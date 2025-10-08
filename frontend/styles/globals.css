@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-slate-950 text-slate-100 min-h-screen;
+}
+
+a {
+  @apply text-accent;
+}
+
+button:disabled {
+  @apply opacity-60 cursor-not-allowed;
+}
