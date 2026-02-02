@@ -342,6 +342,10 @@ def emit_event_no_actor(
     Payload validation is still enforced. LEPH (Large Event Payload Handling)
     is applied automatically for large payloads.
 
+    IMPORTANT: This function sets tenant context for proper database routing.
+    For dedicated tenants, events are written to their dedicated database.
+    For shared tenants, RLS context is set to ensure proper isolation.
+
     Args:
         company: The company this event belongs to
         event_type: Event type (must be registered in EVENT_DATA_CLASSES)
@@ -360,21 +364,47 @@ def emit_event_no_actor(
     Raises:
         InvalidEventPayload: If data doesn't match the event type schema
     """
-    return _emit_event_core(
-        company=company,
-        user=user,
-        event_type=event_type,
-        aggregate_type=aggregate_type,
-        aggregate_id=aggregate_id,
-        data=data,
-        occurred_at=occurred_at,
-        idempotency_key=idempotency_key,
-        metadata=metadata,
-        caused_by_event=caused_by_event,
-        external_source=external_source,
-        external_id=external_id,
-        payload_origin=payload_origin,
-    )
+    # Import tenant modules here to avoid circular imports
+    from tenant.context import tenant_context, system_db_context
+    from tenant.models import TenantDirectory
+    from accounts import rls
+
+    # Look up tenant configuration to determine database routing
+    # TenantDirectory is in system DB, so use system_db_context for lookup
+    with system_db_context():
+        tenant_info = TenantDirectory.get_tenant_info(company.id)
+
+    db_alias = tenant_info["db_alias"]
+    is_shared = tenant_info["is_shared"]
+
+    # Set tenant context for proper database routing
+    with tenant_context(company_id=company.id, db_alias=db_alias, is_shared=is_shared):
+        # For shared tenants, set RLS context; for dedicated, bypass RLS
+        if is_shared:
+            rls.set_rls_context(company.id, bypass=getattr(settings, "RLS_BYPASS", False))
+        else:
+            # Dedicated DB: no RLS needed, bypass for single-tenant database
+            rls.set_rls_bypass(True)
+
+        try:
+            return _emit_event_core(
+                company=company,
+                user=user,
+                event_type=event_type,
+                aggregate_type=aggregate_type,
+                aggregate_id=aggregate_id,
+                data=data,
+                occurred_at=occurred_at,
+                idempotency_key=idempotency_key,
+                metadata=metadata,
+                caused_by_event=caused_by_event,
+                external_source=external_source,
+                external_id=external_id,
+                payload_origin=payload_origin,
+            )
+        finally:
+            # Clean up RLS context
+            rls.clear_rls_context()
 
 
 def get_aggregate_events(company, aggregate_type: str, aggregate_id: Any) -> list[BusinessEvent]:
