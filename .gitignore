@@ -2,16 +2,34 @@
 frontend/node_modules
 frontend/.next
 frontend/.turbo
+frontend/tsconfig.tsbuildinfo
 
 # Python
 backend/.venv
+backend/venv
 backend/__pycache__/
 backend/**/__pycache__/
 *.pyc
 
 # Env files
 frontend/.env
+frontend/.env.local
 backend/.env
 
 # OS
 .DS_Store
+
+# IDE/Editor
+.claude/
+
+# Test/Coverage
+backend/.coverage
+backend/pytest.log
+backend/htmlcov/
+
+# Temp files
+backend/tmpclaude-*
+backend/python
+
+# Media uploads (if any)
+backend/media/

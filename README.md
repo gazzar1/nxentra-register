@@ -50,6 +50,7 @@ The Next.js application will be available at `http://localhost:3000` and expects
 - Deploy the `frontend` directory to Vercel. Configure the environment variable `NEXT_PUBLIC_API_URL` with the public DigitalOcean API URL.
 - Deploy the `backend` directory to a DigitalOcean App Platform or Droplet. Provide the environment variables listed in `backend/.env.example` and make sure PostgreSQL is reachable (DigitalOcean Managed Database recommended).
 - Ensure HTTPS origins are whitelisted in both `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS`.
+- Run the projection consumer in production to keep read models current: `python manage.py run_projections --daemon --interval 5` (set `PROJECTIONS_SYNC=False` in production).
 
 ## Next steps
 

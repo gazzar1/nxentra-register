@@ -1,0 +1,62 @@
+{
+  "title": "التقارير المالية",
+  "subtitle": "عرض وتحليل البيانات المالية",
+  "trialBalance": {
+    "title": "ميزان المراجعة",
+    "subtitle": "ملخص أرصدة جميع الحسابات",
+    "asOf": "كما في",
+    "printTitle": "تقرير ميزان المراجعة"
+  },
+  "balanceSheet": {
+    "title": "الميزانية العمومية",
+    "subtitle": "قائمة المركز المالي",
+    "asOf": "كما في",
+    "printTitle": "تقرير الميزانية العمومية",
+    "assets": "الأصول",
+    "liabilities": "الالتزامات",
+    "equity": "حقوق الملكية",
+    "totalAssets": "إجمالي الأصول",
+    "totalLiabilities": "إجمالي الالتزامات",
+    "totalEquity": "إجمالي حقوق الملكية",
+    "totalLiabilitiesAndEquity": "إجمالي الالتزامات وحقوق الملكية"
+  },
+  "incomeStatement": {
+    "title": "قائمة الدخل",
+    "subtitle": "قائمة الأرباح والخسائر",
+    "periodFrom": "الفترة من",
+    "periodTo": "إلى",
+    "printTitle": "تقرير قائمة الدخل",
+    "revenue": "الإيرادات",
+    "expenses": "المصروفات",
+    "totalRevenue": "إجمالي الإيرادات",
+    "totalExpenses": "إجمالي المصروفات",
+    "netIncome": "صافي الربح",
+    "netLoss": "صافي الخسارة",
+    "grossProfit": "إجمالي الربح"
+  },
+  "columns": {
+    "code": "الرمز",
+    "accountName": "اسم الحساب",
+    "debit": "مدين",
+    "credit": "دائن",
+    "balance": "الرصيد",
+    "amount": "المبلغ"
+  },
+  "totals": {
+    "label": "الإجماليات",
+    "grandTotal": "المجموع الكلي"
+  },
+  "filters": {
+    "dateRange": "نطاق التاريخ",
+    "accountType": "نوع الحساب",
+    "includeZeroBalances": "تضمين الأرصدة الصفرية",
+    "showSubAccounts": "عرض الحسابات الفرعية"
+  },
+  "actions": {
+    "generate": "إنشاء التقرير",
+    "export": "تصدير",
+    "exportPDF": "تصدير كـ PDF",
+    "exportExcel": "تصدير كـ Excel",
+    "print": "طباعة التقرير"
+  }
+}

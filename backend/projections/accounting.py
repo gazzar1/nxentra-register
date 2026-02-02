@@ -1,6 +1,12 @@
 # projections/accounting.py
 """
 Accounting projections (read models).
+
+This module contains projections that maintain the read models for
+accounting entities. Projections are the ONLY code allowed to write
+to the accounting models (Account, JournalEntry, JournalLine, etc.).
+
+All writes use _projection_write=True to bypass the read-model guard.
 """
 
 import logging
@@ -66,7 +72,7 @@ class AccountProjection(BaseProjection):
                     public_id=parent_public_id,
                 ).first()
 
-            Account.objects.update_or_create(
+            Account.objects.projection().update_or_create(
                 company=event.company,
                 public_id=data["account_public_id"],
                 defaults={
@@ -95,7 +101,7 @@ class AccountProjection(BaseProjection):
 
             for field, change in data.get("changes", {}).items():
                 setattr(account, field, change.get("new"))
-            account.save()
+            account.save(_projection_write=True)
             return
 
         if event.event_type == EventTypes.ACCOUNT_DELETED:
@@ -127,7 +133,7 @@ class AnalysisDimensionProjection(BaseProjection):
     def handle(self, event: BusinessEvent) -> None:
         data = event.data
         if event.event_type == EventTypes.ANALYSIS_DIMENSION_CREATED:
-            AnalysisDimension.objects.update_or_create(
+            AnalysisDimension.objects.projection().update_or_create(
                 company=event.company,
                 public_id=data["dimension_public_id"],
                 defaults={
@@ -153,7 +159,7 @@ class AnalysisDimensionProjection(BaseProjection):
                 return
             for field, change in data.get("changes", {}).items():
                 setattr(dimension, field, change.get("new"))
-            dimension.save()
+            dimension.save(_projection_write=True)
             return
 
         if event.event_type == EventTypes.ANALYSIS_DIMENSION_DELETED:
@@ -177,10 +183,12 @@ class AnalysisDimensionProjection(BaseProjection):
             if parent_public_id:
                 parent = AnalysisDimensionValue.objects.filter(
                     dimension=dimension,
+                    company=event.company,
                     public_id=parent_public_id,
                 ).first()
 
-            AnalysisDimensionValue.objects.update_or_create(
+            AnalysisDimensionValue.objects.projection().update_or_create(
+                company=event.company,
                 dimension=dimension,
                 public_id=data["value_public_id"],
                 defaults={
@@ -203,6 +211,7 @@ class AnalysisDimensionProjection(BaseProjection):
                 logger.warning("Dimension not found for value update: %s", data["dimension_public_id"])
                 return
             value = AnalysisDimensionValue.objects.filter(
+                company=event.company,
                 dimension=dimension,
                 public_id=data["value_public_id"],
             ).first()
@@ -211,7 +220,7 @@ class AnalysisDimensionProjection(BaseProjection):
                 return
             for field, change in data.get("changes", {}).items():
                 setattr(value, field, change.get("new"))
-            value.save()
+            value.save(_projection_write=True)
             return
 
         if event.event_type == EventTypes.ANALYSIS_DIMENSION_VALUE_DELETED:
@@ -222,6 +231,7 @@ class AnalysisDimensionProjection(BaseProjection):
             if not dimension:
                 return
             AnalysisDimensionValue.objects.filter(
+                company=event.company,
                 dimension=dimension,
                 public_id=data["value_public_id"],
             ).delete()
@@ -264,7 +274,8 @@ class AccountAnalysisDefaultProjection(BaseProjection):
             if not value:
                 logger.warning("Missing dimension value for default projection.")
                 return
-            AccountAnalysisDefault.objects.update_or_create(
+            AccountAnalysisDefault.objects.projection().update_or_create(
+                company=event.company,
                 account=account,
                 dimension=dimension,
                 defaults={"default_value": value},
@@ -273,6 +284,7 @@ class AccountAnalysisDefaultProjection(BaseProjection):
 
         if event.event_type == EventTypes.ACCOUNT_ANALYSIS_DEFAULT_REMOVED:
             AccountAnalysisDefault.objects.filter(
+                company=event.company,
                 account=account,
                 dimension=dimension,
             ).delete()
@@ -302,16 +314,19 @@ class JournalEntryProjection(BaseProjection):
         data = event.data
 
         if event.event_type == EventTypes.JOURNAL_ENTRY_CREATED:
-            entry, _ = JournalEntry.objects.get_or_create(
+            entry, _ = JournalEntry.objects.projection().get_or_create(
                 company=event.company,
                 public_id=data["entry_public_id"],
                 defaults={
                     "date": _parse_date(data["date"]),
+                    "period": data.get("period"),
                     "memo": data.get("memo", ""),
                     "memo_ar": data.get("memo_ar", ""),
                     "kind": data.get("kind", JournalEntry.Kind.NORMAL),
                     "status": data.get("status", JournalEntry.Status.INCOMPLETE),
                     "created_by_id": data.get("created_by_id"),
+                    "currency": data.get("currency", event.company.default_currency),
+                    "exchange_rate": Decimal(str(data.get("exchange_rate", "1.0"))),
                 },
             )
             lines = data.get("lines", [])
@@ -328,12 +343,15 @@ class JournalEntryProjection(BaseProjection):
                 logger.warning("Journal entry not found for update: %s", data["entry_public_id"])
                 return
             for field, change in data.get("changes", {}).items():
+                # Skip "lines" - it's handled separately by _replace_lines
+                if field == "lines":
+                    continue
                 if field == "date":
                     setattr(entry, field, _parse_date(change.get("new")))
                 else:
                     setattr(entry, field, change.get("new"))
             entry.status = JournalEntry.Status.INCOMPLETE
-            entry.save()
+            entry.save(_projection_write=True)
             if data.get("lines") is not None:
                 self._replace_lines(entry, data.get("lines", []))
             return
@@ -348,20 +366,27 @@ class JournalEntryProjection(BaseProjection):
                 return
             if data.get("date"):
                 entry.date = _parse_date(data.get("date"))
+            if data.get("period") is not None:
+                entry.period = data.get("period")
             entry.memo = data.get("memo", entry.memo)
             entry.memo_ar = data.get("memo_ar", entry.memo_ar)
+            if data.get("currency"):
+                entry.currency = data.get("currency")
+            if data.get("exchange_rate"):
+                entry.exchange_rate = Decimal(str(data.get("exchange_rate")))
             entry.status = JournalEntry.Status.DRAFT
-            entry.save()
+            entry.save(_projection_write=True)
             if data.get("lines"):
                 self._replace_lines(entry, data.get("lines", []))
             return
 
         if event.event_type == EventTypes.JOURNAL_ENTRY_POSTED:
-            entry, _ = JournalEntry.objects.get_or_create(
+            entry, _ = JournalEntry.objects.projection().get_or_create(
                 company=event.company,
                 public_id=data["entry_public_id"],
                 defaults={
                     "date": _parse_date(data.get("date")),
+                    "period": data.get("period"),
                     "memo": data.get("memo", ""),
                     "memo_ar": data.get("memo_ar", ""),
                     "kind": data.get("kind", JournalEntry.Kind.NORMAL),
@@ -369,10 +394,14 @@ class JournalEntryProjection(BaseProjection):
                     "posted_at": _parse_datetime(data.get("posted_at")),
                     "posted_by_id": data.get("posted_by_id"),
                     "entry_number": data.get("entry_number", ""),
+                    "currency": data.get("currency", event.company.default_currency),
+                    "exchange_rate": Decimal(str(data.get("exchange_rate", "1.0"))),
                 },
             )
             if data.get("date"):
                 entry.date = _parse_date(data.get("date"))
+            if data.get("period") is not None:
+                entry.period = data.get("period")
             entry.memo = data.get("memo", entry.memo)
             entry.memo_ar = data.get("memo_ar", entry.memo_ar)
             entry.kind = data.get("kind", entry.kind)
@@ -380,7 +409,11 @@ class JournalEntryProjection(BaseProjection):
             entry.posted_at = _parse_datetime(data.get("posted_at"))
             entry.posted_by_id = data.get("posted_by_id")
             entry.entry_number = data.get("entry_number", "")
-            entry.save()
+            if data.get("currency"):
+                entry.currency = data.get("currency")
+            if data.get("exchange_rate"):
+                entry.exchange_rate = Decimal(str(data.get("exchange_rate")))
+            entry.save(_projection_write=True)
             self._replace_lines(entry, data.get("lines", []))
             return
 
@@ -398,7 +431,7 @@ class JournalEntryProjection(BaseProjection):
                 original.status = JournalEntry.Status.REVERSED
                 original.reversed_at = _parse_datetime(data.get("reversed_at")) or timezone.now()
                 original.reversed_by_id = data.get("reversed_by_id")
-                original.save(update_fields=["status", "reversed_at", "reversed_by_id"])
+                original.save(_projection_write=True, update_fields=["status", "reversed_at", "reversed_by_id"])
 
             if original and reversal:
                 JournalEntry.objects.filter(
@@ -424,25 +457,28 @@ class JournalEntryProjection(BaseProjection):
             line = JournalLine.objects.filter(
                 entry=entry,
                 line_no=data["line_no"],
+                company=entry.company,
             ).first()
             if not line:
                 logger.warning("Line not found for analysis set.")
                 return
 
-            JournalLineAnalysis.objects.filter(journal_line=line).delete()
+            JournalLineAnalysis.objects.filter(journal_line=line, company=entry.company).delete()
             for tag in data.get("analysis_tags", []):
                 dimension = AnalysisDimension.objects.filter(
                     company=event.company,
                     public_id=tag.get("dimension_public_id"),
                 ).first()
                 value = AnalysisDimensionValue.objects.filter(
+                    company=event.company,
                     dimension=dimension,
                     public_id=tag.get("value_public_id"),
                 ).first() if dimension else None
                 if not dimension or not value:
                     continue
-                JournalLineAnalysis.objects.create(
+                JournalLineAnalysis.objects.projection().create(
                     journal_line=line,
+                    company=entry.company,
                     dimension=dimension,
                     dimension_value=value,
                 )
@@ -453,6 +489,7 @@ class JournalEntryProjection(BaseProjection):
     def _replace_lines(self, entry: JournalEntry, lines: list[dict]) -> None:
         entry.lines.all().delete()
         line_objects = []
+        line_analysis_tags = {}  # line_no -> analysis_tags
         line_no = 1
         for line in lines:
             account_public_id = line.get("account_public_id")
@@ -466,23 +503,55 @@ class JournalEntryProjection(BaseProjection):
                 continue
             debit = Decimal(str(line.get("debit", "0")))
             credit = Decimal(str(line.get("credit", "0")))
-            
+
             # Skip invalid lines (DB constraint: not both zero)
             if debit == 0 and credit == 0:
                 continue
-            
+
             line_objects.append(JournalLine(
                 entry=entry,
+                company=entry.company,
                 line_no=line_no,
                 account=account,
                 description=line.get("description", ""),
                 description_ar=line.get("description_ar", ""),
                 debit=debit,
                 credit=credit,
+                amount_currency=line.get("amount_currency"),
+                currency=line.get("currency") or entry.currency or "",
+                exchange_rate=line.get("exchange_rate") or entry.exchange_rate,
             ))
+            # Store analysis tags for this line
+            if line.get("analysis_tags"):
+                line_analysis_tags[line_no] = line.get("analysis_tags")
             line_no += 1
         if line_objects:
-            JournalLine.objects.bulk_create(line_objects)
+            JournalLine.objects.projection().bulk_create(line_objects)
+
+            # Create analysis tags for each line
+            if line_analysis_tags:
+                created_lines = JournalLine.objects.filter(
+                    entry=entry, company=entry.company
+                ).order_by("line_no")
+                for journal_line in created_lines:
+                    tags = line_analysis_tags.get(journal_line.line_no, [])
+                    for tag in tags:
+                        dimension = AnalysisDimension.objects.filter(
+                            company=entry.company,
+                            public_id=tag.get("dimension_public_id"),
+                        ).first()
+                        value = AnalysisDimensionValue.objects.filter(
+                            company=entry.company,
+                            dimension=dimension,
+                            public_id=tag.get("value_public_id"),
+                        ).first() if dimension else None
+                        if dimension and value:
+                            JournalLineAnalysis.objects.projection().create(
+                                journal_line=journal_line,
+                                company=entry.company,
+                                dimension=dimension,
+                                dimension_value=value,
+                            )
 
 
 projection_registry.register(AccountProjection())

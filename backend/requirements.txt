@@ -3,3 +3,21 @@ djangorestframework>=3.14
 psycopg2-binary>=2.9
 django-cors-headers>=3.14
 djangorestframework-simplejwt>=5.3
+openpyxl>=3.1.0
+dj-database-url>=2.1.0
+python-dotenv>=1.0.0
+
+# Observability
+prometheus-client>=0.19.0
+structlog>=24.1.0
+django-structlog>=7.1.0
+
+# Async workers
+celery[redis]>=5.3.0
+django-celery-beat>=2.5.0
+django-celery-results>=2.5.0
+redis>=5.0.0
+
+# Channels (WebSocket support)
+channels>=4.0.0
+channels-redis>=4.1.0

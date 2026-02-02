@@ -6,6 +6,12 @@ The BusinessEvent table is the canonical source of truth for all
 state changes in the system. Events are immutable once created.
 
 EventBookmark tracks consumer progress for projection rebuilds.
+
+LEPH (Large Event Payload Handling):
+BusinessEvent supports three payload storage strategies:
+- inline: Small payloads stored directly in the 'data' field
+- external: Large payloads stored in EventPayload table
+- chunked: Very large journal entries split across multiple events
 """
 
 import uuid
@@ -15,6 +21,120 @@ from django.db.models import F
 from django.utils import timezone
 
 from accounts.models import Company
+
+
+# =============================================================================
+# LEPH: EventPayload Model for External Storage
+# =============================================================================
+
+class EventPayload(models.Model):
+    """
+    External storage for large event payloads.
+
+    This model stores large payloads separately from BusinessEvent.data,
+    allowing the event stream to remain efficient while supporting
+    arbitrarily large payloads.
+
+    Key properties:
+    - Content-addressed: content_hash = SHA-256(canonical_json(payload))
+    - Immutable: Cannot be modified after creation
+    - Deduplicated: Same payload content reuses existing record
+    """
+
+    id = models.BigAutoField(primary_key=True)
+
+    content_hash = models.CharField(
+        max_length=64,
+        unique=True,
+        db_index=True,
+        help_text="SHA-256 hash of canonical JSON representation",
+    )
+
+    payload = models.JSONField(
+        help_text="The actual payload data",
+    )
+
+    size_bytes = models.PositiveIntegerField(
+        help_text="Size of the canonical JSON in bytes",
+    )
+
+    compression = models.CharField(
+        max_length=20,
+        default='none',
+        choices=[
+            ('none', 'No compression'),
+            ('gzip', 'Gzip compression'),
+            ('zstd', 'Zstandard compression'),
+        ],
+        help_text="Compression algorithm used (for future use)",
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+        db_index=True,
+    )
+
+    class Meta:
+        db_table = 'events_payload'
+        verbose_name = 'Event Payload'
+        verbose_name_plural = 'Event Payloads'
+
+    def __str__(self):
+        return f"EventPayload({self.content_hash[:12]}..., {self.size_bytes} bytes)"
+
+    def save(self, *args, **kwargs):
+        """
+        Save the payload record.
+        Only new records can be saved. Existing records are immutable.
+        """
+        if not self._state.adding:
+            raise ValueError(
+                "EventPayload records are immutable and cannot be modified. "
+                "Content-addressed storage means changes would alter the hash."
+            )
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        """
+        Prevent deletion of payload records.
+        Payloads are referenced by events and must remain for replay integrity.
+        """
+        raise ValueError(
+            "EventPayload records cannot be deleted. "
+            "They are required for event replay and audit purposes."
+        )
+
+    def verify_integrity(self) -> bool:
+        """
+        Verify that the stored payload matches its hash.
+        Returns True if the payload hash matches, False otherwise.
+        """
+        from events.serialization import compute_payload_hash
+
+        try:
+            computed_hash = compute_payload_hash(self.payload)
+            return computed_hash == self.content_hash
+        except Exception:
+            return False
+
+    @classmethod
+    def store_payload(cls, payload: dict) -> 'EventPayload':
+        """
+        Store a payload, reusing existing record if content matches.
+        """
+        from events.serialization import compute_payload_hash, estimate_json_size
+
+        content_hash = compute_payload_hash(payload)
+        size_bytes = estimate_json_size(payload)
+
+        record, _ = cls.objects.get_or_create(
+            content_hash=content_hash,
+            defaults={
+                'payload': payload,
+                'size_bytes': size_bytes,
+            }
+        )
+        return record
 
 
 class CompanyEventCounter(models.Model):
@@ -107,6 +227,7 @@ class BusinessEvent(models.Model):
         on_delete=models.SET_NULL,
         related_name="caused_events",
         help_text="User who triggered this event",
+        db_constraint=False,  # Cross-database FK (User in system DB, Event in tenant DB)
     )
 
     caused_by_event = models.ForeignKey(
@@ -130,6 +251,57 @@ class BusinessEvent(models.Model):
         blank=True,
         default="",
         help_text="ID in external system",
+    )
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # LEPH (Large Event Payload Handling) fields
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    payload_storage = models.CharField(
+        max_length=20,
+        default='inline',
+        choices=[
+            ('inline', 'Inline'),
+            ('external', 'External'),
+            ('chunked', 'Chunked'),
+        ],
+        help_text="Storage strategy: inline (data field), external (EventPayload), or chunked (multi-event)",
+    )
+
+    payload_hash = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text="SHA-256 hash of canonical JSON payload for integrity verification",
+    )
+
+    payload_ref = models.ForeignKey(
+        'EventPayload',
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name='events',
+        help_text="Reference to external payload (when payload_storage='external')",
+    )
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Ledger Survivability: Origin tracking
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    class EventOrigin(models.TextChoices):
+        """Origin of the event - who/what initiated it."""
+        HUMAN = 'human', 'Human (Manual UI)'
+        SYSTEM_BATCH = 'batch', 'System Batch Import'
+        API = 'api', 'External API'
+        SYSTEM = 'system', 'Internal System Process'
+
+    origin = models.CharField(
+        max_length=20,
+        choices=EventOrigin.choices,
+        default=EventOrigin.HUMAN,
+        db_index=True,
+        help_text="Origin of this event (human, batch import, API, or system)",
     )
 
     recorded_at = models.DateTimeField(
@@ -210,6 +382,132 @@ class BusinessEvent(models.Model):
     def delete(self, *args, **kwargs):
         raise ValueError("Events are immutable and cannot be deleted.")
 
+    # ═══════════════════════════════════════════════════════════════════════════
+    # LEPH Payload Resolution
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def get_data(self) -> dict:
+        """
+        Resolve the event payload regardless of storage strategy.
+
+        This method transparently handles all payload storage strategies,
+        returning the full payload dict whether stored inline, externally,
+        or across multiple chunked events.
+
+        Returns:
+            The complete event payload dict
+
+        Raises:
+            IntegrityError: If external payload is missing or hash verification fails
+            ValueError: If chunk assembly is called on non-chunked events
+
+        Usage:
+            # Projections should use get_data() instead of accessing .data directly
+            data = event.get_data()
+            lines = data.get('lines', [])
+        """
+        if self.payload_storage == 'inline':
+            return self.data
+
+        elif self.payload_storage == 'external':
+            if not self.payload_ref_id:
+                raise IntegrityError(
+                    f"Event {self.id} has external storage but no payload_ref"
+                )
+
+            payload = self.payload_ref.payload
+
+            # Verify integrity if hash is set
+            if self.payload_hash:
+                from events.serialization import compute_payload_hash
+                computed_hash = compute_payload_hash(payload)
+                if computed_hash != self.payload_hash:
+                    raise IntegrityError(
+                        f"Payload hash mismatch for event {self.id}: "
+                        f"expected {self.payload_hash[:16]}..., got {computed_hash[:16]}..."
+                    )
+
+            return payload
+
+        elif self.payload_storage == 'chunked':
+            return self._assemble_chunks()
+
+        # Fallback for unknown strategy (shouldn't happen)
+        return self.data
+
+    def _assemble_chunks(self) -> dict:
+        """
+        Assemble full journal entry from JOURNAL_CREATED + chunk events.
+
+        This method is called when payload_storage='chunked' to reconstruct
+        the complete payload from the parent event and its child chunk events.
+
+        Returns:
+            Complete payload with all lines assembled
+
+        Raises:
+            ValueError: If called on non-JOURNAL_CREATED event type
+        """
+        from events.types import EventTypes
+
+        # Chunked assembly only works for JOURNAL_CREATED events
+        if self.event_type != EventTypes.JOURNAL_CREATED:
+            raise ValueError(
+                f"Can only assemble chunks from JOURNAL_CREATED event, "
+                f"got {self.event_type}"
+            )
+
+        # Get all chunk events caused by this event, ordered by sequence
+        chunk_events = BusinessEvent.objects.filter(
+            caused_by_event=self,
+            event_type=EventTypes.JOURNAL_LINES_CHUNK_ADDED,
+        ).order_by('sequence')
+
+        # Assemble lines from all chunks in order
+        all_lines = []
+        for chunk_event in chunk_events:
+            chunk_data = chunk_event.get_data()
+            chunk_lines = chunk_data.get('lines', [])
+            all_lines.extend(chunk_lines)
+
+        # Combine header data with assembled lines
+        header = dict(self.data)  # Copy to avoid mutating
+        header['lines'] = all_lines
+
+        return header
+
+    def has_external_payload(self) -> bool:
+        """Check if this event uses external payload storage."""
+        return self.payload_storage == 'external' and self.payload_ref_id is not None
+
+    def has_chunked_payload(self) -> bool:
+        """Check if this event uses chunked payload storage."""
+        return self.payload_storage == 'chunked'
+
+    def verify_payload_integrity(self) -> bool:
+        """
+        Verify the integrity of the payload hash.
+
+        Returns:
+            True if verification passes or no hash is set, False otherwise
+        """
+        if not self.payload_hash:
+            return True  # No hash to verify
+
+        from events.serialization import compute_payload_hash
+
+        try:
+            if self.payload_storage == 'inline':
+                computed = compute_payload_hash(self.data)
+            elif self.payload_storage == 'external' and self.payload_ref:
+                computed = compute_payload_hash(self.payload_ref.payload)
+            else:
+                return True  # Chunked payloads verified differently
+
+            return computed == self.payload_hash
+        except Exception:
+            return False
+
 
 class EventBookmark(models.Model):
     consumer_name = models.CharField(
@@ -285,6 +583,11 @@ class EventBookmark(models.Model):
         self.save(update_fields=["error_count", "last_error", "updated_at"])
 
     def get_unprocessed_events(self, event_types: list = None, limit: int = 100):
+        """
+        Company-wide stream ordering.
+
+        Bookmarks advance on company_sequence; use aggregate ordering elsewhere.
+        """
         qs = BusinessEvent.objects.all()
 
         if self.company:

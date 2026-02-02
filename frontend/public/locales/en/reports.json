@@ -1,0 +1,62 @@
+{
+  "title": "Financial Reports",
+  "subtitle": "View and analyze financial data",
+  "trialBalance": {
+    "title": "Trial Balance",
+    "subtitle": "Summary of all account balances",
+    "asOf": "As of",
+    "printTitle": "Trial Balance Report"
+  },
+  "balanceSheet": {
+    "title": "Balance Sheet",
+    "subtitle": "Statement of financial position",
+    "asOf": "As of",
+    "printTitle": "Balance Sheet Report",
+    "assets": "Assets",
+    "liabilities": "Liabilities",
+    "equity": "Equity",
+    "totalAssets": "Total Assets",
+    "totalLiabilities": "Total Liabilities",
+    "totalEquity": "Total Equity",
+    "totalLiabilitiesAndEquity": "Total Liabilities & Equity"
+  },
+  "incomeStatement": {
+    "title": "Income Statement",
+    "subtitle": "Profit and loss statement",
+    "periodFrom": "Period From",
+    "periodTo": "To",
+    "printTitle": "Income Statement Report",
+    "revenue": "Revenue",
+    "expenses": "Expenses",
+    "totalRevenue": "Total Revenue",
+    "totalExpenses": "Total Expenses",
+    "netIncome": "Net Income",
+    "netLoss": "Net Loss",
+    "grossProfit": "Gross Profit"
+  },
+  "columns": {
+    "code": "Code",
+    "accountName": "Account Name",
+    "debit": "Debit",
+    "credit": "Credit",
+    "balance": "Balance",
+    "amount": "Amount"
+  },
+  "totals": {
+    "label": "Totals",
+    "grandTotal": "Grand Total"
+  },
+  "filters": {
+    "dateRange": "Date Range",
+    "accountType": "Account Type",
+    "includeZeroBalances": "Include Zero Balances",
+    "showSubAccounts": "Show Sub-Accounts"
+  },
+  "actions": {
+    "generate": "Generate Report",
+    "export": "Export",
+    "exportPDF": "Export as PDF",
+    "exportExcel": "Export as Excel",
+    "print": "Print Report"
+  }
+}

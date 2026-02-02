@@ -26,7 +26,7 @@ export function InputField({
 }: InputProps) {
   return (
     <div className="space-y-2">
-      <label className="block text-sm font-medium text-slate-200" htmlFor={id}>
+      <label className="block text-sm font-medium text-foreground" htmlFor={id}>
         {label}
       </label>
       <input
@@ -37,12 +37,12 @@ export function InputField({
         placeholder={placeholder}
         onChange={(event) => onChange(event.target.value)}
         className={clsx(
-          "w-full rounded-xl border border-slate-800 bg-slate-900/60 px-4 py-3 text-slate-100 transition",
-          "placeholder:text-slate-500 focus:border-accent focus:outline-none focus:ring focus:ring-accent/20",
-          error && "border-red-500/70 focus:border-red-500/70 focus:ring-red-500/20"
+          "w-full rounded-xl border border-input bg-background px-4 py-3 text-foreground transition",
+          "placeholder:text-muted-foreground focus:border-accent focus:outline-none focus:ring focus:ring-accent/20",
+          error && "border-destructive focus:border-destructive focus:ring-destructive/20"
         )}
       />
-      {error && <p className="text-sm text-red-400">{error}</p>}
+      {error && <p className="text-sm text-destructive">{error}</p>}
     </div>
   );
 }
@@ -56,7 +56,7 @@ interface SelectProps extends BaseProps {
 export function SelectField({ id, label, value, onChange, children, error }: SelectProps) {
   return (
     <div className="space-y-2">
-      <label className="block text-sm font-medium text-slate-200" htmlFor={id}>
+      <label className="block text-sm font-medium text-foreground" htmlFor={id}>
         {label}
       </label>
       <select
@@ -65,14 +65,14 @@ export function SelectField({ id, label, value, onChange, children, error }: Sel
         value={value}
         onChange={(event) => onChange(event.target.value)}
         className={clsx(
-          "w-full rounded-xl border border-slate-800 bg-slate-900/60 px-4 py-3 text-slate-100 transition",
+          "w-full rounded-xl border border-input bg-background px-4 py-3 text-foreground transition",
           "focus:border-accent focus:outline-none focus:ring focus:ring-accent/20",
-          error && "border-red-500/70 focus:border-red-500/70 focus:ring-red-500/20"
+          error && "border-destructive focus:border-destructive focus:ring-destructive/20"
         )}
       >
         {children}
       </select>
-      {error && <p className="text-sm text-red-400">{error}</p>}
+      {error && <p className="text-sm text-destructive">{error}</p>}
     </div>
   );
 }

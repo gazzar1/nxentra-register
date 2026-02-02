@@ -15,7 +15,8 @@ Pattern:
 ALL state changes MUST go through commands to ensure events are emitted.
 """
 
-from django.db import transaction
+from django.db import transaction, IntegrityError
+from django.conf import settings
 from django.utils import timezone
 import hashlib
 import json
@@ -23,6 +24,7 @@ import uuid
 from decimal import Decimal
 
 from accounts.authz import ActorContext, require
+from accounts.rls import rls_bypass
 from accounting.models import (
     Account,
     JournalEntry,
@@ -30,6 +32,7 @@ from accounting.models import (
     AnalysisDimension,
     AnalysisDimensionValue,
     AccountAnalysisDefault,
+    CompanySequence,
 )
 from accounting.aggregates import load_journal_entry_aggregate, load_account_aggregate
 from accounting.policies import (
@@ -41,8 +44,10 @@ from accounting.policies import (
     can_delete_dimension,
     can_delete_dimension_value,
     can_post_to_account,
+    can_post_to_period,
 )
 from events.emitter import emit_event
+from projections.write_barrier import command_writes_allowed
 from events.types import (
     EventTypes,
     AccountCreatedData,
@@ -54,6 +59,12 @@ from events.types import (
     JournalEntryReversedData,
     JournalEntrySavedCompleteData,
     JournalEntryDeletedData,
+    FiscalPeriodClosedData,
+    FiscalPeriodOpenedData,
+    FiscalPeriodsConfiguredData,
+    FiscalPeriodRangeSetData,
+    FiscalPeriodCurrentSetData,
+    FiscalPeriodDatesUpdatedData,
     JournalLineData,
     AnalysisDimensionCreatedData,
     AnalysisDimensionUpdatedData,
@@ -96,7 +107,7 @@ class CommandResult:
 
 
 def _changes_hash(changes: dict) -> str:
-    payload = str(sorted((k, v.get("new")) for k, v in changes.items())).encode()
+    payload = json.dumps(changes, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(payload).hexdigest()[:12]
 
 
@@ -105,12 +116,108 @@ def _idempotency_hash(prefix: str, payload: dict) -> str:
     digest = hashlib.sha256(normalized).hexdigest()[:16]
     return f"{prefix}:{digest}"
 
+def _next_company_sequence(company, name: str) -> int:
+    """
+    Allocate the next sequence value for a company/name pair.
+    Uses select_for_update to avoid concurrent duplicates.
+    """
+    with command_writes_allowed():
+        try:
+            seq = CompanySequence.objects.select_for_update().get(
+                company=company,
+                name=name,
+            )
+        except CompanySequence.DoesNotExist:
+            try:
+                seq = CompanySequence.objects.create(
+                    company=company,
+                    name=name,
+                    next_value=1,
+                )
+            except IntegrityError:
+                seq = CompanySequence.objects.select_for_update().get(
+                    company=company,
+                    name=name,
+                )
+
+        value = seq.next_value
+        seq.next_value = value + 1
+        seq.save(update_fields=["next_value"])
+        return value
+
+
+def _resolve_analysis_tags_to_public_ids(company, analysis_tags: list) -> list:
+    """
+    Convert analysis_tags with integer IDs to public IDs, or pass through already-resolved tags.
+
+    Input formats:
+    - [{"dimension_id": 1, "value_id": 5}, ...] - needs resolution
+    - [{"dimension_id": 1, "dimension_value_id": 5}, ...] - needs resolution
+    - [{"dimension_public_id": "uuid", "value_public_id": "uuid"}, ...] - already resolved
+
+    Output format: [{"dimension_public_id": "uuid", "value_public_id": "uuid"}, ...]
+    """
+    if not analysis_tags:
+        return []
+
+    result = []
+    tags_to_resolve = []
+
+    # First pass: separate already-resolved tags from those needing resolution
+    for tag in analysis_tags:
+        if tag.get("dimension_public_id") and tag.get("value_public_id"):
+            # Already resolved - pass through
+            result.append({
+                "dimension_public_id": str(tag["dimension_public_id"]),
+                "value_public_id": str(tag["value_public_id"]),
+            })
+        elif tag.get("dimension_id") and (tag.get("value_id") or tag.get("dimension_value_id")):
+            # Needs resolution
+            tags_to_resolve.append(tag)
+
+    # If all tags were already resolved, return early
+    if not tags_to_resolve:
+        return result
+
+    # Resolve integer IDs to public IDs
+    dimension_ids = [t.get("dimension_id") for t in tags_to_resolve]
+    value_ids = [
+        t.get("value_id") or t.get("dimension_value_id")
+        for t in tags_to_resolve
+    ]
+
+    dimensions = {
+        dim.id: dim
+        for dim in AnalysisDimension.objects.filter(company=company, id__in=dimension_ids)
+    }
+    values = {
+        val.id: val
+        for val in AnalysisDimensionValue.objects.filter(company=company, id__in=value_ids)
+    }
+
+    for tag in tags_to_resolve:
+        dim_id = tag.get("dimension_id")
+        val_id = tag.get("value_id") or tag.get("dimension_value_id")
+        dim = dimensions.get(dim_id)
+        val = values.get(val_id)
+        if dim and val:
+            result.append({
+                "dimension_public_id": str(dim.public_id),
+                "value_public_id": str(val.public_id),
+            })
+
+    return result
+
 
 def _process_projections(company, exclude: set[str] | None = None) -> None:
+    if not settings.PROJECTIONS_SYNC:
+        return
+
     from projections.base import projection_registry
-    exclude = exclude or set()
+
+    excluded = exclude or set()
     for projection in projection_registry.all():
-        if projection.name in exclude:
+        if projection.name in excluded:
             continue
         projection.process_pending(company, limit=1000)
 
@@ -217,6 +324,7 @@ def create_account(
 
 
 @transaction.atomic
+@transaction.atomic
 def update_account(
     actor: ActorContext,
     account_id: int,
@@ -224,23 +332,26 @@ def update_account(
 ) -> CommandResult:
     """
     Update an existing account.
-    
+
     Args:
         actor: The actor context
         account_id: ID of account to update
         **updates: Field updates (name, name_ar, description, etc.)
-    
+
     Returns:
         CommandResult with updated Account or error
     """
     require(actor, "accounts.manage")
 
-    try:
-        account = Account.objects.select_for_update().get(
-            pk=account_id, company=actor.company
-        )
-    except Account.DoesNotExist:
-        return CommandResult.fail("Account not found.")
+    # Use rls_bypass for lookup since authorization is already done above
+    # and the view has already validated company ownership
+    with rls_bypass():
+        try:
+            account = Account.objects.select_for_update().get(
+                pk=account_id, company=actor.company
+            )
+        except Account.DoesNotExist:
+            return CommandResult.fail("Account not found.")
 
     # Policy checks for specific field changes
     if "code" in updates and updates["code"] != account.code:
@@ -265,19 +376,20 @@ def update_account(
         return CommandResult.fail("Unit of measure can only be set for MEMO accounts.")
 
     aggregate = load_account_aggregate(actor.company, str(account.public_id))
-    if not aggregate or aggregate.deleted:
+    if aggregate and aggregate.deleted:
         return CommandResult.fail("Account not found.")
 
     # Track changes for event
+    # Use aggregate state if available, otherwise fall back to DB model (legacy accounts)
     changes = {}
     allowed_fields = {
         "name", "name_ar", "description", "description_ar",
         "status", "code", "account_type", "unit_of_measure"
     }
-    
+
     for field, value in updates.items():
         if field in allowed_fields:
-            old_value = getattr(aggregate, field)
+            old_value = getattr(aggregate, field) if aggregate else getattr(account, field)
             if old_value != value:
                 changes[field] = {"old": old_value, "new": value}
 
@@ -306,22 +418,24 @@ def update_account(
 def delete_account(actor: ActorContext, account_id: int) -> CommandResult:
     """
     Delete an account.
-    
+
     Args:
         actor: The actor context
         account_id: ID of account to delete
-    
+
     Returns:
         CommandResult with deletion confirmation or error
     """
     require(actor, "accounts.manage")
 
-    try:
-        account = Account.objects.select_for_update().get(
-            pk=account_id, company=actor.company
-        )
-    except Account.DoesNotExist:
-        return CommandResult.fail("Account not found.")
+    # Use rls_bypass for lookup since authorization is already done above
+    with rls_bypass():
+        try:
+            account = Account.objects.select_for_update().get(
+                pk=account_id, company=actor.company
+            )
+        except Account.DoesNotExist:
+            return CommandResult.fail("Account not found.")
 
     allowed, reason = can_delete_account(actor, account)
     if not allowed:
@@ -357,6 +471,9 @@ def create_journal_entry(
     memo_ar: str = "",
     lines: list = None,
     kind: str = JournalEntry.Kind.NORMAL,
+    currency: str = None,
+    exchange_rate: str = None,
+    period: int = None,
 ) -> CommandResult:
     """
     Create a new journal entry.
@@ -375,6 +492,9 @@ def create_journal_entry(
     require(actor, "journal.create")
 
     entry_public_id = uuid.uuid4()
+    entry_currency = currency or actor.company.default_currency
+    entry_exchange_rate = exchange_rate or "1.0"
+
     line_data = []
     if lines:
         account_ids = [line.get("account_id") for line in lines if line.get("account_id")]
@@ -394,6 +514,9 @@ def create_journal_entry(
             credit = line.get("credit", 0)
             if debit == 0 and credit == 0:
                 continue
+            line_currency = line.get("currency") or entry_currency
+            line_exchange_rate = line.get("exchange_rate") or entry_exchange_rate
+            amount_currency = line.get("amount_currency")
             line_data.append(JournalLineData(
                 line_no=line_no,
                 account_public_id=str(account.public_id),
@@ -402,8 +525,13 @@ def create_journal_entry(
                 description_ar=line.get("description_ar", ""),
                 debit=str(debit),
                 credit=str(credit),
+                amount_currency=str(amount_currency) if amount_currency is not None else None,
+                currency=line_currency,
+                exchange_rate=str(line_exchange_rate) if line_exchange_rate is not None else None,
                 is_memo_line=account.is_memo_account,
-                analysis_tags=[],
+                analysis_tags=_resolve_analysis_tags_to_public_ids(
+                    actor.company, line.get("analysis_tags", [])
+                ),
             ).to_dict())
             line_no += 1
 
@@ -421,6 +549,9 @@ def create_journal_entry(
                 "description_ar": line.get("description_ar", ""),
                 "debit": str(debit),
                 "credit": str(credit),
+                "amount_currency": str(line.get("amount_currency")) if line.get("amount_currency") is not None else None,
+                "currency": line.get("currency"),
+                "exchange_rate": str(line.get("exchange_rate")) if line.get("exchange_rate") is not None else None,
             })
 
     idempotency_key = _idempotency_hash("journal_entry.created", {
@@ -429,6 +560,8 @@ def create_journal_entry(
         "memo": memo,
         "memo_ar": memo_ar,
         "kind": kind,
+        "currency": entry_currency,
+        "exchange_rate": str(entry_exchange_rate),
         "lines": normalized_lines,
     })
 
@@ -446,13 +579,27 @@ def create_journal_entry(
             memo_ar=memo_ar,
             kind=kind,
             status=JournalEntry.Status.INCOMPLETE,
+            period=period,
+            currency=entry_currency,
+            exchange_rate=str(entry_exchange_rate),
             created_by_id=actor.user.id,
             lines=line_data,
         ).to_dict(),
     )
 
     _process_projections(actor.company)
-    entry = JournalEntry.objects.get(company=actor.company, public_id=entry_public_id)
+    try:
+        entry = JournalEntry.objects.get(company=actor.company, public_id=entry_public_id)
+    except JournalEntry.DoesNotExist:
+        # Projection may have failed; check bookmark for errors
+        from projections.base import projection_registry
+        with rls_bypass():
+            je_proj = projection_registry.get("journal_entry_read_model")
+            if je_proj:
+                bookmark = je_proj.get_bookmark(actor.company)
+                if bookmark and bookmark.last_error:
+                    return CommandResult.fail(f"Projection error: {bookmark.last_error}")
+        return CommandResult.fail("Journal entry could not be created. Projection may have failed.")
     return CommandResult.ok(entry, event=event)
 
 
@@ -463,7 +610,10 @@ def update_journal_entry(
     date=None,
     memo: str = None,
     memo_ar: str = None,
+    currency: str = None,
+    exchange_rate: str = None,
     lines: list = None,
+    period: int = None,
 ) -> CommandResult:
     """
     Update a journal entry (autosave mode - status becomes INCOMPLETE).
@@ -488,25 +638,42 @@ def update_journal_entry(
     except JournalEntry.DoesNotExist:
         return CommandResult.fail("Journal entry not found.")
 
-    allowed, reason = can_edit_entry(actor, entry)
-    if not allowed:
-        return CommandResult.fail(reason)
-
     aggregate = load_journal_entry_aggregate(actor.company, str(entry.public_id))
     if not aggregate or aggregate.deleted:
         return CommandResult.fail("Journal entry not found.")
 
+    allowed, reason = can_edit_entry(actor, aggregate)
+    if not allowed:
+        return CommandResult.fail(reason)
+
+    if date is not None:
+        allowed, reason = can_post_to_period(actor, date)
+        if not allowed:
+            return CommandResult.fail(reason)
+
     # Track changes
     changes = {}
+    current_date = aggregate.date or (entry.date.isoformat() if entry.date else None)
     
-    if date is not None and entry.date != date:
-        changes["date"] = {"old": entry.date.isoformat(), "new": date.isoformat() if hasattr(date, 'isoformat') else str(date)}
+    if date is not None:
+        new_date = date.isoformat() if hasattr(date, "isoformat") else str(date)
+        if current_date != new_date:
+            changes["date"] = {"old": current_date, "new": new_date}
     
-    if memo is not None and entry.memo != memo:
-        changes["memo"] = {"old": entry.memo, "new": memo}
+    if memo is not None and aggregate.memo != memo:
+        changes["memo"] = {"old": aggregate.memo, "new": memo}
     
-    if memo_ar is not None and entry.memo_ar != memo_ar:
-        changes["memo_ar"] = {"old": entry.memo_ar, "new": memo_ar}
+    if memo_ar is not None and aggregate.memo_ar != memo_ar:
+        changes["memo_ar"] = {"old": aggregate.memo_ar, "new": memo_ar}
+
+    if currency is not None and aggregate.currency != currency:
+        changes["currency"] = {"old": aggregate.currency, "new": currency}
+
+    if exchange_rate is not None and str(aggregate.exchange_rate) != str(exchange_rate):
+        changes["exchange_rate"] = {"old": aggregate.exchange_rate, "new": exchange_rate}
+
+    if period is not None and entry.period != period:
+        changes["period"] = {"old": entry.period, "new": period}
 
     # Update lines if provided
     line_data = None
@@ -538,6 +705,8 @@ def update_journal_entry(
                 return CommandResult.fail(f"Account {account_id} not found.")
 
             account = accounts[account_id]
+            line_currency = line.get("currency") or entry.currency or actor.company.default_currency
+            line_exchange_rate = line.get("exchange_rate") or entry.exchange_rate
             line_data.append(JournalLineData(
                 line_no=line_no,
                 account_public_id=str(account.public_id),
@@ -546,8 +715,13 @@ def update_journal_entry(
                 description_ar=line.get("description_ar", ""),
                 debit=str(debit),
                 credit=str(credit),
+                amount_currency=str(line.get("amount_currency")) if line.get("amount_currency") is not None else None,
+                currency=line_currency,
+                exchange_rate=str(line_exchange_rate) if line_exchange_rate is not None else None,
                 is_memo_line=account.is_memo_account,
-                analysis_tags=[],
+                analysis_tags=_resolve_analysis_tags_to_public_ids(
+                    actor.company, line.get("analysis_tags", [])
+                ),
             ).to_dict())
             line_no += 1
 
@@ -581,7 +755,10 @@ def save_journal_entry_complete(
     date=None,
     memo: str = None,
     memo_ar: str = None,
+    currency: str = None,
+    exchange_rate: str = None,
     lines: list = None,
+    period: int = None,
 ) -> CommandResult:
     """
     Save a journal entry as complete (DRAFT status).
@@ -606,10 +783,6 @@ def save_journal_entry_complete(
         )
     except JournalEntry.DoesNotExist:
         return CommandResult.fail("Journal entry not found.")
-
-    allowed, reason = can_edit_entry(actor, entry)
-    if not allowed:
-        return CommandResult.fail(reason)
 
     line_data = None
     if lines is not None:
@@ -637,6 +810,8 @@ def save_journal_entry_complete(
                 return CommandResult.fail(f"Account {account_id} not found.")
 
             account = accounts[account_id]
+            line_currency = line.get("currency") or entry.currency or actor.company.default_currency
+            line_exchange_rate = line.get("exchange_rate") or entry.exchange_rate
             line_data.append(JournalLineData(
                 line_no=line_no,
                 account_public_id=str(account.public_id),
@@ -645,14 +820,28 @@ def save_journal_entry_complete(
                 description_ar=line.get("description_ar", ""),
                 debit=str(debit),
                 credit=str(credit),
+                amount_currency=str(line.get("amount_currency")) if line.get("amount_currency") is not None else None,
+                currency=line_currency,
+                exchange_rate=str(line_exchange_rate) if line_exchange_rate is not None else None,
                 is_memo_line=account.is_memo_account,
-                analysis_tags=[],
+                analysis_tags=_resolve_analysis_tags_to_public_ids(
+                    actor.company, line.get("analysis_tags", [])
+                ),
             ).to_dict())
             line_no += 1
-            
+
     aggregate = load_journal_entry_aggregate(actor.company, str(entry.public_id))
     if not aggregate or aggregate.deleted:
         return CommandResult.fail("Journal entry not found.")
+
+    allowed, reason = can_edit_entry(actor, aggregate)
+    if not allowed:
+        return CommandResult.fail(reason)
+
+    if date is not None:
+        allowed, reason = can_post_to_period(actor, date)
+        if not allowed:
+            return CommandResult.fail(reason)
 
     # Validate for DRAFT status (use provided lines or aggregate)
     if line_data is not None:
@@ -674,13 +863,21 @@ def save_journal_entry_complete(
 
     # Emit event
     lines_payload = line_data if line_data is not None else aggregate.lines
+    current_date = aggregate.date or (entry.date.isoformat() if entry.date else None)
+    resolved_exchange_rate = exchange_rate if exchange_rate is not None else aggregate.exchange_rate
     payload = {
-        "date": (date or entry.date).isoformat() if hasattr((date or entry.date), "isoformat") else str(date or entry.date),
-        "memo": memo if memo is not None else entry.memo,
-        "memo_ar": memo_ar if memo_ar is not None else entry.memo_ar,
+        "date": date.isoformat() if hasattr(date, "isoformat") else (str(date) if date is not None else current_date),
+        "memo": memo if memo is not None else (aggregate.memo or ""),
+        "memo_ar": memo_ar if memo_ar is not None else (aggregate.memo_ar or ""),
+        "currency": currency if currency is not None else aggregate.currency,
+        "exchange_rate": str(resolved_exchange_rate) if resolved_exchange_rate is not None else None,
         "lines": lines_payload,
     }
-    digest = hashlib.sha256(str(payload).encode()).hexdigest()[:12]
+    if not payload["date"]:
+        return CommandResult.fail("Entry date is required to save as complete.")
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:12]
     event = emit_event(
         actor=actor,
         event_type=EventTypes.JOURNAL_ENTRY_SAVED_COMPLETE,
@@ -689,13 +886,16 @@ def save_journal_entry_complete(
         idempotency_key=f"journal_entry.saved_complete:{entry.public_id}:{digest}",
         data=JournalEntrySavedCompleteData(
             entry_public_id=str(entry.public_id),
-            date=(date or entry.date).isoformat() if hasattr((date or entry.date), "isoformat") else str(date or entry.date),
-            memo=memo if memo is not None else entry.memo,
-            memo_ar=memo_ar if memo_ar is not None else entry.memo_ar,
+            date=payload["date"],
+            memo=payload["memo"],
+            memo_ar=payload["memo_ar"],
             status=JournalEntry.Status.DRAFT,
             line_count=line_count,
             total_debit=str(total_debit),
             total_credit=str(total_credit),
+            period=period if period is not None else entry.period,
+            currency=payload.get("currency"),
+            exchange_rate=str(payload.get("exchange_rate")) if payload.get("exchange_rate") is not None else None,
             lines=lines_payload,
         ).to_dict(),
     )
@@ -745,13 +945,14 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
             f"Entry is not balanced. Debit={aggregate.total_debit} Credit={aggregate.total_credit}"
         )
 
+    allowed, reason = can_post_to_period(actor, aggregate.date or entry.date, period=entry.period)
+    if not allowed:
+        return CommandResult.fail(reason)
+
     posted_at = timezone.now()
 
-    last_num = JournalEntry.objects.filter(
-        company=entry.company,
-        status=JournalEntry.Status.POSTED,
-    ).count()
-    entry_number = f"JE-{entry.company_id}-{last_num + 1:06d}"
+    sequence_value = _next_company_sequence(entry.company, "journal_entry_number")
+    entry_number = f"JE-{entry.company_id}-{sequence_value:06d}"
 
     # Build line data for event (including analysis tags)
     line_data = []
@@ -776,8 +977,13 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
             description_ar=line.get("description_ar", ""),
             debit=str(line.get("debit", "0")),
             credit=str(line.get("credit", "0")),
+            amount_currency=str(line.get("amount_currency")) if line.get("amount_currency") is not None else None,
+            currency=line.get("currency") or aggregate.currency or entry.currency or actor.company.default_currency,
+            exchange_rate=str(line.get("exchange_rate") or aggregate.exchange_rate or entry.exchange_rate or "1.0"),
             is_memo_line=account.is_memo_account,
-            analysis_tags=line.get("analysis_tags", []),
+            analysis_tags=_resolve_analysis_tags_to_public_ids(
+                actor.company, line.get("analysis_tags", [])
+            ),
         ).to_dict())
 
     # Emit event
@@ -794,6 +1000,9 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
             memo=aggregate.memo,
             memo_ar=aggregate.memo_ar,
             kind=aggregate.kind,
+            period=entry.period,
+            currency=aggregate.currency or entry.currency or actor.company.default_currency,
+            exchange_rate=str(aggregate.exchange_rate or entry.exchange_rate or "1.0"),
             posted_at=posted_at.isoformat(),
             posted_by_id=actor.user.id,
             posted_by_email=actor.user.email,
@@ -803,7 +1012,7 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
         ).to_dict(),
     )
 
-    _process_projections(actor.company, exclude={"account_balance"})
+    _process_projections(actor.company)
     posted_entry = JournalEntry.objects.get(company=actor.company, public_id=entry.public_id)
     return CommandResult.ok(posted_entry, event=event)
 
@@ -851,12 +1060,12 @@ def reverse_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
 
     reversal_public_id = uuid.uuid4()
     posted_at = timezone.now()
+    allowed, reason = can_post_to_period(actor, posted_at.date())
+    if not allowed:
+        return CommandResult.fail(reason)
 
-    last_num = JournalEntry.objects.filter(
-        company=original.company,
-        status=JournalEntry.Status.POSTED,
-    ).count()
-    reversal_entry_number = f"JE-{original.company_id}-{last_num + 1:06d}"
+    sequence_value = _next_company_sequence(original.company, "journal_entry_number")
+    reversal_entry_number = f"JE-{original.company_id}-{sequence_value:06d}"
 
     reversal_line_data = []
     for line in aggregate.lines:
@@ -877,6 +1086,9 @@ def reverse_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
             description_ar=f"عكس: {line.get('description_ar', '')}".strip() if line.get("description_ar") else "",
             debit=str(line.get("credit", "0")),
             credit=str(line.get("debit", "0")),
+            amount_currency=str(line.get("amount_currency")) if line.get("amount_currency") is not None else None,
+            currency=line.get("currency") or aggregate.currency or original.currency or actor.company.default_currency,
+            exchange_rate=str(line.get("exchange_rate") or aggregate.exchange_rate or original.exchange_rate or "1.0"),
             is_memo_line=account.is_memo_account,
             analysis_tags=analysis_tags,
         ).to_dict())
@@ -890,10 +1102,12 @@ def reverse_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
         data=JournalEntryPostedData(
             entry_public_id=str(reversal_public_id),
             entry_number=reversal_entry_number,
-            date=aggregate.date or original.date.isoformat(),
+            date=posted_at.date().isoformat(),
             memo=f"Reversal of JE#{original.id}: {aggregate.memo}",
             memo_ar=f"عكس قيد #{original.id}: {aggregate.memo_ar}" if aggregate.memo_ar else "",
             kind=JournalEntry.Kind.REVERSAL,
+            currency=aggregate.currency or original.currency or actor.company.default_currency,
+            exchange_rate=str(aggregate.exchange_rate or original.exchange_rate or "1.0"),
             posted_at=posted_at.isoformat(),
             posted_by_id=actor.user.id,
             posted_by_email=actor.user.email,
@@ -919,7 +1133,7 @@ def reverse_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
         ).to_dict(),
     )
 
-    _process_projections(actor.company, exclude={"account_balance"})
+    _process_projections(actor.company)
     original = JournalEntry.objects.get(company=actor.company, public_id=original.public_id)
     reversal_public_id = event_posted.data.get("entry_public_id", reversal_public_id)
     reversal = JournalEntry.objects.get(company=actor.company, public_id=reversal_public_id)
@@ -949,7 +1163,11 @@ def delete_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
     except JournalEntry.DoesNotExist:
         return CommandResult.fail("Journal entry not found.")
 
-    allowed, reason = can_delete_entry(actor, entry)
+    aggregate = load_journal_entry_aggregate(actor.company, str(entry.public_id))
+    if not aggregate or aggregate.deleted:
+        return CommandResult.fail("Journal entry not found.")
+
+    allowed, reason = can_delete_entry(actor, aggregate)
     if not allowed:
         return CommandResult.fail(reason)
 
@@ -962,14 +1180,422 @@ def delete_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
         idempotency_key=f"journal_entry.deleted:{entry.public_id}",
         data=JournalEntryDeletedData(
             entry_public_id=str(entry.public_id),
-            date=entry.date.isoformat(),
-            memo=entry.memo,
-            status=entry.status,
+            date=aggregate.date or entry.date.isoformat(),
+            memo=aggregate.memo,
+            status=aggregate.status,
         ).to_dict(),
     )
 
     _process_projections(actor.company)
     return CommandResult.ok({"deleted": True}, event=event)
+
+
+# =============================================================================
+# Fiscal Period Commands
+# =============================================================================
+
+@transaction.atomic
+def close_period(
+    actor: ActorContext,
+    fiscal_year: int,
+    period: int,
+) -> CommandResult:
+    """
+    Close a fiscal period.
+
+    Args:
+        actor: The actor context
+        fiscal_year: Fiscal year start (e.g., 2024)
+        period: Period number (1-12)
+    """
+    require(actor, "periods.close")
+
+    from projections.models import FiscalPeriod
+
+    fiscal_period = FiscalPeriod.objects.filter(
+        company=actor.company,
+        fiscal_year=fiscal_year,
+        period=period,
+    ).first()
+    if not fiscal_period:
+        return CommandResult.fail("Fiscal period not found.")
+
+    if fiscal_period.status == FiscalPeriod.Status.CLOSED:
+        return CommandResult.fail("Fiscal period is already closed.")
+
+    closed_at = timezone.now()
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.FISCAL_PERIOD_CLOSED,
+        aggregate_type="FiscalPeriod",
+        aggregate_id=f"{actor.company.public_id}:{fiscal_year}:{period}",
+        idempotency_key=f"fiscal_period.closed:{actor.company.public_id}:{fiscal_year}:{period}:{closed_at.isoformat()}",
+        data=FiscalPeriodClosedData(
+            company_public_id=str(actor.company.public_id),
+            fiscal_year=fiscal_year,
+            period=period,
+            closed_at=closed_at.isoformat(),
+            closed_by_id=actor.user.id,
+            closed_by_email=actor.user.email,
+        ).to_dict(),
+    )
+
+    _process_projections(actor.company)
+    fiscal_period = FiscalPeriod.objects.get(
+        company=actor.company,
+        fiscal_year=fiscal_year,
+        period=period,
+    )
+    return CommandResult.ok(fiscal_period, event=event)
+
+
+@transaction.atomic
+def open_period(
+    actor: ActorContext,
+    fiscal_year: int,
+    period: int,
+) -> CommandResult:
+    """
+    Reopen a closed fiscal period.
+
+    Args:
+        actor: The actor context
+        fiscal_year: Fiscal year
+        period: Period number
+    """
+    require(actor, "periods.reopen")
+
+    from projections.models import FiscalPeriod
+
+    fiscal_period = FiscalPeriod.objects.filter(
+        company=actor.company,
+        fiscal_year=fiscal_year,
+        period=period,
+    ).first()
+    if not fiscal_period:
+        return CommandResult.fail("Fiscal period not found.")
+
+    if fiscal_period.status == FiscalPeriod.Status.OPEN:
+        return CommandResult.fail("Fiscal period is already open.")
+
+    opened_at = timezone.now()
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.FISCAL_PERIOD_OPENED,
+        aggregate_type="FiscalPeriod",
+        aggregate_id=f"{actor.company.public_id}:{fiscal_year}:{period}",
+        idempotency_key=f"fiscal_period.opened:{actor.company.public_id}:{fiscal_year}:{period}:{opened_at.isoformat()}",
+        data=FiscalPeriodOpenedData(
+            company_public_id=str(actor.company.public_id),
+            fiscal_year=fiscal_year,
+            period=period,
+            opened_at=opened_at.isoformat(),
+            opened_by_id=actor.user.id,
+            opened_by_email=actor.user.email,
+        ).to_dict(),
+    )
+
+    _process_projections(actor.company)
+    fiscal_period = FiscalPeriod.objects.get(
+        company=actor.company,
+        fiscal_year=fiscal_year,
+        period=period,
+    )
+    return CommandResult.ok(fiscal_period, event=event)
+
+
+def _calculate_period_boundaries(fiscal_year: int, start_month: int, period_count: int):
+    """
+    Calculate period start/end dates for a fiscal year divided into N periods.
+
+    Divides the fiscal year into equal-length periods based on total days.
+
+    Args:
+        fiscal_year: The fiscal year (calendar year the fiscal year starts)
+        start_month: Month the fiscal year starts (1-12)
+        period_count: Number of periods (any positive integer)
+
+    Returns:
+        List of dicts with period, start_date, end_date
+    """
+    from datetime import date, timedelta
+    import calendar
+
+    # Calculate fiscal year start and end dates
+    fy_start_year = fiscal_year
+    fy_start = date(fy_start_year, start_month, 1)
+
+    # End is one year later minus one day
+    fy_end_month = start_month
+    fy_end_year = fy_start_year + 1
+    if fy_end_month == 1:
+        fy_end = date(fy_end_year, 1, 1) - timedelta(days=1)
+    else:
+        fy_end = date(fy_end_year, fy_end_month, 1) - timedelta(days=1)
+
+    total_days = (fy_end - fy_start).days + 1
+    base_days = total_days // period_count
+    remainder = total_days % period_count
+
+    periods = []
+    current_start = fy_start
+
+    for i in range(period_count):
+        # Distribute remainder days across the first periods
+        days_in_period = base_days + (1 if i < remainder else 0)
+        period_end = current_start + timedelta(days=days_in_period - 1)
+
+        periods.append({
+            "period": i + 1,
+            "start_date": current_start.isoformat(),
+            "end_date": period_end.isoformat(),
+        })
+
+        current_start = period_end + timedelta(days=1)
+
+    return periods
+
+
+@transaction.atomic
+def configure_periods(
+    actor: ActorContext,
+    fiscal_year: int,
+    period_count: int,
+) -> CommandResult:
+    """
+    Configure the number of periods for a fiscal year.
+    Deletes existing periods and creates new ones with calculated boundaries.
+
+    Args:
+        actor: The actor context
+        fiscal_year: Fiscal year
+        period_count: Number of periods (1, 2, 3, 4, 6, or 12)
+    """
+    require(actor, "periods.configure")
+
+    if period_count < 1 or period_count > 999:
+        return CommandResult.fail("Period count must be between 1 and 999.")
+
+    from projections.models import FiscalPeriod, FiscalPeriodConfig
+
+    # Get existing config to record previous_period_count
+    config = FiscalPeriodConfig.objects.filter(
+        company=actor.company,
+        fiscal_year=fiscal_year,
+    ).first()
+    previous_period_count = config.period_count if config else 12
+
+    start_month = actor.company.fiscal_year_start_month or 1
+    periods = _calculate_period_boundaries(fiscal_year, start_month, period_count)
+
+    configured_at = timezone.now()
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.FISCAL_PERIODS_CONFIGURED,
+        aggregate_type="FiscalPeriod",
+        aggregate_id=f"{actor.company.public_id}:{fiscal_year}",
+        idempotency_key=f"fiscal_periods.configured:{actor.company.public_id}:{fiscal_year}:{period_count}:{configured_at.isoformat()}",
+        data=FiscalPeriodsConfiguredData(
+            company_public_id=str(actor.company.public_id),
+            fiscal_year=fiscal_year,
+            period_count=period_count,
+            periods=periods,
+            configured_at=configured_at.isoformat(),
+            configured_by_id=actor.user.id,
+            configured_by_email=actor.user.email,
+            previous_period_count=previous_period_count,
+        ).to_dict(),
+    )
+
+    _process_projections(actor.company)
+    return CommandResult.ok({"period_count": period_count, "periods": periods}, event=event)
+
+
+@transaction.atomic
+def set_period_range(
+    actor: ActorContext,
+    fiscal_year: int,
+    open_from_period: int,
+    open_to_period: int,
+) -> CommandResult:
+    """
+    Set which periods are open for posting via a from/to range.
+    Periods within range become OPEN, all others become CLOSED.
+
+    Args:
+        actor: The actor context
+        fiscal_year: Fiscal year
+        open_from_period: First period to open
+        open_to_period: Last period to open
+    """
+    require(actor, "periods.configure")
+
+    from projections.models import FiscalPeriodConfig
+
+    config = FiscalPeriodConfig.objects.filter(
+        company=actor.company,
+        fiscal_year=fiscal_year,
+    ).first()
+    max_period = config.period_count if config else 12
+
+    if open_from_period < 1 or open_to_period > max_period:
+        return CommandResult.fail(f"Period range must be between 1 and {max_period}.")
+    if open_from_period > open_to_period:
+        return CommandResult.fail("'Open From' must be less than or equal to 'Open To'.")
+
+    set_at = timezone.now()
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.FISCAL_PERIOD_RANGE_SET,
+        aggregate_type="FiscalPeriod",
+        aggregate_id=f"{actor.company.public_id}:{fiscal_year}",
+        idempotency_key=f"fiscal_period.range_set:{actor.company.public_id}:{fiscal_year}:{open_from_period}:{open_to_period}:{set_at.isoformat()}",
+        data=FiscalPeriodRangeSetData(
+            company_public_id=str(actor.company.public_id),
+            fiscal_year=fiscal_year,
+            open_from_period=open_from_period,
+            open_to_period=open_to_period,
+            set_at=set_at.isoformat(),
+            set_by_id=actor.user.id,
+            set_by_email=actor.user.email,
+        ).to_dict(),
+    )
+
+    _process_projections(actor.company)
+    return CommandResult.ok({
+        "open_from_period": open_from_period,
+        "open_to_period": open_to_period,
+    }, event=event)
+
+
+@transaction.atomic
+def set_current_period(
+    actor: ActorContext,
+    fiscal_year: int,
+    period: int,
+) -> CommandResult:
+    """
+    Set which period is the 'current' period.
+
+    Args:
+        actor: The actor context
+        fiscal_year: Fiscal year
+        period: Period number to mark as current
+    """
+    require(actor, "periods.configure")
+
+    from projections.models import FiscalPeriod, FiscalPeriodConfig
+
+    # Validate period exists
+    fiscal_period = FiscalPeriod.objects.filter(
+        company=actor.company,
+        fiscal_year=fiscal_year,
+        period=period,
+    ).first()
+    if not fiscal_period:
+        return CommandResult.fail("Fiscal period not found.")
+
+    # Get previous current period
+    config = FiscalPeriodConfig.objects.filter(
+        company=actor.company,
+        fiscal_year=fiscal_year,
+    ).first()
+    previous_period = config.current_period if config else None
+
+    set_at = timezone.now()
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.FISCAL_PERIOD_CURRENT_SET,
+        aggregate_type="FiscalPeriod",
+        aggregate_id=f"{actor.company.public_id}:{fiscal_year}",
+        idempotency_key=f"fiscal_period.current_set:{actor.company.public_id}:{fiscal_year}:{period}:{set_at.isoformat()}",
+        data=FiscalPeriodCurrentSetData(
+            company_public_id=str(actor.company.public_id),
+            fiscal_year=fiscal_year,
+            period=period,
+            set_at=set_at.isoformat(),
+            set_by_id=actor.user.id,
+            set_by_email=actor.user.email,
+            previous_period=previous_period,
+        ).to_dict(),
+    )
+
+    _process_projections(actor.company)
+    return CommandResult.ok({"current_period": period}, event=event)
+
+
+@transaction.atomic
+def update_period_dates(
+    actor: ActorContext,
+    fiscal_year: int,
+    period: int,
+    start_date: str,
+    end_date: str,
+) -> CommandResult:
+    """
+    Update the start and end dates of a fiscal period.
+
+    Args:
+        actor: The actor context
+        fiscal_year: Fiscal year
+        period: Period number
+        start_date: New start date (ISO format)
+        end_date: New end date (ISO format)
+    """
+    require(actor, "periods.configure")
+
+    from datetime import date as date_cls
+    from projections.models import FiscalPeriod
+
+    # Parse dates
+    try:
+        new_start = date_cls.fromisoformat(start_date)
+        new_end = date_cls.fromisoformat(end_date)
+    except (ValueError, TypeError):
+        return CommandResult.fail("Invalid date format. Use ISO format (YYYY-MM-DD).")
+
+    if new_start > new_end:
+        return CommandResult.fail("Start date must be on or before end date.")
+
+    fiscal_period = FiscalPeriod.objects.filter(
+        company=actor.company,
+        fiscal_year=fiscal_year,
+        period=period,
+    ).first()
+    if not fiscal_period:
+        return CommandResult.fail("Fiscal period not found.")
+
+    previous_start = fiscal_period.start_date.isoformat()
+    previous_end = fiscal_period.end_date.isoformat()
+
+    updated_at = timezone.now()
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.FISCAL_PERIOD_DATES_UPDATED,
+        aggregate_type="FiscalPeriod",
+        aggregate_id=f"{actor.company.public_id}:{fiscal_year}:{period}",
+        idempotency_key=f"fiscal_period.dates_updated:{actor.company.public_id}:{fiscal_year}:{period}:{updated_at.isoformat()}",
+        data=FiscalPeriodDatesUpdatedData(
+            company_public_id=str(actor.company.public_id),
+            fiscal_year=fiscal_year,
+            period=period,
+            start_date=start_date,
+            end_date=end_date,
+            previous_start_date=previous_start,
+            previous_end_date=previous_end,
+            updated_at=updated_at.isoformat(),
+            updated_by_id=actor.user.id,
+            updated_by_email=actor.user.email,
+        ).to_dict(),
+    )
+
+    _process_projections(actor.company)
+    fiscal_period = FiscalPeriod.objects.get(
+        company=actor.company,
+        fiscal_year=fiscal_year,
+        period=period,
+    )
+    return CommandResult.ok(fiscal_period, event=event)
 
 
 # =============================================================================
@@ -1395,6 +2021,13 @@ def set_account_analysis_default(
             f"Dimension '{dimension.code}' does not apply to account type '{account.account_type}'."
         )
 
+    # Create a short aggregate_id that fits within 64 chars
+    # Format: "aad:{hash}" where hash is derived from account+dimension
+    aggregate_hash = hashlib.sha256(
+        f"{account.public_id}:{dimension.public_id}".encode()
+    ).hexdigest()[:32]
+    aggregate_id = f"aad:{aggregate_hash}"
+
     idempotency_key = _idempotency_hash("account_analysis_default.set", {
         "account_public_id": str(account.public_id),
         "dimension_public_id": str(dimension.public_id),
@@ -1406,7 +2039,7 @@ def set_account_analysis_default(
         actor=actor,
         event_type=EventTypes.ACCOUNT_ANALYSIS_DEFAULT_SET,
         aggregate_type="AccountAnalysisDefault",
-        aggregate_id=f"{account.public_id}:{dimension.public_id}",
+        aggregate_id=aggregate_id,
         idempotency_key=idempotency_key,
         data=AccountAnalysisDefaultSetData(
             account_public_id=str(account.public_id),
@@ -1457,13 +2090,24 @@ def remove_account_analysis_default(
     except AccountAnalysisDefault.DoesNotExist:
         return CommandResult.fail("No default set for this account and dimension.")
 
+    # Create a short aggregate_id that fits within 64 chars
+    aggregate_hash = hashlib.sha256(
+        f"{account.public_id}:{dimension.public_id}".encode()
+    ).hexdigest()[:32]
+    aggregate_id = f"aad:{aggregate_hash}"
+
+    idempotency_key = _idempotency_hash("account_analysis_default.removed", {
+        "account_public_id": str(account.public_id),
+        "dimension_public_id": str(dimension.public_id),
+    })
+
     # Emit event
     event = emit_event(
         actor=actor,
         event_type=EventTypes.ACCOUNT_ANALYSIS_DEFAULT_REMOVED,
         aggregate_type="AccountAnalysisDefault",
-        aggregate_id=f"{account.public_id}:{dimension.public_id}",
-        idempotency_key=f"account_analysis_default.removed:{account.public_id}:{dimension.public_id}",
+        aggregate_id=aggregate_id,
+        idempotency_key=idempotency_key,
         data=AccountAnalysisDefaultRemovedData(
             account_public_id=str(account.public_id),
             account_code=account.code,
@@ -1507,7 +2151,11 @@ def set_journal_line_analysis(
         return CommandResult.fail("Journal line not found.")
 
     # Check entry is editable
-    if line.entry.status not in [JournalEntry.Status.INCOMPLETE, JournalEntry.Status.DRAFT]:
+    aggregate = load_journal_entry_aggregate(actor.company, str(line.entry.public_id))
+    if not aggregate or aggregate.deleted:
+        return CommandResult.fail("Journal entry not found.")
+
+    if aggregate.status not in [JournalEntry.Status.INCOMPLETE, JournalEntry.Status.DRAFT]:
         return CommandResult.fail("Cannot modify analysis on posted/reversed entries.")
 
     tag_data = []
@@ -1538,14 +2186,18 @@ def set_journal_line_analysis(
             "value_code": value.code,
         })
 
+    # IMPORTANT: Use JournalEntry as aggregate type so this event is included
+    # in the journal entry's event stream. This allows load_journal_entry_aggregate()
+    # to replay analysis events without a global scan.
+    entry_public_id = str(line.entry.public_id)
     event = emit_event(
         actor=actor,
         event_type=EventTypes.JOURNAL_LINE_ANALYSIS_SET,
-        aggregate_type="JournalLine",
-        aggregate_id=str(line.public_id),
-        idempotency_key=f"journal_line.analysis_set:{line.public_id}:{_changes_hash({'tags': {'new': tag_data}})}",
+        aggregate_type="JournalEntry",
+        aggregate_id=entry_public_id,
+        idempotency_key=f"journal_line.analysis_set:{entry_public_id}:{line.line_no}:{_changes_hash({'tags': {'new': tag_data}})}",
         data=JournalLineAnalysisSetData(
-            entry_public_id=str(line.entry.public_id),
+            entry_public_id=entry_public_id,
             line_no=line.line_no,
             analysis_tags=tag_data,
         ).to_dict(),

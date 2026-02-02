@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Regarding Your Nxentra Account Application</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: #1f2937;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f9fafb;
+        }
+        .container {
+            background-color: #ffffff;
+            border-radius: 8px;
+            padding: 40px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+        .logo {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .logo h1 {
+            color: #3b82f6;
+            font-size: 28px;
+            margin: 0;
+        }
+        h2 {
+            color: #111827;
+            margin-top: 0;
+        }
+        .reason-box {
+            background-color: #fef2f2;
+            border-left: 4px solid #ef4444;
+            padding: 16px 20px;
+            margin: 20px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .reason-box strong {
+            color: #dc2626;
+        }
+        .contact-info {
+            background-color: #f3f4f6;
+            border-radius: 6px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .footer {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #e5e7eb;
+            font-size: 14px;
+            color: #6b7280;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">
+            <h1>Nxentra</h1>
+        </div>
+
+        <h2>Regarding Your Account Application</h2>
+
+        <p>Hello {{ user_name }},</p>
+
+        <p>Thank you for your interest in Nxentra. After reviewing your account application, we regret to inform you that we are unable to approve your account at this time.</p>
+
+        {% if reason %}
+        <div class="reason-box">
+            <strong>Reason:</strong><br>
+            {{ reason }}
+        </div>
+        {% endif %}
+
+        <p>If you believe this decision was made in error, or if you have additional information that might help us reconsider your application, please don't hesitate to contact us.</p>
+
+        <div class="contact-info">
+            <strong>Contact Support:</strong><br>
+            Email: support@nxentra.com
+        </div>
+
+        <p>We appreciate your understanding and wish you the best in your business endeavors.</p>
+
+        <div class="footer">
+            <p>Best regards,<br>The Nxentra Team</p>
+            <p>&copy; {{ year|default:"2024" }} Nxentra. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>

@@ -91,50 +91,57 @@ class ActorContext:
 def resolve_actor(request) -> ActorContext:
     """
     Extract ActorContext from the current request.
-    
+
     This is called at the start of every view that needs authorization.
     It loads the user's membership and permissions FRESH from the database,
     ensuring that permission changes take effect immediately.
-    
+
+    Uses rls_bypass internally because authorization must work independently
+    of the tenant RLS context (the user needs to be resolved before we know
+    which tenant they belong to).
+
     Args:
         request: Django/DRF request object
-    
+
     Returns:
         ActorContext with user, company, membership, permissions
-    
+
     Raises:
         NotAuthenticated: If user is not authenticated
         PermissionDenied: If user has no active company or membership
     """
+    from accounts.rls import rls_bypass
+
     user = getattr(request, "user", None)
-    
+
     if not user or not user.is_authenticated:
         raise NotAuthenticated("Authentication required.")
-    
-    company = getattr(user, "active_company", None)
-    
-    if not company:
-        raise PermissionDenied("No active company selected. Please select a company first.")
-    
-    # Fresh membership lookup EVERY request (not cached)
-    try:
-        membership = CompanyMembership.objects.select_related(
-            "company"
-        ).prefetch_related(
-            "permissions"
-        ).get(
-            user=user,
-            company=company,
-            is_active=True,
+
+    with rls_bypass():
+        company = getattr(user, "active_company", None)
+
+        if not company:
+            raise PermissionDenied("No active company selected. Please select a company first.")
+
+        # Fresh membership lookup EVERY request (not cached)
+        try:
+            membership = CompanyMembership.objects.select_related(
+                "company"
+            ).prefetch_related(
+                "permissions"
+            ).get(
+                user=user,
+                company=company,
+                is_active=True,
+            )
+        except CompanyMembership.DoesNotExist:
+            raise PermissionDenied("You are not an active member of the selected company.")
+
+        # Fresh permission lookup EVERY request
+        perms = frozenset(
+            membership.permissions.values_list("code", flat=True)
         )
-    except CompanyMembership.DoesNotExist:
-        raise PermissionDenied("You are not an active member of the selected company.")
-    
-    # Fresh permission lookup EVERY request
-    perms = frozenset(
-        membership.permissions.values_list("code", flat=True)
-    )
-    
+
     return ActorContext(
         user=user,
         company=company,

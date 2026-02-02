@@ -1,0 +1,110 @@
+{
+  "app": {
+    "name": "إنكسنترا",
+    "tagline": "محرك الحقيقة المالية"
+  },
+  "nav": {
+    "dashboard": "لوحة التحكم",
+    "accounting": "المحاسبة",
+    "chartOfAccounts": "دليل الحسابات",
+    "journalEntries": "القيود اليومية",
+    "reports": "التقارير",
+    "trialBalance": "ميزان المراجعة",
+    "balanceSheet": "الميزانية العمومية",
+    "incomeStatement": "قائمة الدخل",
+    "users": "المستخدمون",
+    "settings": "الإعدادات",
+    "companySettings": "إعدادات الشركة",
+    "periods": "الفترات",
+    "dimensions": "أبعاد التحليل",
+    "createCompany": "إنشاء شركة",
+    "companyName": "اسم الشركة",
+    "companyNamePlaceholder": "أدخل اسم الشركة",
+    "preferences": "التفضيلات",
+    "logout": "تسجيل الخروج"
+  },
+  "actions": {
+    "save": "حفظ",
+    "cancel": "إلغاء",
+    "delete": "حذف",
+    "edit": "تعديل",
+    "create": "إنشاء",
+    "add": "إضافة",
+    "remove": "إزالة",
+    "post": "ترحيل",
+    "reverse": "عكس",
+    "print": "طباعة",
+    "search": "بحث",
+    "filter": "تصفية",
+    "export": "تصدير",
+    "refresh": "تحديث",
+    "back": "رجوع",
+    "next": "التالي",
+    "previous": "السابق",
+    "submit": "إرسال",
+    "confirm": "تأكيد",
+    "close": "إغلاق",
+    "view": "عرض",
+    "loading": "جاري التحميل...",
+    "apply": "تطبيق",
+    "set": "تعيين"
+  },
+  "status": {
+    "active": "نشط",
+    "inactive": "غير نشط",
+    "draft": "مسودة",
+    "posted": "مرحّل",
+    "reversed": "معكوس",
+    "incomplete": "غير مكتمل",
+    "locked": "مقفل",
+    "balanced": "متوازن",
+    "unbalanced": "غير متوازن"
+  },
+  "messages": {
+    "success": "تمت العملية بنجاح",
+    "error": "حدث خطأ",
+    "confirmDelete": "هل أنت متأكد من حذف هذا العنصر؟",
+    "noData": "لا توجد بيانات",
+    "loading": "جاري التحميل...",
+    "saving": "جاري الحفظ...",
+    "saved": "تم الحفظ بنجاح",
+    "deleted": "تم الحذف بنجاح",
+    "required": "هذا الحقل مطلوب",
+    "invalidEmail": "البريد الإلكتروني غير صالح",
+    "invalidPassword": "يجب أن تكون كلمة المرور 8 أحرف على الأقل",
+    "loadError": "فشل تحميل البيانات"
+  },
+  "table": {
+    "showing": "عرض",
+    "of": "من",
+    "entries": "سجلات",
+    "page": "صفحة",
+    "rowsPerPage": "صفوف لكل صفحة",
+    "noResults": "لم يتم العثور على نتائج"
+  },
+  "language": {
+    "en": "الإنجليزية",
+    "ar": "العربية",
+    "switchTo": "التبديل إلى"
+  },
+  "date": {
+    "today": "اليوم",
+    "yesterday": "أمس",
+    "thisWeek": "هذا الأسبوع",
+    "thisMonth": "هذا الشهر",
+    "thisYear": "هذه السنة",
+    "from": "من",
+    "to": "إلى"
+  },
+  "currency": {
+    "USD": "دولار أمريكي",
+    "EUR": "يورو",
+    "GBP": "جنيه إسترليني",
+    "AED": "درهم إماراتي",
+    "SAR": "ريال سعودي",
+    "EGP": "جنيه مصري",
+    "KWD": "دينار كويتي",
+    "QAR": "ريال قطري",
+    "OMR": "ريال عماني"
+  }
+}

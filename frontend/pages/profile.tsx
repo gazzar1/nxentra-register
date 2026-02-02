@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
 import { AuthLayout } from "@/components/AuthLayout";
 import { getProfile, ProfileResponse, logout } from "@/lib/api";
-import { clearTokens, getAccessToken, getRefreshToken } from "@/lib/auth-storage";
+import { removeAccessToken , getAccessToken, getRefreshToken } from "@/lib/auth-storage";
+import Link from 'next/link';
 
 export default function ProfilePage() {
   const router = useRouter();
@@ -40,7 +41,7 @@ export default function ProfilePage() {
         console.error("Failed to revoke refresh token", error);
       }
     }
-    clearTokens();
+    removeAccessToken ();
     router.replace("/login");
   };
 
@@ -67,6 +68,29 @@ export default function ProfilePage() {
           <h2 className="text-3xl font-semibold text-slate-100">Welcome back, {user.name}</h2>
           <p className="mt-2 text-sm text-slate-400">Here are the settings that power your Nxentra ERP tenant.</p>
         </header>
+
+        <main className="p-6 space-y-6">
+      <section>
+        <h1 className="text-2xl font-bold mb-2">My Profile</h1>
+        {/* هنا بيانات اليوزر، إيميل، اسم… إلخ */}
+      </section>
+
+      {/* جزء المينيو للموديولز */}
+      <section>
+        <h2 className="text-xl font-semibold mb-3">Modules</h2>
+        <ul className="space-y-2">
+          <li>
+            <Link
+              href="/accounting/chart-of-accounts"
+              className="text-blue-600 hover:underline font-medium"
+            >
+              Chart of Accounts
+            </Link>
+          </li>
+          {/* بعدين تزود موديلز تانية هنا */}
+        </ul>
+      </section>
+    </main>
 
         <section className="rounded-3xl border border-slate-800 bg-slate-900/50 p-6">
           <h3 className="text-xl font-semibold text-slate-200">Company workspace</h3>

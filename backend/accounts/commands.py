@@ -15,22 +15,26 @@ This ensures:
 """
 
 from django.db import transaction
+from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.contrib.auth.hashers import make_password
+from django.utils import timezone
 import json
 import hashlib
 import uuid
 
 from accounts.authz import ActorContext, require, PermissionDenied
+from accounts.rls import rls_bypass
 
 from accounts.models import Company, CompanyMembership, NxPermission
 
 from events.emitter import emit_event, emit_event_no_actor
+from projections.write_barrier import bootstrap_writes_allowed, auth_writes_allowed, command_writes_allowed
 from events.types import (
     EventTypes,
     CompanyCreatedData,
     CompanyUpdatedData,
     CompanySettingsChangedData,
+    CompanyLogoUploadedData,
     UserRegisteredData,
     PermissionGrantedData,
     PermissionRevokedData,
@@ -43,6 +47,12 @@ from events.types import (
     MembershipRoleChangedData,
     MembershipDeactivatedData,
     MembershipPermissionsUpdatedData,
+    # Email verification and admin approval
+    UserEmailVerificationSentData,
+    UserEmailVerifiedData,
+    UserApprovalRequestedData,
+    UserApprovedData,
+    UserRejectedData,
 )
 
 User = get_user_model()
@@ -73,7 +83,7 @@ class CommandResult:
 
 
 def _changes_hash(changes: dict) -> str:
-    payload = str(sorted((k, v.get("new")) for k, v in changes.items())).encode()
+    payload = json.dumps(changes, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(payload).hexdigest()[:12]
 
 
@@ -84,7 +94,11 @@ def _idempotency_hash(prefix: str, payload: dict) -> str:
 
 
 def _process_projections(company) -> None:
+    if not settings.PROJECTIONS_SYNC:
+        return
+
     from projections.base import projection_registry
+
     for projection in projection_registry.all():
         projection.process_pending(company, limit=1000)
 
@@ -99,183 +113,375 @@ def register_signup(
     password: str,
     company_name: str,
     name: str = "",
+    default_currency: str = "USD",
 ) -> CommandResult:
     """
     Register a new user with a new company.
-    
+
     This is the ONLY way to create a company owner. It atomically:
     1. Creates the company with unique slug (retry on collision)
     2. Creates the user
     3. Creates the owner membership
     4. Sets the active company
     5. Emits the registration event
-    
+
     Args:
         email: User's email (must be unique)
         password: User's password
         company_name: Name of the company to create
         name: User's display name (optional)
-    
+        default_currency: Company currency code (default: USD)
+
     Returns:
         CommandResult with user, company, membership
     """
     from django.utils.text import slugify
     
-    # Validate email uniqueness
-    email = email.lower().strip()
-    if User.objects.filter(email=email).exists():
-        return CommandResult.fail(f"User with email '{email}' already exists.")
-    
-    if not company_name or not company_name.strip():
-        return CommandResult.fail("Company name is required.")
-    
-    if not password or len(password) < 8:
-        return CommandResult.fail("Password must be at least 8 characters.")
-    
-    # Generate unique slug with retry on collision
-    base_slug = slugify(company_name.strip())
-    if not base_slug:
-        base_slug = "company"
-    
-    slug = base_slug
-    max_attempts = 10
-    for attempt in range(max_attempts):
-        if Company.objects.filter(slug=slug).exists():
-            slug = f"{base_slug}-{attempt + 1}"
-            if attempt == max_attempts - 1:
-                return CommandResult.fail("Could not generate unique company slug. Please try a different name.")
-            continue
-        break
+    with rls_bypass():
+        # Validate email uniqueness
+        email = email.lower().strip()
+        if User.objects.filter(email=email).exists():
+            return CommandResult.fail(f"User with email '{email}' already exists.")
+        
+        if not company_name or not company_name.strip():
+            return CommandResult.fail("Company name is required.")
+        
+        if not password or len(password) < 8:
+            return CommandResult.fail("Password must be at least 8 characters.")
+        
+        # Generate unique slug with retry on collision
+        base_slug = slugify(company_name.strip())
+        if not base_slug:
+            base_slug = "company"
+        
+        slug = base_slug
+        max_attempts = 10
+        for attempt in range(max_attempts):
+            if Company.objects.filter(slug=slug).exists():
+                slug = f"{base_slug}-{attempt + 1}"
+                if attempt == max_attempts - 1:
+                    return CommandResult.fail("Could not generate unique company slug. Please try a different name.")
+                continue
+            break
 
-    company_public_id = uuid.uuid4()
-    user_public_id = uuid.uuid4()
-    membership_public_id = uuid.uuid4()
-    password_hash = make_password(password)
+        company_public_id = uuid.uuid4()
+        user_public_id = uuid.uuid4()
+        membership_public_id = uuid.uuid4()
 
-    company = Company.objects.create(
-        name=company_name.strip(),
-        slug=slug,
-        public_id=company_public_id,
-    )
+        with bootstrap_writes_allowed():
+            company = Company.objects.create(
+                name=company_name.strip(),
+                slug=slug,
+                public_id=company_public_id,
+                default_currency=default_currency,
+            )
 
-    event_company = emit_event_no_actor(
-        company=company,
-        user=None,
-        event_type=EventTypes.COMPANY_CREATED,
-        aggregate_type="Company",
-        aggregate_id=str(company_public_id),
-        idempotency_key=_idempotency_hash("company.created", {
-            "company_public_id": str(company_public_id),
-            "name": company_name.strip(),
-            "slug": slug,
-        }),
-        data=CompanyCreatedData(
-            company_public_id=str(company_public_id),
-            name=company_name.strip(),
-            slug=slug,
-        ).to_dict(),
-    )
+            # Create TenantDirectory entry (same transaction as Company)
+            # This is REQUIRED for database routing to work correctly.
+            from tenant.models import TenantDirectory
+            TenantDirectory.objects.create(
+                company=company,
+                mode=TenantDirectory.IsolationMode.SHARED,
+                db_alias="default",
+                status=TenantDirectory.Status.ACTIVE,
+            )
 
-    event_user = emit_event_no_actor(
-        company=company,
-        user=None,
-        event_type=EventTypes.USER_CREATED,
-        aggregate_type="User",
-        aggregate_id=str(user_public_id),
-        idempotency_key=_idempotency_hash("user.created", {
-            "company_public_id": str(company_public_id),
-            "user_public_id": str(user_public_id),
+        event_company = emit_event_no_actor(
+            company=company,
+            user=None,
+            event_type=EventTypes.COMPANY_CREATED,
+            aggregate_type="Company",
+            aggregate_id=str(company_public_id),
+            idempotency_key=_idempotency_hash("company.created", {
+                "company_public_id": str(company_public_id),
+                "name": company_name.strip(),
+                "slug": slug,
+            }),
+            data=CompanyCreatedData(
+                company_public_id=str(company_public_id),
+                name=company_name.strip(),
+                slug=slug,
+            ).to_dict(),
+        )
+
+        event_user = emit_event_no_actor(
+            company=company,
+            user=None,
+            event_type=EventTypes.USER_CREATED,
+            aggregate_type="User",
+            aggregate_id=str(user_public_id),
+            idempotency_key=_idempotency_hash("user.created", {
+                "company_public_id": str(company_public_id),
+                "user_public_id": str(user_public_id),
+                "email": email,
+                "name": name.strip() if name else "",
+            }),
+            data=UserCreatedData(
+                user_public_id=str(user_public_id),
+                email=email,
+                name=name.strip() if name else "",
+                created_by_user_public_id=None,
+            ).to_dict(),
+        )
+
+        event_membership = emit_event_no_actor(
+            company=company,
+            user=None,
+            event_type=EventTypes.MEMBERSHIP_CREATED,
+            aggregate_type="CompanyMembership",
+            aggregate_id=str(membership_public_id),
+            idempotency_key=_idempotency_hash("membership.created", {
+                "company_public_id": str(company_public_id),
+                "user_public_id": str(user_public_id),
+                "membership_public_id": str(membership_public_id),
+                "role": CompanyMembership.Role.OWNER,
+            }),
+            data=MembershipCreatedData(
+                membership_public_id=str(membership_public_id),
+                company_public_id=str(company_public_id),
+                user_public_id=str(user_public_id),
+                role=CompanyMembership.Role.OWNER,
+                is_active=True,
+            ).to_dict(),
+        )
+
+        event_switch = emit_event_no_actor(
+            company=company,
+            user=None,
+            event_type=EventTypes.USER_COMPANY_SWITCHED,
+            aggregate_type="User",
+            aggregate_id=str(user_public_id),
+            idempotency_key=_idempotency_hash("user.company_switched", {
+                "user_public_id": str(user_public_id),
+                "to_company_public_id": str(company_public_id),
+            }),
+            data=UserCompanySwitchedData(
+                user_public_id=str(user_public_id),
+                email=email,
+                from_company_public_id=None,
+                to_company_public_id=str(company_public_id),
+                to_company_name=company_name.strip(),
+            ).to_dict(),
+        )
+        
+        # Emit registration event
+        # FIX: Added idempotency_key
+        event = emit_event_no_actor(
+            company=company,
+            user=None,
+            event_type=EventTypes.USER_REGISTERED,
+            aggregate_type="User",
+            aggregate_id=str(user_public_id),
+            idempotency_key=_idempotency_hash("user.registered", {
+                "company_public_id": str(company_public_id),
+                "user_public_id": str(user_public_id),
+                "email": email,
+            }),
+            data=UserRegisteredData(
+                user_public_id=str(user_public_id),
+                email=email,
+                name=name.strip() if name else "",
+                company_public_id=str(company_public_id),
+                company_name=company_name.strip(),
+                membership_public_id=str(membership_public_id),
+            ).to_dict(),
+            metadata={
+                "is_owner": True,
+                "registration_type": "signup",
+            },
+        )
+
+        if not settings.PROJECTIONS_SYNC:
+            return CommandResult.ok({
+                "status": "pending",
+                "correlation_id": str(uuid.uuid4()),
+                "company_public_id": str(company_public_id),
+                "user_public_id": str(user_public_id),
+                "membership_public_id": str(membership_public_id),
+            }, event=event, events=[event_company, event_user, event_membership, event_switch, event])
+
+        _process_projections(company)
+
+        company = Company.objects.get(public_id=company_public_id)
+        user = User.objects.get(public_id=user_public_id)
+        with auth_writes_allowed():
+            user.set_password(password)
+            user.save(update_fields=["password"])
+        emit_event_no_actor(
+            company=company,
+            user=user,
+            event_type=EventTypes.USER_PASSWORD_CHANGED,
+            aggregate_type="User",
+            aggregate_id=str(user_public_id),
+            idempotency_key=_idempotency_hash("user.password_changed", {
+                "user_public_id": str(user_public_id),
+                "changed_at": timezone.now().isoformat(),
+            }),
+            data=UserPasswordChangedData(
+                user_public_id=str(user_public_id),
+                email=user.email,
+                changed_by_self=True,
+            ).to_dict(),
+        )
+        membership = CompanyMembership.objects.get(public_id=membership_public_id)
+
+        # Send verification email (email verification flow)
+        # Import here to avoid circular import
+        from accounts.email_service import send_verification_email
+
+        # Create verification token
+        token_result = create_verification_token(user, ip_address="")
+        if token_result.success:
+            raw_token = token_result.data["token"]
+            expires_at = token_result.data["expires_at"]
+
+            # Send verification email
+            email_sent = send_verification_email(user, raw_token)
+
+            # Emit verification sent event
+            emit_event_no_actor(
+                company=company,
+                user=user,
+                event_type=EventTypes.USER_EMAIL_VERIFICATION_SENT,
+                aggregate_type="User",
+                aggregate_id=str(user_public_id),
+                idempotency_key=_idempotency_hash("user.email_verification_sent", {
+                    "user_public_id": str(user_public_id),
+                    "sent_at": timezone.now().isoformat(),
+                }),
+                data=UserEmailVerificationSentData(
+                    user_public_id=str(user_public_id),
+                    email=email,
+                    expires_at=expires_at.isoformat(),
+                    ip_address="",
+                ).to_dict(),
+                metadata={
+                    "email_sent": email_sent,
+                    "registration_flow": True,
+                },
+            )
+
+        return CommandResult.ok({
+            "status": "email_verification_required",
+            "user": user,
+            "company": company,
+            "membership": membership,
             "email": email,
-            "name": name.strip() if name else "",
-        }),
-        data=UserCreatedData(
-            user_public_id=str(user_public_id),
-            email=email,
-            name=name.strip() if name else "",
-            created_by_user_public_id=None,
-            password_hash=password_hash,
-        ).to_dict(),
-    )
+        }, event=event, events=[event_company, event_user, event_membership, event_switch, event])
 
-    event_membership = emit_event_no_actor(
-        company=company,
-        user=None,
-        event_type=EventTypes.MEMBERSHIP_CREATED,
-        aggregate_type="CompanyMembership",
-        aggregate_id=str(membership_public_id),
-        idempotency_key=_idempotency_hash("membership.created", {
-            "company_public_id": str(company_public_id),
-            "user_public_id": str(user_public_id),
-            "membership_public_id": str(membership_public_id),
-            "role": CompanyMembership.Role.OWNER,
-        }),
-        data=MembershipCreatedData(
-            membership_public_id=str(membership_public_id),
-            company_public_id=str(company_public_id),
-            user_public_id=str(user_public_id),
-            role=CompanyMembership.Role.OWNER,
-            is_active=True,
-        ).to_dict(),
-    )
 
-    event_switch = emit_event_no_actor(
-        company=company,
-        user=None,
-        event_type=EventTypes.USER_COMPANY_SWITCHED,
-        aggregate_type="User",
-        aggregate_id=str(user_public_id),
-        idempotency_key=_idempotency_hash("user.company_switched", {
-            "user_public_id": str(user_public_id),
-            "to_company_public_id": str(company_public_id),
-        }),
-        data=UserCompanySwitchedData(
-            user_public_id=str(user_public_id),
-            email=email,
-            from_company_public_id=None,
-            to_company_public_id=str(company_public_id),
-            to_company_name=company_name.strip(),
-        ).to_dict(),
-    )
-    
-    # Emit registration event
-    # FIX: Added idempotency_key
-    event = emit_event_no_actor(
-        company=company,
-        user=None,
-        event_type=EventTypes.USER_REGISTERED,
-        aggregate_type="User",
-        aggregate_id=str(user_public_id),
-        idempotency_key=_idempotency_hash("user.registered", {
-            "company_public_id": str(company_public_id),
-            "user_public_id": str(user_public_id),
-            "email": email,
-        }),
-        data=UserRegisteredData(
-            user_public_id=str(user_public_id),
-            email=email,
-            name=name.strip() if name else "",
-            company_public_id=str(company_public_id),
-            company_name=company_name.strip(),
-            membership_public_id=str(membership_public_id),
-            password_hash=password_hash,
-        ).to_dict(),
-        metadata={
-            "is_owner": True,
-            "registration_type": "signup",
-        },
-    )
+# =============================================================================
+# Company Creation (for existing users)
+# =============================================================================
 
-    _process_projections(company)
+@transaction.atomic
+def create_company(user, company_name: str, default_currency: str = "USD") -> CommandResult:
+    """
+    Create a new company for an existing user.
 
-    company = Company.objects.get(public_id=company_public_id)
-    user = User.objects.get(public_id=user_public_id)
-    membership = CompanyMembership.objects.get(public_id=membership_public_id)
+    The user becomes the OWNER of the new company and their active
+    company is switched to the new one.
 
-    return CommandResult.ok({
-        "user": user,
-        "company": company,
-        "membership": membership,
-    }, event=event, events=[event_company, event_user, event_membership, event_switch, event])
+    Args:
+        user: The authenticated user creating the company
+        company_name: Name of the company to create
+        default_currency: Company currency code (default: USD)
+    """
+    from django.utils.text import slugify
+
+    with rls_bypass():
+        if not company_name or not company_name.strip():
+            return CommandResult.fail("Company name is required.")
+
+        # Generate unique slug
+        base_slug = slugify(company_name.strip())
+        if not base_slug:
+            base_slug = "company"
+
+        slug = base_slug
+        max_attempts = 10
+        for attempt in range(max_attempts):
+            if Company.objects.filter(slug=slug).exists():
+                slug = f"{base_slug}-{attempt + 1}"
+                if attempt == max_attempts - 1:
+                    return CommandResult.fail("Could not generate unique company slug.")
+                continue
+            break
+
+        company_public_id = uuid.uuid4()
+        membership_public_id = uuid.uuid4()
+
+        with bootstrap_writes_allowed():
+            company = Company.objects.create(
+                name=company_name.strip(),
+                slug=slug,
+                public_id=company_public_id,
+                default_currency=default_currency,
+            )
+
+            # Create TenantDirectory entry (same transaction as Company)
+            # This is REQUIRED for database routing to work correctly.
+            from tenant.models import TenantDirectory
+            TenantDirectory.objects.create(
+                company=company,
+                mode=TenantDirectory.IsolationMode.SHARED,
+                db_alias="default",
+                status=TenantDirectory.Status.ACTIVE,
+            )
+
+        emit_event_no_actor(
+            company=company,
+            user=user,
+            event_type=EventTypes.COMPANY_CREATED,
+            aggregate_type="Company",
+            aggregate_id=str(company_public_id),
+            idempotency_key=_idempotency_hash("company.created", {
+                "company_public_id": str(company_public_id),
+                "name": company_name.strip(),
+                "slug": slug,
+            }),
+            data=CompanyCreatedData(
+                company_public_id=str(company_public_id),
+                name=company_name.strip(),
+                slug=slug,
+            ).to_dict(),
+        )
+
+        emit_event_no_actor(
+            company=company,
+            user=user,
+            event_type=EventTypes.MEMBERSHIP_CREATED,
+            aggregate_type="CompanyMembership",
+            aggregate_id=str(membership_public_id),
+            idempotency_key=_idempotency_hash("membership.created", {
+                "company_public_id": str(company_public_id),
+                "user_public_id": str(user.public_id),
+                "membership_public_id": str(membership_public_id),
+                "role": CompanyMembership.Role.OWNER,
+            }),
+            data=MembershipCreatedData(
+                membership_public_id=str(membership_public_id),
+                company_public_id=str(company_public_id),
+                user_public_id=str(user.public_id),
+                role=CompanyMembership.Role.OWNER,
+                is_active=True,
+            ).to_dict(),
+        )
+
+        _process_projections(company)
+
+        company = Company.objects.get(public_id=company_public_id)
+        membership = CompanyMembership.objects.get(public_id=membership_public_id)
+
+        # Switch to the new company
+        with bootstrap_writes_allowed():
+            user.active_company = company
+            user.save(update_fields=["active_company"])
+
+        return CommandResult.ok({
+            "company": company,
+            "membership": membership,
+        })
 
 
 # =============================================================================
@@ -303,54 +509,55 @@ def switch_active_company(user, target_company_id: int) -> CommandResult:
     if not user or not user.is_authenticated:
         return CommandResult.fail("Authentication required.")
     
-    try:
-        target_company = Company.objects.get(pk=target_company_id, is_active=True)
-    except Company.DoesNotExist:
-        return CommandResult.fail("Company not found or inactive.")
-    
-    # Verify active membership exists
-    try:
-        membership = CompanyMembership.objects.select_related("company").get(
-            user=user, company=target_company, is_active=True
+    with rls_bypass():
+        try:
+            target_company = Company.objects.get(pk=target_company_id, is_active=True)
+        except Company.DoesNotExist:
+            return CommandResult.fail("Company not found or inactive.")
+
+        # Verify active membership exists
+        try:
+            membership = CompanyMembership.objects.select_related("company").get(
+                user=user, company=target_company, is_active=True
+            )
+        except CompanyMembership.DoesNotExist:
+            return CommandResult.fail("You do not have an active membership for that company.")
+
+        # Capture old company for audit
+        old_company_public_id = user.active_company.public_id if user.active_company else None
+        old_company_name = user.active_company.name if user.active_company else None
+
+        # Emit audit event
+        event = emit_event_no_actor(
+            company=target_company,
+            user=user,
+            event_type=EventTypes.USER_COMPANY_SWITCHED,
+            aggregate_type="User",
+            aggregate_id=str(user.public_id),
+            idempotency_key=_idempotency_hash("user.company_switched", {
+                "user_public_id": str(user.public_id),
+                "from_company_public_id": str(old_company_public_id) if old_company_public_id else None,
+                "to_company_public_id": str(target_company.public_id),
+            }),
+            data=UserCompanySwitchedData(
+                user_public_id=str(user.public_id),
+                email=user.email,
+                from_company_public_id=str(old_company_public_id) if old_company_public_id else None,
+                to_company_public_id=str(target_company.public_id),
+                to_company_name=target_company.name,
+            ).to_dict(),
+            metadata={
+                "from_company_name": old_company_name,
+            },
         )
-    except CompanyMembership.DoesNotExist:
-        return CommandResult.fail("You do not have an active membership for that company.")
-    
-    # Capture old company for audit
-    old_company_public_id = user.active_company.public_id if user.active_company else None
-    old_company_name = user.active_company.name if user.active_company else None
-    
-    # Update active company immediately
-    user.active_company = target_company
-    user.save(update_fields=["active_company"])
 
-    # Emit audit event
-    # FIX: Added idempotency_key with timestamp for uniqueness
-    event = emit_event_no_actor(
-        company=target_company,
-        user=user,
-        event_type=EventTypes.USER_COMPANY_SWITCHED,
-        aggregate_type="User",
-        aggregate_id=str(user.public_id),
-        idempotency_key=_idempotency_hash("user.company_switched", {
-            "user_public_id": str(user.public_id),
-            "from_company_public_id": str(old_company_public_id) if old_company_public_id else None,
-            "to_company_public_id": str(target_company.public_id),
-        }),
-        data=UserCompanySwitchedData(
-            user_public_id=str(user.public_id),
-            email=user.email,
-            from_company_public_id=str(old_company_public_id) if old_company_public_id else None,
-            to_company_public_id=str(target_company.public_id),
-            to_company_name=target_company.name,
-        ).to_dict(),
-        metadata={
-            "from_company_name": old_company_name,
-        },
-    )
+        _process_projections(target_company)
 
-    _process_projections(target_company)
-    
+        # Actually switch the user's active company
+        user.active_company = target_company
+        with command_writes_allowed():
+            user.save(update_fields=["active_company"])
+
     return CommandResult.ok({
         "company_id": target_company.id,
         "company_public_id": str(target_company.public_id),
@@ -404,7 +611,6 @@ def create_user_with_membership(
     
     user_public_id = uuid.uuid4()
     membership_public_id = uuid.uuid4()
-    password_hash = make_password(password)
 
     event_user = emit_event(
         actor=actor,
@@ -422,7 +628,6 @@ def create_user_with_membership(
             email=email,
             name=name,
             created_by_user_public_id=str(actor.user.public_id),
-            password_hash=password_hash,
         ).to_dict(),
         metadata={"source": "admin"},
     )
@@ -464,8 +669,39 @@ def create_user_with_membership(
         ).to_dict(),
     )
 
+    if not settings.PROJECTIONS_SYNC:
+        return CommandResult.ok(
+            {
+                "status": "pending",
+                "correlation_id": str(uuid.uuid4()),
+                "company_public_id": str(actor.company.public_id),
+                "user_public_id": str(user_public_id),
+                "membership_public_id": str(membership_public_id),
+            },
+            event=event_membership,
+            events=[event_user, event_membership, event_switch],
+        )
+
     _process_projections(actor.company)
     user = User.objects.get(public_id=user_public_id)
+    with auth_writes_allowed():
+        user.set_password(password)
+        user.save(update_fields=["password"])
+    emit_event(
+        actor=actor,
+        event_type=EventTypes.USER_PASSWORD_CHANGED,
+        aggregate_type="User",
+        aggregate_id=str(user_public_id),
+        idempotency_key=_idempotency_hash("user.password_changed", {
+            "user_public_id": str(user_public_id),
+            "changed_at": timezone.now().isoformat(),
+        }),
+        data=UserPasswordChangedData(
+            user_public_id=str(user_public_id),
+            email=user.email,
+            changed_by_self=False,
+        ).to_dict(),
+    )
     membership = CompanyMembership.objects.get(public_id=membership_public_id)
 
     return CommandResult.ok(
@@ -505,13 +741,11 @@ def update_user(
     if not is_self:
         from accounts.authz import require
         require(actor, "company.manage_users")
-        
-        # Verify target user is in actor's company unless actor is owner
-        if not actor.is_owner:
-            if not CompanyMembership.objects.filter(
-                user=target_user, company=actor.company, is_active=True
-            ).exists():
-                return CommandResult.fail("User is not a member of your company.")
+
+        if not CompanyMembership.objects.filter(
+            user=target_user, company=actor.company, is_active=True
+        ).exists():
+            return CommandResult.fail("User is not a member of your company.")
     
     # Track changes
     changes = {}
@@ -534,9 +768,7 @@ def update_user(
     
     # Emit event
     # Create a deterministic hash of changes for idempotency
-    changes_hash = hashlib.sha256(
-        str(sorted((k, v['new']) for k, v in changes.items())).encode()
-    ).hexdigest()[:12]
+    changes_hash = _changes_hash(changes)
     
     event = emit_event(
         actor=actor,
@@ -596,9 +828,13 @@ def set_user_password(
         ).exists():
             return CommandResult.fail("User is not a member of your company.")
     
-    # Emit audit event (no password in event data!)
-    # FIX: Use timestamp to make idempotency key unique per password change
-    password_hash = make_password(new_password)
+    with auth_writes_allowed():
+        target_user.set_password(new_password)
+        target_user.save(update_fields=["password"])
+
+    # Emit audit event (no password in event data)
+    # Use timestamp to keep idempotency keys distinct per change
+    changed_at = timezone.now().isoformat()
     event = emit_event(
         actor=actor,
         event_type=EventTypes.USER_PASSWORD_CHANGED,
@@ -606,13 +842,12 @@ def set_user_password(
         aggregate_id=str(target_user.public_id),
         idempotency_key=_idempotency_hash("user.password_changed", {
             "user_public_id": str(target_user.public_id),
-            "password_hash": password_hash,
+            "changed_at": changed_at,
         }),
         data=UserPasswordChangedData(
             user_public_id=str(target_user.public_id),
             email=target_user.email,
             changed_by_self=is_self,
-            password_hash=password_hash,
         ).to_dict()
     )
     _process_projections(actor.company)
@@ -1092,7 +1327,7 @@ def update_company(
             changes[field] = {"old": old_value, "new": new_value}
     
     if not changes:
-        return CommandResult.success({"company": company, "message": "No changes"})
+        return CommandResult.ok({"company": company, "message": "No changes"})
     
     # 5. Emit event
     emit_event(
@@ -1105,7 +1340,10 @@ def update_company(
             "changes": changes,
         },
         caused_by_user=actor.user,
-        idempotency_key=_idempotency_hash("company.update", company.public_id, changes),
+        idempotency_key=_idempotency_hash("company.update", {
+            "company_public_id": str(company.public_id),
+            "changes": changes,
+        }),
     )
     
     # 6. Process projections (projection will apply the changes)
@@ -1114,7 +1352,7 @@ def update_company(
     
     # 7. Reload and return
     company.refresh_from_db()
-    return CommandResult.success({"company": company})
+    return CommandResult.ok({"company": company})
 
 
 @transaction.atomic
@@ -1133,7 +1371,7 @@ def update_company_settings(
     company = actor.company
     
     # 2. Build changes
-    allowed_settings = {"default_currency", "fiscal_year_start_month"}
+    allowed_settings = {"name", "name_ar", "default_currency", "fiscal_year_start_month"}
     changes = {}
     
     for setting, new_value in settings.items():
@@ -1144,7 +1382,7 @@ def update_company_settings(
             changes[setting] = {"old": old_value, "new": new_value}
     
     if not changes:
-        return CommandResult.success({"company": company, "message": "No changes"})
+        return CommandResult.ok({"company": company, "message": "No changes"})
     
     # 3. Validate settings
     if "default_currency" in changes:
@@ -1168,7 +1406,10 @@ def update_company_settings(
             "changes": changes,
         },
         caused_by_user=actor.user,
-        idempotency_key=_idempotency_hash("company.settings", company.public_id, changes),
+        idempotency_key=_idempotency_hash("company.settings", {
+            "company_public_id": str(company.public_id),
+            "changes": changes,
+        }),
     )
     
     # 5. Process projections
@@ -1176,4 +1417,612 @@ def update_company_settings(
     
     # 6. Return
     company.refresh_from_db()
-    return CommandResult.success({"company": company})
+    return CommandResult.ok({"company": company})
+
+
+@transaction.atomic
+def upload_company_logo(
+    actor: ActorContext,
+    logo_file,
+) -> CommandResult:
+    """
+    Upload or update company logo.
+
+    Args:
+        actor: The actor context
+        logo_file: The uploaded file (InMemoryUploadedFile or TemporaryUploadedFile)
+
+    Returns:
+        CommandResult with company and logo URL
+    """
+    import os
+    from django.core.files.storage import default_storage
+
+    # 1. Authorization
+    require(actor, "company.settings.update")
+
+    company = actor.company
+
+    # 2. Validate file type
+    allowed_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.webp'}
+    ext = os.path.splitext(logo_file.name)[1].lower()
+    if ext not in allowed_extensions:
+        return CommandResult.fail(
+            f"Invalid file type. Allowed: {', '.join(allowed_extensions)}"
+        )
+
+    # 3. Validate file size (max 5MB)
+    max_size = 5 * 1024 * 1024  # 5MB
+    if logo_file.size > max_size:
+        return CommandResult.fail("File too large. Maximum size is 5MB.")
+
+    # 4. Get old logo path for event
+    old_logo_path = company.logo.name if company.logo else None
+
+    # 5. Delete old logo if exists
+    if company.logo:
+        try:
+            default_storage.delete(company.logo.name)
+        except Exception:
+            pass  # Ignore deletion errors
+
+    # 6. Save new logo path (don't save directly - projection will do it)
+    # Generate the path that will be used
+    new_logo_path = f"logos/{company.slug}/logo{ext}"
+
+    # 7. Save the file to storage
+    # Save the file first, projection will update the model
+    saved_path = default_storage.save(new_logo_path, logo_file)
+
+    # 8. Emit event
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.COMPANY_LOGO_UPLOADED,
+        aggregate_type="Company",
+        aggregate_id=str(company.public_id),
+        idempotency_key=_idempotency_hash("company.logo_uploaded", {
+            "company_public_id": str(company.public_id),
+            "logo_path": saved_path,
+        }),
+        data=CompanyLogoUploadedData(
+            company_public_id=str(company.public_id),
+            logo_path=saved_path,
+            old_logo_path=old_logo_path,
+        ).to_dict(),
+    )
+
+    # 9. Process projections
+    _process_projections(company)
+
+    # 10. Reload and return
+    company.refresh_from_db()
+    from django.conf import settings as django_settings
+    logo_url = None
+    if company.logo:
+        logo_url = f"{django_settings.MEDIA_URL}{company.logo.name}"
+
+    return CommandResult.ok({
+        "company": company,
+        "logo_url": logo_url,
+    }, event=event)
+
+
+@transaction.atomic
+def delete_company_logo(actor: ActorContext) -> CommandResult:
+    """
+    Delete company logo.
+
+    Args:
+        actor: The actor context
+
+    Returns:
+        CommandResult confirming deletion
+    """
+    from django.core.files.storage import default_storage
+    from events.types import EventTypes, CompanyLogoDeletedData
+
+    # 1. Authorization
+    require(actor, "company.settings.update")
+
+    company = actor.company
+
+    # 2. Check logo exists
+    if not company.logo:
+        return CommandResult.fail("No logo to delete.")
+
+    # 3. Store logo path for event
+    logo_path = company.logo.name
+
+    # 4. Delete the file from storage
+    try:
+        default_storage.delete(logo_path)
+    except Exception:
+        pass  # Ignore deletion errors (file may not exist)
+
+    # 5. Emit event
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.COMPANY_LOGO_DELETED,
+        aggregate_type="Company",
+        aggregate_id=str(company.public_id),
+        idempotency_key=_idempotency_hash("company.logo_deleted", {
+            "company_public_id": str(company.public_id),
+            "logo_path": logo_path,
+        }),
+        data=CompanyLogoDeletedData(
+            company_public_id=str(company.public_id),
+            deleted_logo_path=logo_path,
+        ).to_dict(),
+    )
+
+    # 6. Process projections (will clear company.logo)
+    _process_projections(company)
+
+    return CommandResult.ok({
+        "company_public_id": str(company.public_id),
+        "deleted_logo_path": logo_path,
+    }, event=event)
+
+
+# =============================================================================
+# Email Verification
+# =============================================================================
+
+import secrets
+
+def _generate_verification_token() -> str:
+    """Generate a secure random token for email verification."""
+    return secrets.token_urlsafe(32)
+
+
+def _hash_token(token: str) -> str:
+    """Hash a token using SHA-256."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+@transaction.atomic
+def create_verification_token(user, ip_address: str = "") -> CommandResult:
+    """
+    Create a verification token for a user.
+
+    Tokens are:
+    - Generated using secrets.token_urlsafe(32) (256 bits entropy)
+    - Stored as SHA-256 hash (raw token never stored)
+    - Set to expire in VERIFICATION_TOKEN_EXPIRY_HOURS
+
+    Args:
+        user: The User instance
+        ip_address: IP address of the request (for audit)
+
+    Returns:
+        CommandResult with raw token (to send via email)
+    """
+    from accounts.models import EmailVerificationToken
+    from datetime import timedelta
+
+    # Delete any existing tokens for this user
+    EmailVerificationToken.objects.filter(user=user).delete()
+
+    # Generate token
+    raw_token = _generate_verification_token()
+    token_hash = _hash_token(raw_token)
+
+    # Calculate expiry
+    expiry_hours = getattr(settings, 'VERIFICATION_TOKEN_EXPIRY_HOURS', 24)
+    expires_at = timezone.now() + timedelta(hours=expiry_hours)
+
+    # Create token record
+    token_record = EmailVerificationToken.objects.create(
+        user=user,
+        token_hash=token_hash,
+        expires_at=expires_at,
+        ip_address=ip_address or None,
+    )
+
+    return CommandResult.ok({
+        "token": raw_token,
+        "expires_at": expires_at,
+        "token_record": token_record,
+    })
+
+
+@transaction.atomic
+def send_verification_email_command(user, ip_address: str = "") -> CommandResult:
+    """
+    Generate verification token and send verification email.
+
+    This is the main entry point for sending verification emails.
+
+    Args:
+        user: The User instance
+        ip_address: IP address of the request
+
+    Returns:
+        CommandResult with status
+    """
+    from accounts.email_service import send_verification_email
+
+    # Create token
+    token_result = create_verification_token(user, ip_address)
+    if not token_result.success:
+        return token_result
+
+    raw_token = token_result.data["token"]
+    expires_at = token_result.data["expires_at"]
+
+    # Send email
+    email_sent = send_verification_email(user, raw_token)
+
+    # Get company for event
+    membership = user.memberships.first()
+    company = membership.company if membership else None
+
+    # Emit event (even if email fails - we track the attempt)
+    event = emit_event_no_actor(
+        company=company,
+        user=user,
+        event_type=EventTypes.USER_EMAIL_VERIFICATION_SENT,
+        aggregate_type="User",
+        aggregate_id=str(user.public_id),
+        idempotency_key=_idempotency_hash("user.email_verification_sent", {
+            "user_public_id": str(user.public_id),
+            "sent_at": timezone.now().isoformat(),
+        }),
+        data=UserEmailVerificationSentData(
+            user_public_id=str(user.public_id),
+            email=user.email,
+            expires_at=expires_at.isoformat(),
+            ip_address=ip_address,
+        ).to_dict(),
+        metadata={
+            "email_sent": email_sent,
+        },
+    )
+
+    if company:
+        _process_projections(company)
+
+    if not email_sent:
+        return CommandResult.fail("Failed to send verification email. Please try again later.")
+
+    return CommandResult.ok({
+        "status": "email_sent",
+        "email": user.email,
+        "expires_at": expires_at.isoformat(),
+    }, event=event)
+
+
+@transaction.atomic
+def verify_email(token: str, ip_address: str = "") -> CommandResult:
+    """
+    Verify a user's email using the provided token.
+
+    This:
+    1. Hashes the provided token
+    2. Looks up the token hash
+    3. Validates it's not expired
+    4. Marks user as email_verified=True
+    5. Deletes the token (one-time use)
+    6. If Beta Gate enabled, emits approval_requested event
+    7. If Beta Gate disabled, auto-approves user
+
+    Args:
+        token: Raw token from verification URL
+        ip_address: IP address for audit
+
+    Returns:
+        CommandResult with verification status
+    """
+    from accounts.models import EmailVerificationToken
+    from accounts.email_service import send_admin_approval_notification
+
+    # Hash the provided token
+    token_hash = _hash_token(token)
+
+    # Look up token
+    try:
+        token_record = EmailVerificationToken.objects.select_related("user").get(
+            token_hash=token_hash
+        )
+    except EmailVerificationToken.DoesNotExist:
+        return CommandResult.fail("Invalid or expired verification token.")
+
+    user = token_record.user
+
+    # Check if already verified
+    if user.email_verified:
+        # Token exists but user already verified - clean up and return
+        token_record.delete()
+        return CommandResult.ok({
+            "status": "already_verified",
+            "email": user.email,
+        })
+
+    # Check expiry
+    if token_record.is_expired:
+        return CommandResult.fail("Verification token has expired. Please request a new one.")
+
+    # Get company for event
+    membership = user.memberships.first()
+    company = membership.company if membership else None
+
+    # Mark user as verified
+    now = timezone.now()
+    with command_writes_allowed():
+        user.email_verified = True
+        user.email_verified_at = now
+        user.save(update_fields=["email_verified", "email_verified_at"])
+
+    # Delete token (one-time use)
+    token_record.delete()
+
+    # Emit verified event
+    event = emit_event_no_actor(
+        company=company,
+        user=user,
+        event_type=EventTypes.USER_EMAIL_VERIFIED,
+        aggregate_type="User",
+        aggregate_id=str(user.public_id),
+        idempotency_key=_idempotency_hash("user.email_verified", {
+            "user_public_id": str(user.public_id),
+        }),
+        data=UserEmailVerifiedData(
+            user_public_id=str(user.public_id),
+            email=user.email,
+            verified_at=now.isoformat(),
+            ip_address=ip_address,
+        ).to_dict(),
+    )
+
+    # Check Beta Gate
+    beta_gate_enabled = getattr(settings, 'BETA_GATE_ENABLED', True)
+
+    if not beta_gate_enabled:
+        # Auto-approve the user
+        with command_writes_allowed():
+            user.is_approved = True
+            user.approved_at = now
+            user.save(update_fields=["is_approved", "approved_at"])
+
+        if company:
+            _process_projections(company)
+
+        return CommandResult.ok({
+            "status": "verified_and_approved",
+            "email": user.email,
+        }, event=event)
+
+    # Beta Gate enabled - emit approval requested event
+    emit_event_no_actor(
+        company=company,
+        user=user,
+        event_type=EventTypes.USER_APPROVAL_REQUESTED,
+        aggregate_type="User",
+        aggregate_id=str(user.public_id),
+        idempotency_key=_idempotency_hash("user.approval_requested", {
+            "user_public_id": str(user.public_id),
+        }),
+        data=UserApprovalRequestedData(
+            user_public_id=str(user.public_id),
+            email=user.email,
+            company_public_id=str(company.public_id) if company else "",
+            company_name=company.name if company else "",
+        ).to_dict(),
+    )
+
+    # Send admin notification
+    if company:
+        send_admin_approval_notification(user)
+        _process_projections(company)
+
+    return CommandResult.ok({
+        "status": "pending_approval",
+        "email": user.email,
+        "message": "Email verified. Your account is pending admin approval.",
+    }, event=event)
+
+
+@transaction.atomic
+def resend_verification_email(email: str, ip_address: str = "") -> CommandResult:
+    """
+    Resend verification email for a user.
+
+    Rate limited: max 3 emails per hour per user (checked at view level).
+
+    Args:
+        email: User's email address
+        ip_address: IP address for audit
+
+    Returns:
+        CommandResult
+    """
+    with rls_bypass():
+        try:
+            user = User.objects.get(email=email.lower().strip())
+        except User.DoesNotExist:
+            # Don't reveal if email exists
+            return CommandResult.ok({
+                "status": "email_sent_if_exists",
+                "message": "If an account exists with this email, a verification link has been sent.",
+            })
+
+    # Check if already verified
+    if user.email_verified:
+        return CommandResult.ok({
+            "status": "already_verified",
+            "message": "This email has already been verified.",
+        })
+
+    # Send verification email
+    return send_verification_email_command(user, ip_address)
+
+
+# =============================================================================
+# Admin Approval (Beta Gate)
+# =============================================================================
+
+@transaction.atomic
+def approve_user(admin_user, user_id: int) -> CommandResult:
+    """
+    Approve a pending user (admin only).
+
+    Args:
+        admin_user: The admin User performing the approval (must be staff)
+        user_id: ID of the user to approve
+
+    Returns:
+        CommandResult
+    """
+    from accounts.email_service import send_approval_notification
+
+    # Validate admin user
+    if not admin_user.is_staff:
+        return CommandResult.fail("Only staff users can approve registrations.")
+
+    with rls_bypass():
+        try:
+            user = User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            return CommandResult.fail("User not found.")
+
+    # Check user is verified but not approved
+    if not user.email_verified:
+        return CommandResult.fail("User email has not been verified yet.")
+
+    if user.is_approved:
+        return CommandResult.fail("User is already approved.")
+
+    # Get company for event
+    membership = user.memberships.first()
+    company = membership.company if membership else None
+
+    # Approve user
+    now = timezone.now()
+    with command_writes_allowed():
+        user.is_approved = True
+        user.approved_at = now
+        user.approved_by = admin_user
+        user.save(update_fields=["is_approved", "approved_at", "approved_by"])
+
+    # Emit event
+    event = emit_event_no_actor(
+        company=company,
+        user=admin_user,
+        event_type=EventTypes.USER_APPROVED,
+        aggregate_type="User",
+        aggregate_id=str(user.public_id),
+        idempotency_key=_idempotency_hash("user.approved", {
+            "user_public_id": str(user.public_id),
+        }),
+        data=UserApprovedData(
+            user_public_id=str(user.public_id),
+            email=user.email,
+            approved_by_public_id=str(admin_user.public_id),
+            approved_by_email=admin_user.email,
+            approved_at=now.isoformat(),
+        ).to_dict(),
+    )
+
+    # Send approval notification to user
+    send_approval_notification(user)
+
+    if company:
+        _process_projections(company)
+
+    return CommandResult.ok({
+        "status": "approved",
+        "user_email": user.email,
+        "approved_at": now.isoformat(),
+    }, event=event)
+
+
+@transaction.atomic
+def reject_user(admin_user, user_id: int, reason: str = "") -> CommandResult:
+    """
+    Reject a pending user (admin only).
+
+    This sets is_active=False to prevent any future login attempts.
+
+    Args:
+        admin_user: The admin User performing the rejection (must be staff)
+        user_id: ID of the user to reject
+        reason: Reason for rejection (sent to user)
+
+    Returns:
+        CommandResult
+    """
+    from accounts.email_service import send_rejection_notification
+
+    # Validate admin user
+    if not admin_user.is_staff:
+        return CommandResult.fail("Only staff users can reject registrations.")
+
+    with rls_bypass():
+        try:
+            user = User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            return CommandResult.fail("User not found.")
+
+    # Check user is not already approved
+    if user.is_approved:
+        return CommandResult.fail("Cannot reject an already approved user.")
+
+    # Get company for event
+    membership = user.memberships.first()
+    company = membership.company if membership else None
+
+    # Reject user (set is_active=False)
+    with bootstrap_writes_allowed():
+        user.is_active = False
+        user.save(update_fields=["is_active"])
+
+    # Emit event
+    event = emit_event_no_actor(
+        company=company,
+        user=admin_user,
+        event_type=EventTypes.USER_REJECTED,
+        aggregate_type="User",
+        aggregate_id=str(user.public_id),
+        idempotency_key=_idempotency_hash("user.rejected", {
+            "user_public_id": str(user.public_id),
+        }),
+        data=UserRejectedData(
+            user_public_id=str(user.public_id),
+            email=user.email,
+            rejected_by_public_id=str(admin_user.public_id),
+            rejected_by_email=admin_user.email,
+            reason=reason,
+        ).to_dict(),
+    )
+
+    # Send rejection notification to user
+    send_rejection_notification(user, reason)
+
+    if company:
+        _process_projections(company)
+
+    return CommandResult.ok({
+        "status": "rejected",
+        "user_email": user.email,
+        "reason": reason,
+    }, event=event)
+
+
+def list_pending_approvals() -> list:
+    """
+    List users pending admin approval.
+
+    Returns users where:
+    - email_verified=True
+    - is_approved=False
+    - is_active=True (not rejected)
+
+    Returns:
+        List of pending User objects
+    """
+    with rls_bypass():
+        return list(User.objects.filter(
+            email_verified=True,
+            is_approved=False,
+            is_active=True,
+        ).select_related('approved_by').prefetch_related('memberships__company').order_by('date_joined'))

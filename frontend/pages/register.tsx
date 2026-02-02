@@ -3,7 +3,6 @@ import { useRouter } from "next/router";
 import { FormEvent, useState } from "react";
 import { AuthLayout } from "@/components/AuthLayout";
 import { InputField, SelectField } from "@/components/FormField";
-import { LoadingOverlay } from "@/components/LoadingOverlay";
 import {
   accountingPeriods,
   currencyOptions,
@@ -14,7 +13,6 @@ import {
   thousandSeparators
 } from "@/lib/constants";
 import { register } from "@/lib/api";
-import { storeTokens } from "@/lib/auth-storage";
 
 const initialState = {
   email: "",
@@ -38,7 +36,6 @@ export default function RegisterPage() {
   const [form, setForm] = useState(initialState);
   const [errors, setErrors] = useState<Errors>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [showOverlay, setShowOverlay] = useState(false);
 
   const handleChange = (field: keyof typeof form) => (value: string) => {
     setForm((previous) => {
@@ -83,7 +80,7 @@ export default function RegisterPage() {
 
     try {
       setIsSubmitting(true);
-      const response = await register({
+      await register({
         email: form.email,
         name: form.name,
         password: form.password,
@@ -98,14 +95,14 @@ export default function RegisterPage() {
         date_format: form.date_format
       });
 
-      storeTokens(response.access, response.refresh);
-      setShowOverlay(true);
-      setTimeout(() => {
-        router.push("/profile");
-      }, 1800);
-    } catch (error) {
+      // Redirect to verify-email page
+      router.push(`/verify-email?email=${encodeURIComponent(form.email)}&sent=true`);
+    } catch (error: unknown) {
       console.error(error);
-      setErrors({ email: "Registration failed. Please try again." });
+      const axiosError = error as { response?: { data?: { detail?: string; email?: string[] } } };
+      const detail = axiosError.response?.data?.detail;
+      const emailError = axiosError.response?.data?.email?.[0];
+      setErrors({ email: emailError || detail || "Registration failed. Please try again." });
     } finally {
       setIsSubmitting(false);
     }
@@ -114,11 +111,10 @@ export default function RegisterPage() {
   return (
     <AuthLayout>
       <div className="relative">
-        {showOverlay && <LoadingOverlay />}
         <form onSubmit={handleSubmit} className="grid grid-cols-1 gap-6 md:grid-cols-2">
           <div className="md:col-span-2">
-            <h2 className="text-2xl font-semibold text-slate-100">Create your company workspace</h2>
-            <p className="mt-2 text-sm text-slate-400">
+            <h2 className="text-2xl font-semibold text-foreground">Create your company workspace</h2>
+            <p className="mt-2 text-sm text-muted-foreground">
               Enter basic account credentials and configure the accounting experience for your ERP tenant.
             </p>
           </div>
@@ -239,12 +235,12 @@ export default function RegisterPage() {
           <div className="md:col-span-2 flex flex-col gap-3">
             <button
               type="submit"
-              className="rounded-full bg-accent px-8 py-3 text-center font-semibold text-slate-950 shadow-lg shadow-accent/30 transition hover:bg-sky-400"
+              className="rounded-full bg-accent px-8 py-3 text-center font-semibold text-accent-foreground shadow-lg shadow-accent/30 transition hover:bg-accent/90"
               disabled={isSubmitting}
             >
               {isSubmitting ? "Submitting..." : "Launch Workspace"}
             </button>
-            <p className="text-sm text-slate-400">
+            <p className="text-sm text-muted-foreground">
               Already onboarded? <Link href="/login">Login</Link>
             </p>
           </div>
