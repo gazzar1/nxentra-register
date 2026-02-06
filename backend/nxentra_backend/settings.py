@@ -178,8 +178,11 @@ EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True") == "True"
 EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
 
-# Postmark (if using postmark.django_backend.EmailBackend)
-POSTMARK_API_KEY = os.getenv("POSTMARK_API_KEY", "")
+# Postmark (if using postmarker.django.EmailBackend)
+POSTMARK = {
+    "TOKEN": os.getenv("POSTMARK_API_KEY", ""),
+    "TEST_MODE": False,
+}
 
 # Nxentra email addresses
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "Nxentra <no-reply@nxentra.com>")
