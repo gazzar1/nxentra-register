@@ -158,9 +158,17 @@ export default function VerifyEmailPage() {
             <p className="text-sm text-slate-500">
               Your email has been verified. An administrator will review your account shortly.
             </p>
-            <Link href="/pending-approval" className="text-sm text-accent hover:text-sky-400">
-              Learn more about the approval process
+            <Link
+              href="/login"
+              className="inline-block rounded-full bg-accent px-8 py-3 font-semibold text-slate-950 shadow-lg shadow-accent/30 transition hover:bg-sky-400"
+            >
+              Back to Login
             </Link>
+            <div className="pt-2">
+              <Link href="/pending-approval" className="text-sm text-slate-400 hover:text-slate-300">
+                Learn more about the approval process
+              </Link>
+            </div>
           </>
         )}
 
