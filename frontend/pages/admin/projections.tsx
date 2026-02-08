@@ -1,6 +1,6 @@
 import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, Fragment } from "react";
 import {
   RefreshCw,
   Play,
@@ -43,11 +43,6 @@ import {
   DialogFooter,
   DialogDescription,
 } from "@/components/ui/dialog";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
 import { Progress } from "@/components/ui/progress";
 import { PageHeader, LoadingSpinner, EmptyState } from "@/components/common";
 import { useAuth } from "@/contexts/AuthContext";
@@ -451,199 +446,196 @@ export default function ProjectionsPage() {
                 </TableHeader>
                 <TableBody>
                   {data.projections.map((projection) => (
-                    <Collapsible
-                      key={projection.name}
-                      open={expandedRows.has(projection.name)}
-                      onOpenChange={() => toggleExpand(projection.name)}
-                      asChild
-                    >
-                      <>
-                        <TableRow className="group">
-                          <TableCell>
-                            <CollapsibleTrigger asChild>
-                              <Button variant="ghost" size="sm" className="p-0">
-                                {expandedRows.has(projection.name) ? (
-                                  <ChevronDown className="h-4 w-4" />
-                                ) : (
-                                  <ChevronRight className="h-4 w-4" />
-                                )}
-                              </Button>
-                            </CollapsibleTrigger>
-                          </TableCell>
-                          <TableCell>
-                            <div>
-                              <p className="font-medium">{projection.name}</p>
-                              <p className="text-xs text-muted-foreground">
-                                {projection.consumes.join(", ") || "all events"}
-                              </p>
-                            </div>
-                          </TableCell>
-                          <TableCell>{getStatusBadge(projection)}</TableCell>
-                          <TableCell>
-                            {projection.lag > 0 ? (
-                              <span className="text-yellow-500 font-medium">
-                                {projection.lag.toLocaleString()}
-                              </span>
+                    <Fragment key={projection.name}>
+                      <TableRow className="group">
+                        <TableCell>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="p-0"
+                            onClick={() => toggleExpand(projection.name)}
+                          >
+                            {expandedRows.has(projection.name) ? (
+                              <ChevronDown className="h-4 w-4" />
                             ) : (
-                              <span className="text-muted-foreground">0</span>
+                              <ChevronRight className="h-4 w-4" />
                             )}
-                          </TableCell>
-                          <TableCell>
-                            <div className="text-sm">
-                              {formatDate(
-                                projection.last_rebuild_completed_at
-                              )}
-                              {projection.last_rebuild_duration_seconds && (
-                                <span className="text-xs text-muted-foreground block">
-                                  {formatDuration(
-                                    projection.last_rebuild_duration_seconds
-                                  )}
-                                </span>
-                              )}
-                            </div>
-                          </TableCell>
-                          <TableCell className="text-right">
-                            <div className="flex justify-end gap-2">
-                              {projection.lag > 0 && !projection.is_rebuilding && (
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={() => handleProcess(projection)}
-                                  disabled={isSubmitting || projection.is_paused}
-                                  title="Process pending events"
-                                >
-                                  <Play className="h-4 w-4" />
-                                </Button>
-                              )}
+                          </Button>
+                        </TableCell>
+                        <TableCell>
+                          <div>
+                            <p className="font-medium">{projection.name}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {projection.consumes.join(", ") || "all events"}
+                            </p>
+                          </div>
+                        </TableCell>
+                        <TableCell>{getStatusBadge(projection)}</TableCell>
+                        <TableCell>
+                          {projection.lag > 0 ? (
+                            <span className="text-yellow-500 font-medium">
+                              {projection.lag.toLocaleString()}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground">0</span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <div className="text-sm">
+                            {formatDate(projection.last_rebuild_completed_at)}
+                            {projection.last_rebuild_duration_seconds && (
+                              <span className="text-xs text-muted-foreground block">
+                                {formatDuration(
+                                  projection.last_rebuild_duration_seconds
+                                )}
+                              </span>
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-2">
+                            {projection.lag > 0 && !projection.is_rebuilding && (
                               <Button
                                 size="sm"
                                 variant="outline"
-                                onClick={() => handlePause(projection)}
-                                disabled={isSubmitting || projection.is_rebuilding}
-                                title={
-                                  projection.is_paused
-                                    ? "Resume projection"
-                                    : "Pause projection"
-                                }
+                                onClick={() => handleProcess(projection)}
+                                disabled={isSubmitting || projection.is_paused}
+                                title="Process pending events"
                               >
-                                {projection.is_paused ? (
-                                  <Play className="h-4 w-4" />
-                                ) : (
-                                  <Pause className="h-4 w-4" />
-                                )}
+                                <Play className="h-4 w-4" />
                               </Button>
-                              <Button
-                                size="sm"
-                                variant="default"
-                                onClick={() => openRebuildDialog(projection)}
-                                disabled={isSubmitting || projection.is_rebuilding}
-                              >
-                                <RotateCcw className="me-1 h-4 w-4" />
-                                Rebuild
-                              </Button>
+                            )}
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handlePause(projection)}
+                              disabled={isSubmitting || projection.is_rebuilding}
+                              title={
+                                projection.is_paused
+                                  ? "Resume projection"
+                                  : "Pause projection"
+                              }
+                            >
+                              {projection.is_paused ? (
+                                <Play className="h-4 w-4" />
+                              ) : (
+                                <Pause className="h-4 w-4" />
+                              )}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="default"
+                              onClick={() => openRebuildDialog(projection)}
+                              disabled={isSubmitting || projection.is_rebuilding}
+                            >
+                              <RotateCcw className="me-1 h-4 w-4" />
+                              Rebuild
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+
+                      {/* Expanded Details Row */}
+                      {expandedRows.has(projection.name) && (
+                        <TableRow className="bg-muted/30">
+                          <TableCell colSpan={6}>
+                            <div className="py-4 px-2 space-y-4">
+                              {/* Progress bar if rebuilding */}
+                              {projection.is_rebuilding && (
+                                <div className="space-y-2">
+                                  <div className="flex justify-between text-sm">
+                                    <span>Rebuild Progress</span>
+                                    <span>
+                                      {projection.events_processed.toLocaleString()}{" "}
+                                      /{" "}
+                                      {projection.events_total.toLocaleString()}{" "}
+                                      events
+                                    </span>
+                                  </div>
+                                  <Progress
+                                    value={projection.rebuild_progress_percent}
+                                  />
+                                </div>
+                              )}
+
+                              {/* Error message */}
+                              {projection.error_message && (
+                                <div className="bg-destructive/10 border border-destructive/50 rounded p-3">
+                                  <div className="flex items-start justify-between">
+                                    <div>
+                                      <p className="text-sm font-medium text-destructive">
+                                        Error ({projection.error_count} total)
+                                      </p>
+                                      <p className="text-xs text-destructive/80 mt-1">
+                                        {projection.error_message}
+                                      </p>
+                                    </div>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() =>
+                                        handleClearError(projection)
+                                      }
+                                      disabled={isSubmitting}
+                                    >
+                                      Clear Error
+                                    </Button>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Details grid */}
+                              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                                <div>
+                                  <p className="text-muted-foreground">
+                                    Event Types
+                                  </p>
+                                  <p className="font-medium">
+                                    {projection.consumes.length > 0
+                                      ? projection.consumes.join(", ")
+                                      : "All events"}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="text-muted-foreground">
+                                    Last Processed
+                                  </p>
+                                  <p className="font-medium">
+                                    {formatDate(projection.last_processed_at)}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="text-muted-foreground">
+                                    Bookmark Errors
+                                  </p>
+                                  <p className="font-medium">
+                                    {projection.bookmark_error_count}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="text-muted-foreground">
+                                    Last Rebuild Started
+                                  </p>
+                                  <p className="font-medium">
+                                    {formatDate(
+                                      projection.last_rebuild_started_at
+                                    )}
+                                  </p>
+                                </div>
+                              </div>
+
+                              {/* Bookmark error message */}
+                              {projection.bookmark_last_error && (
+                                <div className="text-xs text-destructive/80 bg-destructive/5 p-2 rounded">
+                                  Bookmark error:{" "}
+                                  {projection.bookmark_last_error}
+                                </div>
+                              )}
                             </div>
                           </TableCell>
                         </TableRow>
-
-                        <CollapsibleContent asChild>
-                          <TableRow className="bg-muted/30">
-                            <TableCell colSpan={6}>
-                              <div className="py-4 px-2 space-y-4">
-                                {/* Progress bar if rebuilding */}
-                                {projection.is_rebuilding && (
-                                  <div className="space-y-2">
-                                    <div className="flex justify-between text-sm">
-                                      <span>Rebuild Progress</span>
-                                      <span>
-                                        {projection.events_processed.toLocaleString()}{" "}
-                                        / {projection.events_total.toLocaleString()}{" "}
-                                        events
-                                      </span>
-                                    </div>
-                                    <Progress
-                                      value={projection.rebuild_progress_percent}
-                                    />
-                                  </div>
-                                )}
-
-                                {/* Error message */}
-                                {projection.error_message && (
-                                  <div className="bg-destructive/10 border border-destructive/50 rounded p-3">
-                                    <div className="flex items-start justify-between">
-                                      <div>
-                                        <p className="text-sm font-medium text-destructive">
-                                          Error ({projection.error_count} total)
-                                        </p>
-                                        <p className="text-xs text-destructive/80 mt-1">
-                                          {projection.error_message}
-                                        </p>
-                                      </div>
-                                      <Button
-                                        size="sm"
-                                        variant="outline"
-                                        onClick={() =>
-                                          handleClearError(projection)
-                                        }
-                                        disabled={isSubmitting}
-                                      >
-                                        Clear Error
-                                      </Button>
-                                    </div>
-                                  </div>
-                                )}
-
-                                {/* Details grid */}
-                                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                                  <div>
-                                    <p className="text-muted-foreground">
-                                      Event Types
-                                    </p>
-                                    <p className="font-medium">
-                                      {projection.consumes.length > 0
-                                        ? projection.consumes.join(", ")
-                                        : "All events"}
-                                    </p>
-                                  </div>
-                                  <div>
-                                    <p className="text-muted-foreground">
-                                      Last Processed
-                                    </p>
-                                    <p className="font-medium">
-                                      {formatDate(projection.last_processed_at)}
-                                    </p>
-                                  </div>
-                                  <div>
-                                    <p className="text-muted-foreground">
-                                      Bookmark Errors
-                                    </p>
-                                    <p className="font-medium">
-                                      {projection.bookmark_error_count}
-                                    </p>
-                                  </div>
-                                  <div>
-                                    <p className="text-muted-foreground">
-                                      Last Rebuild Started
-                                    </p>
-                                    <p className="font-medium">
-                                      {formatDate(
-                                        projection.last_rebuild_started_at
-                                      )}
-                                    </p>
-                                  </div>
-                                </div>
-
-                                {/* Bookmark error message */}
-                                {projection.bookmark_last_error && (
-                                  <div className="text-xs text-destructive/80 bg-destructive/5 p-2 rounded">
-                                    Bookmark error: {projection.bookmark_last_error}
-                                  </div>
-                                )}
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        </CollapsibleContent>
-                      </>
-                    </Collapsible>
+                      )}
+                    </Fragment>
                   ))}
                 </TableBody>
               </Table>
@@ -693,7 +685,10 @@ export default function ProjectionsPage() {
                 {isSubmitting ? "Rebuilding..." : "Force Restart"}
               </Button>
             ) : (
-              <Button onClick={() => handleRebuild(false)} disabled={isSubmitting}>
+              <Button
+                onClick={() => handleRebuild(false)}
+                disabled={isSubmitting}
+              >
                 {isSubmitting ? (
                   <>
                     <Loader2 className="me-2 h-4 w-4 animate-spin" />
