@@ -1394,6 +1394,549 @@ class FiscalPeriodDatesView(APIView):
         })
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# ADMIN PROJECTION MANAGEMENT ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class AdminProjectionListView(APIView):
+    """
+    GET /api/admin/projections/
+
+    List all projections with their rebuild status for the current company.
+    Admin only.
+
+    Returns:
+        - projections: List of projections with status info
+        - total_lag: Total unprocessed events across all projections
+        - all_healthy: True if all projections have 0 lag
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from projections.base import projection_registry
+        from projections.models import ProjectionStatus
+
+        # Check admin permission
+        if not (request.user.is_staff or request.user.is_superuser):
+            return Response(
+                {"detail": "Admin access required."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        actor = resolve_actor(request)
+        company = actor.company
+
+        projections_data = []
+
+        for projection in projection_registry.all():
+            # Get projection status (rebuild tracking)
+            proj_status = ProjectionStatus.objects.filter(
+                company=company,
+                projection_name=projection.name,
+            ).first()
+
+            # Get bookmark for lag calculation
+            bookmark = projection.get_bookmark(company)
+            lag = projection.get_lag(company)
+
+            proj_info = {
+                "name": projection.name,
+                "consumes": projection.consumes,
+                "lag": lag,
+                "is_healthy": lag == 0,
+                # Bookmark info
+                "is_paused": bookmark.is_paused if bookmark else False,
+                "bookmark_error_count": bookmark.error_count if bookmark else 0,
+                "bookmark_last_error": bookmark.last_error if bookmark else "",
+                "last_processed_at": (
+                    bookmark.last_processed_at.isoformat()
+                    if bookmark and bookmark.last_processed_at
+                    else None
+                ),
+            }
+
+            # Add rebuild status info if available
+            if proj_status:
+                proj_info.update({
+                    "rebuild_status": proj_status.status,
+                    "is_rebuilding": proj_status.is_rebuilding,
+                    "rebuild_progress_percent": proj_status.progress_percent,
+                    "events_total": proj_status.events_total,
+                    "events_processed": proj_status.events_processed,
+                    "last_rebuild_started_at": (
+                        proj_status.last_rebuild_started_at.isoformat()
+                        if proj_status.last_rebuild_started_at
+                        else None
+                    ),
+                    "last_rebuild_completed_at": (
+                        proj_status.last_rebuild_completed_at.isoformat()
+                        if proj_status.last_rebuild_completed_at
+                        else None
+                    ),
+                    "last_rebuild_duration_seconds": proj_status.last_rebuild_duration_seconds,
+                    "error_message": proj_status.error_message,
+                    "error_count": proj_status.error_count,
+                })
+            else:
+                proj_info.update({
+                    "rebuild_status": "NEVER_RUN",
+                    "is_rebuilding": False,
+                    "rebuild_progress_percent": 0,
+                    "events_total": 0,
+                    "events_processed": 0,
+                    "last_rebuild_started_at": None,
+                    "last_rebuild_completed_at": None,
+                    "last_rebuild_duration_seconds": None,
+                    "error_message": "",
+                    "error_count": 0,
+                })
+
+            projections_data.append(proj_info)
+
+        total_lag = sum(p["lag"] for p in projections_data)
+        all_healthy = all(p["is_healthy"] for p in projections_data)
+        any_rebuilding = any(p["is_rebuilding"] for p in projections_data)
+
+        return Response({
+            "company": {
+                "id": company.id,
+                "name": company.name,
+                "slug": company.slug,
+            },
+            "projections": projections_data,
+            "total_lag": total_lag,
+            "all_healthy": all_healthy,
+            "any_rebuilding": any_rebuilding,
+        })
+
+
+class AdminProjectionDetailView(APIView):
+    """
+    GET /api/admin/projections/<name>/
+
+    Get detailed status of a specific projection.
+    Admin only.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, name):
+        from projections.base import projection_registry
+        from projections.models import ProjectionStatus
+        from events.models import BusinessEvent
+
+        # Check admin permission
+        if not (request.user.is_staff or request.user.is_superuser):
+            return Response(
+                {"detail": "Admin access required."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        actor = resolve_actor(request)
+        company = actor.company
+
+        # Get projection
+        projection = projection_registry.get(name)
+        if not projection:
+            return Response(
+                {"detail": f"Projection not found: {name}"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Get projection status
+        proj_status = ProjectionStatus.objects.filter(
+            company=company,
+            projection_name=name,
+        ).first()
+
+        # Get bookmark
+        bookmark = projection.get_bookmark(company)
+        lag = projection.get_lag(company)
+
+        # Count total events for this projection's event types
+        total_events = BusinessEvent.objects.filter(
+            company=company,
+            event_type__in=projection.consumes,
+        ).count() if projection.consumes else 0
+
+        response_data = {
+            "name": projection.name,
+            "consumes": projection.consumes,
+            "lag": lag,
+            "is_healthy": lag == 0,
+            "total_events": total_events,
+            # Bookmark info
+            "bookmark": {
+                "exists": bookmark is not None,
+                "is_paused": bookmark.is_paused if bookmark else False,
+                "error_count": bookmark.error_count if bookmark else 0,
+                "last_error": bookmark.last_error if bookmark else "",
+                "last_processed_at": (
+                    bookmark.last_processed_at.isoformat()
+                    if bookmark and bookmark.last_processed_at
+                    else None
+                ),
+                "last_event_sequence": (
+                    bookmark.last_event.company_sequence
+                    if bookmark and bookmark.last_event
+                    else None
+                ),
+            },
+        }
+
+        # Add rebuild status
+        if proj_status:
+            response_data["rebuild_status"] = {
+                "status": proj_status.status,
+                "is_rebuilding": proj_status.is_rebuilding,
+                "progress_percent": proj_status.progress_percent,
+                "events_total": proj_status.events_total,
+                "events_processed": proj_status.events_processed,
+                "last_rebuild_started_at": (
+                    proj_status.last_rebuild_started_at.isoformat()
+                    if proj_status.last_rebuild_started_at
+                    else None
+                ),
+                "last_rebuild_completed_at": (
+                    proj_status.last_rebuild_completed_at.isoformat()
+                    if proj_status.last_rebuild_completed_at
+                    else None
+                ),
+                "last_rebuild_duration_seconds": proj_status.last_rebuild_duration_seconds,
+                "error_message": proj_status.error_message,
+                "error_count": proj_status.error_count,
+                "rebuild_requested_by": (
+                    proj_status.rebuild_requested_by.email
+                    if proj_status.rebuild_requested_by
+                    else None
+                ),
+            }
+        else:
+            response_data["rebuild_status"] = {
+                "status": "NEVER_RUN",
+                "is_rebuilding": False,
+                "progress_percent": 0,
+                "events_total": 0,
+                "events_processed": 0,
+                "last_rebuild_started_at": None,
+                "last_rebuild_completed_at": None,
+                "last_rebuild_duration_seconds": None,
+                "error_message": "",
+                "error_count": 0,
+                "rebuild_requested_by": None,
+            }
+
+        return Response(response_data)
+
+
+class AdminProjectionRebuildView(APIView):
+    """
+    POST /api/admin/projections/<name>/rebuild/
+
+    Trigger a rebuild for a specific projection.
+    Admin only.
+
+    This is a synchronous operation that blocks until complete.
+    For very large datasets, use the management command instead.
+
+    Request body:
+        - force: bool (optional) - Force rebuild even if already rebuilding
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, name):
+        import time
+        import logging
+        from django.db import transaction
+        from projections.base import projection_registry
+        from projections.models import ProjectionStatus, ProjectionAppliedEvent
+        from projections.write_barrier import projection_writes_allowed
+        from events.models import BusinessEvent, EventBookmark
+        from accounts.rls import rls_bypass
+
+        logger = logging.getLogger(__name__)
+
+        # Check admin permission
+        if not (request.user.is_staff or request.user.is_superuser):
+            return Response(
+                {"detail": "Admin access required."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        actor = resolve_actor(request)
+        company = actor.company
+        force = request.data.get("force", False)
+
+        # Get projection
+        projection = projection_registry.get(name)
+        if not projection:
+            return Response(
+                {"detail": f"Projection not found: {name}"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        with rls_bypass():
+            # Get or create status
+            proj_status, _ = ProjectionStatus.objects.get_or_create(
+                company=company,
+                projection_name=name,
+            )
+
+            # Check if already rebuilding
+            if proj_status.is_rebuilding and not force:
+                return Response(
+                    {
+                        "detail": "Rebuild already in progress. Use force=true to override.",
+                        "progress_percent": proj_status.progress_percent,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            # Count events
+            event_types = projection.consumes
+            total_events = BusinessEvent.objects.filter(
+                company=company,
+                event_type__in=event_types,
+            ).count() if event_types else 0
+
+            if total_events == 0:
+                return Response({
+                    "detail": "No events to process.",
+                    "events_processed": 0,
+                    "duration_seconds": 0,
+                })
+
+            # Mark as rebuilding
+            proj_status.mark_rebuild_started(total_events, requested_by=request.user)
+
+            start_time = time.time()
+
+            try:
+                # Step 1: Clear existing data
+                ProjectionAppliedEvent.objects.filter(
+                    company=company,
+                    projection_name=name,
+                ).delete()
+
+                # Clear the projection's own data
+                if hasattr(projection, "_clear_projected_data"):
+                    with projection_writes_allowed():
+                        projection._clear_projected_data(company)
+
+                # Reset bookmark
+                EventBookmark.objects.filter(
+                    consumer_name=name,
+                    company=company,
+                ).delete()
+
+                # Step 2: Replay events
+                events = BusinessEvent.objects.filter(
+                    company=company,
+                    event_type__in=event_types,
+                ).order_by("company_sequence") if event_types else BusinessEvent.objects.filter(
+                    company=company
+                ).order_by("company_sequence")
+
+                processed = 0
+                last_sequence = None
+                batch_size = 100
+
+                for event in events.iterator(chunk_size=batch_size):
+                    with transaction.atomic():
+                        with projection_writes_allowed():
+                            projection.handle(event)
+
+                    processed += 1
+                    last_sequence = event.company_sequence
+
+                    # Update progress periodically
+                    if processed % batch_size == 0:
+                        proj_status.update_progress(processed)
+
+                # Mark as complete
+                proj_status.mark_rebuild_completed(last_event_sequence=last_sequence)
+
+                elapsed = time.time() - start_time
+
+                return Response({
+                    "detail": "Rebuild completed successfully.",
+                    "events_processed": processed,
+                    "duration_seconds": round(elapsed, 2),
+                    "rate_per_second": round(processed / elapsed, 0) if elapsed > 0 else 0,
+                })
+
+            except Exception as e:
+                proj_status.mark_rebuild_error(str(e))
+                logger.exception(f"Projection rebuild failed: {name} @ {company.slug}")
+                return Response(
+                    {"detail": f"Rebuild failed: {str(e)}"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+
+
+class AdminProjectionPauseView(APIView):
+    """
+    POST /api/admin/projections/<name>/pause/
+
+    Pause or unpause a projection's automatic processing.
+    Admin only.
+
+    Request body:
+        - paused: bool - True to pause, False to unpause
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, name):
+        from projections.base import projection_registry
+        from events.models import EventBookmark
+        from accounts.rls import rls_bypass
+
+        # Check admin permission
+        if not (request.user.is_staff or request.user.is_superuser):
+            return Response(
+                {"detail": "Admin access required."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        actor = resolve_actor(request)
+        company = actor.company
+
+        # Get projection
+        projection = projection_registry.get(name)
+        if not projection:
+            return Response(
+                {"detail": f"Projection not found: {name}"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        paused = request.data.get("paused", True)
+
+        with rls_bypass():
+            bookmark, _ = EventBookmark.objects.get_or_create(
+                consumer_name=name,
+                company=company,
+            )
+            bookmark.is_paused = paused
+            bookmark.save(update_fields=["is_paused"])
+
+        action = "paused" if paused else "resumed"
+        return Response({
+            "detail": f"Projection {name} has been {action}.",
+            "is_paused": paused,
+        })
+
+
+class AdminProjectionClearErrorView(APIView):
+    """
+    POST /api/admin/projections/<name>/clear-error/
+
+    Clear error state for a projection.
+    Admin only.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, name):
+        from projections.base import projection_registry
+        from projections.models import ProjectionStatus
+        from events.models import EventBookmark
+        from accounts.rls import rls_bypass
+
+        # Check admin permission
+        if not (request.user.is_staff or request.user.is_superuser):
+            return Response(
+                {"detail": "Admin access required."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        actor = resolve_actor(request)
+        company = actor.company
+
+        # Get projection
+        projection = projection_registry.get(name)
+        if not projection:
+            return Response(
+                {"detail": f"Projection not found: {name}"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        with rls_bypass():
+            # Clear bookmark errors
+            bookmark = EventBookmark.objects.filter(
+                consumer_name=name,
+                company=company,
+            ).first()
+
+            if bookmark:
+                bookmark.error_count = 0
+                bookmark.last_error = ""
+                bookmark.save(update_fields=["error_count", "last_error"])
+
+            # Clear status errors
+            proj_status = ProjectionStatus.objects.filter(
+                company=company,
+                projection_name=name,
+            ).first()
+
+            if proj_status and proj_status.status == ProjectionStatus.Status.ERROR:
+                proj_status.status = ProjectionStatus.Status.READY
+                proj_status.error_message = ""
+                proj_status.error_count = 0
+                proj_status.save(update_fields=["status", "error_message", "error_count", "updated_at"])
+
+        return Response({
+            "detail": f"Errors cleared for projection {name}.",
+        })
+
+
+class AdminProjectionProcessView(APIView):
+    """
+    POST /api/admin/projections/<name>/process/
+
+    Process pending events for a projection (catch up).
+    Admin only.
+
+    Request body:
+        - limit: int (optional) - Maximum events to process (default 1000)
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, name):
+        from projections.base import projection_registry
+        from accounts.rls import rls_bypass
+
+        # Check admin permission
+        if not (request.user.is_staff or request.user.is_superuser):
+            return Response(
+                {"detail": "Admin access required."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        actor = resolve_actor(request)
+        company = actor.company
+        limit = request.data.get("limit", 1000)
+
+        # Get projection
+        projection = projection_registry.get(name)
+        if not projection:
+            return Response(
+                {"detail": f"Projection not found: {name}"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Process pending events
+        processed = projection.process_pending(company, limit=limit)
+
+        # Get updated lag
+        lag = projection.get_lag(company)
+
+        return Response({
+            "detail": f"Processed {processed} events for projection {name}.",
+            "events_processed": processed,
+            "remaining_lag": lag,
+            "is_caught_up": lag == 0,
+        })
+
+
 class DashboardChartsView(APIView):
     """
     GET /api/reports/dashboard-charts/

@@ -256,3 +256,200 @@ export async function deleteUnverifiedUser(
   );
   return response.data;
 }
+
+// ==========================
+//   PROJECTION ADMIN API
+// ==========================
+export interface ProjectionInfo {
+  name: string;
+  consumes: string[];
+  lag: number;
+  is_healthy: boolean;
+  is_paused: boolean;
+  bookmark_error_count: number;
+  bookmark_last_error: string;
+  last_processed_at: string | null;
+  rebuild_status: string;
+  is_rebuilding: boolean;
+  rebuild_progress_percent: number;
+  events_total: number;
+  events_processed: number;
+  last_rebuild_started_at: string | null;
+  last_rebuild_completed_at: string | null;
+  last_rebuild_duration_seconds: number | null;
+  error_message: string;
+  error_count: number;
+}
+
+export interface ProjectionListResponse {
+  company: {
+    id: number;
+    name: string;
+    slug: string;
+  };
+  projections: ProjectionInfo[];
+  total_lag: number;
+  all_healthy: boolean;
+  any_rebuilding: boolean;
+}
+
+export interface ProjectionDetailResponse {
+  name: string;
+  consumes: string[];
+  lag: number;
+  is_healthy: boolean;
+  total_events: number;
+  bookmark: {
+    exists: boolean;
+    is_paused: boolean;
+    error_count: number;
+    last_error: string;
+    last_processed_at: string | null;
+    last_event_sequence: number | null;
+  };
+  rebuild_status: {
+    status: string;
+    is_rebuilding: boolean;
+    progress_percent: number;
+    events_total: number;
+    events_processed: number;
+    last_rebuild_started_at: string | null;
+    last_rebuild_completed_at: string | null;
+    last_rebuild_duration_seconds: number | null;
+    error_message: string;
+    error_count: number;
+    rebuild_requested_by: string | null;
+  };
+}
+
+export interface RebuildResponse {
+  detail: string;
+  events_processed: number;
+  duration_seconds: number;
+  rate_per_second?: number;
+}
+
+export async function getProjections(
+  accessToken: string,
+  companyId?: number
+): Promise<ProjectionListResponse> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${accessToken}`,
+  };
+  if (companyId) {
+    headers["X-Company-ID"] = companyId.toString();
+  }
+
+  const response = await axiosClient.get<ProjectionListResponse>(
+    "/reports/admin/projections/",
+    { headers }
+  );
+  return response.data;
+}
+
+export async function getProjectionDetail(
+  accessToken: string,
+  name: string,
+  companyId?: number
+): Promise<ProjectionDetailResponse> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${accessToken}`,
+  };
+  if (companyId) {
+    headers["X-Company-ID"] = companyId.toString();
+  }
+
+  const response = await axiosClient.get<ProjectionDetailResponse>(
+    `/reports/admin/projections/${name}/`,
+    { headers }
+  );
+  return response.data;
+}
+
+export async function rebuildProjection(
+  accessToken: string,
+  name: string,
+  force: boolean = false,
+  companyId?: number
+): Promise<RebuildResponse> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${accessToken}`,
+  };
+  if (companyId) {
+    headers["X-Company-ID"] = companyId.toString();
+  }
+
+  const response = await axiosClient.post<RebuildResponse>(
+    `/reports/admin/projections/${name}/rebuild/`,
+    { force },
+    { headers }
+  );
+  return response.data;
+}
+
+export async function pauseProjection(
+  accessToken: string,
+  name: string,
+  paused: boolean,
+  companyId?: number
+): Promise<{ detail: string; is_paused: boolean }> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${accessToken}`,
+  };
+  if (companyId) {
+    headers["X-Company-ID"] = companyId.toString();
+  }
+
+  const response = await axiosClient.post<{ detail: string; is_paused: boolean }>(
+    `/reports/admin/projections/${name}/pause/`,
+    { paused },
+    { headers }
+  );
+  return response.data;
+}
+
+export async function clearProjectionError(
+  accessToken: string,
+  name: string,
+  companyId?: number
+): Promise<{ detail: string }> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${accessToken}`,
+  };
+  if (companyId) {
+    headers["X-Company-ID"] = companyId.toString();
+  }
+
+  const response = await axiosClient.post<{ detail: string }>(
+    `/reports/admin/projections/${name}/clear-error/`,
+    {},
+    { headers }
+  );
+  return response.data;
+}
+
+export async function processProjection(
+  accessToken: string,
+  name: string,
+  limit: number = 1000,
+  companyId?: number
+): Promise<{ detail: string; events_processed: number; remaining_lag: number; is_caught_up: boolean }> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${accessToken}`,
+  };
+  if (companyId) {
+    headers["X-Company-ID"] = companyId.toString();
+  }
+
+  const response = await axiosClient.post<{
+    detail: string;
+    events_processed: number;
+    remaining_lag: number;
+    is_caught_up: boolean;
+  }>(
+    `/reports/admin/projections/${name}/process/`,
+    { limit },
+    { headers }
+  );
+  return response.data;
+}

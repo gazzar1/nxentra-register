@@ -16,7 +16,10 @@ import {
   Upload,
   Plug,
   ShieldCheck,
+  Database,
+  UserCheck,
 } from "lucide-react";
+import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/cn";
 import { useState } from "react";
 
@@ -30,11 +33,15 @@ interface NavItem {
 export function Sidebar() {
   const { t } = useTranslation("common");
   const router = useRouter();
+  const { user } = useAuth();
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
     accounting: true,
     reports: true,
     settings: true,
+    admin: true,
   });
+
+  const isAdmin = user?.is_staff || user?.is_superuser;
 
   const navItems: NavItem[] = [
     {
@@ -121,6 +128,26 @@ export function Sidebar() {
       ],
     },
   ];
+
+  // Add admin section only for staff/superusers
+  if (isAdmin) {
+    navItems.push({
+      label: t("nav.admin", "Admin"),
+      icon: <ShieldCheck className="h-5 w-5" />,
+      children: [
+        {
+          label: t("nav.pendingUsers", "Pending Users"),
+          href: "/admin/pending-users",
+          icon: <UserCheck className="h-4 w-4" />,
+        },
+        {
+          label: t("nav.projections", "Projections"),
+          href: "/admin/projections",
+          icon: <Database className="h-4 w-4" />,
+        },
+      ],
+    });
+  }
 
   const toggleExpand = (label: string) => {
     setExpanded((prev) => ({ ...prev, [label]: !prev[label] }));

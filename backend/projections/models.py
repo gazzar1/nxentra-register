@@ -397,3 +397,172 @@ class ProjectionAppliedEvent(ProjectionOwnedModel):
 
     def __str__(self):
         return f"{self.projection_name} applied {self.event_id}"
+
+
+class ProjectionStatus(models.Model):
+    """
+    Tracks the status of each projection for each company.
+
+    Used for:
+    - Monitoring projection health
+    - Tracking rebuild progress
+    - Coordinating rebuild operations
+    - Providing status to frontend admin
+
+    This is NOT a projection-owned model because it's metadata about projections,
+    not derived data from events.
+    """
+
+    class Status(models.TextChoices):
+        READY = "READY", "Ready"
+        REBUILDING = "REBUILDING", "Rebuilding"
+        ERROR = "ERROR", "Error"
+        PAUSED = "PAUSED", "Paused"
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="projection_statuses",
+    )
+
+    projection_name = models.CharField(
+        max_length=100,
+        help_text="Name of the projection (e.g., 'account_balance')",
+    )
+
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.READY,
+    )
+
+    # Progress tracking
+    events_total = models.PositiveIntegerField(
+        default=0,
+        help_text="Total events to process during rebuild",
+    )
+
+    events_processed = models.PositiveIntegerField(
+        default=0,
+        help_text="Events processed so far during rebuild",
+    )
+
+    # Timing
+    last_rebuild_started_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the last rebuild started",
+    )
+
+    last_rebuild_completed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the last rebuild completed",
+    )
+
+    last_rebuild_duration_seconds = models.FloatField(
+        null=True,
+        blank=True,
+        help_text="Duration of last rebuild in seconds",
+    )
+
+    # Error tracking
+    error_message = models.TextField(
+        blank=True,
+        default="",
+        help_text="Last error message if status is ERROR",
+    )
+
+    error_count = models.PositiveIntegerField(
+        default=0,
+        help_text="Number of errors during current/last rebuild",
+    )
+
+    # Metadata
+    last_event_sequence = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Last processed event sequence (for lag calculation)",
+    )
+
+    rebuild_requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        help_text="User who requested the rebuild",
+    )
+
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Projection Status"
+        verbose_name_plural = "Projection Statuses"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "projection_name"],
+                name="uniq_projection_status",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["company", "status"]),
+            models.Index(fields=["projection_name", "status"]),
+        ]
+
+    def __str__(self):
+        return f"{self.projection_name} @ {self.company.slug}: {self.status}"
+
+    @property
+    def progress_percent(self) -> float:
+        """Calculate rebuild progress as percentage."""
+        if self.events_total == 0:
+            return 100.0 if self.status == self.Status.READY else 0.0
+        return round((self.events_processed / self.events_total) * 100, 2)
+
+    @property
+    def is_rebuilding(self) -> bool:
+        """Check if projection is currently rebuilding."""
+        return self.status == self.Status.REBUILDING
+
+    def mark_rebuild_started(self, total_events: int, requested_by=None):
+        """Mark projection as rebuilding."""
+        from django.utils import timezone
+        self.status = self.Status.REBUILDING
+        self.events_total = total_events
+        self.events_processed = 0
+        self.last_rebuild_started_at = timezone.now()
+        self.last_rebuild_completed_at = None
+        self.last_rebuild_duration_seconds = None
+        self.error_message = ""
+        self.error_count = 0
+        self.rebuild_requested_by = requested_by
+        self.save()
+
+    def update_progress(self, events_processed: int):
+        """Update rebuild progress."""
+        self.events_processed = events_processed
+        self.save(update_fields=["events_processed", "updated_at"])
+
+    def mark_rebuild_completed(self, last_event_sequence: int = None):
+        """Mark projection as ready after successful rebuild."""
+        from django.utils import timezone
+        now = timezone.now()
+        self.status = self.Status.READY
+        self.last_rebuild_completed_at = now
+        if self.last_rebuild_started_at:
+            self.last_rebuild_duration_seconds = (
+                now - self.last_rebuild_started_at
+            ).total_seconds()
+        if last_event_sequence is not None:
+            self.last_event_sequence = last_event_sequence
+        self.save()
+
+    def mark_rebuild_error(self, error_message: str):
+        """Mark projection as having an error."""
+        self.status = self.Status.ERROR
+        self.error_message = error_message
+        self.error_count += 1
+        self.save()

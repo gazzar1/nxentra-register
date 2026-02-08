@@ -12,6 +12,15 @@ Endpoints:
 - /reports/account-balances/ - All account balances
 - /reports/account-balances/<code>/ - Single account balance
 - /reports/projection-status/ - Projection health monitoring
+- /reports/dashboard-charts/ - Dashboard chart data
+
+Admin Projection Management (staff/superuser only):
+- /reports/admin/projections/ - List all projections with status
+- /reports/admin/projections/<name>/ - Get detailed projection status
+- /reports/admin/projections/<name>/rebuild/ - Trigger rebuild
+- /reports/admin/projections/<name>/pause/ - Pause/unpause projection
+- /reports/admin/projections/<name>/clear-error/ - Clear error state
+- /reports/admin/projections/<name>/process/ - Process pending events
 """
 
 from django.urls import path
@@ -31,6 +40,13 @@ from .views import (
     FiscalPeriodCurrentView,
     FiscalPeriodDatesView,
     DashboardChartsView,
+    # Admin projection management
+    AdminProjectionListView,
+    AdminProjectionDetailView,
+    AdminProjectionRebuildView,
+    AdminProjectionPauseView,
+    AdminProjectionClearErrorView,
+    AdminProjectionProcessView,
 )
 
 app_name = "projections"
@@ -114,5 +130,37 @@ urlpatterns = [
         "dashboard-charts/",
         DashboardChartsView.as_view(),
         name="dashboard-charts",
+    ),
+
+    # Admin Projection Management
+    path(
+        "admin/projections/",
+        AdminProjectionListView.as_view(),
+        name="admin-projection-list",
+    ),
+    path(
+        "admin/projections/<str:name>/",
+        AdminProjectionDetailView.as_view(),
+        name="admin-projection-detail",
+    ),
+    path(
+        "admin/projections/<str:name>/rebuild/",
+        AdminProjectionRebuildView.as_view(),
+        name="admin-projection-rebuild",
+    ),
+    path(
+        "admin/projections/<str:name>/pause/",
+        AdminProjectionPauseView.as_view(),
+        name="admin-projection-pause",
+    ),
+    path(
+        "admin/projections/<str:name>/clear-error/",
+        AdminProjectionClearErrorView.as_view(),
+        name="admin-projection-clear-error",
+    ),
+    path(
+        "admin/projections/<str:name>/process/",
+        AdminProjectionProcessView.as_view(),
+        name="admin-projection-process",
     ),
 ]
