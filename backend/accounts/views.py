@@ -1309,3 +1309,127 @@ class RejectUserView(APIView):
             "user_email": result.data["user_email"],
             "reason": result.data["reason"],
         })
+
+
+class UnverifiedUsersView(APIView):
+    """
+    GET /api/admin/unverified-users/
+
+    Lists users who haven't verified their email yet.
+    Staff/superuser only.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from accounts.commands import list_unverified_users
+
+        # Check if user is staff or superuser
+        if not (request.user.is_staff or request.user.is_superuser):
+            return Response(
+                {"detail": "You do not have permission to view unverified users."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        unverified_users = list_unverified_users()
+
+        users_data = []
+        for user in unverified_users:
+            membership = user.memberships.first()
+            company = membership.company if membership else None
+            users_data.append({
+                "id": user.id,
+                "public_id": str(user.public_id),
+                "email": user.email,
+                "name": user.name or "",
+                "company_name": company.name if company else "",
+                "company_public_id": str(company.public_id) if company else None,
+                "registered_at": user.date_joined.isoformat() if user.date_joined else None,
+            })
+
+        return Response({
+            "count": len(users_data),
+            "users": users_data,
+        })
+
+
+class AdminResendVerificationView(APIView):
+    """
+    POST /api/admin/resend-verification/<pk>/
+
+    Resends verification email to an unverified user.
+    Staff/superuser only.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        from accounts.commands import send_verification_email
+        from accounts.models import User
+
+        # Check if user is staff or superuser
+        if not (request.user.is_staff or request.user.is_superuser):
+            return Response(
+                {"detail": "You do not have permission to resend verification emails."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            user = User.objects.get(id=pk)
+        except User.DoesNotExist:
+            return Response(
+                {"detail": "User not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if user.email_verified:
+            return Response(
+                {"detail": "User has already verified their email."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        result = send_verification_email(user)
+
+        if not result.success:
+            return Response(
+                {"detail": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response({
+            "status": "sent",
+            "email": user.email,
+            "message": f"Verification email sent to {user.email}",
+        })
+
+
+class DeleteUnverifiedUserView(APIView):
+    """
+    DELETE /api/admin/delete-unverified/<pk>/
+
+    Deletes an unverified user and their associated data.
+    Staff/superuser only.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        from accounts.commands import delete_unverified_user
+
+        # Check if user is staff or superuser
+        if not (request.user.is_staff or request.user.is_superuser):
+            return Response(
+                {"detail": "You do not have permission to delete users."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        result = delete_unverified_user(request.user, pk)
+
+        if not result.success:
+            return Response(
+                {"detail": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response({
+            "status": "deleted",
+            "email": result.data["email"],
+            "message": result.data["message"],
+        })

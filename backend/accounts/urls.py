@@ -26,6 +26,9 @@ from .views import (
     PendingApprovalsView,
     ApproveUserView,
     RejectUserView,
+    UnverifiedUsersView,
+    AdminResendVerificationView,
+    DeleteUnverifiedUserView,
     # Users
     UserListCreateView,
     UserDetailView,
@@ -67,6 +70,9 @@ urlpatterns = [
     path("admin/pending-approvals/", PendingApprovalsView.as_view(), name="pending-approvals"),
     path("admin/approve/<int:pk>/", ApproveUserView.as_view(), name="approve-user"),
     path("admin/reject/<int:pk>/", RejectUserView.as_view(), name="reject-user"),
+    path("admin/unverified-users/", UnverifiedUsersView.as_view(), name="unverified-users"),
+    path("admin/resend-verification/<int:pk>/", AdminResendVerificationView.as_view(), name="admin-resend-verification"),
+    path("admin/delete-unverified/<int:pk>/", DeleteUnverifiedUserView.as_view(), name="delete-unverified-user"),
 
     # ==========================================================================
     # Users

@@ -94,6 +94,9 @@ class TenantRlsMiddleware:
         ("GET", "/api/admin/pending-approvals/"),  # SYSTEM: User, Company
         ("POST", "/api/admin/approve/"),  # SYSTEM: User
         ("POST", "/api/admin/reject/"),  # SYSTEM: User
+        ("GET", "/api/admin/unverified-users/"),  # SYSTEM: User, Company
+        ("POST", "/api/admin/resend-verification/"),  # SYSTEM: User
+        ("DELETE", "/api/admin/delete-unverified/"),  # SYSTEM: User, Company
     )
 
     def __init__(self, get_response):

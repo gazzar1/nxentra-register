@@ -198,3 +198,61 @@ export async function rejectUser(
   );
   return response.data;
 }
+
+// ==========================
+// Unverified Users (Admin)
+// ==========================
+export interface UnverifiedUser {
+  id: number;
+  public_id: string;
+  email: string;
+  name: string;
+  company_name: string;
+  company_public_id: string | null;
+  registered_at: string | null;
+}
+
+interface UnverifiedUsersResponse {
+  count: number;
+  users: UnverifiedUser[];
+}
+
+export async function getUnverifiedUsers(accessToken: string): Promise<UnverifiedUser[]> {
+  const response = await axiosClient.get<UnverifiedUsersResponse>('/admin/unverified-users/', {
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    }
+  });
+  return response.data.users;
+}
+
+export async function resendVerificationEmail(
+  accessToken: string,
+  userId: number
+): Promise<{ status: string; email: string; message: string }> {
+  const response = await axiosClient.post<{ status: string; email: string; message: string }>(
+    `/admin/resend-verification/${userId}/`,
+    {},
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`
+      }
+    }
+  );
+  return response.data;
+}
+
+export async function deleteUnverifiedUser(
+  accessToken: string,
+  userId: number
+): Promise<{ status: string; email: string; message: string }> {
+  const response = await axiosClient.delete<{ status: string; email: string; message: string }>(
+    `/admin/delete-unverified/${userId}/`,
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`
+      }
+    }
+  );
+  return response.data;
+}

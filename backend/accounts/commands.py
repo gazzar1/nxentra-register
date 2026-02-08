@@ -2026,3 +2026,74 @@ def list_pending_approvals() -> list:
             is_approved=False,
             is_active=True,
         ).select_related('approved_by').prefetch_related('memberships__company').order_by('date_joined'))
+
+
+def list_unverified_users() -> list:
+    """
+    List users who haven't verified their email yet.
+
+    Returns users where:
+    - email_verified=False
+    - is_active=True (not rejected/deleted)
+
+    Returns:
+        List of unverified User objects
+    """
+    with rls_bypass():
+        return list(User.objects.filter(
+            email_verified=False,
+            is_active=True,
+        ).prefetch_related('memberships__company').order_by('date_joined'))
+
+
+def delete_unverified_user(admin_user, user_id: int) -> CommandResult:
+    """
+    Delete an unverified user and their associated company/membership.
+
+    Only allows deletion of users who haven't verified their email.
+
+    Args:
+        admin_user: The admin performing the deletion
+        user_id: The ID of the user to delete
+
+    Returns:
+        CommandResult with success status
+    """
+    with rls_bypass():
+        try:
+            user = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return CommandResult(success=False, error="User not found")
+
+        if user.email_verified:
+            return CommandResult(
+                success=False,
+                error="Cannot delete verified users. Use reject instead."
+            )
+
+        email = user.email
+
+        # Delete associated memberships and companies they own
+        from accounts.models import CompanyMembership, Company
+
+        memberships = CompanyMembership.objects.filter(user=user)
+        for membership in memberships:
+            company = membership.company
+            # If user is owner and only member, delete the company too
+            if membership.role == 'OWNER':
+                member_count = CompanyMembership.objects.filter(company=company).count()
+                if member_count == 1:
+                    company.delete()
+            membership.delete()
+
+        # Delete email verification tokens
+        from accounts.models import EmailVerificationToken
+        EmailVerificationToken.objects.filter(user=user).delete()
+
+        # Delete the user
+        user.delete()
+
+        return CommandResult(
+            success=True,
+            data={"email": email, "message": f"User {email} has been deleted"}
+        )
