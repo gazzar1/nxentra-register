@@ -18,10 +18,12 @@ import {
   ShieldCheck,
   Database,
   UserCheck,
+  X,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+import { useSidebar } from "@/contexts/SidebarContext";
 import { cn } from "@/lib/cn";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 interface NavItem {
   label: string;
@@ -34,12 +36,24 @@ export function Sidebar() {
   const { t } = useTranslation("common");
   const router = useRouter();
   const { user } = useAuth();
+  const { isOpen, close } = useSidebar();
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
     accounting: true,
     reports: true,
     settings: true,
     admin: true,
   });
+
+  // Close sidebar on route change (mobile)
+  useEffect(() => {
+    const handleRouteChange = () => {
+      close();
+    };
+    router.events.on("routeChangeComplete", handleRouteChange);
+    return () => {
+      router.events.off("routeChangeComplete", handleRouteChange);
+    };
+  }, [router.events, close]);
 
   const isAdmin = user?.is_staff || user?.is_superuser;
 
@@ -197,7 +211,7 @@ export function Sidebar() {
         className={cn(
           "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
           active
-            ? "bg-accent text-primary"
+            ? "bg-accent text-primary-foreground"
             : "text-muted-foreground hover:bg-muted hover:text-foreground"
         )}
       >
@@ -208,21 +222,45 @@ export function Sidebar() {
   };
 
   return (
-    <aside className="flex h-screen w-64 flex-col border-e bg-card">
-      {/* Logo */}
-      <div className="flex h-16 items-center border-b px-6">
-        <Link href="/dashboard" className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent">
-            <span className="text-lg font-bold text-primary">N</span>
-          </div>
-          <span className="text-xl font-bold">Nxentra</span>
-        </Link>
-      </div>
+    <>
+      {/* Mobile overlay */}
+      {isOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-background/80 backdrop-blur-sm lg:hidden"
+          onClick={close}
+        />
+      )}
 
-      {/* Navigation */}
-      <nav className="flex-1 overflow-y-auto p-4">
-        <div className="space-y-1">{navItems.map((item) => renderNavItem(item))}</div>
-      </nav>
-    </aside>
+      {/* Sidebar */}
+      <aside
+        className={cn(
+          "fixed inset-y-0 start-0 z-50 flex w-64 flex-col border-e bg-card transition-transform duration-300 ease-in-out lg:static lg:translate-x-0",
+          isOpen ? "translate-x-0" : "-translate-x-full rtl:translate-x-full"
+        )}
+      >
+        {/* Logo */}
+        <div className="flex h-16 items-center justify-between border-b px-6">
+          <Link href="/dashboard" className="flex items-center gap-2">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent">
+              <span className="text-lg font-bold text-primary-foreground">N</span>
+            </div>
+            <span className="text-xl font-bold">Nxentra</span>
+          </Link>
+          {/* Close button for mobile */}
+          <button
+            onClick={close}
+            className="rounded-lg p-2 hover:bg-muted lg:hidden"
+            aria-label="Close menu"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* Navigation */}
+        <nav className="flex-1 overflow-y-auto p-4">
+          <div className="space-y-1">{navItems.map((item) => renderNavItem(item))}</div>
+        </nav>
+      </aside>
+    </>
   );
 }

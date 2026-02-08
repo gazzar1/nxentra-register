@@ -1,7 +1,8 @@
 import { useRouter } from "next/router";
 import { useTranslation } from "next-i18next";
-import { LogOut, User, Settings, Building2 } from "lucide-react";
+import { LogOut, User, Settings, Building2, Menu } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+import { useSidebar } from "@/contexts/SidebarContext";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -19,15 +20,26 @@ export function Header() {
   const { t } = useTranslation("common");
   const router = useRouter();
   const { user, logout } = useAuth();
+  const { toggle } = useSidebar();
 
   const handleLogout = async () => {
     await logout();
   };
 
   return (
-    <header className="flex h-16 items-center justify-between border-b bg-card px-6">
-      {/* Company Switcher */}
-      <div className="flex items-center gap-4">
+    <header className="flex h-16 items-center justify-between border-b bg-card px-4 md:px-6">
+      {/* Left side - Menu button and Company Switcher */}
+      <div className="flex items-center gap-2 md:gap-4">
+        {/* Mobile menu button */}
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={toggle}
+          className="lg:hidden"
+          aria-label="Toggle menu"
+        >
+          <Menu className="h-5 w-5" />
+        </Button>
         <CompanySwitcher />
       </div>
 
