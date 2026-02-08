@@ -226,7 +226,7 @@ export async function getUnverifiedUsers(accessToken: string): Promise<Unverifie
   return response.data.users;
 }
 
-export async function resendVerificationEmail(
+export async function adminResendVerificationEmail(
   accessToken: string,
   userId: number
 ): Promise<{ status: string; email: string; message: string }> {

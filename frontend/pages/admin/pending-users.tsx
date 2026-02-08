@@ -31,7 +31,7 @@ import {
   approveUser,
   rejectUser,
   getUnverifiedUsers,
-  resendVerificationEmail,
+  adminResendVerificationEmail,
   deleteUnverifiedUser,
   type PendingUser,
   type UnverifiedUser,
@@ -164,7 +164,7 @@ export default function PendingUsersPage() {
       setError(null);
       const token = getAccessToken();
       if (!token) return;
-      await resendVerificationEmail(token, userId);
+      await adminResendVerificationEmail(token, userId);
       setSuccessMessage(`Verification email sent to ${email}`);
     } catch (err) {
       console.error(err);
