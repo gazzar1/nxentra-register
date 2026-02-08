@@ -131,21 +131,42 @@ export async function resendVerificationEmail(email: string): Promise<{ message:
 // ==========================
 export interface PendingUser {
   id: number;
+  public_id: string;
   email: string;
   name: string;
   company_name: string;
+  company_public_id: string | null;
   email_verified: boolean;
   email_verified_at: string | null;
   date_joined: string;
 }
 
+interface PendingApprovalsResponse {
+  count: number;
+  users: Array<{
+    id: number;
+    public_id: string;
+    email: string;
+    name: string;
+    company_name: string;
+    company_public_id: string | null;
+    registered_at: string | null;
+    email_verified_at: string | null;
+  }>;
+}
+
 export async function getPendingApprovals(accessToken: string): Promise<PendingUser[]> {
-  const response = await axiosClient.get<PendingUser[]>('/admin/pending-approvals/', {
+  const response = await axiosClient.get<PendingApprovalsResponse>('/admin/pending-approvals/', {
     headers: {
       Authorization: `Bearer ${accessToken}`
     }
   });
-  return response.data;
+  // Map backend fields to frontend interface
+  return response.data.users.map(user => ({
+    ...user,
+    email_verified: !!user.email_verified_at,
+    date_joined: user.registered_at || '',
+  }));
 }
 
 export async function approveUser(accessToken: string, userId: number): Promise<{ message: string }> {

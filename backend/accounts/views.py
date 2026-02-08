@@ -1209,8 +1209,8 @@ class PendingApprovalsView(APIView):
     def get(self, request):
         from accounts.commands import list_pending_approvals
 
-        # Check if user is staff
-        if not request.user.is_staff:
+        # Check if user is staff or superuser
+        if not (request.user.is_staff or request.user.is_superuser):
             return Response(
                 {"detail": "You do not have permission to view pending approvals."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -1251,8 +1251,8 @@ class ApproveUserView(APIView):
     def post(self, request, pk):
         from accounts.commands import approve_user
 
-        # Check if user is staff
-        if not request.user.is_staff:
+        # Check if user is staff or superuser
+        if not (request.user.is_staff or request.user.is_superuser):
             return Response(
                 {"detail": "You do not have permission to approve users."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -1287,8 +1287,8 @@ class RejectUserView(APIView):
     def post(self, request, pk):
         from accounts.commands import reject_user
 
-        # Check if user is staff
-        if not request.user.is_staff:
+        # Check if user is staff or superuser
+        if not (request.user.is_staff or request.user.is_superuser):
             return Response(
                 {"detail": "You do not have permission to reject users."},
                 status=status.HTTP_403_FORBIDDEN,
