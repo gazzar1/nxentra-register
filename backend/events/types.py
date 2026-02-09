@@ -1028,6 +1028,26 @@ class CompanyLogoDeletedData(BaseEventData):
     deleted_logo_path: str  # Path of the deleted logo
 
 
+# =============================================================================
+# Scratchpad Events
+# =============================================================================
+
+@dataclass
+class ScratchpadBatchCommittedData(BaseEventData):
+    """
+    Data for scratchpad.batch_committed event.
+
+    Emitted when scratchpad rows are committed to journal entries.
+    This is an audit event that links scratchpad rows to the created
+    journal entries.
+    """
+    batch_id: str  # UUID of the commit batch
+    group_ids: List[str]  # UUIDs of committed groups
+    row_count: int
+    journal_entry_public_ids: List[str]  # Resulting JournalEntry public_ids
+    committed_at: str
+    committed_by_id: int
+    committed_by_email: str
 
 
 
@@ -1149,6 +1169,9 @@ class EventTypes:
     EDIM_CROSSWALK_REJECTED = "edim_crosswalk.rejected"
     EDIM_CROSSWALK_UPDATED = "edim_crosswalk.updated"
 
+    # Scratchpad events
+    SCRATCHPAD_BATCH_COMMITTED = "scratchpad.batch_committed"
+
 
 
 # =============================================================================
@@ -1222,6 +1245,9 @@ EVENT_DATA_CLASSES = {
     EventTypes.USER_APPROVAL_REQUESTED: UserApprovalRequestedData,
     EventTypes.USER_APPROVED: UserApprovedData,
     EventTypes.USER_REJECTED: UserRejectedData,
+
+    # Scratchpad events
+    EventTypes.SCRATCHPAD_BATCH_COMMITTED: ScratchpadBatchCommittedData,
 }
 
 # =============================================================================

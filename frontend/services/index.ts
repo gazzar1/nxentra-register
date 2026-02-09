@@ -7,3 +7,4 @@ export { companyService } from './company.service';
 export { edimService, sourceSystemsService, mappingProfilesService, crosswalksService, batchesService } from './edim.service';
 export { exportService } from './export.service';
 export { eventsService } from './events.service';
+export { scratchpadService } from './scratchpad.service';

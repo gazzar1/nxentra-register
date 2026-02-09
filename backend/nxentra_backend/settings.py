@@ -39,6 +39,7 @@ INSTALLED_APPS = [
     "accounts.apps.AccountsConfig",
     "accounting",
     "events",
+    "scratchpad.apps.ScratchpadConfig",
     "projections.apps.ProjectionsConfig",
     "edim.apps.EdimConfig",
     "channels",

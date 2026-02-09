@@ -5,3 +5,4 @@ export * from './account';
 export * from './journal';
 export * from './report';
 export * from './edim';
+export * from './scratchpad';

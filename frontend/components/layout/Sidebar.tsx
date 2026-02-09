@@ -19,6 +19,7 @@ import {
   Database,
   UserCheck,
   X,
+  ClipboardList,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useSidebar } from "@/contexts/SidebarContext";
@@ -76,6 +77,11 @@ export function Sidebar() {
           label: t("nav.journalEntries"),
           href: "/accounting/journal-entries",
           icon: <FileText className="h-4 w-4" />,
+        },
+        {
+          label: t("nav.scratchpad", "Scratchpad"),
+          href: "/accounting/scratchpad",
+          icon: <ClipboardList className="h-4 w-4" />,
         },
         {
           label: t("nav.import", "Import Data"),

@@ -5,3 +5,4 @@ export * from './useUsers';
 export * from './useCompanySettings';
 export * from './useEdim';
 export * from './useEvents';
+export * from './useScratchpad';
