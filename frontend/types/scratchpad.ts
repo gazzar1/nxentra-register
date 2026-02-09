@@ -103,7 +103,7 @@ export interface ScratchpadBulkDeletePayload {
 }
 
 export interface ScratchpadValidatePayload {
-  public_ids: string[];
+  row_ids: string[];
 }
 
 export interface ScratchpadValidateResponse {

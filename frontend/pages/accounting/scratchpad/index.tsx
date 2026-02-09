@@ -149,7 +149,7 @@ export default function ScratchpadPage() {
     if (selectedRows.length === 0) return;
 
     validateRows.mutate(
-      { public_ids: selectedRows },
+      { row_ids: selectedRows },
       {
         onSuccess: (response) => {
           const data = response.data;

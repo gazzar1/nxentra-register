@@ -467,11 +467,22 @@ class ScratchpadCommitView(APIView):
 class ScratchpadImportView(APIView):
     """
     POST /api/scratchpad/import/ -> import CSV/XLSX file
+
+    Expected CSV columns:
+    - date (or transaction_date): YYYY-MM-DD
+    - description: text
+    - amount: decimal number
+    - debit_account: account code
+    - credit_account: account code
     """
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
+        import csv
+        import io
+        from decimal import Decimal, InvalidOperation
+
         actor = resolve_actor(request)
         require(actor, "journal.create")
 
@@ -481,12 +492,97 @@ class ScratchpadImportView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # TODO: Implement full import logic
-        # For now, return a placeholder response
-        return Response(
-            {"detail": "Import functionality not yet implemented."},
-            status=status.HTTP_501_NOT_IMPLEMENTED,
-        )
+        uploaded_file = request.FILES["file"]
+        filename = uploaded_file.name.lower()
+
+        # Only support CSV for now
+        if not filename.endswith('.csv'):
+            return Response(
+                {"detail": "Only CSV files are supported at this time."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            # Read CSV content
+            content = uploaded_file.read().decode('utf-8-sig')  # Handle BOM
+            reader = csv.DictReader(io.StringIO(content))
+
+            # Normalize column names (lowercase, strip whitespace)
+            if reader.fieldnames:
+                reader.fieldnames = [f.lower().strip() for f in reader.fieldnames]
+
+            # Build account lookup by code
+            accounts_by_code = {
+                a.code: a for a in Account.objects.filter(
+                    company=actor.company,
+                    is_postable=True,
+                )
+            }
+
+            created_rows = []
+            errors = []
+            group_id = uuid.uuid4()  # All imported rows share a group
+
+            for row_num, row in enumerate(reader, start=2):  # Start at 2 (1 is header)
+                try:
+                    # Parse date
+                    date_str = row.get('date') or row.get('transaction_date') or ''
+                    date_str = date_str.strip()
+
+                    # Parse description
+                    description = row.get('description', '').strip() or row.get('memo', '').strip()
+
+                    # Parse amount
+                    amount_str = row.get('amount', '').strip()
+                    amount = None
+                    if amount_str:
+                        try:
+                            amount = Decimal(amount_str.replace(',', ''))
+                        except InvalidOperation:
+                            errors.append(f"Row {row_num}: Invalid amount '{amount_str}'")
+                            continue
+
+                    # Parse accounts
+                    debit_code = row.get('debit_account', '').strip() or row.get('debit', '').strip()
+                    credit_code = row.get('credit_account', '').strip() or row.get('credit', '').strip()
+
+                    debit_account = accounts_by_code.get(debit_code)
+                    credit_account = accounts_by_code.get(credit_code)
+
+                    # Create the row
+                    scratchpad_row = ScratchpadRow.objects.create(
+                        company=actor.company,
+                        group_id=group_id,
+                        group_order=row_num - 1,
+                        source=ScratchpadRow.Source.IMPORT,
+                        status=ScratchpadRow.Status.PARSED,
+                        transaction_date=date_str if date_str else None,
+                        description=description,
+                        amount=amount,
+                        debit_account=debit_account,
+                        credit_account=credit_account,
+                        raw_input=str(row),
+                        created_by=actor.user,
+                    )
+                    created_rows.append(scratchpad_row)
+
+                except Exception as e:
+                    errors.append(f"Row {row_num}: {str(e)}")
+
+            # Serialize the created rows
+            serializer = ScratchpadRowSerializer(created_rows, many=True)
+
+            return Response({
+                "created": serializer.data,
+                "errors": errors,
+                "group_id": str(group_id),
+            }, status=status.HTTP_201_CREATED)
+
+        except Exception as e:
+            return Response(
+                {"detail": f"Failed to parse file: {str(e)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
 
 class ScratchpadExportView(APIView):
