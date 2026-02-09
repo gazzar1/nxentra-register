@@ -482,6 +482,7 @@ class ScratchpadImportView(APIView):
         import csv
         import io
         from decimal import Decimal, InvalidOperation
+        from datetime import datetime
 
         actor = resolve_actor(request)
         require(actor, "journal.create")
@@ -528,6 +529,23 @@ class ScratchpadImportView(APIView):
                     # Parse date
                     date_str = row.get('date') or row.get('transaction_date') or ''
                     date_str = date_str.strip()
+                    parsed_date = None
+                    if date_str:
+                        # Try multiple date formats
+                        date_formats = [
+                            '%Y-%m-%d',    # 2026-01-01
+                            '%d/%m/%Y',    # 01/01/2026
+                            '%m/%d/%Y',    # 01/01/2026 (US)
+                            '%d-%m-%Y',    # 01-01-2026
+                            '%m-%d-%Y',    # 01-01-2026 (US)
+                            '%Y/%m/%d',    # 2026/01/01
+                        ]
+                        for fmt in date_formats:
+                            try:
+                                parsed_date = datetime.strptime(date_str, fmt).date()
+                                break
+                            except ValueError:
+                                continue
 
                     # Parse description
                     description = row.get('description', '').strip() or row.get('memo', '').strip()
@@ -556,7 +574,7 @@ class ScratchpadImportView(APIView):
                         group_order=row_num - 1,
                         source=ScratchpadRow.Source.IMPORT,
                         status=ScratchpadRow.Status.PARSED,
-                        transaction_date=date_str if date_str else None,
+                        transaction_date=parsed_date,
                         description=description,
                         amount=amount,
                         debit_account=debit_account,
