@@ -7,7 +7,6 @@ import {
   flexRender,
   createColumnHelper,
   SortingState,
-  RowSelectionState,
 } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useRouter } from "next/router";
@@ -21,7 +20,6 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { Input } from "@/components/ui/input";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
@@ -82,29 +80,30 @@ export function ScratchpadGrid({
     [accounts]
   );
 
-  // Row selection state
-  const rowSelection = useMemo(() => {
-    const selection: RowSelectionState = {};
-    selectedRows.forEach((id) => {
-      const index = rows.findIndex((r) => r.public_id === id);
-      if (index >= 0) {
-        selection[index] = true;
-      }
-    });
-    return selection;
-  }, [selectedRows, rows]);
-
-  const handleSelectionChange = useCallback(
-    (updater: RowSelectionState | ((old: RowSelectionState) => RowSelectionState)) => {
-      const newSelection = typeof updater === "function" ? updater(rowSelection) : updater;
-      const selectedIds = Object.keys(newSelection)
-        .filter((key) => newSelection[parseInt(key)])
-        .map((key) => rows[parseInt(key)]?.public_id)
-        .filter(Boolean) as string[];
-      onSelectionChange(selectedIds);
-    },
-    [rowSelection, rows, onSelectionChange]
+  // Row selection helpers
+  const isRowSelected = useCallback(
+    (publicId: string) => selectedRows.includes(publicId),
+    [selectedRows]
   );
+
+  const toggleRowSelection = useCallback(
+    (publicId: string) => {
+      if (selectedRows.includes(publicId)) {
+        onSelectionChange(selectedRows.filter((id) => id !== publicId));
+      } else {
+        onSelectionChange([...selectedRows, publicId]);
+      }
+    },
+    [selectedRows, onSelectionChange]
+  );
+
+  const toggleAllSelection = useCallback(() => {
+    if (selectedRows.length === rows.length) {
+      onSelectionChange([]);
+    } else {
+      onSelectionChange(rows.map((r) => r.public_id));
+    }
+  }, [selectedRows, rows, onSelectionChange]);
 
   // Build columns
   const columns = useMemo(() => {
@@ -112,17 +111,21 @@ export function ScratchpadGrid({
       // Selection column
       columnHelper.display({
         id: "select",
-        header: ({ table }) => (
-          <Checkbox
-            checked={table.getIsAllRowsSelected()}
-            onCheckedChange={(value) => table.toggleAllRowsSelected(!!value)}
+        header: () => (
+          <input
+            type="checkbox"
+            checked={selectedRows.length === rows.length && rows.length > 0}
+            onChange={toggleAllSelection}
+            className="h-4 w-4 rounded border-primary"
             aria-label="Select all"
           />
         ),
         cell: ({ row }) => (
-          <Checkbox
-            checked={row.getIsSelected()}
-            onCheckedChange={(value) => row.toggleSelected(!!value)}
+          <input
+            type="checkbox"
+            checked={isRowSelected(row.original.public_id)}
+            onChange={() => toggleRowSelection(row.original.public_id)}
+            className="h-4 w-4 rounded border-primary"
             aria-label="Select row"
           />
         ),
@@ -500,6 +503,11 @@ export function ScratchpadGrid({
     onRowDelete,
     dimensionSchema,
     isRTL,
+    selectedRows,
+    rows,
+    isRowSelected,
+    toggleRowSelection,
+    toggleAllSelection,
   ]);
 
   const table = useReactTable({
@@ -507,10 +515,8 @@ export function ScratchpadGrid({
     columns,
     state: {
       sorting,
-      rowSelection,
     },
     onSortingChange: setSorting,
-    onRowSelectionChange: handleSelectionChange,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
@@ -606,7 +612,7 @@ export function ScratchpadGrid({
                 key={row.id}
                 className={cn(
                   "border-b hover:bg-muted/30 transition-colors",
-                  row.getIsSelected() && "bg-primary/5"
+                  isRowSelected(row.original.public_id) && "bg-primary/5"
                 )}
               >
                 {row.getVisibleCells().map((cell) => (
