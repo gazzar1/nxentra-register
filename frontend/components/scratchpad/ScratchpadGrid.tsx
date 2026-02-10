@@ -494,9 +494,9 @@ export function ScratchpadGrid({
             if (isEditing) {
               return (
                 <Select
-                  defaultValue={currentValueId?.toString() || ""}
+                  defaultValue={currentValueId?.toString() || "__none__"}
                   onValueChange={(newValue) => {
-                    const valueId = newValue ? parseInt(newValue) : null;
+                    const valueId = newValue && newValue !== "__none__" ? parseInt(newValue) : null;
                     if (valueId !== currentValueId) {
                       // Build the dimensions array with only the required fields
                       const existingDims = row.original.dimensions || [];
@@ -523,7 +523,7 @@ export function ScratchpadGrid({
                     <SelectValue placeholder="Select..." />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">None</SelectItem>
+                    <SelectItem value="__none__">None</SelectItem>
                     {dim.values.map((val) => (
                       <SelectItem key={val.id} value={val.id.toString()}>
                         <span className="font-mono ltr-code">{val.code}</span>
