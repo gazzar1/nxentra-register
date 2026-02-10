@@ -610,14 +610,89 @@ class ScratchpadExportView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        import csv
+        import io
+        from django.http import HttpResponse
+
         actor = resolve_actor(request)
         require(actor, "journal.view")
 
-        # TODO: Implement export logic
-        return Response(
-            {"detail": "Export functionality not yet implemented."},
-            status=status.HTTP_501_NOT_IMPLEMENTED,
-        )
+        export_format = request.query_params.get('format', 'csv').lower()
+        if export_format not in ('csv', 'xlsx'):
+            return Response(
+                {"detail": "Invalid format. Use 'csv' or 'xlsx'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Get rows with optional status filter
+        status_filter = request.query_params.get('status')
+        queryset = ScratchpadRow.objects.filter(
+            company=actor.company,
+        ).select_related('debit_account', 'credit_account', 'created_by')
+
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+
+        queryset = queryset.order_by('-created_at')
+
+        # Build data rows
+        rows_data = []
+        for row in queryset:
+            rows_data.append({
+                'Date': row.transaction_date.isoformat() if row.transaction_date else '',
+                'Description': row.description or '',
+                'Amount': str(row.amount) if row.amount else '',
+                'Debit Account': row.debit_account.code if row.debit_account else '',
+                'Credit Account': row.credit_account.code if row.credit_account else '',
+                'Status': row.status,
+                'Notes': row.notes or '',
+            })
+
+        if export_format == 'csv':
+            output = io.StringIO()
+            if rows_data:
+                writer = csv.DictWriter(output, fieldnames=rows_data[0].keys())
+                writer.writeheader()
+                writer.writerows(rows_data)
+            else:
+                writer = csv.writer(output)
+                writer.writerow(['Date', 'Description', 'Amount', 'Debit Account', 'Credit Account', 'Status', 'Notes'])
+
+            response = HttpResponse(output.getvalue(), content_type='text/csv')
+            response['Content-Disposition'] = 'attachment; filename="scratchpad_export.csv"'
+            return response
+
+        else:  # xlsx
+            try:
+                from openpyxl import Workbook
+            except ImportError:
+                return Response(
+                    {"detail": "XLSX export not available. openpyxl not installed."},
+                    status=status.HTTP_501_NOT_IMPLEMENTED,
+                )
+
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Scratchpad"
+
+            # Headers
+            headers = ['Date', 'Description', 'Amount', 'Debit Account', 'Credit Account', 'Status', 'Notes']
+            ws.append(headers)
+
+            # Data rows
+            for row_data in rows_data:
+                ws.append([row_data[h] for h in headers])
+
+            output = io.BytesIO()
+            wb.save(output)
+            output.seek(0)
+
+            response = HttpResponse(
+                output.getvalue(),
+                content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            )
+            response['Content-Disposition'] = 'attachment; filename="scratchpad_export.xlsx"'
+            return response
 
 
 # =============================================================================
