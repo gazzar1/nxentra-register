@@ -617,6 +617,7 @@ class ScratchpadExportView(APIView):
         import csv
         import io
         from django.http import HttpResponse
+        from django.db.models import Prefetch
 
         actor = resolve_actor(request)
         require(actor, "journal.view")
@@ -629,21 +630,44 @@ class ScratchpadExportView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Get rows with optional status filter
+        # Get active dimensions for this company to create dynamic columns
+        active_dimensions = list(
+            AnalysisDimension.objects.filter(
+                company=actor.company,
+                is_active=True,
+            ).order_by('code')
+        )
+
+        # Get rows with optional status filter, prefetch dimensions
         status_filter = request.query_params.get('status')
         queryset = ScratchpadRow.objects.filter(
             company=actor.company,
-        ).select_related('debit_account', 'credit_account', 'created_by')
+        ).select_related(
+            'debit_account', 'credit_account', 'created_by'
+        ).prefetch_related(
+            Prefetch(
+                'dimensions',
+                queryset=ScratchpadRowDimension.objects.select_related(
+                    'dimension', 'dimension_value'
+                )
+            )
+        )
 
         if status_filter:
             queryset = queryset.filter(status=status_filter)
 
         queryset = queryset.order_by('-created_at')
 
+        # Build base headers and dimension headers
+        base_headers = ['Date', 'Description', 'Amount', 'Debit Account', 'Credit Account', 'Status', 'Notes']
+        dimension_headers = [f"Dim: {dim.name}" for dim in active_dimensions]
+        all_headers = base_headers + dimension_headers
+
         # Build data rows
         rows_data = []
         for row in queryset:
-            rows_data.append({
+            # Base row data
+            row_data = {
                 'Date': row.transaction_date.isoformat() if row.transaction_date else '',
                 'Description': row.description or '',
                 'Amount': str(row.amount) if row.amount else '',
@@ -651,17 +675,30 @@ class ScratchpadExportView(APIView):
                 'Credit Account': row.credit_account.code if row.credit_account else '',
                 'Status': row.status,
                 'Notes': row.notes or '',
-            })
+            }
+
+            # Build dimension lookup for this row
+            dim_values = {d.dimension_id: d for d in row.dimensions.all()}
+
+            # Add dimension values
+            for dim in active_dimensions:
+                header = f"Dim: {dim.name}"
+                row_dim = dim_values.get(dim.id)
+                if row_dim and row_dim.dimension_value:
+                    # Format as "CODE - Name"
+                    row_data[header] = f"{row_dim.dimension_value.code} - {row_dim.dimension_value.name}"
+                elif row_dim and row_dim.raw_value:
+                    row_data[header] = row_dim.raw_value
+                else:
+                    row_data[header] = ''
+
+            rows_data.append(row_data)
 
         if export_format == 'csv':
             output = io.StringIO()
-            if rows_data:
-                writer = csv.DictWriter(output, fieldnames=rows_data[0].keys())
-                writer.writeheader()
-                writer.writerows(rows_data)
-            else:
-                writer = csv.writer(output)
-                writer.writerow(['Date', 'Description', 'Amount', 'Debit Account', 'Credit Account', 'Status', 'Notes'])
+            writer = csv.DictWriter(output, fieldnames=all_headers)
+            writer.writeheader()
+            writer.writerows(rows_data)
 
             response = HttpResponse(output.getvalue(), content_type='text/csv')
             response['Content-Disposition'] = 'attachment; filename="scratchpad_export.csv"'
@@ -681,12 +718,11 @@ class ScratchpadExportView(APIView):
             ws.title = "Scratchpad"
 
             # Headers
-            headers = ['Date', 'Description', 'Amount', 'Debit Account', 'Credit Account', 'Status', 'Notes']
-            ws.append(headers)
+            ws.append(all_headers)
 
             # Data rows
             for row_data in rows_data:
-                ws.append([row_data[h] for h in headers])
+                ws.append([row_data.get(h, '') for h in all_headers])
 
             output = io.BytesIO()
             wb.save(output)
