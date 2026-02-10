@@ -512,11 +512,11 @@ class ScratchpadImportView(APIView):
             if reader.fieldnames:
                 reader.fieldnames = [f.lower().strip() for f in reader.fieldnames]
 
-            # Build account lookup by code
+            # Build account lookup by code (postable = not a header account)
             accounts_by_code = {
                 a.code: a for a in Account.objects.filter(
                     company=actor.company,
-                    is_postable=True,
+                    is_header=False,
                 )
             }
 
