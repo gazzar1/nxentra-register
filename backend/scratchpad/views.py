@@ -625,10 +625,32 @@ class ScratchpadExportView(APIView):
             logger.warning(f"DISPATCH: DRF request initialized, method={drf_request.method}")
 
             try:
-                self.initial(drf_request, *args, **kwargs)
-                logger.warning("DISPATCH: initial() completed successfully")
+                # Trace each step of initial() to find Http404 source
+                logger.warning("DISPATCH: Starting initial() breakdown...")
+
+                self.format_kwarg = self.get_format_suffix(**kwargs)
+                logger.warning(f"DISPATCH: get_format_suffix done, format_kwarg={self.format_kwarg}")
+
+                neg = self.perform_content_negotiation(drf_request)
+                drf_request.accepted_renderer, drf_request.accepted_media_type = neg
+                logger.warning(f"DISPATCH: content_negotiation done, renderer={drf_request.accepted_renderer}, media_type={drf_request.accepted_media_type}")
+
+                version, scheme = self.determine_version(drf_request, *args, **kwargs)
+                drf_request.version, drf_request.versioning_scheme = version, scheme
+                logger.warning(f"DISPATCH: determine_version done, version={version}")
+
+                self.perform_authentication(drf_request)
+                logger.warning(f"DISPATCH: perform_authentication done, user={drf_request.user}")
+
+                self.check_permissions(drf_request)
+                logger.warning("DISPATCH: check_permissions done")
+
+                self.check_throttles(drf_request)
+                logger.warning("DISPATCH: check_throttles done - initial() complete")
             except Exception as init_exc:
                 logger.error(f"DISPATCH: initial() raised {type(init_exc).__name__}: {init_exc}")
+                import traceback
+                logger.error(f"DISPATCH: Traceback: {traceback.format_exc()}")
                 raise
 
             # Get handler
