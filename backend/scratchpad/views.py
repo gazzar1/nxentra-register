@@ -697,10 +697,11 @@ class ScratchpadExportView(APIView):
             logger.error(f"Permission check FAILED: {type(e).__name__}: {e}")
             raise
 
-        export_format = request.query_params.get('format', 'csv').lower()
+        # Use 'export_format' instead of 'format' to avoid DRF content negotiation conflict
+        export_format = request.query_params.get('export_format', 'csv').lower()
         if export_format not in ('csv', 'xlsx'):
             return Response(
-                {"detail": "Invalid format. Use 'csv' or 'xlsx'."},
+                {"detail": "Invalid export_format. Use 'csv' or 'xlsx'."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

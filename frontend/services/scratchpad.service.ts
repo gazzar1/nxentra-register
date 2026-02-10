@@ -82,10 +82,10 @@ export const scratchpadService = {
     );
   },
 
-  // Export
+  // Export - use export_format to avoid DRF content negotiation conflict with 'format'
   export: (format: 'csv' | 'xlsx', params?: ScratchpadFilters) =>
     apiClient.get('/scratchpad/export/', {
-      params: { format, ...params },
+      params: { export_format: format, ...params },
       responseType: 'blob',
     }),
 };
