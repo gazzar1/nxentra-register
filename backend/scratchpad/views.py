@@ -609,6 +609,19 @@ class ScratchpadExportView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    def dispatch(self, request, *args, **kwargs):
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"=== EXPORT VIEW DISPATCH: {request.method} {request.path} ===")
+        logger.warning(f"DISPATCH: request.user={getattr(request, 'user', 'NONE')}")
+        try:
+            response = super().dispatch(request, *args, **kwargs)
+            logger.warning(f"DISPATCH: Response status={response.status_code}")
+            return response
+        except Exception as e:
+            logger.error(f"DISPATCH: Exception raised: {type(e).__name__}: {e}")
+            raise
+
     def get(self, request):
         import csv
         import io
