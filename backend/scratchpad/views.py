@@ -606,96 +606,20 @@ class ScratchpadImportView(APIView):
 class ScratchpadExportView(APIView):
     """
     GET /api/scratchpad/export/ -> export rows to CSV/XLSX
+
+    Query params:
+    - export_format: 'csv' (default) or 'xlsx'
+    - status: optional filter by row status
     """
     permission_classes = [IsAuthenticated]
-
-    def dispatch(self, request, *args, **kwargs):
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.warning(f"=== EXPORT VIEW DISPATCH: {request.method} {request.path} ===")
-        logger.warning(f"DISPATCH: request.user={getattr(request, 'user', 'NONE')}")
-
-        # Manually trace the DRF dispatch flow
-        try:
-            self.args = args
-            self.kwargs = kwargs
-            drf_request = self.initialize_request(request, *args, **kwargs)
-            self.request = drf_request
-            self.headers = self.default_response_headers
-            logger.warning(f"DISPATCH: DRF request initialized, method={drf_request.method}")
-
-            try:
-                # Trace each step of initial() to find Http404 source
-                logger.warning("DISPATCH: Starting initial() breakdown...")
-
-                self.format_kwarg = self.get_format_suffix(**kwargs)
-                logger.warning(f"DISPATCH: get_format_suffix done, format_kwarg={self.format_kwarg}")
-
-                neg = self.perform_content_negotiation(drf_request)
-                drf_request.accepted_renderer, drf_request.accepted_media_type = neg
-                logger.warning(f"DISPATCH: content_negotiation done, renderer={drf_request.accepted_renderer}, media_type={drf_request.accepted_media_type}")
-
-                version, scheme = self.determine_version(drf_request, *args, **kwargs)
-                drf_request.version, drf_request.versioning_scheme = version, scheme
-                logger.warning(f"DISPATCH: determine_version done, version={version}")
-
-                self.perform_authentication(drf_request)
-                logger.warning(f"DISPATCH: perform_authentication done, user={drf_request.user}")
-
-                self.check_permissions(drf_request)
-                logger.warning("DISPATCH: check_permissions done")
-
-                self.check_throttles(drf_request)
-                logger.warning("DISPATCH: check_throttles done - initial() complete")
-            except Exception as init_exc:
-                logger.error(f"DISPATCH: initial() raised {type(init_exc).__name__}: {init_exc}")
-                import traceback
-                logger.error(f"DISPATCH: Traceback: {traceback.format_exc()}")
-                raise
-
-            # Get handler
-            if drf_request.method.lower() in self.http_method_names:
-                handler = getattr(self, drf_request.method.lower(), self.http_method_not_allowed)
-                logger.warning(f"DISPATCH: handler={handler.__name__}")
-            else:
-                handler = self.http_method_not_allowed
-                logger.warning(f"DISPATCH: method not in http_method_names, using http_method_not_allowed")
-
-            response = handler(drf_request, *args, **kwargs)
-            logger.warning(f"DISPATCH: handler returned status={response.status_code}")
-
-        except Exception as exc:
-            logger.error(f"DISPATCH: Exception in flow: {type(exc).__name__}: {exc}")
-            response = self.handle_exception(exc)
-            logger.warning(f"DISPATCH: handle_exception returned status={response.status_code}")
-
-        self.response = self.finalize_response(drf_request, response, *args, **kwargs)
-        return self.response
 
     def get(self, request):
         import csv
         import io
-        import logging
         from django.http import HttpResponse
 
-        logger = logging.getLogger(__name__)
-        logger.warning("=== SCRATCHPAD EXPORT VIEW CALLED ===")
-        logger.warning(f"User: {getattr(request, 'user', 'NONE')}")
-        logger.warning(f"User authenticated: {getattr(request.user, 'is_authenticated', False) if hasattr(request, 'user') else 'NO USER'}")
-
-        try:
-            actor = resolve_actor(request)
-            logger.warning(f"Actor resolved successfully: company={actor.company.id}, user={actor.user.email}")
-        except Exception as e:
-            logger.error(f"resolve_actor FAILED: {type(e).__name__}: {e}")
-            raise
-
-        try:
-            require(actor, "journal.view")
-            logger.warning("Permission check PASSED for journal.view")
-        except Exception as e:
-            logger.error(f"Permission check FAILED: {type(e).__name__}: {e}")
-            raise
+        actor = resolve_actor(request)
+        require(actor, "journal.view")
 
         # Use 'export_format' instead of 'format' to avoid DRF content negotiation conflict
         export_format = request.query_params.get('export_format', 'csv').lower()

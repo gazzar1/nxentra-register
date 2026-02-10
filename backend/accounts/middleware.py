@@ -106,13 +106,6 @@ class TenantRlsMiddleware:
         self._tenant_cache = {}
 
     def __call__(self, request):
-        import logging
-        logger = logging.getLogger(__name__)
-
-        # Debug logging for export endpoint
-        if 'export' in request.path:
-            logger.warning(f"=== MIDDLEWARE: {request.method} {request.path} ===")
-
         # =====================================================================
         # CASE 1: Public path - no auth, no RLS
         # =====================================================================
@@ -148,13 +141,9 @@ class TenantRlsMiddleware:
         # CASE 3: Authenticated WITH company_id - set tenant + RLS context
         # =====================================================================
         if jwt_user is not None and company_id is not None:
-            if 'export' in request.path:
-                logger.warning(f"MIDDLEWARE CASE 3: user={jwt_user.email}, company_id={company_id}")
             try:
                 # Lookup tenant configuration
                 tenant_info = self._get_tenant_info(company_id)
-                if 'export' in request.path:
-                    logger.warning(f"MIDDLEWARE tenant_info: {tenant_info}")
 
                 # Check if tenant is writable (not migrating/suspended)
                 if not tenant_info["is_writable"]:
