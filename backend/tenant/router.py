@@ -60,6 +60,7 @@ TENANT_APPS = frozenset({
     "accounting",
     "projections",
     "edim",
+    "scratchpad",  # Scratchpad is tenant-specific
 })
 
 
