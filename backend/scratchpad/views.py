@@ -612,10 +612,27 @@ class ScratchpadExportView(APIView):
     def get(self, request):
         import csv
         import io
+        import logging
         from django.http import HttpResponse
 
-        actor = resolve_actor(request)
-        require(actor, "journal.view")
+        logger = logging.getLogger(__name__)
+        logger.warning("=== SCRATCHPAD EXPORT VIEW CALLED ===")
+        logger.warning(f"User: {getattr(request, 'user', 'NONE')}")
+        logger.warning(f"User authenticated: {getattr(request.user, 'is_authenticated', False) if hasattr(request, 'user') else 'NO USER'}")
+
+        try:
+            actor = resolve_actor(request)
+            logger.warning(f"Actor resolved successfully: company={actor.company.id}, user={actor.user.email}")
+        except Exception as e:
+            logger.error(f"resolve_actor FAILED: {type(e).__name__}: {e}")
+            raise
+
+        try:
+            require(actor, "journal.view")
+            logger.warning("Permission check PASSED for journal.view")
+        except Exception as e:
+            logger.error(f"Permission check FAILED: {type(e).__name__}: {e}")
+            raise
 
         export_format = request.query_params.get('format', 'csv').lower()
         if export_format not in ('csv', 'xlsx'):
