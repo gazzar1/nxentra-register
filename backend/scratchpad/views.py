@@ -614,13 +614,41 @@ class ScratchpadExportView(APIView):
         logger = logging.getLogger(__name__)
         logger.warning(f"=== EXPORT VIEW DISPATCH: {request.method} {request.path} ===")
         logger.warning(f"DISPATCH: request.user={getattr(request, 'user', 'NONE')}")
+
+        # Manually trace the DRF dispatch flow
         try:
-            response = super().dispatch(request, *args, **kwargs)
-            logger.warning(f"DISPATCH: Response status={response.status_code}")
-            return response
-        except Exception as e:
-            logger.error(f"DISPATCH: Exception raised: {type(e).__name__}: {e}")
-            raise
+            self.args = args
+            self.kwargs = kwargs
+            drf_request = self.initialize_request(request, *args, **kwargs)
+            self.request = drf_request
+            self.headers = self.default_response_headers
+            logger.warning(f"DISPATCH: DRF request initialized, method={drf_request.method}")
+
+            try:
+                self.initial(drf_request, *args, **kwargs)
+                logger.warning("DISPATCH: initial() completed successfully")
+            except Exception as init_exc:
+                logger.error(f"DISPATCH: initial() raised {type(init_exc).__name__}: {init_exc}")
+                raise
+
+            # Get handler
+            if drf_request.method.lower() in self.http_method_names:
+                handler = getattr(self, drf_request.method.lower(), self.http_method_not_allowed)
+                logger.warning(f"DISPATCH: handler={handler.__name__}")
+            else:
+                handler = self.http_method_not_allowed
+                logger.warning(f"DISPATCH: method not in http_method_names, using http_method_not_allowed")
+
+            response = handler(drf_request, *args, **kwargs)
+            logger.warning(f"DISPATCH: handler returned status={response.status_code}")
+
+        except Exception as exc:
+            logger.error(f"DISPATCH: Exception in flow: {type(exc).__name__}: {exc}")
+            response = self.handle_exception(exc)
+            logger.warning(f"DISPATCH: handle_exception returned status={response.status_code}")
+
+        self.response = self.finalize_response(drf_request, response, *args, **kwargs)
+        return self.response
 
     def get(self, request):
         import csv
