@@ -48,11 +48,11 @@ export const scratchpadService = {
 
   // Dimension schema (for dynamic columns)
   getDimensionSchema: () =>
-    apiClient.get<DimensionSchema>('/scratchpad/dimension-schema/'),
+    apiClient.get<DimensionSchema>('/scratchpad/dimensions/schema/'),
 
   // Account dimension rules
   getAccountDimensionRules: (accountId?: number) =>
-    apiClient.get<AccountDimensionRule[]>('/scratchpad/account-dimension-rules/', {
+    apiClient.get<AccountDimensionRule[]>('/scratchpad/dimension-rules/', {
       params: accountId ? { account_id: accountId } : undefined,
     }),
 
@@ -62,7 +62,7 @@ export const scratchpadService = {
     rule_type: string;
     default_value_id?: number | null;
   }) =>
-    apiClient.post<AccountDimensionRule>('/scratchpad/account-dimension-rules/', data),
+    apiClient.post<AccountDimensionRule>('/scratchpad/dimension-rules/', data),
 
   // Import (file upload)
   import: (file: File, mappingProfileId?: number) => {
