@@ -36,7 +36,7 @@ export const scratchpadService = {
     apiClient.post<{ created: ScratchpadRow[] }>('/scratchpad/bulk/', { action: 'create', ...data }),
 
   bulkDelete: (data: ScratchpadBulkDeletePayload) =>
-    apiClient.post<{ deleted_count: number }>('/scratchpad/bulk/', { action: 'delete', ...data }),
+    apiClient.post<{ deleted_count: number }>('/scratchpad/bulk/', data),
 
   // Validation
   validate: (data: ScratchpadValidatePayload) =>

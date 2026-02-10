@@ -99,7 +99,7 @@ export interface ScratchpadBulkCreatePayload {
 }
 
 export interface ScratchpadBulkDeletePayload {
-  public_ids: string[];
+  row_ids: string[];
 }
 
 export interface ScratchpadValidatePayload {

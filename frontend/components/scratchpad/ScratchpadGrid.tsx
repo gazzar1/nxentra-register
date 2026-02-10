@@ -485,10 +485,72 @@ export function ScratchpadGrid({
             const rowDim = row.original.dimensions?.find(
               (d) => d.dimension_id === dim.id
             );
-            const valueName = rowDim?.dimension_value_name || "-";
-            return <span className="text-sm">{valueName}</span>;
+            const currentValueId = rowDim?.dimension_value_id;
+            const valueName = rowDim?.dimension_value_name;
+            const isEditing =
+              editingCell?.rowId === row.original.public_id &&
+              editingCell?.columnId === `dim_${dim.code}`;
+
+            if (isEditing) {
+              return (
+                <Select
+                  defaultValue={currentValueId?.toString() || ""}
+                  onValueChange={(newValue) => {
+                    const valueId = newValue ? parseInt(newValue) : null;
+                    if (valueId !== currentValueId) {
+                      // Build the dimensions array with only the required fields
+                      const existingDims = row.original.dimensions || [];
+                      const otherDims = existingDims
+                        .filter((d) => d.dimension_id !== dim.id)
+                        .map((d) => ({
+                          dimension_id: d.dimension_id,
+                          dimension_value_id: d.dimension_value_id,
+                        }));
+                      const newDimensions = valueId
+                        ? [
+                            ...otherDims,
+                            { dimension_id: dim.id, dimension_value_id: valueId },
+                          ]
+                        : otherDims;
+                      onRowUpdate(row.original.public_id, {
+                        dimensions: newDimensions,
+                      });
+                    }
+                    setEditingCell(null);
+                  }}
+                >
+                  <SelectTrigger className="h-8 w-36">
+                    <SelectValue placeholder="Select..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">None</SelectItem>
+                    {dim.values.map((val) => (
+                      <SelectItem key={val.id} value={val.id.toString()}>
+                        <span className="font-mono ltr-code">{val.code}</span>
+                        {" - "}
+                        {isRTL && val.name_ar ? val.name_ar : val.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              );
+            }
+
+            return (
+              <span
+                className="cursor-pointer hover:bg-muted/50 px-2 py-1 rounded block truncate text-sm"
+                onClick={() =>
+                  setEditingCell({
+                    rowId: row.original.public_id,
+                    columnId: `dim_${dim.code}`,
+                  })
+                }
+              >
+                {valueName || "-"}
+              </span>
+            );
           },
-          size: 120,
+          size: 140,
         })
       );
       // Insert dimension columns before the actions column

@@ -125,7 +125,7 @@ export default function ScratchpadPage() {
     if (selectedRows.length === 0) return;
 
     bulkDelete.mutate(
-      { public_ids: selectedRows },
+      { row_ids: selectedRows },
       {
         onSuccess: (response) => {
           setSelectedRows([]);

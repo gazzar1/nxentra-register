@@ -21,8 +21,12 @@ from accounting.models import Account, AnalysisDimension, AnalysisDimensionValue
 
 class ScratchpadRowDimensionSerializer(serializers.ModelSerializer):
     """Serializer for dimension values on a scratchpad row."""
+    dimension_id = serializers.IntegerField(source="dimension.id", read_only=True)
     dimension_code = serializers.CharField(source="dimension.code", read_only=True)
     dimension_name = serializers.CharField(source="dimension.name", read_only=True)
+    dimension_value_id = serializers.IntegerField(
+        source="dimension_value.id", read_only=True, default=None
+    )
     dimension_value_code = serializers.CharField(
         source="dimension_value.code", read_only=True, default=None
     )
@@ -34,18 +38,20 @@ class ScratchpadRowDimensionSerializer(serializers.ModelSerializer):
         model = ScratchpadRowDimension
         fields = [
             "id",
-            "dimension",
+            "dimension_id",
             "dimension_code",
             "dimension_name",
-            "dimension_value",
+            "dimension_value_id",
             "dimension_value_code",
             "dimension_value_name",
             "raw_value",
         ]
         read_only_fields = [
             "id",
+            "dimension_id",
             "dimension_code",
             "dimension_name",
+            "dimension_value_id",
             "dimension_value_code",
             "dimension_value_name",
         ]
@@ -65,11 +71,17 @@ class ScratchpadRowDimensionInputSerializer(serializers.Serializer):
 class ScratchpadRowSerializer(serializers.ModelSerializer):
     """Serializer for ScratchpadRow - used for list/retrieve."""
     dimensions = ScratchpadRowDimensionSerializer(many=True, read_only=True)
+    debit_account_id = serializers.IntegerField(
+        source="debit_account.id", read_only=True, default=None
+    )
     debit_account_code = serializers.CharField(
         source="debit_account.code", read_only=True, default=None
     )
     debit_account_name = serializers.CharField(
         source="debit_account.name", read_only=True, default=None
+    )
+    credit_account_id = serializers.IntegerField(
+        source="credit_account.id", read_only=True, default=None
     )
     credit_account_code = serializers.CharField(
         source="credit_account.code", read_only=True, default=None
@@ -94,10 +106,10 @@ class ScratchpadRowSerializer(serializers.ModelSerializer):
             "description",
             "description_ar",
             "amount",
-            "debit_account",
+            "debit_account_id",
             "debit_account_code",
             "debit_account_name",
-            "credit_account",
+            "credit_account_id",
             "credit_account_code",
             "credit_account_name",
             "notes",
