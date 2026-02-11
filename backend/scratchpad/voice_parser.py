@@ -126,33 +126,24 @@ TRANSACTION_SCHEMA = {
                     "description_ar": {"type": ["string", "null"]},
                     "debit_account_code": {"type": ["string", "null"]},
                     "credit_account_code": {"type": ["string", "null"]},
-                    "dimensions": {
-                        "type": "object",
-                        "additionalProperties": {"type": ["string", "null"]}
-                    },
                     "notes": {"type": ["string", "null"]},
-                    "confidence": {
-                        "type": "object",
-                        "properties": {
-                            "overall": {"type": "number"},
-                            "date": {"type": "number"},
-                            "amount": {"type": "number"},
-                            "accounts": {"type": "number"},
-                        },
-                        "additionalProperties": {"type": "number"}
-                    },
+                    "confidence": {"type": "number"},
                     "questions": {
                         "type": "array",
                         "items": {"type": "string"}
                     }
                 },
-                "required": ["transaction_date", "amount", "description", "confidence"],
+                "required": [
+                    "transaction_date", "amount", "description", "description_ar",
+                    "debit_account_code", "credit_account_code", "notes",
+                    "confidence", "questions"
+                ],
                 "additionalProperties": False
             }
         },
         "parse_notes": {"type": ["string", "null"]}
     },
-    "required": ["transactions"],
+    "required": ["transactions", "parse_notes"],
     "additionalProperties": False
 }
 
@@ -182,7 +173,7 @@ class VoiceUsageInfo:
     """Token and cost tracking for a voice parsing operation."""
     audio_seconds: Optional[Decimal] = None
     transcript_chars: int = 0
-    asr_model: str = "gpt-4o-transcribe"
+    asr_model: str = "whisper-1"
     parse_model: str = "gpt-4o"
     parse_input_tokens: int = 0
     parse_output_tokens: int = 0
@@ -379,17 +370,15 @@ class VoiceParserService:
 
         for attempt in range(self.MAX_RETRIES + 1):
             try:
-                # gpt-4o-transcribe returns JSON; we must parse it
-                # Using verbose_json to get the transcript text
+                # Use whisper-1 model which is more widely supported
+                # gpt-4o-transcribe has limited availability and format support
                 response = self.client.audio.transcriptions.create(
-                    model="gpt-4o-transcribe",
+                    model="whisper-1",
                     file=file_tuple,
                     language=language,
-                    response_format="verbose_json",
                 )
 
-                # Extract transcript from JSON response
-                # The response object has a 'text' attribute
+                # whisper-1 returns text directly
                 transcript = response.text.strip()
                 return transcript
 

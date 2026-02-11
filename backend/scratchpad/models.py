@@ -408,7 +408,7 @@ class VoiceUsageEvent(models.Model):
     # Model info
     asr_model = models.CharField(
         max_length=50,
-        default="gpt-4o-transcribe",
+        default="whisper-1",
         help_text="Model used for speech-to-text",
     )
     parse_model = models.CharField(
