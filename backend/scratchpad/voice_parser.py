@@ -331,6 +331,55 @@ class VoiceParserService:
                 voice_rows_used=F('voice_rows_used') + 1
             )
 
+    def _convert_audio_to_mp3(self, audio_content: bytes, content_type: str) -> bytes:
+        """
+        Convert audio to MP3 format for OpenAI gpt-4o-audio-preview compatibility.
+
+        gpt-4o-audio-preview only supports 'wav' and 'mp3' formats.
+        Browsers typically record in webm/opus, so we need to convert.
+
+        Args:
+            audio_content: Raw audio bytes
+            content_type: MIME type of the audio
+
+        Returns:
+            MP3 audio bytes
+        """
+        import io
+        from pydub import AudioSegment
+
+        # Map content type to pydub format
+        format_map = {
+            'audio/webm': 'webm',
+            'audio/mp4': 'mp4',
+            'audio/mpeg': 'mp3',
+            'audio/wav': 'wav',
+            'audio/ogg': 'ogg',
+            'audio/x-wav': 'wav',
+        }
+        input_format = format_map.get(content_type, 'webm')
+
+        # If already mp3 or wav, return as-is
+        if input_format in ('mp3', 'wav'):
+            return audio_content
+
+        logger.info(f"Converting audio from {input_format} to mp3")
+
+        try:
+            # Load audio from bytes
+            audio_input = io.BytesIO(audio_content)
+            audio = AudioSegment.from_file(audio_input, format=input_format)
+
+            # Export as mp3
+            mp3_output = io.BytesIO()
+            audio.export(mp3_output, format='mp3', bitrate='128k')
+            mp3_output.seek(0)
+
+            return mp3_output.read()
+        except Exception as e:
+            logger.error(f"Audio conversion failed: {e}")
+            raise ValueError(f"Failed to convert audio from {input_format} to mp3: {e}")
+
     def transcribe_audio(
         self,
         audio_file,
@@ -342,6 +391,9 @@ class VoiceParserService:
         Uses the Chat Completions API with audio input instead of the Audio API.
         This provides better Arabic support and uses the same API permissions as
         text parsing.
+
+        NOTE: gpt-4o-audio-preview only supports 'wav' and 'mp3' formats.
+        Browser recordings (webm) are automatically converted to mp3.
 
         AUDIO POLICY: Audio is discarded after this call returns.
         Only the transcript text is returned; audio is never stored.
@@ -360,23 +412,23 @@ class VoiceParserService:
 
         last_error = None
 
-        # Read file content and convert to base64
+        # Read file content
         audio_file.seek(0)
         file_content = audio_file.read()
-        audio_base64 = base64.b64encode(file_content).decode('utf-8')
 
         # Determine audio format from content type
         content_type = getattr(audio_file, 'content_type', 'audio/webm')
 
-        # Map content type to OpenAI format
-        format_map = {
-            'audio/webm': 'webm',
-            'audio/mp4': 'mp4',
-            'audio/mpeg': 'mp3',
-            'audio/wav': 'wav',
-            'audio/ogg': 'ogg',
-        }
-        audio_format = format_map.get(content_type, 'webm')
+        # gpt-4o-audio-preview only supports wav and mp3
+        # Convert other formats (webm, mp4, ogg) to mp3
+        supported_formats = {'audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav'}
+        if content_type not in supported_formats:
+            file_content = self._convert_audio_to_mp3(file_content, content_type)
+            audio_format = 'mp3'
+        else:
+            audio_format = 'wav' if 'wav' in content_type else 'mp3'
+
+        audio_base64 = base64.b64encode(file_content).decode('utf-8')
 
         # Build language instruction
         lang_name = "Arabic" if language == "ar" else "English"

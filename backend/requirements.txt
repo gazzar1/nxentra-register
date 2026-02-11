@@ -27,3 +27,4 @@ channels-redis>=4.1.0
 
 # AI/ML (Voice parsing)
 openai>=1.0.0
+pydub>=0.25.1
