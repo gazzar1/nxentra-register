@@ -269,6 +269,14 @@ export default function ScratchpadPage() {
     refetchRows();
   }, [refetchRows]);
 
+  const handleVoiceCreated = useCallback(
+    (rowIds: string[]) => {
+      // Refetch rows to show newly created voice rows
+      refetchRows();
+    },
+    [refetchRows]
+  );
+
   const isLoading = isLoadingRows || isLoadingAccounts;
 
   return (
@@ -289,6 +297,7 @@ export default function ScratchpadPage() {
             onCommitReady={handleCommitReady}
             onImport={handleImport}
             onExport={handleExport}
+            onVoiceCreated={handleVoiceCreated}
             onRefresh={handleRefresh}
             isValidating={validateRows.isPending}
             isCommitting={commitGroups.isPending}
