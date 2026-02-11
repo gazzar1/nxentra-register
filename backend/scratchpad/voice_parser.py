@@ -354,7 +354,7 @@ class VoiceParserService:
         Only the transcript text is returned; audio is never stored.
 
         Args:
-            audio_file: File-like object containing audio data
+            audio_file: File-like object containing audio data (Django UploadedFile or similar)
             language: Language code (e.g., 'en', 'ar')
 
         Returns:
@@ -365,13 +365,25 @@ class VoiceParserService:
         """
         last_error = None
 
+        # Convert Django's InMemoryUploadedFile to a format OpenAI accepts
+        # OpenAI expects: bytes, io.IOBase, PathLike, or tuple (filename, content, content_type)
+        file_name = getattr(audio_file, 'name', 'audio.webm')
+        content_type = getattr(audio_file, 'content_type', 'audio/webm')
+
+        # Read file content as bytes
+        audio_file.seek(0)
+        file_content = audio_file.read()
+
+        # Create tuple format that OpenAI accepts
+        file_tuple = (file_name, file_content, content_type)
+
         for attempt in range(self.MAX_RETRIES + 1):
             try:
                 # gpt-4o-transcribe returns JSON; we must parse it
                 # Using verbose_json to get the transcript text
                 response = self.client.audio.transcriptions.create(
                     model="gpt-4o-transcribe",
-                    file=audio_file,
+                    file=file_tuple,
                     language=language,
                     response_format="verbose_json",
                 )
@@ -396,9 +408,7 @@ class VoiceParserService:
                     delay = get_retry_delay(attempt)
                     logger.info(f"Retrying in {delay:.2f}s...")
                     time.sleep(delay)
-                    # Reset file position for retry
-                    if hasattr(audio_file, 'seek'):
-                        audio_file.seek(0)
+                    # No need to reset file position - we already have bytes in file_tuple
 
         logger.error(f"Transcription failed after {self.MAX_RETRIES + 1} attempts")
         raise last_error
