@@ -14,7 +14,7 @@ from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
 from django.db import transaction
 from django.utils import timezone
@@ -39,12 +39,39 @@ from .serializers import (
     ImportResultSerializer,
     VoiceParseRequestSerializer,
     VoiceParseResponseSerializer,
+    ParsedTransactionSerializer,
+    CreateFromParsedRequestSerializer,
 )
 
 
 # =============================================================================
 # Helper Functions
 # =============================================================================
+
+def redact_parser_output(raw_response: dict) -> dict:
+    """
+    Redact sensitive information from LLM parser output before storage.
+
+    This removes the full raw LLM response which may contain:
+    - Account names/numbers that might expose client data patterns
+    - Amounts and descriptions from the transcript
+    - Any hallucinated or inferred sensitive data
+
+    We only keep a reference that parsing occurred, not the full output.
+    The actual parsed data is stored in the row fields directly.
+    """
+    if not raw_response:
+        return {}
+
+    # Only keep metadata about the parsing, not the actual content
+    return {
+        "parsed_at": raw_response.get("parsed_at"),
+        "model_used": raw_response.get("model_used"),
+        "transaction_count": len(raw_response.get("transactions", [])) if isinstance(raw_response.get("transactions"), list) else None,
+        # Note: Full LLM output intentionally omitted to protect privacy
+        "_redacted": True,
+    }
+
 
 def create_row_from_data(data: dict, company, user) -> ScratchpadRow:
     """Create a ScratchpadRow from validated data."""
@@ -883,19 +910,616 @@ class AccountDimensionRuleDetailView(APIView):
 
 class ScratchpadParseVoiceView(APIView):
     """
-    POST /api/scratchpad/parse-voice/ -> parse voice transcript
+    POST /api/scratchpad/parse-voice/ -> parse voice transcript or audio
+
+    Supports two modes:
+    1. Audio file upload (multipart/form-data with 'audio' field)
+    2. Text transcript (JSON body with 'transcript' field)
+
+    Options:
+    - language: 'en' (default) or 'ar'
+    - create_rows: If true, creates ScratchpadRows from parsed data
+    - group_id: Optional group ID for created rows
+
+    Error Handling:
+    - Feature disabled: 403 Forbidden
+    - Quota exceeded: 429 Too Many Requests
+    - ASR fails: No row created, error returned
+    - Parsing fails: Row created with raw_transcript, status=RAW
+    """
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def post(self, request):
+        import logging
+        logger = logging.getLogger(__name__)
+
+        actor = resolve_actor(request)
+        require(actor, "journal.create")
+
+        # Check if audio file is provided
+        audio_file = request.FILES.get('audio')
+        language = request.data.get('language', 'en')
+
+        # Handle create_rows as either boolean or string (multipart sends strings)
+        create_rows_raw = request.data.get('create_rows', False)
+        if isinstance(create_rows_raw, bool):
+            create_rows = create_rows_raw
+        else:
+            create_rows = str(create_rows_raw).lower() == 'true'
+
+        group_id = request.data.get('group_id')
+
+        # Get audio duration from frontend (in seconds)
+        audio_seconds_raw = request.data.get('audio_seconds')
+        audio_seconds = None
+        if audio_seconds_raw:
+            try:
+                from decimal import Decimal
+                audio_seconds = Decimal(str(audio_seconds_raw))
+            except (ValueError, TypeError):
+                pass
+
+        # Import the voice parser service and exceptions
+        from .voice_parser import (
+            voice_parser,
+            VoiceFeatureDisabledError,
+            VoiceQuotaExceededError,
+            VoiceQuotaNotConfiguredError,
+            VoiceProviderNotConfiguredError,
+        )
+
+        try:
+            # Check feature gating and quota first
+            voice_parser.check_feature_enabled(actor.company)
+            voice_parser.check_quota(actor.company)
+
+            if audio_file:
+                # Validate audio file size
+                from django.conf import settings
+                max_size_mb = getattr(settings, 'VOICE_MAX_AUDIO_SIZE_MB', 25)
+                max_size_bytes = max_size_mb * 1024 * 1024
+
+                if audio_file.size > max_size_bytes:
+                    return Response(
+                        {"error": f"Audio file too large. Maximum size is {max_size_mb}MB."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                # Mode 1: Audio file upload - transcribe and parse
+                result = voice_parser.parse_audio(
+                    audio_file=audio_file,
+                    company=actor.company,
+                    language=language,
+                    audio_seconds=audio_seconds,
+                    user=actor.user,
+                )
+            else:
+                # Mode 2: Text transcript parsing
+                transcript = request.data.get('transcript', '').strip()
+                if not transcript:
+                    return Response(
+                        {"error": "Either 'audio' file or 'transcript' text is required"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                result = voice_parser.parse_transcript(
+                    transcript=transcript,
+                    company=actor.company,
+                    language=language,
+                )
+                # Log usage for text-only parsing too
+                voice_parser.log_usage(
+                    company=actor.company,
+                    user=actor.user,
+                    result=result,
+                    audio_seconds=None,
+                )
+
+            created_row_ids = []
+
+            # If parsing failed but we have a transcript, still store it
+            if not result.success and result.transcript and create_rows:
+                # Create a RAW row with just the transcript (parsing failed)
+                row = self._create_raw_row(
+                    transcript=result.transcript,
+                    company=actor.company,
+                    user=actor.user,
+                    group_id=group_id,
+                )
+                created_row_ids.append(str(row.public_id))
+
+                return Response({
+                    "success": False,
+                    "transcript": result.transcript,
+                    "transactions": [],
+                    "error": result.error,
+                    "created_rows": created_row_ids,
+                })
+
+            if not result.success:
+                return Response({
+                    "success": False,
+                    "transcript": result.transcript,
+                    "transactions": [],
+                    "error": result.error,
+                    "created_rows": [],
+                })
+
+            # Convert ParsedTransaction dataclasses to dicts
+            transactions_data = []
+            for tx in result.transactions:
+                # Get overall confidence from the confidence dict
+                overall_confidence = tx.confidence.get('overall', 0.5) if isinstance(tx.confidence, dict) else tx.confidence
+
+                transactions_data.append({
+                    "transaction_date": tx.transaction_date.isoformat() if tx.transaction_date else None,
+                    "description": tx.description,
+                    "description_ar": tx.description_ar,
+                    "amount": str(tx.amount) if tx.amount else None,
+                    "debit_account_code": tx.debit_account_code,
+                    "credit_account_code": tx.credit_account_code,
+                    "dimensions": tx.dimensions,
+                    "notes": tx.notes,
+                    "confidence": overall_confidence,
+                    "suggestions": tx.questions,  # Clarification questions
+                })
+
+            # Optionally create ScratchpadRows from parsed data
+            if create_rows and result.transactions:
+                created_row_ids = self._create_rows_from_parsed(
+                    transactions=result.transactions,
+                    transcript=result.transcript,
+                    raw_response=result.raw_response,
+                    company=actor.company,
+                    user=actor.user,
+                    group_id=group_id,
+                )
+
+            return Response({
+                "success": True,
+                "transcript": result.transcript,
+                "transactions": transactions_data,
+                "error": None,
+                "created_rows": created_row_ids,
+            })
+
+        except VoiceFeatureDisabledError as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        except VoiceQuotaExceededError as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+        except VoiceQuotaNotConfiguredError as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        except VoiceProviderNotConfiguredError as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except ImportError as e:
+            return Response(
+                {"error": f"Voice parsing service not available: {e}"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except ValueError as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except Exception as e:
+            logger.exception("Voice parsing failed")
+            return Response(
+                {"error": f"Voice parsing failed: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+    def _create_raw_row(
+        self,
+        transcript: str,
+        company,
+        user,
+        group_id: str = None,
+    ) -> ScratchpadRow:
+        """
+        Create a RAW scratchpad row with just the transcript.
+
+        This is used when ASR succeeds but parsing fails.
+        The transcript is preserved so the user can edit manually.
+        """
+        parsed_group_id = uuid.UUID(group_id) if group_id else uuid.uuid4()
+
+        return ScratchpadRow.objects.create(
+            company=company,
+            group_id=parsed_group_id,
+            group_order=0,
+            status=ScratchpadRow.Status.RAW,
+            source=ScratchpadRow.Source.VOICE,
+            raw_input=transcript,
+            created_by=user,
+        )
+
+    def _create_rows_from_parsed(
+        self,
+        transactions,
+        transcript: str,
+        raw_response: dict,
+        company,
+        user,
+        group_id: str = None,
+    ) -> list:
+        """Create ScratchpadRows from parsed transactions."""
+        created_ids = []
+        parsed_group_id = uuid.UUID(group_id) if group_id else uuid.uuid4()
+
+        for idx, tx in enumerate(transactions):
+            # Resolve account codes to account objects
+            debit_account = None
+            credit_account = None
+
+            if tx.debit_account_code:
+                debit_account = Account.objects.filter(
+                    company=company,
+                    code=tx.debit_account_code,
+                ).first()
+
+            if tx.credit_account_code:
+                credit_account = Account.objects.filter(
+                    company=company,
+                    code=tx.credit_account_code,
+                ).first()
+
+            # Create the row with redacted parser output
+            row = ScratchpadRow.objects.create(
+                company=company,
+                group_id=parsed_group_id,
+                group_order=idx,
+                status=ScratchpadRow.Status.PARSED,
+                source=ScratchpadRow.Source.VOICE,
+                transaction_date=tx.transaction_date,
+                description=tx.description,
+                description_ar=tx.description_ar,
+                amount=tx.amount,
+                debit_account=debit_account,
+                credit_account=credit_account,
+                notes=tx.notes,
+                raw_input=transcript,
+                parser_output_json={
+                    "confidence": tx.confidence,
+                    "questions": tx.questions,
+                    # Raw LLM response is redacted to protect privacy
+                    "parser_metadata": redact_parser_output(raw_response),
+                },
+                created_by=user,
+            )
+
+            # Create dimension assignments
+            if tx.dimensions:
+                for dim_code, value_code in tx.dimensions.items():
+                    dimension = AnalysisDimension.objects.filter(
+                        company=company,
+                        code=dim_code,
+                    ).first()
+
+                    if dimension:
+                        dim_value = AnalysisDimensionValue.objects.filter(
+                            dimension=dimension,
+                            code=value_code,
+                        ).first()
+
+                        ScratchpadRowDimension.objects.create(
+                            scratchpad_row=row,
+                            company=company,
+                            dimension=dimension,
+                            dimension_value=dim_value,
+                            raw_value=value_code if not dim_value else "",
+                        )
+
+            created_ids.append(str(row.public_id))
+
+        return created_ids
+
+
+# =============================================================================
+# Create from Parsed View (avoids double parsing)
+# =============================================================================
+
+class ScratchpadCreateFromParsedView(APIView):
+    """
+    POST /api/scratchpad/create-from-parsed/ -> create rows from already-parsed data
+
+    This endpoint allows the frontend to create ScratchpadRows from transactions
+    that were already parsed (via parse-voice with create_rows=false), avoiding
+    the need to call the parser again.
+
+    Request body:
+    {
+        "transactions": [
+            {
+                "transaction_date": "2026-02-10",
+                "description": "Payment to supplier",
+                "description_ar": "دفعة للمورد",
+                "amount": "5000.00",
+                "debit_account_code": "2110",
+                "credit_account_code": "1110",
+                "dimensions": {"COSTCENTER": "CC001"},
+                "notes": "",
+                "confidence": 0.9,
+                "suggestions": []
+            }
+        ],
+        "transcript": "Original voice transcript...",
+        "group_id": "optional-uuid"
+    }
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        from decimal import Decimal
+        import logging
+        logger = logging.getLogger(__name__)
+
         actor = resolve_actor(request)
         require(actor, "journal.create")
 
-        serializer = VoiceParseRequestSerializer(data=request.data)
+        serializer = CreateFromParsedRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        # TODO: Implement voice parsing with OpenAI
-        return Response(
-            {"detail": "Voice parsing not yet implemented."},
-            status=status.HTTP_501_NOT_IMPLEMENTED,
+        data = serializer.validated_data
+        transactions = data["transactions"]
+        transcript = data.get("transcript", "")
+        group_id_str = data.get("group_id")
+        parsed_group_id = uuid.UUID(str(group_id_str)) if group_id_str else uuid.uuid4()
+
+        created_ids = []
+
+        with transaction.atomic():
+            for idx, tx in enumerate(transactions):
+                # Resolve account codes to account objects
+                debit_account = None
+                credit_account = None
+
+                if tx.get("debit_account_code"):
+                    debit_account = Account.objects.filter(
+                        company=actor.company,
+                        code=tx["debit_account_code"],
+                    ).first()
+
+                if tx.get("credit_account_code"):
+                    credit_account = Account.objects.filter(
+                        company=actor.company,
+                        code=tx["credit_account_code"],
+                    ).first()
+
+                # Build redacted parser output (no raw LLM response)
+                parser_output = {
+                    "confidence": tx.get("confidence", 0.5),
+                    "suggestions": tx.get("suggestions", []),
+                    # Note: raw_response is intentionally omitted to avoid storing
+                    # potentially sensitive LLM output
+                }
+
+                # Create the row
+                row = ScratchpadRow.objects.create(
+                    company=actor.company,
+                    group_id=parsed_group_id,
+                    group_order=idx,
+                    status=ScratchpadRow.Status.PARSED,
+                    source=ScratchpadRow.Source.VOICE,
+                    transaction_date=tx.get("transaction_date"),
+                    description=tx.get("description", ""),
+                    description_ar=tx.get("description_ar", ""),
+                    amount=tx.get("amount"),
+                    debit_account=debit_account,
+                    credit_account=credit_account,
+                    notes=tx.get("notes", ""),
+                    raw_input=transcript,
+                    parser_output_json=parser_output,
+                    created_by=actor.user,
+                )
+
+                # Create dimension assignments
+                dimensions = tx.get("dimensions", {})
+                if dimensions:
+                    for dim_code, value_code in dimensions.items():
+                        dimension = AnalysisDimension.objects.filter(
+                            company=actor.company,
+                            code=dim_code,
+                        ).first()
+
+                        if dimension:
+                            dim_value = AnalysisDimensionValue.objects.filter(
+                                dimension=dimension,
+                                code=value_code,
+                            ).first()
+
+                            ScratchpadRowDimension.objects.create(
+                                scratchpad_row=row,
+                                company=actor.company,
+                                dimension=dimension,
+                                dimension_value=dim_value,
+                                raw_value=value_code if not dim_value else "",
+                            )
+
+                created_ids.append(str(row.public_id))
+
+        return Response({
+            "success": True,
+            "created_rows": created_ids,
+            "group_id": str(parsed_group_id),
+        }, status=status.HTTP_201_CREATED)
+
+
+# =============================================================================
+# Voice Usage View
+# =============================================================================
+
+class VoiceUsageView(APIView):
+    """
+    GET /api/scratchpad/voice-usage/ -> get voice usage statistics
+
+    Query params:
+    - from_date: Start date (YYYY-MM-DD), default: 30 days ago
+    - to_date: End date (YYYY-MM-DD), default: today
+    - user_id: Filter by specific user (admin only)
+
+    Returns:
+    - company_totals: Aggregate stats for the company
+    - per_user: Usage breakdown by user
+    - daily: Daily usage for the period
+    - recent_events: Last 50 usage events
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from datetime import timedelta
+        from decimal import Decimal
+        from django.db.models import Sum, Count, Q
+        from django.db.models.functions import TruncDate
+
+        from .models import VoiceUsageEvent
+
+        actor = resolve_actor(request)
+        # Require admin permission to view usage
+        require(actor, "company.manage")
+
+        # Parse date range (default: last 30 days)
+        from_date_str = request.query_params.get("from_date")
+        to_date_str = request.query_params.get("to_date")
+
+        today = timezone.now().date()
+        from_date = today - timedelta(days=30)
+        to_date = today
+
+        if from_date_str:
+            try:
+                from datetime import datetime
+                from_date = datetime.strptime(from_date_str, "%Y-%m-%d").date()
+            except ValueError:
+                pass
+
+        if to_date_str:
+            try:
+                from datetime import datetime
+                to_date = datetime.strptime(to_date_str, "%Y-%m-%d").date()
+            except ValueError:
+                pass
+
+        # Base queryset
+        queryset = VoiceUsageEvent.objects.filter(
+            company=actor.company,
+            created_at__date__gte=from_date,
+            created_at__date__lte=to_date,
         )
+
+        # Optional user filter
+        user_id = request.query_params.get("user_id")
+        if user_id:
+            queryset = queryset.filter(user_id=user_id)
+
+        # Company totals
+        company_totals = queryset.aggregate(
+            total_requests=Count("id"),
+            successful_requests=Count("id", filter=Q(success=True)),
+            total_audio_seconds=Sum("audio_seconds") or Decimal("0"),
+            total_transcript_chars=Sum("transcript_chars") or 0,
+            total_transactions=Sum("transactions_parsed") or 0,
+            total_asr_cost_usd=Sum("asr_cost_usd") or Decimal("0"),
+            total_parse_cost_usd=Sum("parse_cost_usd") or Decimal("0"),
+        )
+        company_totals["total_cost_usd"] = (
+            company_totals["total_asr_cost_usd"] +
+            company_totals["total_parse_cost_usd"]
+        )
+
+        # Per-user breakdown
+        user_stats = queryset.values(
+            "user_id", "user__email"
+        ).annotate(
+            total_requests=Count("id"),
+            successful_requests=Count("id", filter=Q(success=True)),
+            total_audio_seconds=Sum("audio_seconds"),
+            total_transcript_chars=Sum("transcript_chars"),
+            total_transactions=Sum("transactions_parsed"),
+            total_asr_cost_usd=Sum("asr_cost_usd"),
+            total_parse_cost_usd=Sum("parse_cost_usd"),
+        ).order_by("-total_requests")
+
+        per_user = [
+            {
+                "user_id": u["user_id"],
+                "user_email": u["user__email"],
+                "total_requests": u["total_requests"],
+                "successful_requests": u["successful_requests"],
+                "total_audio_seconds": u["total_audio_seconds"] or Decimal("0"),
+                "total_transcript_chars": u["total_transcript_chars"] or 0,
+                "total_transactions": u["total_transactions"] or 0,
+                "total_asr_cost_usd": u["total_asr_cost_usd"] or Decimal("0"),
+                "total_parse_cost_usd": u["total_parse_cost_usd"] or Decimal("0"),
+                "total_cost_usd": (u["total_asr_cost_usd"] or Decimal("0")) + (u["total_parse_cost_usd"] or Decimal("0")),
+            }
+            for u in user_stats
+        ]
+
+        # Daily breakdown
+        daily_stats = queryset.annotate(
+            date=TruncDate("created_at")
+        ).values("date").annotate(
+            total_requests=Count("id"),
+            successful_requests=Count("id", filter=Q(success=True)),
+            total_audio_seconds=Sum("audio_seconds"),
+            total_transactions=Sum("transactions_parsed"),
+            total_asr_cost_usd=Sum("asr_cost_usd"),
+            total_parse_cost_usd=Sum("parse_cost_usd"),
+        ).order_by("-date")
+
+        daily = [
+            {
+                "date": d["date"],
+                "total_requests": d["total_requests"],
+                "successful_requests": d["successful_requests"],
+                "total_audio_seconds": d["total_audio_seconds"] or Decimal("0"),
+                "total_transactions": d["total_transactions"] or 0,
+                "total_cost_usd": (d["total_asr_cost_usd"] or Decimal("0")) + (d["total_parse_cost_usd"] or Decimal("0")),
+            }
+            for d in daily_stats[:30]  # Last 30 days max
+        ]
+
+        # Recent events (last 50)
+        recent = queryset.select_related("user").order_by("-created_at")[:50]
+        recent_events = [
+            {
+                "id": e.id,
+                "public_id": e.public_id,
+                "user_id": e.user_id,
+                "user_email": e.user.email,
+                "audio_seconds": e.audio_seconds,
+                "transcript_chars": e.transcript_chars,
+                "asr_model": e.asr_model,
+                "parse_model": e.parse_model,
+                "parse_input_tokens": e.parse_input_tokens,
+                "parse_output_tokens": e.parse_output_tokens,
+                "asr_cost_usd": e.asr_cost_usd,
+                "parse_cost_usd": e.parse_cost_usd,
+                "total_cost_usd": e.total_cost_usd,
+                "success": e.success,
+                "transactions_parsed": e.transactions_parsed,
+                "created_at": e.created_at,
+            }
+            for e in recent
+        ]
+
+        return Response({
+            "from_date": from_date.isoformat(),
+            "to_date": to_date.isoformat(),
+            "company_totals": company_totals,
+            "per_user": per_user,
+            "daily": daily,
+            "recent_events": recent_events,
+        })

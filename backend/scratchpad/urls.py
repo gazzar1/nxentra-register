@@ -31,4 +31,10 @@ urlpatterns = [
 
     # Voice parsing (optional feature)
     path("parse-voice/", views.ScratchpadParseVoiceView.as_view(), name="parse-voice"),
+
+    # Create rows from already-parsed data (avoids double API call)
+    path("create-from-parsed/", views.ScratchpadCreateFromParsedView.as_view(), name="create-from-parsed"),
+
+    # Voice usage statistics (admin only)
+    path("voice-usage/", views.VoiceUsageView.as_view(), name="voice-usage"),
 ]

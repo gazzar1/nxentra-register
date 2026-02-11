@@ -94,7 +94,27 @@ class Company(ProjectionWriteGuard):
 
     # Status
     is_active = models.BooleanField(default=True)
-    
+
+    # Voice Feature Settings (Add-On)
+    voice_enabled = models.BooleanField(
+        default=False,
+        help_text="Enable voice input feature for this tenant",
+    )
+    voice_quota = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Monthly voice row quota (null = unlimited)",
+    )
+    voice_rows_used = models.PositiveIntegerField(
+        default=0,
+        help_text="Voice rows used this period",
+    )
+    voice_quota_reset_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the quota was last reset",
+    )
+
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

@@ -7,8 +7,10 @@ import {
   Download,
   Send,
   RefreshCw,
+  Mic,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { VoiceInputDialog } from "./VoiceInputDialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -34,6 +36,7 @@ interface ScratchpadToolbarProps {
   onCommitReady: (postImmediately: boolean) => void;
   onImport: (file: File) => void;
   onExport: (format: "csv" | "xlsx") => void;
+  onVoiceCreated: (rowIds: string[]) => void;
   onRefresh: () => void;
   isValidating?: boolean;
   isCommitting?: boolean;
@@ -50,6 +53,7 @@ export function ScratchpadToolbar({
   onCommitReady,
   onImport,
   onExport,
+  onVoiceCreated,
   onRefresh,
   isValidating = false,
   isCommitting = false,
@@ -58,6 +62,7 @@ export function ScratchpadToolbar({
 }: ScratchpadToolbarProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showCommitDialog, setShowCommitDialog] = useState(false);
+  const [showVoiceDialog, setShowVoiceDialog] = useState(false);
   const [postImmediately, setPostImmediately] = useState(false);
   const { toast } = useToast();
 
@@ -97,6 +102,16 @@ export function ScratchpadToolbar({
       <Button onClick={onAddRow} size="sm">
         <Plus className="me-2 h-4 w-4" />
         Add Row
+      </Button>
+
+      {/* Voice input button */}
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => setShowVoiceDialog(true)}
+      >
+        <Mic className="me-2 h-4 w-4" />
+        Voice
       </Button>
 
       {/* Selected actions */}
@@ -220,6 +235,19 @@ export function ScratchpadToolbar({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Voice input dialog */}
+      <VoiceInputDialog
+        open={showVoiceDialog}
+        onOpenChange={setShowVoiceDialog}
+        onTransactionsCreated={(rowIds) => {
+          onVoiceCreated(rowIds);
+          toast({
+            title: "Rows created",
+            description: `Created ${rowIds.length} row(s) from voice input.`,
+          });
+        }}
+      />
     </div>
   );
 }

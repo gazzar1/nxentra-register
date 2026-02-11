@@ -114,6 +114,7 @@ class ScratchpadRowSerializer(serializers.ModelSerializer):
             "credit_account_name",
             "notes",
             "raw_input",
+            "parser_output_json",
             "validation_errors",
             "import_batch_id",
             "import_row_number",
@@ -130,6 +131,7 @@ class ScratchpadRowSerializer(serializers.ModelSerializer):
             "id",
             "public_id",
             "status",
+            "parser_output_json",
             "validation_errors",
             "committed_at",
             "committed_by",
@@ -374,12 +376,175 @@ class DimensionSchemaResponseSerializer(serializers.Serializer):
 # =============================================================================
 
 class VoiceParseRequestSerializer(serializers.Serializer):
-    """Serializer for voice parsing request."""
-    transcript = serializers.CharField(min_length=1)
+    """
+    Serializer for voice parsing request.
+
+    Supports two modes:
+    1. Audio file upload (multipart/form-data)
+    2. Text transcript (JSON body)
+    """
+    # For text-based parsing (JSON body)
+    transcript = serializers.CharField(
+        required=False,
+        allow_blank=False,
+        help_text="Text transcript to parse (alternative to audio upload)",
+    )
+    # Language for transcription and parsing
+    language = serializers.ChoiceField(
+        choices=[("en", "English"), ("ar", "Arabic")],
+        default="en",
+        required=False,
+    )
+    # Whether to create ScratchpadRows from parsed data
+    create_rows = serializers.BooleanField(
+        default=False,
+        required=False,
+        help_text="If true, create ScratchpadRows from parsed transactions",
+    )
+    # Optional group_id for created rows
+    group_id = serializers.UUIDField(
+        required=False,
+        allow_null=True,
+        help_text="Group ID for created rows (auto-generated if not provided)",
+    )
+
+
+class ParsedTransactionSerializer(serializers.Serializer):
+    """Serializer for a single parsed transaction from voice input."""
+    transaction_date = serializers.DateField(allow_null=True)
+    description = serializers.CharField(allow_blank=True)
+    description_ar = serializers.CharField(allow_blank=True)
+    amount = serializers.DecimalField(
+        max_digits=18, decimal_places=2, allow_null=True
+    )
+    debit_account_code = serializers.CharField(allow_null=True, allow_blank=True)
+    credit_account_code = serializers.CharField(allow_null=True, allow_blank=True)
+    dimensions = serializers.DictField(
+        child=serializers.CharField(),
+        required=False,
+        default=dict,
+        help_text="Dimension code -> value code mapping",
+    )
+    notes = serializers.CharField(allow_blank=True, default="")
+    confidence = serializers.FloatField(min_value=0.0, max_value=1.0)
+    suggestions = serializers.ListField(
+        child=serializers.CharField(),
+        required=False,
+        default=list,
+        help_text="Parser suggestions for user review",
+    )
 
 
 class VoiceParseResponseSerializer(serializers.Serializer):
     """Serializer for voice parsing response."""
-    parsed = serializers.DictField()
-    confidence = serializers.FloatField()
-    raw_input = serializers.CharField()
+    success = serializers.BooleanField()
+    transcript = serializers.CharField(allow_blank=True)
+    transactions = ParsedTransactionSerializer(many=True)
+    error = serializers.CharField(allow_null=True, required=False)
+    # If create_rows was True, include created row IDs
+    created_rows = serializers.ListField(
+        child=serializers.UUIDField(),
+        required=False,
+        default=list,
+    )
+
+
+class CreateFromParsedTransactionSerializer(serializers.Serializer):
+    """
+    Serializer for a single transaction in the create-from-parsed endpoint.
+
+    This is used when the frontend has already received parsed data and wants
+    to create rows without re-parsing (avoiding double API calls).
+    """
+    transaction_date = serializers.DateField(required=False, allow_null=True)
+    description = serializers.CharField(required=False, allow_blank=True, default="")
+    description_ar = serializers.CharField(required=False, allow_blank=True, default="")
+    amount = serializers.DecimalField(
+        max_digits=18, decimal_places=2, required=False, allow_null=True
+    )
+    debit_account_code = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    credit_account_code = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    dimensions = serializers.DictField(
+        child=serializers.CharField(),
+        required=False,
+        default=dict,
+    )
+    notes = serializers.CharField(required=False, allow_blank=True, default="")
+    confidence = serializers.FloatField(required=False, default=0.5)
+    suggestions = serializers.ListField(
+        child=serializers.CharField(),
+        required=False,
+        default=list,
+    )
+
+
+class CreateFromParsedRequestSerializer(serializers.Serializer):
+    """
+    Serializer for creating rows from already-parsed transactions.
+
+    This avoids the double-parse problem where:
+    1. Frontend calls parse-voice (create_rows=false) to get parsed transactions
+    2. User reviews them
+    3. Frontend calls parse-voice AGAIN (create_rows=true) to create rows
+
+    Instead, step 3 can call this endpoint with the already-parsed data.
+    """
+    transactions = CreateFromParsedTransactionSerializer(many=True, min_length=1)
+    transcript = serializers.CharField(required=False, allow_blank=True, default="")
+    group_id = serializers.UUIDField(required=False, allow_null=True)
+
+
+# =============================================================================
+# Voice Usage Serializers
+# =============================================================================
+
+class VoiceUsageEventSerializer(serializers.Serializer):
+    """Serializer for individual voice usage events."""
+    id = serializers.IntegerField()
+    public_id = serializers.UUIDField()
+    user_id = serializers.IntegerField()
+    user_email = serializers.CharField()
+    audio_seconds = serializers.DecimalField(max_digits=10, decimal_places=2, allow_null=True)
+    transcript_chars = serializers.IntegerField()
+    asr_model = serializers.CharField()
+    parse_model = serializers.CharField()
+    parse_input_tokens = serializers.IntegerField()
+    parse_output_tokens = serializers.IntegerField()
+    asr_cost_usd = serializers.DecimalField(max_digits=10, decimal_places=6)
+    parse_cost_usd = serializers.DecimalField(max_digits=10, decimal_places=6)
+    total_cost_usd = serializers.DecimalField(max_digits=10, decimal_places=6)
+    success = serializers.BooleanField()
+    transactions_parsed = serializers.IntegerField()
+    created_at = serializers.DateTimeField()
+
+
+class VoiceUsageUserSummarySerializer(serializers.Serializer):
+    """Aggregated usage per user."""
+    user_id = serializers.IntegerField()
+    user_email = serializers.CharField()
+    total_requests = serializers.IntegerField()
+    successful_requests = serializers.IntegerField()
+    total_audio_seconds = serializers.DecimalField(max_digits=12, decimal_places=2)
+    total_transcript_chars = serializers.IntegerField()
+    total_transactions = serializers.IntegerField()
+    total_asr_cost_usd = serializers.DecimalField(max_digits=12, decimal_places=6)
+    total_parse_cost_usd = serializers.DecimalField(max_digits=12, decimal_places=6)
+    total_cost_usd = serializers.DecimalField(max_digits=12, decimal_places=6)
+
+
+class VoiceUsageDailySummarySerializer(serializers.Serializer):
+    """Daily usage summary."""
+    date = serializers.DateField()
+    total_requests = serializers.IntegerField()
+    successful_requests = serializers.IntegerField()
+    total_audio_seconds = serializers.DecimalField(max_digits=12, decimal_places=2)
+    total_transactions = serializers.IntegerField()
+    total_cost_usd = serializers.DecimalField(max_digits=12, decimal_places=6)
+
+
+class VoiceUsageSummaryResponseSerializer(serializers.Serializer):
+    """Complete usage summary response."""
+    company_totals = serializers.DictField()
+    per_user = VoiceUsageUserSummarySerializer(many=True)
+    daily = VoiceUsageDailySummarySerializer(many=True)
+    recent_events = VoiceUsageEventSerializer(many=True)

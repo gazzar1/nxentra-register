@@ -8,6 +8,8 @@ from datetime import timedelta
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
+
+
 SECRET_KEY = os.environ.get("SECRET_KEY", os.environ.get("DJANGO_SECRET_KEY", "changeme"))
 DEBUG = os.getenv("DEBUG", os.getenv("DJANGO_DEBUG", "True")) == "True"
 ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
@@ -201,6 +203,16 @@ BETA_GATE_ENABLED = os.getenv("BETA_GATE_ENABLED", "True") == "True"
 
 # Email verification token settings
 VERIFICATION_TOKEN_EXPIRY_HOURS = int(os.getenv("VERIFICATION_TOKEN_EXPIRY_HOURS", "24"))
+
+# =============================================================================
+# OpenAI Configuration (Voice Parsing)
+# =============================================================================
+# API key for OpenAI services (Whisper transcription, GPT-4o parsing)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+
+# Voice feature settings
+VOICE_PARSING_ENABLED = os.getenv("VOICE_PARSING_ENABLED", "True") == "True"
+VOICE_MAX_AUDIO_SIZE_MB = int(os.getenv("VOICE_MAX_AUDIO_SIZE_MB", "25"))  # Whisper limit
 
 # =============================================================================
 # Rate Limiting

@@ -24,3 +24,6 @@ redis>=5.0.0
 # Channels (WebSocket support)
 channels>=4.0.0
 channels-redis>=4.1.0
+
+# AI/ML (Voice parsing)
+openai>=1.0.0
