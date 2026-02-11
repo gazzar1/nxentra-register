@@ -408,7 +408,7 @@ class VoiceUsageEvent(models.Model):
     # Model info
     asr_model = models.CharField(
         max_length=50,
-        default="whisper-1",
+        default="gpt-4o-audio-preview",
         help_text="Model used for speech-to-text",
     )
     parse_model = models.CharField(
@@ -488,12 +488,14 @@ class VoiceUsageEvent(models.Model):
         """
         Calculate ASR cost based on audio duration.
 
-        gpt-4o-transcribe pricing: $0.006 per minute
+        gpt-4o-audio-preview pricing: ~$0.06 per minute (audio input tokens)
+        This is significantly higher than whisper-1 ($0.006/min) but provides
+        better accuracy, especially for Arabic.
         """
         if not audio_seconds:
             return Decimal("0")
         minutes = audio_seconds / Decimal("60")
-        return (minutes * Decimal("0.006")).quantize(Decimal("0.000001"))
+        return (minutes * Decimal("0.06")).quantize(Decimal("0.000001"))
 
     @classmethod
     def calculate_parse_cost(cls, input_tokens: int, output_tokens: int) -> Decimal:

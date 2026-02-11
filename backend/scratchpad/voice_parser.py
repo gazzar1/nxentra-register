@@ -173,7 +173,7 @@ class VoiceUsageInfo:
     """Token and cost tracking for a voice parsing operation."""
     audio_seconds: Optional[Decimal] = None
     transcript_chars: int = 0
-    asr_model: str = "whisper-1"
+    asr_model: str = "gpt-4o-audio-preview"
     parse_model: str = "gpt-4o"
     parse_input_tokens: int = 0
     parse_output_tokens: int = 0
@@ -337,9 +337,11 @@ class VoiceParserService:
         language: str = "en",
     ) -> str:
         """
-        Transcribe audio file using OpenAI gpt-4o-transcribe.
+        Transcribe audio file using OpenAI gpt-4o-audio-preview via Chat Completions.
 
-        This is ASR ONLY - no parsing, no accounting logic.
+        Uses the Chat Completions API with audio input instead of the Audio API.
+        This provides better Arabic support and uses the same API permissions as
+        text parsing.
 
         AUDIO POLICY: Audio is discarded after this call returns.
         Only the transcript text is returned; audio is never stored.
@@ -354,32 +356,63 @@ class VoiceParserService:
         Raises:
             Exception: If transcription fails after retries
         """
+        import base64
+
         last_error = None
 
-        # Convert Django's InMemoryUploadedFile to a format OpenAI accepts
-        # OpenAI expects: bytes, io.IOBase, PathLike, or tuple (filename, content, content_type)
-        file_name = getattr(audio_file, 'name', 'audio.webm')
-        content_type = getattr(audio_file, 'content_type', 'audio/webm')
-
-        # Read file content as bytes
+        # Read file content and convert to base64
         audio_file.seek(0)
         file_content = audio_file.read()
+        audio_base64 = base64.b64encode(file_content).decode('utf-8')
 
-        # Create tuple format that OpenAI accepts
-        file_tuple = (file_name, file_content, content_type)
+        # Determine audio format from content type
+        content_type = getattr(audio_file, 'content_type', 'audio/webm')
+
+        # Map content type to OpenAI format
+        format_map = {
+            'audio/webm': 'webm',
+            'audio/mp4': 'mp4',
+            'audio/mpeg': 'mp3',
+            'audio/wav': 'wav',
+            'audio/ogg': 'ogg',
+        }
+        audio_format = format_map.get(content_type, 'webm')
+
+        # Build language instruction
+        lang_name = "Arabic" if language == "ar" else "English"
+        system_prompt = f"""You are a transcription assistant. Transcribe the audio exactly as spoken.
+The audio is in {lang_name}. Output ONLY the transcribed text, nothing else.
+Do not translate - keep the original language.
+If the audio contains numbers, transcribe them as digits."""
 
         for attempt in range(self.MAX_RETRIES + 1):
             try:
-                # Use whisper-1 model which is more widely supported
-                # gpt-4o-transcribe has limited availability and format support
-                response = self.client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=file_tuple,
-                    language=language,
+                # Use gpt-4o-audio-preview via Chat Completions API
+                # This uses the same endpoint as text parsing
+                response = self.client.chat.completions.create(
+                    model="gpt-4o-audio-preview",
+                    modalities=["text"],
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": system_prompt,
+                        },
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_audio",
+                                    "input_audio": {
+                                        "data": audio_base64,
+                                        "format": audio_format,
+                                    }
+                                }
+                            ]
+                        }
+                    ],
                 )
 
-                # whisper-1 returns text directly
-                transcript = response.text.strip()
+                transcript = response.choices[0].message.content.strip()
                 return transcript
 
             except Exception as e:
@@ -397,7 +430,6 @@ class VoiceParserService:
                     delay = get_retry_delay(attempt)
                     logger.info(f"Retrying in {delay:.2f}s...")
                     time.sleep(delay)
-                    # No need to reset file position - we already have bytes in file_tuple
 
         logger.error(f"Transcription failed after {self.MAX_RETRIES + 1} attempts")
         raise last_error
