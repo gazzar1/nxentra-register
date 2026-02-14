@@ -54,6 +54,7 @@ export interface JournalEntry {
   posted_at: string | null;
   posted_by: number | null;
   posted_by_name?: string;
+  posted_by_email?: string;
   reversed_at: string | null;
   reversed_by: number | null;
   reverses_entry: number | null;
