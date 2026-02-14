@@ -1502,3 +1502,157 @@ class SeedAccountsView(APIView):
             "skipped": result.skipped,
             "errors": result.errors,
         }, status=status.HTTP_201_CREATED if result.created else status.HTTP_200_OK)
+
+
+# =============================================================================
+# Cash Application Views
+# =============================================================================
+
+class CustomerReceiptCreateView(APIView):
+    """
+    POST /api/accounting/customer-receipts/ -> record customer receipt
+
+    Records a payment received from a customer.
+    Creates a journal entry: Dr Bank, Cr AR Control.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from .commands import record_customer_receipt
+
+        actor = resolve_actor(request)
+
+        # Parse request body
+        customer_id = request.data.get("customer_id")
+        receipt_date = request.data.get("receipt_date")
+        amount = request.data.get("amount")
+        bank_account_id = request.data.get("bank_account_id")
+        ar_control_account_id = request.data.get("ar_control_account_id")
+        reference = request.data.get("reference", "")
+        memo = request.data.get("memo", "")
+
+        # Validate required fields
+        if not customer_id:
+            return Response(
+                {"detail": "customer_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not receipt_date:
+            return Response(
+                {"detail": "receipt_date is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not amount:
+            return Response(
+                {"detail": "amount is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not bank_account_id:
+            return Response(
+                {"detail": "bank_account_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not ar_control_account_id:
+            return Response(
+                {"detail": "ar_control_account_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        result = record_customer_receipt(
+            actor=actor,
+            customer_id=int(customer_id),
+            receipt_date=receipt_date,
+            amount=str(amount),
+            bank_account_id=int(bank_account_id),
+            ar_control_account_id=int(ar_control_account_id),
+            reference=reference,
+            memo=memo,
+        )
+
+        if not result.success:
+            return Response(
+                {"detail": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response({
+            "receipt_public_id": result.data["receipt_public_id"],
+            "journal_entry_id": result.data["journal_entry"].id,
+            "amount": result.data["amount"],
+            "customer_code": result.data["customer_code"],
+        }, status=status.HTTP_201_CREATED)
+
+
+class VendorPaymentCreateView(APIView):
+    """
+    POST /api/accounting/vendor-payments/ -> record vendor payment
+
+    Records a payment made to a vendor.
+    Creates a journal entry: Dr AP Control, Cr Bank.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from .commands import record_vendor_payment
+
+        actor = resolve_actor(request)
+
+        # Parse request body
+        vendor_id = request.data.get("vendor_id")
+        payment_date = request.data.get("payment_date")
+        amount = request.data.get("amount")
+        bank_account_id = request.data.get("bank_account_id")
+        ap_control_account_id = request.data.get("ap_control_account_id")
+        reference = request.data.get("reference", "")
+        memo = request.data.get("memo", "")
+
+        # Validate required fields
+        if not vendor_id:
+            return Response(
+                {"detail": "vendor_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not payment_date:
+            return Response(
+                {"detail": "payment_date is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not amount:
+            return Response(
+                {"detail": "amount is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not bank_account_id:
+            return Response(
+                {"detail": "bank_account_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not ap_control_account_id:
+            return Response(
+                {"detail": "ap_control_account_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        result = record_vendor_payment(
+            actor=actor,
+            vendor_id=int(vendor_id),
+            payment_date=payment_date,
+            amount=str(amount),
+            bank_account_id=int(bank_account_id),
+            ap_control_account_id=int(ap_control_account_id),
+            reference=reference,
+            memo=memo,
+        )
+
+        if not result.success:
+            return Response(
+                {"detail": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response({
+            "payment_public_id": result.data["payment_public_id"],
+            "journal_entry_id": result.data["journal_entry"].id,
+            "amount": result.data["amount"],
+            "vendor_code": result.data["vendor_code"],
+        }, status=status.HTTP_201_CREATED)

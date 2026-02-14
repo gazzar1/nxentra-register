@@ -42,6 +42,9 @@ from .views import (
     CustomerDetailView,
     VendorListCreateView,
     VendorDetailView,
+    # Cash application views
+    CustomerReceiptCreateView,
+    VendorPaymentCreateView,
     # Statistical entry views
     StatisticalEntryListCreateView,
     StatisticalEntryDetailView,
@@ -173,6 +176,20 @@ urlpatterns = [
         "vendors/<str:code>/",
         VendorDetailView.as_view(),
         name="vendor-detail",
+    ),
+
+    # ==========================================================================
+    # Cash Application (Customer Receipts / Vendor Payments)
+    # ==========================================================================
+    path(
+        "customer-receipts/",
+        CustomerReceiptCreateView.as_view(),
+        name="customer-receipt-create",
+    ),
+    path(
+        "vendor-payments/",
+        VendorPaymentCreateView.as_view(),
+        name="vendor-payment-create",
     ),
 
     # ==========================================================================

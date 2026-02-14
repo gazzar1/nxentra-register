@@ -523,6 +523,244 @@ class InventoryBalance(ProjectionOwnedModel):
         return qty * self.avg_cost
 
 
+class CustomerBalance(ProjectionOwnedModel):
+    """
+    Materialized customer balance (subledger).
+
+    This is the single source of truth for "what is the balance owed by customer X?"
+    It is computed by consuming journal_entry.posted events where lines have
+    a customer counterparty.
+
+    The balance represents the customer's AR balance:
+    - Positive = customer owes us (normal for AR)
+    - Negative = we owe customer (overpayment/credit)
+
+    Attributes:
+        company: Tenant isolation
+        customer: The customer
+        balance: Current outstanding balance
+        debit_total: Sum of all debits (invoices, debit notes)
+        credit_total: Sum of all credits (payments, credit notes)
+        last_invoice_date: Date of most recent invoice
+        last_payment_date: Date of most recent payment
+        oldest_open_date: Date of oldest unpaid item (for aging)
+    """
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="customer_balances",
+    )
+
+    customer = models.OneToOneField(
+        "accounting.Customer",
+        on_delete=models.CASCADE,
+        related_name="projected_balance",
+    )
+
+    # Current balance (debit - credit for AR)
+    balance = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Current outstanding balance (positive = owed to us)",
+    )
+
+    # Running totals for audit/verification
+    debit_total = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Sum of all debits (invoices, debit notes)",
+    )
+
+    credit_total = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Sum of all credits (payments, credit notes)",
+    )
+
+    # Statistics
+    transaction_count = models.PositiveIntegerField(
+        default=0,
+        help_text="Number of transactions affecting this customer",
+    )
+
+    last_invoice_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Date of most recent invoice",
+    )
+
+    last_payment_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Date of most recent payment received",
+    )
+
+    oldest_open_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Date of oldest unpaid item (for aging reports)",
+    )
+
+    # Event tracking for idempotency
+    last_event = models.ForeignKey(
+        BusinessEvent,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        help_text="Last event that updated this balance",
+    )
+
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Customer Balance"
+        verbose_name_plural = "Customer Balances"
+        indexes = [
+            models.Index(fields=["company", "customer"]),
+            models.Index(fields=["company", "balance"]),
+            models.Index(fields=["company", "oldest_open_date"]),
+        ]
+
+    def __str__(self):
+        return f"{self.customer.code}: {self.balance}"
+
+    def apply_debit(self, amount: Decimal):
+        """Apply a debit (increases balance owed)."""
+        self.debit_total += amount
+        self.balance = self.debit_total - self.credit_total
+
+    def apply_credit(self, amount: Decimal):
+        """Apply a credit (decreases balance owed)."""
+        self.credit_total += amount
+        self.balance = self.debit_total - self.credit_total
+
+
+class VendorBalance(ProjectionOwnedModel):
+    """
+    Materialized vendor balance (subledger).
+
+    This is the single source of truth for "what do we owe vendor X?"
+    It is computed by consuming journal_entry.posted events where lines have
+    a vendor counterparty.
+
+    The balance represents the vendor's AP balance:
+    - Positive = we owe vendor (normal for AP)
+    - Negative = vendor owes us (overpayment/debit balance)
+
+    Attributes:
+        company: Tenant isolation
+        vendor: The vendor
+        balance: Current outstanding balance
+        credit_total: Sum of all credits (bills, credit notes from vendor)
+        debit_total: Sum of all debits (payments, debit notes to vendor)
+        last_bill_date: Date of most recent bill
+        last_payment_date: Date of most recent payment
+        oldest_open_date: Date of oldest unpaid item (for aging)
+    """
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="vendor_balances",
+    )
+
+    vendor = models.OneToOneField(
+        "accounting.Vendor",
+        on_delete=models.CASCADE,
+        related_name="projected_balance",
+    )
+
+    # Current balance (credit - debit for AP)
+    balance = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Current outstanding balance (positive = we owe vendor)",
+    )
+
+    # Running totals for audit/verification
+    debit_total = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Sum of all debits (payments, debit notes)",
+    )
+
+    credit_total = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Sum of all credits (bills, credit notes from vendor)",
+    )
+
+    # Statistics
+    transaction_count = models.PositiveIntegerField(
+        default=0,
+        help_text="Number of transactions affecting this vendor",
+    )
+
+    last_bill_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Date of most recent bill",
+    )
+
+    last_payment_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Date of most recent payment made",
+    )
+
+    oldest_open_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Date of oldest unpaid item (for aging reports)",
+    )
+
+    # Event tracking for idempotency
+    last_event = models.ForeignKey(
+        BusinessEvent,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        help_text="Last event that updated this balance",
+    )
+
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Vendor Balance"
+        verbose_name_plural = "Vendor Balances"
+        indexes = [
+            models.Index(fields=["company", "vendor"]),
+            models.Index(fields=["company", "balance"]),
+            models.Index(fields=["company", "oldest_open_date"]),
+        ]
+
+    def __str__(self):
+        return f"{self.vendor.code}: {self.balance}"
+
+    def apply_debit(self, amount: Decimal):
+        """Apply a debit (decreases balance owed)."""
+        self.debit_total += amount
+        self.balance = self.credit_total - self.debit_total
+
+    def apply_credit(self, amount: Decimal):
+        """Apply a credit (increases balance owed)."""
+        self.credit_total += amount
+        self.balance = self.credit_total - self.debit_total
+
+
 class ProjectionAppliedEvent(ProjectionOwnedModel):
     """
     Tracks which events were applied by each projection to ensure idempotency.

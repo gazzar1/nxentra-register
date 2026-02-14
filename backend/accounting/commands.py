@@ -79,6 +79,8 @@ from events.types import (
     AccountAnalysisDefaultSetData,
     AccountAnalysisDefaultRemovedData,
     JournalLineAnalysisSetData,
+    CustomerReceiptRecordedData,
+    VendorPaymentRecordedData,
 )
 
 
@@ -2249,3 +2251,382 @@ def set_journal_line_analysis(
     _process_projections(actor.company)
     line = JournalLine.objects.get(entry=line.entry, line_no=line.line_no)
     return CommandResult.ok(line, event=event)
+
+
+# =============================================================================
+# Cash Application Commands
+# =============================================================================
+
+@transaction.atomic
+def record_customer_receipt(
+    actor: ActorContext,
+    customer_id: int,
+    receipt_date: str,
+    amount: str,
+    bank_account_id: int,
+    ar_control_account_id: int,
+    reference: str = "",
+    memo: str = "",
+) -> CommandResult:
+    """
+    Record a payment received from a customer.
+
+    Creates a journal entry:
+    - Dr Bank Account (amount)
+    - Cr AR Control (amount) with customer counterparty
+
+    This will:
+    1. Create a posted journal entry
+    2. Update account balances
+    3. Update customer subledger balance
+
+    Args:
+        actor: The actor context
+        customer_id: ID of the customer making the payment
+        receipt_date: Date of receipt (ISO format)
+        amount: Payment amount as string
+        bank_account_id: ID of bank/cash account to debit
+        ar_control_account_id: ID of AR control account to credit
+        reference: External reference (check #, wire ref, etc.)
+        memo: Optional memo
+
+    Returns:
+        CommandResult with the journal entry or error
+    """
+    from events.types import CustomerReceiptRecordedData
+
+    require(actor, "journal.post")
+
+    # Validate customer
+    try:
+        customer = Customer.objects.get(pk=customer_id, company=actor.company)
+    except Customer.DoesNotExist:
+        return CommandResult.fail("Customer not found.")
+
+    # Validate bank account
+    try:
+        bank_account = Account.objects.get(pk=bank_account_id, company=actor.company)
+    except Account.DoesNotExist:
+        return CommandResult.fail("Bank account not found.")
+
+    if bank_account.account_type != Account.AccountType.ASSET:
+        return CommandResult.fail("Bank account must be an Asset account.")
+
+    # Validate AR control account
+    try:
+        ar_control = Account.objects.get(pk=ar_control_account_id, company=actor.company)
+    except Account.DoesNotExist:
+        return CommandResult.fail("AR control account not found.")
+
+    if ar_control.account_type != Account.AccountType.ASSET:
+        return CommandResult.fail("AR control account must be an Asset account.")
+
+    # Parse and validate amount
+    try:
+        receipt_amount = Decimal(amount)
+    except (ValueError, TypeError):
+        return CommandResult.fail("Invalid amount format.")
+
+    if receipt_amount <= 0:
+        return CommandResult.fail("Amount must be positive.")
+
+    # Parse date
+    from datetime import date as date_cls
+    try:
+        parsed_date = date_cls.fromisoformat(receipt_date)
+    except (ValueError, TypeError):
+        return CommandResult.fail("Invalid date format. Use ISO format (YYYY-MM-DD).")
+
+    # Generate receipt public ID
+    receipt_public_id = uuid.uuid4()
+
+    # Create journal entry description
+    description = f"Receipt from {customer.name}"
+    if reference:
+        description += f" - Ref: {reference}"
+
+    # Build journal entry
+    entry_sequence = _next_company_sequence(actor.company, "journal_entry")
+    entry_public_id = uuid.uuid4()
+
+    lines = [
+        {
+            "account_public_id": str(bank_account.public_id),
+            "debit": str(receipt_amount),
+            "credit": "0",
+            "line_no": 1,
+            "memo": memo or f"Customer receipt from {customer.code}",
+        },
+        {
+            "account_public_id": str(ar_control.public_id),
+            "debit": "0",
+            "credit": str(receipt_amount),
+            "line_no": 2,
+            "memo": memo or f"Customer receipt from {customer.code}",
+            "customer_public_id": str(customer.public_id),
+        },
+    ]
+
+    # Create the journal entry directly (bypassing save_journal_entry for simplicity)
+    # We'll use the existing post_journal_entry flow
+    from events.types import JournalEntryPostedData, JournalLineData
+
+    line_data_list = []
+    for line in lines:
+        line_data_list.append(JournalLineData(
+            line_no=line["line_no"],
+            account_public_id=line["account_public_id"],
+            debit=line.get("debit", "0"),
+            credit=line.get("credit", "0"),
+            memo=line.get("memo", ""),
+            customer_public_id=line.get("customer_public_id"),
+            vendor_public_id=None,
+        ))
+
+    posted_at = timezone.now()
+
+    # Emit journal posted event
+    journal_event = emit_event(
+        actor=actor,
+        event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+        aggregate_type="JournalEntry",
+        aggregate_id=str(entry_public_id),
+        idempotency_key=f"customer_receipt:{receipt_public_id}",
+        data=JournalEntryPostedData(
+            entry_public_id=str(entry_public_id),
+            entry_type=JournalEntry.EntryType.STANDARD,
+            date=receipt_date,
+            description=description,
+            lines=[ld.to_dict() for ld in line_data_list],
+            posted_at=posted_at.isoformat(),
+            posted_by_id=actor.user.id,
+            posted_by_email=actor.user.email,
+            previous_status=JournalEntry.Status.INCOMPLETE,
+        ).to_dict(),
+    )
+
+    # Emit customer receipt event
+    receipt_event = emit_event(
+        actor=actor,
+        event_type=EventTypes.CUSTOMER_RECEIPT_RECORDED,
+        aggregate_type="CustomerReceipt",
+        aggregate_id=str(receipt_public_id),
+        idempotency_key=f"customer_receipt.recorded:{receipt_public_id}",
+        data=CustomerReceiptRecordedData(
+            receipt_public_id=str(receipt_public_id),
+            company_public_id=str(actor.company.public_id),
+            customer_public_id=str(customer.public_id),
+            customer_code=customer.code,
+            receipt_date=receipt_date,
+            amount=str(receipt_amount),
+            bank_account_public_id=str(bank_account.public_id),
+            bank_account_code=bank_account.code,
+            ar_control_account_public_id=str(ar_control.public_id),
+            ar_control_account_code=ar_control.code,
+            reference=reference,
+            memo=memo,
+            journal_entry_public_id=str(entry_public_id),
+            recorded_at=posted_at.isoformat(),
+            recorded_by_id=actor.user.id,
+            recorded_by_email=actor.user.email,
+        ).to_dict(),
+    )
+
+    _process_projections(actor.company)
+
+    # Get the created journal entry
+    entry = JournalEntry.objects.get(company=actor.company, public_id=entry_public_id)
+
+    return CommandResult.ok({
+        "receipt_public_id": str(receipt_public_id),
+        "journal_entry": entry,
+        "amount": str(receipt_amount),
+        "customer_code": customer.code,
+    }, event=receipt_event)
+
+
+@transaction.atomic
+def record_vendor_payment(
+    actor: ActorContext,
+    vendor_id: int,
+    payment_date: str,
+    amount: str,
+    bank_account_id: int,
+    ap_control_account_id: int,
+    reference: str = "",
+    memo: str = "",
+) -> CommandResult:
+    """
+    Record a payment made to a vendor.
+
+    Creates a journal entry:
+    - Dr AP Control (amount) with vendor counterparty
+    - Cr Bank Account (amount)
+
+    This will:
+    1. Create a posted journal entry
+    2. Update account balances
+    3. Update vendor subledger balance
+
+    Args:
+        actor: The actor context
+        vendor_id: ID of the vendor receiving payment
+        payment_date: Date of payment (ISO format)
+        amount: Payment amount as string
+        bank_account_id: ID of bank/cash account to credit
+        ap_control_account_id: ID of AP control account to debit
+        reference: External reference (check #, wire ref, etc.)
+        memo: Optional memo
+
+    Returns:
+        CommandResult with the journal entry or error
+    """
+    from events.types import VendorPaymentRecordedData
+
+    require(actor, "journal.post")
+
+    # Validate vendor
+    try:
+        vendor = Vendor.objects.get(pk=vendor_id, company=actor.company)
+    except Vendor.DoesNotExist:
+        return CommandResult.fail("Vendor not found.")
+
+    # Validate bank account
+    try:
+        bank_account = Account.objects.get(pk=bank_account_id, company=actor.company)
+    except Account.DoesNotExist:
+        return CommandResult.fail("Bank account not found.")
+
+    if bank_account.account_type != Account.AccountType.ASSET:
+        return CommandResult.fail("Bank account must be an Asset account.")
+
+    # Validate AP control account
+    try:
+        ap_control = Account.objects.get(pk=ap_control_account_id, company=actor.company)
+    except Account.DoesNotExist:
+        return CommandResult.fail("AP control account not found.")
+
+    if ap_control.account_type != Account.AccountType.LIABILITY:
+        return CommandResult.fail("AP control account must be a Liability account.")
+
+    # Parse and validate amount
+    try:
+        payment_amount = Decimal(amount)
+    except (ValueError, TypeError):
+        return CommandResult.fail("Invalid amount format.")
+
+    if payment_amount <= 0:
+        return CommandResult.fail("Amount must be positive.")
+
+    # Parse date
+    from datetime import date as date_cls
+    try:
+        parsed_date = date_cls.fromisoformat(payment_date)
+    except (ValueError, TypeError):
+        return CommandResult.fail("Invalid date format. Use ISO format (YYYY-MM-DD).")
+
+    # Generate payment public ID
+    payment_public_id = uuid.uuid4()
+
+    # Create journal entry description
+    description = f"Payment to {vendor.name}"
+    if reference:
+        description += f" - Ref: {reference}"
+
+    # Build journal entry
+    entry_sequence = _next_company_sequence(actor.company, "journal_entry")
+    entry_public_id = uuid.uuid4()
+
+    lines = [
+        {
+            "account_public_id": str(ap_control.public_id),
+            "debit": str(payment_amount),
+            "credit": "0",
+            "line_no": 1,
+            "memo": memo or f"Vendor payment to {vendor.code}",
+            "vendor_public_id": str(vendor.public_id),
+        },
+        {
+            "account_public_id": str(bank_account.public_id),
+            "debit": "0",
+            "credit": str(payment_amount),
+            "line_no": 2,
+            "memo": memo or f"Vendor payment to {vendor.code}",
+        },
+    ]
+
+    # Create the journal entry
+    from events.types import JournalEntryPostedData, JournalLineData
+
+    line_data_list = []
+    for line in lines:
+        line_data_list.append(JournalLineData(
+            line_no=line["line_no"],
+            account_public_id=line["account_public_id"],
+            debit=line.get("debit", "0"),
+            credit=line.get("credit", "0"),
+            memo=line.get("memo", ""),
+            customer_public_id=None,
+            vendor_public_id=line.get("vendor_public_id"),
+        ))
+
+    posted_at = timezone.now()
+
+    # Emit journal posted event
+    journal_event = emit_event(
+        actor=actor,
+        event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+        aggregate_type="JournalEntry",
+        aggregate_id=str(entry_public_id),
+        idempotency_key=f"vendor_payment:{payment_public_id}",
+        data=JournalEntryPostedData(
+            entry_public_id=str(entry_public_id),
+            entry_type=JournalEntry.EntryType.STANDARD,
+            date=payment_date,
+            description=description,
+            lines=[ld.to_dict() for ld in line_data_list],
+            posted_at=posted_at.isoformat(),
+            posted_by_id=actor.user.id,
+            posted_by_email=actor.user.email,
+            previous_status=JournalEntry.Status.INCOMPLETE,
+        ).to_dict(),
+    )
+
+    # Emit vendor payment event
+    payment_event = emit_event(
+        actor=actor,
+        event_type=EventTypes.VENDOR_PAYMENT_RECORDED,
+        aggregate_type="VendorPayment",
+        aggregate_id=str(payment_public_id),
+        idempotency_key=f"vendor_payment.recorded:{payment_public_id}",
+        data=VendorPaymentRecordedData(
+            payment_public_id=str(payment_public_id),
+            company_public_id=str(actor.company.public_id),
+            vendor_public_id=str(vendor.public_id),
+            vendor_code=vendor.code,
+            payment_date=payment_date,
+            amount=str(payment_amount),
+            bank_account_public_id=str(bank_account.public_id),
+            bank_account_code=bank_account.code,
+            ap_control_account_public_id=str(ap_control.public_id),
+            ap_control_account_code=ap_control.code,
+            reference=reference,
+            memo=memo,
+            journal_entry_public_id=str(entry_public_id),
+            recorded_at=posted_at.isoformat(),
+            recorded_by_id=actor.user.id,
+            recorded_by_email=actor.user.email,
+        ).to_dict(),
+    )
+
+    _process_projections(actor.company)
+
+    # Get the created journal entry
+    entry = JournalEntry.objects.get(company=actor.company, public_id=entry_public_id)
+
+    return CommandResult.ok({
+        "payment_public_id": str(payment_public_id),
+        "journal_entry": entry,
+        "amount": str(payment_amount),
+        "vendor_code": vendor.code,
+    }, event=payment_event)

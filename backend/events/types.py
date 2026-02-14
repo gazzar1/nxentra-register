@@ -1491,6 +1491,62 @@ class InvitationCancelledData(BaseEventData):
 
 
 # =============================================================================
+# Cash Application Events
+# =============================================================================
+
+@dataclass
+class CustomerReceiptRecordedData(BaseEventData):
+    """
+    Data for cash.customer_receipt_recorded event.
+
+    Emitted when a payment is received from a customer.
+    Reduces the customer's AR balance.
+    """
+    receipt_public_id: str
+    company_public_id: str
+    customer_public_id: str
+    customer_code: str
+    receipt_date: str
+    amount: str
+    bank_account_public_id: str
+    bank_account_code: str
+    ar_control_account_public_id: str
+    ar_control_account_code: str
+    reference: str = ""
+    memo: str = ""
+    journal_entry_public_id: str = ""
+    recorded_at: str = ""
+    recorded_by_id: Optional[int] = None
+    recorded_by_email: str = ""
+
+
+@dataclass
+class VendorPaymentRecordedData(BaseEventData):
+    """
+    Data for cash.vendor_payment_recorded event.
+
+    Emitted when a payment is made to a vendor.
+    Reduces the vendor's AP balance.
+    """
+    payment_public_id: str
+    company_public_id: str
+    vendor_public_id: str
+    vendor_code: str
+    payment_date: str
+    amount: str
+    bank_account_public_id: str
+    bank_account_code: str
+    ap_control_account_public_id: str
+    ap_control_account_code: str
+    reference: str = ""
+    memo: str = ""
+    journal_entry_public_id: str = ""
+    recorded_at: str = ""
+    recorded_by_id: Optional[int] = None
+    recorded_by_email: str = ""
+
+
+# =============================================================================
 # Scratchpad Events
 # =============================================================================
 
@@ -1662,6 +1718,10 @@ class EventTypes:
     INVITATION_ACCEPTED = "invitation.accepted"
     INVITATION_CANCELLED = "invitation.cancelled"
 
+    # Cash application events
+    CUSTOMER_RECEIPT_RECORDED = "cash.customer_receipt_recorded"
+    VENDOR_PAYMENT_RECORDED = "cash.vendor_payment_recorded"
+
     # Scratchpad events
     SCRATCHPAD_BATCH_COMMITTED = "scratchpad.batch_committed"
 
@@ -1743,6 +1803,10 @@ EVENT_DATA_CLASSES = {
     EventTypes.INVITATION_CREATED: InvitationCreatedData,
     EventTypes.INVITATION_ACCEPTED: InvitationAcceptedData,
     EventTypes.INVITATION_CANCELLED: InvitationCancelledData,
+
+    # Cash application events
+    EventTypes.CUSTOMER_RECEIPT_RECORDED: CustomerReceiptRecordedData,
+    EventTypes.VENDOR_PAYMENT_RECORDED: VendorPaymentRecordedData,
 
     # Scratchpad events
     EventTypes.SCRATCHPAD_BATCH_COMMITTED: ScratchpadBatchCommittedData,
