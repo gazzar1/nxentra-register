@@ -141,7 +141,7 @@ TRANSACTION_SCHEMA = {
                             "dimensions": {"type": ["number", "null"]},
                             "description": {"type": ["number", "null"]}
                         },
-                        "required": ["overall"],
+                        "required": ["overall", "date", "amount", "accounts", "dimensions", "description"],
                         "additionalProperties": False
                     },
                     "questions": {
