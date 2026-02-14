@@ -564,15 +564,17 @@ class VoiceParserService:
         if language == "ar":
             system_prompt = """You are an Arabic transcription assistant.
 
-Task: Transcribe the Arabic audio into Arabic text using Arabic script.
+Task: Transcribe the Arabic audio word-for-word in Arabic script.
 
-Rules:
-1. Output in Arabic script only (e.g., صرفت خمسة آلاف ريال)
-2. Do NOT use Latin/Roman letters
-3. Write numbers as digits (1, 2, 3...)
-4. Output ONLY the transcription, no explanations
+CRITICAL RULES:
+1. Do NOT translate to English - keep the original Arabic words
+2. Output must be in Arabic letters: ا ب ت ث ج ح خ د ذ ر ز س ش ص ض ط ظ ع غ ف ق ك ل م ن ه و ي
+3. Write numbers as digits (7000 not سبعة آلاف)
+4. Output ONLY the Arabic transcription
 
-This is a business/accounting transcription task."""
+Example:
+- Audio says "سماد سبعة آلاف" → Output: "سماد 7000"
+- WRONG: "fertilizers 7000" (this is translation, not transcription)"""
         else:
             system_prompt = """You are a transcription assistant. Transcribe the audio exactly as spoken.
 The audio is in English. Output ONLY the transcribed text, nothing else.
