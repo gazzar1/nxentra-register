@@ -22,6 +22,9 @@ export interface JournalLine {
   is_debit: boolean;
   amount: string;
   analysis_tags?: AnalysisTag[];
+  // Counterparty info (from subledger postings)
+  customer_name?: string;
+  vendor_name?: string;
 }
 
 export interface AnalysisTag {
