@@ -516,11 +516,9 @@ class VoiceParserService:
         language: str = "en",
     ) -> str:
         """
-        Transcribe audio file using OpenAI Whisper API.
+        Transcribe audio file using OpenAI GPT-4o audio model.
 
-        Uses the dedicated Audio Transcription API (Whisper) which is designed
-        specifically for transcription and respects the language parameter to
-        output in the correct script (Arabic script for Arabic, etc.).
+        Uses gpt-4o-audio-preview via Chat Completions API for transcription.
 
         AUDIO POLICY: Audio is discarded after this call returns.
         Only the transcript text is returned; audio is never stored.
@@ -535,7 +533,7 @@ class VoiceParserService:
         Raises:
             Exception: If transcription fails after retries
         """
-        import io
+        import base64
 
         last_error = None
 
@@ -546,50 +544,71 @@ class VoiceParserService:
         # Determine audio format from content type
         content_type = getattr(audio_file, 'content_type', 'audio/webm')
 
-        # Whisper supports: mp3, mp4, mpeg, mpga, m4a, wav, webm
-        # But for consistency, convert webm to mp3 (better compatibility)
-        webm_formats = {'audio/webm', 'audio/ogg'}
-        if content_type in webm_formats:
+        # gpt-4o-audio-preview only supports wav and mp3
+        # Convert other formats (webm, mp4, ogg) to mp3
+        supported_formats = {'audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav'}
+        if content_type not in supported_formats:
             file_content = self._convert_audio_to_mp3(file_content, content_type)
-            file_ext = 'mp3'
+            audio_format = 'mp3'
         else:
-            # Map content type to file extension
-            ext_map = {
-                'audio/mpeg': 'mp3',
-                'audio/mp3': 'mp3',
-                'audio/mp4': 'mp4',
-                'audio/m4a': 'm4a',
-                'audio/wav': 'wav',
-                'audio/x-wav': 'wav',
-            }
-            file_ext = ext_map.get(content_type, 'mp3')
+            audio_format = 'wav' if 'wav' in content_type else 'mp3'
 
-        # Build a prompt to guide Whisper's output style
-        # For Arabic, provide Arabic script examples to encourage Arabic output
+        audio_base64 = base64.b64encode(file_content).decode('utf-8')
+
+        # Build language-specific system prompt
         if language == "ar":
-            whisper_prompt = "هذا تسجيل صوتي باللغة العربية عن معاملات محاسبية. مثال: صرفت ألف ريال للمورد، استلمت فاتورة بمبلغ خمسة آلاف."
+            system_prompt = """You are a speech-to-text transcription system.
+
+YOUR ONLY JOB: Convert Arabic speech to Arabic text.
+
+STRICT RULES:
+1. Output the EXACT Arabic words spoken using Arabic script (الحروف العربية)
+2. NEVER translate to English
+3. NEVER use Latin/Roman letters
+4. Write numbers as digits: 1000, 5000, etc.
+5. Output ONLY the transcription - no explanations, no translations
+
+If someone says "سماد سبعة آلاف" you output: سماد 7000
+If someone says "دفعت للمورد" you output: دفعت للمورد
+
+FORBIDDEN OUTPUT: fertilizers, paid, supplier (these are English translations)
+REQUIRED OUTPUT: Arabic script only"""
         else:
-            whisper_prompt = "This is an accounting transaction recording. Example: Paid 1000 to supplier, received invoice for 5000."
+            system_prompt = """You are a speech-to-text transcription system.
+
+YOUR ONLY JOB: Convert English speech to English text.
+
+RULES:
+1. Output the EXACT words spoken
+2. Write numbers as digits: 1000, 5000, etc.
+3. Output ONLY the transcription - no explanations"""
 
         for attempt in range(self.MAX_RETRIES + 1):
             try:
-                # Create a file-like object with proper name for Whisper API
-                audio_buffer = io.BytesIO(file_content)
-                audio_buffer.name = f"audio.{file_ext}"
-
-                # Use Whisper API for transcription
-                # The 'language' parameter tells Whisper the source language
-                # The 'prompt' parameter guides the output style (Arabic script for Arabic)
-                response = self.client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=audio_buffer,
-                    language=language,  # 'ar' for Arabic, 'en' for English
-                    prompt=whisper_prompt,  # Guide output to use correct script
-                    response_format="text",
+                response = self.client.chat.completions.create(
+                    model="gpt-4o-audio-preview",
+                    modalities=["text"],
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": system_prompt,
+                        },
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_audio",
+                                    "input_audio": {
+                                        "data": audio_base64,
+                                        "format": audio_format,
+                                    }
+                                }
+                            ]
+                        }
+                    ],
                 )
 
-                # Response is the transcript text directly
-                transcript = response.strip() if isinstance(response, str) else response
+                transcript = response.choices[0].message.content.strip()
                 return transcript
 
             except Exception as e:
