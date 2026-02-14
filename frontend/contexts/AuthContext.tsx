@@ -132,6 +132,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const hasPermission = (code: string): boolean => {
+    // Superusers have all permissions
+    if (state.user?.is_superuser) return true;
     if (!state.membership) return false;
     // Owner has all permissions
     if (state.membership.role === 'OWNER') return true;
