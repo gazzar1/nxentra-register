@@ -1,10 +1,11 @@
 import { cn } from "@/lib/cn";
 
 interface PageHeaderProps {
-  title: string;
+  title: React.ReactNode;
   subtitle?: React.ReactNode;
   actions?: React.ReactNode;
   className?: string;
+  backHref?: string;
 }
 
 export function PageHeader({
