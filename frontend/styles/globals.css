@@ -21,6 +21,10 @@
     --accent-foreground: 222 47% 5%;
     --destructive: 0 62% 30%;
     --destructive-foreground: 0 0% 98%;
+    --success: 160 60% 35%;
+    --success-foreground: 0 0% 98%;
+    --warning: 38 92% 40%;
+    --warning-foreground: 0 0% 5%;
     --border: 215 20% 25%;
     --input: 215 20% 25%;
     --ring: 199 89% 48%;
@@ -50,6 +54,10 @@
     --accent-foreground: 0 0% 100%;
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 98%;
+    --success: 160 60% 45%;
+    --success-foreground: 0 0% 98%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 5%;
     --border: 214 32% 91%;
     --input: 214 32% 91%;
     --ring: 199 89% 40%;
@@ -67,7 +75,7 @@
   }
 
   html {
-    @apply scroll-smooth;
+    @apply scroll-smooth h-full overflow-hidden;
   }
 
   html[dir="rtl"] {
@@ -79,7 +87,7 @@
   }
 
   body {
-    @apply bg-background text-foreground min-h-screen antialiased;
+    @apply bg-background text-foreground h-full overflow-hidden antialiased;
   }
 
   /* Arabic font for RTL */
@@ -152,8 +160,8 @@ select:disabled {
     display: block !important;
   }
 
-  body {
-    @apply bg-white text-black;
+  html, body {
+    @apply bg-white text-black h-auto overflow-visible;
   }
 
   /* Ensure tables print properly */

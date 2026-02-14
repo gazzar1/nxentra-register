@@ -21,8 +21,9 @@ export function AuthLayout({ children }: PropsWithChildren) {
   }, []);
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-blue-50 via-white to-slate-100">
-      <div className="w-full max-w-3xl rounded-3xl border border-border bg-card p-10 shadow-xl shadow-slate-200/60">
+    <div className="fixed inset-0 overflow-auto bg-gradient-to-br from-blue-50 via-white to-slate-100">
+      <div className="flex min-h-full items-center justify-center py-8 px-4">
+        <div className="w-full max-w-3xl rounded-3xl border border-border bg-card p-10 shadow-xl shadow-slate-200/60">
         <header className="mb-8 text-center">
           <Link href="/" className="text-3xl font-semibold text-accent">
             Nxentra ERP Access
@@ -32,6 +33,7 @@ export function AuthLayout({ children }: PropsWithChildren) {
           </p>
         </header>
         {children}
+        </div>
       </div>
     </div>
   );

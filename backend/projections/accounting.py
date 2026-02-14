@@ -26,6 +26,8 @@ from accounting.models import (
     AnalysisDimensionValue,
     JournalLineAnalysis,
     AccountAnalysisDefault,
+    Customer,
+    Vendor,
 )
 
 
@@ -86,6 +88,9 @@ class AccountProjection(BaseProjection):
                     "description": data.get("description", ""),
                     "description_ar": data.get("description_ar", ""),
                     "unit_of_measure": data.get("unit_of_measure", ""),
+                    "role": data.get("account_role", ""),
+                    "ledger_domain": data.get("ledger_domain", Account.LedgerDomain.FINANCIAL),
+                    "allow_manual_posting": data.get("allow_manual_posting", True),
                 },
             )
             return
@@ -508,6 +513,24 @@ class JournalEntryProjection(BaseProjection):
             if debit == 0 and credit == 0:
                 continue
 
+            # Resolve counterparty if provided
+            customer = None
+            vendor = None
+            customer_public_id = line.get("customer_public_id")
+            vendor_public_id = line.get("vendor_public_id")
+
+            if customer_public_id:
+                customer = Customer.objects.filter(
+                    company=entry.company,
+                    public_id=customer_public_id,
+                ).first()
+
+            if vendor_public_id:
+                vendor = Vendor.objects.filter(
+                    company=entry.company,
+                    public_id=vendor_public_id,
+                ).first()
+
             line_objects.append(JournalLine(
                 entry=entry,
                 company=entry.company,
@@ -520,6 +543,8 @@ class JournalEntryProjection(BaseProjection):
                 amount_currency=line.get("amount_currency"),
                 currency=line.get("currency") or entry.currency or "",
                 exchange_rate=line.get("exchange_rate") or entry.exchange_rate,
+                customer=customer,
+                vendor=vendor,
             ))
             # Store analysis tags for this line
             if line.get("analysis_tags"):

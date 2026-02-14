@@ -53,6 +53,10 @@ from events.types import (
     UserApprovalRequestedData,
     UserApprovedData,
     UserRejectedData,
+    # Invitation events
+    InvitationCreatedData,
+    InvitationAcceptedData,
+    InvitationCancelledData,
 )
 
 User = get_user_model()
@@ -302,6 +306,15 @@ def register_signup(
 
         _process_projections(company)
 
+        # Auto-seed chart of accounts for new company
+        from accounting.seeds import seed_chart_of_accounts
+        seed_result = seed_chart_of_accounts(company)
+        if seed_result.errors:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"Seed errors for company {company.slug}: {seed_result.errors}"
+            )
+
         company = Company.objects.get(public_id=company_public_id)
         user = User.objects.get(public_id=user_public_id)
         with auth_writes_allowed():
@@ -469,6 +482,15 @@ def create_company(user, company_name: str, default_currency: str = "USD") -> Co
         )
 
         _process_projections(company)
+
+        # Auto-seed chart of accounts for new company
+        from accounting.seeds import seed_chart_of_accounts
+        seed_result = seed_chart_of_accounts(company)
+        if seed_result.errors:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"Seed errors for company {company.slug}: {seed_result.errors}"
+            )
 
         company = Company.objects.get(public_id=company_public_id)
         membership = CompanyMembership.objects.get(public_id=membership_public_id)
@@ -852,6 +874,64 @@ def set_user_password(
     )
     _process_projections(actor.company)
     return CommandResult.ok({"success": True}, event=event)
+
+
+def admin_reset_password(
+    admin_user,  # User model instance (superuser)
+    target_user_id: int,
+    new_password: str,
+) -> CommandResult:
+    """
+    Superuser password reset for any user in the system.
+
+    This bypasses company membership checks - only for superusers.
+
+    Args:
+        admin_user: The superuser performing the reset
+        target_user_id: ID of target user
+        new_password: New password
+
+    Returns:
+        CommandResult
+    """
+    if not admin_user.is_superuser:
+        return CommandResult.fail("Superuser access required.")
+
+    try:
+        target_user = User.objects.get(pk=target_user_id)
+    except User.DoesNotExist:
+        return CommandResult.fail("User not found.")
+
+    with auth_writes_allowed():
+        target_user.set_password(new_password)
+        target_user.save(update_fields=["password"])
+
+    # Log the reset (we don't have actor context, so emit without full audit)
+    # Get any company the target user belongs to for the event
+    membership = target_user.memberships.filter(is_active=True).first()
+    if membership:
+        from events.emitter import emit_event_no_actor
+        emit_event_no_actor(
+            company=membership.company,
+            user=admin_user,
+            event_type=EventTypes.USER_PASSWORD_CHANGED,
+            aggregate_type="User",
+            aggregate_id=str(target_user.public_id),
+            idempotency_key=_idempotency_hash("user.admin_password_reset", {
+                "user_public_id": str(target_user.public_id),
+                "admin_user_id": str(admin_user.id),
+                "reset_at": timezone.now().isoformat(),
+            }),
+            data=UserPasswordChangedData(
+                user_public_id=str(target_user.public_id),
+                email=target_user.email,
+                changed_by_self=False,
+            ).to_dict()
+        )
+
+    return CommandResult.ok({
+        "user_email": target_user.email,
+    })
 
 
 # =============================================================================
@@ -2097,3 +2177,857 @@ def delete_unverified_user(admin_user, user_id: int) -> CommandResult:
             success=True,
             data={"email": email, "message": f"User {email} has been deleted"}
         )
+
+
+def admin_verify_user_email(admin_user, user_id: int) -> CommandResult:
+    """
+    Manually verify a user's email (admin only).
+
+    This allows admins to verify a user's email without requiring
+    the user to click the verification link. Useful when:
+    - Email delivery failed
+    - Admin knows the user is legitimate
+    - Testing/development
+
+    After verification, the user still needs admin approval (if beta gate is enabled).
+
+    Args:
+        admin_user: The admin User performing the verification (must be staff)
+        user_id: ID of the user to verify
+
+    Returns:
+        CommandResult
+    """
+    # Validate admin user
+    if not admin_user.is_staff:
+        return CommandResult.fail("Only staff users can manually verify users.")
+
+    with rls_bypass():
+        try:
+            user = User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            return CommandResult.fail("User not found.")
+
+    # Check user is not already verified
+    if user.email_verified:
+        return CommandResult.fail("User email is already verified.")
+
+    # Get company for event
+    membership = user.memberships.first()
+    company = membership.company if membership else None
+
+    # Verify the user
+    now = timezone.now()
+    with command_writes_allowed():
+        user.email_verified = True
+        user.email_verified_at = now
+        user.save(update_fields=["email_verified", "email_verified_at"])
+
+    # Emit event
+    event = emit_event_no_actor(
+        company=company,
+        user=admin_user,
+        event_type=EventTypes.USER_EMAIL_VERIFIED,
+        aggregate_type="User",
+        aggregate_id=str(user.public_id),
+        idempotency_key=_idempotency_hash("user.email_verified.admin", {
+            "user_public_id": str(user.public_id),
+        }),
+        data=UserEmailVerifiedData(
+            user_public_id=str(user.public_id),
+            email=user.email,
+            verified_at=now.isoformat(),
+            ip_address="admin_manual",  # Mark as admin manual verification
+        ).to_dict(),
+    )
+
+    if company:
+        _process_projections(company)
+
+    return CommandResult.ok({
+        "status": "verified",
+        "user_email": user.email,
+        "verified_at": now.isoformat(),
+        "needs_approval": not user.is_approved,
+    }, event=event)
+
+
+# =============================================================================
+# User Invitations
+# =============================================================================
+
+@transaction.atomic
+def create_invitation(
+    actor,  # ActorContext
+    email: str,
+    name: str = "",
+    role: str = CompanyMembership.Role.USER,
+    company_ids: list = None,
+    permission_codes: list = None,
+) -> CommandResult:
+    """
+    Create an invitation to join the company.
+
+    This creates a pending invitation and sends an email with
+    a secure link where the invitee can set their password and
+    complete registration.
+
+    Args:
+        actor: The actor context (must have company.manage_users permission)
+        email: Email address of the invitee
+        name: Display name of the invitee (optional)
+        role: Role to assign in the company
+        company_ids: List of company IDs the invitee can access (defaults to actor's company)
+        permission_codes: List of permission codes to grant
+
+    Returns:
+        CommandResult with invitation info
+    """
+    from accounts.authz import require
+    from accounts.models import Invitation
+    from accounts.email_service import send_invitation_email
+    from datetime import timedelta
+
+    require(actor, "company.manage_users")
+
+    # Normalize email
+    email = email.lower().strip()
+
+    # Check if user already exists
+    if User.objects.filter(email=email).exists():
+        return CommandResult.fail(f"User with email '{email}' already exists.")
+
+    # Check for existing pending invitation
+    existing_invitation = Invitation.objects.filter(
+        email=email,
+        primary_company=actor.company,
+        status=Invitation.Status.PENDING,
+    ).first()
+
+    if existing_invitation:
+        return CommandResult.fail(f"An invitation is already pending for '{email}'.")
+
+    # Validate role
+    valid_roles = [r[0] for r in CompanyMembership.Role.choices]
+    if role not in valid_roles:
+        return CommandResult.fail(f"Invalid role. Must be one of: {valid_roles}")
+
+    # Cannot invite as OWNER
+    if role == CompanyMembership.Role.OWNER:
+        return CommandResult.fail("Cannot invite users with OWNER role.")
+
+    # Default company_ids to actor's company
+    if company_ids is None:
+        company_ids = [actor.company.id]
+    else:
+        # Validate all company IDs exist and actor has access to them
+        # For now, only allow inviting to companies the actor has membership in
+        actor_company_ids = set(
+            CompanyMembership.objects.filter(
+                user=actor.user, is_active=True
+            ).values_list("company_id", flat=True)
+        )
+        for cid in company_ids:
+            if cid not in actor_company_ids:
+                return CommandResult.fail(
+                    f"You don't have access to company ID {cid}."
+                )
+
+    # Validate permission codes if provided
+    if permission_codes:
+        existing_codes = set(
+            NxPermission.objects.filter(code__in=permission_codes).values_list("code", flat=True)
+        )
+        missing = set(permission_codes) - existing_codes
+        if missing:
+            return CommandResult.fail(f"Unknown permissions: {sorted(missing)}")
+    else:
+        permission_codes = []
+
+    # Generate secure token
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+
+    # Calculate expiry
+    expiry_days = getattr(settings, 'INVITATION_EXPIRY_DAYS', 7)
+    expires_at = timezone.now() + timedelta(days=expiry_days)
+
+    invitation_public_id = uuid.uuid4()
+
+    # Create invitation record
+    invitation = Invitation.objects.create(
+        public_id=invitation_public_id,
+        email=email,
+        name=name.strip() if name else "",
+        token_hash=token_hash,
+        invited_by=actor.user,
+        primary_company=actor.company,
+        role=role,
+        company_ids=company_ids,
+        permission_codes=permission_codes,
+        status=Invitation.Status.PENDING,
+        expires_at=expires_at,
+    )
+
+    # Emit event
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.INVITATION_CREATED,
+        aggregate_type="Invitation",
+        aggregate_id=str(invitation_public_id),
+        idempotency_key=_idempotency_hash("invitation.created", {
+            "invitation_public_id": str(invitation_public_id),
+            "email": email,
+            "company_public_id": str(actor.company.public_id),
+        }),
+        data=InvitationCreatedData(
+            invitation_public_id=str(invitation_public_id),
+            email=email,
+            name=name.strip() if name else "",
+            primary_company_public_id=str(actor.company.public_id),
+            role=role,
+            company_ids=company_ids,
+            permission_codes=permission_codes,
+            invited_by_public_id=str(actor.user.public_id),
+            invited_by_email=actor.user.email,
+            expires_at=expires_at.isoformat(),
+        ).to_dict(),
+    )
+
+    # Send invitation email
+    email_sent = send_invitation_email(invitation, raw_token)
+
+    if not email_sent:
+        # Don't fail the whole operation - invitation is created, email can be resent
+        return CommandResult.ok({
+            "invitation": invitation,
+            "email_sent": False,
+            "warning": "Invitation created but email failed to send. You can resend it.",
+        }, event=event)
+
+    return CommandResult.ok({
+        "invitation": invitation,
+        "email_sent": True,
+    }, event=event)
+
+
+@transaction.atomic
+def accept_invitation(
+    token: str,
+    password: str,
+    name: str = None,
+    ip_address: str = "",
+) -> CommandResult:
+    """
+    Accept an invitation and create the user account.
+
+    This:
+    1. Validates the token
+    2. Creates the User account with password
+    3. Creates CompanyMembership(s) for selected companies
+    4. Grants specified permissions
+    5. Marks invitation as accepted
+
+    Args:
+        token: Raw invitation token from email link
+        password: Password chosen by the invitee
+        name: Display name (optional, defaults to invitation name)
+        ip_address: IP address for audit
+
+    Returns:
+        CommandResult with user and memberships
+    """
+    from accounts.models import Invitation
+
+    # Validate password
+    if not password or len(password) < 8:
+        return CommandResult.fail("Password must be at least 8 characters.")
+
+    # Hash token and look up invitation
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+
+    with rls_bypass():
+        try:
+            invitation = Invitation.objects.select_related(
+                "invited_by", "primary_company"
+            ).get(token_hash=token_hash)
+        except Invitation.DoesNotExist:
+            return CommandResult.fail("Invalid or expired invitation token.")
+
+    # Check invitation status
+    if invitation.status != Invitation.Status.PENDING:
+        if invitation.status == Invitation.Status.ACCEPTED:
+            return CommandResult.fail("This invitation has already been accepted.")
+        elif invitation.status == Invitation.Status.EXPIRED:
+            return CommandResult.fail("This invitation has expired.")
+        elif invitation.status == Invitation.Status.CANCELLED:
+            return CommandResult.fail("This invitation has been cancelled.")
+        return CommandResult.fail("This invitation is no longer valid.")
+
+    # Check expiry
+    if invitation.expires_at < timezone.now():
+        invitation.status = Invitation.Status.EXPIRED
+        invitation.save(update_fields=["status"])
+        return CommandResult.fail("This invitation has expired.")
+
+    # Check if user with this email already exists
+    if User.objects.filter(email=invitation.email).exists():
+        return CommandResult.fail(
+            "An account with this email already exists. Please log in instead."
+        )
+
+    # Use invitation name if no name provided
+    user_name = name.strip() if name else invitation.name
+
+    # Generate public IDs
+    user_public_id = uuid.uuid4()
+    primary_company = invitation.primary_company
+    membership_public_ids = []
+
+    # Create user
+    event_user = emit_event_no_actor(
+        company=primary_company,
+        user=None,
+        event_type=EventTypes.USER_CREATED,
+        aggregate_type="User",
+        aggregate_id=str(user_public_id),
+        idempotency_key=_idempotency_hash("user.created", {
+            "company_public_id": str(primary_company.public_id),
+            "user_public_id": str(user_public_id),
+            "email": invitation.email,
+            "name": user_name,
+        }),
+        data=UserCreatedData(
+            user_public_id=str(user_public_id),
+            email=invitation.email,
+            name=user_name,
+            created_by_user_public_id=str(invitation.invited_by.public_id) if invitation.invited_by else None,
+        ).to_dict(),
+        metadata={"source": "invitation"},
+    )
+
+    # Create memberships for each company
+    events = [event_user]
+
+    for company_id in invitation.company_ids:
+        try:
+            company = Company.objects.get(pk=company_id)
+        except Company.DoesNotExist:
+            continue  # Skip invalid company IDs
+
+        membership_public_id = uuid.uuid4()
+        membership_public_ids.append(str(membership_public_id))
+
+        # Determine role - primary company gets the invitation role, others get USER
+        membership_role = invitation.role if company_id == primary_company.id else CompanyMembership.Role.USER
+
+        event_membership = emit_event_no_actor(
+            company=company,
+            user=None,
+            event_type=EventTypes.MEMBERSHIP_CREATED,
+            aggregate_type="CompanyMembership",
+            aggregate_id=str(membership_public_id),
+            idempotency_key=_idempotency_hash("membership.created", {
+                "company_public_id": str(company.public_id),
+                "user_public_id": str(user_public_id),
+                "membership_public_id": str(membership_public_id),
+                "role": membership_role,
+            }),
+            data=MembershipCreatedData(
+                membership_public_id=str(membership_public_id),
+                company_public_id=str(company.public_id),
+                user_public_id=str(user_public_id),
+                role=membership_role,
+                is_active=True,
+            ).to_dict(),
+        )
+        events.append(event_membership)
+
+    # Set active company to primary
+    event_switch = emit_event_no_actor(
+        company=primary_company,
+        user=None,
+        event_type=EventTypes.USER_COMPANY_SWITCHED,
+        aggregate_type="User",
+        aggregate_id=str(user_public_id),
+        idempotency_key=_idempotency_hash("user.company_switched", {
+            "user_public_id": str(user_public_id),
+            "to_company_public_id": str(primary_company.public_id),
+        }),
+        data=UserCompanySwitchedData(
+            user_public_id=str(user_public_id),
+            email=invitation.email,
+            from_company_public_id=None,
+            to_company_public_id=str(primary_company.public_id),
+            to_company_name=primary_company.name,
+        ).to_dict(),
+    )
+    events.append(event_switch)
+
+    # Process projections to create the user and memberships
+    _process_projections(primary_company)
+
+    # Get the created user
+    user = User.objects.get(public_id=user_public_id)
+
+    # Set password
+    with auth_writes_allowed():
+        user.set_password(password)
+        # Mark as verified since they came through invitation link
+        user.email_verified = True
+        user.email_verified_at = timezone.now()
+        user.is_approved = True
+        user.approved_at = timezone.now()
+        user.save(update_fields=["password", "email_verified", "email_verified_at", "is_approved", "approved_at"])
+
+    # Emit password changed event
+    emit_event_no_actor(
+        company=primary_company,
+        user=user,
+        event_type=EventTypes.USER_PASSWORD_CHANGED,
+        aggregate_type="User",
+        aggregate_id=str(user_public_id),
+        idempotency_key=_idempotency_hash("user.password_changed", {
+            "user_public_id": str(user_public_id),
+            "changed_at": timezone.now().isoformat(),
+        }),
+        data=UserPasswordChangedData(
+            user_public_id=str(user_public_id),
+            email=user.email,
+            changed_by_self=True,
+        ).to_dict(),
+    )
+
+    # Grant permissions if specified
+    if invitation.permission_codes:
+        # Get the primary membership
+        primary_membership = CompanyMembership.objects.filter(
+            user=user, company=primary_company
+        ).first()
+
+        if primary_membership:
+            permissions = NxPermission.objects.filter(code__in=invitation.permission_codes)
+            for perm in permissions:
+                from accounts.models import CompanyMembershipPermission
+                CompanyMembershipPermission.objects.get_or_create(
+                    membership=primary_membership,
+                    permission=perm,
+                    company=primary_company,
+                )
+
+    # Mark invitation as accepted
+    now = timezone.now()
+    invitation.status = Invitation.Status.ACCEPTED
+    invitation.accepted_at = now
+    invitation.created_user = user
+    invitation.save(update_fields=["status", "accepted_at", "created_user"])
+
+    # Emit acceptance event
+    event_accepted = emit_event_no_actor(
+        company=primary_company,
+        user=user,
+        event_type=EventTypes.INVITATION_ACCEPTED,
+        aggregate_type="Invitation",
+        aggregate_id=str(invitation.public_id),
+        idempotency_key=_idempotency_hash("invitation.accepted", {
+            "invitation_public_id": str(invitation.public_id),
+        }),
+        data=InvitationAcceptedData(
+            invitation_public_id=str(invitation.public_id),
+            email=invitation.email,
+            user_public_id=str(user_public_id),
+            accepted_at=now.isoformat(),
+            membership_public_ids=membership_public_ids,
+        ).to_dict(),
+    )
+    events.append(event_accepted)
+
+    # Get memberships
+    memberships = list(CompanyMembership.objects.filter(user=user, is_active=True))
+
+    return CommandResult.ok({
+        "user": user,
+        "memberships": memberships,
+        "primary_company": primary_company,
+    }, events=events)
+
+
+@transaction.atomic
+def cancel_invitation(
+    actor,  # ActorContext
+    invitation_id: int,
+    reason: str = "",
+) -> CommandResult:
+    """
+    Cancel a pending invitation.
+
+    Args:
+        actor: The actor context (must have company.manage_users permission)
+        invitation_id: ID of the invitation to cancel
+        reason: Reason for cancellation (optional)
+
+    Returns:
+        CommandResult
+    """
+    from accounts.authz import require
+    from accounts.models import Invitation
+
+    require(actor, "company.manage_users")
+
+    try:
+        invitation = Invitation.objects.get(
+            pk=invitation_id,
+            primary_company=actor.company,
+        )
+    except Invitation.DoesNotExist:
+        return CommandResult.fail("Invitation not found.")
+
+    if invitation.status != Invitation.Status.PENDING:
+        return CommandResult.fail(
+            f"Cannot cancel invitation with status '{invitation.status}'."
+        )
+
+    # Update status
+    invitation.status = Invitation.Status.CANCELLED
+    invitation.save(update_fields=["status"])
+
+    # Emit event
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.INVITATION_CANCELLED,
+        aggregate_type="Invitation",
+        aggregate_id=str(invitation.public_id),
+        idempotency_key=_idempotency_hash("invitation.cancelled", {
+            "invitation_public_id": str(invitation.public_id),
+        }),
+        data=InvitationCancelledData(
+            invitation_public_id=str(invitation.public_id),
+            email=invitation.email,
+            cancelled_by_public_id=str(actor.user.public_id),
+            cancelled_by_email=actor.user.email,
+            reason=reason,
+        ).to_dict(),
+    )
+
+    return CommandResult.ok({
+        "invitation": invitation,
+        "cancelled": True,
+    }, event=event)
+
+
+@transaction.atomic
+def resend_invitation(
+    actor,  # ActorContext
+    invitation_id: int,
+) -> CommandResult:
+    """
+    Resend an invitation email.
+
+    Args:
+        actor: The actor context (must have company.manage_users permission)
+        invitation_id: ID of the invitation to resend
+
+    Returns:
+        CommandResult
+    """
+    from accounts.authz import require
+    from accounts.models import Invitation
+    from accounts.email_service import send_invitation_email
+    from datetime import timedelta
+
+    require(actor, "company.manage_users")
+
+    try:
+        invitation = Invitation.objects.get(
+            pk=invitation_id,
+            primary_company=actor.company,
+        )
+    except Invitation.DoesNotExist:
+        return CommandResult.fail("Invitation not found.")
+
+    if invitation.status != Invitation.Status.PENDING:
+        return CommandResult.fail(
+            f"Cannot resend invitation with status '{invitation.status}'."
+        )
+
+    # Generate new token
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+
+    # Extend expiry
+    expiry_days = getattr(settings, 'INVITATION_EXPIRY_DAYS', 7)
+    expires_at = timezone.now() + timedelta(days=expiry_days)
+
+    # Update invitation
+    invitation.token_hash = token_hash
+    invitation.expires_at = expires_at
+    invitation.save(update_fields=["token_hash", "expires_at"])
+
+    # Send email
+    email_sent = send_invitation_email(invitation, raw_token)
+
+    if not email_sent:
+        return CommandResult.fail("Failed to send invitation email.")
+
+    return CommandResult.ok({
+        "invitation": invitation,
+        "email_sent": True,
+        "new_expiry": expires_at.isoformat(),
+    })
+
+
+def list_pending_invitations(actor) -> list:
+    """
+    List pending invitations for the actor's company.
+
+    Args:
+        actor: The actor context
+
+    Returns:
+        List of pending Invitation objects
+    """
+    from accounts.models import Invitation
+
+    return list(Invitation.objects.filter(
+        primary_company=actor.company,
+        status=Invitation.Status.PENDING,
+    ).select_related("invited_by").order_by("-created_at"))
+
+
+# =============================================================================
+# Voice Feature Management
+# =============================================================================
+
+@transaction.atomic
+def grant_voice_access(
+    actor: ActorContext,
+    membership_id: int,
+    quota: int,
+) -> CommandResult:
+    """
+    Grant voice access to a user with specified quota.
+
+    Args:
+        actor: The actor context (must have voice.admin permission)
+        membership_id: ID of the membership to grant voice access
+        quota: Initial voice quota (number of voice rows)
+
+    Returns:
+        CommandResult with updated membership
+    """
+    require(actor, "voice.admin")
+
+    if quota <= 0:
+        return CommandResult.fail("Quota must be a positive number.")
+
+    try:
+        membership = CompanyMembership.objects.select_for_update().select_related("user").get(
+            pk=membership_id, company=actor.company
+        )
+    except CompanyMembership.DoesNotExist:
+        return CommandResult.fail("Membership not found.")
+
+    with command_writes_allowed():
+        membership.voice_enabled = True
+        membership.voice_quota = quota
+        membership.voice_quota_reset_at = timezone.now()
+        membership.save(update_fields=[
+            "voice_enabled", "voice_quota", "voice_quota_reset_at", "updated_at"
+        ])
+
+    return CommandResult.ok({
+        "membership_id": membership.id,
+        "user_email": membership.user.email,
+        "voice_enabled": membership.voice_enabled,
+        "voice_quota": membership.voice_quota,
+        "voice_rows_used": membership.voice_rows_used,
+        "voice_remaining": membership.get_voice_remaining(),
+    })
+
+
+@transaction.atomic
+def revoke_voice_access(
+    actor: ActorContext,
+    membership_id: int,
+) -> CommandResult:
+    """
+    Revoke voice access from a user.
+
+    Args:
+        actor: The actor context (must have voice.admin permission)
+        membership_id: ID of the membership to revoke voice access
+
+    Returns:
+        CommandResult confirming revocation
+    """
+    require(actor, "voice.admin")
+
+    try:
+        membership = CompanyMembership.objects.select_for_update().select_related("user").get(
+            pk=membership_id, company=actor.company
+        )
+    except CompanyMembership.DoesNotExist:
+        return CommandResult.fail("Membership not found.")
+
+    with command_writes_allowed():
+        membership.voice_enabled = False
+        membership.save(update_fields=["voice_enabled", "updated_at"])
+
+    return CommandResult.ok({
+        "membership_id": membership.id,
+        "user_email": membership.user.email,
+        "voice_enabled": membership.voice_enabled,
+    })
+
+
+@transaction.atomic
+def refill_voice_quota(
+    actor: ActorContext,
+    membership_id: int,
+    additional_quota: int = None,
+    reset_usage: bool = False,
+    new_quota: int = None,
+) -> CommandResult:
+    """
+    Refill or reset voice quota for a user.
+
+    Can either:
+    - Add additional quota to existing quota (additional_quota)
+    - Reset usage counter to 0 (reset_usage=True)
+    - Set a new quota value (new_quota)
+
+    Args:
+        actor: The actor context (must have voice.admin permission)
+        membership_id: ID of the membership
+        additional_quota: Amount to add to current quota
+        reset_usage: If True, reset voice_rows_used to 0
+        new_quota: Set quota to this exact value
+
+    Returns:
+        CommandResult with updated voice status
+    """
+    require(actor, "voice.admin")
+
+    try:
+        membership = CompanyMembership.objects.select_for_update().select_related("user").get(
+            pk=membership_id, company=actor.company
+        )
+    except CompanyMembership.DoesNotExist:
+        return CommandResult.fail("Membership not found.")
+
+    if not membership.voice_enabled:
+        return CommandResult.fail("Voice access not enabled for this user. Grant access first.")
+
+    update_fields = ["updated_at"]
+
+    with command_writes_allowed():
+        if new_quota is not None:
+            if new_quota <= 0:
+                return CommandResult.fail("New quota must be a positive number.")
+            membership.voice_quota = new_quota
+            update_fields.append("voice_quota")
+
+        if additional_quota is not None:
+            if additional_quota <= 0:
+                return CommandResult.fail("Additional quota must be a positive number.")
+            membership.voice_quota = (membership.voice_quota or 0) + additional_quota
+            update_fields.append("voice_quota")
+
+        if reset_usage:
+            membership.voice_rows_used = 0
+            membership.voice_quota_reset_at = timezone.now()
+            update_fields.extend(["voice_rows_used", "voice_quota_reset_at"])
+
+        membership.save(update_fields=update_fields)
+
+    return CommandResult.ok({
+        "membership_id": membership.id,
+        "user_email": membership.user.email,
+        "voice_enabled": membership.voice_enabled,
+        "voice_quota": membership.voice_quota,
+        "voice_rows_used": membership.voice_rows_used,
+        "voice_remaining": membership.get_voice_remaining(),
+        "voice_quota_reset_at": membership.voice_quota_reset_at.isoformat() if membership.voice_quota_reset_at else None,
+    })
+
+
+def get_user_voice_status(
+    actor: ActorContext,
+    membership_id: int = None,
+) -> CommandResult:
+    """
+    Get voice feature status for a user.
+
+    Args:
+        actor: The actor context
+        membership_id: ID of membership (if None, returns status for actor's membership)
+
+    Returns:
+        CommandResult with voice status information
+    """
+    if membership_id:
+        require(actor, "voice.view_usage")
+        try:
+            membership = CompanyMembership.objects.select_related("user").get(
+                pk=membership_id, company=actor.company
+            )
+        except CompanyMembership.DoesNotExist:
+            return CommandResult.fail("Membership not found.")
+    else:
+        membership = actor.user.get_active_membership()
+        if not membership:
+            return CommandResult.fail("No active membership found.")
+
+    from scratchpad.voice_parser import voice_parser
+    status = voice_parser.get_user_voice_status(membership)
+
+    return CommandResult.ok({
+        "membership_id": membership.id,
+        "user_email": membership.user.email,
+        **status,
+    })
+
+
+def list_users_voice_status(actor: ActorContext, all_companies: bool = False) -> CommandResult:
+    """
+    List voice status for users.
+
+    Args:
+        actor: The actor context (must have voice.admin permission)
+        all_companies: If True and user is superuser, list all users across all companies
+
+    Returns:
+        CommandResult with list of users and their voice status
+    """
+    require(actor, "voice.admin")
+
+    if all_companies and actor.user.is_superuser:
+        # Superuser can see all users across all companies
+        memberships = CompanyMembership.objects.filter(
+            is_active=True,
+        ).select_related("user", "company").order_by("company__name", "user__email")
+    else:
+        # Regular admin sees only their company's users
+        memberships = CompanyMembership.objects.filter(
+            company=actor.company,
+            is_active=True,
+        ).select_related("user", "company").order_by("user__email")
+
+    users = []
+    for m in memberships:
+        users.append({
+            "membership_id": m.id,
+            "user_id": m.user.id,
+            "user_email": m.user.email,
+            "user_name": m.user.get_display_name(),
+            "role": m.role,
+            "company_id": m.company.id,
+            "company_name": m.company.name,
+            "voice_enabled": m.voice_enabled,
+            "voice_quota": m.voice_quota,
+            "voice_rows_used": m.voice_rows_used,
+            "voice_remaining": m.get_voice_remaining() if m.voice_enabled else 0,
+            "voice_quota_reset_at": m.voice_quota_reset_at.isoformat() if m.voice_quota_reset_at else None,
+        })
+
+    return CommandResult.ok({"users": users})

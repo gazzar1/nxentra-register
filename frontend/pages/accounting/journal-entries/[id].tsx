@@ -3,7 +3,7 @@ import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import { useRouter } from "next/router";
 import { useState } from "react";
-import { ArrowLeft, Send, Undo2, Trash2, Pencil } from "lucide-react";
+import { ArrowLeft, Send, Undo2, Trash2, Pencil, Printer } from "lucide-react";
 import Link from "next/link";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
@@ -149,6 +149,13 @@ export default function JournalEntryDetailPage() {
           subtitle={entry.memo || t("accounting:journalEntries.entryDetails")}
           actions={
             <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                onClick={() => window.open(`/accounting/journal-entries/${id}/print`, '_blank')}
+              >
+                <Printer className="me-2 h-4 w-4" />
+                {t("actions.print")}
+              </Button>
               {canEditJournalEntry(entry) && (
                 <Button
                   variant="outline"

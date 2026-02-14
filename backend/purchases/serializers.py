@@ -1,0 +1,116 @@
+# purchases/serializers.py
+"""
+Serializers for purchases API.
+"""
+
+from decimal import Decimal
+from rest_framework import serializers
+from .models import PurchaseBill, PurchaseBillLine
+
+
+# =============================================================================
+# Purchase Bill Serializers
+# =============================================================================
+
+class PurchaseBillLineSerializer(serializers.ModelSerializer):
+    """Serializer for PurchaseBillLine model."""
+    item_code = serializers.CharField(source="item.code", read_only=True, default=None)
+    account_code = serializers.CharField(source="account.code", read_only=True)
+    tax_code_code = serializers.CharField(source="tax_code.code", read_only=True, default=None)
+
+    class Meta:
+        model = PurchaseBillLine
+        fields = [
+            "id", "public_id", "line_number",
+            "item", "item_code", "description", "description_ar",
+            "quantity", "unit_price", "discount_amount",
+            "tax_code", "tax_code_code", "tax_rate",
+            "gross_amount", "net_amount", "tax_amount", "line_total",
+            "account", "account_code",
+        ]
+        read_only_fields = [
+            "id", "public_id", "item_code", "account_code", "tax_code_code",
+            "gross_amount", "net_amount", "tax_amount", "line_total",
+        ]
+
+
+class PurchaseBillSerializer(serializers.ModelSerializer):
+    """Serializer for PurchaseBill model."""
+    lines = PurchaseBillLineSerializer(many=True, read_only=True)
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True)
+    vendor_code = serializers.CharField(source="vendor.code", read_only=True)
+    posting_profile_code = serializers.CharField(source="posting_profile.code", read_only=True)
+    posted_by_email = serializers.CharField(source="posted_by.email", read_only=True, default=None)
+    posted_journal_entry_number = serializers.CharField(
+        source="posted_journal_entry.entry_number", read_only=True, default=None
+    )
+
+    class Meta:
+        model = PurchaseBill
+        fields = [
+            "id", "public_id", "bill_number", "bill_date", "due_date",
+            "vendor", "vendor_name", "vendor_code",
+            "posting_profile", "posting_profile_code",
+            "subtotal", "total_discount", "total_tax", "total_amount",
+            "status", "posted_at", "posted_by", "posted_by_email",
+            "posted_journal_entry", "posted_journal_entry_number",
+            "notes", "reference",
+            "created_at", "created_by", "updated_at",
+            "lines",
+        ]
+        read_only_fields = [
+            "id", "public_id",
+            "vendor_name", "vendor_code", "posting_profile_code",
+            "subtotal", "total_discount", "total_tax", "total_amount",
+            "status", "posted_at", "posted_by", "posted_by_email",
+            "posted_journal_entry", "posted_journal_entry_number",
+            "created_at", "created_by", "updated_at",
+            "lines",
+        ]
+
+
+class PurchaseBillLineInputSerializer(serializers.Serializer):
+    """Serializer for input line data when creating/updating bills."""
+    account_id = serializers.IntegerField()
+    description = serializers.CharField(max_length=500)
+    description_ar = serializers.CharField(max_length=500, required=False, allow_blank=True, default="")
+    quantity = serializers.DecimalField(max_digits=18, decimal_places=4, default=Decimal("1"))
+    unit_price = serializers.DecimalField(max_digits=18, decimal_places=2)
+    discount_amount = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, default=Decimal("0"))
+    tax_code_id = serializers.IntegerField(required=False, allow_null=True)
+    item_id = serializers.IntegerField(required=False, allow_null=True)
+    dimension_value_ids = serializers.ListField(
+        child=serializers.IntegerField(), required=False, default=list
+    )
+
+
+class PurchaseBillCreateSerializer(serializers.Serializer):
+    """Serializer for creating purchase bills via command."""
+    bill_number = serializers.CharField(max_length=50)
+    bill_date = serializers.DateField()
+    due_date = serializers.DateField(required=False, allow_null=True)
+    vendor_id = serializers.IntegerField()
+    posting_profile_id = serializers.IntegerField()
+    reference = serializers.CharField(max_length=100, required=False, allow_blank=True, default="")
+    notes = serializers.CharField(required=False, allow_blank=True, default="")
+    lines = PurchaseBillLineInputSerializer(many=True)
+
+    def validate_lines(self, value):
+        if not value:
+            raise serializers.ValidationError("At least one line is required.")
+        return value
+
+
+class PurchaseBillListSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for listing bills."""
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True)
+    vendor_code = serializers.CharField(source="vendor.code", read_only=True)
+
+    class Meta:
+        model = PurchaseBill
+        fields = [
+            "id", "public_id", "bill_number", "bill_date", "due_date",
+            "vendor", "vendor_name", "vendor_code",
+            "total_amount", "status",
+            "created_at",
+        ]

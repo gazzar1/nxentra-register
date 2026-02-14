@@ -964,15 +964,24 @@ class ScratchpadParseVoiceView(APIView):
         from .voice_parser import (
             voice_parser,
             VoiceFeatureDisabledError,
+            VoiceUserNotAuthorizedError,
             VoiceQuotaExceededError,
             VoiceQuotaNotConfiguredError,
             VoiceProviderNotConfiguredError,
         )
 
+        # Get user's membership for user-level voice permission checks
+        membership = actor.user.get_active_membership()
+        if not membership:
+            return Response(
+                {"error": "No active company membership found."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         try:
-            # Check feature gating and quota first
-            voice_parser.check_feature_enabled(actor.company)
-            voice_parser.check_quota(actor.company)
+            # Check user-level voice access and quota
+            voice_parser.check_user_voice_access(membership)
+            voice_parser.check_user_quota(membership)
 
             if audio_file:
                 # Validate audio file size
@@ -993,6 +1002,7 @@ class ScratchpadParseVoiceView(APIView):
                     language=language,
                     audio_seconds=audio_seconds,
                     user=actor.user,
+                    membership=membership,
                 )
             else:
                 # Mode 2: Text transcript parsing
@@ -1007,6 +1017,8 @@ class ScratchpadParseVoiceView(APIView):
                     company=actor.company,
                     language=language,
                 )
+                # Increment user usage for text-only parsing too
+                voice_parser.increment_user_usage(membership)
                 # Log usage for text-only parsing too
                 voice_parser.log_usage(
                     company=actor.company,
@@ -1084,6 +1096,11 @@ class ScratchpadParseVoiceView(APIView):
             })
 
         except VoiceFeatureDisabledError as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        except VoiceUserNotAuthorizedError as e:
             return Response(
                 {"error": str(e)},
                 status=status.HTTP_403_FORBIDDEN,

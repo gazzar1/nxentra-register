@@ -145,7 +145,7 @@ def can_change_account_type(actor, account) -> tuple[bool, str]:
 def can_post_to_account(account) -> tuple[bool, str]:
     """
     Check if journal lines can be posted to this account.
-    
+
     Rules:
     - Cannot post to header accounts
     - Cannot post to inactive accounts
@@ -157,6 +157,92 @@ def can_post_to_account(account) -> tuple[bool, str]:
         return False, f"Cannot post to inactive account: {account.code}"
 
     return True, ""
+
+
+def validate_line_counterparty(
+    account,
+    customer_public_id: str | None,
+    vendor_public_id: str | None,
+) -> tuple[bool, str]:
+    """
+    Validate counterparty requirements for a journal line.
+
+    Rules:
+    - If account requires_counterparty and counterparty_kind is CUSTOMER,
+      customer_public_id must be provided
+    - If account requires_counterparty and counterparty_kind is VENDOR,
+      vendor_public_id must be provided
+    - Cannot have both customer and vendor on same line
+    - If account.allow_manual_posting is False and no counterparty provided,
+      warn that system posting is expected
+
+    Args:
+        account: The Account being posted to
+        customer_public_id: UUID string of customer if provided
+        vendor_public_id: UUID string of vendor if provided
+
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    # Cannot have both
+    if customer_public_id and vendor_public_id:
+        return False, f"Line for account {account.code} cannot have both customer and vendor."
+
+    # Check if account requires counterparty
+    if account.requires_counterparty:
+        if account.counterparty_kind == "CUSTOMER":
+            if not customer_public_id:
+                return False, (
+                    f"Account {account.code} (AR control) requires a customer. "
+                    "Provide customer_public_id for this line."
+                )
+        elif account.counterparty_kind == "VENDOR":
+            if not vendor_public_id:
+                return False, (
+                    f"Account {account.code} (AP control) requires a vendor. "
+                    "Provide vendor_public_id for this line."
+                )
+
+    # If account doesn't require counterparty but one was provided, that's OK
+    # (allows flexibility for additional tracking)
+
+    return True, ""
+
+
+def validate_counterparty_exists(company, customer_public_id: str | None, vendor_public_id: str | None) -> tuple[bool, str, dict]:
+    """
+    Validate that the counterparty exists and belongs to the company.
+
+    Args:
+        company: The company context
+        customer_public_id: UUID string of customer if provided
+        vendor_public_id: UUID string of vendor if provided
+
+    Returns:
+        Tuple of (is_valid, error_message, {"customer": Customer|None, "vendor": Vendor|None})
+    """
+    from accounting.models import Customer, Vendor
+
+    customer = None
+    vendor = None
+
+    if customer_public_id:
+        try:
+            customer = Customer.objects.get(company=company, public_id=customer_public_id)
+            if customer.status != Customer.Status.ACTIVE:
+                return False, f"Customer {customer.code} is not active.", {}
+        except Customer.DoesNotExist:
+            return False, f"Customer {customer_public_id} not found.", {}
+
+    if vendor_public_id:
+        try:
+            vendor = Vendor.objects.get(company=company, public_id=vendor_public_id)
+            if vendor.status != Vendor.Status.ACTIVE:
+                return False, f"Vendor {vendor.code} is not active.", {}
+        except Vendor.DoesNotExist:
+            return False, f"Vendor {vendor_public_id} not found.", {}
+
+    return True, "", {"customer": customer, "vendor": vendor}
 
 
 # =============================================================================

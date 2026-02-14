@@ -143,6 +143,7 @@ export function VoiceInputDialog({
     if (!transcript.trim()) return;
 
     try {
+      setError(null); // Clear previous errors
       setRecordingState("processing");
       const response = await scratchpadService.parseVoiceText(transcript, {
         language,

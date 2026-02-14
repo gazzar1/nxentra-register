@@ -13,17 +13,20 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useAccounts } from "@/queries/useAccounts";
-import type { Account, AccountCreatePayload, AccountType } from "@/types/account";
+import type { Account, AccountCreatePayload, AccountType, AccountRole, LedgerDomain } from "@/types/account";
 
 const accountSchema = z.object({
   code: z.string().min(1, "Account code is required").max(20),
   name: z.string().min(1, "Account name is required").max(255),
   name_ar: z.string().max(255).optional(),
   account_type: z.string().min(1, "Account type is required"),
+  ledger_domain: z.string().min(1, "Ledger domain is required"),
+  role: z.string().optional(),
   is_header: z.boolean(),
   parent: z.string().optional(),
   description: z.string().max(1000).optional(),
   description_ar: z.string().max(1000).optional(),
+  unit_of_measure: z.string().max(50).optional(),
 });
 
 type AccountFormData = z.infer<typeof accountSchema>;
@@ -36,21 +39,80 @@ interface AccountFormProps {
   extraContent?: React.ReactNode;
 }
 
+// Base account types (5-type system)
 const ACCOUNT_TYPES: AccountType[] = [
   "ASSET",
   "LIABILITY",
   "EQUITY",
   "REVENUE",
   "EXPENSE",
-  "RECEIVABLE",
-  "PAYABLE",
-  "CONTRA_ASSET",
-  "CONTRA_LIABILITY",
-  "CONTRA_EQUITY",
-  "CONTRA_REVENUE",
-  "CONTRA_EXPENSE",
-  "MEMO",
 ];
+
+// Ledger domains
+const LEDGER_DOMAINS: { value: LedgerDomain; label: string }[] = [
+  { value: "FINANCIAL", label: "Financial (Balance Sheet/P&L)" },
+  { value: "STATISTICAL", label: "Statistical (Quantities/Metrics)" },
+  { value: "OFF_BALANCE", label: "Off-Balance (Memorandum)" },
+];
+
+// Roles organized by account type and ledger domain
+const ROLES_BY_TYPE: Record<string, { value: AccountRole; label: string }[]> = {
+  // Financial roles
+  "ASSET:FINANCIAL": [
+    { value: "ASSET_GENERAL", label: "General Asset" },
+    { value: "LIQUIDITY", label: "Cash & Bank" },
+    { value: "RECEIVABLE_CONTROL", label: "Accounts Receivable (AR Control)" },
+    { value: "INVENTORY_VALUE", label: "Inventory" },
+    { value: "PREPAID", label: "Prepaid Expenses" },
+    { value: "FIXED_ASSET_COST", label: "Fixed Assets" },
+    { value: "ACCUM_DEPRECIATION", label: "Accumulated Depreciation (Contra)" },
+    { value: "OTHER_ASSET", label: "Other Assets" },
+  ],
+  "LIABILITY:FINANCIAL": [
+    { value: "LIABILITY_GENERAL", label: "General Liability" },
+    { value: "PAYABLE_CONTROL", label: "Accounts Payable (AP Control)" },
+    { value: "ACCRUED_EXPENSE", label: "Accrued Expenses" },
+    { value: "DEFERRED_REVENUE", label: "Deferred Revenue" },
+    { value: "TAX_PAYABLE", label: "Taxes Payable" },
+    { value: "LOAN", label: "Loans & Borrowings" },
+    { value: "OTHER_LIABILITY", label: "Other Liabilities" },
+  ],
+  "EQUITY:FINANCIAL": [
+    { value: "CAPITAL", label: "Capital / Share Capital" },
+    { value: "RETAINED_EARNINGS", label: "Retained Earnings" },
+    { value: "CURRENT_YEAR_EARNINGS", label: "Current Year Earnings" },
+    { value: "DRAWINGS", label: "Drawings (Contra)" },
+    { value: "RESERVE", label: "Reserves" },
+    { value: "OTHER_EQUITY", label: "Other Equity" },
+  ],
+  "REVENUE:FINANCIAL": [
+    { value: "SALES", label: "Sales Revenue" },
+    { value: "SERVICE", label: "Service Revenue" },
+    { value: "OTHER_INCOME", label: "Other Income" },
+    { value: "FINANCIAL_INCOME", label: "Financial Income (Interest)" },
+    { value: "CONTRA_REVENUE", label: "Sales Returns (Contra)" },
+  ],
+  "EXPENSE:FINANCIAL": [
+    { value: "COGS", label: "Cost of Goods Sold" },
+    { value: "OPERATING_EXPENSE", label: "Operating Expenses" },
+    { value: "ADMIN_EXPENSE", label: "Administrative Expenses" },
+    { value: "FINANCIAL_EXPENSE", label: "Financial Expenses (Interest)" },
+    { value: "DEPRECIATION_EXPENSE", label: "Depreciation Expense" },
+    { value: "TAX_EXPENSE", label: "Tax Expense" },
+    { value: "OTHER_EXPENSE", label: "Other Expenses" },
+  ],
+  // Statistical roles (any account type)
+  "STATISTICAL": [
+    { value: "STAT_GENERAL", label: "General Statistical" },
+    { value: "STAT_INVENTORY_QTY", label: "Inventory Quantities" },
+    { value: "STAT_PRODUCTION_QTY", label: "Production Quantities" },
+  ],
+  // Off-balance roles (any account type)
+  "OFF_BALANCE": [
+    { value: "OBS_GENERAL", label: "General Off-Balance" },
+    { value: "OBS_CONTINGENT", label: "Contingent Liabilities/Assets" },
+  ],
+};
 
 export function AccountForm({
   initialData,
@@ -69,12 +131,34 @@ export function AccountForm({
       name: initialData?.name || "",
       name_ar: initialData?.name_ar || "",
       account_type: initialData?.account_type || "",
+      ledger_domain: initialData?.ledger_domain || "FINANCIAL",
+      role: initialData?.role || "",
       is_header: initialData?.is_header || false,
       parent: initialData?.parent_code || "",
       description: initialData?.description || "",
       description_ar: initialData?.description_ar || "",
+      unit_of_measure: initialData?.unit_of_measure || "",
     },
   });
+
+  // Watch values for dynamic role options
+  const watchedType = form.watch("account_type");
+  const watchedDomain = form.watch("ledger_domain");
+
+  // Get available roles based on account type and ledger domain
+  const getAvailableRoles = () => {
+    if (watchedDomain === "STATISTICAL") {
+      return ROLES_BY_TYPE["STATISTICAL"] || [];
+    }
+    if (watchedDomain === "OFF_BALANCE") {
+      return ROLES_BY_TYPE["OFF_BALANCE"] || [];
+    }
+    // Financial domain - use type-specific roles
+    const key = `${watchedType}:FINANCIAL`;
+    return ROLES_BY_TYPE[key] || [];
+  };
+
+  const availableRoles = getAvailableRoles();
 
   const handleSubmit = async (data: AccountFormData) => {
     await onSubmit({
@@ -82,10 +166,13 @@ export function AccountForm({
       name: data.name,
       name_ar: data.name_ar,
       account_type: data.account_type as AccountType,
+      ledger_domain: data.ledger_domain as LedgerDomain,
+      role: (data.role || undefined) as AccountRole | undefined,
       is_header: data.is_header,
       parent: data.parent || undefined,
       description: data.description,
       description_ar: data.description_ar,
+      unit_of_measure: data.unit_of_measure || undefined,
     });
   };
 
@@ -136,12 +223,43 @@ export function AccountForm({
         />
       </div>
 
+      {/* Ledger Domain */}
+      <div className="space-y-2">
+        <Label htmlFor="ledger_domain">Ledger Domain *</Label>
+        <Select
+          value={form.watch("ledger_domain")}
+          onValueChange={(value) => {
+            form.setValue("ledger_domain", value);
+            form.setValue("role", ""); // Reset role when domain changes
+          }}
+        >
+          <SelectTrigger>
+            <SelectValue placeholder="Select ledger domain" />
+          </SelectTrigger>
+          <SelectContent>
+            {LEDGER_DOMAINS.map((domain) => (
+              <SelectItem key={domain.value} value={domain.value}>
+                {domain.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {form.formState.errors.ledger_domain && (
+          <p className="text-sm text-destructive">
+            {form.formState.errors.ledger_domain.message}
+          </p>
+        )}
+      </div>
+
       {/* Account Type */}
       <div className="space-y-2">
         <Label htmlFor="account_type">{t("accounting:account.type")} *</Label>
         <Select
           value={form.watch("account_type")}
-          onValueChange={(value) => form.setValue("account_type", value)}
+          onValueChange={(value) => {
+            form.setValue("account_type", value);
+            form.setValue("role", ""); // Reset role when type changes
+          }}
         >
           <SelectTrigger>
             <SelectValue placeholder={t("accounting:account.type")} />
@@ -160,6 +278,50 @@ export function AccountForm({
           </p>
         )}
       </div>
+
+      {/* Account Role */}
+      {availableRoles.length > 0 && (
+        <div className="space-y-2">
+          <Label htmlFor="role">Account Role</Label>
+          <Select
+            value={form.watch("role") || "__none__"}
+            onValueChange={(value) => form.setValue("role", value === "__none__" ? "" : value)}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Select role (optional)" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__none__">General (No specific role)</SelectItem>
+              {availableRoles.map((role) => (
+                <SelectItem key={role.value} value={role.value}>
+                  {role.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            {watchedDomain === "STATISTICAL" && "Statistical accounts track quantities and metrics without financial values."}
+            {watchedDomain === "OFF_BALANCE" && "Off-balance accounts are memorandum entries not affecting financial statements."}
+            {watchedDomain === "FINANCIAL" && form.watch("role") === "RECEIVABLE_CONTROL" && "AR Control accounts require customer selection on journal entries."}
+            {watchedDomain === "FINANCIAL" && form.watch("role") === "PAYABLE_CONTROL" && "AP Control accounts require vendor selection on journal entries."}
+          </p>
+        </div>
+      )}
+
+      {/* Unit of Measure (for Statistical accounts) */}
+      {watchedDomain === "STATISTICAL" && (
+        <div className="space-y-2">
+          <Label htmlFor="unit_of_measure">Unit of Measure</Label>
+          <Input
+            id="unit_of_measure"
+            {...form.register("unit_of_measure")}
+            placeholder="e.g., units, kg, hours"
+          />
+          <p className="text-xs text-muted-foreground">
+            The unit used for tracking quantities (e.g., pieces, kg, hours)
+          </p>
+        </div>
+      )}
 
       {/* Parent Account */}
       <div className="space-y-2">

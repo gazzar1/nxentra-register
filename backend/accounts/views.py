@@ -17,6 +17,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import get_user_model
+from django.db import models
 
 from accounts.models import Company, CompanyMembership, NxPermission
 from accounts.authz import resolve_actor, require, resolve_actor_optional
@@ -36,6 +37,12 @@ from accounts.commands import (
     grant_permission,
     revoke_permission,
     bulk_set_permissions,
+    # Invitation commands
+    create_invitation,
+    accept_invitation,
+    cancel_invitation,
+    resend_invitation,
+    list_pending_invitations,
 )
 from accounts.serializers import (
     # Input serializers
@@ -1433,3 +1440,818 @@ class DeleteUnverifiedUserView(APIView):
             "email": result.data["email"],
             "message": result.data["message"],
         })
+
+
+class AdminManualVerifyUserView(APIView):
+    """
+    POST /api/admin/verify-user/<pk>/
+
+    Manually verify a user's email without requiring them to click the link.
+    Staff/superuser only.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        from accounts.commands import admin_verify_user_email
+
+        # Check if user is staff or superuser
+        if not (request.user.is_staff or request.user.is_superuser):
+            return Response(
+                {"detail": "You do not have permission to verify users."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        result = admin_verify_user_email(request.user, pk)
+
+        if not result.success:
+            return Response(
+                {"detail": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response({
+            "status": "verified",
+            "email": result.data["user_email"],
+            "verified_at": result.data["verified_at"],
+            "needs_approval": result.data["needs_approval"],
+        })
+
+
+# =============================================================================
+# Admin Panel Views (Superuser Only)
+# =============================================================================
+
+class AdminStatsView(APIView):
+    """
+    GET /api/admin/stats/
+
+    Returns system-wide statistics for the admin dashboard.
+    Superuser only.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from django.db.models import Count
+        from events.models import BusinessEvent
+
+        # Check if user is superuser
+        if not request.user.is_superuser:
+            return Response(
+                {"detail": "Superuser access required."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Get counts - explicitly use 'default' database for system models
+        total_users = User.objects.using('default').count()
+        total_companies = Company.objects.using('default').count()
+        active_users = User.objects.using('default').filter(is_active=True).count()
+        verified_users = User.objects.using('default').filter(email_verified=True).count()
+        pending_approval = User.objects.using('default').filter(
+            email_verified=True, is_approved=False
+        ).count()
+
+        # Get event count (from all companies)
+        total_events = 0
+        try:
+            # Events are per-company, so we need to count across all
+            from events.models import CompanyEventCounter
+            counters = CompanyEventCounter.objects.all()
+            total_events = sum(c.last_sequence for c in counters)
+        except Exception:
+            pass
+
+        # Recent activity (last 7 days)
+        from django.utils import timezone
+        from datetime import timedelta
+        week_ago = timezone.now() - timedelta(days=7)
+
+        new_users_week = User.objects.using('default').filter(date_joined__gte=week_ago).count()
+        new_companies_week = Company.objects.using('default').filter(created_at__gte=week_ago).count()
+
+        return Response({
+            "total_users": total_users,
+            "total_companies": total_companies,
+            "active_users": active_users,
+            "verified_users": verified_users,
+            "pending_approval": pending_approval,
+            "total_events": total_events,
+            "new_users_week": new_users_week,
+            "new_companies_week": new_companies_week,
+        })
+
+
+class AdminCompaniesListView(APIView):
+    """
+    GET /api/admin/companies/
+
+    Lists all companies in the system.
+    Superuser only.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from django.db.models import Count
+
+        # Check if user is superuser
+        if not request.user.is_superuser:
+            return Response(
+                {"detail": "Superuser access required."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        companies = Company.objects.using('default').annotate(
+            member_count=Count("memberships", filter=models.Q(memberships__is_active=True))
+        ).order_by("-created_at")
+
+        companies_data = []
+        for company in companies:
+            # Get owner (first OWNER role membership)
+            owner_membership = CompanyMembership.objects.filter(
+                company=company, role=CompanyMembership.Role.OWNER, is_active=True
+            ).select_related("user").first()
+            owner = owner_membership.user if owner_membership else None
+
+            companies_data.append({
+                "id": company.id,
+                "public_id": str(company.public_id),
+                "name": company.name,
+                "name_ar": company.name_ar,
+                "slug": company.slug,
+                "owner_email": owner.email if owner else None,
+                "owner_name": owner.name if owner else None,
+                "default_currency": company.default_currency,
+                "is_active": company.is_active,
+                "member_count": company.member_count,
+                "created_at": company.created_at.isoformat() if company.created_at else None,
+            })
+
+        return Response({
+            "count": len(companies_data),
+            "companies": companies_data,
+        })
+
+
+class AdminUsersListView(APIView):
+    """
+    GET /api/admin/users/
+
+    Lists all users in the system.
+    Superuser only.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from django.db.models import Count
+
+        # Check if user is superuser
+        if not request.user.is_superuser:
+            return Response(
+                {"detail": "Superuser access required."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        users = User.objects.using('default').annotate(
+            company_count=Count("memberships", filter=models.Q(memberships__is_active=True))
+        ).order_by("-date_joined")
+
+        users_data = []
+        for user in users:
+            # Get primary company (first active membership)
+            primary_membership = user.memberships.filter(is_active=True).select_related("company").first()
+
+            users_data.append({
+                "id": user.id,
+                "public_id": str(user.public_id),
+                "email": user.email,
+                "name": user.name,
+                "name_ar": user.name_ar,
+                "is_active": user.is_active,
+                "is_staff": user.is_staff,
+                "is_superuser": user.is_superuser,
+                "email_verified": user.email_verified,
+                "is_approved": user.is_approved,
+                "company_count": user.company_count,
+                "primary_company": primary_membership.company.name if primary_membership else None,
+                "primary_company_id": primary_membership.company.id if primary_membership else None,
+                "date_joined": user.date_joined.isoformat() if user.date_joined else None,
+                "last_login": user.last_login.isoformat() if user.last_login else None,
+            })
+
+        return Response({
+            "count": len(users_data),
+            "users": users_data,
+        })
+
+
+class AdminAuditLogView(APIView):
+    """
+    GET /api/admin/audit-log/
+
+    Returns recent business events across all companies for audit purposes.
+    Superuser only.
+
+    Query params:
+    - company_id: Filter by company ID
+    - event_type: Filter by event type
+    - user_id: Filter by user who caused the event
+    - limit: Number of events to return (default 100, max 500)
+    - offset: Pagination offset
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from events.models import BusinessEvent
+
+        # Check if user is superuser
+        if not request.user.is_superuser:
+            return Response(
+                {"detail": "Superuser access required."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Parse query params
+        company_id = request.query_params.get("company_id")
+        event_type = request.query_params.get("event_type")
+        user_id = request.query_params.get("user_id")
+        limit = min(int(request.query_params.get("limit", 100)), 500)
+        offset = int(request.query_params.get("offset", 0))
+
+        # Build query
+        events = BusinessEvent.objects.select_related("company", "caused_by_user")
+
+        if company_id:
+            events = events.filter(company_id=company_id)
+        if event_type:
+            events = events.filter(event_type=event_type)
+        if user_id:
+            events = events.filter(caused_by_user_id=user_id)
+
+        # Order by most recent first
+        events = events.order_by("-occurred_at")
+
+        # Get total count before pagination
+        total_count = events.count()
+
+        # Apply pagination
+        events = events[offset:offset + limit]
+
+        events_data = []
+        for event in events:
+            events_data.append({
+                "id": str(event.id),
+                "event_type": event.event_type,
+                "aggregate_type": event.aggregate_type,
+                "aggregate_id": event.aggregate_id,
+                "company_id": event.company_id,
+                "company_name": event.company.name if event.company else None,
+                "caused_by_user_id": event.caused_by_user_id,
+                "caused_by_user_email": event.caused_by_user.email if event.caused_by_user else None,
+                "origin": event.origin,
+                "occurred_at": event.occurred_at.isoformat() if event.occurred_at else None,
+                "recorded_at": event.recorded_at.isoformat() if event.recorded_at else None,
+                "data_preview": str(event.data)[:200] if event.data else None,
+            })
+
+        return Response({
+            "count": total_count,
+            "limit": limit,
+            "offset": offset,
+            "events": events_data,
+        })
+
+
+class AdminEventTypesView(APIView):
+    """
+    GET /api/admin/event-types/
+
+    Returns list of distinct event types for filtering.
+    Superuser only.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from events.models import BusinessEvent
+
+        # Check if user is superuser
+        if not request.user.is_superuser:
+            return Response(
+                {"detail": "Superuser access required."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        event_types = BusinessEvent.objects.values_list(
+            "event_type", flat=True
+        ).distinct().order_by("event_type")
+
+        return Response({
+            "event_types": list(event_types),
+        })
+
+
+class AdminResetPasswordView(APIView):
+    """
+    POST /api/admin/reset-password/<pk>/
+
+    Resets a user's password.
+    Superuser only.
+
+    Body: { "password": "new_password" }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        from accounts.commands import admin_reset_password
+
+        # Check if user is superuser
+        if not request.user.is_superuser:
+            return Response(
+                {"detail": "Superuser access required."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        password = request.data.get("password", "").strip()
+        if not password:
+            return Response(
+                {"detail": "Password is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if len(password) < 8:
+            return Response(
+                {"detail": "Password must be at least 8 characters."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        result = admin_reset_password(request.user, pk, password)
+
+        if not result.success:
+            return Response(
+                {"detail": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response({
+            "status": "password_reset",
+            "user_email": result.data["user_email"],
+            "message": f"Password reset successfully for {result.data['user_email']}",
+        })
+
+
+# =============================================================================
+# Invitation Views
+# =============================================================================
+
+class InvitationListCreateView(APIView):
+    """
+    GET /api/invitations/ - List pending invitations for the company
+    POST /api/invitations/ - Create a new invitation
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        actor = resolve_actor(request)
+        require(actor, "company.manage_users")
+
+        invitations = list_pending_invitations(actor)
+
+        invitations_data = []
+        for inv in invitations:
+            invitations_data.append({
+                "id": inv.id,
+                "public_id": str(inv.public_id),
+                "email": inv.email,
+                "name": inv.name,
+                "role": inv.role,
+                "status": inv.status,
+                "company_ids": inv.company_ids,
+                "permission_codes": inv.permission_codes,
+                "invited_by_email": inv.invited_by.email if inv.invited_by else None,
+                "invited_by_name": inv.invited_by.name if inv.invited_by else None,
+                "created_at": inv.created_at.isoformat() if inv.created_at else None,
+                "expires_at": inv.expires_at.isoformat() if inv.expires_at else None,
+            })
+
+        return Response({
+            "count": len(invitations_data),
+            "invitations": invitations_data,
+        })
+
+    def post(self, request):
+        actor = resolve_actor(request)
+
+        # Extract input
+        email = request.data.get("email", "").lower().strip()
+        name = request.data.get("name", "")
+        role = request.data.get("role", CompanyMembership.Role.USER)
+        company_ids = request.data.get("company_ids")
+        permission_codes = request.data.get("permission_codes")
+
+        if not email:
+            return Response(
+                {"detail": "Email is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        result = create_invitation(
+            actor=actor,
+            email=email,
+            name=name,
+            role=role,
+            company_ids=company_ids,
+            permission_codes=permission_codes,
+        )
+
+        if not result.success:
+            return Response(
+                {"detail": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        invitation = result.data["invitation"]
+        return Response({
+            "id": invitation.id,
+            "public_id": str(invitation.public_id),
+            "email": invitation.email,
+            "name": invitation.name,
+            "role": invitation.role,
+            "status": invitation.status,
+            "company_ids": invitation.company_ids,
+            "permission_codes": invitation.permission_codes,
+            "expires_at": invitation.expires_at.isoformat(),
+            "email_sent": result.data.get("email_sent", True),
+            "warning": result.data.get("warning"),
+        }, status=status.HTTP_201_CREATED)
+
+
+class InvitationDetailView(APIView):
+    """
+    GET /api/invitations/<pk>/ - Get invitation details
+    DELETE /api/invitations/<pk>/ - Cancel invitation
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        from accounts.models import Invitation
+
+        actor = resolve_actor(request)
+        require(actor, "company.manage_users")
+
+        try:
+            invitation = Invitation.objects.select_related("invited_by").get(
+                pk=pk, primary_company=actor.company
+            )
+        except Invitation.DoesNotExist:
+            return Response(
+                {"detail": "Invitation not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        return Response({
+            "id": invitation.id,
+            "public_id": str(invitation.public_id),
+            "email": invitation.email,
+            "name": invitation.name,
+            "role": invitation.role,
+            "status": invitation.status,
+            "company_ids": invitation.company_ids,
+            "permission_codes": invitation.permission_codes,
+            "invited_by_email": invitation.invited_by.email if invitation.invited_by else None,
+            "invited_by_name": invitation.invited_by.name if invitation.invited_by else None,
+            "created_at": invitation.created_at.isoformat() if invitation.created_at else None,
+            "expires_at": invitation.expires_at.isoformat() if invitation.expires_at else None,
+            "accepted_at": invitation.accepted_at.isoformat() if invitation.accepted_at else None,
+        })
+
+    def delete(self, request, pk):
+        actor = resolve_actor(request)
+
+        reason = request.data.get("reason", "")
+
+        result = cancel_invitation(actor, pk, reason)
+
+        if not result.success:
+            return Response(
+                {"detail": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class InvitationResendView(APIView):
+    """
+    POST /api/invitations/<pk>/resend/ - Resend invitation email
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        actor = resolve_actor(request)
+
+        result = resend_invitation(actor, pk)
+
+        if not result.success:
+            return Response(
+                {"detail": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response({
+            "email_sent": True,
+            "new_expiry": result.data.get("new_expiry"),
+        })
+
+
+class AcceptInvitationView(APIView):
+    """
+    POST /api/invitations/accept/
+
+    Accept an invitation and create the user account.
+    No authentication required (the token proves identity).
+
+    Body: {
+        "token": "invitation_token",
+        "password": "new_password",
+        "name": "Optional Name Override"
+    }
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        token = request.data.get("token", "")
+        password = request.data.get("password", "")
+        name = request.data.get("name")
+
+        if not token:
+            return Response(
+                {"detail": "Invitation token is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not password:
+            return Response(
+                {"detail": "Password is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        ip_address = request.META.get("REMOTE_ADDR", "")
+
+        result = accept_invitation(
+            token=token,
+            password=password,
+            name=name,
+            ip_address=ip_address,
+        )
+
+        if not result.success:
+            return Response(
+                {"detail": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = result.data["user"]
+        primary_company = result.data["primary_company"]
+
+        # Generate tokens for the new user
+        tokens = mint_token_pair(user, company_id=primary_company.id)
+
+        return Response({
+            "user": {
+                "id": user.id,
+                "public_id": str(user.public_id),
+                "email": user.email,
+                "name": user.name,
+            },
+            "company": {
+                "id": primary_company.id,
+                "public_id": str(primary_company.public_id),
+                "name": primary_company.name,
+            },
+            "tokens": tokens,
+        }, status=status.HTTP_201_CREATED)
+
+
+class InvitationInfoView(APIView):
+    """
+    GET /api/invitations/info/?token=<token>
+
+    Get invitation details without accepting it.
+    Used by the frontend to display the invitation acceptance form.
+    No authentication required.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        import hashlib
+        from accounts.models import Invitation
+        from django.utils import timezone
+
+        token = request.query_params.get("token", "")
+
+        if not token:
+            return Response(
+                {"detail": "Invitation token is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Hash token and look up invitation
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+
+        try:
+            invitation = Invitation.objects.select_related(
+                "invited_by", "primary_company"
+            ).get(token_hash=token_hash)
+        except Invitation.DoesNotExist:
+            return Response(
+                {"detail": "Invalid or expired invitation token."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Check invitation status
+        if invitation.status != Invitation.Status.PENDING:
+            status_messages = {
+                Invitation.Status.ACCEPTED: "This invitation has already been accepted.",
+                Invitation.Status.EXPIRED: "This invitation has expired.",
+                Invitation.Status.CANCELLED: "This invitation has been cancelled.",
+            }
+            return Response(
+                {"detail": status_messages.get(invitation.status, "This invitation is no longer valid.")},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Check expiry
+        if invitation.expires_at < timezone.now():
+            invitation.status = Invitation.Status.EXPIRED
+            invitation.save(update_fields=["status"])
+            return Response(
+                {"detail": "This invitation has expired."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response({
+            "email": invitation.email,
+            "name": invitation.name,
+            "company_name": invitation.primary_company.name,
+            "invited_by_name": invitation.invited_by.name if invitation.invited_by else None,
+            "invited_by_email": invitation.invited_by.email if invitation.invited_by else None,
+            "role": invitation.role,
+            "expires_at": invitation.expires_at.isoformat(),
+        })
+
+
+# =============================================================================
+# Voice Feature Management
+# =============================================================================
+
+class VoiceUsersListView(APIView):
+    """
+    GET /api/accounts/voice/users/ -> List all users with voice status
+
+    Query params:
+        all_companies: If "true" and user is superuser, list all users across all companies
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from accounts.authz import resolve_actor
+        from accounts.commands import list_users_voice_status
+
+        actor = resolve_actor(request)
+        all_companies = request.query_params.get("all_companies", "").lower() == "true"
+        result = list_users_voice_status(actor, all_companies=all_companies)
+
+        if not result.success:
+            return Response({"detail": result.error}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(result.data)
+
+
+class VoiceUserStatusView(APIView):
+    """
+    GET /api/accounts/voice/status/ -> Get current user's voice status
+    GET /api/accounts/voice/users/<membership_id>/status/ -> Get specific user's voice status
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, membership_id=None):
+        from accounts.authz import resolve_actor
+        from accounts.commands import get_user_voice_status
+
+        actor = resolve_actor(request)
+        result = get_user_voice_status(actor, membership_id)
+
+        if not result.success:
+            return Response({"detail": result.error}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(result.data)
+
+
+class VoiceGrantAccessView(APIView):
+    """
+    POST /api/accounts/voice/users/<membership_id>/grant/ -> Grant voice access
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, membership_id):
+        from accounts.authz import resolve_actor
+        from accounts.commands import grant_voice_access
+
+        actor = resolve_actor(request)
+        quota = request.data.get("quota")
+
+        if not quota:
+            return Response(
+                {"detail": "Quota is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            quota = int(quota)
+        except (ValueError, TypeError):
+            return Response(
+                {"detail": "Quota must be a positive integer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        result = grant_voice_access(actor, membership_id, quota)
+
+        if not result.success:
+            return Response({"detail": result.error}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(result.data)
+
+
+class VoiceRevokeAccessView(APIView):
+    """
+    POST /api/accounts/voice/users/<membership_id>/revoke/ -> Revoke voice access
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, membership_id):
+        from accounts.authz import resolve_actor
+        from accounts.commands import revoke_voice_access
+
+        actor = resolve_actor(request)
+        result = revoke_voice_access(actor, membership_id)
+
+        if not result.success:
+            return Response({"detail": result.error}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(result.data)
+
+
+class VoiceRefillQuotaView(APIView):
+    """
+    POST /api/accounts/voice/users/<membership_id>/refill/ -> Refill voice quota
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, membership_id):
+        from accounts.authz import resolve_actor
+        from accounts.commands import refill_voice_quota
+
+        actor = resolve_actor(request)
+
+        # Parse parameters
+        additional_quota = request.data.get("additional_quota")
+        new_quota = request.data.get("new_quota")
+        reset_usage = request.data.get("reset_usage", False)
+
+        if isinstance(reset_usage, str):
+            reset_usage = reset_usage.lower() == "true"
+
+        if additional_quota:
+            try:
+                additional_quota = int(additional_quota)
+            except (ValueError, TypeError):
+                return Response(
+                    {"detail": "additional_quota must be a positive integer."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        if new_quota:
+            try:
+                new_quota = int(new_quota)
+            except (ValueError, TypeError):
+                return Response(
+                    {"detail": "new_quota must be a positive integer."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        if not additional_quota and not new_quota and not reset_usage:
+            return Response(
+                {"detail": "Provide additional_quota, new_quota, or reset_usage=true."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        result = refill_voice_quota(
+            actor,
+            membership_id,
+            additional_quota=additional_quota,
+            reset_usage=reset_usage,
+            new_quota=new_quota,
+        )
+
+        if not result.success:
+            return Response({"detail": result.error}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(result.data)

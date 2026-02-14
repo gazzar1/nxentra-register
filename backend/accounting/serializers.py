@@ -24,6 +24,9 @@ from .models import (
     AnalysisDimensionValue,
     JournalLineAnalysis,
     AccountAnalysisDefault,
+    Customer,
+    Vendor,
+    StatisticalEntry,
 )
 from .commands import (
     create_journal_entry,
@@ -74,6 +77,11 @@ class AccountSerializer(serializers.ModelSerializer):
     Serializer for Account model.
     Used for listing, retrieving, and basic updates.
     For creates/updates that need events, use commands directly.
+
+    Includes:
+    - role: Behavioral classification (RECEIVABLE_CONTROL, PAYABLE_CONTROL, etc.)
+    - ledger_domain: FINANCIAL, STATISTICAL, or OFF_BALANCE
+    - Derived flags: requires_counterparty, counterparty_kind, allow_manual_posting
     """
     has_transactions = serializers.SerializerMethodField()
     parent_code = serializers.CharField(source="parent.code", read_only=True, default=None)
@@ -82,16 +90,24 @@ class AccountSerializer(serializers.ModelSerializer):
         model = Account
         fields = [
             "id", "public_id", "company", "code", "name", "name_ar",
-            "account_type", "status", "normal_balance",
+            "account_type", "role", "ledger_domain", "status", "normal_balance",
+            # Derived flags (read-only, computed from role)
+            "requires_counterparty", "counterparty_kind", "allow_manual_posting",
             "is_header", "parent", "parent_code", "description", "description_ar",
-            "unit_of_measure", "is_postable", "is_memo_account",
-            "is_receivable", "is_payable",
+            "unit_of_measure",
+            # Computed properties
+            "is_postable", "is_memo_account", "is_statistical", "is_off_balance",
+            "is_financial", "is_control_account", "is_receivable", "is_payable",
             "has_transactions",
             "created_at", "updated_at",
         ]
         read_only_fields = [
             "id", "public_id", "company", "normal_balance",
-            "is_postable", "is_memo_account", "is_receivable", "is_payable",
+            # Derived flags are read-only (computed from role)
+            "requires_counterparty", "counterparty_kind",
+            # Computed properties
+            "is_postable", "is_memo_account", "is_statistical", "is_off_balance",
+            "is_financial", "is_control_account", "is_receivable", "is_payable",
             "has_transactions", "parent_code",
             "created_at", "updated_at",
         ]
@@ -104,28 +120,73 @@ class AccountSerializer(serializers.ModelSerializer):
 
 
 class AccountCreateSerializer(serializers.Serializer):
-    """Serializer for creating accounts via command."""
+    """
+    Serializer for creating accounts via command.
+
+    Includes role and ledger_domain for the new 5-type + role architecture.
+    """
     code = serializers.CharField(max_length=20)
     name = serializers.CharField(max_length=255)
     name_ar = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
     account_type = serializers.ChoiceField(choices=Account.AccountType.choices)
+    role = serializers.ChoiceField(
+        choices=Account.AccountRole.choices,
+        required=False,
+        allow_blank=True,
+        default="",
+        help_text="Behavioral role. If not provided, a default role for the type is used.",
+    )
+    ledger_domain = serializers.ChoiceField(
+        choices=Account.LedgerDomain.choices,
+        required=False,
+        default=Account.LedgerDomain.FINANCIAL,
+        help_text="Financial, Statistical, or Off-Balance ledger",
+    )
     parent_id = serializers.IntegerField(required=False, allow_null=True)
     is_header = serializers.BooleanField(required=False, default=False)
     description = serializers.CharField(required=False, allow_blank=True, default="")
     description_ar = serializers.CharField(required=False, allow_blank=True, default="")
-    unit_of_measure = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
+    unit_of_measure = serializers.CharField(
+        max_length=20,
+        required=False,
+        allow_blank=True,
+        default="",
+        help_text="Required for STATISTICAL and OFF_BALANCE ledger domains",
+    )
+    allow_manual_posting = serializers.BooleanField(
+        required=False,
+        default=True,
+        help_text="Admin override to allow manual posting to control accounts",
+    )
 
 
 class AccountUpdateSerializer(serializers.Serializer):
-    """Serializer for updating accounts via command."""
+    """
+    Serializer for updating accounts via command.
+
+    Note: Changing role may affect derived flags (requires_counterparty, etc.)
+    """
     name = serializers.CharField(max_length=255, required=False)
     name_ar = serializers.CharField(max_length=255, required=False, allow_blank=True)
     code = serializers.CharField(max_length=20, required=False)
     account_type = serializers.ChoiceField(choices=Account.AccountType.choices, required=False)
+    role = serializers.ChoiceField(
+        choices=Account.AccountRole.choices,
+        required=False,
+        allow_blank=True,
+    )
+    ledger_domain = serializers.ChoiceField(
+        choices=Account.LedgerDomain.choices,
+        required=False,
+    )
     status = serializers.ChoiceField(choices=Account.Status.choices, required=False)
     description = serializers.CharField(required=False, allow_blank=True)
     description_ar = serializers.CharField(required=False, allow_blank=True)
     unit_of_measure = serializers.CharField(max_length=20, required=False, allow_blank=True)
+    allow_manual_posting = serializers.BooleanField(
+        required=False,
+        help_text="Admin override to allow manual posting to control accounts",
+    )
 
 
 # =============================================================================
@@ -150,11 +211,16 @@ class JournalLineAnalysisOutputSerializer(serializers.ModelSerializer):
 
 
 class JournalLineSerializer(serializers.ModelSerializer):
-    """Serializer for individual journal lines."""
+    """Serializer for individual journal lines with counterparty support."""
     account_code = serializers.CharField(source="account.code", read_only=True)
     account_name = serializers.CharField(source="account.name", read_only=True)
     account_name_ar = serializers.CharField(source="account.name_ar", read_only=True)
     analysis_tags = JournalLineAnalysisOutputSerializer(many=True, read_only=True)
+    # Counterparty info
+    customer_code = serializers.CharField(source="customer.code", read_only=True, default=None)
+    customer_name = serializers.CharField(source="customer.name", read_only=True, default=None)
+    vendor_code = serializers.CharField(source="vendor.code", read_only=True, default=None)
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True, default=None)
 
     class Meta:
         model = JournalLine
@@ -163,8 +229,17 @@ class JournalLineSerializer(serializers.ModelSerializer):
             "description", "description_ar",
             "debit", "credit", "amount_currency", "currency", "exchange_rate",
             "is_debit", "amount", "analysis_tags",
+            # Counterparty
+            "customer", "customer_code", "customer_name",
+            "vendor", "vendor_code", "vendor_name",
+            "has_counterparty", "counterparty_kind",
         ]
-        read_only_fields = ["public_id", "line_no", "is_debit", "amount", "account_code", "account_name", "account_name_ar", "analysis_tags"]
+        read_only_fields = [
+            "public_id", "line_no", "is_debit", "amount",
+            "account_code", "account_name", "account_name_ar", "analysis_tags",
+            "customer_code", "customer_name", "vendor_code", "vendor_name",
+            "has_counterparty", "counterparty_kind",
+        ]
 
 
 class AnalysisTagInputSerializer(serializers.Serializer):
@@ -178,6 +253,7 @@ class JournalLineInputSerializer(serializers.Serializer):
     Serializer for journal line input (creation/update).
 
     Standardized contract: ALWAYS use account_id (integer).
+    For control accounts, provide customer_id or vendor_id.
     """
     account_id = serializers.IntegerField(required=True, help_text="Account ID (integer)")
     description = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
@@ -188,6 +264,17 @@ class JournalLineInputSerializer(serializers.Serializer):
     currency = serializers.CharField(max_length=3, required=False, allow_blank=True, default="")
     exchange_rate = serializers.DecimalField(max_digits=18, decimal_places=6, required=False)
     analysis_tags = AnalysisTagInputSerializer(many=True, required=False, default=list)
+    # Counterparty for AR/AP control accounts
+    customer_id = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        help_text="Customer ID for AR control account lines",
+    )
+    vendor_id = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        help_text="Vendor ID for AP control account lines",
+    )
 
 
 class JournalEntrySerializer(serializers.ModelSerializer):
@@ -577,7 +664,7 @@ class AccountAnalysisDefaultSerializer(serializers.ModelSerializer):
     dimension_name = serializers.CharField(source="dimension.name", read_only=True)
     value_code = serializers.CharField(source="default_value.code", read_only=True)
     value_name = serializers.CharField(source="default_value.name", read_only=True)
-    
+
     class Meta:
         model = AccountAnalysisDefault
         fields = [
@@ -585,3 +672,252 @@ class AccountAnalysisDefaultSerializer(serializers.ModelSerializer):
             "dimension_code", "dimension_name", "value_code", "value_name",
         ]
         read_only_fields = ["id"]
+
+
+# =============================================================================
+# Customer Serializers (AR Subledger)
+# =============================================================================
+
+class CustomerSerializer(serializers.ModelSerializer):
+    """
+    Serializer for Customer model (AR subledger).
+
+    Customers are counterparties for accounts receivable, not COA entries.
+    """
+    default_ar_account_code = serializers.CharField(
+        source="default_ar_account.code", read_only=True, default=None
+    )
+    default_ar_account_name = serializers.CharField(
+        source="default_ar_account.name", read_only=True, default=None
+    )
+
+    class Meta:
+        model = Customer
+        fields = [
+            "id", "public_id", "company", "code", "name", "name_ar",
+            "default_ar_account", "default_ar_account_code", "default_ar_account_name",
+            "email", "phone", "address", "address_ar",
+            "credit_limit", "payment_terms_days", "currency", "tax_id",
+            "status", "is_active",
+            "notes", "notes_ar",
+            "created_at", "updated_at",
+        ]
+        read_only_fields = [
+            "id", "public_id", "company", "is_active",
+            "default_ar_account_code", "default_ar_account_name",
+            "created_at", "updated_at",
+        ]
+
+
+class CustomerCreateSerializer(serializers.Serializer):
+    """Serializer for creating customers via command."""
+    code = serializers.CharField(max_length=20)
+    name = serializers.CharField(max_length=255)
+    name_ar = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
+    default_ar_account_id = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        help_text="Default AR control account ID",
+    )
+    email = serializers.EmailField(required=False, allow_blank=True, default="")
+    phone = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
+    address = serializers.CharField(required=False, allow_blank=True, default="")
+    address_ar = serializers.CharField(required=False, allow_blank=True, default="")
+    credit_limit = serializers.DecimalField(
+        max_digits=18, decimal_places=2, required=False, allow_null=True
+    )
+    payment_terms_days = serializers.IntegerField(required=False, default=30)
+    currency = serializers.CharField(max_length=3, required=False, default="USD")
+    tax_id = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
+    notes = serializers.CharField(required=False, allow_blank=True, default="")
+    notes_ar = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class CustomerUpdateSerializer(serializers.Serializer):
+    """Serializer for updating customers via command."""
+    name = serializers.CharField(max_length=255, required=False)
+    name_ar = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    code = serializers.CharField(max_length=20, required=False)
+    default_ar_account_id = serializers.IntegerField(required=False, allow_null=True)
+    email = serializers.EmailField(required=False, allow_blank=True)
+    phone = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    address = serializers.CharField(required=False, allow_blank=True)
+    address_ar = serializers.CharField(required=False, allow_blank=True)
+    credit_limit = serializers.DecimalField(
+        max_digits=18, decimal_places=2, required=False, allow_null=True
+    )
+    payment_terms_days = serializers.IntegerField(required=False)
+    currency = serializers.CharField(max_length=3, required=False)
+    tax_id = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    status = serializers.ChoiceField(choices=Customer.Status.choices, required=False)
+    notes = serializers.CharField(required=False, allow_blank=True)
+    notes_ar = serializers.CharField(required=False, allow_blank=True)
+
+
+# =============================================================================
+# Vendor Serializers (AP Subledger)
+# =============================================================================
+
+class VendorSerializer(serializers.ModelSerializer):
+    """
+    Serializer for Vendor model (AP subledger).
+
+    Vendors are counterparties for accounts payable, not COA entries.
+    """
+    default_ap_account_code = serializers.CharField(
+        source="default_ap_account.code", read_only=True, default=None
+    )
+    default_ap_account_name = serializers.CharField(
+        source="default_ap_account.name", read_only=True, default=None
+    )
+
+    class Meta:
+        model = Vendor
+        fields = [
+            "id", "public_id", "company", "code", "name", "name_ar",
+            "default_ap_account", "default_ap_account_code", "default_ap_account_name",
+            "email", "phone", "address", "address_ar",
+            "payment_terms_days", "currency", "tax_id",
+            "bank_name", "bank_account", "bank_iban", "bank_swift",
+            "status", "is_active",
+            "notes", "notes_ar",
+            "created_at", "updated_at",
+        ]
+        read_only_fields = [
+            "id", "public_id", "company", "is_active",
+            "default_ap_account_code", "default_ap_account_name",
+            "created_at", "updated_at",
+        ]
+
+
+class VendorCreateSerializer(serializers.Serializer):
+    """Serializer for creating vendors via command."""
+    code = serializers.CharField(max_length=20)
+    name = serializers.CharField(max_length=255)
+    name_ar = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
+    default_ap_account_id = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        help_text="Default AP control account ID",
+    )
+    email = serializers.EmailField(required=False, allow_blank=True, default="")
+    phone = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
+    address = serializers.CharField(required=False, allow_blank=True, default="")
+    address_ar = serializers.CharField(required=False, allow_blank=True, default="")
+    payment_terms_days = serializers.IntegerField(required=False, default=30)
+    currency = serializers.CharField(max_length=3, required=False, default="USD")
+    tax_id = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
+    bank_name = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
+    bank_account = serializers.CharField(max_length=100, required=False, allow_blank=True, default="")
+    bank_iban = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
+    bank_swift = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
+    notes = serializers.CharField(required=False, allow_blank=True, default="")
+    notes_ar = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class VendorUpdateSerializer(serializers.Serializer):
+    """Serializer for updating vendors via command."""
+    name = serializers.CharField(max_length=255, required=False)
+    name_ar = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    code = serializers.CharField(max_length=20, required=False)
+    default_ap_account_id = serializers.IntegerField(required=False, allow_null=True)
+    email = serializers.EmailField(required=False, allow_blank=True)
+    phone = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    address = serializers.CharField(required=False, allow_blank=True)
+    address_ar = serializers.CharField(required=False, allow_blank=True)
+    payment_terms_days = serializers.IntegerField(required=False)
+    currency = serializers.CharField(max_length=3, required=False)
+    tax_id = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    bank_name = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    bank_account = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    bank_iban = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    bank_swift = serializers.CharField(max_length=20, required=False, allow_blank=True)
+    status = serializers.ChoiceField(choices=Vendor.Status.choices, required=False)
+    notes = serializers.CharField(required=False, allow_blank=True)
+    notes_ar = serializers.CharField(required=False, allow_blank=True)
+
+
+# =============================================================================
+# Statistical Entry Serializers
+# =============================================================================
+
+class StatisticalEntrySerializer(serializers.ModelSerializer):
+    """
+    Serializer for StatisticalEntry model.
+
+    Statistical entries track quantities for statistical/off-balance accounts.
+    They never affect trial balance or debit/credit validation.
+    """
+    account_code = serializers.CharField(source="account.code", read_only=True)
+    account_name = serializers.CharField(source="account.name", read_only=True)
+    signed_quantity = serializers.DecimalField(
+        max_digits=18, decimal_places=4, read_only=True
+    )
+    related_journal_entry_number = serializers.CharField(
+        source="related_journal_entry.entry_number", read_only=True, default=None
+    )
+
+    class Meta:
+        model = StatisticalEntry
+        fields = [
+            "id", "public_id", "company",
+            "account", "account_code", "account_name",
+            "date", "memo", "memo_ar",
+            "quantity", "direction", "unit", "signed_quantity",
+            "status",
+            "related_journal_entry", "related_journal_entry_number",
+            "source_module", "source_document",
+            "reverses_entry",
+            "posted_at", "posted_by",
+            "created_at", "created_by", "updated_at",
+        ]
+        read_only_fields = [
+            "id", "public_id", "company",
+            "account_code", "account_name", "signed_quantity",
+            "related_journal_entry_number",
+            "status", "posted_at", "posted_by",
+            "created_at", "created_by", "updated_at",
+        ]
+
+
+class StatisticalEntryCreateSerializer(serializers.Serializer):
+    """Serializer for creating statistical entries via command."""
+    account_id = serializers.IntegerField(
+        help_text="Account ID (must be STATISTICAL or OFF_BALANCE ledger domain)"
+    )
+    date = serializers.DateField()
+    memo = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
+    memo_ar = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
+    quantity = serializers.DecimalField(
+        max_digits=18, decimal_places=4,
+        help_text="Positive quantity (use direction for sign)"
+    )
+    direction = serializers.ChoiceField(
+        choices=StatisticalEntry.Direction.choices,
+        help_text="INCREASE or DECREASE"
+    )
+    unit = serializers.CharField(
+        max_length=20,
+        help_text="Unit of measure (must match account's unit_of_measure if set)"
+    )
+    related_journal_entry_id = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        help_text="Optional link to a financial journal entry",
+    )
+    source_module = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
+    source_document = serializers.CharField(max_length=100, required=False, allow_blank=True, default="")
+
+
+class StatisticalEntryUpdateSerializer(serializers.Serializer):
+    """Serializer for updating statistical entries via command."""
+    date = serializers.DateField(required=False)
+    memo = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    memo_ar = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    quantity = serializers.DecimalField(max_digits=18, decimal_places=4, required=False)
+    direction = serializers.ChoiceField(
+        choices=StatisticalEntry.Direction.choices, required=False
+    )
+    unit = serializers.CharField(max_length=20, required=False)
+    source_module = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    source_document = serializers.CharField(max_length=100, required=False, allow_blank=True)

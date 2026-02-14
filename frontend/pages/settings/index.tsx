@@ -2,7 +2,7 @@ import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import Link from "next/link";
-import { Building2, User, Globe, ShieldCheck } from "lucide-react";
+import { Building2, User, Globe, ShieldCheck, KeyRound } from "lucide-react";
 import { AppLayout } from "@/components/layout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/common";
@@ -22,6 +22,12 @@ export default function SettingsIndexPage() {
       description: t("settings:preferences.subtitle"),
       href: "/settings/preferences",
       icon: <User className="h-8 w-8" />,
+    },
+    {
+      title: t("settings:account.title", "Account"),
+      description: t("settings:account.subtitle", "Manage your account and security settings"),
+      href: "/settings/account",
+      icon: <KeyRound className="h-8 w-8" />,
     },
     {
       title: t("settings:audit.title", "Event Audit"),

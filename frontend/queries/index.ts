@@ -6,3 +6,5 @@ export * from './useCompanySettings';
 export * from './useEdim';
 export * from './useEvents';
 export * from './useScratchpad';
+export * from './useSales';
+export * from './usePurchases';

@@ -26,11 +26,15 @@ export function AppLayout({ children }: PropsWithChildren) {
 
   return (
     <SidebarProvider>
-      <div className="flex h-screen">
-        <Sidebar />
-        <div className="flex flex-1 flex-col overflow-hidden">
-          <Header />
-          <main className="flex-1 overflow-y-auto p-4 md:p-6">{children}</main>
+      <div className="flex h-screen print:block print:h-auto">
+        <div className="no-print">
+          <Sidebar />
+        </div>
+        <div className="flex flex-1 flex-col overflow-hidden print:overflow-visible">
+          <div className="no-print">
+            <Header />
+          </div>
+          <main className="flex-1 overflow-y-auto p-4 md:p-6 print:p-0 print:overflow-visible">{children}</main>
         </div>
       </div>
     </SidebarProvider>

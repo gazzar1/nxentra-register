@@ -371,6 +371,9 @@ class AccountCreatedData(BaseEventData):
     description: str = ""
     description_ar: str = ""
     unit_of_measure: str = ""  # For MEMO accounts
+    account_role: str = ""  # Behavioral role (e.g., RECEIVABLE_CONTROL, PAYABLE_CONTROL)
+    ledger_domain: str = "FINANCIAL"  # FINANCIAL, STATISTICAL, or OFF_BALANCE
+    allow_manual_posting: bool = True  # False for control accounts by default
 
 
 
@@ -406,12 +409,15 @@ class JournalLineData:
     amount_currency: Optional[str] = None
     currency: Optional[str] = None
     exchange_rate: Optional[str] = None
-    description_ar: str = ""    
+    description_ar: str = ""
     is_memo_line: bool = False
     analysis_tags: List[Dict[str, Any]] = field(default_factory=list)
-    
+    # Counterparty for AR/AP subledger
+    customer_public_id: Optional[str] = None
+    vendor_public_id: Optional[str] = None
+
     def to_dict(self) -> dict:
-        return {
+        result = {
             "line_no": self.line_no,
             "account_public_id": self.account_public_id,
             "account_code": self.account_code,
@@ -425,6 +431,12 @@ class JournalLineData:
             "is_memo_line": self.is_memo_line,
             "analysis_tags": self.analysis_tags,
         }
+        # Only include counterparty if set
+        if self.customer_public_id:
+            result["customer_public_id"] = self.customer_public_id
+        if self.vendor_public_id:
+            result["vendor_public_id"] = self.vendor_public_id
+        return result
 
 
 @dataclass
@@ -1029,6 +1041,456 @@ class CompanyLogoDeletedData(BaseEventData):
 
 
 # =============================================================================
+# Sales Module Events
+# =============================================================================
+
+@dataclass
+class ItemCreatedData(BaseEventData):
+    """Data for sales.item_created event."""
+    item_public_id: str
+    company_public_id: str
+    code: str
+    name: str
+    item_type: str
+    name_ar: str = ""
+    description: str = ""
+    sales_account_public_id: Optional[str] = None
+    purchase_account_public_id: Optional[str] = None
+    default_unit_price: str = "0"
+    default_cost: str = "0"
+    default_tax_code_public_id: Optional[str] = None
+
+
+@dataclass
+class ItemUpdatedData(BaseEventData):
+    """Data for sales.item_updated event."""
+    item_public_id: str
+    company_public_id: str
+    changes: Dict[str, Dict[str, Any]]
+
+
+@dataclass
+class TaxCodeCreatedData(BaseEventData):
+    """Data for sales.taxcode_created event."""
+    taxcode_public_id: str
+    company_public_id: str
+    code: str
+    name: str
+    rate: str
+    direction: str
+    tax_account_public_id: str
+    tax_account_code: str
+    name_ar: str = ""
+    description: str = ""
+
+
+@dataclass
+class TaxCodeUpdatedData(BaseEventData):
+    """Data for sales.taxcode_updated event."""
+    taxcode_public_id: str
+    company_public_id: str
+    changes: Dict[str, Dict[str, Any]]
+
+
+@dataclass
+class PostingProfileCreatedData(BaseEventData):
+    """Data for sales.postingprofile_created event."""
+    profile_public_id: str
+    company_public_id: str
+    code: str
+    name: str
+    profile_type: str
+    control_account_public_id: str
+    control_account_code: str
+    is_default: bool = False
+    name_ar: str = ""
+    description: str = ""
+
+
+@dataclass
+class PostingProfileUpdatedData(BaseEventData):
+    """Data for sales.postingprofile_updated event."""
+    profile_public_id: str
+    company_public_id: str
+    changes: Dict[str, Dict[str, Any]]
+
+
+@dataclass
+class SalesInvoiceLineData:
+    """Sales invoice line data for embedding in events."""
+    line_no: int
+    item_public_id: Optional[str]
+    description: str
+    quantity: str
+    unit_price: str
+    discount_amount: str
+    tax_code_public_id: Optional[str]
+    tax_rate: str
+    gross_amount: str
+    net_amount: str
+    tax_amount: str
+    line_total: str
+    account_public_id: str
+    account_code: str
+    dimension_value_public_ids: List[str] = field(default_factory=list)
+    description_ar: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "line_no": self.line_no,
+            "item_public_id": self.item_public_id,
+            "description": self.description,
+            "description_ar": self.description_ar,
+            "quantity": self.quantity,
+            "unit_price": self.unit_price,
+            "discount_amount": self.discount_amount,
+            "tax_code_public_id": self.tax_code_public_id,
+            "tax_rate": self.tax_rate,
+            "gross_amount": self.gross_amount,
+            "net_amount": self.net_amount,
+            "tax_amount": self.tax_amount,
+            "line_total": self.line_total,
+            "account_public_id": self.account_public_id,
+            "account_code": self.account_code,
+            "dimension_value_public_ids": self.dimension_value_public_ids,
+        }
+
+
+@dataclass
+class SalesInvoiceCreatedData(BaseEventData):
+    """Data for sales.invoice_created event."""
+    invoice_public_id: str
+    company_public_id: str
+    invoice_number: str
+    invoice_date: str
+    customer_public_id: str
+    customer_code: str
+    posting_profile_public_id: str
+    status: str
+    due_date: Optional[str] = None
+    reference: str = ""
+    notes: str = ""
+    subtotal: str = "0"
+    total_discount: str = "0"
+    total_tax: str = "0"
+    total_amount: str = "0"
+    lines: List[dict] = field(default_factory=list)
+    created_by_id: Optional[int] = None
+
+
+@dataclass
+class SalesInvoiceUpdatedData(BaseEventData):
+    """Data for sales.invoice_updated event."""
+    invoice_public_id: str
+    company_public_id: str
+    changes: Dict[str, Dict[str, Any]]
+    lines: Optional[List[dict]] = None
+
+
+@dataclass
+class SalesInvoicePostedData(BaseEventData):
+    """Data for sales.invoice_posted event."""
+    invoice_public_id: str
+    company_public_id: str
+    invoice_number: str
+    invoice_date: str
+    customer_public_id: str
+    customer_code: str
+    posting_profile_public_id: str
+    journal_entry_public_id: str
+    posted_at: str
+    posted_by_id: int
+    posted_by_email: str
+    subtotal: str
+    total_discount: str
+    total_tax: str
+    total_amount: str
+    lines: List[dict]
+
+
+@dataclass
+class SalesInvoiceVoidedData(BaseEventData):
+    """Data for sales.invoice_voided event."""
+    invoice_public_id: str
+    company_public_id: str
+    invoice_number: str
+    reversing_journal_entry_public_id: str
+    voided_at: str
+    voided_by_id: int
+    voided_by_email: str
+    reason: str = ""
+
+
+# =============================================================================
+# Purchases Module Events
+# =============================================================================
+
+@dataclass
+class PurchaseBillLineData:
+    """Purchase bill line data for embedding in events."""
+    line_no: int
+    item_public_id: Optional[str]
+    description: str
+    quantity: str
+    unit_price: str
+    discount_amount: str
+    tax_code_public_id: Optional[str]
+    tax_rate: str
+    gross_amount: str
+    net_amount: str
+    tax_amount: str
+    line_total: str
+    account_public_id: str
+    account_code: str
+    dimension_value_public_ids: List[str] = field(default_factory=list)
+    description_ar: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "line_no": self.line_no,
+            "item_public_id": self.item_public_id,
+            "description": self.description,
+            "description_ar": self.description_ar,
+            "quantity": self.quantity,
+            "unit_price": self.unit_price,
+            "discount_amount": self.discount_amount,
+            "tax_code_public_id": self.tax_code_public_id,
+            "tax_rate": self.tax_rate,
+            "gross_amount": self.gross_amount,
+            "net_amount": self.net_amount,
+            "tax_amount": self.tax_amount,
+            "line_total": self.line_total,
+            "account_public_id": self.account_public_id,
+            "account_code": self.account_code,
+            "dimension_value_public_ids": self.dimension_value_public_ids,
+        }
+
+
+@dataclass
+class PurchaseBillCreatedData(BaseEventData):
+    """Data for purchases.bill_created event."""
+    bill_public_id: str
+    company_public_id: str
+    bill_number: str
+    bill_date: str
+    vendor_public_id: str
+    vendor_code: str
+    posting_profile_public_id: str
+    status: str
+    due_date: Optional[str] = None
+    reference: str = ""
+    notes: str = ""
+    subtotal: str = "0"
+    total_discount: str = "0"
+    total_tax: str = "0"
+    total_amount: str = "0"
+    lines: List[dict] = field(default_factory=list)
+    created_by_id: Optional[int] = None
+
+
+@dataclass
+class PurchaseBillUpdatedData(BaseEventData):
+    """Data for purchases.bill_updated event."""
+    bill_public_id: str
+    company_public_id: str
+    changes: Dict[str, Dict[str, Any]]
+    lines: Optional[List[dict]] = None
+
+
+@dataclass
+class PurchaseBillPostedData(BaseEventData):
+    """Data for purchases.bill_posted event."""
+    bill_public_id: str
+    company_public_id: str
+    bill_number: str
+    bill_date: str
+    vendor_public_id: str
+    vendor_code: str
+    posting_profile_public_id: str
+    journal_entry_public_id: str
+    posted_at: str
+    posted_by_id: int
+    posted_by_email: str
+    subtotal: str
+    total_discount: str
+    total_tax: str
+    total_amount: str
+    lines: List[dict]
+
+
+@dataclass
+class PurchaseBillVoidedData(BaseEventData):
+    """Data for purchases.bill_voided event."""
+    bill_public_id: str
+    company_public_id: str
+    bill_number: str
+    reversing_journal_entry_public_id: str
+    voided_at: str
+    voided_by_id: int
+    voided_by_email: str
+    reason: str = ""
+
+
+# =============================================================================
+# Inventory Module Events
+# =============================================================================
+
+@dataclass
+class StockLedgerEntryData:
+    """Stock ledger entry data for embedding in events."""
+    item_public_id: str
+    warehouse_public_id: str
+    qty_delta: str  # String for JSON safety, +IN or -OUT
+    unit_cost: str
+    value_delta: str
+    costing_method_snapshot: str
+    source_line_id: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "item_public_id": self.item_public_id,
+            "warehouse_public_id": self.warehouse_public_id,
+            "qty_delta": self.qty_delta,
+            "unit_cost": self.unit_cost,
+            "value_delta": self.value_delta,
+            "costing_method_snapshot": self.costing_method_snapshot,
+            "source_line_id": self.source_line_id,
+        }
+
+
+@dataclass
+class WarehouseCreatedData(BaseEventData):
+    """Data for inventory.warehouse_created event."""
+    warehouse_public_id: str
+    company_public_id: str
+    code: str
+    name: str
+    name_ar: str = ""
+    is_default: bool = False
+    is_active: bool = True
+
+
+@dataclass
+class WarehouseUpdatedData(BaseEventData):
+    """Data for inventory.warehouse_updated event."""
+    warehouse_public_id: str
+    company_public_id: str
+    changes: Dict[str, Dict[str, Any]]
+
+
+@dataclass
+class StockReceivedData(BaseEventData):
+    """
+    Data for inventory.stock_received event.
+
+    Emitted when stock is received from purchase bill or opening balance.
+    Each entry increases inventory qty and value.
+    """
+    source_type: str  # PURCHASE_BILL, OPENING_BALANCE, ADJUSTMENT
+    source_id: str  # Document public_id
+    company_public_id: str
+    entries: List[dict]  # List of StockLedgerEntryData dicts
+    journal_entry_public_id: Optional[str] = None
+    posted_at: str = ""
+    posted_by_id: Optional[int] = None
+    posted_by_email: str = ""
+
+
+@dataclass
+class StockIssuedData(BaseEventData):
+    """
+    Data for inventory.stock_issued event.
+
+    Emitted when stock is issued for sales invoice.
+    Each entry decreases inventory qty and calculates COGS.
+    """
+    source_type: str  # SALES_INVOICE, ADJUSTMENT
+    source_id: str  # Document public_id
+    company_public_id: str
+    entries: List[dict]  # List of StockLedgerEntryData dicts
+    total_cogs: str  # Total cost of goods sold
+    journal_entry_public_id: Optional[str] = None
+    posted_at: str = ""
+    posted_by_id: Optional[int] = None
+    posted_by_email: str = ""
+
+
+@dataclass
+class InventoryAdjustedData(BaseEventData):
+    """
+    Data for inventory.adjusted event.
+
+    Emitted when inventory is manually adjusted (count, write-off, etc).
+    Can include both positive and negative adjustments.
+    """
+    adjustment_public_id: str
+    company_public_id: str
+    adjustment_date: str
+    reason: str
+    entries: List[dict]  # List of StockLedgerEntryData dicts
+    journal_entry_public_id: str
+    adjusted_at: str
+    adjusted_by_id: int
+    adjusted_by_email: str
+
+
+@dataclass
+class InventoryOpeningBalanceData(BaseEventData):
+    """
+    Data for inventory.opening_balance event.
+
+    Emitted when opening balances are set for inventory items.
+    Dr Inventory, Cr Opening Balance Equity.
+    """
+    company_public_id: str
+    as_of_date: str
+    entries: List[dict]  # List of StockLedgerEntryData dicts
+    journal_entry_public_id: str
+    recorded_at: str
+    recorded_by_id: int
+    recorded_by_email: str
+
+
+# =============================================================================
+# Invitation Events
+# =============================================================================
+
+@dataclass
+class InvitationCreatedData(BaseEventData):
+    """Data for invitation.created event."""
+    invitation_public_id: str
+    email: str
+    name: str
+    primary_company_public_id: str
+    role: str
+    company_ids: List[int]  # List of company IDs the invitee will have access to
+    permission_codes: List[str]  # List of permission codes to grant
+    invited_by_public_id: str
+    invited_by_email: str
+    expires_at: str  # ISO datetime
+
+
+@dataclass
+class InvitationAcceptedData(BaseEventData):
+    """Data for invitation.accepted event."""
+    invitation_public_id: str
+    email: str
+    user_public_id: str
+    accepted_at: str  # ISO datetime
+    membership_public_ids: List[str]  # List of created membership public_ids
+
+
+@dataclass
+class InvitationCancelledData(BaseEventData):
+    """Data for invitation.cancelled event."""
+    invitation_public_id: str
+    email: str
+    cancelled_by_public_id: str
+    cancelled_by_email: str
+    reason: str = ""
+
+
+# =============================================================================
 # Scratchpad Events
 # =============================================================================
 
@@ -1169,6 +1631,37 @@ class EventTypes:
     EDIM_CROSSWALK_REJECTED = "edim_crosswalk.rejected"
     EDIM_CROSSWALK_UPDATED = "edim_crosswalk.updated"
 
+    # Sales module events
+    SALES_ITEM_CREATED = "sales.item_created"
+    SALES_ITEM_UPDATED = "sales.item_updated"
+    SALES_TAXCODE_CREATED = "sales.taxcode_created"
+    SALES_TAXCODE_UPDATED = "sales.taxcode_updated"
+    SALES_POSTINGPROFILE_CREATED = "sales.postingprofile_created"
+    SALES_POSTINGPROFILE_UPDATED = "sales.postingprofile_updated"
+    SALES_INVOICE_CREATED = "sales.invoice_created"
+    SALES_INVOICE_UPDATED = "sales.invoice_updated"
+    SALES_INVOICE_POSTED = "sales.invoice_posted"
+    SALES_INVOICE_VOIDED = "sales.invoice_voided"
+
+    # Purchases module events
+    PURCHASES_BILL_CREATED = "purchases.bill_created"
+    PURCHASES_BILL_UPDATED = "purchases.bill_updated"
+    PURCHASES_BILL_POSTED = "purchases.bill_posted"
+    PURCHASES_BILL_VOIDED = "purchases.bill_voided"
+
+    # Inventory module events
+    INVENTORY_WAREHOUSE_CREATED = "inventory.warehouse_created"
+    INVENTORY_WAREHOUSE_UPDATED = "inventory.warehouse_updated"
+    INVENTORY_STOCK_RECEIVED = "inventory.stock_received"
+    INVENTORY_STOCK_ISSUED = "inventory.stock_issued"
+    INVENTORY_ADJUSTED = "inventory.adjusted"
+    INVENTORY_OPENING_BALANCE = "inventory.opening_balance"
+
+    # Invitation events
+    INVITATION_CREATED = "invitation.created"
+    INVITATION_ACCEPTED = "invitation.accepted"
+    INVITATION_CANCELLED = "invitation.cancelled"
+
     # Scratchpad events
     SCRATCHPAD_BATCH_COMMITTED = "scratchpad.batch_committed"
 
@@ -1246,8 +1739,39 @@ EVENT_DATA_CLASSES = {
     EventTypes.USER_APPROVED: UserApprovedData,
     EventTypes.USER_REJECTED: UserRejectedData,
 
+    # Invitation events
+    EventTypes.INVITATION_CREATED: InvitationCreatedData,
+    EventTypes.INVITATION_ACCEPTED: InvitationAcceptedData,
+    EventTypes.INVITATION_CANCELLED: InvitationCancelledData,
+
     # Scratchpad events
     EventTypes.SCRATCHPAD_BATCH_COMMITTED: ScratchpadBatchCommittedData,
+
+    # Sales module events
+    EventTypes.SALES_ITEM_CREATED: ItemCreatedData,
+    EventTypes.SALES_ITEM_UPDATED: ItemUpdatedData,
+    EventTypes.SALES_TAXCODE_CREATED: TaxCodeCreatedData,
+    EventTypes.SALES_TAXCODE_UPDATED: TaxCodeUpdatedData,
+    EventTypes.SALES_POSTINGPROFILE_CREATED: PostingProfileCreatedData,
+    EventTypes.SALES_POSTINGPROFILE_UPDATED: PostingProfileUpdatedData,
+    EventTypes.SALES_INVOICE_CREATED: SalesInvoiceCreatedData,
+    EventTypes.SALES_INVOICE_UPDATED: SalesInvoiceUpdatedData,
+    EventTypes.SALES_INVOICE_POSTED: SalesInvoicePostedData,
+    EventTypes.SALES_INVOICE_VOIDED: SalesInvoiceVoidedData,
+
+    # Purchases module events
+    EventTypes.PURCHASES_BILL_CREATED: PurchaseBillCreatedData,
+    EventTypes.PURCHASES_BILL_UPDATED: PurchaseBillUpdatedData,
+    EventTypes.PURCHASES_BILL_POSTED: PurchaseBillPostedData,
+    EventTypes.PURCHASES_BILL_VOIDED: PurchaseBillVoidedData,
+
+    # Inventory module events
+    EventTypes.INVENTORY_WAREHOUSE_CREATED: WarehouseCreatedData,
+    EventTypes.INVENTORY_WAREHOUSE_UPDATED: WarehouseUpdatedData,
+    EventTypes.INVENTORY_STOCK_RECEIVED: StockReceivedData,
+    EventTypes.INVENTORY_STOCK_ISSUED: StockIssuedData,
+    EventTypes.INVENTORY_ADJUSTED: InventoryAdjustedData,
+    EventTypes.INVENTORY_OPENING_BALANCE: InventoryOpeningBalanceData,
 }
 
 # =============================================================================

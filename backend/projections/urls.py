@@ -9,6 +9,7 @@ Endpoints:
 - /reports/trial-balance/ - Trial balance
 - /reports/balance-sheet/ - Balance sheet
 - /reports/income-statement/ - Income statement (P&L)
+- /reports/subledger-tieout/ - AR/AP subledger tie-out reconciliation
 - /reports/account-balances/ - All account balances
 - /reports/account-balances/<code>/ - Single account balance
 - /reports/projection-status/ - Projection health monitoring
@@ -40,6 +41,7 @@ from .views import (
     FiscalPeriodCurrentView,
     FiscalPeriodDatesView,
     DashboardChartsView,
+    SubledgerTieOutView,
     # Admin projection management
     AdminProjectionListView,
     AdminProjectionDetailView,
@@ -68,7 +70,12 @@ urlpatterns = [
         IncomeStatementView.as_view(),
         name="income-statement",
     ),
-    
+    path(
+        "subledger-tieout/",
+        SubledgerTieOutView.as_view(),
+        name="subledger-tieout",
+    ),
+
     # Account Balances
     path(
         "account-balances/",

@@ -8,6 +8,15 @@ import type {
   AnalysisDimensionValue,
   DimensionValueCreatePayload,
   AccountAnalysisDefault,
+  Customer,
+  CustomerCreatePayload,
+  CustomerUpdatePayload,
+  Vendor,
+  VendorCreatePayload,
+  VendorUpdatePayload,
+  StatisticalEntry,
+  StatisticalEntryCreatePayload,
+  StatisticalEntryUpdatePayload,
 } from '@/types/account';
 
 export const accountsService = {
@@ -73,4 +82,72 @@ export const dimensionsService = {
 
   deleteValue: (dimensionId: number, valueId: number) =>
     apiClient.delete(`/accounting/dimensions/${dimensionId}/values/${valueId}/`),
+};
+
+// =============================================================================
+// Customer Service (AR Subledger)
+// =============================================================================
+
+export const customersService = {
+  list: (params?: { status?: string }) =>
+    apiClient.get<Customer[]>('/accounting/customers/', { params }),
+
+  get: (code: string) =>
+    apiClient.get<Customer>(`/accounting/customers/${code}/`),
+
+  create: (data: CustomerCreatePayload) =>
+    apiClient.post<Customer>('/accounting/customers/', data),
+
+  update: (code: string, data: CustomerUpdatePayload) =>
+    apiClient.patch<Customer>(`/accounting/customers/${code}/`, data),
+
+  delete: (code: string) =>
+    apiClient.delete(`/accounting/customers/${code}/`),
+};
+
+// =============================================================================
+// Vendor Service (AP Subledger)
+// =============================================================================
+
+export const vendorsService = {
+  list: (params?: { status?: string }) =>
+    apiClient.get<Vendor[]>('/accounting/vendors/', { params }),
+
+  get: (code: string) =>
+    apiClient.get<Vendor>(`/accounting/vendors/${code}/`),
+
+  create: (data: VendorCreatePayload) =>
+    apiClient.post<Vendor>('/accounting/vendors/', data),
+
+  update: (code: string, data: VendorUpdatePayload) =>
+    apiClient.patch<Vendor>(`/accounting/vendors/${code}/`, data),
+
+  delete: (code: string) =>
+    apiClient.delete(`/accounting/vendors/${code}/`),
+};
+
+// =============================================================================
+// Statistical Entry Service
+// =============================================================================
+
+export const statisticalEntriesService = {
+  list: (params?: { account_id?: number; status?: string }) =>
+    apiClient.get<StatisticalEntry[]>('/accounting/statistical-entries/', { params }),
+
+  get: (id: number) =>
+    apiClient.get<StatisticalEntry>(`/accounting/statistical-entries/${id}/`),
+
+  create: (data: StatisticalEntryCreatePayload) =>
+    apiClient.post<StatisticalEntry>('/accounting/statistical-entries/', data),
+
+  update: (id: number, data: StatisticalEntryUpdatePayload) =>
+    apiClient.patch<StatisticalEntry>(`/accounting/statistical-entries/${id}/`, data),
+
+  delete: (id: number) =>
+    apiClient.delete(`/accounting/statistical-entries/${id}/`),
+
+  post: (id: number) =>
+    apiClient.post<{ id: number; status: string; posted_at: string }>(
+      `/accounting/statistical-entries/${id}/post/`
+    ),
 };

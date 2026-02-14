@@ -29,6 +29,14 @@ from .views import (
     UnverifiedUsersView,
     AdminResendVerificationView,
     DeleteUnverifiedUserView,
+    AdminManualVerifyUserView,
+    # Admin Panel
+    AdminStatsView,
+    AdminCompaniesListView,
+    AdminUsersListView,
+    AdminAuditLogView,
+    AdminEventTypesView,
+    AdminResetPasswordView,
     # Users
     UserListCreateView,
     UserDetailView,
@@ -44,6 +52,18 @@ from .views import (
     CompanyLogoUploadView,
     # Permissions
     PermissionListView,
+    # Invitations
+    InvitationListCreateView,
+    InvitationDetailView,
+    InvitationResendView,
+    AcceptInvitationView,
+    InvitationInfoView,
+    # Voice Feature Management
+    VoiceUsersListView,
+    VoiceUserStatusView,
+    VoiceGrantAccessView,
+    VoiceRevokeAccessView,
+    VoiceRefillQuotaView,
 )
 
 app_name = "accounts"
@@ -73,6 +93,17 @@ urlpatterns = [
     path("admin/unverified-users/", UnverifiedUsersView.as_view(), name="unverified-users"),
     path("admin/resend-verification/<int:pk>/", AdminResendVerificationView.as_view(), name="admin-resend-verification"),
     path("admin/delete-unverified/<int:pk>/", DeleteUnverifiedUserView.as_view(), name="delete-unverified-user"),
+    path("admin/verify-user/<int:pk>/", AdminManualVerifyUserView.as_view(), name="admin-verify-user"),
+
+    # ==========================================================================
+    # Admin Panel (Superuser Only)
+    # ==========================================================================
+    path("admin/stats/", AdminStatsView.as_view(), name="admin-stats"),
+    path("admin/companies/", AdminCompaniesListView.as_view(), name="admin-companies"),
+    path("admin/users/", AdminUsersListView.as_view(), name="admin-users"),
+    path("admin/audit-log/", AdminAuditLogView.as_view(), name="admin-audit-log"),
+    path("admin/event-types/", AdminEventTypesView.as_view(), name="admin-event-types"),
+    path("admin/reset-password/<int:pk>/", AdminResetPasswordView.as_view(), name="admin-reset-password"),
 
     # ==========================================================================
     # Users
@@ -100,4 +131,23 @@ urlpatterns = [
     # Permissions
     # ==========================================================================
     path("permissions/", PermissionListView.as_view(), name="permission-list"),
+
+    # ==========================================================================
+    # Invitations
+    # ==========================================================================
+    path("invitations/", InvitationListCreateView.as_view(), name="invitation-list"),
+    path("invitations/accept/", AcceptInvitationView.as_view(), name="accept-invitation"),
+    path("invitations/info/", InvitationInfoView.as_view(), name="invitation-info"),
+    path("invitations/<int:pk>/", InvitationDetailView.as_view(), name="invitation-detail"),
+    path("invitations/<int:pk>/resend/", InvitationResendView.as_view(), name="invitation-resend"),
+
+    # ==========================================================================
+    # Voice Feature Management
+    # ==========================================================================
+    path("voice/status/", VoiceUserStatusView.as_view(), name="voice-status"),
+    path("voice/users/", VoiceUsersListView.as_view(), name="voice-users-list"),
+    path("voice/users/<int:membership_id>/status/", VoiceUserStatusView.as_view(), name="voice-user-status"),
+    path("voice/users/<int:membership_id>/grant/", VoiceGrantAccessView.as_view(), name="voice-grant"),
+    path("voice/users/<int:membership_id>/revoke/", VoiceRevokeAccessView.as_view(), name="voice-revoke"),
+    path("voice/users/<int:membership_id>/refill/", VoiceRefillQuotaView.as_view(), name="voice-refill"),
 ]

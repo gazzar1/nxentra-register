@@ -175,3 +175,44 @@ def send_rejection_notification(user, reason: str = "") -> bool:
     except Exception as e:
         logger.error(f"Failed to send rejection notification to {user.email}: {e}")
         return False
+
+
+def send_invitation_email(invitation, token: str) -> bool:
+    """
+    Send an invitation email to a prospective user.
+
+    Args:
+        invitation: Invitation model instance
+        token: Raw invitation token (not the hash)
+
+    Returns:
+        True if email was sent successfully, False otherwise
+    """
+    accept_url = f"{settings.FRONTEND_URL}/accept-invitation?token={token}"
+
+    context = {
+        "invitation": invitation,
+        "invitee_name": invitation.name or invitation.email.split("@")[0],
+        "inviter_name": invitation.invited_by.name if invitation.invited_by else "A team member",
+        "company_name": invitation.primary_company.name,
+        "accept_url": accept_url,
+        "expiry_days": getattr(settings, 'INVITATION_EXPIRY_DAYS', 7),
+    }
+
+    try:
+        html_message = render_to_string("emails/invitation.html", context)
+        plain_message = strip_tags(html_message)
+
+        send_mail(
+            subject=f"You've been invited to join {invitation.primary_company.name} on Nxentra",
+            message=plain_message,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[invitation.email],
+            html_message=html_message,
+            fail_silently=False,
+        )
+        logger.info(f"Invitation email sent to {invitation.email}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send invitation email to {invitation.email}: {e}")
+        return False

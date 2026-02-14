@@ -2,7 +2,7 @@ import { cn } from "@/lib/cn";
 
 interface PageHeaderProps {
   title: string;
-  subtitle?: string;
+  subtitle?: React.ReactNode;
   actions?: React.ReactNode;
   className?: string;
 }
@@ -23,7 +23,7 @@ export function PageHeader({
       <div>
         <h1 className="text-2xl font-bold tracking-tight">{title}</h1>
         {subtitle && (
-          <p className="text-muted-foreground">{subtitle}</p>
+          <div className="text-muted-foreground">{subtitle}</div>
         )}
       </div>
       {actions && <div className="flex items-center gap-2">{actions}</div>}

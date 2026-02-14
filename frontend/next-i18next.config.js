@@ -10,5 +10,5 @@ module.exports = {
     : '/locales',
   reloadOnPrerender: process.env.NODE_ENV === 'development',
   defaultNS: 'common',
-  ns: ['common', 'auth', 'accounting', 'reports', 'settings'],
+  ns: ['common', 'auth', 'accounting', 'reports', 'settings', 'inventory'],
 };

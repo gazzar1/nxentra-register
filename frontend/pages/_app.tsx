@@ -7,6 +7,7 @@ import { useState } from "react";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { ThemeProvider } from "@/contexts/ThemeContext";
 import { ToastContextProvider } from "@/components/ui/toaster";
+import { ErrorBoundary } from "@/components/common/ErrorBoundary";
 
 function App({ Component, pageProps }: AppProps) {
   const [queryClient] = useState(
@@ -28,15 +29,17 @@ function App({ Component, pageProps }: AppProps) {
         <title>Nxentra</title>
         <meta name="viewport" content="width=device-width, initial-scale=1" />
       </Head>
-      <QueryClientProvider client={queryClient}>
-        <ThemeProvider>
-          <ToastContextProvider>
-            <AuthProvider>
-              <Component {...pageProps} />
-            </AuthProvider>
-          </ToastContextProvider>
-        </ThemeProvider>
-      </QueryClientProvider>
+      <ErrorBoundary>
+        <QueryClientProvider client={queryClient}>
+          <ThemeProvider>
+            <ToastContextProvider>
+              <AuthProvider>
+                <Component {...pageProps} />
+              </AuthProvider>
+            </ToastContextProvider>
+          </ThemeProvider>
+        </QueryClientProvider>
+      </ErrorBoundary>
     </>
   );
 }

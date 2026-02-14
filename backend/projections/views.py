@@ -112,9 +112,11 @@ class TrialBalanceView(APIView):
         period_start_date = first_period.start_date
         period_end_date = last_period.end_date
 
-        # Get all accounts for the company
+        # Get all FINANCIAL domain accounts for the company
+        # Statistical and off-balance accounts are excluded from trial balance
         accounts = Account.objects.filter(
             company=actor.company,
+            ledger_domain=Account.LedgerDomain.FINANCIAL,
         ).order_by("code")
 
         # Build account lookup
@@ -481,9 +483,11 @@ class BalanceSheetView(APIView):
         period_start_date = first_period.start_date
         as_of_date = last_period.end_date
 
-        # Get all accounts for the company
+        # Get all FINANCIAL domain accounts for the company
+        # Statistical and off-balance accounts are excluded from balance sheet
         accounts = Account.objects.filter(
             company=actor.company,
+            ledger_domain=Account.LedgerDomain.FINANCIAL,
         ).order_by("code")
 
         # Build account lookup
@@ -884,9 +888,11 @@ class IncomeStatementView(APIView):
         period_start_date = first_period.start_date
         period_end_date = last_period.end_date
 
-        # Get all accounts for the company
+        # Get all FINANCIAL domain accounts for the company
+        # Statistical and off-balance accounts are excluded from financial reports
         accounts = Account.objects.filter(
             company=actor.company,
+            ledger_domain=Account.LedgerDomain.FINANCIAL,
         ).order_by("code")
 
         # Build account lookup
@@ -2096,4 +2102,201 @@ class DashboardChartsView(APIView):
             "account_type_distribution": account_type_distribution,
             "monthly_net_income": monthly_net_income,
             "top_accounts": top_accounts,
+        })
+
+
+class SubledgerTieOutView(APIView):
+    """
+    GET /api/reports/subledger-tieout/
+
+    Validates that subledger balances tie out to GL control accounts.
+
+    This is a critical reconciliation report that verifies:
+    - Sum of all customer balances == AR control account balance
+    - Sum of all vendor balances == AP control account balance
+
+    Returns details of any discrepancies for investigation.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from accounting.models import Account, Customer, Vendor, JournalLine
+
+        actor = resolve_actor(request)
+        require(actor, "reports.view")
+
+        company = actor.company
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # AR Tie-Out: AR Control Account Balance vs Sum of Customer Balances
+        # ═══════════════════════════════════════════════════════════════════════
+
+        # Get AR control accounts
+        ar_control_accounts = Account.objects.filter(
+            company=company,
+            role=Account.AccountRole.RECEIVABLE_CONTROL,
+            ledger_domain=Account.LedgerDomain.FINANCIAL,
+        )
+
+        ar_tieout = {
+            "control_accounts": [],
+            "customer_balances": [],
+            "gl_total": Decimal("0.00"),
+            "subledger_total": Decimal("0.00"),
+            "is_balanced": True,
+            "discrepancy": Decimal("0.00"),
+        }
+
+        # Get GL balance for each AR control account
+        for ar_account in ar_control_accounts:
+            try:
+                balance_record = AccountBalance.objects.get(
+                    company=company,
+                    account=ar_account,
+                )
+                gl_balance = balance_record.balance
+            except AccountBalance.DoesNotExist:
+                gl_balance = Decimal("0.00")
+
+            ar_tieout["control_accounts"].append({
+                "code": ar_account.code,
+                "name": ar_account.name,
+                "balance": str(gl_balance),
+            })
+            ar_tieout["gl_total"] += gl_balance
+
+        # Compute customer subledger balances from journal lines
+        # Group by customer, sum debits - credits on AR control accounts
+        customer_balances = {}
+
+        # Get all posted journal lines on AR control accounts with customers
+        ar_lines = JournalLine.objects.filter(
+            journal_entry__company=company,
+            journal_entry__status="POSTED",
+            account__in=ar_control_accounts,
+            customer__isnull=False,
+        ).select_related("customer")
+
+        for line in ar_lines:
+            customer_code = line.customer.code
+            if customer_code not in customer_balances:
+                customer_balances[customer_code] = {
+                    "code": customer_code,
+                    "name": line.customer.name,
+                    "debit_total": Decimal("0.00"),
+                    "credit_total": Decimal("0.00"),
+                }
+
+            customer_balances[customer_code]["debit_total"] += line.debit_amount or Decimal("0.00")
+            customer_balances[customer_code]["credit_total"] += line.credit_amount or Decimal("0.00")
+
+        # Calculate customer balances (AR is debit-normal)
+        for code, data in customer_balances.items():
+            balance = data["debit_total"] - data["credit_total"]
+            ar_tieout["customer_balances"].append({
+                "code": data["code"],
+                "name": data["name"],
+                "balance": str(balance),
+            })
+            ar_tieout["subledger_total"] += balance
+
+        ar_tieout["discrepancy"] = ar_tieout["gl_total"] - ar_tieout["subledger_total"]
+        ar_tieout["is_balanced"] = ar_tieout["discrepancy"] == Decimal("0.00")
+
+        # Convert decimals to strings for JSON
+        ar_tieout["gl_total"] = str(ar_tieout["gl_total"])
+        ar_tieout["subledger_total"] = str(ar_tieout["subledger_total"])
+        ar_tieout["discrepancy"] = str(ar_tieout["discrepancy"])
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # AP Tie-Out: AP Control Account Balance vs Sum of Vendor Balances
+        # ═══════════════════════════════════════════════════════════════════════
+
+        # Get AP control accounts
+        ap_control_accounts = Account.objects.filter(
+            company=company,
+            role=Account.AccountRole.PAYABLE_CONTROL,
+            ledger_domain=Account.LedgerDomain.FINANCIAL,
+        )
+
+        ap_tieout = {
+            "control_accounts": [],
+            "vendor_balances": [],
+            "gl_total": Decimal("0.00"),
+            "subledger_total": Decimal("0.00"),
+            "is_balanced": True,
+            "discrepancy": Decimal("0.00"),
+        }
+
+        # Get GL balance for each AP control account
+        for ap_account in ap_control_accounts:
+            try:
+                balance_record = AccountBalance.objects.get(
+                    company=company,
+                    account=ap_account,
+                )
+                gl_balance = balance_record.balance
+            except AccountBalance.DoesNotExist:
+                gl_balance = Decimal("0.00")
+
+            ap_tieout["control_accounts"].append({
+                "code": ap_account.code,
+                "name": ap_account.name,
+                "balance": str(gl_balance),
+            })
+            ap_tieout["gl_total"] += gl_balance
+
+        # Compute vendor subledger balances from journal lines
+        vendor_balances = {}
+
+        # Get all posted journal lines on AP control accounts with vendors
+        ap_lines = JournalLine.objects.filter(
+            journal_entry__company=company,
+            journal_entry__status="POSTED",
+            account__in=ap_control_accounts,
+            vendor__isnull=False,
+        ).select_related("vendor")
+
+        for line in ap_lines:
+            vendor_code = line.vendor.code
+            if vendor_code not in vendor_balances:
+                vendor_balances[vendor_code] = {
+                    "code": vendor_code,
+                    "name": line.vendor.name,
+                    "debit_total": Decimal("0.00"),
+                    "credit_total": Decimal("0.00"),
+                }
+
+            vendor_balances[vendor_code]["debit_total"] += line.debit_amount or Decimal("0.00")
+            vendor_balances[vendor_code]["credit_total"] += line.credit_amount or Decimal("0.00")
+
+        # Calculate vendor balances (AP is credit-normal)
+        for code, data in vendor_balances.items():
+            balance = data["credit_total"] - data["debit_total"]
+            ap_tieout["vendor_balances"].append({
+                "code": data["code"],
+                "name": data["name"],
+                "balance": str(balance),
+            })
+            ap_tieout["subledger_total"] += balance
+
+        ap_tieout["discrepancy"] = ap_tieout["gl_total"] - ap_tieout["subledger_total"]
+        ap_tieout["is_balanced"] = ap_tieout["discrepancy"] == Decimal("0.00")
+
+        # Convert decimals to strings for JSON
+        ap_tieout["gl_total"] = str(ap_tieout["gl_total"])
+        ap_tieout["subledger_total"] = str(ap_tieout["subledger_total"])
+        ap_tieout["discrepancy"] = str(ap_tieout["discrepancy"])
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # Overall Status
+        # ═══════════════════════════════════════════════════════════════════════
+
+        overall_balanced = ar_tieout["is_balanced"] and ap_tieout["is_balanced"]
+
+        return Response({
+            "ar_tieout": ar_tieout,
+            "ap_tieout": ap_tieout,
+            "overall_balanced": overall_balanced,
+            "report_date": date_type.today().isoformat(),
         })

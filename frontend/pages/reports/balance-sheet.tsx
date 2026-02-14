@@ -152,20 +152,22 @@ export default function BalanceSheetPage() {
 
   return (
     <AppLayout>
-      <div className="space-y-6">
-        <PageHeader
-          title={t("reports:balanceSheet.title")}
-          subtitle={t("reports:balanceSheet.subtitle")}
-          actions={
-            <Button variant="outline" onClick={handlePrint}>
-              <Printer className="me-2 h-4 w-4" />
-              {t("reports:actions.print")}
-            </Button>
-          }
-        />
+      <div className="space-y-6 print:space-y-0">
+        <div className="no-print">
+          <PageHeader
+            title={t("reports:balanceSheet.title")}
+            subtitle={t("reports:balanceSheet.subtitle")}
+            actions={
+              <Button variant="outline" onClick={handlePrint}>
+                <Printer className="me-2 h-4 w-4" />
+                {t("reports:actions.print")}
+              </Button>
+            }
+          />
+        </div>
 
         {/* Period Filter Card */}
-        <Card>
+        <Card className="no-print">
           <CardContent className="pt-6">
             <div className="flex flex-wrap items-end gap-4">
               <div className="space-y-2">
@@ -263,8 +265,8 @@ export default function BalanceSheetPage() {
           </CardContent>
         </Card>
 
-        <Card>
-          <CardContent className="pt-6">
+        <Card className="print:shadow-none print:border-0">
+          <CardContent className="pt-6 print:p-0">
             {isLoading ? (
               <div className="flex justify-center py-12">
                 <LoadingSpinner size="lg" />

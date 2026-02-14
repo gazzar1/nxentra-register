@@ -25,6 +25,9 @@ from .models import (
     AnalysisDimension,
     AnalysisDimensionValue,
     AccountAnalysisDefault,
+    Customer,
+    Vendor,
+    StatisticalEntry,
 )
 from .serializers import (
     AccountSerializer,
@@ -38,6 +41,15 @@ from .serializers import (
     AnalysisDimensionValueSerializer,
     DimensionValueCreateSerializer,
     AccountAnalysisDefaultSerializer,
+    CustomerSerializer,
+    CustomerCreateSerializer,
+    CustomerUpdateSerializer,
+    VendorSerializer,
+    VendorCreateSerializer,
+    VendorUpdateSerializer,
+    StatisticalEntrySerializer,
+    StatisticalEntryCreateSerializer,
+    StatisticalEntryUpdateSerializer,
 )
 from .commands import (
     # Account commands
@@ -1011,3 +1023,482 @@ class JournalEntryExportView(APIView):
             filename=filename,
             title=title,
         )
+
+
+# =============================================================================
+# Customer Views (AR Subledger)
+# =============================================================================
+
+class CustomerListCreateView(APIView):
+    """
+    GET /api/accounting/customers/ -> list customers
+    POST /api/accounting/customers/ -> create customer
+
+    Customers are counterparties for AR (not COA entries).
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        actor = resolve_actor(request)
+        require(actor, "accounts.view")
+
+        customers = Customer.objects.filter(
+            company=actor.company
+        ).select_related("default_ar_account").order_by("code")
+
+        serializer = CustomerSerializer(customers, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        actor = resolve_actor(request)
+        require(actor, "accounts.create")
+
+        input_serializer = CustomerCreateSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+
+        # For now, create directly (will add command layer later)
+        from projections.write_barrier import projection_writes_allowed
+        with projection_writes_allowed():
+            data = input_serializer.validated_data
+            default_ar_account = None
+            if data.get("default_ar_account_id"):
+                default_ar_account = get_object_or_404(
+                    Account, company=actor.company, pk=data.pop("default_ar_account_id")
+                )
+            customer = Customer(
+                company=actor.company,
+                default_ar_account=default_ar_account,
+                **data,
+            )
+            customer.save(_projection_write=True)
+
+        output_serializer = CustomerSerializer(customer)
+        return Response(output_serializer.data, status=status.HTTP_201_CREATED)
+
+
+class CustomerDetailView(APIView):
+    """
+    GET /api/accounting/customers/<code>/ -> retrieve
+    PATCH /api/accounting/customers/<code>/ -> update
+    DELETE /api/accounting/customers/<code>/ -> delete
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get_object(self, actor, code):
+        return get_object_or_404(Customer, company=actor.company, code=code)
+
+    def get(self, request, code):
+        actor = resolve_actor(request)
+        require(actor, "accounts.view")
+
+        customer = self.get_object(actor, code)
+        serializer = CustomerSerializer(customer)
+        return Response(serializer.data)
+
+    def patch(self, request, code):
+        actor = resolve_actor(request)
+        require(actor, "accounts.update")
+
+        customer = self.get_object(actor, code)
+
+        input_serializer = CustomerUpdateSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+
+        from projections.write_barrier import projection_writes_allowed
+        with projection_writes_allowed():
+            data = input_serializer.validated_data
+            if "default_ar_account_id" in data:
+                ar_id = data.pop("default_ar_account_id")
+                if ar_id:
+                    customer.default_ar_account = get_object_or_404(
+                        Account, company=actor.company, pk=ar_id
+                    )
+                else:
+                    customer.default_ar_account = None
+
+            for key, value in data.items():
+                setattr(customer, key, value)
+
+            customer.save(_projection_write=True)
+
+        output_serializer = CustomerSerializer(customer)
+        return Response(output_serializer.data)
+
+    def delete(self, request, code):
+        actor = resolve_actor(request)
+        require(actor, "accounts.delete")
+
+        customer = self.get_object(actor, code)
+
+        # Check if customer has any journal lines
+        if customer.journal_lines.exists():
+            return Response(
+                {"detail": "Cannot delete customer with existing transactions."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from projections.write_barrier import projection_writes_allowed
+        with projection_writes_allowed():
+            customer.delete()
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# =============================================================================
+# Vendor Views (AP Subledger)
+# =============================================================================
+
+class VendorListCreateView(APIView):
+    """
+    GET /api/accounting/vendors/ -> list vendors
+    POST /api/accounting/vendors/ -> create vendor
+
+    Vendors are counterparties for AP (not COA entries).
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        actor = resolve_actor(request)
+        require(actor, "accounts.view")
+
+        vendors = Vendor.objects.filter(
+            company=actor.company
+        ).select_related("default_ap_account").order_by("code")
+
+        serializer = VendorSerializer(vendors, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        actor = resolve_actor(request)
+        require(actor, "accounts.create")
+
+        input_serializer = VendorCreateSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+
+        from projections.write_barrier import projection_writes_allowed
+        with projection_writes_allowed():
+            data = input_serializer.validated_data
+            default_ap_account = None
+            if data.get("default_ap_account_id"):
+                default_ap_account = get_object_or_404(
+                    Account, company=actor.company, pk=data.pop("default_ap_account_id")
+                )
+            vendor = Vendor(
+                company=actor.company,
+                default_ap_account=default_ap_account,
+                **data,
+            )
+            vendor.save(_projection_write=True)
+
+        output_serializer = VendorSerializer(vendor)
+        return Response(output_serializer.data, status=status.HTTP_201_CREATED)
+
+
+class VendorDetailView(APIView):
+    """
+    GET /api/accounting/vendors/<code>/ -> retrieve
+    PATCH /api/accounting/vendors/<code>/ -> update
+    DELETE /api/accounting/vendors/<code>/ -> delete
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get_object(self, actor, code):
+        return get_object_or_404(Vendor, company=actor.company, code=code)
+
+    def get(self, request, code):
+        actor = resolve_actor(request)
+        require(actor, "accounts.view")
+
+        vendor = self.get_object(actor, code)
+        serializer = VendorSerializer(vendor)
+        return Response(serializer.data)
+
+    def patch(self, request, code):
+        actor = resolve_actor(request)
+        require(actor, "accounts.update")
+
+        vendor = self.get_object(actor, code)
+
+        input_serializer = VendorUpdateSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+
+        from projections.write_barrier import projection_writes_allowed
+        with projection_writes_allowed():
+            data = input_serializer.validated_data
+            if "default_ap_account_id" in data:
+                ap_id = data.pop("default_ap_account_id")
+                if ap_id:
+                    vendor.default_ap_account = get_object_or_404(
+                        Account, company=actor.company, pk=ap_id
+                    )
+                else:
+                    vendor.default_ap_account = None
+
+            for key, value in data.items():
+                setattr(vendor, key, value)
+
+            vendor.save(_projection_write=True)
+
+        output_serializer = VendorSerializer(vendor)
+        return Response(output_serializer.data)
+
+    def delete(self, request, code):
+        actor = resolve_actor(request)
+        require(actor, "accounts.delete")
+
+        vendor = self.get_object(actor, code)
+
+        # Check if vendor has any journal lines
+        if vendor.journal_lines.exists():
+            return Response(
+                {"detail": "Cannot delete vendor with existing transactions."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from projections.write_barrier import projection_writes_allowed
+        with projection_writes_allowed():
+            vendor.delete()
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# =============================================================================
+# Statistical Entry Views
+# =============================================================================
+
+class StatisticalEntryListCreateView(APIView):
+    """
+    GET /api/accounting/statistical-entries/ -> list statistical entries
+    POST /api/accounting/statistical-entries/ -> create statistical entry
+
+    Statistical entries track quantities for statistical/off-balance accounts.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        actor = resolve_actor(request)
+        require(actor, "journal.view")
+
+        entries = StatisticalEntry.objects.filter(
+            company=actor.company
+        ).select_related("account", "related_journal_entry").order_by("-date", "-id")
+
+        # Optional filters
+        account_id = request.query_params.get("account_id")
+        if account_id:
+            entries = entries.filter(account_id=account_id)
+
+        status_filter = request.query_params.get("status")
+        if status_filter:
+            entries = entries.filter(status=status_filter)
+
+        serializer = StatisticalEntrySerializer(entries, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        actor = resolve_actor(request)
+        require(actor, "journal.create")
+
+        input_serializer = StatisticalEntryCreateSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+
+        from projections.write_barrier import projection_writes_allowed
+        with projection_writes_allowed():
+            data = input_serializer.validated_data
+
+            # Get the account
+            account = get_object_or_404(
+                Account, company=actor.company, pk=data.pop("account_id")
+            )
+
+            # Optional related journal entry
+            related_je = None
+            if data.get("related_journal_entry_id"):
+                related_je = get_object_or_404(
+                    JournalEntry, company=actor.company, pk=data.pop("related_journal_entry_id")
+                )
+
+            entry = StatisticalEntry(
+                company=actor.company,
+                account=account,
+                related_journal_entry=related_je,
+                created_by=actor.user,
+                **data,
+            )
+            entry.save(_projection_write=True)
+
+        output_serializer = StatisticalEntrySerializer(entry)
+        return Response(output_serializer.data, status=status.HTTP_201_CREATED)
+
+
+class StatisticalEntryDetailView(APIView):
+    """
+    GET /api/accounting/statistical-entries/<pk>/ -> retrieve
+    PATCH /api/accounting/statistical-entries/<pk>/ -> update
+    DELETE /api/accounting/statistical-entries/<pk>/ -> delete
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get_object(self, actor, pk):
+        return get_object_or_404(StatisticalEntry, company=actor.company, pk=pk)
+
+    def get(self, request, pk):
+        actor = resolve_actor(request)
+        require(actor, "journal.view")
+
+        entry = self.get_object(actor, pk)
+        serializer = StatisticalEntrySerializer(entry)
+        return Response(serializer.data)
+
+    def patch(self, request, pk):
+        actor = resolve_actor(request)
+        require(actor, "journal.update")
+
+        entry = self.get_object(actor, pk)
+
+        if entry.status != StatisticalEntry.Status.DRAFT:
+            return Response(
+                {"detail": "Only DRAFT statistical entries can be updated."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        input_serializer = StatisticalEntryUpdateSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+
+        from projections.write_barrier import projection_writes_allowed
+        with projection_writes_allowed():
+            for key, value in input_serializer.validated_data.items():
+                setattr(entry, key, value)
+            entry.save(_projection_write=True)
+
+        output_serializer = StatisticalEntrySerializer(entry)
+        return Response(output_serializer.data)
+
+    def delete(self, request, pk):
+        actor = resolve_actor(request)
+        require(actor, "journal.delete")
+
+        entry = self.get_object(actor, pk)
+
+        if entry.status != StatisticalEntry.Status.DRAFT:
+            return Response(
+                {"detail": "Only DRAFT statistical entries can be deleted."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from projections.write_barrier import projection_writes_allowed
+        with projection_writes_allowed():
+            entry.delete()
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class StatisticalEntryPostView(APIView):
+    """
+    POST /api/accounting/statistical-entries/<pk>/post/ -> post entry
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        actor = resolve_actor(request)
+        require(actor, "journal.post")
+
+        entry = get_object_or_404(StatisticalEntry, company=actor.company, pk=pk)
+
+        if entry.status != StatisticalEntry.Status.DRAFT:
+            return Response(
+                {"detail": "Only DRAFT entries can be posted."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from django.utils import timezone
+        from projections.write_barrier import projection_writes_allowed
+
+        with projection_writes_allowed():
+            entry.status = StatisticalEntry.Status.POSTED
+            entry.posted_at = timezone.now()
+            entry.posted_by = actor.user
+            entry.save(_projection_write=True)
+
+        return Response({
+            "id": entry.id,
+            "status": entry.status,
+            "posted_at": entry.posted_at,
+        })
+
+
+# =============================================================================
+# Admin: Chart of Accounts Seeding
+# =============================================================================
+
+class SeedStatusView(APIView):
+    """
+    GET /api/accounting/admin/seed-status/ -> check seed status
+
+    Super-admin only. Shows which required accounts exist and which are missing.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        actor = resolve_actor(request)
+
+        # Super-admin check
+        if not request.user.is_staff and not request.user.is_superuser:
+            return Response(
+                {"detail": "Super-admin access required."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        from .seeds import get_seed_status
+
+        seed_status = get_seed_status(actor.company)
+
+        return Response({
+            "company_id": actor.company.id,
+            "company_name": actor.company.name,
+            "is_complete": seed_status["is_complete"],
+            "existing_accounts": seed_status["existing"],
+            "missing_roles": seed_status["missing"],
+        })
+
+
+class SeedAccountsView(APIView):
+    """
+    POST /api/accounting/admin/seed-accounts/ -> seed missing required accounts
+
+    Super-admin only. Creates missing accounts only - no deletion, no overwrite.
+    This is idempotent: running twice creates zero duplicates.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        actor = resolve_actor(request)
+
+        # Super-admin check
+        if not request.user.is_staff and not request.user.is_superuser:
+            return Response(
+                {"detail": "Super-admin access required."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        from .seeds import seed_chart_of_accounts, get_seed_status
+
+        # Get status before seeding
+        before_status = get_seed_status(actor.company)
+        if before_status["is_complete"]:
+            return Response({
+                "message": "All required accounts already exist.",
+                "created": [],
+                "skipped": list(before_status["existing"].keys()),
+                "errors": [],
+            })
+
+        # Perform seeding
+        result = seed_chart_of_accounts(actor.company)
+
+        return Response({
+            "message": "Seeding complete.",
+            "created": result.created,
+            "skipped": result.skipped,
+            "errors": result.errors,
+        }, status=status.HTTP_201_CREATED if result.created else status.HTTP_200_OK)

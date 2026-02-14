@@ -1,7 +1,7 @@
 import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useState, useEffect, useCallback } from "react";
-import { Check, X, RefreshCw, Mail, Trash2 } from "lucide-react";
+import { Check, X, RefreshCw, Mail, Trash2, CheckCircle } from "lucide-react";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -33,6 +33,7 @@ import {
   getUnverifiedUsers,
   adminResendVerificationEmail,
   deleteUnverifiedUser,
+  adminManualVerifyUser,
   type PendingUser,
   type UnverifiedUser,
 } from "@/lib/api";
@@ -169,6 +170,31 @@ export default function PendingUsersPage() {
     } catch (err) {
       console.error(err);
       setError("Failed to send verification email");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleManualVerify = async (userId: number, email: string) => {
+    try {
+      setIsSubmitting(true);
+      setError(null);
+      const token = getAccessToken();
+      if (!token) return;
+      const result = await adminManualVerifyUser(token, userId);
+      // Remove from unverified list
+      setUnverifiedUsers((prev) => prev.filter((u) => u.id !== userId));
+      // If beta gate is enabled, user will need approval next
+      if (result.needs_approval) {
+        setSuccessMessage(`${email} verified. User now needs admin approval.`);
+        // Refresh pending approvals to show the newly verified user
+        fetchPendingUsers();
+      } else {
+        setSuccessMessage(`${email} verified and approved successfully.`);
+      }
+    } catch (err) {
+      console.error(err);
+      setError("Failed to verify user");
     } finally {
       setIsSubmitting(false);
     }
@@ -353,7 +379,7 @@ export default function PendingUsersPage() {
               )}
             </CardTitle>
             <CardDescription>
-              Users who registered but haven&apos;t verified their email yet. You can resend verification emails or delete their accounts.
+              Users who registered but haven&apos;t verified their email yet. You can manually verify them, resend verification emails, or delete their accounts.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -395,6 +421,15 @@ export default function PendingUsersPage() {
                       <TableCell>{formatDate(unverifiedUser.registered_at)}</TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-2">
+                          <Button
+                            size="sm"
+                            onClick={() => handleManualVerify(unverifiedUser.id, unverifiedUser.email)}
+                            disabled={isSubmitting}
+                            title="Manually verify user email"
+                          >
+                            <CheckCircle className="me-1 h-4 w-4" />
+                            Verify
+                          </Button>
                           <Button
                             size="sm"
                             variant="outline"

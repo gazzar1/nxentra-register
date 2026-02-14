@@ -7,6 +7,13 @@ Endpoints:
 - /journal-entries/ - Journal Entry CRUD with workflow actions
 - /dimensions/ - Analysis Dimensions CRUD
 - /dimensions/<id>/values/ - Dimension Values CRUD
+- /customers/ - Customer (AR subledger) CRUD
+- /vendors/ - Vendor (AP subledger) CRUD
+- /statistical-entries/ - Statistical Entry CRUD with post action
+
+Admin Endpoints (super-admin only):
+- /admin/seed-status/ - Check seed status (missing/existing accounts)
+- /admin/seed-accounts/ - Seed missing required accounts
 """
 
 from django.urls import path
@@ -30,6 +37,18 @@ from .views import (
     AnalysisDimensionDetailView,
     DimensionValueListCreateView,
     DimensionValueDetailView,
+    # Customer/Vendor views
+    CustomerListCreateView,
+    CustomerDetailView,
+    VendorListCreateView,
+    VendorDetailView,
+    # Statistical entry views
+    StatisticalEntryListCreateView,
+    StatisticalEntryDetailView,
+    StatisticalEntryPostView,
+    # Admin views
+    SeedStatusView,
+    SeedAccountsView,
 )
 
 app_name = "accounting"
@@ -126,5 +145,66 @@ urlpatterns = [
         "dimensions/<int:dim_pk>/values/<int:pk>/",
         DimensionValueDetailView.as_view(),
         name="dimension-value-detail",
+    ),
+
+    # ==========================================================================
+    # Customers (AR Subledger)
+    # ==========================================================================
+    path(
+        "customers/",
+        CustomerListCreateView.as_view(),
+        name="customer-list-create",
+    ),
+    path(
+        "customers/<str:code>/",
+        CustomerDetailView.as_view(),
+        name="customer-detail",
+    ),
+
+    # ==========================================================================
+    # Vendors (AP Subledger)
+    # ==========================================================================
+    path(
+        "vendors/",
+        VendorListCreateView.as_view(),
+        name="vendor-list-create",
+    ),
+    path(
+        "vendors/<str:code>/",
+        VendorDetailView.as_view(),
+        name="vendor-detail",
+    ),
+
+    # ==========================================================================
+    # Statistical Entries
+    # ==========================================================================
+    path(
+        "statistical-entries/",
+        StatisticalEntryListCreateView.as_view(),
+        name="statistical-entry-list-create",
+    ),
+    path(
+        "statistical-entries/<int:pk>/",
+        StatisticalEntryDetailView.as_view(),
+        name="statistical-entry-detail",
+    ),
+    path(
+        "statistical-entries/<int:pk>/post/",
+        StatisticalEntryPostView.as_view(),
+        name="statistical-entry-post",
+    ),
+
+    # ==========================================================================
+    # Admin: Chart of Accounts Seeding (super-admin only)
+    # ==========================================================================
+    path(
+        "admin/seed-status/",
+        SeedStatusView.as_view(),
+        name="admin-seed-status",
+    ),
+    path(
+        "admin/seed-accounts/",
+        SeedAccountsView.as_view(),
+        name="admin-seed-accounts",
     ),
 ]

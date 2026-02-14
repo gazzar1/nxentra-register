@@ -195,12 +195,17 @@ class VoiceParseResult:
 # =============================================================================
 
 class VoiceFeatureDisabledError(Exception):
-    """Raised when voice feature is not enabled for tenant."""
+    """Raised when voice feature is not enabled globally."""
+    pass
+
+
+class VoiceUserNotAuthorizedError(Exception):
+    """Raised when user does not have voice access permission."""
     pass
 
 
 class VoiceQuotaExceededError(Exception):
-    """Raised when tenant has exceeded voice usage quota."""
+    """Raised when user has exceeded voice usage quota."""
     pass
 
 
@@ -320,16 +325,141 @@ class VoiceParserService:
 
     def increment_usage(self, company) -> None:
         """
-        Increment voice usage counter after successful transcript storage.
-
-        IMPORTANT: Only call this ONCE per successful transcription.
-        Do NOT call during retries to avoid duplicate counting.
+        DEPRECATED: Use increment_user_usage instead.
+        Increment voice usage counter at company level.
         """
         if hasattr(company, 'voice_rows_used'):
             from django.db.models import F
             type(company).objects.filter(pk=company.pk).update(
                 voice_rows_used=F('voice_rows_used') + 1
             )
+
+    # =========================================================================
+    # User-Level Voice Permission Methods
+    # =========================================================================
+
+    def check_global_enabled(self) -> None:
+        """
+        Check if voice feature is enabled globally.
+
+        Raises:
+            VoiceFeatureDisabledError: If voice is disabled globally
+            VoiceProviderNotConfiguredError: If API key is missing
+        """
+        # Check global setting (kill-switch)
+        global_enabled = getattr(settings, 'VOICE_PARSING_ENABLED', True)
+        if not global_enabled:
+            raise VoiceFeatureDisabledError(
+                "Voice parsing is disabled globally (VOICE_PARSING_ENABLED=False)"
+            )
+
+        # Check API key is configured
+        api_key = getattr(settings, 'OPENAI_API_KEY', '').strip()
+        if not api_key:
+            raise VoiceProviderNotConfiguredError(
+                "Voice is enabled but OPENAI_API_KEY is not configured. "
+                "Contact administrator."
+            )
+
+    def check_user_voice_access(self, membership) -> None:
+        """
+        Check if user has voice access permission.
+
+        Voice access is granted per-user by admin via membership.voice_enabled flag.
+
+        Args:
+            membership: CompanyMembership instance
+
+        Raises:
+            VoiceFeatureDisabledError: If voice is disabled globally
+            VoiceProviderNotConfiguredError: If API key is missing
+            VoiceUserNotAuthorizedError: If user does not have voice permission
+        """
+        # First check global settings
+        self.check_global_enabled()
+
+        # Check user-level permission (granted by admin)
+        if not getattr(membership, 'voice_enabled', False):
+            raise VoiceUserNotAuthorizedError(
+                "Voice feature not enabled for your account. "
+                "Contact your administrator to request access."
+            )
+
+    def check_user_quota(self, membership) -> None:
+        """
+        Check if user has remaining voice quota.
+
+        Args:
+            membership: CompanyMembership instance
+
+        Raises:
+            VoiceQuotaNotConfiguredError: If quota is null
+            VoiceQuotaExceededError: If quota exceeded
+        """
+        voice_quota = getattr(membership, 'voice_quota', None)
+        voice_rows_used = getattr(membership, 'voice_rows_used', 0)
+
+        # Null quota = not configured = error (no unlimited allowed)
+        if voice_quota is None:
+            raise VoiceQuotaNotConfiguredError(
+                "Voice quota not configured for your account. "
+                "Contact your administrator to set your voice quota."
+            )
+
+        if voice_rows_used >= voice_quota:
+            raise VoiceQuotaExceededError(
+                f"Voice quota exceeded ({voice_rows_used}/{voice_quota}). "
+                "Contact your administrator to request additional quota."
+            )
+
+    def increment_user_usage(self, membership) -> None:
+        """
+        Increment user's voice usage counter after successful transcript storage.
+
+        IMPORTANT: Only call this ONCE per successful transcription.
+        Do NOT call during retries to avoid duplicate counting.
+
+        Args:
+            membership: CompanyMembership instance
+        """
+        from django.db.models import F
+        from accounts.models import CompanyMembership
+        CompanyMembership.objects.filter(pk=membership.pk).update(
+            voice_rows_used=F('voice_rows_used') + 1
+        )
+
+    def get_user_voice_status(self, membership) -> dict:
+        """
+        Get user's voice feature status and quota information.
+
+        Args:
+            membership: CompanyMembership instance
+
+        Returns:
+            dict with voice status info
+        """
+        # Check global settings
+        try:
+            self.check_global_enabled()
+            global_enabled = True
+            global_error = None
+        except (VoiceFeatureDisabledError, VoiceProviderNotConfiguredError) as e:
+            global_enabled = False
+            global_error = str(e)
+
+        voice_enabled = getattr(membership, 'voice_enabled', False)
+        voice_quota = getattr(membership, 'voice_quota', None)
+        voice_rows_used = getattr(membership, 'voice_rows_used', 0)
+
+        return {
+            "global_enabled": global_enabled,
+            "global_error": global_error,
+            "user_enabled": voice_enabled,
+            "quota": voice_quota,
+            "used": voice_rows_used,
+            "remaining": max(0, (voice_quota or 0) - voice_rows_used) if voice_quota else 0,
+            "can_use": global_enabled and voice_enabled and voice_quota is not None and voice_rows_used < voice_quota,
+        }
 
     def _convert_audio_to_mp3(self, audio_content: bytes, content_type: str) -> bytes:
         """
@@ -768,16 +898,19 @@ Extract all transactions mentioned. For each one, suggest field values with conf
         language: str = "en",
         audio_seconds: Optional[Decimal] = None,
         user=None,
+        membership=None,
     ) -> VoiceParseResult:
         """
         Complete flow: transcribe audio and parse into transaction suggestions.
 
         Flow:
-        1. Check feature enabled (global AND tenant flags)
-        2. Check quota (must be numeric, no unlimited)
-        3. Transcribe audio (ASR only) - audio discarded after
-        4. Increment usage counter (ONCE, after successful transcript)
-        5. Parse transcript into suggestions
+        1. Transcribe audio (ASR only) - audio discarded after
+        2. Increment usage counter (ONCE, after successful transcript)
+        3. Parse transcript into suggestions
+
+        NOTE: Feature gating and quota checks should be done by the caller
+        using check_user_voice_access() and check_user_quota() before calling
+        this method.
 
         AUDIO POLICY: Audio file is discarded after transcription.
         Only transcript is persisted. No audio storage.
@@ -786,37 +919,37 @@ Extract all transactions mentioned. For each one, suggest field values with conf
             audio_file: File-like object (discarded after transcription)
             company: Company model instance
             language: Language code
+            audio_seconds: Duration of audio in seconds
+            user: User instance for logging
+            membership: CompanyMembership for user-level usage tracking
 
         Returns:
             VoiceParseResult with transcript and suggested transactions
         """
-        # Step 1: Check feature gating (global AND tenant)
-        self.check_feature_enabled(company)
-
-        # Step 2: Check quota (must be numeric)
-        self.check_quota(company)
-
         transcript = ""
-
         result = None
 
         try:
-            # Step 3: Transcribe (audio discarded after this)
+            # Step 1: Transcribe (audio discarded after this)
             transcript = self.transcribe_audio(audio_file, language)
             logger.info(f"Transcribed audio: {transcript[:100]}...")
 
-            # Step 4: Increment usage ONCE after successful transcript
+            # Step 2: Increment usage ONCE after successful transcript
             # (before parsing, so transcript counts even if parsing fails)
-            self.increment_usage(company)
+            if membership:
+                self.increment_user_usage(membership)
+            else:
+                # Fallback to company-level for backward compatibility
+                self.increment_usage(company)
 
-            # Step 5: Parse transcript into suggestions
+            # Step 3: Parse transcript into suggestions
             result = self.parse_transcript(transcript, company, language)
 
             # Add audio_seconds to usage info
             if result.usage:
                 result.usage.audio_seconds = audio_seconds
 
-            # Step 6: Log usage event (if user provided)
+            # Step 4: Log usage event (if user provided)
             if user:
                 self.log_usage(
                     company=company,
@@ -827,7 +960,8 @@ Extract all transactions mentioned. For each one, suggest field values with conf
 
             return result
 
-        except (VoiceFeatureDisabledError, VoiceQuotaExceededError, VoiceQuotaNotConfiguredError):
+        except (VoiceFeatureDisabledError, VoiceUserNotAuthorizedError,
+                VoiceQuotaExceededError, VoiceQuotaNotConfiguredError):
             raise
         except Exception as e:
             logger.error(f"Voice parsing failed: {e}")

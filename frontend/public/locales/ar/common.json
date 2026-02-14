@@ -21,7 +21,13 @@
     "companyName": "اسم الشركة",
     "companyNamePlaceholder": "أدخل اسم الشركة",
     "preferences": "التفضيلات",
-    "logout": "تسجيل الخروج"
+    "logout": "تسجيل الخروج",
+    "inventory": "المخزون",
+    "inventoryBalances": "أرصدة المخزون",
+    "warehouses": "المستودعات",
+    "stockLedger": "دفتر المخزون",
+    "inventoryAdjustment": "تسوية",
+    "openingBalance": "رصيد افتتاحي"
   },
   "actions": {
     "save": "حفظ",
@@ -106,5 +112,14 @@
     "KWD": "دينار كويتي",
     "QAR": "ريال قطري",
     "OMR": "ريال عماني"
-  }
+  },
+  "code": "الرمز",
+  "name": "الاسم",
+  "nameAr": "الاسم (عربي)",
+  "address": "العنوان",
+  "active": "نشط",
+  "saving": "جاري الحفظ...",
+  "save": "حفظ",
+  "create": "إنشاء",
+  "error": "حدث خطأ"
 }

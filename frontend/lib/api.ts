@@ -257,6 +257,22 @@ export async function deleteUnverifiedUser(
   return response.data;
 }
 
+export async function adminManualVerifyUser(
+  accessToken: string,
+  userId: number
+): Promise<{ status: string; email: string; verified_at: string; needs_approval: boolean }> {
+  const response = await axiosClient.post<{ status: string; email: string; verified_at: string; needs_approval: boolean }>(
+    `/admin/verify-user/${userId}/`,
+    {},
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`
+      }
+    }
+  );
+  return response.data;
+}
+
 // ==========================
 //   PROJECTION ADMIN API
 // ==========================

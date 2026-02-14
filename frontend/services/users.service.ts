@@ -54,3 +54,63 @@ export const permissionsService = {
   list: () =>
     apiClient.get<Permission[]>('/permissions/'),
 };
+
+// Voice feature management
+export interface VoiceUserStatus {
+  membership_id: number;
+  user_id?: number;
+  user_email: string;
+  user_name?: string;
+  role?: string;
+  company_id?: number;
+  company_name?: string;
+  // Fields from list endpoint
+  voice_enabled?: boolean;
+  voice_quota?: number | null;
+  voice_rows_used?: number;
+  voice_remaining?: number;
+  voice_quota_reset_at?: string | null;
+  // Fields from status endpoint
+  global_enabled?: boolean;
+  global_error?: string | null;
+  user_enabled?: boolean;
+  quota?: number | null;
+  used?: number;
+  remaining?: number;
+  can_use?: boolean;
+}
+
+export interface VoiceUsersList {
+  users: VoiceUserStatus[];
+}
+
+export const voiceService = {
+  // Get current user's voice status
+  getMyStatus: () =>
+    apiClient.get<VoiceUserStatus>('/voice/status/'),
+
+  // List all users with voice status (admin only)
+  // Pass allCompanies=true to see all users across all companies (superuser only)
+  listUsers: (allCompanies: boolean = false) =>
+    apiClient.get<VoiceUsersList>(`/voice/users/${allCompanies ? '?all_companies=true' : ''}`),
+
+  // Get specific user's voice status
+  getUserStatus: (membershipId: number) =>
+    apiClient.get<VoiceUserStatus>(`/voice/users/${membershipId}/status/`),
+
+  // Grant voice access to a user
+  grantAccess: (membershipId: number, quota: number) =>
+    apiClient.post<VoiceUserStatus>(`/voice/users/${membershipId}/grant/`, { quota }),
+
+  // Revoke voice access from a user
+  revokeAccess: (membershipId: number) =>
+    apiClient.post<VoiceUserStatus>(`/voice/users/${membershipId}/revoke/`, {}),
+
+  // Refill or reset voice quota
+  refillQuota: (membershipId: number, options: {
+    additional_quota?: number;
+    new_quota?: number;
+    reset_usage?: boolean;
+  }) =>
+    apiClient.post<VoiceUserStatus>(`/voice/users/${membershipId}/refill/`, options),
+};

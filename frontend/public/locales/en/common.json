@@ -21,7 +21,14 @@
     "companyName": "Company Name",
     "companyNamePlaceholder": "Enter company name",
     "preferences": "Preferences",
-    "logout": "Logout"
+    "logout": "Logout",
+    "inventory": "Inventory",
+    "inventoryBalances": "Stock Balances",
+    "warehouses": "Warehouses",
+    "stockLedger": "Stock Ledger",
+    "inventoryAdjustment": "Adjustment",
+    "openingBalance": "Opening Balance",
+    "voiceSettings": "Voice Settings"
   },
   "actions": {
     "save": "Save",
@@ -106,5 +113,16 @@
     "KWD": "Kuwaiti Dinar",
     "QAR": "Qatari Riyal",
     "OMR": "Omani Rial"
-  }
+  },
+  "code": "Code",
+  "name": "Name",
+  "nameAr": "Name (Arabic)",
+  "address": "Address",
+  "active": "Active",
+  "inactive": "Inactive",
+  "saving": "Saving...",
+  "save": "Save",
+  "create": "Create",
+  "search": "Search",
+  "error": "An error occurred"
 }

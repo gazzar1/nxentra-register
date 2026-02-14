@@ -40,6 +40,9 @@ INSTALLED_APPS = [
     "tenant.apps.TenantConfig",  # Database-per-Tenant isolation (before accounts)
     "accounts.apps.AccountsConfig",
     "accounting",
+    "sales.apps.SalesConfig",
+    "purchases.apps.PurchasesConfig",
+    "inventory.apps.InventoryConfig",
     "events",
     "scratchpad.apps.ScratchpadConfig",
     "projections.apps.ProjectionsConfig",

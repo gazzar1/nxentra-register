@@ -293,8 +293,11 @@ class AccountBalanceProjection(BaseProjection):
         """
         from datetime import date
 
+        # CRITICAL: Only include FINANCIAL domain accounts in trial balance
+        # Statistical and off-balance accounts must never appear here
         balances = AccountBalance.objects.filter(
             company=company,
+            account__ledger_domain=Account.LedgerDomain.FINANCIAL,
         ).select_related("account").order_by("account__code")
 
         accounts = []
@@ -398,8 +401,11 @@ class AccountBalanceProjection(BaseProjection):
                 expected_totals[account_public_id]["credit"] += credit
                 events_processed += 1
 
-        # Compare against projected balances
-        balances = AccountBalance.objects.filter(company=company).select_related("account")
+        # Compare against projected balances (FINANCIAL domain only)
+        balances = AccountBalance.objects.filter(
+            company=company,
+            account__ledger_domain=Account.LedgerDomain.FINANCIAL,
+        ).select_related("account")
 
         mismatches = []
         verified = 0

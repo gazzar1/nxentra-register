@@ -363,6 +363,166 @@ class PeriodAccountBalance(ProjectionOwnedModel):
         return f"{self.account.code} FY{self.fiscal_year} P{self.period}: {self.closing_balance}"
 
 
+class InventoryBalance(ProjectionOwnedModel):
+    """
+    Materialized inventory balance per item per warehouse.
+
+    This is the single source of truth for "what is the quantity/value of item X in warehouse Y?"
+    It is computed by consuming inventory stock_received and stock_issued events.
+
+    The stock ledger (StockLedgerEntry) is the SOURCE OF TRUTH for movements.
+    This projection provides a query-efficient view of current inventory state.
+
+    Note: Unlike other projections, InventoryBalance can also be written from commands
+    because stock availability checks require synchronous, up-to-date values.
+    The projection can still be rebuilt from StockLedgerEntry if needed.
+
+    Attributes:
+        company: Tenant isolation
+        item: The inventory item
+        warehouse: The warehouse location
+        qty_on_hand: Current quantity in stock
+        avg_cost: Current weighted average cost per unit
+        stock_value: Total value = qty_on_hand * avg_cost
+        last_event: Last event that updated this balance
+        entry_count: Number of stock ledger entries
+    """
+
+    # Allow writes from both projection and command contexts
+    _allowed_write_contexts = {"projection", "command"}
+
+    def save(self, *args, **kwargs):
+        if not write_context_allowed(self._allowed_write_contexts) and not getattr(settings, "TESTING", False):
+            raise RuntimeError(
+                f"{self.__class__.__name__} is a projection-owned read model. "
+                "Direct saves are only allowed from projections within projection_writes_allowed() "
+                "or from inventory commands within command_writes_allowed()."
+            )
+        # Call Model.save directly, skipping ProjectionOwnedModel.save
+        models.Model.save(self, *args, **kwargs)
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="inventory_balances",
+    )
+
+    item = models.ForeignKey(
+        "sales.Item",
+        on_delete=models.CASCADE,
+        related_name="inventory_balances",
+    )
+
+    warehouse = models.ForeignKey(
+        "inventory.Warehouse",
+        on_delete=models.CASCADE,
+        related_name="inventory_balances",
+    )
+
+    # Current state
+    qty_on_hand = models.DecimalField(
+        max_digits=18,
+        decimal_places=4,
+        default=Decimal("0"),
+        help_text="Current quantity on hand",
+    )
+
+    avg_cost = models.DecimalField(
+        max_digits=18,
+        decimal_places=6,
+        default=Decimal("0"),
+        help_text="Current weighted average cost per unit",
+    )
+
+    stock_value = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        default=Decimal("0"),
+        help_text="Total stock value = qty_on_hand * avg_cost",
+    )
+
+    # Event tracking for idempotency
+    last_event = models.ForeignKey(
+        BusinessEvent,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        help_text="Last event that updated this balance",
+    )
+
+    last_entry_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Date of most recent stock movement",
+    )
+
+    entry_count = models.PositiveIntegerField(
+        default=0,
+        help_text="Number of stock ledger entries affecting this balance",
+    )
+
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Inventory Balance"
+        verbose_name_plural = "Inventory Balances"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "item", "warehouse"],
+                name="uniq_inventory_balance",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["company", "item"]),
+            models.Index(fields=["company", "warehouse"]),
+            models.Index(fields=["company", "item", "warehouse"]),
+            models.Index(fields=["company", "qty_on_hand"]),
+        ]
+
+    def __str__(self):
+        return f"{self.item.code} @ {self.warehouse.code}: {self.qty_on_hand} units"
+
+    def apply_receipt(self, qty: Decimal, unit_cost: Decimal):
+        """
+        Apply a stock receipt (purchase, return from customer, adjustment up).
+
+        Recalculates weighted average cost:
+        new_avg = (old_value + new_value) / new_qty
+        """
+        old_value = self.qty_on_hand * self.avg_cost
+        new_value = qty * unit_cost
+        new_qty = self.qty_on_hand + qty
+
+        if new_qty > 0:
+            self.avg_cost = (old_value + new_value) / new_qty
+        else:
+            self.avg_cost = unit_cost
+
+        self.qty_on_hand = new_qty
+        self.stock_value = self.qty_on_hand * self.avg_cost
+
+    def apply_issue(self, qty: Decimal):
+        """
+        Apply a stock issue (sale, return to vendor, adjustment down).
+
+        Uses current avg_cost - does not change it.
+        Note: qty should be positive, the sign is handled by the caller.
+        """
+        self.qty_on_hand -= qty
+        self.stock_value = self.qty_on_hand * self.avg_cost
+
+    def get_issue_cost(self, qty: Decimal) -> Decimal:
+        """
+        Calculate the cost value for issuing a quantity.
+
+        Returns qty * avg_cost.
+        """
+        return qty * self.avg_cost
+
+
 class ProjectionAppliedEvent(ProjectionOwnedModel):
     """
     Tracks which events were applied by each projection to ensure idempotency.

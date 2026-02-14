@@ -1,0 +1,99 @@
+# sales/urls.py
+"""
+URL configuration for sales API.
+
+Endpoints:
+- /items/ - Item CRUD
+- /tax-codes/ - Tax Code CRUD
+- /posting-profiles/ - Posting Profile CRUD
+- /invoices/ - Sales Invoice CRUD with workflow actions
+"""
+
+from django.urls import path
+
+from .views import (
+    # Item views
+    ItemListCreateView,
+    ItemDetailView,
+    # Tax Code views
+    TaxCodeListCreateView,
+    TaxCodeDetailView,
+    # Posting Profile views
+    PostingProfileListCreateView,
+    PostingProfileDetailView,
+    # Sales Invoice views
+    SalesInvoiceListCreateView,
+    SalesInvoiceDetailView,
+    SalesInvoicePostView,
+    SalesInvoiceVoidView,
+)
+
+app_name = "sales"
+
+urlpatterns = [
+    # ==========================================================================
+    # Items
+    # ==========================================================================
+    path(
+        "items/",
+        ItemListCreateView.as_view(),
+        name="item-list-create",
+    ),
+    path(
+        "items/<int:pk>/",
+        ItemDetailView.as_view(),
+        name="item-detail",
+    ),
+
+    # ==========================================================================
+    # Tax Codes
+    # ==========================================================================
+    path(
+        "tax-codes/",
+        TaxCodeListCreateView.as_view(),
+        name="taxcode-list-create",
+    ),
+    path(
+        "tax-codes/<int:pk>/",
+        TaxCodeDetailView.as_view(),
+        name="taxcode-detail",
+    ),
+
+    # ==========================================================================
+    # Posting Profiles
+    # ==========================================================================
+    path(
+        "posting-profiles/",
+        PostingProfileListCreateView.as_view(),
+        name="postingprofile-list-create",
+    ),
+    path(
+        "posting-profiles/<int:pk>/",
+        PostingProfileDetailView.as_view(),
+        name="postingprofile-detail",
+    ),
+
+    # ==========================================================================
+    # Sales Invoices
+    # ==========================================================================
+    path(
+        "invoices/",
+        SalesInvoiceListCreateView.as_view(),
+        name="invoice-list-create",
+    ),
+    path(
+        "invoices/<int:pk>/",
+        SalesInvoiceDetailView.as_view(),
+        name="invoice-detail",
+    ),
+    path(
+        "invoices/<int:pk>/post/",
+        SalesInvoicePostView.as_view(),
+        name="invoice-post",
+    ),
+    path(
+        "invoices/<int:pk>/void/",
+        SalesInvoiceVoidView.as_view(),
+        name="invoice-void",
+    ),
+]

@@ -221,65 +221,202 @@ class CompanySequence(models.Model):
 class Account(AccountingReadModel):
     """
     Chart of Accounts entry.
-    
+
+    Architecture (5-Type + Role + Ledger Domain):
+    =============================================
+    - account_type: 5 core types (ASSET, LIABILITY, EQUITY, REVENUE, EXPENSE)
+    - role: Behavioral classification that determines derived properties
+    - ledger_domain: FINANCIAL, STATISTICAL, or OFF_BALANCE
+
+    Derived properties (computed from role):
+    - normal_balance: Debit or Credit
+    - requires_counterparty: True for AR/AP control accounts
+    - counterparty_kind: CUSTOMER or VENDOR
+    - allow_manual_posting: False for control accounts by default
+
     Supports:
     - Hierarchical structure (parent/child)
-    - Account types with normal balance rules
     - Header accounts (non-postable groupings)
     - Soft status (ACTIVE/INACTIVE/LOCKED)
     - Multilingual names (English/Arabic)
-    - Memo/Statistical accounts for non-monetary tracking
+    - Statistical/Off-balance accounts (separate from financial ledger)
     """
 
     class AccountType(models.TextChoices):
-        # Balance Sheet - Assets
+        """
+        5 core account types - the accounting ontology.
+
+        All behavior is determined by the combination of type + role.
+        Old types (RECEIVABLE, PAYABLE, CONTRA_*, MEMO) are migrated to
+        the appropriate type + role combination.
+        """
         ASSET = "ASSET", "Asset"
-        RECEIVABLE = "RECEIVABLE", "Accounts Receivable"
-        CONTRA_ASSET = "CONTRA_ASSET", "Contra Asset"
-        
-        # Balance Sheet - Liabilities
         LIABILITY = "LIABILITY", "Liability"
-        PAYABLE = "PAYABLE", "Accounts Payable"
-        CONTRA_LIABILITY = "CONTRA_LIABILITY", "Contra Liability"
-        
-        # Balance Sheet - Equity
         EQUITY = "EQUITY", "Equity"
-        CONTRA_EQUITY = "CONTRA_EQUITY", "Contra Equity"
-        
-        # Income Statement
         REVENUE = "REVENUE", "Revenue"
-        CONTRA_REVENUE = "CONTRA_REVENUE", "Contra Revenue"
         EXPENSE = "EXPENSE", "Expense"
-        CONTRA_EXPENSE = "CONTRA_EXPENSE", "Contra Expense"
-        
-        # Statistical (Non-financial)
-        MEMO = "MEMO", "Memo/Statistical"
+        # Legacy values kept for migration compatibility
+        # TODO: Remove after data migration is complete
+        RECEIVABLE = "RECEIVABLE", "Accounts Receivable (Legacy)"
+        CONTRA_ASSET = "CONTRA_ASSET", "Contra Asset (Legacy)"
+        PAYABLE = "PAYABLE", "Accounts Payable (Legacy)"
+        CONTRA_LIABILITY = "CONTRA_LIABILITY", "Contra Liability (Legacy)"
+        CONTRA_EQUITY = "CONTRA_EQUITY", "Contra Equity (Legacy)"
+        CONTRA_REVENUE = "CONTRA_REVENUE", "Contra Revenue (Legacy)"
+        CONTRA_EXPENSE = "CONTRA_EXPENSE", "Contra Expense (Legacy)"
+        MEMO = "MEMO", "Memo/Statistical (Legacy)"
+
+    class AccountRole(models.TextChoices):
+        """
+        Behavioral classification within a type.
+
+        Role determines derived properties like normal_balance,
+        requires_counterparty, and allow_manual_posting.
+        """
+        # Asset roles
+        ASSET_GENERAL = "ASSET_GENERAL", "General Asset"
+        LIQUIDITY = "LIQUIDITY", "Cash/Bank"
+        RECEIVABLE_CONTROL = "RECEIVABLE_CONTROL", "Accounts Receivable Control"
+        INVENTORY_VALUE = "INVENTORY_VALUE", "Inventory Value"
+        PREPAID = "PREPAID", "Prepaid Expense"
+        FIXED_ASSET_COST = "FIXED_ASSET_COST", "Fixed Asset Cost"
+        ACCUM_DEPRECIATION = "ACCUM_DEPRECIATION", "Accumulated Depreciation"
+        OTHER_ASSET = "OTHER_ASSET", "Other Asset"
+
+        # Liability roles
+        LIABILITY_GENERAL = "LIABILITY_GENERAL", "General Liability"
+        PAYABLE_CONTROL = "PAYABLE_CONTROL", "Accounts Payable Control"
+        ACCRUED_EXPENSE = "ACCRUED_EXPENSE", "Accrued Expense"
+        DEFERRED_REVENUE = "DEFERRED_REVENUE", "Deferred Revenue"
+        TAX_PAYABLE = "TAX_PAYABLE", "Tax Payable"
+        LOAN = "LOAN", "Loan/Borrowing"
+        OTHER_LIABILITY = "OTHER_LIABILITY", "Other Liability"
+
+        # Equity roles
+        CAPITAL = "CAPITAL", "Capital"
+        RETAINED_EARNINGS = "RETAINED_EARNINGS", "Retained Earnings"
+        CURRENT_YEAR_EARNINGS = "CURRENT_YEAR_EARNINGS", "Current Year Earnings"
+        DRAWINGS = "DRAWINGS", "Drawings/Distributions"
+        RESERVE = "RESERVE", "Reserve"
+        OTHER_EQUITY = "OTHER_EQUITY", "Other Equity"
+
+        # Revenue roles
+        SALES = "SALES", "Sales Revenue"
+        SERVICE = "SERVICE", "Service Revenue"
+        OTHER_INCOME = "OTHER_INCOME", "Other Income"
+        FINANCIAL_INCOME = "FINANCIAL_INCOME", "Financial Income"
+        CONTRA_REVENUE = "CONTRA_REVENUE", "Contra Revenue"
+
+        # Expense roles
+        COGS = "COGS", "Cost of Goods Sold"
+        OPERATING_EXPENSE = "OPERATING_EXPENSE", "Operating Expense"
+        ADMIN_EXPENSE = "ADMIN_EXPENSE", "Administrative Expense"
+        FINANCIAL_EXPENSE = "FINANCIAL_EXPENSE", "Financial Expense"
+        DEPRECIATION_EXPENSE = "DEPRECIATION_EXPENSE", "Depreciation Expense"
+        TAX_EXPENSE = "TAX_EXPENSE", "Tax Expense"
+        OTHER_EXPENSE = "OTHER_EXPENSE", "Other Expense"
+
+        # Statistical/Off-balance roles
+        STAT_GENERAL = "STAT_GENERAL", "Statistical General"
+        STAT_INVENTORY_QTY = "STAT_INVENTORY_QTY", "Inventory Quantity"
+        STAT_PRODUCTION_QTY = "STAT_PRODUCTION_QTY", "Production Quantity"
+        OBS_GENERAL = "OBS_GENERAL", "Off-Balance General"
+        OBS_CONTINGENT = "OBS_CONTINGENT", "Contingent Liability"
+
+    class LedgerDomain(models.TextChoices):
+        """
+        Which ledger this account belongs to.
+
+        FINANCIAL: Affects trial balance, P&L, balance sheet
+        STATISTICAL: Quantity tracking only, no financial impact
+        OFF_BALANCE: Off-balance-sheet items (contingencies, commitments)
+        """
+        FINANCIAL = "FINANCIAL", "Financial"
+        STATISTICAL = "STATISTICAL", "Statistical"
+        OFF_BALANCE = "OFF_BALANCE", "Off-Balance Sheet"
 
     class NormalBalance(models.TextChoices):
         DEBIT = "DEBIT", "Debit"
         CREDIT = "CREDIT", "Credit"
-        NONE = "NONE", "None"  # For MEMO accounts
+        NONE = "NONE", "None"  # For statistical/off-balance accounts
 
     class Status(models.TextChoices):
         ACTIVE = "ACTIVE", "Active"
         INACTIVE = "INACTIVE", "Inactive"
         LOCKED = "LOCKED", "Locked"  # Has transactions, cannot delete
 
-    # Map account types to their normal balance
+    # Roles that require counterparty
+    CONTROL_ACCOUNT_ROLES = {
+        AccountRole.RECEIVABLE_CONTROL: "CUSTOMER",
+        AccountRole.PAYABLE_CONTROL: "VENDOR",
+    }
+
+    # Roles with contra behavior (opposite normal balance)
+    CONTRA_ASSET_ROLES = {AccountRole.ACCUM_DEPRECIATION}
+    CONTRA_REVENUE_ROLES = {AccountRole.CONTRA_REVENUE}
+
+    # Statistical/off-balance roles
+    STAT_ROLES = {
+        AccountRole.STAT_GENERAL,
+        AccountRole.STAT_INVENTORY_QTY,
+        AccountRole.STAT_PRODUCTION_QTY,
+        AccountRole.OBS_GENERAL,
+        AccountRole.OBS_CONTINGENT,
+    }
+
+    # Map account types to their default normal balance (used if role not set)
     NORMAL_BALANCE_MAP = {
         AccountType.ASSET: NormalBalance.DEBIT,
+        AccountType.LIABILITY: NormalBalance.CREDIT,
+        AccountType.EQUITY: NormalBalance.CREDIT,
+        AccountType.REVENUE: NormalBalance.CREDIT,
+        AccountType.EXPENSE: NormalBalance.DEBIT,
+        # Legacy types (for backward compatibility during migration)
         AccountType.RECEIVABLE: NormalBalance.DEBIT,
         AccountType.CONTRA_ASSET: NormalBalance.CREDIT,
-        AccountType.LIABILITY: NormalBalance.CREDIT,
         AccountType.PAYABLE: NormalBalance.CREDIT,
         AccountType.CONTRA_LIABILITY: NormalBalance.DEBIT,
-        AccountType.EQUITY: NormalBalance.CREDIT,
         AccountType.CONTRA_EQUITY: NormalBalance.DEBIT,
-        AccountType.REVENUE: NormalBalance.CREDIT,
         AccountType.CONTRA_REVENUE: NormalBalance.DEBIT,
-        AccountType.EXPENSE: NormalBalance.DEBIT,
         AccountType.CONTRA_EXPENSE: NormalBalance.CREDIT,
         AccountType.MEMO: NormalBalance.NONE,
+    }
+
+    # Valid roles per account type
+    VALID_ROLES_BY_TYPE = {
+        AccountType.ASSET: {
+            AccountRole.ASSET_GENERAL, AccountRole.LIQUIDITY, AccountRole.RECEIVABLE_CONTROL,
+            AccountRole.INVENTORY_VALUE, AccountRole.PREPAID, AccountRole.FIXED_ASSET_COST,
+            AccountRole.ACCUM_DEPRECIATION, AccountRole.OTHER_ASSET,
+            AccountRole.STAT_GENERAL, AccountRole.STAT_INVENTORY_QTY, AccountRole.STAT_PRODUCTION_QTY,
+        },
+        AccountType.LIABILITY: {
+            AccountRole.LIABILITY_GENERAL, AccountRole.PAYABLE_CONTROL, AccountRole.ACCRUED_EXPENSE,
+            AccountRole.DEFERRED_REVENUE, AccountRole.TAX_PAYABLE, AccountRole.LOAN,
+            AccountRole.OTHER_LIABILITY, AccountRole.OBS_GENERAL, AccountRole.OBS_CONTINGENT,
+        },
+        AccountType.EQUITY: {
+            AccountRole.CAPITAL, AccountRole.RETAINED_EARNINGS, AccountRole.CURRENT_YEAR_EARNINGS,
+            AccountRole.DRAWINGS, AccountRole.RESERVE, AccountRole.OTHER_EQUITY,
+        },
+        AccountType.REVENUE: {
+            AccountRole.SALES, AccountRole.SERVICE, AccountRole.OTHER_INCOME,
+            AccountRole.FINANCIAL_INCOME, AccountRole.CONTRA_REVENUE,
+        },
+        AccountType.EXPENSE: {
+            AccountRole.COGS, AccountRole.OPERATING_EXPENSE, AccountRole.ADMIN_EXPENSE,
+            AccountRole.FINANCIAL_EXPENSE, AccountRole.DEPRECIATION_EXPENSE,
+            AccountRole.TAX_EXPENSE, AccountRole.OTHER_EXPENSE,
+        },
+    }
+
+    # Default role per account type (for new accounts)
+    DEFAULT_ROLE_BY_TYPE = {
+        AccountType.ASSET: AccountRole.ASSET_GENERAL,
+        AccountType.LIABILITY: AccountRole.LIABILITY_GENERAL,
+        AccountType.EQUITY: AccountRole.CAPITAL,
+        AccountType.REVENUE: AccountRole.SALES,
+        AccountType.EXPENSE: AccountRole.OPERATING_EXPENSE,
     }
 
     # Account types that are subsets of ASSET for hierarchy validation
@@ -312,13 +449,50 @@ class Account(AccountingReadModel):
         choices=AccountType.choices,
         db_column="type",
     )
-    
+
+    # Role determines behavioral properties (normal_balance, requires_counterparty, etc.)
+    role = models.CharField(
+        max_length=30,
+        choices=AccountRole.choices,
+        blank=True,
+        default="",
+        help_text="Behavioral role that determines derived properties",
+    )
+
+    # Ledger domain separates financial from statistical/off-balance accounts
+    ledger_domain = models.CharField(
+        max_length=15,
+        choices=LedgerDomain.choices,
+        default=LedgerDomain.FINANCIAL,
+        help_text="Financial, Statistical, or Off-Balance ledger",
+    )
+
     normal_balance = models.CharField(
         max_length=10,
         choices=NormalBalance.choices,
         editable=False,
     )
-    
+
+    # Derived flags (computed from role, stored for query performance)
+    requires_counterparty = models.BooleanField(
+        default=False,
+        editable=False,
+        help_text="True for AR/AP control accounts (derived from role)",
+    )
+
+    counterparty_kind = models.CharField(
+        max_length=10,
+        blank=True,
+        default="",
+        editable=False,
+        help_text="CUSTOMER or VENDOR for control accounts (derived from role)",
+    )
+
+    allow_manual_posting = models.BooleanField(
+        default=True,
+        help_text="False for control accounts (system-only posting by default)",
+    )
+
     status = models.CharField(
         max_length=20,
         choices=Status.choices,
@@ -343,12 +517,18 @@ class Account(AccountingReadModel):
     description = models.TextField(blank=True, default="")
     description_ar = models.TextField(blank=True, default="")
     
-    # For MEMO accounts only
+    # For statistical/off-balance accounts (required for STATISTICAL and OFF_BALANCE domains)
     unit_of_measure = models.CharField(
         max_length=20,
         blank=True,
         default="",
-        help_text="Unit for memo accounts: 'units', 'kg', 'hours', 'sqm', etc.",
+        help_text="Unit for statistical accounts: 'units', 'kg', 'L', 'hours', 'sqm', etc.",
+    )
+
+    # System protection flag for seeded accounts
+    is_system_protected = models.BooleanField(
+        default=False,
+        help_text="Protected accounts: type/role/domain locked, cannot delete once has transactions",
     )
 
     # Timestamps
@@ -367,6 +547,10 @@ class Account(AccountingReadModel):
             models.Index(fields=["company", "account_type"]),
             models.Index(fields=["company", "parent"]),
             models.Index(fields=["company", "status"]),
+            models.Index(fields=["company", "role"]),
+            models.Index(fields=["company", "ledger_domain"]),
+            models.Index(fields=["company", "requires_counterparty"]),
+            models.Index(fields=["company", "is_system_protected"]),
         ]
 
     def __str__(self):
@@ -387,17 +571,48 @@ class Account(AccountingReadModel):
     @property
     def is_memo_account(self) -> bool:
         """Returns True if this is a memo/statistical account."""
+        # New architecture: check ledger_domain or legacy MEMO type
+        if self.ledger_domain in (self.LedgerDomain.STATISTICAL, self.LedgerDomain.OFF_BALANCE):
+            return True
         return self.account_type == self.AccountType.MEMO
 
     @property
+    def is_statistical(self) -> bool:
+        """Returns True if this is a statistical (non-financial) account."""
+        return self.ledger_domain == self.LedgerDomain.STATISTICAL
+
+    @property
+    def is_off_balance(self) -> bool:
+        """Returns True if this is an off-balance sheet account."""
+        return self.ledger_domain == self.LedgerDomain.OFF_BALANCE
+
+    @property
+    def is_financial(self) -> bool:
+        """Returns True if this account affects financial statements."""
+        return self.ledger_domain == self.LedgerDomain.FINANCIAL
+
+    @property
     def is_receivable(self) -> bool:
-        """Returns True if this is a receivable account."""
+        """Returns True if this is a receivable control account."""
+        # New architecture: check role
+        if self.role == self.AccountRole.RECEIVABLE_CONTROL:
+            return True
+        # Legacy: check old type
         return self.account_type == self.AccountType.RECEIVABLE
 
     @property
     def is_payable(self) -> bool:
-        """Returns True if this is a payable account."""
+        """Returns True if this is a payable control account."""
+        # New architecture: check role
+        if self.role == self.AccountRole.PAYABLE_CONTROL:
+            return True
+        # Legacy: check old type
         return self.account_type == self.AccountType.PAYABLE
+
+    @property
+    def is_control_account(self) -> bool:
+        """Returns True if this is an AR/AP control account."""
+        return self.role in (self.AccountRole.RECEIVABLE_CONTROL, self.AccountRole.PAYABLE_CONTROL)
 
     def clean(self):
         # Validate parent belongs to same company
@@ -412,10 +627,10 @@ class Account(AccountingReadModel):
         if self.parent:
             parent_type = self.parent.account_type
             child_type = self.account_type
-            
+
             # Define allowed parent-child relationships
             allowed = False
-            
+
             # Same type is always allowed
             if parent_type == child_type:
                 allowed = True
@@ -438,15 +653,31 @@ class Account(AccountingReadModel):
             # EXPENSE relationships
             elif parent_type == self.AccountType.EXPENSE and child_type == self.AccountType.CONTRA_EXPENSE:
                 allowed = True
-            
+
             if not allowed:
                 raise ValidationError(
                     f"Account type {child_type} cannot be a child of {parent_type}."
                 )
 
-        # Validate unit_of_measure only for MEMO accounts
-        if self.unit_of_measure and self.account_type != self.AccountType.MEMO:
-            raise ValidationError("Unit of measure can only be set for MEMO accounts.")
+        # Validate type/role combination (if role is set)
+        if self.role:
+            from .behaviors import validate_type_role_combination
+            is_valid, error_msg = validate_type_role_combination(self.account_type, self.role)
+            if not is_valid:
+                raise ValidationError(error_msg)
+
+        # Validate unit_of_measure for statistical/off-balance accounts
+        if self.ledger_domain in (self.LedgerDomain.STATISTICAL, self.LedgerDomain.OFF_BALANCE):
+            if not self.unit_of_measure:
+                raise ValidationError(
+                    "Unit of measure is required for statistical and off-balance accounts."
+                )
+        # Legacy: validate for MEMO type
+        elif self.unit_of_measure and self.account_type != self.AccountType.MEMO:
+            if self.role not in self.STAT_ROLES:
+                raise ValidationError(
+                    "Unit of measure can only be set for statistical/off-balance accounts."
+                )
 
     def save(self, *args, _projection_write: bool = False, **kwargs):
         """
@@ -455,6 +686,9 @@ class Account(AccountingReadModel):
         Args:
             _projection_write: Must be True when called from projections.
                               Prevents accidental direct writes.
+
+        Derived fields (normal_balance, requires_counterparty, etc.) are
+        automatically computed from (account_type, role, ledger_domain).
         """
         if not write_context_allowed({"projection"}) and not getattr(settings, "TESTING", False):
             raise RuntimeError(
@@ -462,13 +696,34 @@ class Account(AccountingReadModel):
                 "Direct saves are only allowed from projections within projection_writes_allowed()."
             )
 
-        # Auto-set normal balance from account type
-        self.normal_balance = self.NORMAL_BALANCE_MAP.get(
-            self.account_type,
-            self.NormalBalance.DEBIT,
-        )
+        # Apply derived fields from role and type
+        from .behaviors import apply_derived_fields
+        apply_derived_fields(self)
+
         self.full_clean()
         super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        """
+        Delete the account with system protection validation.
+
+        System-protected accounts with transactions cannot be deleted.
+        This prevents data integrity issues in the event history.
+        """
+        if not write_context_allowed({"projection"}) and not getattr(settings, "TESTING", False):
+            raise RuntimeError(
+                "Account is a read model. "
+                "Direct deletes are only allowed from projections within projection_writes_allowed()."
+            )
+
+        # System-protected accounts with transactions cannot be deleted
+        if self.is_system_protected and self.has_transactions:
+            raise ValidationError(
+                f"Cannot delete system-protected account '{self.code}' that has transactions. "
+                "Mark it as INACTIVE instead."
+            )
+
+        return super().delete(*args, **kwargs)
 
     @property
     def is_postable(self) -> bool:
@@ -481,6 +736,15 @@ class Account(AccountingReadModel):
         if self.parent:
             return f"{self.parent.full_code}.{self.code}"
         return self.code
+
+    @property
+    def has_transactions(self) -> bool:
+        """
+        Check if this account has any posted journal lines.
+
+        Used to determine if system-protected accounts can be deleted.
+        """
+        return self.journal_lines.filter(entry__status="POSTED").exists()
 
     def get_ancestors(self) -> list["Account"]:
         """Returns list of ancestor accounts from root to immediate parent."""
@@ -532,6 +796,377 @@ class Account(AccountingReadModel):
             )
             return projection.balance
         except AccountBalance.DoesNotExist:
+            return Decimal("0.00")
+
+
+# =============================================================================
+# Counterparty Models (AR/AP Subledgers)
+# =============================================================================
+
+class Customer(AccountingReadModel):
+    """
+    Customer entity for Accounts Receivable subledger.
+
+    Customers are NOT chart of accounts entries. They are counterparties
+    linked to AR control accounts for subledger tracking.
+
+    The subledger invariant:
+        AR Control Account Balance = Sum of all Customer Balances
+
+    This is enforced by the projection layer, not database constraints.
+    """
+
+    class Status(models.TextChoices):
+        ACTIVE = "ACTIVE", "Active"
+        INACTIVE = "INACTIVE", "Inactive"
+        BLOCKED = "BLOCKED", "Blocked"  # Cannot create new receivables
+
+    # Custom manager for projection writes
+    objects = ProjectionWriteManager()
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="customers",
+    )
+
+    public_id = models.UUIDField(
+        default=uuid.uuid4,
+        editable=False,
+        unique=True,
+    )
+
+    # Customer identification
+    code = models.CharField(
+        max_length=20,
+        help_text="Customer code (e.g., CUST001)",
+    )
+
+    # Multilingual names
+    name = models.CharField(max_length=255)
+    name_ar = models.CharField(max_length=255, blank=True, default="")
+
+    # Default AR control account for this customer
+    default_ar_account = models.ForeignKey(
+        Account,
+        on_delete=models.PROTECT,
+        related_name="customers",
+        null=True,
+        blank=True,
+        help_text="Default AR control account. Must have role=RECEIVABLE_CONTROL",
+    )
+
+    # Contact information
+    email = models.EmailField(blank=True, default="")
+    phone = models.CharField(max_length=50, blank=True, default="")
+    address = models.TextField(blank=True, default="")
+    address_ar = models.TextField(blank=True, default="")
+
+    # Credit management
+    credit_limit = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Maximum credit allowed (null = unlimited)",
+    )
+
+    # Payment terms (days)
+    payment_terms_days = models.PositiveIntegerField(
+        default=30,
+        help_text="Default payment terms in days",
+    )
+
+    # Preferred currency for transactions
+    currency = models.CharField(
+        max_length=3,
+        default="USD",
+        help_text="Preferred transaction currency",
+    )
+
+    # Tax identification
+    tax_id = models.CharField(
+        max_length=50,
+        blank=True,
+        default="",
+        help_text="Tax identification number (VAT, TIN, etc.)",
+    )
+
+    # Status
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.ACTIVE,
+    )
+
+    # Notes - Multilingual
+    notes = models.TextField(blank=True, default="")
+    notes_ar = models.TextField(blank=True, default="")
+
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "code"],
+                name="uniq_customer_code_per_company",
+            ),
+        ]
+        ordering = ["code"]
+        indexes = [
+            models.Index(fields=["company", "status"]),
+            models.Index(fields=["company", "name"]),
+        ]
+
+    def __str__(self):
+        return f"{self.code} - {self.name}"
+
+    def get_localized_name(self, language: str = "en") -> str:
+        """Get name in specified language, fallback to English."""
+        if language == "ar" and self.name_ar:
+            return self.name_ar
+        return self.name
+
+    def get_localized_address(self, language: str = "en") -> str:
+        """Get address in specified language, fallback to English."""
+        if language == "ar" and self.address_ar:
+            return self.address_ar
+        return self.address
+
+    def clean(self):
+        # Validate default_ar_account is a receivable control account
+        if self.default_ar_account:
+            if self.default_ar_account.company_id != self.company_id:
+                raise ValidationError(
+                    "Default AR account must belong to the same company."
+                )
+            if self.default_ar_account.role != Account.AccountRole.RECEIVABLE_CONTROL:
+                raise ValidationError(
+                    "Default AR account must have role=RECEIVABLE_CONTROL."
+                )
+
+    def save(self, *args, _projection_write: bool = False, **kwargs):
+        """
+        Save the customer. Only projections should call this directly.
+
+        Args:
+            _projection_write: Must be True when called from projections.
+                              Prevents accidental direct writes.
+        """
+        if not write_context_allowed({"projection"}) and not getattr(settings, "TESTING", False):
+            raise RuntimeError(
+                "Customer is a read model. Use accounting.commands to modify. "
+                "Direct saves are only allowed from projections within projection_writes_allowed()."
+            )
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    @property
+    def is_active(self) -> bool:
+        """Returns True if customer can receive new transactions."""
+        return self.status == self.Status.ACTIVE
+
+    def get_balance(self) -> Decimal:
+        """
+        Get customer balance from the CustomerBalance projection.
+
+        Returns:
+            Current balance from the projection (Decimal)
+        """
+        # Import here to avoid circular imports
+        from projections.models import CustomerBalance
+
+        try:
+            projection = CustomerBalance.objects.get(
+                company=self.company,
+                customer=self,
+            )
+            return projection.balance
+        except CustomerBalance.DoesNotExist:
+            return Decimal("0.00")
+
+
+class Vendor(AccountingReadModel):
+    """
+    Vendor entity for Accounts Payable subledger.
+
+    Vendors are NOT chart of accounts entries. They are counterparties
+    linked to AP control accounts for subledger tracking.
+
+    The subledger invariant:
+        AP Control Account Balance = Sum of all Vendor Balances
+
+    This is enforced by the projection layer, not database constraints.
+    """
+
+    class Status(models.TextChoices):
+        ACTIVE = "ACTIVE", "Active"
+        INACTIVE = "INACTIVE", "Inactive"
+        BLOCKED = "BLOCKED", "Blocked"  # Cannot create new payables
+
+    # Custom manager for projection writes
+    objects = ProjectionWriteManager()
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="vendors",
+    )
+
+    public_id = models.UUIDField(
+        default=uuid.uuid4,
+        editable=False,
+        unique=True,
+    )
+
+    # Vendor identification
+    code = models.CharField(
+        max_length=20,
+        help_text="Vendor code (e.g., VEND001)",
+    )
+
+    # Multilingual names
+    name = models.CharField(max_length=255)
+    name_ar = models.CharField(max_length=255, blank=True, default="")
+
+    # Default AP control account for this vendor
+    default_ap_account = models.ForeignKey(
+        Account,
+        on_delete=models.PROTECT,
+        related_name="vendors",
+        null=True,
+        blank=True,
+        help_text="Default AP control account. Must have role=PAYABLE_CONTROL",
+    )
+
+    # Contact information
+    email = models.EmailField(blank=True, default="")
+    phone = models.CharField(max_length=50, blank=True, default="")
+    address = models.TextField(blank=True, default="")
+    address_ar = models.TextField(blank=True, default="")
+
+    # Payment terms (days)
+    payment_terms_days = models.PositiveIntegerField(
+        default=30,
+        help_text="Default payment terms in days",
+    )
+
+    # Preferred currency for transactions
+    currency = models.CharField(
+        max_length=3,
+        default="USD",
+        help_text="Preferred transaction currency",
+    )
+
+    # Tax identification
+    tax_id = models.CharField(
+        max_length=50,
+        blank=True,
+        default="",
+        help_text="Tax identification number (VAT, TIN, etc.)",
+    )
+
+    # Bank details for payments
+    bank_name = models.CharField(max_length=255, blank=True, default="")
+    bank_account = models.CharField(max_length=100, blank=True, default="")
+    bank_iban = models.CharField(max_length=50, blank=True, default="")
+    bank_swift = models.CharField(max_length=20, blank=True, default="")
+
+    # Status
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.ACTIVE,
+    )
+
+    # Notes - Multilingual
+    notes = models.TextField(blank=True, default="")
+    notes_ar = models.TextField(blank=True, default="")
+
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "code"],
+                name="uniq_vendor_code_per_company",
+            ),
+        ]
+        ordering = ["code"]
+        indexes = [
+            models.Index(fields=["company", "status"]),
+            models.Index(fields=["company", "name"]),
+        ]
+
+    def __str__(self):
+        return f"{self.code} - {self.name}"
+
+    def get_localized_name(self, language: str = "en") -> str:
+        """Get name in specified language, fallback to English."""
+        if language == "ar" and self.name_ar:
+            return self.name_ar
+        return self.name
+
+    def get_localized_address(self, language: str = "en") -> str:
+        """Get address in specified language, fallback to English."""
+        if language == "ar" and self.address_ar:
+            return self.address_ar
+        return self.address
+
+    def clean(self):
+        # Validate default_ap_account is a payable control account
+        if self.default_ap_account:
+            if self.default_ap_account.company_id != self.company_id:
+                raise ValidationError(
+                    "Default AP account must belong to the same company."
+                )
+            if self.default_ap_account.role != Account.AccountRole.PAYABLE_CONTROL:
+                raise ValidationError(
+                    "Default AP account must have role=PAYABLE_CONTROL."
+                )
+
+    def save(self, *args, _projection_write: bool = False, **kwargs):
+        """
+        Save the vendor. Only projections should call this directly.
+
+        Args:
+            _projection_write: Must be True when called from projections.
+                              Prevents accidental direct writes.
+        """
+        if not write_context_allowed({"projection"}) and not getattr(settings, "TESTING", False):
+            raise RuntimeError(
+                "Vendor is a read model. Use accounting.commands to modify. "
+                "Direct saves are only allowed from projections within projection_writes_allowed()."
+            )
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    @property
+    def is_active(self) -> bool:
+        """Returns True if vendor can receive new transactions."""
+        return self.status == self.Status.ACTIVE
+
+    def get_balance(self) -> Decimal:
+        """
+        Get vendor balance from the VendorBalance projection.
+
+        Returns:
+            Current balance from the projection (Decimal)
+        """
+        # Import here to avoid circular imports
+        from projections.models import VendorBalance
+
+        try:
+            projection = VendorBalance.objects.get(
+                company=self.company,
+                vendor=self,
+            )
+            return projection.balance
+        except VendorBalance.DoesNotExist:
             return Decimal("0.00")
 
 
@@ -893,6 +1528,26 @@ class JournalLine(AccountingReadModel):
         blank=True,
     )
 
+    # Counterparty fields for AR/AP subledger
+    # Required when posting to control accounts (RECEIVABLE_CONTROL, PAYABLE_CONTROL)
+    customer = models.ForeignKey(
+        "Customer",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="journal_lines",
+        help_text="Required when posting to AR control accounts",
+    )
+
+    vendor = models.ForeignKey(
+        "Vendor",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="journal_lines",
+        help_text="Required when posting to AP control accounts",
+    )
+
     class Meta:
         unique_together = ("entry", "line_no")
         ordering = ["entry", "line_no"]
@@ -909,9 +1564,16 @@ class JournalLine(AccountingReadModel):
                 check=Q(debit__gte=0) & Q(credit__gte=0),
                 name="chk_line_non_negative",
             ),
+            # A line cannot have both customer and vendor
+            models.CheckConstraint(
+                check=~(Q(customer__isnull=False) & Q(vendor__isnull=False)),
+                name="chk_line_not_both_counterparty",
+            ),
         ]
         indexes = [
             models.Index(fields=["company", "entry"]),
+            models.Index(fields=["company", "customer"]),
+            models.Index(fields=["company", "vendor"]),
         ]
 
     def __str__(self):
@@ -959,6 +1621,16 @@ class JournalLine(AccountingReadModel):
         if self.account_id and self.company_id and self.account.company_id != self.company_id:
             raise ValidationError("JournalLine company must match account company.")
 
+        # Validate counterparty company
+        if self.customer_id and self.company_id and self.customer.company_id != self.company_id:
+            raise ValidationError("JournalLine customer must belong to the same company.")
+        if self.vendor_id and self.company_id and self.vendor.company_id != self.company_id:
+            raise ValidationError("JournalLine vendor must belong to the same company.")
+
+        # Cannot have both customer and vendor on same line
+        if self.customer_id and self.vendor_id:
+            raise ValidationError("A journal line cannot have both customer and vendor.")
+
         super().save(*args, **kwargs)
 
     @property
@@ -975,6 +1647,39 @@ class JournalLine(AccountingReadModel):
     def is_memo_line(self) -> bool:
         """Returns True if this line is for a memo/statistical account."""
         return self.account.is_memo_account if self.account_id else False
+
+    @property
+    def has_counterparty(self) -> bool:
+        """Returns True if this line has a customer or vendor."""
+        return self.customer_id is not None or self.vendor_id is not None
+
+    @property
+    def counterparty(self):
+        """
+        Returns the counterparty (Customer or Vendor) if set.
+
+        Returns:
+            Customer, Vendor, or None
+        """
+        if self.customer_id:
+            return self.customer
+        if self.vendor_id:
+            return self.vendor
+        return None
+
+    @property
+    def counterparty_kind(self) -> str:
+        """
+        Returns the type of counterparty: 'CUSTOMER', 'VENDOR', or ''.
+
+        Returns:
+            String indicating counterparty type
+        """
+        if self.customer_id:
+            return "CUSTOMER"
+        if self.vendor_id:
+            return "VENDOR"
+        return ""
 
 
 # =============================================================================
@@ -1365,4 +2070,217 @@ class AccountAnalysisDefault(AccountingReadModel):
             raise ValidationError("AccountAnalysisDefault company must match dimension company.")
         if self.default_value_id and self.company_id and self.default_value.company_id != self.company_id:
             raise ValidationError("AccountAnalysisDefault company must match value company.")
+        super().save(*args, **kwargs)
+
+
+# =============================================================================
+# Statistical Entries
+# =============================================================================
+
+class StatisticalEntry(AccountingReadModel):
+    """
+    Quantity tracking for statistical and off-balance sheet accounts.
+
+    IMPORTANT: Statistical entries NEVER affect:
+    - Trial balance
+    - P&L statement
+    - Debit = Credit validation
+
+    They track quantities (inventory units, production hours, etc.) separately
+    from financial accounting.
+
+    Design Decision (locked): Uses direction enum (INCREASE/DECREASE) instead
+    of signed quantities for clarity and consistency.
+    """
+
+    class Direction(models.TextChoices):
+        INCREASE = "INCREASE", "Increase"
+        DECREASE = "DECREASE", "Decrease"
+
+    class Status(models.TextChoices):
+        DRAFT = "DRAFT", "Draft"
+        POSTED = "POSTED", "Posted"
+        REVERSED = "REVERSED", "Reversed"
+
+    # Custom manager for projection writes
+    objects = ProjectionWriteManager()
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="statistical_entries",
+    )
+
+    public_id = models.UUIDField(
+        default=uuid.uuid4,
+        editable=False,
+        unique=True,
+    )
+
+    # Optional link to financial document
+    # Can reference a JournalEntry to correlate financial and statistical movements
+    related_journal_entry = models.ForeignKey(
+        JournalEntry,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="statistical_entries",
+        help_text="Related financial journal entry (optional)",
+    )
+
+    # Must be statistical or off-balance account
+    account = models.ForeignKey(
+        Account,
+        on_delete=models.PROTECT,
+        related_name="statistical_entries",
+        help_text="Must be a statistical or off-balance account",
+    )
+
+    # Date and description
+    date = models.DateField()
+    memo = models.CharField(max_length=255, blank=True, default="")
+    memo_ar = models.CharField(max_length=255, blank=True, default="")
+
+    # Quantity tracking (direction enum, not signed)
+    quantity = models.DecimalField(
+        max_digits=18,
+        decimal_places=4,
+        help_text="Positive quantity (direction indicates increase/decrease)",
+    )
+    direction = models.CharField(
+        max_length=10,
+        choices=Direction.choices,
+        help_text="INCREASE or DECREASE",
+    )
+    unit = models.CharField(
+        max_length=20,
+        help_text="Unit of measure: 'units', 'kg', 'L', 'hours', 'sqm', etc.",
+    )
+
+    # Status workflow
+    status = models.CharField(
+        max_length=12,
+        choices=Status.choices,
+        default=Status.DRAFT,
+    )
+
+    # For reversals
+    reverses_entry = models.OneToOneField(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="reversal_entry",
+    )
+
+    # Source tracking
+    source_module = models.CharField(
+        max_length=50,
+        blank=True,
+        default="",
+        help_text="Module that created this entry (e.g., 'inventory', 'production')",
+    )
+    source_document = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        help_text="Reference to source document",
+    )
+
+    # Posting metadata
+    posted_at = models.DateTimeField(null=True, blank=True)
+    posted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="posted_statistical_entries",
+        db_constraint=False,
+    )
+
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_statistical_entries",
+        db_constraint=False,
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-date", "-created_at"]
+        indexes = [
+            models.Index(fields=["company", "account", "date"]),
+            models.Index(fields=["company", "status"]),
+            models.Index(fields=["company", "related_journal_entry"]),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                check=Q(quantity__gt=0),
+                name="chk_stat_quantity_positive",
+            ),
+        ]
+        verbose_name = "Statistical Entry"
+        verbose_name_plural = "Statistical Entries"
+
+    def __str__(self):
+        sign = "+" if self.direction == self.Direction.INCREASE else "-"
+        return f"STAT {self.date} {self.account.code}: {sign}{self.quantity} {self.unit}"
+
+    def get_localized_memo(self, language: str = "en") -> str:
+        """Get memo in specified language, fallback to English."""
+        if language == "ar" and self.memo_ar:
+            return self.memo_ar
+        return self.memo
+
+    @property
+    def signed_quantity(self) -> Decimal:
+        """Returns the quantity with sign based on direction."""
+        if self.direction == self.Direction.DECREASE:
+            return -self.quantity
+        return self.quantity
+
+    def clean(self):
+        # Validate account is statistical or off-balance
+        if self.account:
+            if self.account.ledger_domain == Account.LedgerDomain.FINANCIAL:
+                raise ValidationError(
+                    "Statistical entries can only use statistical or off-balance accounts. "
+                    f"Account {self.account.code} has ledger_domain=FINANCIAL."
+                )
+            if self.account.company_id != self.company_id:
+                raise ValidationError(
+                    "Account must belong to the same company."
+                )
+
+        # Validate quantity is positive
+        if self.quantity is not None and self.quantity <= 0:
+            raise ValidationError(
+                "Quantity must be positive. Use direction to indicate increase/decrease."
+            )
+
+        # Validate unit matches account's unit_of_measure (if set)
+        if self.account and self.account.unit_of_measure:
+            if self.unit != self.account.unit_of_measure:
+                raise ValidationError(
+                    f"Unit '{self.unit}' does not match account's unit '{self.account.unit_of_measure}'."
+                )
+
+    def save(self, *args, _projection_write: bool = False, **kwargs):
+        """
+        Save the statistical entry. Only projections should call this directly.
+
+        Args:
+            _projection_write: Must be True when called from projections.
+                              Prevents accidental direct writes.
+        """
+        if not write_context_allowed({"projection"}) and not getattr(settings, "TESTING", False):
+            raise RuntimeError(
+                "StatisticalEntry is a read model. Use accounting.commands to modify. "
+                "Direct saves are only allowed from projections within projection_writes_allowed()."
+            )
+        self.full_clean()
         super().save(*args, **kwargs)

@@ -20,11 +20,25 @@ import {
   UserCheck,
   X,
   ClipboardList,
+  UserCircle,
+  Truck,
+  ShoppingCart,
+  Receipt,
+  Package,
+  Percent,
+  CreditCard,
+  KeyRound,
+  Mic,
+  Warehouse,
+  PackageOpen,
+  ScrollText,
+  Scale,
+  PackagePlus,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useSidebar } from "@/contexts/SidebarContext";
 import { cn } from "@/lib/cn";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 
 interface NavItem {
   label: string;
@@ -40,19 +54,58 @@ export function Sidebar() {
   const { isOpen, close } = useSidebar();
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
     accounting: true,
+    sales: true,
+    purchases: true,
+    inventory: true,
     reports: true,
     settings: true,
     admin: true,
   });
 
-  // Close sidebar on route change (mobile)
+  // Ref for preserving sidebar scroll position
+  const navRef = useRef<HTMLElement>(null);
+  const SCROLL_KEY = "nxentra-sidebar-scroll";
+
+  // Restore scroll position on mount and after route changes
   useEffect(() => {
-    const handleRouteChange = () => {
-      close();
+    const restoreScroll = () => {
+      try {
+        const saved = sessionStorage.getItem(SCROLL_KEY);
+        if (saved && navRef.current) {
+          navRef.current.scrollTop = parseInt(saved, 10);
+        }
+      } catch {
+        // Ignore sessionStorage errors
+      }
     };
-    router.events.on("routeChangeComplete", handleRouteChange);
+
+    const handleRouteChangeStart = () => {
+      try {
+        if (navRef.current) {
+          sessionStorage.setItem(SCROLL_KEY, String(navRef.current.scrollTop));
+        }
+      } catch {
+        // Ignore sessionStorage errors
+      }
+    };
+
+    const handleRouteChangeComplete = () => {
+      close(); // Close mobile sidebar
+      // Restore scroll position after DOM settles
+      requestAnimationFrame(() => {
+        restoreScroll();
+      });
+    };
+
+    // Restore on initial mount
+    restoreScroll();
+
+    router.events.on("routeChangeStart", handleRouteChangeStart);
+    router.events.on("routeChangeComplete", handleRouteChangeComplete);
+
     return () => {
-      router.events.off("routeChangeComplete", handleRouteChange);
+      router.events.off("routeChangeStart", handleRouteChangeStart);
+      router.events.off("routeChangeComplete", handleRouteChangeComplete);
     };
   }, [router.events, close]);
 
@@ -62,88 +115,171 @@ export function Sidebar() {
     {
       label: t("nav.dashboard"),
       href: "/dashboard",
-      icon: <LayoutDashboard className="h-5 w-5" />,
+      icon: <LayoutDashboard className="h-5 w-5 text-blue-500" />,
     },
     {
       label: t("nav.accounting"),
-      icon: <BookOpen className="h-5 w-5" />,
+      icon: <BookOpen className="h-5 w-5 text-emerald-500" />,
       children: [
         {
           label: t("nav.chartOfAccounts"),
           href: "/accounting/chart-of-accounts",
-          icon: <FileText className="h-4 w-4" />,
+          icon: <FileText className="h-4 w-4 text-emerald-400" />,
         },
         {
           label: t("nav.journalEntries"),
           href: "/accounting/journal-entries",
-          icon: <FileText className="h-4 w-4" />,
+          icon: <FileText className="h-4 w-4 text-teal-400" />,
         },
         {
           label: t("nav.scratchpad", "Scratchpad"),
           href: "/accounting/scratchpad",
-          icon: <ClipboardList className="h-4 w-4" />,
+          icon: <ClipboardList className="h-4 w-4 text-lime-500" />,
         },
         {
           label: t("nav.import", "Import Data"),
           href: "/accounting/import",
-          icon: <Upload className="h-4 w-4" />,
+          icon: <Upload className="h-4 w-4 text-cyan-500" />,
+        },
+        {
+          label: t("nav.customers", "Customers (AR)"),
+          href: "/accounting/customers",
+          icon: <UserCircle className="h-4 w-4 text-sky-400" />,
+        },
+        {
+          label: t("nav.vendors", "Vendors (AP)"),
+          href: "/accounting/vendors",
+          icon: <Truck className="h-4 w-4 text-amber-500" />,
+        },
+      ],
+    },
+    {
+      label: t("nav.sales", "Sales"),
+      icon: <ShoppingCart className="h-5 w-5 text-orange-500" />,
+      children: [
+        {
+          label: t("nav.salesInvoices", "Invoices"),
+          href: "/accounting/sales-invoices",
+          icon: <Receipt className="h-4 w-4 text-orange-400" />,
+        },
+        {
+          label: t("nav.items", "Items"),
+          href: "/accounting/items",
+          icon: <Package className="h-4 w-4 text-amber-400" />,
+        },
+        {
+          label: t("nav.taxCodes", "Tax Codes"),
+          href: "/accounting/tax-codes",
+          icon: <Percent className="h-4 w-4 text-rose-400" />,
+        },
+        {
+          label: t("nav.postingProfiles", "Posting Profiles"),
+          href: "/accounting/posting-profiles",
+          icon: <CreditCard className="h-4 w-4 text-fuchsia-400" />,
+        },
+      ],
+    },
+    {
+      label: t("nav.purchases", "Purchases"),
+      icon: <Truck className="h-5 w-5 text-violet-500" />,
+      children: [
+        {
+          label: t("nav.purchaseBills", "Bills"),
+          href: "/accounting/purchase-bills",
+          icon: <Receipt className="h-4 w-4 text-violet-400" />,
+        },
+      ],
+    },
+    {
+      label: t("nav.inventory", "Inventory"),
+      icon: <Warehouse className="h-5 w-5 text-teal-500" />,
+      children: [
+        {
+          label: t("nav.inventoryBalances", "Stock Balances"),
+          href: "/inventory/balances",
+          icon: <PackageOpen className="h-4 w-4 text-teal-400" />,
+        },
+        {
+          label: t("nav.warehouses", "Warehouses"),
+          href: "/inventory/warehouses",
+          icon: <Warehouse className="h-4 w-4 text-cyan-400" />,
+        },
+        {
+          label: t("nav.stockLedger", "Stock Ledger"),
+          href: "/inventory/ledger",
+          icon: <ScrollText className="h-4 w-4 text-emerald-400" />,
+        },
+        {
+          label: t("nav.inventoryAdjustment", "Adjustment"),
+          href: "/inventory/adjustments/new",
+          icon: <Scale className="h-4 w-4 text-amber-400" />,
+        },
+        {
+          label: t("nav.openingBalance", "Opening Balance"),
+          href: "/inventory/opening-balance",
+          icon: <PackagePlus className="h-4 w-4 text-lime-400" />,
         },
       ],
     },
     {
       label: t("nav.reports"),
-      icon: <BarChart3 className="h-5 w-5" />,
+      icon: <BarChart3 className="h-5 w-5 text-pink-500" />,
       children: [
         {
           label: t("nav.trialBalance"),
           href: "/reports/trial-balance",
-          icon: <BarChart3 className="h-4 w-4" />,
+          icon: <BarChart3 className="h-4 w-4 text-pink-400" />,
         },
         {
           label: t("nav.balanceSheet"),
           href: "/reports/balance-sheet",
-          icon: <BarChart3 className="h-4 w-4" />,
+          icon: <BarChart3 className="h-4 w-4 text-rose-400" />,
         },
         {
           label: t("nav.incomeStatement"),
           href: "/reports/income-statement",
-          icon: <BarChart3 className="h-4 w-4" />,
+          icon: <BarChart3 className="h-4 w-4 text-red-400" />,
         },
       ],
     },
     {
       label: t("nav.users"),
       href: "/users",
-      icon: <Users className="h-5 w-5" />,
+      icon: <Users className="h-5 w-5 text-indigo-500" />,
     },
     {
       label: t("nav.settings"),
-      icon: <Settings className="h-5 w-5" />,
+      icon: <Settings className="h-5 w-5 text-slate-500" />,
       children: [
         {
           label: t("nav.companySettings"),
           href: "/settings/company",
-          icon: <Building2 className="h-4 w-4" />,
+          icon: <Building2 className="h-4 w-4 text-slate-400" />,
         },
         {
           label: t("nav.periods"),
           href: "/settings/periods",
-          icon: <Calendar className="h-4 w-4" />,
+          icon: <Calendar className="h-4 w-4 text-purple-400" />,
         },
         {
           label: t("nav.dimensions"),
           href: "/settings/dimensions",
-          icon: <Layers className="h-4 w-4" />,
+          icon: <Layers className="h-4 w-4 text-cyan-400" />,
         },
         {
           label: t("nav.integrations", "Integrations"),
           href: "/settings/integrations",
-          icon: <Plug className="h-4 w-4" />,
+          icon: <Plug className="h-4 w-4 text-green-400" />,
+        },
+        {
+          label: t("nav.account", "Account"),
+          href: "/settings/account",
+          icon: <KeyRound className="h-4 w-4 text-yellow-500" />,
         },
         {
           label: t("nav.audit", "Event Audit"),
           href: "/settings/audit",
-          icon: <ShieldCheck className="h-4 w-4" />,
+          icon: <ShieldCheck className="h-4 w-4 text-blue-400" />,
         },
       ],
     },
@@ -151,21 +287,54 @@ export function Sidebar() {
 
   // Add admin section only for staff/superusers
   if (isAdmin) {
+    const adminChildren: NavItem[] = [
+      {
+        label: t("nav.pendingUsers", "Pending Users"),
+        href: "/admin/pending-users",
+        icon: <UserCheck className="h-4 w-4 text-amber-400" />,
+      },
+      {
+        label: t("nav.projections", "Projections"),
+        href: "/admin/projections",
+        icon: <Database className="h-4 w-4 text-cyan-400" />,
+      },
+      {
+        label: t("nav.voiceSettings", "Voice Settings"),
+        href: "/settings/voice",
+        icon: <Mic className="h-4 w-4 text-violet-400" />,
+      },
+    ];
+
+    // Add superuser-only admin pages
+    if (user?.is_superuser) {
+      adminChildren.unshift(
+        {
+          label: t("nav.adminDashboard", "Dashboard"),
+          href: "/admin",
+          icon: <ShieldCheck className="h-4 w-4 text-red-400" />,
+        },
+        {
+          label: t("nav.allCompanies", "All Companies"),
+          href: "/admin/companies",
+          icon: <Building2 className="h-4 w-4 text-purple-400" />,
+        },
+        {
+          label: t("nav.allUsers", "All Users"),
+          href: "/admin/all-users",
+          icon: <Users className="h-4 w-4 text-indigo-400" />,
+        },
+        {
+          label: t("nav.auditLog", "Audit Log"),
+          href: "/admin/audit-log",
+          icon: <FileText className="h-4 w-4 text-emerald-400" />,
+        }
+      );
+    }
+
     navItems.push({
       label: t("nav.admin", "Admin"),
-      icon: <ShieldCheck className="h-5 w-5" />,
-      children: [
-        {
-          label: t("nav.pendingUsers", "Pending Users"),
-          href: "/admin/pending-users",
-          icon: <UserCheck className="h-4 w-4" />,
-        },
-        {
-          label: t("nav.projections", "Projections"),
-          href: "/admin/projections",
-          icon: <Database className="h-4 w-4" />,
-        },
-      ],
+      icon: <ShieldCheck className="h-5 w-5 text-red-500" />,
+      children: adminChildren,
     });
   }
 
@@ -240,7 +409,7 @@ export function Sidebar() {
       {/* Sidebar */}
       <aside
         className={cn(
-          "fixed inset-y-0 start-0 z-50 flex w-64 flex-col border-e bg-card transition-transform duration-300 ease-in-out lg:static lg:translate-x-0",
+          "fixed inset-y-0 start-0 z-50 flex w-64 flex-col border-e bg-card transition-transform duration-300 ease-in-out lg:static lg:h-full lg:translate-x-0",
           isOpen ? "translate-x-0" : "-translate-x-full rtl:translate-x-full"
         )}
       >
@@ -263,7 +432,7 @@ export function Sidebar() {
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 overflow-y-auto p-4">
+        <nav ref={navRef} className="flex-1 overflow-y-auto p-4">
           <div className="space-y-1">{navItems.map((item) => renderNavItem(item))}</div>
         </nav>
       </aside>

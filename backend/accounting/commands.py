@@ -33,6 +33,8 @@ from accounting.models import (
     AnalysisDimensionValue,
     AccountAnalysisDefault,
     CompanySequence,
+    Customer,
+    Vendor,
 )
 from accounting.aggregates import load_journal_entry_aggregate, load_account_aggregate
 from accounting.policies import (
@@ -45,6 +47,8 @@ from accounting.policies import (
     can_delete_dimension_value,
     can_post_to_account,
     can_post_to_period,
+    validate_line_counterparty,
+    validate_counterparty_exists,
 )
 from events.emitter import emit_event
 from projections.write_barrier import command_writes_allowed
@@ -238,10 +242,13 @@ def create_account(
     description: str = "",
     description_ar: str = "",
     unit_of_measure: str = "",
+    role: str = "",
+    ledger_domain: str = "FINANCIAL",
+    allow_manual_posting: bool = True,
 ) -> CommandResult:
     """
     Create a new account in the chart of accounts.
-    
+
     Args:
         actor: The actor context (user + company)
         code: Account code (unique per company)
@@ -253,7 +260,10 @@ def create_account(
         description: Description (English)
         description_ar: Arabic description
         unit_of_measure: Unit for MEMO accounts only
-    
+        role: Behavioral role (e.g., RECEIVABLE_CONTROL, PAYABLE_CONTROL)
+        ledger_domain: FINANCIAL, STATISTICAL, or OFF_BALANCE
+        allow_manual_posting: Admin override for control accounts
+
     Returns:
         CommandResult with the created Account or error
     """
@@ -294,6 +304,9 @@ def create_account(
         "description": description,
         "description_ar": description_ar,
         "unit_of_measure": unit_of_measure,
+        "account_role": role,
+        "ledger_domain": ledger_domain,
+        "allow_manual_posting": allow_manual_posting,
     })
 
     # Emit event
@@ -315,6 +328,9 @@ def create_account(
             description=description,
             description_ar=description_ar,
             unit_of_measure=unit_of_measure,
+            account_role=role,
+            ledger_domain=ledger_domain,
+            allow_manual_posting=allow_manual_posting,
         ).to_dict(),
     )
 
@@ -532,6 +548,8 @@ def create_journal_entry(
                 analysis_tags=_resolve_analysis_tags_to_public_ids(
                     actor.company, line.get("analysis_tags", [])
                 ),
+                customer_public_id=line.get("customer_public_id"),
+                vendor_public_id=line.get("vendor_public_id"),
             ).to_dict())
             line_no += 1
 
@@ -722,6 +740,8 @@ def update_journal_entry(
                 analysis_tags=_resolve_analysis_tags_to_public_ids(
                     actor.company, line.get("analysis_tags", [])
                 ),
+                customer_public_id=line.get("customer_public_id"),
+                vendor_public_id=line.get("vendor_public_id"),
             ).to_dict())
             line_no += 1
 
@@ -827,6 +847,8 @@ def save_journal_entry_complete(
                 analysis_tags=_resolve_analysis_tags_to_public_ids(
                     actor.company, line.get("analysis_tags", [])
                 ),
+                customer_public_id=line.get("customer_public_id"),
+                vendor_public_id=line.get("vendor_public_id"),
             ).to_dict())
             line_no += 1
 
@@ -954,7 +976,7 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
     sequence_value = _next_company_sequence(entry.company, "journal_entry_number")
     entry_number = f"JE-{entry.company_id}-{sequence_value:06d}"
 
-    # Build line data for event (including analysis tags)
+    # Build line data for event (including analysis tags and counterparty)
     line_data = []
     for line in aggregate.lines:
         account_public_id = line.get("account_public_id")
@@ -968,6 +990,25 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
         allowed, reason = can_post_to_account(account)
         if not allowed:
             return CommandResult.fail(reason)
+
+        # Extract counterparty from line
+        customer_public_id = line.get("customer_public_id")
+        vendor_public_id = line.get("vendor_public_id")
+
+        # Validate counterparty requirements for control accounts
+        allowed, reason = validate_line_counterparty(
+            account, customer_public_id, vendor_public_id
+        )
+        if not allowed:
+            return CommandResult.fail(reason)
+
+        # Validate counterparty exists if provided
+        if customer_public_id or vendor_public_id:
+            valid, reason, _ = validate_counterparty_exists(
+                actor.company, customer_public_id, vendor_public_id
+            )
+            if not valid:
+                return CommandResult.fail(reason)
 
         line_data.append(JournalLineData(
             line_no=line.get("line_no"),
@@ -984,6 +1025,8 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
             analysis_tags=_resolve_analysis_tags_to_public_ids(
                 actor.company, line.get("analysis_tags", [])
             ),
+            customer_public_id=customer_public_id,
+            vendor_public_id=vendor_public_id,
         ).to_dict())
 
     # Emit event

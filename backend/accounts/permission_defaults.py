@@ -19,6 +19,14 @@ ROLE_DEFAULTS = {
         "journal.post",
         "journal.reverse",
 
+        # Inventory
+        "inventory.warehouse.create",
+        "inventory.warehouse.update",
+        "inventory.stock.receive",
+        "inventory.stock.issue",
+        "inventory.adjustment.create",
+        "inventory.opening_balance.create",
+
         # Periods
         "periods.view",
         "periods.close",
@@ -28,6 +36,10 @@ ROLE_DEFAULTS = {
         # Reports
         "reports.view",
         "reports.export",
+
+        # Voice (admin can grant/revoke access and manage quotas)
+        "voice.admin",
+        "voice.view_usage",
 
         # EDIM (External Data Ingestion & Mapping)
         "edim.view",
@@ -53,9 +65,21 @@ ROLE_DEFAULTS = {
         "journal.post",
         "journal.reverse",
 
+        # Inventory
+        "inventory.warehouse.create",
+        "inventory.warehouse.update",
+        "inventory.stock.receive",
+        "inventory.stock.issue",
+        "inventory.adjustment.create",
+        "inventory.opening_balance.create",
+
         "periods.view",
         "reports.view",
         "reports.export",
+
+        # Voice (admin can grant/revoke access and manage quotas)
+        "voice.admin",
+        "voice.view_usage",
 
         # EDIM (External Data Ingestion & Mapping)
         "edim.view",
@@ -74,6 +98,11 @@ ROLE_DEFAULTS = {
         "journal.view",
         "journal.create",
         "journal.edit_draft",
+
+        # Inventory (limited)
+        "inventory.stock.receive",
+        "inventory.stock.issue",
+        "inventory.adjustment.create",
 
         "periods.view",
         "reports.view",

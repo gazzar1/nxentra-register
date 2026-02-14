@@ -1,5 +1,5 @@
 export { authService } from './auth.service';
-export { accountsService, dimensionsService } from './accounts.service';
+export { accountsService, dimensionsService, customersService, vendorsService, statisticalEntriesService } from './accounts.service';
 export { journalService } from './journal.service';
 export { reportsService } from './reports.service';
 export { usersService, permissionsService } from './users.service';
@@ -8,3 +8,5 @@ export { edimService, sourceSystemsService, mappingProfilesService, crosswalksSe
 export { exportService } from './export.service';
 export { eventsService } from './events.service';
 export { scratchpadService } from './scratchpad.service';
+export { itemsService, taxCodesService, postingProfilesService, salesInvoicesService } from './sales.service';
+export { purchaseBillsService } from './purchases.service';

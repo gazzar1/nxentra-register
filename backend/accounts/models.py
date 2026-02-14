@@ -115,6 +115,15 @@ class Company(ProjectionWriteGuard):
         help_text="When the quota was last reset",
     )
 
+    # Inventory Settings
+    allow_negative_inventory = models.BooleanField(
+        default=False,
+        help_text=(
+            "Allow posting sales invoices that result in negative inventory. "
+            "If False, posting will fail if insufficient stock is available."
+        ),
+    )
+
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -369,7 +378,27 @@ class CompanyMembership(ProjectionWriteGuard):
         blank=True,
         related_name="memberships",
     )
-    
+
+    # Voice Feature Settings (per-user, admin-controlled)
+    voice_enabled = models.BooleanField(
+        default=False,
+        help_text="User has permission to use voice input (granted by admin)",
+    )
+    voice_quota = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="User's voice row quota (null = no quota set, must be set to use voice)",
+    )
+    voice_rows_used = models.PositiveIntegerField(
+        default=0,
+        help_text="Voice rows used by this user",
+    )
+    voice_quota_reset_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the user's quota was last reset/refilled",
+    )
+
     # Timestamps
     joined_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -385,6 +414,20 @@ class CompanyMembership(ProjectionWriteGuard):
 
     def __str__(self):
         return f"{self.user.email} @ {self.company.name} ({self.role})"
+
+    def has_voice_access(self) -> bool:
+        """Check if user has voice access and available quota."""
+        if not self.voice_enabled:
+            return False
+        if self.voice_quota is None:
+            return False
+        return self.voice_rows_used < self.voice_quota
+
+    def get_voice_remaining(self) -> int:
+        """Get remaining voice quota."""
+        if self.voice_quota is None:
+            return 0
+        return max(0, self.voice_quota - self.voice_rows_used)
 
     @property
     def permission_records(self):
@@ -547,3 +590,115 @@ class EmailVerificationToken(models.Model):
     @property
     def is_expired(self):
         return timezone.now() > self.expires_at
+
+
+class Invitation(models.Model):
+    """
+    User invitation for multi-tenant access.
+
+    Flow:
+    1. Admin/Owner creates invitation with email, role, companies, and permissions
+    2. Email sent with unique token link
+    3. Invitee clicks link and sets their password
+    4. User account created and memberships established
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        ACCEPTED = "ACCEPTED", "Accepted"
+        EXPIRED = "EXPIRED", "Expired"
+        CANCELLED = "CANCELLED", "Cancelled"
+
+    public_id = models.UUIDField(
+        default=uuid.uuid4,
+        editable=False,
+        unique=True,
+    )
+
+    # Invitee info
+    email = models.EmailField()
+    name = models.CharField(max_length=255, blank=True, default="")
+
+    # Invitation token (hashed)
+    token_hash = models.CharField(
+        max_length=64,
+        unique=True,
+        db_index=True,
+        help_text="SHA-256 hash of the invitation token",
+    )
+
+    # Who invited
+    invited_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="sent_invitations",
+    )
+
+    # Primary company (where the invitation originated)
+    primary_company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="invitations",
+    )
+
+    # Role to assign in all companies
+    role = models.CharField(
+        max_length=20,
+        choices=CompanyMembership.Role.choices,
+        default=CompanyMembership.Role.USER,
+    )
+
+    # Companies to grant access to (JSON array of company IDs)
+    company_ids = models.JSONField(
+        default=list,
+        help_text="List of company IDs the invitee will have access to",
+    )
+
+    # Permissions to grant (JSON array of permission codes)
+    permission_codes = models.JSONField(
+        default=list,
+        help_text="List of permission codes to grant",
+    )
+
+    # Status and timing
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+
+    # When accepted
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    created_user = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="invitation_origin",
+        help_text="The user account created from this invitation",
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["email", "status"]),
+            models.Index(fields=["primary_company", "status"]),
+            models.Index(fields=["expires_at"]),
+        ]
+        verbose_name = "User Invitation"
+        verbose_name_plural = "User Invitations"
+
+    def __str__(self):
+        return f"Invitation for {self.email} ({self.status})"
+
+    @property
+    def is_expired(self):
+        return timezone.now() > self.expires_at
+
+    @property
+    def is_valid(self):
+        return self.status == self.Status.PENDING and not self.is_expired
