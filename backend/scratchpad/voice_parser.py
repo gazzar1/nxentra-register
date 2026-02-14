@@ -564,6 +564,13 @@ class VoiceParserService:
             }
             file_ext = ext_map.get(content_type, 'mp3')
 
+        # Build a prompt to guide Whisper's output style
+        # For Arabic, provide Arabic script examples to encourage Arabic output
+        if language == "ar":
+            whisper_prompt = "هذا تسجيل صوتي باللغة العربية عن معاملات محاسبية. مثال: صرفت ألف ريال للمورد، استلمت فاتورة بمبلغ خمسة آلاف."
+        else:
+            whisper_prompt = "This is an accounting transaction recording. Example: Paid 1000 to supplier, received invoice for 5000."
+
         for attempt in range(self.MAX_RETRIES + 1):
             try:
                 # Create a file-like object with proper name for Whisper API
@@ -572,11 +579,12 @@ class VoiceParserService:
 
                 # Use Whisper API for transcription
                 # The 'language' parameter tells Whisper the source language
-                # and it will output in that language's script
+                # The 'prompt' parameter guides the output style (Arabic script for Arabic)
                 response = self.client.audio.transcriptions.create(
                     model="whisper-1",
                     file=audio_buffer,
                     language=language,  # 'ar' for Arabic, 'en' for English
+                    prompt=whisper_prompt,  # Guide output to use correct script
                     response_format="text",
                 )
 
