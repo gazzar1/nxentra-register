@@ -516,14 +516,11 @@ class VoiceParserService:
         language: str = "en",
     ) -> str:
         """
-        Transcribe audio file using OpenAI gpt-4o-audio-preview via Chat Completions.
+        Transcribe audio file using OpenAI Whisper API.
 
-        Uses the Chat Completions API with audio input instead of the Audio API.
-        This provides better Arabic support and uses the same API permissions as
-        text parsing.
-
-        NOTE: gpt-4o-audio-preview only supports 'wav' and 'mp3' formats.
-        Browser recordings (webm) are automatically converted to mp3.
+        Uses the dedicated Audio Transcription API (Whisper) which is designed
+        specifically for transcription and respects the language parameter to
+        output in the correct script (Arabic script for Arabic, etc.).
 
         AUDIO POLICY: Audio is discarded after this call returns.
         Only the transcript text is returned; audio is never stored.
@@ -533,12 +530,12 @@ class VoiceParserService:
             language: Language code (e.g., 'en', 'ar')
 
         Returns:
-            Transcribed text (raw transcript)
+            Transcribed text (raw transcript in the source language)
 
         Raises:
             Exception: If transcription fails after retries
         """
-        import base64
+        import io
 
         last_error = None
 
@@ -549,66 +546,42 @@ class VoiceParserService:
         # Determine audio format from content type
         content_type = getattr(audio_file, 'content_type', 'audio/webm')
 
-        # gpt-4o-audio-preview only supports wav and mp3
-        # Convert other formats (webm, mp4, ogg) to mp3
-        supported_formats = {'audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav'}
-        if content_type not in supported_formats:
+        # Whisper supports: mp3, mp4, mpeg, mpga, m4a, wav, webm
+        # But for consistency, convert webm to mp3 (better compatibility)
+        webm_formats = {'audio/webm', 'audio/ogg'}
+        if content_type in webm_formats:
             file_content = self._convert_audio_to_mp3(file_content, content_type)
-            audio_format = 'mp3'
+            file_ext = 'mp3'
         else:
-            audio_format = 'wav' if 'wav' in content_type else 'mp3'
-
-        audio_base64 = base64.b64encode(file_content).decode('utf-8')
-
-        # Build language instruction based on selected language
-        if language == "ar":
-            system_prompt = """You are an Arabic transcription assistant.
-
-Task: Transcribe the Arabic audio word-for-word in Arabic script.
-
-CRITICAL RULES:
-1. Do NOT translate to English - keep the original Arabic words
-2. Output must be in Arabic letters: ا ب ت ث ج ح خ د ذ ر ز س ش ص ض ط ظ ع غ ف ق ك ل م ن ه و ي
-3. Write numbers as digits (7000 not سبعة آلاف)
-4. Output ONLY the Arabic transcription
-
-Example:
-- Audio says "سماد سبعة آلاف" → Output: "سماد 7000"
-- WRONG: "fertilizers 7000" (this is translation, not transcription)"""
-        else:
-            system_prompt = """You are a transcription assistant. Transcribe the audio exactly as spoken.
-The audio is in English. Output ONLY the transcribed text, nothing else.
-Do not translate - keep the original language.
-If the audio contains numbers, transcribe them as digits."""
+            # Map content type to file extension
+            ext_map = {
+                'audio/mpeg': 'mp3',
+                'audio/mp3': 'mp3',
+                'audio/mp4': 'mp4',
+                'audio/m4a': 'm4a',
+                'audio/wav': 'wav',
+                'audio/x-wav': 'wav',
+            }
+            file_ext = ext_map.get(content_type, 'mp3')
 
         for attempt in range(self.MAX_RETRIES + 1):
             try:
-                # Use gpt-4o-audio-preview via Chat Completions API
-                # This uses the same endpoint as text parsing
-                response = self.client.chat.completions.create(
-                    model="gpt-4o-audio-preview",
-                    modalities=["text"],
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": system_prompt,
-                        },
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "input_audio",
-                                    "input_audio": {
-                                        "data": audio_base64,
-                                        "format": audio_format,
-                                    }
-                                }
-                            ]
-                        }
-                    ],
+                # Create a file-like object with proper name for Whisper API
+                audio_buffer = io.BytesIO(file_content)
+                audio_buffer.name = f"audio.{file_ext}"
+
+                # Use Whisper API for transcription
+                # The 'language' parameter tells Whisper the source language
+                # and it will output in that language's script
+                response = self.client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio_buffer,
+                    language=language,  # 'ar' for Arabic, 'en' for English
+                    response_format="text",
                 )
 
-                transcript = response.choices[0].message.content.strip()
+                # Response is the transcript text directly
+                transcript = response.strip() if isinstance(response, str) else response
                 return transcript
 
             except Exception as e:
