@@ -224,7 +224,7 @@ export default function CustomersPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Customer</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete "{deleteDialog.customer?.name}"? This action cannot be undone.
+              Are you sure you want to delete &quot;{deleteDialog.customer?.name}&quot;? This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

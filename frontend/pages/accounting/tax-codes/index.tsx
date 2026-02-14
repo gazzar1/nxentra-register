@@ -207,7 +207,7 @@ export default function TaxCodesPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Tax Code</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete "{deleteDialog.taxCode?.name}"? This action cannot be undone.
+              Are you sure you want to delete &quot;{deleteDialog.taxCode?.name}&quot;? This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

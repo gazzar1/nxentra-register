@@ -48,7 +48,7 @@ export default function EditCustomerPage() {
       <AppLayout>
         <div className="text-center py-12">
           <h2 className="text-lg font-semibold">Customer not found</h2>
-          <p className="text-muted-foreground mt-2">The customer you're looking for doesn't exist.</p>
+          <p className="text-muted-foreground mt-2">The customer you&apos;re looking for doesn&apos;t exist.</p>
         </div>
       </AppLayout>
     );

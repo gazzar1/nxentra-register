@@ -27,8 +27,7 @@ export default function NewWarehousePage() {
       router.push("/inventory/warehouses");
     } catch (error: unknown) {
       console.error("Create warehouse error:", error);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const err = error as any;
+      const err = error as { response?: { data?: { error?: string; detail?: string; message?: string } }; message?: string };
       const responseData = err?.response?.data;
       console.error("Response data:", responseData);
       const errorMessage = responseData?.error || responseData?.detail || responseData?.message || err?.message || t("common:error");

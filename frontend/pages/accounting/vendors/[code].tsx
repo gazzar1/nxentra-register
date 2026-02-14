@@ -79,7 +79,7 @@ export default function VendorDetailPage() {
       <AppLayout>
         <div className="text-center py-12">
           <h2 className="text-lg font-semibold">Vendor not found</h2>
-          <p className="text-muted-foreground mt-2">The vendor you're looking for doesn't exist.</p>
+          <p className="text-muted-foreground mt-2">The vendor you&apos;re looking for doesn&apos;t exist.</p>
           <Link href="/accounting/vendors">
             <Button className="mt-4">Back to Vendors</Button>
           </Link>
@@ -293,7 +293,7 @@ export default function VendorDetailPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Vendor</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete "{vendor.name}"? This action cannot be undone.
+              Are you sure you want to delete &quot;{vendor.name}&quot;? This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

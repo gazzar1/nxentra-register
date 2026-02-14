@@ -79,7 +79,7 @@ export default function CustomerDetailPage() {
       <AppLayout>
         <div className="text-center py-12">
           <h2 className="text-lg font-semibold">Customer not found</h2>
-          <p className="text-muted-foreground mt-2">The customer you're looking for doesn't exist.</p>
+          <p className="text-muted-foreground mt-2">The customer you&apos;re looking for doesn&apos;t exist.</p>
           <Link href="/accounting/customers">
             <Button className="mt-4">Back to Customers</Button>
           </Link>
@@ -259,7 +259,7 @@ export default function CustomerDetailPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Customer</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete "{customer.name}"? This action cannot be undone.
+              Are you sure you want to delete &quot;{customer.name}&quot;? This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

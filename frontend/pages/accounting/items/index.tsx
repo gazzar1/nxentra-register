@@ -220,7 +220,7 @@ export default function ItemsPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Item</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete "{deleteDialog.item?.name}"? This action cannot be undone.
+              Are you sure you want to delete &quot;{deleteDialog.item?.name}&quot;? This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

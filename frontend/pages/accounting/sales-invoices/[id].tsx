@@ -361,7 +361,7 @@ export default function SalesInvoiceDetailPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Post Invoice</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to post invoice "{invoice.invoice_number}"? This will create a journal entry
+              Are you sure you want to post invoice &quot;{invoice.invoice_number}&quot;? This will create a journal entry
               and the invoice cannot be edited afterwards.
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -380,7 +380,7 @@ export default function SalesInvoiceDetailPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Void Invoice</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to void invoice "{invoice.invoice_number}"? This will create a reversing
+              Are you sure you want to void invoice &quot;{invoice.invoice_number}&quot;? This will create a reversing
               journal entry to cancel the original posting.
             </AlertDialogDescription>
           </AlertDialogHeader>

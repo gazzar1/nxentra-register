@@ -224,7 +224,7 @@ export default function VendorsPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Vendor</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete "{deleteDialog.vendor?.name}"? This action cannot be undone.
+              Are you sure you want to delete &quot;{deleteDialog.vendor?.name}&quot;? This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

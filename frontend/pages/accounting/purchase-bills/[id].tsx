@@ -365,7 +365,7 @@ export default function PurchaseBillDetailPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Post Bill</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to post bill "{bill.bill_number}"? This will create a journal entry
+              Are you sure you want to post bill &quot;{bill.bill_number}&quot;? This will create a journal entry
               and the bill cannot be edited afterwards.
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -384,7 +384,7 @@ export default function PurchaseBillDetailPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Void Bill</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to void bill "{bill.bill_number}"? This will create a reversing
+              Are you sure you want to void bill &quot;{bill.bill_number}&quot;? This will create a reversing
               journal entry to cancel the original posting.
             </AlertDialogDescription>
           </AlertDialogHeader>

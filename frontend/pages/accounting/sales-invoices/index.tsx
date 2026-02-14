@@ -296,7 +296,7 @@ export default function SalesInvoicesPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Invoice</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete invoice "{deleteDialog.invoice?.invoice_number}"? This action cannot be undone.
+              Are you sure you want to delete invoice &quot;{deleteDialog.invoice?.invoice_number}&quot;? This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -314,7 +314,7 @@ export default function SalesInvoicesPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Post Invoice</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to post invoice "{postDialog.invoice?.invoice_number}"? This will create a journal entry
+              Are you sure you want to post invoice &quot;{postDialog.invoice?.invoice_number}&quot;? This will create a journal entry
               and the invoice cannot be edited afterwards.
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -333,7 +333,7 @@ export default function SalesInvoicesPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Void Invoice</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to void invoice "{voidDialog.invoice?.invoice_number}"? This will create a reversing
+              Are you sure you want to void invoice &quot;{voidDialog.invoice?.invoice_number}&quot;? This will create a reversing
               journal entry to cancel the original posting.
             </AlertDialogDescription>
           </AlertDialogHeader>

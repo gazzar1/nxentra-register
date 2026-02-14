@@ -214,7 +214,7 @@ export default function PostingProfilesPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Posting Profile</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete "{deleteDialog.profile?.name}"? This action cannot be undone.
+              Are you sure you want to delete &quot;{deleteDialog.profile?.name}&quot;? This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

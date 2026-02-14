@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/router";
+import Link from "next/link";
 import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
@@ -234,9 +235,9 @@ export default function AcceptInvitationPage() {
           <div className="mt-4 text-center">
             <p className="text-sm text-muted-foreground">
               Already have an account?{" "}
-              <a href="/login" className="text-primary hover:underline">
+              <Link href="/login" className="text-primary hover:underline">
                 Sign in
-              </a>
+              </Link>
             </p>
           </div>
         </CardContent>
