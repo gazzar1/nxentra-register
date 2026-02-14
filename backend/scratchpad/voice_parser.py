@@ -151,7 +151,7 @@ TRANSACTION_SCHEMA = {
                 },
                 "required": [
                     "transaction_date", "amount", "description", "description_ar",
-                    "debit_account_code", "credit_account_code", "notes", "dimensions",
+                    "debit_account_code", "credit_account_code", "notes",
                     "confidence", "questions"
                 ],
                 "additionalProperties": False
