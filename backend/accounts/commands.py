@@ -2821,9 +2821,15 @@ def grant_voice_access(
         return CommandResult.fail("Quota must be a positive number.")
 
     try:
-        membership = CompanyMembership.objects.select_for_update().select_related("user").get(
-            pk=membership_id, company=actor.company
-        )
+        # Superusers can manage any membership, others only their company
+        if actor.user.is_superuser:
+            membership = CompanyMembership.objects.select_for_update().select_related("user").get(
+                pk=membership_id
+            )
+        else:
+            membership = CompanyMembership.objects.select_for_update().select_related("user").get(
+                pk=membership_id, company=actor.company
+            )
     except CompanyMembership.DoesNotExist:
         return CommandResult.fail("Membership not found.")
 
@@ -2863,9 +2869,15 @@ def revoke_voice_access(
     require(actor, "voice.admin")
 
     try:
-        membership = CompanyMembership.objects.select_for_update().select_related("user").get(
-            pk=membership_id, company=actor.company
-        )
+        # Superusers can manage any membership, others only their company
+        if actor.user.is_superuser:
+            membership = CompanyMembership.objects.select_for_update().select_related("user").get(
+                pk=membership_id
+            )
+        else:
+            membership = CompanyMembership.objects.select_for_update().select_related("user").get(
+                pk=membership_id, company=actor.company
+            )
     except CompanyMembership.DoesNotExist:
         return CommandResult.fail("Membership not found.")
 
@@ -2909,9 +2921,15 @@ def refill_voice_quota(
     require(actor, "voice.admin")
 
     try:
-        membership = CompanyMembership.objects.select_for_update().select_related("user").get(
-            pk=membership_id, company=actor.company
-        )
+        # Superusers can manage any membership, others only their company
+        if actor.user.is_superuser:
+            membership = CompanyMembership.objects.select_for_update().select_related("user").get(
+                pk=membership_id
+            )
+        else:
+            membership = CompanyMembership.objects.select_for_update().select_related("user").get(
+                pk=membership_id, company=actor.company
+            )
     except CompanyMembership.DoesNotExist:
         return CommandResult.fail("Membership not found.")
 
