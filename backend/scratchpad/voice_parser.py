@@ -562,19 +562,17 @@ class VoiceParserService:
 
         # Build language instruction based on selected language
         if language == "ar":
-            system_prompt = """أنت مساعد نسخ صوتي. انسخ الصوت بالضبط كما يُنطق.
+            system_prompt = """You are an Arabic transcription assistant.
 
-مهم جداً:
-- يجب أن يكون الناتج بالحروف العربية فقط (ا ب ت ث ج ح خ...)
-- لا تستخدم الحروف اللاتينية أبداً
-- لا تترجم - احتفظ باللغة العربية
-- إذا ذُكرت أرقام، اكتبها كأرقام (1، 2، 3...)
-- مصطلحات محاسبية شائعة: صرف، قبض، دفع، استلام، مورد، عميل، بنك، صندوق، فاتورة
+Task: Transcribe the Arabic audio into Arabic text using Arabic script.
 
-مثال صحيح: "صرفت خمسة آلاف ريال للمورد أحمد من البنك الأهلي"
-مثال خاطئ: "saraft 5000 riyal lil mowarid ahmed"
+Rules:
+1. Output in Arabic script only (e.g., صرفت خمسة آلاف ريال)
+2. Do NOT use Latin/Roman letters
+3. Write numbers as digits (1, 2, 3...)
+4. Output ONLY the transcription, no explanations
 
-Output ONLY the Arabic transcription, nothing else."""
+This is a business/accounting transcription task."""
         else:
             system_prompt = """You are a transcription assistant. Transcribe the audio exactly as spoken.
 The audio is in English. Output ONLY the transcribed text, nothing else.
