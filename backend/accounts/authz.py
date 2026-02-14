@@ -44,13 +44,18 @@ class ActorContext:
     def has(self, code: str) -> bool:
         """
         Check if actor has a specific permission.
-        
+
         Order of checks:
-        1. OWNER: implicit allow
-        2. everyone else: only code in permse
+        1. Superuser: implicit allow (all permissions)
+        2. OWNER: implicit allow
+        3. everyone else: only code in perms
         """
         if not self.membership.is_active:
             return False
+
+        # Superusers have all permissions
+        if getattr(self.user, 'is_superuser', False):
+            return True
 
         if self.membership.role == CompanyMembership.Role.OWNER:
             return True
