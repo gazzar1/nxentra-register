@@ -979,6 +979,7 @@ class ScratchpadParseVoiceView(APIView):
             )
 
         try:
+            voice_parser.check_feature_enabled(actor.company)
             # Check user-level voice access and quota
             voice_parser.check_user_voice_access(membership)
             voice_parser.check_user_quota(membership)

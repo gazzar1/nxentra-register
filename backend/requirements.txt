@@ -28,3 +28,10 @@ channels-redis>=4.1.0
 # AI/ML (Voice parsing)
 openai>=1.0.0
 pydub>=0.25.1
+
+# Image processing
+Pillow>=10.0.0
+
+# Testing
+pytest>=8.0.0
+pytest-django>=4.7.0

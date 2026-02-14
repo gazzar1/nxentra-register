@@ -3,8 +3,8 @@
 Voice input parsing service for Nxentra Scratchpad.
 
 IMPORTANT: This module follows strict separation of concerns:
-- Audio → Text: OpenAI ASR (transcription only)
-- Text → Fields: GPT-4o (suggestions only)
+- Audio -> Text: OpenAI ASR (transcription only)
+- Text -> Fields: GPT-4o (suggestions only)
 - Validation: Nxentra rules engine (truth)
 - Commit: Nxentra core (immutable events)
 
@@ -21,10 +21,10 @@ Voice is enabled IFF:
 Both flags must be True. Either being False disables voice.
 
 Flow:
-    Audio → gpt-4o-transcribe (JSON) → Extract transcript → Store immediately
-                                                ↓
-                                    GPT-4o + JSON Schema → Suggestions
-                                                ↓
+    Audio -> gpt-4o-audio-preview (JSON) -> Extract transcript -> Store immediately
+                                                |
+                                    GPT-4o + JSON Schema -> Suggestions
+                                                |
                                          Discard audio
 """
 
@@ -127,7 +127,23 @@ TRANSACTION_SCHEMA = {
                     "debit_account_code": {"type": ["string", "null"]},
                     "credit_account_code": {"type": ["string", "null"]},
                     "notes": {"type": ["string", "null"]},
-                    "confidence": {"type": "number"},
+                    "dimensions": {
+                        "type": "object",
+                        "additionalProperties": {"type": "string"}
+                    },
+                    "confidence": {
+                        "type": "object",
+                        "properties": {
+                            "overall": {"type": ["number", "null"]},
+                            "date": {"type": ["number", "null"]},
+                            "amount": {"type": ["number", "null"]},
+                            "accounts": {"type": ["number", "null"]},
+                            "dimensions": {"type": ["number", "null"]},
+                            "description": {"type": ["number", "null"]}
+                        },
+                        "required": ["overall"],
+                        "additionalProperties": False
+                    },
                     "questions": {
                         "type": "array",
                         "items": {"type": "string"}
@@ -135,7 +151,7 @@ TRANSACTION_SCHEMA = {
                 },
                 "required": [
                     "transaction_date", "amount", "description", "description_ar",
-                    "debit_account_code", "credit_account_code", "notes",
+                    "debit_account_code", "credit_account_code", "notes", "dimensions",
                     "confidence", "questions"
                 ],
                 "additionalProperties": False
@@ -228,7 +244,7 @@ class VoiceParserService:
     Service for parsing voice input into structured transaction data.
 
     Uses:
-    - gpt-4o-transcribe for speech-to-text (returns JSON, extract transcript)
+    - gpt-4o-audio-preview for speech-to-text (returns JSON, extract transcript)
     - gpt-4o with JSON Schema for structured parsing
 
     IMPORTANT: This service only SUGGESTS fields. Validation and
@@ -562,14 +578,14 @@ class VoiceParserService:
 YOUR ONLY JOB: Convert Arabic speech to Arabic text.
 
 STRICT RULES:
-1. Output the EXACT Arabic words spoken using Arabic script (الحروف العربية)
+1. Output the EXACT Arabic words spoken using Arabic script (?????? ???????)
 2. NEVER translate to English
 3. NEVER use Latin/Roman letters
 4. Write numbers as digits: 1000, 5000, etc.
 5. Output ONLY the transcription - no explanations, no translations
 
-If someone says "سماد سبعة آلاف" you output: سماد 7000
-If someone says "دفعت للمورد" you output: دفعت للمورد
+If someone says "???? ???? ????" you output: ???? 7000
+If someone says "???? ??????" you output: ???? ??????
 
 FORBIDDEN OUTPUT: fertilizers, paid, supplier (these are English translations)
 REQUIRED OUTPUT: Arabic script only"""
@@ -606,6 +622,7 @@ RULES:
                             ]
                         }
                     ],
+                    temperature=0,
                 )
 
                 transcript = response.choices[0].message.content.strip()
@@ -792,31 +809,37 @@ AVAILABLE ANALYSIS DIMENSIONS:
 
 CURRENCY: {context['currency']}
 
-For each field, provide a confidence score (0.0 to 1.0):
+Provide confidence as an object with:
+- overall (required)
+- date, amount, accounts, dimensions, description (optional)
+
+Confidence scale (0.0 to 1.0):
 - 1.0 = Explicitly stated in transcript
 - 0.7-0.9 = Strongly implied
 - 0.5-0.7 = Inferred with some uncertainty
 - <0.5 = Guessing (avoid this - set to null instead)
+
+If no dimensions apply, set dimensions to an empty object.
 
 If the transcript mentions something not in the available accounts/dimensions, add it to the questions array asking for clarification."""
 
     def _build_user_prompt(self, transcript: str, language: str) -> str:
         """Build the user prompt with the transcript."""
         if language == "ar":
-            return f"""حلل هذا النص الصوتي العربي إلى اقتراحات معاملات محاسبية:
+            return f"""??? ??? ???? ?????? ?????? ??? ???????? ??????? ???????:
 
-النص:
+????:
 {transcript}
 
-مصطلحات عربية شائعة:
-- صرف/دفع = مصروفات (مدين: مصروف، دائن: بنك/صندوق)
-- قبض/استلام = إيرادات (مدين: بنك/صندوق، دائن: إيراد)
-- شراء من مورد = مشتريات (مدين: مشتريات، دائن: موردين)
-- بيع لعميل = مبيعات (مدين: عملاء، دائن: مبيعات)
-- تحويل بنكي = تحويل بين حسابات
+??????? ????? ?????:
+- ???/??? = ??????? (????: ?????? ????: ???/?????)
+- ???/?????? = ??????? (????: ???/?????? ????: ?????)
+- ???? ?? ???? = ??????? (????: ???????? ????: ??????)
+- ??? ????? = ?????? (????: ?????? ????: ??????)
+- ????? ???? = ????? ??? ??????
 
-استخرج جميع المعاملات المذكورة. لكل معاملة، اقترح قيم الحقول مع درجات الثقة.
-أضف أسئلة لأي شيء غير واضح.
+?????? ???? ????????? ????????. ??? ??????? ????? ??? ?????? ?? ????? ?????.
+??? ????? ??? ??? ??? ????.
 
 Parse into the JSON schema with description_ar in Arabic."""
         else:
@@ -850,9 +873,13 @@ Extract all transactions mentioned. For each one, suggest field values with conf
                 except (ValueError, TypeError):
                     pass
 
-            confidence = tx.get('confidence', {})
+            confidence = tx.get('confidence') or {}
             if isinstance(confidence, (int, float)):
                 confidence = {"overall": float(confidence)}
+            elif not isinstance(confidence, dict):
+                confidence = {}
+            if "overall" not in confidence:
+                confidence["overall"] = None
 
             transactions.append(ParsedTransaction(
                 transaction_date=tx_date,
