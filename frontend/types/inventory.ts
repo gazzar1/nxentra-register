@@ -157,6 +157,7 @@ export interface ItemSummary {
 }
 
 export interface InventoryBalanceFilters {
+  [key: string]: string | number | boolean | undefined;
   item_code?: string;
   warehouse_code?: string;
   min_qty?: number;
@@ -165,6 +166,7 @@ export interface InventoryBalanceFilters {
 }
 
 export interface StockLedgerFilters {
+  [key: string]: string | StockLedgerSourceType | undefined;
   item_code?: string;
   warehouse_code?: string;
   source_type?: StockLedgerSourceType;
