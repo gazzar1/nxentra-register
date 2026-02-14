@@ -12,6 +12,10 @@ Endpoints:
 - /reports/subledger-tieout/ - AR/AP subledger tie-out reconciliation
 - /reports/account-balances/ - All account balances
 - /reports/account-balances/<code>/ - Single account balance
+- /reports/customer-balances/ - All customer balances (AR subledger)
+- /reports/customer-balances/<code>/ - Single customer balance
+- /reports/vendor-balances/ - All vendor balances (AP subledger)
+- /reports/vendor-balances/<code>/ - Single vendor balance
 - /reports/projection-status/ - Projection health monitoring
 - /reports/dashboard-charts/ - Dashboard chart data
 
@@ -42,6 +46,11 @@ from .views import (
     FiscalPeriodDatesView,
     DashboardChartsView,
     SubledgerTieOutView,
+    # Customer/Vendor balance views
+    CustomerBalanceListView,
+    CustomerBalanceDetailView,
+    VendorBalanceListView,
+    VendorBalanceDetailView,
     # Admin projection management
     AdminProjectionListView,
     AdminProjectionDetailView,
@@ -86,6 +95,30 @@ urlpatterns = [
         "account-balances/<str:code>/",
         AccountBalanceDetailView.as_view(),
         name="account-balance-detail",
+    ),
+
+    # Customer Balances (AR Subledger)
+    path(
+        "customer-balances/",
+        CustomerBalanceListView.as_view(),
+        name="customer-balance-list",
+    ),
+    path(
+        "customer-balances/<str:code>/",
+        CustomerBalanceDetailView.as_view(),
+        name="customer-balance-detail",
+    ),
+
+    # Vendor Balances (AP Subledger)
+    path(
+        "vendor-balances/",
+        VendorBalanceListView.as_view(),
+        name="vendor-balance-list",
+    ),
+    path(
+        "vendor-balances/<str:code>/",
+        VendorBalanceDetailView.as_view(),
+        name="vendor-balance-detail",
     ),
     
     # Fiscal Periods

@@ -5,6 +5,8 @@ import {
   customersService,
   vendorsService,
   statisticalEntriesService,
+  type CustomerBalance,
+  type VendorBalance,
 } from '@/services/accounts.service';
 import type {
   Account,
@@ -43,6 +45,7 @@ export const customerKeys = {
   list: (filters: Record<string, unknown>) => [...customerKeys.lists(), filters] as const,
   details: () => [...customerKeys.all, 'detail'] as const,
   detail: (code: string) => [...customerKeys.details(), code] as const,
+  balance: (code: string) => [...customerKeys.all, 'balance', code] as const,
 };
 
 export const vendorKeys = {
@@ -51,6 +54,7 @@ export const vendorKeys = {
   list: (filters: Record<string, unknown>) => [...vendorKeys.lists(), filters] as const,
   details: () => [...vendorKeys.all, 'detail'] as const,
   detail: (code: string) => [...vendorKeys.details(), code] as const,
+  balance: (code: string) => [...vendorKeys.all, 'balance', code] as const,
 };
 
 export const statisticalEntryKeys = {
@@ -241,6 +245,17 @@ export function useDeleteCustomer() {
   });
 }
 
+export function useCustomerBalance(code: string) {
+  return useQuery({
+    queryKey: customerKeys.balance(code),
+    queryFn: async () => {
+      const { data } = await customersService.getBalance(code);
+      return data;
+    },
+    enabled: !!code,
+  });
+}
+
 // =============================================================================
 // Vendor Queries (AP Subledger)
 // =============================================================================
@@ -298,6 +313,17 @@ export function useDeleteVendor() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: vendorKeys.lists() });
     },
+  });
+}
+
+export function useVendorBalance(code: string) {
+  return useQuery({
+    queryKey: vendorKeys.balance(code),
+    queryFn: async () => {
+      const { data } = await vendorsService.getBalance(code);
+      return data;
+    },
+    enabled: !!code,
   });
 }
 

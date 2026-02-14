@@ -3,14 +3,14 @@ import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import { useRouter } from "next/router";
 import Link from "next/link";
-import { ArrowLeft, Pencil, Trash2, Mail, Phone, MapPin, Building2, CreditCard, Calendar } from "lucide-react";
+import { ArrowLeft, Pencil, Trash2, Mail, Phone, MapPin, Building2, CreditCard, Calendar, DollarSign, TrendingUp, TrendingDown } from "lucide-react";
 import { useState } from "react";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader, LoadingSpinner } from "@/components/common";
-import { useCustomer, useDeleteCustomer } from "@/queries/useAccounts";
+import { useCustomer, useDeleteCustomer, useCustomerBalance } from "@/queries/useAccounts";
 import { useToast } from "@/components/ui/toaster";
 import {
   AlertDialog,
@@ -29,6 +29,7 @@ export default function CustomerDetailPage() {
   const { toast } = useToast();
   const code = router.query.code as string;
   const { data: customer, isLoading } = useCustomer(code);
+  const { data: balance, isLoading: balanceLoading } = useCustomerBalance(code);
   const deleteCustomer = useDeleteCustomer();
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 
@@ -225,6 +226,74 @@ export default function CustomerDetailPage() {
                   </div>
                 )}
               </div>
+            </CardContent>
+          </Card>
+
+          {/* Balance Summary */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <DollarSign className="h-5 w-5" />
+                Balance Summary
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {balanceLoading ? (
+                <p className="text-muted-foreground">Loading balance...</p>
+              ) : balance ? (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between p-4 bg-muted rounded-lg">
+                    <span className="text-muted-foreground">Current Balance</span>
+                    <span className={`text-2xl font-bold font-mono ltr-number ${parseFloat(balance.balance) > 0 ? 'text-green-600' : parseFloat(balance.balance) < 0 ? 'text-red-600' : ''}`}>
+                      {parseFloat(balance.balance).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="flex items-center gap-2">
+                      <TrendingUp className="h-4 w-4 text-green-500" />
+                      <div>
+                        <p className="text-sm text-muted-foreground">Total Debits</p>
+                        <p className="font-mono ltr-number">
+                          {parseFloat(balance.debit_total).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <TrendingDown className="h-4 w-4 text-red-500" />
+                      <div>
+                        <p className="text-sm text-muted-foreground">Total Credits</p>
+                        <p className="font-mono ltr-number">
+                          {parseFloat(balance.credit_total).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </p>
+                      </div>
+                    </div>
+                    <div>
+                      <p className="text-sm text-muted-foreground">Transaction Count</p>
+                      <p>{balance.transaction_count}</p>
+                    </div>
+                    {balance.last_invoice_date && (
+                      <div>
+                        <p className="text-sm text-muted-foreground">Last Invoice</p>
+                        <p>{new Date(balance.last_invoice_date).toLocaleDateString()}</p>
+                      </div>
+                    )}
+                    {balance.last_payment_date && (
+                      <div>
+                        <p className="text-sm text-muted-foreground">Last Payment</p>
+                        <p>{new Date(balance.last_payment_date).toLocaleDateString()}</p>
+                      </div>
+                    )}
+                    {balance.oldest_open_date && (
+                      <div>
+                        <p className="text-sm text-muted-foreground">Oldest Open Item</p>
+                        <p>{new Date(balance.oldest_open_date).toLocaleDateString()}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <p className="text-muted-foreground">No balance data available</p>
+              )}
             </CardContent>
           </Card>
 

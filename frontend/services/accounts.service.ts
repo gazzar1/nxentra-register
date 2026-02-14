@@ -88,6 +88,21 @@ export const dimensionsService = {
 // Customer Service (AR Subledger)
 // =============================================================================
 
+export interface CustomerBalance {
+  customer_code: string;
+  customer_name: string;
+  customer_name_ar: string | null;
+  balance: string;
+  debit_total: string;
+  credit_total: string;
+  transaction_count: number;
+  last_invoice_date: string | null;
+  last_payment_date: string | null;
+  oldest_open_date: string | null;
+  updated_at: string | null;
+  note?: string;
+}
+
 export const customersService = {
   list: (params?: { status?: string }) =>
     apiClient.get<Customer[]>('/accounting/customers/', { params }),
@@ -103,11 +118,30 @@ export const customersService = {
 
   delete: (code: string) =>
     apiClient.delete(`/accounting/customers/${code}/`),
+
+  // Balance (from projections)
+  getBalance: (code: string) =>
+    apiClient.get<CustomerBalance>(`/reports/customer-balances/${code}/`),
 };
 
 // =============================================================================
 // Vendor Service (AP Subledger)
 // =============================================================================
+
+export interface VendorBalance {
+  vendor_code: string;
+  vendor_name: string;
+  vendor_name_ar: string | null;
+  balance: string;
+  debit_total: string;
+  credit_total: string;
+  transaction_count: number;
+  last_bill_date: string | null;
+  last_payment_date: string | null;
+  oldest_open_date: string | null;
+  updated_at: string | null;
+  note?: string;
+}
 
 export const vendorsService = {
   list: (params?: { status?: string }) =>
@@ -124,6 +158,10 @@ export const vendorsService = {
 
   delete: (code: string) =>
     apiClient.delete(`/accounting/vendors/${code}/`),
+
+  // Balance (from projections)
+  getBalance: (code: string) =>
+    apiClient.get<VendorBalance>(`/reports/vendor-balances/${code}/`),
 };
 
 // =============================================================================

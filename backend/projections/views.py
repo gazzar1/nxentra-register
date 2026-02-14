@@ -2300,3 +2300,244 @@ class SubledgerTieOutView(APIView):
             "overall_balanced": overall_balanced,
             "report_date": date_type.today().isoformat(),
         })
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CUSTOMER/VENDOR BALANCE ENDPOINTS (Subledger)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class CustomerBalanceListView(APIView):
+    """
+    GET /api/reports/customer-balances/
+
+    List all customer balances (AR subledger).
+    Returns projected balances from CustomerBalance model.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from projections.models import CustomerBalance
+
+        actor = resolve_actor(request)
+        require(actor, "reports.view")
+
+        balances = CustomerBalance.objects.filter(
+            company=actor.company,
+        ).select_related("customer").order_by("customer__code")
+
+        # Optional filtering
+        has_balance = request.query_params.get("has_balance")
+        if has_balance == "true":
+            balances = balances.exclude(balance=Decimal("0.00"))
+
+        data = [
+            {
+                "customer_code": bal.customer.code,
+                "customer_name": bal.customer.name,
+                "customer_name_ar": bal.customer.name_ar,
+                "balance": str(bal.balance),
+                "debit_total": str(bal.debit_total),
+                "credit_total": str(bal.credit_total),
+                "transaction_count": bal.transaction_count,
+                "last_invoice_date": bal.last_invoice_date.isoformat() if bal.last_invoice_date else None,
+                "last_payment_date": bal.last_payment_date.isoformat() if bal.last_payment_date else None,
+                "oldest_open_date": bal.oldest_open_date.isoformat() if bal.oldest_open_date else None,
+            }
+            for bal in balances
+        ]
+
+        # Calculate totals
+        total_balance = sum(bal.balance for bal in balances)
+        total_debit = sum(bal.debit_total for bal in balances)
+        total_credit = sum(bal.credit_total for bal in balances)
+
+        return Response({
+            "balances": data,
+            "count": len(data),
+            "totals": {
+                "balance": str(total_balance),
+                "debit_total": str(total_debit),
+                "credit_total": str(total_credit),
+            },
+        })
+
+
+class CustomerBalanceDetailView(APIView):
+    """
+    GET /api/reports/customer-balances/<code>/
+
+    Get balance details for a specific customer.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, code):
+        from projections.models import CustomerBalance
+        from accounting.models import Customer
+
+        actor = resolve_actor(request)
+        require(actor, "reports.view")
+
+        try:
+            customer = Customer.objects.get(
+                company=actor.company,
+                code=code,
+            )
+        except Customer.DoesNotExist:
+            return Response(
+                {"detail": "Customer not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            balance = CustomerBalance.objects.get(
+                company=actor.company,
+                customer=customer,
+            )
+            return Response({
+                "customer_code": customer.code,
+                "customer_name": customer.name,
+                "customer_name_ar": customer.name_ar,
+                "balance": str(balance.balance),
+                "debit_total": str(balance.debit_total),
+                "credit_total": str(balance.credit_total),
+                "transaction_count": balance.transaction_count,
+                "last_invoice_date": balance.last_invoice_date.isoformat() if balance.last_invoice_date else None,
+                "last_payment_date": balance.last_payment_date.isoformat() if balance.last_payment_date else None,
+                "oldest_open_date": balance.oldest_open_date.isoformat() if balance.oldest_open_date else None,
+                "updated_at": balance.updated_at.isoformat(),
+            })
+        except CustomerBalance.DoesNotExist:
+            # Customer exists but no balance yet
+            return Response({
+                "customer_code": customer.code,
+                "customer_name": customer.name,
+                "customer_name_ar": customer.name_ar,
+                "balance": "0.00",
+                "debit_total": "0.00",
+                "credit_total": "0.00",
+                "transaction_count": 0,
+                "last_invoice_date": None,
+                "last_payment_date": None,
+                "oldest_open_date": None,
+                "updated_at": None,
+                "note": "No posted entries yet",
+            })
+
+
+class VendorBalanceListView(APIView):
+    """
+    GET /api/reports/vendor-balances/
+
+    List all vendor balances (AP subledger).
+    Returns projected balances from VendorBalance model.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from projections.models import VendorBalance
+
+        actor = resolve_actor(request)
+        require(actor, "reports.view")
+
+        balances = VendorBalance.objects.filter(
+            company=actor.company,
+        ).select_related("vendor").order_by("vendor__code")
+
+        # Optional filtering
+        has_balance = request.query_params.get("has_balance")
+        if has_balance == "true":
+            balances = balances.exclude(balance=Decimal("0.00"))
+
+        data = [
+            {
+                "vendor_code": bal.vendor.code,
+                "vendor_name": bal.vendor.name,
+                "vendor_name_ar": bal.vendor.name_ar,
+                "balance": str(bal.balance),
+                "debit_total": str(bal.debit_total),
+                "credit_total": str(bal.credit_total),
+                "transaction_count": bal.transaction_count,
+                "last_bill_date": bal.last_bill_date.isoformat() if bal.last_bill_date else None,
+                "last_payment_date": bal.last_payment_date.isoformat() if bal.last_payment_date else None,
+                "oldest_open_date": bal.oldest_open_date.isoformat() if bal.oldest_open_date else None,
+            }
+            for bal in balances
+        ]
+
+        # Calculate totals
+        total_balance = sum(bal.balance for bal in balances)
+        total_debit = sum(bal.debit_total for bal in balances)
+        total_credit = sum(bal.credit_total for bal in balances)
+
+        return Response({
+            "balances": data,
+            "count": len(data),
+            "totals": {
+                "balance": str(total_balance),
+                "debit_total": str(total_debit),
+                "credit_total": str(total_credit),
+            },
+        })
+
+
+class VendorBalanceDetailView(APIView):
+    """
+    GET /api/reports/vendor-balances/<code>/
+
+    Get balance details for a specific vendor.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, code):
+        from projections.models import VendorBalance
+        from accounting.models import Vendor
+
+        actor = resolve_actor(request)
+        require(actor, "reports.view")
+
+        try:
+            vendor = Vendor.objects.get(
+                company=actor.company,
+                code=code,
+            )
+        except Vendor.DoesNotExist:
+            return Response(
+                {"detail": "Vendor not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            balance = VendorBalance.objects.get(
+                company=actor.company,
+                vendor=vendor,
+            )
+            return Response({
+                "vendor_code": vendor.code,
+                "vendor_name": vendor.name,
+                "vendor_name_ar": vendor.name_ar,
+                "balance": str(balance.balance),
+                "debit_total": str(balance.debit_total),
+                "credit_total": str(balance.credit_total),
+                "transaction_count": balance.transaction_count,
+                "last_bill_date": balance.last_bill_date.isoformat() if balance.last_bill_date else None,
+                "last_payment_date": balance.last_payment_date.isoformat() if balance.last_payment_date else None,
+                "oldest_open_date": balance.oldest_open_date.isoformat() if balance.oldest_open_date else None,
+                "updated_at": balance.updated_at.isoformat(),
+            })
+        except VendorBalance.DoesNotExist:
+            # Vendor exists but no balance yet
+            return Response({
+                "vendor_code": vendor.code,
+                "vendor_name": vendor.name,
+                "vendor_name_ar": vendor.name_ar,
+                "balance": "0.00",
+                "debit_total": "0.00",
+                "credit_total": "0.00",
+                "transaction_count": 0,
+                "last_bill_date": None,
+                "last_payment_date": None,
+                "oldest_open_date": None,
+                "updated_at": None,
+                "note": "No posted entries yet",
+            })
