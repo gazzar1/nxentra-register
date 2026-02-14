@@ -560,10 +560,24 @@ class VoiceParserService:
 
         audio_base64 = base64.b64encode(file_content).decode('utf-8')
 
-        # Build language instruction
-        lang_name = "Arabic" if language == "ar" else "English"
-        system_prompt = f"""You are a transcription assistant. Transcribe the audio exactly as spoken.
-The audio is in {lang_name}. Output ONLY the transcribed text, nothing else.
+        # Build language instruction based on selected language
+        if language == "ar":
+            system_prompt = """أنت مساعد نسخ صوتي. انسخ الصوت بالضبط كما يُنطق.
+
+مهم جداً:
+- يجب أن يكون الناتج بالحروف العربية فقط (ا ب ت ث ج ح خ...)
+- لا تستخدم الحروف اللاتينية أبداً
+- لا تترجم - احتفظ باللغة العربية
+- إذا ذُكرت أرقام، اكتبها كأرقام (1، 2، 3...)
+- مصطلحات محاسبية شائعة: صرف، قبض، دفع، استلام، مورد، عميل، بنك، صندوق، فاتورة
+
+مثال صحيح: "صرفت خمسة آلاف ريال للمورد أحمد من البنك الأهلي"
+مثال خاطئ: "saraft 5000 riyal lil mowarid ahmed"
+
+Output ONLY the Arabic transcription, nothing else."""
+        else:
+            system_prompt = """You are a transcription assistant. Transcribe the audio exactly as spoken.
+The audio is in English. Output ONLY the transcribed text, nothing else.
 Do not translate - keep the original language.
 If the audio contains numbers, transcribe them as digits."""
 
@@ -788,8 +802,25 @@ If the transcript mentions something not in the available accounts/dimensions, a
 
     def _build_user_prompt(self, transcript: str, language: str) -> str:
         """Build the user prompt with the transcript."""
-        lang_name = "Arabic" if language == "ar" else "English"
-        return f"""Parse this {lang_name} voice transcript into transaction suggestion(s):
+        if language == "ar":
+            return f"""حلل هذا النص الصوتي العربي إلى اقتراحات معاملات محاسبية:
+
+النص:
+{transcript}
+
+مصطلحات عربية شائعة:
+- صرف/دفع = مصروفات (مدين: مصروف، دائن: بنك/صندوق)
+- قبض/استلام = إيرادات (مدين: بنك/صندوق، دائن: إيراد)
+- شراء من مورد = مشتريات (مدين: مشتريات، دائن: موردين)
+- بيع لعميل = مبيعات (مدين: عملاء، دائن: مبيعات)
+- تحويل بنكي = تحويل بين حسابات
+
+استخرج جميع المعاملات المذكورة. لكل معاملة، اقترح قيم الحقول مع درجات الثقة.
+أضف أسئلة لأي شيء غير واضح.
+
+Parse into the JSON schema with description_ar in Arabic."""
+        else:
+            return f"""Parse this English voice transcript into transaction suggestion(s):
 
 TRANSCRIPT:
 {transcript}
