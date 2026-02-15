@@ -1568,6 +1568,108 @@ class ScratchpadBatchCommittedData(BaseEventData):
     committed_by_email: str
 
 
+# =============================================================================
+# Statistical Entry Events
+# =============================================================================
+
+@dataclass
+class StatisticalEntryCreatedData(BaseEventData):
+    """
+    Data for statistical.entry_created event.
+
+    Emitted when a draft statistical entry is created.
+    Statistical entries track non-monetary quantities (headcount, units, etc).
+    """
+    entry_public_id: str
+    company_public_id: str
+    entry_date: str  # ISO date
+    account_public_id: str
+    account_code: str
+    quantity: str  # Decimal as string
+    direction: str  # INCREASE or DECREASE
+    unit: str  # Unit of measure
+    memo: str = ""
+    memo_ar: str = ""
+    source_module: str = ""
+    source_document: str = ""
+    related_journal_entry_public_id: Optional[str] = None
+    created_by_id: Optional[int] = None
+    created_by_email: str = ""
+
+
+@dataclass
+class StatisticalEntryUpdatedData(BaseEventData):
+    """
+    Data for statistical.entry_updated event.
+
+    Emitted when a draft statistical entry is modified.
+    """
+    entry_public_id: str
+    company_public_id: str
+    changes: Dict[str, Dict[str, Any]]  # {"field": {"old": x, "new": y}}
+
+
+@dataclass
+class StatisticalEntryPostedData(BaseEventData):
+    """
+    Data for statistical.entry_posted event.
+
+    Emitted when a statistical entry is finalized (posted).
+    Once posted, it cannot be modified, only reversed.
+    """
+    entry_public_id: str
+    company_public_id: str
+    entry_date: str
+    account_public_id: str
+    account_code: str
+    quantity: str
+    direction: str
+    unit: str
+    posted_at: str
+    posted_by_id: int
+    posted_by_email: str
+    memo: str = ""
+    memo_ar: str = ""
+    source_module: str = ""
+    source_document: str = ""
+    related_journal_entry_public_id: Optional[str] = None
+
+
+@dataclass
+class StatisticalEntryReversedData(BaseEventData):
+    """
+    Data for statistical.entry_reversed event.
+
+    Emitted when a posted statistical entry is reversed.
+    Creates a new entry with opposite direction.
+    """
+    original_entry_public_id: str
+    reversal_entry_public_id: str
+    company_public_id: str
+    reversed_at: str
+    reversed_by_id: int
+    reversed_by_email: str
+    reversal_date: str  # Date of the reversal entry
+
+
+@dataclass
+class StatisticalEntryDeletedData(BaseEventData):
+    """
+    Data for statistical.entry_deleted event.
+
+    Emitted when a draft statistical entry is deleted.
+    Posted entries cannot be deleted, only reversed.
+    """
+    entry_public_id: str
+    company_public_id: str
+    entry_date: str
+    account_code: str
+    quantity: str
+    direction: str
+    deleted_by_id: int
+    deleted_by_email: str
+
+
 
 
 
@@ -1725,6 +1827,13 @@ class EventTypes:
     # Scratchpad events
     SCRATCHPAD_BATCH_COMMITTED = "scratchpad.batch_committed"
 
+    # Statistical entry events
+    STATISTICAL_ENTRY_CREATED = "statistical.entry_created"
+    STATISTICAL_ENTRY_UPDATED = "statistical.entry_updated"
+    STATISTICAL_ENTRY_POSTED = "statistical.entry_posted"
+    STATISTICAL_ENTRY_REVERSED = "statistical.entry_reversed"
+    STATISTICAL_ENTRY_DELETED = "statistical.entry_deleted"
+
 
 
 # =============================================================================
@@ -1810,6 +1919,13 @@ EVENT_DATA_CLASSES = {
 
     # Scratchpad events
     EventTypes.SCRATCHPAD_BATCH_COMMITTED: ScratchpadBatchCommittedData,
+
+    # Statistical entry events
+    EventTypes.STATISTICAL_ENTRY_CREATED: StatisticalEntryCreatedData,
+    EventTypes.STATISTICAL_ENTRY_UPDATED: StatisticalEntryUpdatedData,
+    EventTypes.STATISTICAL_ENTRY_POSTED: StatisticalEntryPostedData,
+    EventTypes.STATISTICAL_ENTRY_REVERSED: StatisticalEntryReversedData,
+    EventTypes.STATISTICAL_ENTRY_DELETED: StatisticalEntryDeletedData,
 
     # Sales module events
     EventTypes.SALES_ITEM_CREATED: ItemCreatedData,

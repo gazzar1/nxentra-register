@@ -1297,35 +1297,40 @@ class StatisticalEntryListCreateView(APIView):
 
     def post(self, request):
         actor = resolve_actor(request)
-        require(actor, "journal.create")
 
         input_serializer = StatisticalEntryCreateSerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
 
-        from projections.write_barrier import projection_writes_allowed
-        with projection_writes_allowed():
-            data = input_serializer.validated_data
+        from accounting.commands import create_statistical_entry
 
-            # Get the account
-            account = get_object_or_404(
-                Account, company=actor.company, pk=data.pop("account_id")
+        data = input_serializer.validated_data
+
+        # Call the command
+        result = create_statistical_entry(
+            actor=actor,
+            account_id=data["account_id"],
+            entry_date=str(data["date"]),
+            quantity=str(data["quantity"]),
+            direction=data["direction"],
+            unit=data["unit"],
+            memo=data.get("memo", ""),
+            memo_ar=data.get("memo_ar", ""),
+            source_module=data.get("source_module", ""),
+            source_document=data.get("source_document", ""),
+            related_journal_entry_id=data.get("related_journal_entry_id"),
+        )
+
+        if not result.success:
+            return Response(
+                {"detail": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-            # Optional related journal entry
-            related_je = None
-            if data.get("related_journal_entry_id"):
-                related_je = get_object_or_404(
-                    JournalEntry, company=actor.company, pk=data.pop("related_journal_entry_id")
-                )
-
-            entry = StatisticalEntry(
-                company=actor.company,
-                account=account,
-                related_journal_entry=related_je,
-                created_by=actor.user,
-                **data,
-            )
-            entry.save(_projection_write=True)
+        # Fetch the created entry
+        entry = StatisticalEntry.objects.get(
+            company=actor.company,
+            public_id=result.data["entry_public_id"],
+        )
 
         output_serializer = StatisticalEntrySerializer(entry)
         return Response(output_serializer.data, status=status.HTTP_201_CREATED)
@@ -1352,43 +1357,69 @@ class StatisticalEntryDetailView(APIView):
 
     def patch(self, request, pk):
         actor = resolve_actor(request)
-        require(actor, "journal.update")
 
         entry = self.get_object(actor, pk)
-
-        if entry.status != StatisticalEntry.Status.DRAFT:
-            return Response(
-                {"detail": "Only DRAFT statistical entries can be updated."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
 
         input_serializer = StatisticalEntryUpdateSerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
 
-        from projections.write_barrier import projection_writes_allowed
-        with projection_writes_allowed():
-            for key, value in input_serializer.validated_data.items():
-                setattr(entry, key, value)
-            entry.save(_projection_write=True)
+        from accounting.commands import update_statistical_entry
 
+        data = input_serializer.validated_data
+
+        # Build kwargs for update command
+        kwargs = {}
+        if "date" in data:
+            kwargs["entry_date"] = str(data["date"])
+        if "quantity" in data:
+            kwargs["quantity"] = str(data["quantity"])
+        if "direction" in data:
+            kwargs["direction"] = data["direction"]
+        if "unit" in data:
+            kwargs["unit"] = data["unit"]
+        if "memo" in data:
+            kwargs["memo"] = data["memo"]
+        if "memo_ar" in data:
+            kwargs["memo_ar"] = data["memo_ar"]
+        if "source_module" in data:
+            kwargs["source_module"] = data["source_module"]
+        if "source_document" in data:
+            kwargs["source_document"] = data["source_document"]
+
+        result = update_statistical_entry(
+            actor=actor,
+            entry_public_id=str(entry.public_id),
+            **kwargs,
+        )
+
+        if not result.success:
+            return Response(
+                {"detail": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Refresh the entry
+        entry.refresh_from_db()
         output_serializer = StatisticalEntrySerializer(entry)
         return Response(output_serializer.data)
 
     def delete(self, request, pk):
         actor = resolve_actor(request)
-        require(actor, "journal.delete")
 
         entry = self.get_object(actor, pk)
 
-        if entry.status != StatisticalEntry.Status.DRAFT:
+        from accounting.commands import delete_statistical_entry
+
+        result = delete_statistical_entry(
+            actor=actor,
+            entry_public_id=str(entry.public_id),
+        )
+
+        if not result.success:
             return Response(
-                {"detail": "Only DRAFT statistical entries can be deleted."},
+                {"detail": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-
-        from projections.write_barrier import projection_writes_allowed
-        with projection_writes_allowed():
-            entry.delete()
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -1401,27 +1432,28 @@ class StatisticalEntryPostView(APIView):
 
     def post(self, request, pk):
         actor = resolve_actor(request)
-        require(actor, "journal.post")
 
         entry = get_object_or_404(StatisticalEntry, company=actor.company, pk=pk)
 
-        if entry.status != StatisticalEntry.Status.DRAFT:
+        from accounting.commands import post_statistical_entry
+
+        result = post_statistical_entry(
+            actor=actor,
+            entry_public_id=str(entry.public_id),
+        )
+
+        if not result.success:
             return Response(
-                {"detail": "Only DRAFT entries can be posted."},
+                {"detail": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        from django.utils import timezone
-        from projections.write_barrier import projection_writes_allowed
-
-        with projection_writes_allowed():
-            entry.status = StatisticalEntry.Status.POSTED
-            entry.posted_at = timezone.now()
-            entry.posted_by = actor.user
-            entry.save(_projection_write=True)
+        # Refresh the entry
+        entry.refresh_from_db()
 
         return Response({
             "id": entry.id,
+            "public_id": str(entry.public_id),
             "status": entry.status,
             "posted_at": entry.posted_at,
         })

@@ -10,6 +10,8 @@ Endpoints:
 - /reports/balance-sheet/ - Balance sheet
 - /reports/income-statement/ - Income statement (P&L)
 - /reports/subledger-tieout/ - AR/AP subledger tie-out reconciliation
+- /reports/ar-aging/ - Accounts Receivable aging report
+- /reports/ap-aging/ - Accounts Payable aging report
 - /reports/account-balances/ - All account balances
 - /reports/account-balances/<code>/ - Single account balance
 - /reports/customer-balances/ - All customer balances (AR subledger)
@@ -51,6 +53,9 @@ from .views import (
     CustomerBalanceDetailView,
     VendorBalanceListView,
     VendorBalanceDetailView,
+    # Aging reports
+    ARAgingReportView,
+    APAgingReportView,
     # Account inquiry
     AccountInquiryView,
     # Admin projection management
@@ -85,6 +90,18 @@ urlpatterns = [
         "subledger-tieout/",
         SubledgerTieOutView.as_view(),
         name="subledger-tieout",
+    ),
+
+    # Aging Reports
+    path(
+        "ar-aging/",
+        ARAgingReportView.as_view(),
+        name="ar-aging",
+    ),
+    path(
+        "ap-aging/",
+        APAgingReportView.as_view(),
+        name="ap-aging",
     ),
 
     # Account Balances

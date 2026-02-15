@@ -35,6 +35,7 @@ from accounting.models import (
     CompanySequence,
     Customer,
     Vendor,
+    StatisticalEntry,
 )
 from accounting.aggregates import load_journal_entry_aggregate, load_account_aggregate
 from accounting.policies import (
@@ -49,6 +50,7 @@ from accounting.policies import (
     can_post_to_period,
     validate_line_counterparty,
     validate_counterparty_exists,
+    validate_subledger_tieout,
 )
 from events.emitter import emit_event
 from projections.write_barrier import command_writes_allowed
@@ -81,6 +83,11 @@ from events.types import (
     JournalLineAnalysisSetData,
     CustomerReceiptRecordedData,
     VendorPaymentRecordedData,
+    StatisticalEntryCreatedData,
+    StatisticalEntryUpdatedData,
+    StatisticalEntryPostedData,
+    StatisticalEntryReversedData,
+    StatisticalEntryDeletedData,
 )
 
 
@@ -1058,6 +1065,23 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
     )
 
     _process_projections(actor.company)
+
+    # Validate subledger tie-out after posting
+    # This is a warning-level check (projection lag may cause temporary mismatches)
+    # Only check tie-out if the entry affects AR or AP control accounts
+    has_subledger_impact = any(
+        line.get("customer_public_id") or line.get("vendor_public_id")
+        for line in line_data
+    )
+    if has_subledger_impact:
+        import logging
+        logger = logging.getLogger(__name__)
+        is_valid, tieout_errors = validate_subledger_tieout(actor.company)
+        if not is_valid:
+            # Log warning but don't fail - this catches projection lag
+            for error in tieout_errors:
+                logger.warning(f"Subledger tie-out warning after posting {entry.public_id}: {error}")
+
     posted_entry = JournalEntry.objects.get(company=actor.company, public_id=entry.public_id)
     return CommandResult.ok(posted_entry, event=event)
 
@@ -2630,3 +2654,452 @@ def record_vendor_payment(
         "amount": str(payment_amount),
         "vendor_code": vendor.code,
     }, event=payment_event)
+
+
+# =============================================================================
+# Statistical Entry Commands
+# =============================================================================
+
+
+def create_statistical_entry(
+    actor: ActorContext,
+    account_id: int,
+    entry_date: str,
+    quantity: str,
+    direction: str,
+    unit: str,
+    memo: str = "",
+    memo_ar: str = "",
+    source_module: str = "",
+    source_document: str = "",
+    related_journal_entry_id: int = None,
+) -> CommandResult:
+    """
+    Create a draft statistical entry.
+
+    Statistical entries track non-monetary quantities (headcount, inventory units,
+    production hours, etc.) separately from financial accounting.
+
+    Args:
+        actor: The actor context
+        account_id: ID of the statistical/off-balance account
+        entry_date: Date of the entry (ISO format)
+        quantity: Positive quantity value
+        direction: INCREASE or DECREASE
+        unit: Unit of measure (e.g., 'units', 'kg', 'hours')
+        memo: Optional description
+        memo_ar: Optional Arabic description
+        source_module: Module that created this entry
+        source_document: Reference to source document
+        related_journal_entry_id: Optional related financial journal entry
+
+    Returns:
+        CommandResult with the entry public_id or error
+    """
+    require(actor, "journal.create")
+
+    # Validate account
+    try:
+        account = Account.objects.get(pk=account_id, company=actor.company)
+    except Account.DoesNotExist:
+        return CommandResult.fail("Account not found.")
+
+    # Verify it's a statistical or off-balance account
+    if account.ledger_domain not in ("STATISTICAL", "OFF_BALANCE"):
+        return CommandResult.fail(
+            f"Account '{account.code}' is not a statistical or off-balance account. "
+            f"Ledger domain is '{account.ledger_domain}'."
+        )
+
+    # Parse and validate quantity
+    try:
+        qty = Decimal(quantity)
+    except (ValueError, TypeError):
+        return CommandResult.fail("Invalid quantity format.")
+
+    if qty <= 0:
+        return CommandResult.fail("Quantity must be positive.")
+
+    # Validate direction
+    if direction not in (StatisticalEntry.Direction.INCREASE, StatisticalEntry.Direction.DECREASE):
+        return CommandResult.fail(
+            f"Direction must be '{StatisticalEntry.Direction.INCREASE}' or "
+            f"'{StatisticalEntry.Direction.DECREASE}'."
+        )
+
+    # Parse date
+    from datetime import date as date_cls
+    try:
+        parsed_date = date_cls.fromisoformat(entry_date)
+    except (ValueError, TypeError):
+        return CommandResult.fail("Invalid date format. Use ISO format (YYYY-MM-DD).")
+
+    # Validate related journal entry if provided
+    related_je = None
+    if related_journal_entry_id:
+        try:
+            related_je = JournalEntry.objects.get(
+                pk=related_journal_entry_id, company=actor.company
+            )
+        except JournalEntry.DoesNotExist:
+            return CommandResult.fail("Related journal entry not found.")
+
+    # Generate public ID
+    entry_public_id = uuid.uuid4()
+
+    # Emit the created event
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.STATISTICAL_ENTRY_CREATED,
+        aggregate_type="StatisticalEntry",
+        aggregate_id=str(entry_public_id),
+        idempotency_key=f"stat_entry_create:{entry_public_id}",
+        data=StatisticalEntryCreatedData(
+            entry_public_id=str(entry_public_id),
+            company_public_id=str(actor.company.public_id),
+            entry_date=entry_date,
+            account_public_id=str(account.public_id),
+            account_code=account.code,
+            quantity=str(qty),
+            direction=direction,
+            unit=unit,
+            memo=memo,
+            memo_ar=memo_ar,
+            source_module=source_module,
+            source_document=source_document,
+            related_journal_entry_public_id=str(related_je.public_id) if related_je else None,
+            created_by_id=actor.user.id,
+            created_by_email=actor.user.email,
+        ).to_dict(),
+    )
+
+    _process_projections(actor.company)
+
+    return CommandResult.ok({
+        "entry_public_id": str(entry_public_id),
+    }, event=event)
+
+
+def update_statistical_entry(
+    actor: ActorContext,
+    entry_public_id: str,
+    entry_date: str = None,
+    quantity: str = None,
+    direction: str = None,
+    unit: str = None,
+    memo: str = None,
+    memo_ar: str = None,
+    source_module: str = None,
+    source_document: str = None,
+) -> CommandResult:
+    """
+    Update a draft statistical entry.
+
+    Only draft entries can be updated. Posted entries must be reversed.
+
+    Args:
+        actor: The actor context
+        entry_public_id: The entry's public ID
+        entry_date: New date (optional)
+        quantity: New quantity (optional)
+        direction: New direction (optional)
+        unit: New unit (optional)
+        memo: New memo (optional)
+        memo_ar: New Arabic memo (optional)
+        source_module: New source module (optional)
+        source_document: New source document (optional)
+
+    Returns:
+        CommandResult with success or error
+    """
+    require(actor, "journal.edit")
+
+    # Find the entry
+    try:
+        entry = StatisticalEntry.objects.get(
+            public_id=entry_public_id, company=actor.company
+        )
+    except StatisticalEntry.DoesNotExist:
+        return CommandResult.fail("Statistical entry not found.")
+
+    # Check status
+    if entry.status != StatisticalEntry.Status.DRAFT:
+        return CommandResult.fail(
+            f"Cannot update entry with status '{entry.status}'. Only DRAFT entries can be updated."
+        )
+
+    # Build changes dict
+    changes = {}
+
+    if entry_date is not None:
+        from datetime import date as date_cls
+        try:
+            parsed_date = date_cls.fromisoformat(entry_date)
+        except (ValueError, TypeError):
+            return CommandResult.fail("Invalid date format. Use ISO format (YYYY-MM-DD).")
+        if str(entry.date) != entry_date:
+            changes["date"] = {"old": str(entry.date), "new": entry_date}
+
+    if quantity is not None:
+        try:
+            qty = Decimal(quantity)
+        except (ValueError, TypeError):
+            return CommandResult.fail("Invalid quantity format.")
+        if qty <= 0:
+            return CommandResult.fail("Quantity must be positive.")
+        if entry.quantity != qty:
+            changes["quantity"] = {"old": str(entry.quantity), "new": str(qty)}
+
+    if direction is not None:
+        if direction not in (StatisticalEntry.Direction.INCREASE, StatisticalEntry.Direction.DECREASE):
+            return CommandResult.fail(
+                f"Direction must be '{StatisticalEntry.Direction.INCREASE}' or "
+                f"'{StatisticalEntry.Direction.DECREASE}'."
+            )
+        if entry.direction != direction:
+            changes["direction"] = {"old": entry.direction, "new": direction}
+
+    if unit is not None and entry.unit != unit:
+        changes["unit"] = {"old": entry.unit, "new": unit}
+
+    if memo is not None and entry.memo != memo:
+        changes["memo"] = {"old": entry.memo, "new": memo}
+
+    if memo_ar is not None and entry.memo_ar != memo_ar:
+        changes["memo_ar"] = {"old": entry.memo_ar, "new": memo_ar}
+
+    if source_module is not None and entry.source_module != source_module:
+        changes["source_module"] = {"old": entry.source_module, "new": source_module}
+
+    if source_document is not None and entry.source_document != source_document:
+        changes["source_document"] = {"old": entry.source_document, "new": source_document}
+
+    if not changes:
+        return CommandResult.ok({"message": "No changes to apply."})
+
+    # Emit update event
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.STATISTICAL_ENTRY_UPDATED,
+        aggregate_type="StatisticalEntry",
+        aggregate_id=str(entry.public_id),
+        idempotency_key=f"stat_entry_update:{entry.public_id}:{_changes_hash(changes)}",
+        data=StatisticalEntryUpdatedData(
+            entry_public_id=str(entry.public_id),
+            company_public_id=str(actor.company.public_id),
+            changes=changes,
+        ).to_dict(),
+    )
+
+    _process_projections(actor.company)
+
+    return CommandResult.ok({
+        "entry_public_id": str(entry.public_id),
+        "changes": changes,
+    }, event=event)
+
+
+def post_statistical_entry(
+    actor: ActorContext,
+    entry_public_id: str,
+) -> CommandResult:
+    """
+    Post a statistical entry to finalize it.
+
+    Once posted, an entry cannot be modified, only reversed.
+
+    Args:
+        actor: The actor context
+        entry_public_id: The entry's public ID
+
+    Returns:
+        CommandResult with success or error
+    """
+    require(actor, "journal.post")
+
+    # Find the entry
+    try:
+        entry = StatisticalEntry.objects.get(
+            public_id=entry_public_id, company=actor.company
+        )
+    except StatisticalEntry.DoesNotExist:
+        return CommandResult.fail("Statistical entry not found.")
+
+    # Check status
+    if entry.status != StatisticalEntry.Status.DRAFT:
+        return CommandResult.fail(
+            f"Cannot post entry with status '{entry.status}'. Only DRAFT entries can be posted."
+        )
+
+    posted_at = timezone.now()
+
+    # Emit posted event
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.STATISTICAL_ENTRY_POSTED,
+        aggregate_type="StatisticalEntry",
+        aggregate_id=str(entry.public_id),
+        idempotency_key=f"stat_entry_post:{entry.public_id}",
+        data=StatisticalEntryPostedData(
+            entry_public_id=str(entry.public_id),
+            company_public_id=str(actor.company.public_id),
+            entry_date=str(entry.date),
+            account_public_id=str(entry.account.public_id),
+            account_code=entry.account.code,
+            quantity=str(entry.quantity),
+            direction=entry.direction,
+            unit=entry.unit,
+            posted_at=posted_at.isoformat(),
+            posted_by_id=actor.user.id,
+            posted_by_email=actor.user.email,
+            memo=entry.memo,
+            memo_ar=entry.memo_ar,
+            source_module=entry.source_module,
+            source_document=entry.source_document,
+            related_journal_entry_public_id=str(entry.related_journal_entry.public_id) if entry.related_journal_entry else None,
+        ).to_dict(),
+    )
+
+    _process_projections(actor.company)
+
+    return CommandResult.ok({
+        "entry_public_id": str(entry.public_id),
+    }, event=event)
+
+
+def reverse_statistical_entry(
+    actor: ActorContext,
+    entry_public_id: str,
+    reversal_date: str = None,
+) -> CommandResult:
+    """
+    Reverse a posted statistical entry.
+
+    Creates a new entry with opposite direction to negate the original.
+
+    Args:
+        actor: The actor context
+        entry_public_id: The entry's public ID to reverse
+        reversal_date: Date for the reversal (defaults to today)
+
+    Returns:
+        CommandResult with the reversal entry public_id or error
+    """
+    require(actor, "journal.post")
+
+    # Find the entry
+    try:
+        entry = StatisticalEntry.objects.get(
+            public_id=entry_public_id, company=actor.company
+        )
+    except StatisticalEntry.DoesNotExist:
+        return CommandResult.fail("Statistical entry not found.")
+
+    # Check status
+    if entry.status != StatisticalEntry.Status.POSTED:
+        return CommandResult.fail(
+            f"Cannot reverse entry with status '{entry.status}'. Only POSTED entries can be reversed."
+        )
+
+    # Check if already reversed
+    if hasattr(entry, 'reversal_entry') and entry.reversal_entry:
+        return CommandResult.fail("This entry has already been reversed.")
+
+    # Parse reversal date
+    from datetime import date as date_cls
+    if reversal_date:
+        try:
+            parsed_reversal_date = date_cls.fromisoformat(reversal_date)
+        except (ValueError, TypeError):
+            return CommandResult.fail("Invalid reversal date format. Use ISO format (YYYY-MM-DD).")
+    else:
+        parsed_reversal_date = date_cls.today()
+
+    # Generate reversal public ID
+    reversal_public_id = uuid.uuid4()
+    reversed_at = timezone.now()
+
+    # Emit reversed event
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.STATISTICAL_ENTRY_REVERSED,
+        aggregate_type="StatisticalEntry",
+        aggregate_id=str(entry.public_id),
+        idempotency_key=f"stat_entry_reverse:{entry.public_id}",
+        data=StatisticalEntryReversedData(
+            original_entry_public_id=str(entry.public_id),
+            reversal_entry_public_id=str(reversal_public_id),
+            company_public_id=str(actor.company.public_id),
+            reversed_at=reversed_at.isoformat(),
+            reversed_by_id=actor.user.id,
+            reversed_by_email=actor.user.email,
+            reversal_date=str(parsed_reversal_date),
+        ).to_dict(),
+    )
+
+    _process_projections(actor.company)
+
+    return CommandResult.ok({
+        "original_entry_public_id": str(entry.public_id),
+        "reversal_entry_public_id": str(reversal_public_id),
+    }, event=event)
+
+
+def delete_statistical_entry(
+    actor: ActorContext,
+    entry_public_id: str,
+) -> CommandResult:
+    """
+    Delete a draft statistical entry.
+
+    Only draft entries can be deleted. Posted entries must be reversed.
+
+    Args:
+        actor: The actor context
+        entry_public_id: The entry's public ID
+
+    Returns:
+        CommandResult with success or error
+    """
+    require(actor, "journal.delete")
+
+    # Find the entry
+    try:
+        entry = StatisticalEntry.objects.get(
+            public_id=entry_public_id, company=actor.company
+        )
+    except StatisticalEntry.DoesNotExist:
+        return CommandResult.fail("Statistical entry not found.")
+
+    # Check status
+    if entry.status != StatisticalEntry.Status.DRAFT:
+        return CommandResult.fail(
+            f"Cannot delete entry with status '{entry.status}'. Only DRAFT entries can be deleted. "
+            f"Use reversal for posted entries."
+        )
+
+    # Emit deleted event
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.STATISTICAL_ENTRY_DELETED,
+        aggregate_type="StatisticalEntry",
+        aggregate_id=str(entry.public_id),
+        idempotency_key=f"stat_entry_delete:{entry.public_id}",
+        data=StatisticalEntryDeletedData(
+            entry_public_id=str(entry.public_id),
+            company_public_id=str(actor.company.public_id),
+            entry_date=str(entry.date),
+            account_code=entry.account.code,
+            quantity=str(entry.quantity),
+            direction=entry.direction,
+            deleted_by_id=actor.user.id,
+            deleted_by_email=actor.user.email,
+        ).to_dict(),
+    )
+
+    _process_projections(actor.company)
+
+    return CommandResult.ok({
+        "entry_public_id": str(entry.public_id),
+        "deleted": True,
+    }, event=event)

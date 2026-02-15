@@ -2303,6 +2303,127 @@ class SubledgerTieOutView(APIView):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# AGING REPORTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class ARAgingReportView(APIView):
+    """
+    GET /api/reports/ar-aging/
+
+    Accounts Receivable aging report.
+    Shows customer balances grouped by aging buckets:
+    - Current (0-30 days)
+    - 31-60 days
+    - 61-90 days
+    - Over 90 days
+
+    Query params:
+    - as_of: Optional date (YYYY-MM-DD), defaults to today
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from projections.subledger_balance import SubledgerBalanceProjection
+
+        actor = resolve_actor(request)
+        require(actor, "reports.view")
+
+        # Parse optional as_of date
+        as_of_param = request.query_params.get("as_of")
+        if as_of_param:
+            try:
+                as_of = date_type.fromisoformat(as_of_param)
+            except ValueError:
+                return Response(
+                    {"detail": "Invalid date format. Use YYYY-MM-DD."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            as_of = date_type.today()
+
+        # Get aging data from projection
+        projection = SubledgerBalanceProjection()
+        aging_data = projection.get_customer_aging(actor.company)
+
+        # Add validation status from tie-out
+        from accounting.policies import validate_subledger_tieout
+        is_valid, _ = validate_subledger_tieout(actor.company)
+
+        return Response({
+            "as_of": as_of.isoformat(),
+            "bucket_names": ["current", "days_31_60", "days_61_90", "over_90"],
+            "bucket_labels": {
+                "current": "Current (0-30 days)",
+                "days_31_60": "31-60 days",
+                "days_61_90": "61-90 days",
+                "over_90": "Over 90 days",
+            },
+            "buckets": aging_data["buckets"],
+            "totals": aging_data["totals"],
+            "subledger_tied_out": is_valid,
+        })
+
+
+class APAgingReportView(APIView):
+    """
+    GET /api/reports/ap-aging/
+
+    Accounts Payable aging report.
+    Shows vendor balances grouped by aging buckets:
+    - Current (0-30 days)
+    - 31-60 days
+    - 61-90 days
+    - Over 90 days
+
+    Query params:
+    - as_of: Optional date (YYYY-MM-DD), defaults to today
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from projections.subledger_balance import SubledgerBalanceProjection
+
+        actor = resolve_actor(request)
+        require(actor, "reports.view")
+
+        # Parse optional as_of date
+        as_of_param = request.query_params.get("as_of")
+        if as_of_param:
+            try:
+                as_of = date_type.fromisoformat(as_of_param)
+            except ValueError:
+                return Response(
+                    {"detail": "Invalid date format. Use YYYY-MM-DD."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            as_of = date_type.today()
+
+        # Get aging data from projection
+        projection = SubledgerBalanceProjection()
+        aging_data = projection.get_vendor_aging(actor.company)
+
+        # Add validation status from tie-out
+        from accounting.policies import validate_subledger_tieout
+        is_valid, _ = validate_subledger_tieout(actor.company)
+
+        return Response({
+            "as_of": as_of.isoformat(),
+            "bucket_names": ["current", "days_31_60", "days_61_90", "over_90"],
+            "bucket_labels": {
+                "current": "Current (0-30 days)",
+                "days_31_60": "31-60 days",
+                "days_61_90": "61-90 days",
+                "over_90": "Over 90 days",
+            },
+            "buckets": aging_data["buckets"],
+            "totals": aging_data["totals"],
+            "subledger_tied_out": is_valid,
+        })
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # CUSTOMER/VENDOR BALANCE ENDPOINTS (Subledger)
 # ═══════════════════════════════════════════════════════════════════════════════
 

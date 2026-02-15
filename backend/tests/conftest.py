@@ -23,7 +23,7 @@ from accounts.authz import ActorContext
 from accounting.models import Account, JournalEntry, JournalLine, AnalysisDimension
 from events.models import BusinessEvent, EventBookmark
 from events.types import EventTypes
-from projections.models import AccountBalance
+from projections.models import AccountBalance, FiscalPeriod, FiscalPeriodConfig
 
 
 User = get_user_model()
@@ -596,6 +596,86 @@ def cost_center_dimension(db, company):
         name_ar="مركز التكلفة",
         is_required_on_posting=False,
         display_order=1,
+    )
+
+
+# =============================================================================
+# Fiscal Period Fixtures
+# =============================================================================
+
+@pytest.fixture
+def fiscal_periods(db, company):
+    """Create fiscal periods for the current year."""
+    from datetime import date
+    from calendar import monthrange
+
+    current_year = date.today().year
+
+    periods = []
+    # TESTING=True in settings allows direct saves on ProjectionOwnedModel
+    for period_num in range(1, 13):
+        start_date = date(current_year, period_num, 1)
+        _, last_day = monthrange(current_year, period_num)
+        end_date = date(current_year, period_num, last_day)
+
+        period = FiscalPeriod.objects.create(
+            company=company,
+            fiscal_year=current_year,
+            period=period_num,
+            start_date=start_date,
+            end_date=end_date,
+            status=FiscalPeriod.Status.OPEN,
+            is_current=(period_num == date.today().month),
+        )
+        periods.append(period)
+
+    # Create config
+    FiscalPeriodConfig.objects.create(
+        company=company,
+        fiscal_year=current_year,
+        period_count=12,
+        open_from_period=1,
+        open_to_period=12,
+    )
+
+    return periods
+
+
+@pytest.fixture(autouse=True)
+def auto_fiscal_periods(db, company):
+    """Automatically create fiscal periods for all tests that use company fixture."""
+    from datetime import date
+    from calendar import monthrange
+
+    current_year = date.today().year
+
+    # Check if periods already exist
+    if FiscalPeriod.objects.filter(company=company, fiscal_year=current_year).exists():
+        return
+
+    # TESTING=True in settings allows direct saves on ProjectionOwnedModel
+    for period_num in range(1, 13):
+        start_date = date(current_year, period_num, 1)
+        _, last_day = monthrange(current_year, period_num)
+        end_date = date(current_year, period_num, last_day)
+
+        FiscalPeriod.objects.create(
+            company=company,
+            fiscal_year=current_year,
+            period=period_num,
+            start_date=start_date,
+            end_date=end_date,
+            status=FiscalPeriod.Status.OPEN,
+            is_current=(period_num == date.today().month),
+        )
+
+    # Create config
+    FiscalPeriodConfig.objects.create(
+        company=company,
+        fiscal_year=current_year,
+        period_count=12,
+        open_from_period=1,
+        open_to_period=12,
     )
 
 

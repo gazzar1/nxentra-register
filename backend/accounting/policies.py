@@ -659,3 +659,87 @@ def assert_can_delete_dimension_value(actor, value) -> None:
     allowed, reason = can_delete_dimension_value(actor, value)
     if not allowed:
         raise PolicyViolation(reason)
+
+
+# =============================================================================
+# Subledger Tie-Out Validation
+# =============================================================================
+
+def validate_subledger_tieout(company) -> tuple[bool, list[str]]:
+    """
+    Validate AR/AP control accounts match subledger totals.
+
+    This check ensures accounting integrity between the GL and subledgers.
+    The AR control account balance should equal the sum of all customer balances,
+    and the AP control account balance should equal the sum of all vendor balances.
+
+    This validation is typically run:
+    1. After posting journal entries that affect AR/AP
+    2. During period close
+    3. On-demand for reconciliation
+
+    NOTE: This check may fail during projection lag (after event emission but
+    before projection completes). In such cases, log a warning but don't fail.
+
+    Args:
+        company: The company to validate
+
+    Returns:
+        Tuple of (is_valid: bool, errors: List[str])
+        - is_valid is True if all tie-outs balance
+        - errors contains descriptive messages for any mismatches
+    """
+    from decimal import Decimal
+    from django.db.models import Sum
+    from projections.models import AccountBalance, CustomerBalance, VendorBalance
+    from accounting.models import Account
+
+    errors = []
+
+    # AR Check: Find AR control accounts and sum their balances
+    ar_control_accounts = Account.objects.filter(
+        company=company,
+        role=Account.AccountRole.RECEIVABLE_CONTROL,
+    ).values_list("id", flat=True)
+
+    if ar_control_accounts:
+        ar_control_balance = AccountBalance.objects.filter(
+            company=company,
+            account_id__in=ar_control_accounts,
+        ).aggregate(total=Sum("balance"))["total"] or Decimal("0")
+
+        customer_total = CustomerBalance.objects.filter(
+            company=company,
+        ).aggregate(total=Sum("balance"))["total"] or Decimal("0")
+
+        if ar_control_balance != customer_total:
+            diff = ar_control_balance - customer_total
+            errors.append(
+                f"AR tie-out mismatch: AR Control ({ar_control_balance}) != "
+                f"Customer balances ({customer_total}). Difference: {diff}"
+            )
+
+    # AP Check: Find AP control accounts and sum their balances
+    ap_control_accounts = Account.objects.filter(
+        company=company,
+        role=Account.AccountRole.PAYABLE_CONTROL,
+    ).values_list("id", flat=True)
+
+    if ap_control_accounts:
+        ap_control_balance = AccountBalance.objects.filter(
+            company=company,
+            account_id__in=ap_control_accounts,
+        ).aggregate(total=Sum("balance"))["total"] or Decimal("0")
+
+        vendor_total = VendorBalance.objects.filter(
+            company=company,
+        ).aggregate(total=Sum("balance"))["total"] or Decimal("0")
+
+        if ap_control_balance != vendor_total:
+            diff = ap_control_balance - vendor_total
+            errors.append(
+                f"AP tie-out mismatch: AP Control ({ap_control_balance}) != "
+                f"Vendor balances ({vendor_total}). Difference: {diff}"
+            )
+
+    return (len(errors) == 0, errors)
