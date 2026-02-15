@@ -11,7 +11,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { PageHeader, EmptyState, LoadingSpinner } from "@/components/common";
-import { useVendors, useDeleteVendor } from "@/queries/useAccounts";
+import { useVendors, useDeleteVendor, useVendorBalances } from "@/queries/useAccounts";
 import { useToast } from "@/components/ui/toaster";
 import type { Vendor } from "@/types/account";
 import { cn } from "@/lib/cn";
@@ -31,7 +31,13 @@ export default function VendorsPage() {
   const router = useRouter();
   const { toast } = useToast();
   const { data: vendors, isLoading } = useVendors();
+  const { data: balancesData } = useVendorBalances();
   const deleteVendor = useDeleteVendor();
+
+  // Create a map of vendor code to balance for quick lookup
+  const balanceMap = new Map(
+    balancesData?.balances?.map((b) => [b.vendor_code, b]) || []
+  );
   const [search, setSearch] = useState("");
   const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; vendor: Vendor | null }>({
     open: false,
@@ -134,8 +140,9 @@ export default function VendorsPage() {
               <div className="space-y-2">
                 {/* Header */}
                 <div className="grid grid-cols-12 gap-4 px-4 py-2 text-sm font-medium text-muted-foreground border-b">
-                  <div className="col-span-2">Code</div>
-                  <div className="col-span-3">Name</div>
+                  <div className="col-span-1">Code</div>
+                  <div className="col-span-2">Name</div>
+                  <div className="col-span-2 text-end">Balance</div>
                   <div className="col-span-2">Contact</div>
                   <div className="col-span-2">AP Account</div>
                   <div className="col-span-1">Terms</div>
@@ -144,74 +151,86 @@ export default function VendorsPage() {
                 </div>
 
                 {/* Rows */}
-                {filteredVendors.map((vendor) => (
-                  <div
-                    key={vendor.code}
-                    className="grid grid-cols-12 gap-4 px-4 py-3 rounded-lg border hover:bg-muted/50 transition-colors items-center"
-                  >
-                    <div className="col-span-2">
-                      <span className="font-mono text-sm ltr-code">{vendor.code}</span>
-                    </div>
-                    <div className="col-span-3">
-                      <Link
-                        href={`/accounting/vendors/${vendor.code}`}
-                        className="font-medium hover:text-primary hover:underline"
-                      >
-                        {vendor.name}
-                      </Link>
-                      {vendor.name_ar && (
-                        <p className="text-sm text-muted-foreground" dir="rtl">
-                          {vendor.name_ar}
-                        </p>
-                      )}
-                    </div>
-                    <div className="col-span-2 text-sm">
-                      {vendor.email && (
-                        <div className="flex items-center gap-1 text-muted-foreground">
-                          <Mail className="h-3 w-3" />
-                          <span className="truncate">{vendor.email}</span>
-                        </div>
-                      )}
-                      {vendor.phone && (
-                        <div className="flex items-center gap-1 text-muted-foreground">
-                          <Phone className="h-3 w-3" />
-                          <span>{vendor.phone}</span>
-                        </div>
-                      )}
-                    </div>
-                    <div className="col-span-2 text-sm">
-                      {vendor.default_ap_account_code ? (
-                        <span className="font-mono ltr-code text-muted-foreground">
-                          {vendor.default_ap_account_code}
+                {filteredVendors.map((vendor) => {
+                  const balance = balanceMap.get(vendor.code);
+                  const balanceValue = balance ? parseFloat(balance.balance) : 0;
+                  return (
+                    <div
+                      key={vendor.code}
+                      className="grid grid-cols-12 gap-4 px-4 py-3 rounded-lg border hover:bg-muted/50 transition-colors items-center"
+                    >
+                      <div className="col-span-1">
+                        <span className="font-mono text-sm ltr-code">{vendor.code}</span>
+                      </div>
+                      <div className="col-span-2">
+                        <Link
+                          href={`/accounting/vendors/${vendor.code}`}
+                          className="font-medium hover:text-primary hover:underline"
+                        >
+                          {vendor.name}
+                        </Link>
+                        {vendor.name_ar && (
+                          <p className="text-sm text-muted-foreground" dir="rtl">
+                            {vendor.name_ar}
+                          </p>
+                        )}
+                      </div>
+                      <div className="col-span-2 text-end">
+                        <span className={cn(
+                          "font-mono text-sm ltr-number font-medium",
+                          balanceValue > 0 ? "text-red-600" : balanceValue < 0 ? "text-green-600" : ""
+                        )}>
+                          {balanceValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </span>
-                      ) : (
-                        <span className="text-muted-foreground">—</span>
-                      )}
+                      </div>
+                      <div className="col-span-2 text-sm">
+                        {vendor.email && (
+                          <div className="flex items-center gap-1 text-muted-foreground">
+                            <Mail className="h-3 w-3" />
+                            <span className="truncate">{vendor.email}</span>
+                          </div>
+                        )}
+                        {vendor.phone && (
+                          <div className="flex items-center gap-1 text-muted-foreground">
+                            <Phone className="h-3 w-3" />
+                            <span>{vendor.phone}</span>
+                          </div>
+                        )}
+                      </div>
+                      <div className="col-span-2 text-sm">
+                        {vendor.default_ap_account_code ? (
+                          <span className="font-mono ltr-code text-muted-foreground">
+                            {vendor.default_ap_account_code}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </div>
+                      <div className="col-span-1 text-sm">
+                        {vendor.payment_terms_days} days
+                      </div>
+                      <div className="col-span-1">
+                        {getStatusBadge(vendor.status)}
+                      </div>
+                      <div className="col-span-1 flex items-center justify-end gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => router.push(`/accounting/vendors/${vendor.code}/edit`)}
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setDeleteDialog({ open: true, vendor })}
+                        >
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      </div>
                     </div>
-                    <div className="col-span-1 text-sm">
-                      {vendor.payment_terms_days} days
-                    </div>
-                    <div className="col-span-1">
-                      {getStatusBadge(vendor.status)}
-                    </div>
-                    <div className="col-span-1 flex items-center justify-end gap-1">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => router.push(`/accounting/vendors/${vendor.code}/edit`)}
-                      >
-                        <Pencil className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setDeleteDialog({ open: true, vendor })}
-                      >
-                        <Trash2 className="h-4 w-4 text-destructive" />
-                      </Button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </CardContent>

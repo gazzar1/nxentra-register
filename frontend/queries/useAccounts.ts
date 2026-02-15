@@ -256,6 +256,16 @@ export function useCustomerBalance(code: string) {
   });
 }
 
+export function useCustomerBalances() {
+  return useQuery({
+    queryKey: [...customerKeys.all, 'balances'] as const,
+    queryFn: async () => {
+      const { data } = await customersService.listBalances();
+      return data;
+    },
+  });
+}
+
 // =============================================================================
 // Vendor Queries (AP Subledger)
 // =============================================================================
@@ -324,6 +334,16 @@ export function useVendorBalance(code: string) {
       return data;
     },
     enabled: !!code,
+  });
+}
+
+export function useVendorBalances() {
+  return useQuery({
+    queryKey: [...vendorKeys.all, 'balances'] as const,
+    queryFn: async () => {
+      const { data } = await vendorsService.listBalances();
+      return data;
+    },
   });
 }
 

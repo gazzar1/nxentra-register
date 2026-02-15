@@ -59,3 +59,71 @@ export const periodsService = {
       end_date: endDate,
     }),
 };
+
+// Account Inquiry Types
+export interface AccountInquiryLine {
+  line_id: number;
+  entry_id: number;
+  entry_number: string | null;
+  entry_date: string;
+  entry_reference: string;
+  entry_memo: string;
+  line_no: number;
+  account_code: string;
+  account_name: string;
+  account_name_ar: string | null;
+  description: string;
+  debit: string;
+  credit: string;
+  currency: string | null;
+  amount_currency: string | null;
+  exchange_rate: string | null;
+  customer_code: string | null;
+  customer_name: string | null;
+  vendor_code: string | null;
+  vendor_name: string | null;
+  analysis: Array<{
+    dimension_code: string;
+    dimension_name: string;
+    value_code: string;
+    value_name: string;
+  }>;
+}
+
+export interface AccountInquiryResponse {
+  lines: AccountInquiryLine[];
+  pagination: {
+    page: number;
+    page_size: number;
+    total_count: number;
+    total_pages: number;
+  };
+  totals: {
+    debit: string;
+    credit: string;
+    net: string;
+  };
+}
+
+export interface AccountInquiryFilters {
+  account_code?: string;
+  date_from?: string;
+  date_to?: string;
+  period_from?: number;
+  period_to?: number;
+  fiscal_year?: number;
+  amount_min?: string;
+  amount_max?: string;
+  entry_type?: 'debit' | 'credit' | 'all';
+  dimension_id?: number;
+  dimension_value_id?: number;
+  reference?: string;
+  currency?: string;
+  page?: number;
+  page_size?: number;
+}
+
+export const accountInquiryService = {
+  query: (filters: AccountInquiryFilters) =>
+    apiClient.get<AccountInquiryResponse>('/reports/account-inquiry/', { params: filters }),
+};

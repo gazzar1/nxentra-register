@@ -240,6 +240,21 @@ export function Sidebar() {
           href: "/reports/income-statement",
           icon: <BarChart3 className="h-4 w-4 text-red-400" />,
         },
+        {
+          label: t("nav.accountInquiry", "Account Inquiry"),
+          href: "/reports/account-inquiry",
+          icon: <FileText className="h-4 w-4 text-purple-400" />,
+        },
+        {
+          label: t("nav.customerBalances", "Customer Balances"),
+          href: "/reports/customer-balances",
+          icon: <UserCircle className="h-4 w-4 text-sky-400" />,
+        },
+        {
+          label: t("nav.vendorBalances", "Vendor Balances"),
+          href: "/reports/vendor-balances",
+          icon: <Truck className="h-4 w-4 text-amber-400" />,
+        },
       ],
     },
     {

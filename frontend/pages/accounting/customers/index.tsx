@@ -11,7 +11,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { PageHeader, EmptyState, LoadingSpinner } from "@/components/common";
-import { useCustomers, useDeleteCustomer } from "@/queries/useAccounts";
+import { useCustomers, useDeleteCustomer, useCustomerBalances } from "@/queries/useAccounts";
 import { useToast } from "@/components/ui/toaster";
 import type { Customer } from "@/types/account";
 import { cn } from "@/lib/cn";
@@ -31,7 +31,13 @@ export default function CustomersPage() {
   const router = useRouter();
   const { toast } = useToast();
   const { data: customers, isLoading } = useCustomers();
+  const { data: balancesData } = useCustomerBalances();
   const deleteCustomer = useDeleteCustomer();
+
+  // Create a map of customer code to balance for quick lookup
+  const balanceMap = new Map(
+    balancesData?.balances?.map((b) => [b.customer_code, b]) || []
+  );
   const [search, setSearch] = useState("");
   const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; customer: Customer | null }>({
     open: false,
@@ -134,8 +140,9 @@ export default function CustomersPage() {
               <div className="space-y-2">
                 {/* Header */}
                 <div className="grid grid-cols-12 gap-4 px-4 py-2 text-sm font-medium text-muted-foreground border-b">
-                  <div className="col-span-2">Code</div>
-                  <div className="col-span-3">Name</div>
+                  <div className="col-span-1">Code</div>
+                  <div className="col-span-2">Name</div>
+                  <div className="col-span-2 text-end">Balance</div>
                   <div className="col-span-2">Contact</div>
                   <div className="col-span-2">AR Account</div>
                   <div className="col-span-1">Credit Limit</div>
@@ -144,74 +151,86 @@ export default function CustomersPage() {
                 </div>
 
                 {/* Rows */}
-                {filteredCustomers.map((customer) => (
-                  <div
-                    key={customer.code}
-                    className="grid grid-cols-12 gap-4 px-4 py-3 rounded-lg border hover:bg-muted/50 transition-colors items-center"
-                  >
-                    <div className="col-span-2">
-                      <span className="font-mono text-sm ltr-code">{customer.code}</span>
-                    </div>
-                    <div className="col-span-3">
-                      <Link
-                        href={`/accounting/customers/${customer.code}`}
-                        className="font-medium hover:text-primary hover:underline"
-                      >
-                        {customer.name}
-                      </Link>
-                      {customer.name_ar && (
-                        <p className="text-sm text-muted-foreground" dir="rtl">
-                          {customer.name_ar}
-                        </p>
-                      )}
-                    </div>
-                    <div className="col-span-2 text-sm">
-                      {customer.email && (
-                        <div className="flex items-center gap-1 text-muted-foreground">
-                          <Mail className="h-3 w-3" />
-                          <span className="truncate">{customer.email}</span>
-                        </div>
-                      )}
-                      {customer.phone && (
-                        <div className="flex items-center gap-1 text-muted-foreground">
-                          <Phone className="h-3 w-3" />
-                          <span>{customer.phone}</span>
-                        </div>
-                      )}
-                    </div>
-                    <div className="col-span-2 text-sm">
-                      {customer.default_ar_account_code ? (
-                        <span className="font-mono ltr-code text-muted-foreground">
-                          {customer.default_ar_account_code}
+                {filteredCustomers.map((customer) => {
+                  const balance = balanceMap.get(customer.code);
+                  const balanceValue = balance ? parseFloat(balance.balance) : 0;
+                  return (
+                    <div
+                      key={customer.code}
+                      className="grid grid-cols-12 gap-4 px-4 py-3 rounded-lg border hover:bg-muted/50 transition-colors items-center"
+                    >
+                      <div className="col-span-1">
+                        <span className="font-mono text-sm ltr-code">{customer.code}</span>
+                      </div>
+                      <div className="col-span-2">
+                        <Link
+                          href={`/accounting/customers/${customer.code}`}
+                          className="font-medium hover:text-primary hover:underline"
+                        >
+                          {customer.name}
+                        </Link>
+                        {customer.name_ar && (
+                          <p className="text-sm text-muted-foreground" dir="rtl">
+                            {customer.name_ar}
+                          </p>
+                        )}
+                      </div>
+                      <div className="col-span-2 text-end">
+                        <span className={cn(
+                          "font-mono text-sm ltr-number font-medium",
+                          balanceValue > 0 ? "text-green-600" : balanceValue < 0 ? "text-red-600" : ""
+                        )}>
+                          {balanceValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </span>
-                      ) : (
-                        <span className="text-muted-foreground">—</span>
-                      )}
+                      </div>
+                      <div className="col-span-2 text-sm">
+                        {customer.email && (
+                          <div className="flex items-center gap-1 text-muted-foreground">
+                            <Mail className="h-3 w-3" />
+                            <span className="truncate">{customer.email}</span>
+                          </div>
+                        )}
+                        {customer.phone && (
+                          <div className="flex items-center gap-1 text-muted-foreground">
+                            <Phone className="h-3 w-3" />
+                            <span>{customer.phone}</span>
+                          </div>
+                        )}
+                      </div>
+                      <div className="col-span-2 text-sm">
+                        {customer.default_ar_account_code ? (
+                          <span className="font-mono ltr-code text-muted-foreground">
+                            {customer.default_ar_account_code}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </div>
+                      <div className="col-span-1 text-sm font-mono ltr-number">
+                        {customer.credit_limit || "—"}
+                      </div>
+                      <div className="col-span-1">
+                        {getStatusBadge(customer.status)}
+                      </div>
+                      <div className="col-span-1 flex items-center justify-end gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => router.push(`/accounting/customers/${customer.code}/edit`)}
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setDeleteDialog({ open: true, customer })}
+                        >
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      </div>
                     </div>
-                    <div className="col-span-1 text-sm font-mono ltr-number">
-                      {customer.credit_limit || "—"}
-                    </div>
-                    <div className="col-span-1">
-                      {getStatusBadge(customer.status)}
-                    </div>
-                    <div className="col-span-1 flex items-center justify-end gap-1">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => router.push(`/accounting/customers/${customer.code}/edit`)}
-                      >
-                        <Pencil className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setDeleteDialog({ open: true, customer })}
-                      >
-                        <Trash2 className="h-4 w-4 text-destructive" />
-                      </Button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </CardContent>

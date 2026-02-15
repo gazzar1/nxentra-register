@@ -122,6 +122,10 @@ export const customersService = {
   // Balance (from projections)
   getBalance: (code: string) =>
     apiClient.get<CustomerBalance>(`/reports/customer-balances/${code}/`),
+
+  // All balances list
+  listBalances: () =>
+    apiClient.get<{ balances: CustomerBalance[]; totals: { balance: string; debit_total: string; credit_total: string } }>('/reports/customer-balances/'),
 };
 
 // =============================================================================
@@ -162,6 +166,10 @@ export const vendorsService = {
   // Balance (from projections)
   getBalance: (code: string) =>
     apiClient.get<VendorBalance>(`/reports/vendor-balances/${code}/`),
+
+  // All balances list
+  listBalances: () =>
+    apiClient.get<{ balances: VendorBalance[]; totals: { balance: string; debit_total: string; credit_total: string } }>('/reports/vendor-balances/'),
 };
 
 // =============================================================================

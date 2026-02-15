@@ -2541,3 +2541,217 @@ class VendorBalanceDetailView(APIView):
                 "updated_at": None,
                 "note": "No posted entries yet",
             })
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ACCOUNT INQUIRY ENDPOINT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class AccountInquiryView(APIView):
+    """
+    GET /api/reports/account-inquiry/
+
+    Account inquiry report - shows journal lines with various filters.
+
+    Query parameters:
+    - account_code: Filter by account code (optional)
+    - date_from: Start date YYYY-MM-DD (optional)
+    - date_to: End date YYYY-MM-DD (optional)
+    - period_from: Starting period number (optional)
+    - period_to: Ending period number (optional)
+    - fiscal_year: Fiscal year for period filtering (required if using periods)
+    - amount_min: Minimum amount (optional)
+    - amount_max: Maximum amount (optional)
+    - entry_type: debit, credit, or all (default: all)
+    - dimension_id: Analysis dimension ID (optional)
+    - dimension_value_id: Analysis dimension value ID (optional)
+    - reference: Journal entry reference/memo filter (optional)
+    - currency: Filter by currency code (optional)
+    - page: Page number (default: 1)
+    - page_size: Results per page (default: 50, max: 500)
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from datetime import datetime
+        from django.db.models import Q
+        from accounting.models import Account, JournalLine, JournalEntry, AnalysisDimension
+
+        actor = resolve_actor(request)
+        require(actor, "reports.view")
+
+        # Parse query params
+        account_code = request.query_params.get("account_code")
+        date_from = request.query_params.get("date_from")
+        date_to = request.query_params.get("date_to")
+        period_from = request.query_params.get("period_from")
+        period_to = request.query_params.get("period_to")
+        fiscal_year = request.query_params.get("fiscal_year")
+        amount_min = request.query_params.get("amount_min")
+        amount_max = request.query_params.get("amount_max")
+        entry_type = request.query_params.get("entry_type", "all")
+        dimension_id = request.query_params.get("dimension_id")
+        dimension_value_id = request.query_params.get("dimension_value_id")
+        reference = request.query_params.get("reference")
+        currency = request.query_params.get("currency")
+        page = int(request.query_params.get("page", 1))
+        page_size = min(int(request.query_params.get("page_size", 50)), 500)
+
+        # Build queryset
+        lines = JournalLine.objects.filter(
+            company=actor.company,
+            entry__status=JournalEntry.Status.POSTED,
+        ).select_related(
+            "entry", "account", "customer", "vendor"
+        ).prefetch_related(
+            "analysis_tags", "analysis_tags__dimension", "analysis_tags__dimension_value"
+        ).order_by("-entry__date", "-entry__id", "line_no")
+
+        # Filter by account
+        if account_code:
+            lines = lines.filter(account__code=account_code)
+
+        # Filter by date range
+        if date_from:
+            try:
+                from_date = datetime.strptime(date_from, "%Y-%m-%d").date()
+                lines = lines.filter(entry__date__gte=from_date)
+            except ValueError:
+                return Response(
+                    {"detail": "Invalid date_from format. Use YYYY-MM-DD."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        if date_to:
+            try:
+                to_date = datetime.strptime(date_to, "%Y-%m-%d").date()
+                lines = lines.filter(entry__date__lte=to_date)
+            except ValueError:
+                return Response(
+                    {"detail": "Invalid date_to format. Use YYYY-MM-DD."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        # Filter by period range
+        if period_from and period_to and fiscal_year:
+            periods = FiscalPeriod.objects.filter(
+                company=actor.company,
+                fiscal_year=int(fiscal_year),
+                period__gte=int(period_from),
+                period__lte=int(period_to),
+            )
+            if periods.exists():
+                period_start = periods.order_by("start_date").first().start_date
+                period_end = periods.order_by("-end_date").first().end_date
+                lines = lines.filter(
+                    entry__date__gte=period_start,
+                    entry__date__lte=period_end,
+                )
+
+        # Filter by amount range
+        if amount_min:
+            min_val = Decimal(amount_min)
+            lines = lines.filter(
+                Q(debit__gte=min_val) | Q(credit__gte=min_val)
+            )
+
+        if amount_max:
+            max_val = Decimal(amount_max)
+            lines = lines.filter(
+                Q(debit__lte=max_val) | Q(credit__lte=max_val)
+            )
+
+        # Filter by entry type
+        if entry_type == "debit":
+            lines = lines.filter(debit__gt=Decimal("0"))
+        elif entry_type == "credit":
+            lines = lines.filter(credit__gt=Decimal("0"))
+
+        # Filter by analysis dimension
+        if dimension_id and dimension_value_id:
+            lines = lines.filter(
+                analysis_tags__dimension_id=int(dimension_id),
+                analysis_tags__dimension_value_id=int(dimension_value_id),
+            )
+        elif dimension_id:
+            lines = lines.filter(analysis_tags__dimension_id=int(dimension_id))
+
+        # Filter by reference
+        if reference:
+            lines = lines.filter(
+                Q(entry__reference__icontains=reference) |
+                Q(entry__memo__icontains=reference) |
+                Q(description__icontains=reference)
+            )
+
+        # Filter by currency
+        if currency:
+            lines = lines.filter(currency=currency)
+
+        # Get total count before pagination
+        total_count = lines.count()
+
+        # Pagination
+        start = (page - 1) * page_size
+        end = start + page_size
+        lines_page = lines[start:end]
+
+        # Calculate running totals for the entire result set
+        from django.db.models import Sum
+        totals = lines.aggregate(
+            total_debit=Sum("debit"),
+            total_credit=Sum("credit"),
+        )
+
+        # Serialize results
+        data = []
+        for line in lines_page:
+            analysis = [
+                {
+                    "dimension_code": tag.dimension.code,
+                    "dimension_name": tag.dimension.name,
+                    "value_code": tag.dimension_value.code,
+                    "value_name": tag.dimension_value.name,
+                }
+                for tag in line.analysis_tags.all()
+            ]
+
+            data.append({
+                "line_id": line.id,
+                "entry_id": line.entry.id,
+                "entry_number": line.entry.entry_number,
+                "entry_date": line.entry.date.isoformat(),
+                "entry_reference": line.entry.reference or "",
+                "entry_memo": line.entry.memo or "",
+                "line_no": line.line_no,
+                "account_code": line.account.code,
+                "account_name": line.account.name,
+                "account_name_ar": line.account.name_ar,
+                "description": line.description,
+                "debit": str(line.debit),
+                "credit": str(line.credit),
+                "currency": line.currency if line.currency else None,
+                "amount_currency": str(line.amount_currency) if line.amount_currency else None,
+                "exchange_rate": str(line.exchange_rate) if line.exchange_rate else None,
+                "customer_code": line.customer.code if line.customer else None,
+                "customer_name": line.customer.name if line.customer else None,
+                "vendor_code": line.vendor.code if line.vendor else None,
+                "vendor_name": line.vendor.name if line.vendor else None,
+                "analysis": analysis,
+            })
+
+        return Response({
+            "lines": data,
+            "pagination": {
+                "page": page,
+                "page_size": page_size,
+                "total_count": total_count,
+                "total_pages": (total_count + page_size - 1) // page_size,
+            },
+            "totals": {
+                "debit": str(totals["total_debit"] or Decimal("0.00")),
+                "credit": str(totals["total_credit"] or Decimal("0.00")),
+                "net": str((totals["total_debit"] or Decimal("0.00")) - (totals["total_credit"] or Decimal("0.00"))),
+            },
+        })

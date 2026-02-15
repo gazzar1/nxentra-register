@@ -51,6 +51,8 @@ from .views import (
     CustomerBalanceDetailView,
     VendorBalanceListView,
     VendorBalanceDetailView,
+    # Account inquiry
+    AccountInquiryView,
     # Admin projection management
     AdminProjectionListView,
     AdminProjectionDetailView,
@@ -120,7 +122,14 @@ urlpatterns = [
         VendorBalanceDetailView.as_view(),
         name="vendor-balance-detail",
     ),
-    
+
+    # Account Inquiry
+    path(
+        "account-inquiry/",
+        AccountInquiryView.as_view(),
+        name="account-inquiry",
+    ),
+
     # Fiscal Periods
     path(
         "periods/",
