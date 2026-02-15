@@ -163,7 +163,7 @@ export default function VendorBalancesPage() {
                                 href={`/accounting/vendors/${balance.vendor_code}`}
                                 className="hover:underline hover:text-primary"
                               >
-                                {getText(balance.vendor_name, balance.vendor_name_ar)}
+                                {getText(balance.vendor_name, balance.vendor_name_ar ?? undefined)}
                               </Link>
                             </TableCell>
                             <TableCell className="text-end ltr-number">
