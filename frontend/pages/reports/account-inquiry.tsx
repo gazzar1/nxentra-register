@@ -173,14 +173,14 @@ export default function AccountInquiryPage() {
               <div className="space-y-2">
                 <Label>Account</Label>
                 <Select
-                  value={filters.account_code || ""}
-                  onValueChange={(v) => updateFilter("account_code", v || undefined)}
+                  value={filters.account_code || "__all__"}
+                  onValueChange={(v) => updateFilter("account_code", v === "__all__" ? undefined : v)}
                 >
                   <SelectTrigger>
                     <SelectValue placeholder="All accounts" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">All accounts</SelectItem>
+                    <SelectItem value="__all__">All accounts</SelectItem>
                     {accounts?.map((acc) => (
                       <SelectItem key={acc.code} value={acc.code}>
                         {acc.code} - {getText(acc.name, acc.name_ar)}
@@ -257,9 +257,9 @@ export default function AccountInquiryPage() {
               <div className="space-y-2">
                 <Label>Period From</Label>
                 <Select
-                  value={filters.period_from?.toString() || ""}
+                  value={filters.period_from?.toString() || "__all__"}
                   onValueChange={(v) =>
-                    updateFilter("period_from", v ? parseInt(v, 10) : undefined)
+                    updateFilter("period_from", v === "__all__" ? undefined : parseInt(v, 10))
                   }
                   disabled={periodOptions.length === 0}
                 >
@@ -267,7 +267,7 @@ export default function AccountInquiryPage() {
                     <SelectValue placeholder="Select period" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">All periods</SelectItem>
+                    <SelectItem value="__all__">All periods</SelectItem>
                     {periodOptions.map((p) => (
                       <SelectItem key={p.period} value={p.period.toString()}>
                         Period {p.period}
@@ -281,9 +281,9 @@ export default function AccountInquiryPage() {
               <div className="space-y-2">
                 <Label>Period To</Label>
                 <Select
-                  value={filters.period_to?.toString() || ""}
+                  value={filters.period_to?.toString() || "__all__"}
                   onValueChange={(v) =>
-                    updateFilter("period_to", v ? parseInt(v, 10) : undefined)
+                    updateFilter("period_to", v === "__all__" ? undefined : parseInt(v, 10))
                   }
                   disabled={periodOptions.length === 0}
                 >
@@ -291,7 +291,7 @@ export default function AccountInquiryPage() {
                     <SelectValue placeholder="Select period" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">All periods</SelectItem>
+                    <SelectItem value="__all__">All periods</SelectItem>
                     {periodOptions
                       .filter(
                         (p) =>
@@ -362,9 +362,9 @@ export default function AccountInquiryPage() {
               <div className="space-y-2">
                 <Label>Analysis Dimension</Label>
                 <Select
-                  value={selectedDimensionId?.toString() || ""}
+                  value={selectedDimensionId?.toString() || "__all__"}
                   onValueChange={(v) => {
-                    const dimId = v ? parseInt(v, 10) : null;
+                    const dimId = v === "__all__" ? null : parseInt(v, 10);
                     setSelectedDimensionId(dimId);
                     updateFilter("dimension_id", dimId || undefined);
                     updateFilter("dimension_value_id", undefined);
@@ -374,7 +374,7 @@ export default function AccountInquiryPage() {
                     <SelectValue placeholder="Select dimension" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">All dimensions</SelectItem>
+                    <SelectItem value="__all__">All dimensions</SelectItem>
                     {dimensions?.map((dim) => (
                       <SelectItem key={dim.id} value={dim.id.toString()}>
                         {dim.name}
@@ -389,11 +389,11 @@ export default function AccountInquiryPage() {
                 <div className="space-y-2">
                   <Label>Dimension Value</Label>
                   <Select
-                    value={filters.dimension_value_id?.toString() || ""}
+                    value={filters.dimension_value_id?.toString() || "__all__"}
                     onValueChange={(v) =>
                       updateFilter(
                         "dimension_value_id",
-                        v ? parseInt(v, 10) : undefined
+                        v === "__all__" ? undefined : parseInt(v, 10)
                       )
                     }
                   >
@@ -401,7 +401,7 @@ export default function AccountInquiryPage() {
                       <SelectValue placeholder="Select value" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="">All values</SelectItem>
+                      <SelectItem value="__all__">All values</SelectItem>
                       {dimensionValues?.map((val) => (
                         <SelectItem key={val.id} value={val.id.toString()}>
                           {val.code} - {val.name}
