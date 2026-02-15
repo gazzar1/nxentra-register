@@ -493,7 +493,7 @@ export default function AccountInquiryPage() {
                             </span>
                           </TableCell>
                           <TableCell className="max-w-xs truncate">
-                            {line.description || getText(line.account_name, line.account_name_ar)}
+                            {line.description || getText(line.account_name, line.account_name_ar ?? undefined)}
                           </TableCell>
                           <TableCell className="max-w-xs truncate text-sm text-muted-foreground">
                             {line.entry_reference || line.entry_memo || "-"}
