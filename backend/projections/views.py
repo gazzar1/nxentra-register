@@ -2722,7 +2722,7 @@ class AccountInquiryView(APIView):
                 "entry_id": line.entry.id,
                 "entry_number": line.entry.entry_number,
                 "entry_date": line.entry.date.isoformat(),
-                "entry_reference": line.entry.reference or "",
+                "entry_reference": line.entry.source_document or "",
                 "entry_memo": line.entry.memo or "",
                 "line_no": line.line_no,
                 "account_code": line.account.code,
