@@ -81,7 +81,19 @@ class Company(ProjectionWriteGuard):
     slug = models.SlugField(max_length=100, unique=True)
     
     # Settings
-    default_currency = models.CharField(max_length=3, default="USD")
+    default_currency = models.CharField(
+        max_length=3,
+        default="USD",
+        help_text="Default currency for new transactions",
+    )
+    functional_currency = models.CharField(
+        max_length=3,
+        default="USD",
+        help_text=(
+            "Functional currency for accounting and reporting. "
+            "All balances are stored in this currency."
+        ),
+    )
     fiscal_year_start_month = models.PositiveSmallIntegerField(default=1)  # 1=January
 
     # Logo
@@ -121,6 +133,16 @@ class Company(ProjectionWriteGuard):
         help_text=(
             "Allow posting sales invoices that result in negative inventory. "
             "If False, posting will fail if insufficient stock is available."
+        ),
+    )
+
+    # Subledger Enforcement
+    enforce_subledger_tieout = models.BooleanField(
+        default=False,
+        help_text=(
+            "Enforce AR/AP control account tie-out with subledger. "
+            "If True, posting fails when AR control != sum of customer balances "
+            "or AP control != sum of vendor balances."
         ),
     )
 

@@ -2284,3 +2284,129 @@ class StatisticalEntry(AccountingReadModel):
             )
         self.full_clean()
         super().save(*args, **kwargs)
+
+
+class ExchangeRate(models.Model):
+    """
+    Exchange rate model for multi-currency support.
+
+    Stores historical exchange rates between currencies.
+    Used for converting foreign currency transactions to the company's
+    functional currency.
+    """
+
+    public_id = models.UUIDField(
+        default=uuid.uuid4,
+        editable=False,
+        unique=True,
+    )
+
+    company = models.ForeignKey(
+        "accounts.Company",
+        on_delete=models.CASCADE,
+        related_name="exchange_rates",
+    )
+
+    from_currency = models.CharField(
+        max_length=3,
+        help_text="Source currency code (ISO 4217, e.g., USD)",
+    )
+
+    to_currency = models.CharField(
+        max_length=3,
+        help_text="Target currency code (ISO 4217, e.g., EUR)",
+    )
+
+    rate = models.DecimalField(
+        max_digits=18,
+        decimal_places=8,
+        help_text="Exchange rate: 1 from_currency = rate to_currency",
+    )
+
+    effective_date = models.DateField(
+        help_text="Date from which this rate is effective",
+    )
+
+    rate_type = models.CharField(
+        max_length=20,
+        choices=[
+            ("SPOT", "Spot Rate"),
+            ("AVERAGE", "Average Rate"),
+            ("CLOSING", "Closing Rate"),
+        ],
+        default="SPOT",
+        help_text="Type of exchange rate",
+    )
+
+    source = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        help_text="Source of the rate (e.g., 'Manual', 'ECB', 'XE')",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Exchange Rate"
+        verbose_name_plural = "Exchange Rates"
+        ordering = ["-effective_date", "from_currency", "to_currency"]
+        indexes = [
+            models.Index(
+                fields=["company", "from_currency", "to_currency", "effective_date"],
+                name="idx_exchange_rate_lookup",
+            ),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "from_currency", "to_currency", "effective_date", "rate_type"],
+                name="unique_exchange_rate_per_date",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.from_currency}/{self.to_currency} = {self.rate} ({self.effective_date})"
+
+    def clean(self):
+        """Validate exchange rate."""
+        if self.rate is not None and self.rate <= 0:
+            raise ValidationError("Exchange rate must be positive.")
+        if self.from_currency == self.to_currency:
+            raise ValidationError("From and to currencies must be different.")
+
+    @classmethod
+    def get_rate(cls, company, from_currency: str, to_currency: str, date, rate_type: str = "SPOT"):
+        """
+        Get the exchange rate for a given date.
+
+        Returns the rate effective on or before the given date.
+        If no rate is found, returns None.
+        """
+        if from_currency == to_currency:
+            return Decimal("1.0")
+
+        rate = cls.objects.filter(
+            company=company,
+            from_currency=from_currency,
+            to_currency=to_currency,
+            effective_date__lte=date,
+            rate_type=rate_type,
+        ).order_by("-effective_date").first()
+
+        if rate:
+            return rate.rate
+
+        # Try reverse rate
+        reverse_rate = cls.objects.filter(
+            company=company,
+            from_currency=to_currency,
+            to_currency=from_currency,
+            effective_date__lte=date,
+            rate_type=rate_type,
+        ).order_by("-effective_date").first()
+
+        if reverse_rate and reverse_rate.rate != 0:
+            return Decimal("1.0") / reverse_rate.rate
+
+        return None

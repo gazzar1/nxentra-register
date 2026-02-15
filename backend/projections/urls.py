@@ -9,6 +9,7 @@ Endpoints:
 - /reports/trial-balance/ - Trial balance
 - /reports/balance-sheet/ - Balance sheet
 - /reports/income-statement/ - Income statement (P&L)
+- /reports/cash-flow-statement/ - Cash flow statement
 - /reports/subledger-tieout/ - AR/AP subledger tie-out reconciliation
 - /reports/ar-aging/ - Accounts Receivable aging report
 - /reports/ap-aging/ - Accounts Payable aging report
@@ -39,6 +40,7 @@ from .views import (
     ProjectionStatusView,
     BalanceSheetView,
     IncomeStatementView,
+    CashFlowStatementView,
     FiscalPeriodListView,
     FiscalPeriodCloseView,
     FiscalPeriodOpenView,
@@ -85,6 +87,11 @@ urlpatterns = [
         "income-statement/",
         IncomeStatementView.as_view(),
         name="income-statement",
+    ),
+    path(
+        "cash-flow-statement/",
+        CashFlowStatementView.as_view(),
+        name="cash-flow-statement",
     ),
     path(
         "subledger-tieout/",

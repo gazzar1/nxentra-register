@@ -54,4 +54,7 @@ export const reportsService = {
     apiClient.get<DashboardCharts>('/reports/dashboard-charts/', {
       params: fiscalYear ? { fiscal_year: fiscalYear } : undefined,
     }),
+
+  getCashFlowStatement: (params?: Record<string, string>) =>
+    apiClient.get('/reports/cash-flow-statement/', { params }),
 };

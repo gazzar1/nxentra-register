@@ -163,6 +163,11 @@ export function Sidebar() {
           icon: <Receipt className="h-4 w-4 text-orange-400" />,
         },
         {
+          label: t("nav.customerReceipts", "Receipts"),
+          href: "/accounting/receipts",
+          icon: <CreditCard className="h-4 w-4 text-emerald-400" />,
+        },
+        {
           label: t("nav.items", "Items"),
           href: "/accounting/items",
           icon: <Package className="h-4 w-4 text-amber-400" />,
@@ -187,6 +192,11 @@ export function Sidebar() {
           label: t("nav.purchaseBills", "Bills"),
           href: "/accounting/purchase-bills",
           icon: <Receipt className="h-4 w-4 text-violet-400" />,
+        },
+        {
+          label: t("nav.vendorPayments", "Payments"),
+          href: "/accounting/payments",
+          icon: <CreditCard className="h-4 w-4 text-violet-400" />,
         },
       ],
     },
@@ -239,6 +249,11 @@ export function Sidebar() {
           label: t("nav.incomeStatement"),
           href: "/reports/income-statement",
           icon: <BarChart3 className="h-4 w-4 text-red-400" />,
+        },
+        {
+          label: t("nav.cashFlowStatement", "Cash Flow"),
+          href: "/reports/cash-flow",
+          icon: <BarChart3 className="h-4 w-4 text-cyan-400" />,
         },
         {
           label: t("nav.accountInquiry", "Account Inquiry"),

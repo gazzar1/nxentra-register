@@ -2876,3 +2876,299 @@ class AccountInquiryView(APIView):
                 "net": str((totals["total_debit"] or Decimal("0.00")) - (totals["total_credit"] or Decimal("0.00"))),
             },
         })
+
+
+class CashFlowStatementView(APIView):
+    """
+    GET /api/reports/cash-flow-statement/
+
+    Returns a cash flow statement using the indirect method.
+
+    Query params:
+    - period_from: Starting period (e.g., 1)
+    - period_to: Ending period (e.g., 12)
+    - fiscal_year: Fiscal year (e.g., 2026)
+
+    Sections:
+    - Operating Activities: Net income + adjustments for non-cash items + working capital changes
+    - Investing Activities: Changes in fixed assets, investments
+    - Financing Activities: Changes in equity, long-term debt
+    """
+    permission_classes = [IsAuthenticated]
+
+    # Mapping of account roles to cash flow categories
+    OPERATING_ADJUSTMENTS = [
+        "RECEIVABLE_CONTROL",  # AR changes
+        "PAYABLE_CONTROL",     # AP changes
+        "INVENTORY",           # Inventory changes
+    ]
+    INVESTING_ROLES = [
+        "FIXED_ASSET",
+        "ACCUMULATED_DEPRECIATION",
+    ]
+    FINANCING_ROLES = [
+        "LONG_TERM_DEBT",
+        "RETAINED_EARNINGS",
+        "CAPITAL_STOCK",
+    ]
+    CASH_ROLES = ["CASH"]
+
+    def get(self, request):
+        actor = resolve_actor(request)
+        require(actor, "reports.view")
+
+        period_from = request.query_params.get("period_from")
+        period_to = request.query_params.get("period_to")
+        fiscal_year = request.query_params.get("fiscal_year")
+
+        if not (period_from and period_to and fiscal_year):
+            # Default to current year YTD
+            from datetime import date
+            today = date.today()
+            fiscal_year = today.year
+            period_from = 1
+            period_to = today.month
+        else:
+            fiscal_year = int(fiscal_year)
+            period_from = int(period_from)
+            period_to = int(period_to)
+
+        return self._generate_cash_flow_statement(
+            actor, fiscal_year, period_from, period_to
+        )
+
+    def _generate_cash_flow_statement(
+        self, actor, fiscal_year: int, period_from: int, period_to: int
+    ):
+        """Generate cash flow statement using indirect method."""
+        from accounting.models import Account
+        from events.models import BusinessEvent
+        from events.types import EventTypes
+        from datetime import date
+
+        # Get period date boundaries
+        periods = FiscalPeriod.objects.filter(
+            company=actor.company,
+            fiscal_year=fiscal_year,
+            period__gte=period_from,
+            period__lte=period_to,
+        ).order_by("period")
+
+        if not periods.exists():
+            return Response(
+                {"detail": f"No periods found for fiscal year {fiscal_year} periods {period_from}-{period_to}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        first_period = periods.first()
+        last_period = periods.last()
+        start_date = first_period.start_date
+        end_date = last_period.end_date
+
+        # Get beginning of year for prior period comparison
+        prior_periods = FiscalPeriod.objects.filter(
+            company=actor.company,
+            fiscal_year=fiscal_year,
+            period__lt=period_from,
+        ).order_by("-period")
+        prior_end_date = prior_periods.first().end_date if prior_periods.exists() else None
+
+        # Calculate net income for the period
+        net_income = self._calculate_net_income(actor, start_date, end_date)
+
+        # Get account balances and calculate changes
+        accounts = Account.objects.filter(
+            company=actor.company,
+            ledger_domain=Account.LedgerDomain.FINANCIAL,
+        )
+
+        # Build operating adjustments
+        operating_adjustments = []
+        total_operating_adjustments = Decimal("0.00")
+
+        # Build investing activities
+        investing_activities = []
+        total_investing = Decimal("0.00")
+
+        # Build financing activities
+        financing_activities = []
+        total_financing = Decimal("0.00")
+
+        # Calculate cash change
+        beginning_cash = Decimal("0.00")
+        ending_cash = Decimal("0.00")
+
+        for account in accounts:
+            balance = AccountBalance.objects.filter(
+                company=actor.company,
+                account=account,
+            ).first()
+
+            if not balance:
+                continue
+
+            current_balance = balance.balance
+            role = account.role
+
+            if role in self.CASH_ROLES:
+                ending_cash += current_balance
+                # Calculate beginning cash (this is simplified - would need period balance tracking)
+                # For now, estimate from period changes
+                period_change = self._get_account_period_change(actor, account, start_date, end_date)
+                beginning_cash = ending_cash - period_change
+
+            elif role in self.OPERATING_ADJUSTMENTS:
+                # Working capital changes
+                period_change = self._get_account_period_change(actor, account, start_date, end_date)
+                if period_change != Decimal("0.00"):
+                    # AR increase = cash outflow, AP increase = cash inflow
+                    if role == "RECEIVABLE_CONTROL":
+                        adjustment = -period_change  # Increase in AR is negative cash
+                    elif role == "PAYABLE_CONTROL":
+                        adjustment = period_change   # Increase in AP is positive cash
+                    else:  # INVENTORY
+                        adjustment = -period_change  # Increase in inventory is negative cash
+
+                    operating_adjustments.append({
+                        "code": account.code,
+                        "name": f"Change in {account.name}",
+                        "name_ar": account.name_ar or account.name,
+                        "amount": str(adjustment),
+                    })
+                    total_operating_adjustments += adjustment
+
+            elif role in self.INVESTING_ROLES:
+                period_change = self._get_account_period_change(actor, account, start_date, end_date)
+                if period_change != Decimal("0.00"):
+                    # Asset purchases are negative cash, sales are positive
+                    if role == "FIXED_ASSET":
+                        adjustment = -period_change
+                    else:  # ACCUMULATED_DEPRECIATION
+                        adjustment = period_change  # Depreciation is non-cash (add back)
+                        # Actually depreciation goes in operating, not investing
+                        # Let me adjust this
+                        operating_adjustments.append({
+                            "code": account.code,
+                            "name": f"Depreciation",
+                            "name_ar": "الإهلاك",
+                            "amount": str(-adjustment),
+                        })
+                        total_operating_adjustments -= adjustment
+                        continue
+
+                    investing_activities.append({
+                        "code": account.code,
+                        "name": account.name,
+                        "name_ar": account.name_ar or account.name,
+                        "amount": str(adjustment),
+                    })
+                    total_investing += adjustment
+
+            elif role in self.FINANCING_ROLES:
+                period_change = self._get_account_period_change(actor, account, start_date, end_date)
+                if period_change != Decimal("0.00"):
+                    financing_activities.append({
+                        "code": account.code,
+                        "name": account.name,
+                        "name_ar": account.name_ar or account.name,
+                        "amount": str(period_change),
+                    })
+                    total_financing += period_change
+
+        # Calculate totals
+        cash_from_operations = net_income + total_operating_adjustments
+        net_change_in_cash = cash_from_operations + total_investing + total_financing
+
+        return Response({
+            "fiscal_year": fiscal_year,
+            "period_from": period_from,
+            "period_to": period_to,
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "operating_activities": {
+                "title": "Cash Flows from Operating Activities",
+                "title_ar": "التدفقات النقدية من الأنشطة التشغيلية",
+                "net_income": str(net_income),
+                "adjustments": operating_adjustments,
+                "total_adjustments": str(total_operating_adjustments),
+                "net_cash": str(cash_from_operations),
+            },
+            "investing_activities": {
+                "title": "Cash Flows from Investing Activities",
+                "title_ar": "التدفقات النقدية من الأنشطة الاستثمارية",
+                "items": investing_activities,
+                "total": str(total_investing),
+            },
+            "financing_activities": {
+                "title": "Cash Flows from Financing Activities",
+                "title_ar": "التدفقات النقدية من الأنشطة التمويلية",
+                "items": financing_activities,
+                "total": str(total_financing),
+            },
+            "net_change_in_cash": str(net_change_in_cash),
+            "beginning_cash": str(beginning_cash),
+            "ending_cash": str(ending_cash),
+        })
+
+    def _calculate_net_income(self, actor, start_date, end_date):
+        """Calculate net income for the period from journal entries."""
+        from accounting.models import Account, JournalEntryLine
+
+        # Get all revenue and expense accounts
+        income_accounts = Account.objects.filter(
+            company=actor.company,
+            account_type__in=[
+                Account.AccountType.REVENUE,
+                Account.AccountType.CONTRA_REVENUE,
+                Account.AccountType.EXPENSE,
+                Account.AccountType.CONTRA_EXPENSE,
+            ],
+        )
+
+        total_revenue = Decimal("0.00")
+        total_expenses = Decimal("0.00")
+
+        for account in income_accounts:
+            # Sum up posted journal entry lines for this period
+            lines = JournalEntryLine.objects.filter(
+                journal_entry__company=actor.company,
+                journal_entry__status="POSTED",
+                journal_entry__date__gte=start_date,
+                journal_entry__date__lte=end_date,
+                account=account,
+            )
+
+            for line in lines:
+                net = line.credit - line.debit
+
+                if account.account_type == Account.AccountType.REVENUE:
+                    total_revenue += net
+                elif account.account_type == Account.AccountType.CONTRA_REVENUE:
+                    total_revenue -= net
+                elif account.account_type == Account.AccountType.EXPENSE:
+                    total_expenses += (line.debit - line.credit)
+                elif account.account_type == Account.AccountType.CONTRA_EXPENSE:
+                    total_expenses -= (line.debit - line.credit)
+
+        return total_revenue - total_expenses
+
+    def _get_account_period_change(self, actor, account, start_date, end_date):
+        """Calculate the change in an account balance during the period."""
+        from accounting.models import JournalEntryLine
+
+        lines = JournalEntryLine.objects.filter(
+            journal_entry__company=actor.company,
+            journal_entry__status="POSTED",
+            journal_entry__date__gte=start_date,
+            journal_entry__date__lte=end_date,
+            account=account,
+        )
+
+        total_change = Decimal("0.00")
+        for line in lines:
+            if account.normal_balance == "DEBIT":
+                total_change += (line.debit - line.credit)
+            else:
+                total_change += (line.credit - line.debit)
+
+        return total_change

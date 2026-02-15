@@ -176,6 +176,62 @@ export const vendorsService = {
 // Statistical Entry Service
 // =============================================================================
 
+// =============================================================================
+// Customer Receipt Service
+// =============================================================================
+
+export interface CustomerReceiptCreatePayload {
+  customer_id: number;
+  receipt_date: string;
+  amount: string;
+  bank_account_id: number;
+  ar_control_account_id: number;
+  reference?: string;
+  memo?: string;
+}
+
+export interface CustomerReceiptResponse {
+  receipt_public_id: string;
+  journal_entry_id: number;
+  amount: string;
+  customer_code: string;
+}
+
+export const customerReceiptsService = {
+  create: (data: CustomerReceiptCreatePayload) =>
+    apiClient.post<CustomerReceiptResponse>('/accounting/customer-receipts/', data),
+};
+
+// =============================================================================
+// Vendor Payment Service
+// =============================================================================
+
+export interface VendorPaymentCreatePayload {
+  vendor_id: number;
+  payment_date: string;
+  amount: string;
+  bank_account_id: number;
+  ap_control_account_id: number;
+  reference?: string;
+  memo?: string;
+}
+
+export interface VendorPaymentResponse {
+  payment_public_id: string;
+  journal_entry_id: number;
+  amount: string;
+  vendor_code: string;
+}
+
+export const vendorPaymentsService = {
+  create: (data: VendorPaymentCreatePayload) =>
+    apiClient.post<VendorPaymentResponse>('/accounting/vendor-payments/', data),
+};
+
+// =============================================================================
+// Statistical Entry Service
+// =============================================================================
+
 export const statisticalEntriesService = {
   list: (params?: { account_id?: number; status?: string }) =>
     apiClient.get<StatisticalEntry[]>('/accounting/statistical-entries/', { params }),

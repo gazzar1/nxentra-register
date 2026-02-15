@@ -159,6 +159,36 @@ def _next_company_sequence(company, name: str) -> int:
         return value
 
 
+def _emit_automatic_reversal(actor, entry, posting_event, reason: str):
+    """
+    Emit a reversal event to undo a posting when tie-out validation fails.
+
+    This is used when enforce_subledger_tieout is enabled and the posting
+    would create a tie-out violation.
+    """
+    from django.utils import timezone as dj_timezone
+
+    reversal_at = dj_timezone.now()
+
+    emit_event(
+        actor=actor,
+        event_type=EventTypes.JOURNAL_ENTRY_REVERSED,
+        aggregate_type="JournalEntry",
+        aggregate_id=str(entry.public_id),
+        idempotency_key=f"journal_entry.auto_reversed:{entry.public_id}:{reversal_at.isoformat()}",
+        data={
+            "entry_public_id": str(entry.public_id),
+            "reversed_at": reversal_at.isoformat(),
+            "reversed_by_id": actor.user.id,
+            "reversed_by_email": actor.user.email,
+            "reason": reason,
+            "auto_reversal": True,
+        },
+    )
+
+    _process_projections(actor.company)
+
+
 def _resolve_analysis_tags_to_public_ids(company, analysis_tags: list) -> list:
     """
     Convert analysis_tags with integer IDs to public IDs, or pass through already-resolved tags.
@@ -1067,7 +1097,6 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
     _process_projections(actor.company)
 
     # Validate subledger tie-out after posting
-    # This is a warning-level check (projection lag may cause temporary mismatches)
     # Only check tie-out if the entry affects AR or AP control accounts
     has_subledger_impact = any(
         line.get("customer_public_id") or line.get("vendor_public_id")
@@ -1078,9 +1107,20 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
         logger = logging.getLogger(__name__)
         is_valid, tieout_errors = validate_subledger_tieout(actor.company)
         if not is_valid:
-            # Log warning but don't fail - this catches projection lag
-            for error in tieout_errors:
-                logger.warning(f"Subledger tie-out warning after posting {entry.public_id}: {error}")
+            # Refresh company to get latest settings
+            actor.company.refresh_from_db()
+            if getattr(actor.company, 'enforce_subledger_tieout', False):
+                # Strict enforcement enabled - fail the posting
+                # Emit a reversal event to undo the posting
+                _emit_automatic_reversal(actor, entry, event, reason="Subledger tie-out violation")
+                return CommandResult.fail(
+                    f"Posting failed: subledger tie-out violation. {'; '.join(tieout_errors)}. "
+                    "The entry was automatically reversed."
+                )
+            else:
+                # Log warning but don't fail - this catches projection lag
+                for error in tieout_errors:
+                    logger.warning(f"Subledger tie-out warning after posting {entry.public_id}: {error}")
 
     posted_entry = JournalEntry.objects.get(company=actor.company, public_id=entry.public_id)
     return CommandResult.ok(posted_entry, event=event)
