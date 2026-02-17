@@ -57,4 +57,104 @@ export const reportsService = {
 
   getCashFlowStatement: (params?: Record<string, string>) =>
     apiClient.get('/reports/cash-flow-statement/', { params }),
+
+  // Customer/Vendor Statements
+  customerStatement: (code: string, params?: { date_from?: string; date_to?: string }) =>
+    apiClient.get<CustomerStatementResponse>(`/reports/customer-statement/${code}/`, { params }),
+
+  vendorStatement: (code: string, params?: { date_from?: string; date_to?: string }) =>
+    apiClient.get<VendorStatementResponse>(`/reports/vendor-statement/${code}/`, { params }),
 };
+
+// Statement response types
+export interface CustomerStatementResponse {
+  customer: {
+    code: string;
+    name: string;
+    name_ar: string;
+    email: string;
+    phone: string;
+    address: string;
+    credit_limit: string | null;
+    payment_terms_days: number;
+  };
+  balance: {
+    balance: string;
+    debit_total: string;
+    credit_total: string;
+    transaction_count: number;
+    last_invoice_date: string | null;
+    last_payment_date: string | null;
+    oldest_open_date: string | null;
+  };
+  transactions: Array<{
+    date: string;
+    entry_number: string;
+    description: string;
+    reference: string;
+    debit: string;
+    credit: string;
+    balance: string;
+  }>;
+  open_invoices: Array<{
+    invoice_number: string;
+    invoice_date: string;
+    due_date: string | null;
+    total_amount: string;
+    amount_paid: string;
+    amount_due: string;
+  }>;
+  aging: {
+    current: string;
+    days_31_60: string;
+    days_61_90: string;
+    over_90: string;
+    total: string;
+  };
+}
+
+export interface VendorStatementResponse {
+  vendor: {
+    code: string;
+    name: string;
+    name_ar: string;
+    email: string;
+    phone: string;
+    address: string;
+    payment_terms_days: number;
+    bank_name: string;
+    bank_account: string;
+  };
+  balance: {
+    balance: string;
+    debit_total: string;
+    credit_total: string;
+    transaction_count: number;
+    last_bill_date: string | null;
+    last_payment_date: string | null;
+    oldest_open_date: string | null;
+  };
+  transactions: Array<{
+    date: string;
+    entry_number: string;
+    description: string;
+    reference: string;
+    debit: string;
+    credit: string;
+    balance: string;
+  }>;
+  payment_allocations: Array<{
+    payment_date: string;
+    bill_reference: string;
+    bill_date: string | null;
+    bill_amount: string | null;
+    amount_paid: string;
+  }>;
+  aging: {
+    current: string;
+    days_31_60: string;
+    days_61_90: string;
+    over_90: string;
+    total: string;
+  };
+}

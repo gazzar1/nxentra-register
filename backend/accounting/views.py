@@ -1546,6 +1546,23 @@ class CustomerReceiptCreateView(APIView):
 
     Records a payment received from a customer.
     Creates a journal entry: Dr Bank, Cr AR Control.
+
+    Request body:
+    {
+        "customer_id": int,
+        "receipt_date": str (ISO date),
+        "amount": str/number,
+        "bank_account_id": int,
+        "ar_control_account_id": int,
+        "reference": str (optional),
+        "memo": str (optional),
+        "allocations": [  // optional
+            {
+                "invoice_public_id": str (UUID),
+                "amount": str/number
+            }
+        ]
+    }
     """
     permission_classes = [IsAuthenticated]
 
@@ -1562,6 +1579,7 @@ class CustomerReceiptCreateView(APIView):
         ar_control_account_id = request.data.get("ar_control_account_id")
         reference = request.data.get("reference", "")
         memo = request.data.get("memo", "")
+        allocations = request.data.get("allocations")
 
         # Validate required fields
         if not customer_id:
@@ -1599,6 +1617,7 @@ class CustomerReceiptCreateView(APIView):
             ar_control_account_id=int(ar_control_account_id),
             reference=reference,
             memo=memo,
+            allocations=allocations,
         )
 
         if not result.success:
@@ -1612,6 +1631,7 @@ class CustomerReceiptCreateView(APIView):
             "journal_entry_id": result.data["journal_entry"].id,
             "amount": result.data["amount"],
             "customer_code": result.data["customer_code"],
+            "allocations": result.data.get("allocations", []),
         }, status=status.HTTP_201_CREATED)
 
 
@@ -1621,6 +1641,25 @@ class VendorPaymentCreateView(APIView):
 
     Records a payment made to a vendor.
     Creates a journal entry: Dr AP Control, Cr Bank.
+
+    Request body:
+    {
+        "vendor_id": int,
+        "payment_date": str (ISO date),
+        "amount": str/number,
+        "bank_account_id": int,
+        "ap_control_account_id": int,
+        "reference": str (optional),
+        "memo": str (optional),
+        "allocations": [  // optional
+            {
+                "bill_reference": str (vendor's bill number),
+                "amount": str/number,
+                "bill_date": str (optional, ISO date),
+                "bill_amount": str/number (optional)
+            }
+        ]
+    }
     """
     permission_classes = [IsAuthenticated]
 
@@ -1637,6 +1676,7 @@ class VendorPaymentCreateView(APIView):
         ap_control_account_id = request.data.get("ap_control_account_id")
         reference = request.data.get("reference", "")
         memo = request.data.get("memo", "")
+        allocations = request.data.get("allocations")
 
         # Validate required fields
         if not vendor_id:
@@ -1674,6 +1714,7 @@ class VendorPaymentCreateView(APIView):
             ap_control_account_id=int(ap_control_account_id),
             reference=reference,
             memo=memo,
+            allocations=allocations,
         )
 
         if not result.success:
@@ -1687,4 +1728,5 @@ class VendorPaymentCreateView(APIView):
             "journal_entry_id": result.data["journal_entry"].id,
             "amount": result.data["amount"],
             "vendor_code": result.data["vendor_code"],
+            "allocations": result.data.get("allocations", []),
         }, status=status.HTTP_201_CREATED)

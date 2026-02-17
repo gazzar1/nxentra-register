@@ -3,8 +3,8 @@
 Voice input parsing service for Nxentra Scratchpad.
 
 IMPORTANT: This module follows strict separation of concerns:
-- Audio -> Text: OpenAI ASR (transcription only)
-- Text -> Fields: GPT-4o (suggestions only)
+- Audio -> Text: OpenAI Transcriptions API (ASR only)
+- Text -> Fields: LLM structured parsing (suggestions only)
 - Validation: Nxentra rules engine (truth)
 - Commit: Nxentra core (immutable events)
 
@@ -20,12 +20,17 @@ Voice is enabled IFF:
   settings.VOICE_PARSING_ENABLED=True AND company.voice_enabled=True
 Both flags must be True. Either being False disables voice.
 
+MODEL CONFIGURATION:
+Models are configured via Django settings (env-var overridable):
+  settings.VOICE_ASR_MODEL    (default: gpt-4o-mini-transcribe)
+  settings.VOICE_PARSE_MODEL  (default: gpt-4o-mini)
+
 Flow:
-    Audio -> gpt-4o-audio-preview (JSON) -> Extract transcript -> Store immediately
-                                                |
-                                    GPT-4o + JSON Schema -> Suggestions
-                                                |
-                                         Discard audio
+    Audio -> Transcriptions API (ASR) -> transcript -> Store immediately
+                                             |
+                              Chat Completions + JSON Schema -> Suggestions
+                                             |
+                                       Discard audio
 """
 
 import json
@@ -189,10 +194,16 @@ class VoiceUsageInfo:
     """Token and cost tracking for a voice parsing operation."""
     audio_seconds: Optional[Decimal] = None
     transcript_chars: int = 0
-    asr_model: str = "gpt-4o-audio-preview"
-    parse_model: str = "gpt-4o"
+    asr_model: str = ""   # populated at runtime from settings.VOICE_ASR_MODEL
+    parse_model: str = "" # populated at runtime from settings.VOICE_PARSE_MODEL
     parse_input_tokens: int = 0
     parse_output_tokens: int = 0
+
+    def __post_init__(self):
+        if not self.asr_model:
+            self.asr_model = getattr(settings, "VOICE_ASR_MODEL", "gpt-4o-mini-transcribe")
+        if not self.parse_model:
+            self.parse_model = getattr(settings, "VOICE_PARSE_MODEL", "gpt-4o-mini")
 
 
 @dataclass
@@ -243,9 +254,9 @@ class VoiceParserService:
     """
     Service for parsing voice input into structured transaction data.
 
-    Uses:
-    - gpt-4o-audio-preview for speech-to-text (returns JSON, extract transcript)
-    - gpt-4o with JSON Schema for structured parsing
+    Uses (configurable via settings):
+    - settings.VOICE_ASR_MODEL for speech-to-text (Transcriptions API)
+    - settings.VOICE_PARSE_MODEL for structured parsing (Chat Completions)
 
     IMPORTANT: This service only SUGGESTS fields. Validation and
     truth determination happen in the Nxentra rules engine.
@@ -477,12 +488,21 @@ class VoiceParserService:
             "can_use": global_enabled and voice_enabled and voice_quota is not None and voice_rows_used < voice_quota,
         }
 
+    # Formats natively supported by the OpenAI Transcriptions API.
+    # No conversion needed for these; the file is uploaded directly.
+    TRANSCRIPTION_SUPPORTED_TYPES = {
+        'audio/flac', 'audio/mp3', 'audio/mpeg', 'audio/mpga',
+        'audio/mp4', 'audio/m4a', 'audio/ogg', 'audio/wav',
+        'audio/x-wav', 'audio/webm',
+    }
+
     def _convert_audio_to_mp3(self, audio_content: bytes, content_type: str) -> bytes:
         """
-        Convert audio to MP3 format for OpenAI gpt-4o-audio-preview compatibility.
+        Convert audio to MP3 when the source format is not supported
+        by the Transcriptions API.
 
-        gpt-4o-audio-preview only supports 'wav' and 'mp3' formats.
-        Browsers typically record in webm/opus, so we need to convert.
+        Most browser formats (webm, mp4, ogg, wav) are supported natively,
+        so this is only a fallback for unusual formats.
 
         Args:
             audio_content: Raw audio bytes
@@ -494,7 +514,6 @@ class VoiceParserService:
         import io
         from pydub import AudioSegment
 
-        # Map content type to pydub format
         format_map = {
             'audio/webm': 'webm',
             'audio/mp4': 'mp4',
@@ -505,18 +524,12 @@ class VoiceParserService:
         }
         input_format = format_map.get(content_type, 'webm')
 
-        # If already mp3 or wav, return as-is
-        if input_format in ('mp3', 'wav'):
-            return audio_content
-
         logger.info(f"Converting audio from {input_format} to mp3")
 
         try:
-            # Load audio from bytes
             audio_input = io.BytesIO(audio_content)
             audio = AudioSegment.from_file(audio_input, format=input_format)
 
-            # Export as mp3
             mp3_output = io.BytesIO()
             audio.export(mp3_output, format='mp3', bitrate='128k')
             mp3_output.seek(0)
@@ -532,15 +545,19 @@ class VoiceParserService:
         language: str = "en",
     ) -> str:
         """
-        Transcribe audio file using OpenAI GPT-4o audio model.
+        Transcribe audio using the OpenAI Transcriptions API.
 
-        Uses gpt-4o-audio-preview via Chat Completions API for transcription.
+        Uses settings.VOICE_ASR_MODEL (default: gpt-4o-mini-transcribe).
+        Supported models: gpt-4o-mini-transcribe, gpt-4o-transcribe, whisper-1.
+
+        The Transcriptions API accepts direct file uploads and supports
+        flac, mp3, mp4, mpeg, mpga, m4a, ogg, wav, webm natively.
 
         AUDIO POLICY: Audio is discarded after this call returns.
         Only the transcript text is returned; audio is never stored.
 
         Args:
-            audio_file: File-like object containing audio data (Django UploadedFile or similar)
+            audio_file: File-like object containing audio data (Django UploadedFile)
             language: Language code (e.g., 'en', 'ar')
 
         Returns:
@@ -549,83 +566,63 @@ class VoiceParserService:
         Raises:
             Exception: If transcription fails after retries
         """
-        import base64
+        import io
 
         last_error = None
+        asr_model = getattr(settings, "VOICE_ASR_MODEL", "gpt-4o-mini-transcribe")
 
         # Read file content
         audio_file.seek(0)
         file_content = audio_file.read()
 
-        # Determine audio format from content type
+        # Determine content type
         content_type = getattr(audio_file, 'content_type', 'audio/webm')
 
-        # gpt-4o-audio-preview only supports wav and mp3
-        # Convert other formats (webm, mp4, ogg) to mp3
-        supported_formats = {'audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav'}
-        if content_type not in supported_formats:
+        # Convert to mp3 only if format is not natively supported
+        if content_type not in self.TRANSCRIPTION_SUPPORTED_TYPES:
             file_content = self._convert_audio_to_mp3(file_content, content_type)
-            audio_format = 'mp3'
+            file_name = "audio.mp3"
         else:
-            audio_format = 'wav' if 'wav' in content_type else 'mp3'
+            # Derive file extension from content type for the API
+            ext_map = {
+                'audio/webm': 'webm', 'audio/mp4': 'mp4', 'audio/mpeg': 'mp3',
+                'audio/mp3': 'mp3', 'audio/mpga': 'mp3', 'audio/m4a': 'm4a',
+                'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/ogg': 'ogg',
+                'audio/flac': 'flac',
+            }
+            ext = ext_map.get(content_type, 'webm')
+            file_name = f"audio.{ext}"
 
-        audio_base64 = base64.b64encode(file_content).decode('utf-8')
-
-        # Build language-specific system prompt
+        # Build prompt for Arabic to enforce script fidelity
+        prompt = None
         if language == "ar":
-            system_prompt = """You are a speech-to-text transcription system.
-
-YOUR ONLY JOB: Convert Arabic speech to Arabic text.
-
-STRICT RULES:
-1. Output the EXACT Arabic words spoken using Arabic script (?????? ???????)
-2. NEVER translate to English
-3. NEVER use Latin/Roman letters
-4. Write numbers as digits: 1000, 5000, etc.
-5. Output ONLY the transcription - no explanations, no translations
-
-If someone says "???? ???? ????" you output: ???? 7000
-If someone says "???? ??????" you output: ???? ??????
-
-FORBIDDEN OUTPUT: fertilizers, paid, supplier (these are English translations)
-REQUIRED OUTPUT: Arabic script only"""
-        else:
-            system_prompt = """You are a speech-to-text transcription system.
-
-YOUR ONLY JOB: Convert English speech to English text.
-
-RULES:
-1. Output the EXACT words spoken
-2. Write numbers as digits: 1000, 5000, etc.
-3. Output ONLY the transcription - no explanations"""
+            prompt = (
+                "هذا تسجيل صوتي باللغة العربية. "
+                "اكتب النص بالحروف العربية فقط. "
+                "اكتب الأرقام كأرقام: 1000، 5000."
+            )
 
         for attempt in range(self.MAX_RETRIES + 1):
             try:
-                response = self.client.chat.completions.create(
-                    model="gpt-4o-audio-preview",
-                    modalities=["text"],
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": system_prompt,
-                        },
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "input_audio",
-                                    "input_audio": {
-                                        "data": audio_base64,
-                                        "format": audio_format,
-                                    }
-                                }
-                            ]
-                        }
-                    ],
-                    temperature=0,
-                )
+                # Use the Transcriptions API (file upload, not base64)
+                audio_io = io.BytesIO(file_content)
+                audio_io.name = file_name
 
-                transcript = response.choices[0].message.content.strip()
+                kwargs = {
+                    "model": asr_model,
+                    "file": audio_io,
+                    "language": language,
+                }
+                if prompt:
+                    kwargs["prompt"] = prompt
+
+                response = self.client.audio.transcriptions.create(**kwargs)
+                transcript = response.text.strip()
+
+                logger.info(
+                    f"Transcribed audio with {asr_model}: "
+                    f"{transcript[:100]}..."
+                )
                 return transcript
 
             except Exception as e:
@@ -634,7 +631,6 @@ RULES:
                     f"Transcription attempt {attempt + 1} failed: {e}"
                 )
 
-                # Only retry transient errors
                 if not is_transient_error(e):
                     logger.error(f"Non-transient error, not retrying: {e}")
                     raise
@@ -716,11 +712,12 @@ RULES:
         user_prompt = self._build_user_prompt(transcript, language)
 
         last_error = None
+        parse_model = getattr(settings, "VOICE_PARSE_MODEL", "gpt-4o-mini")
 
         for attempt in range(self.MAX_RETRIES + 1):
             try:
                 response = self.client.chat.completions.create(
-                    model="gpt-4o",
+                    model=parse_model,
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt},
@@ -743,7 +740,7 @@ RULES:
                 # Capture token usage from response
                 usage_info = VoiceUsageInfo(
                     transcript_chars=len(transcript),
-                    parse_model="gpt-4o",
+                    parse_model=parse_model,
                     parse_input_tokens=getattr(response.usage, 'prompt_tokens', 0) if response.usage else 0,
                     parse_output_tokens=getattr(response.usage, 'completion_tokens', 0) if response.usage else 0,
                 )
@@ -939,7 +936,7 @@ Extract all transactions mentioned. For each one, suggest field values with conf
             transcript_chars=len(result.transcript) if result.transcript else 0,
             asr_model=usage.asr_model,
             parse_model=usage.parse_model,
-            asr_input_tokens=0,  # Whisper doesn't report tokens
+            asr_input_tokens=0,  # Transcription API bills per audio-second, not tokens
             parse_input_tokens=usage.parse_input_tokens,
             parse_output_tokens=usage.parse_output_tokens,
             asr_cost_usd=asr_cost,

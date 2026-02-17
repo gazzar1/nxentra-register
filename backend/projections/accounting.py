@@ -10,7 +10,7 @@ All writes use _projection_write=True to bypass the read-model guard.
 """
 
 import logging
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, date
 
 from django.utils import timezone
@@ -48,6 +48,16 @@ def _parse_datetime(value):
     if isinstance(value, str):
         return datetime.fromisoformat(value)
     return value
+
+
+def _parse_decimal(value, default="1.0"):
+    """Safely parse a value to Decimal, returning default on null/invalid."""
+    if value is None or value == "" or value == "None":
+        return Decimal(default)
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return Decimal(default)
 
 
 class AccountProjection(BaseProjection):
@@ -331,7 +341,7 @@ class JournalEntryProjection(BaseProjection):
                     "status": data.get("status", JournalEntry.Status.INCOMPLETE),
                     "created_by_id": data.get("created_by_id"),
                     "currency": data.get("currency", event.company.default_currency),
-                    "exchange_rate": Decimal(str(data.get("exchange_rate", "1.0"))),
+                    "exchange_rate": _parse_decimal(data.get("exchange_rate"), "1.0"),
                 },
             )
             lines = data.get("lines", [])
@@ -378,7 +388,7 @@ class JournalEntryProjection(BaseProjection):
             if data.get("currency"):
                 entry.currency = data.get("currency")
             if data.get("exchange_rate"):
-                entry.exchange_rate = Decimal(str(data.get("exchange_rate")))
+                entry.exchange_rate = _parse_decimal(data.get("exchange_rate"), str(entry.exchange_rate or "1.0"))
             entry.status = JournalEntry.Status.DRAFT
             entry.save(_projection_write=True)
             if data.get("lines"):
@@ -400,7 +410,7 @@ class JournalEntryProjection(BaseProjection):
                     "posted_by_id": data.get("posted_by_id"),
                     "entry_number": data.get("entry_number", ""),
                     "currency": data.get("currency", event.company.default_currency),
-                    "exchange_rate": Decimal(str(data.get("exchange_rate", "1.0"))),
+                    "exchange_rate": _parse_decimal(data.get("exchange_rate"), "1.0"),
                 },
             )
             if data.get("date"):
@@ -417,7 +427,7 @@ class JournalEntryProjection(BaseProjection):
             if data.get("currency"):
                 entry.currency = data.get("currency")
             if data.get("exchange_rate"):
-                entry.exchange_rate = Decimal(str(data.get("exchange_rate")))
+                entry.exchange_rate = _parse_decimal(data.get("exchange_rate"), str(entry.exchange_rate or "1.0"))
             entry.save(_projection_write=True)
             self._replace_lines(entry, data.get("lines", []))
             return

@@ -208,11 +208,18 @@ class AccountBalance(ProjectionOwnedModel):
         }
 
 
-class FiscalPeriod(ProjectionOwnedModel):
+class FiscalYear(ProjectionOwnedModel):
     """
-    Fiscal period read model.
+    Fiscal year read model with close/open status.
 
-    Periods are derived from events and used to enforce posting rules.
+    Tracks whether a fiscal year has been formally closed (year-end close
+    procedure completed) or is still open for posting.
+
+    State machine:
+        OPEN -> CLOSED  (via close_fiscal_year command)
+        CLOSED -> OPEN  (via reopen_fiscal_year command, requires reason + permission)
+
+    Invariant: A CLOSED fiscal year must not contain any OPEN periods.
     """
 
     class Status(models.TextChoices):
@@ -222,10 +229,91 @@ class FiscalPeriod(ProjectionOwnedModel):
     company = models.ForeignKey(
         Company,
         on_delete=models.CASCADE,
+        related_name="fiscal_years",
+    )
+    fiscal_year = models.PositiveIntegerField()
+    status = models.CharField(
+        max_length=10,
+        choices=Status.choices,
+        default=Status.OPEN,
+    )
+    closed_at = models.DateTimeField(null=True, blank=True)
+    closed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    close_reason = models.TextField(blank=True, default="")
+    retained_earnings_entry_public_id = models.CharField(
+        max_length=36,
+        blank=True,
+        default="",
+        help_text="Public ID of the closing journal entry that transferred P&L to retained earnings",
+    )
+
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Fiscal Year"
+        verbose_name_plural = "Fiscal Years"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "fiscal_year"],
+                name="uniq_fiscal_year",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["company", "fiscal_year"]),
+            models.Index(fields=["company", "status"]),
+        ]
+
+    def __str__(self):
+        return f"{self.company_id} FY{self.fiscal_year} ({self.status})"
+
+
+class FiscalPeriod(ProjectionOwnedModel):
+    """
+    Fiscal period read model.
+
+    Periods are derived from events and used to enforce posting rules.
+    Standard setup: 12 monthly periods (NORMAL) + 1 adjustment period (ADJUSTMENT).
+
+    Period 13 (ADJUSTMENT type) rules:
+    - Only allows ADJUSTMENT and CLOSING kind journal entries
+    - Blocks sales invoices, purchase bills, inventory ops, receipts, payments
+    - Has the same end date as Period 12 (it's a logical period, not calendar)
+    - Required for year-end closing entries
+
+    State machine for status:
+        OPEN -> CLOSED  (via close_period command)
+        CLOSED -> OPEN  (via open_period command, requires fiscal year to be OPEN)
+    """
+
+    class Status(models.TextChoices):
+        OPEN = "OPEN", "Open"
+        CLOSED = "CLOSED", "Closed"
+
+    class PeriodType(models.TextChoices):
+        NORMAL = "NORMAL", "Normal"
+        ADJUSTMENT = "ADJUSTMENT", "Adjustment"
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
         related_name="fiscal_periods",
     )
     fiscal_year = models.PositiveIntegerField()
     period = models.PositiveSmallIntegerField()
+    period_type = models.CharField(
+        max_length=12,
+        choices=PeriodType.choices,
+        default=PeriodType.NORMAL,
+        help_text="NORMAL for periods 1-12, ADJUSTMENT for period 13",
+    )
     start_date = models.DateField()
     end_date = models.DateField()
     status = models.CharField(
@@ -248,7 +336,12 @@ class FiscalPeriod(ProjectionOwnedModel):
         ]
 
     def __str__(self):
-        return f"{self.company_id} FY{self.fiscal_year} P{self.period} ({self.status})"
+        ptype = " (ADJ)" if self.period_type == self.PeriodType.ADJUSTMENT else ""
+        return f"{self.company_id} FY{self.fiscal_year} P{self.period}{ptype} ({self.status})"
+
+    @property
+    def is_adjustment_period(self):
+        return self.period_type == self.PeriodType.ADJUSTMENT
 
 
 class FiscalPeriodConfig(ProjectionOwnedModel):
@@ -257,6 +350,7 @@ class FiscalPeriodConfig(ProjectionOwnedModel):
 
     Tracks how many periods the year is divided into and which
     range of periods is currently open for posting.
+    Always includes 12 normal periods + 1 adjustment period (period 13).
     """
 
     company = models.ForeignKey(
@@ -265,7 +359,10 @@ class FiscalPeriodConfig(ProjectionOwnedModel):
         related_name="fiscal_period_configs",
     )
     fiscal_year = models.PositiveIntegerField()
-    period_count = models.PositiveSmallIntegerField(default=12)
+    period_count = models.PositiveSmallIntegerField(
+        default=13,
+        help_text="Total periods including adjustment period (always 13 for standard ERP)",
+    )
     current_period = models.PositiveSmallIntegerField(null=True, blank=True)
     open_from_period = models.PositiveSmallIntegerField(null=True, blank=True)
     open_to_period = models.PositiveSmallIntegerField(null=True, blank=True)
@@ -285,63 +382,73 @@ class FiscalPeriodConfig(ProjectionOwnedModel):
 class PeriodAccountBalance(ProjectionOwnedModel):
     """
     Account balance for a specific fiscal period.
-    
+
     Used for:
     - Period-over-period comparisons
     - Monthly/quarterly reports
-    - Year-end closing
-    
-    Note: This is a future enhancement. The AccountBalance projection
-    will be extended to maintain period balances as well.
+    - Year-end closing (calculating net income for retained earnings)
+    - Opening balance carry-forward to next fiscal year
+
+    Populated by PeriodAccountBalanceProjection consuming journal_entry.posted events.
     """
-    
+
     company = models.ForeignKey(
         Company,
         on_delete=models.CASCADE,
         related_name="period_balances",
     )
-    
+
     account = models.ForeignKey(
         Account,
         on_delete=models.CASCADE,
         related_name="period_balances",
     )
-    
+
     # Period identification
     fiscal_year = models.PositiveSmallIntegerField()
-    period = models.PositiveSmallIntegerField()  # 1-12 or custom
-    
+    period = models.PositiveSmallIntegerField()  # 1-13
+
     # Balances
     opening_balance = models.DecimalField(
         max_digits=18,
         decimal_places=2,
         default=Decimal("0.00"),
     )
-    
+
     period_debit = models.DecimalField(
         max_digits=18,
         decimal_places=2,
         default=Decimal("0.00"),
     )
-    
+
     period_credit = models.DecimalField(
         max_digits=18,
         decimal_places=2,
         default=Decimal("0.00"),
     )
-    
+
     closing_balance = models.DecimalField(
         max_digits=18,
         decimal_places=2,
         default=Decimal("0.00"),
     )
-    
+
     # Status
     is_closed = models.BooleanField(
         default=False,
         help_text="Period is closed, no more postings allowed",
     )
-    
+
+    # Event tracking
+    last_event = models.ForeignKey(
+        BusinessEvent,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        help_text="Last event that updated this balance",
+    )
+
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -357,10 +464,20 @@ class PeriodAccountBalance(ProjectionOwnedModel):
         ]
         indexes = [
             models.Index(fields=["company", "fiscal_year", "period"]),
+            models.Index(fields=["company", "account", "fiscal_year"]),
         ]
 
     def __str__(self):
         return f"{self.account.code} FY{self.fiscal_year} P{self.period}: {self.closing_balance}"
+
+    def recalculate_closing(self):
+        """Recalculate closing balance from opening + period movements."""
+        if self.account.normal_balance == Account.NormalBalance.DEBIT:
+            self.closing_balance = self.opening_balance + self.period_debit - self.period_credit
+        elif self.account.normal_balance == Account.NormalBalance.CREDIT:
+            self.closing_balance = self.opening_balance + self.period_credit - self.period_debit
+        else:
+            self.closing_balance = self.opening_balance + self.period_debit - self.period_credit
 
 
 class InventoryBalance(ProjectionOwnedModel):

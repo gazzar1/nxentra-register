@@ -270,6 +270,16 @@ export function Sidebar() {
           href: "/reports/vendor-balances",
           icon: <Truck className="h-4 w-4 text-amber-400" />,
         },
+        {
+          label: t("nav.customerStatement", "Customer Statement"),
+          href: "/reports/customer-statement",
+          icon: <UserCircle className="h-4 w-4 text-emerald-400" />,
+        },
+        {
+          label: t("nav.vendorStatement", "Vendor Statement"),
+          href: "/reports/vendor-statement",
+          icon: <Truck className="h-4 w-4 text-orange-400" />,
+        },
       ],
     },
     {

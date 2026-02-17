@@ -7,6 +7,7 @@ Endpoints:
 - /tax-codes/ - Tax Code CRUD
 - /posting-profiles/ - Posting Profile CRUD
 - /invoices/ - Sales Invoice CRUD with workflow actions
+- /customers/<id>/open-invoices/ - Open invoices for receipt allocation
 """
 
 from django.urls import path
@@ -26,6 +27,8 @@ from .views import (
     SalesInvoiceDetailView,
     SalesInvoicePostView,
     SalesInvoiceVoidView,
+    # Open invoices for allocation
+    CustomerOpenInvoicesView,
 )
 
 app_name = "sales"
@@ -95,5 +98,14 @@ urlpatterns = [
         "invoices/<int:pk>/void/",
         SalesInvoiceVoidView.as_view(),
         name="invoice-void",
+    ),
+
+    # ==========================================================================
+    # Open Invoices (for receipt allocation)
+    # ==========================================================================
+    path(
+        "customers/<int:customer_id>/open-invoices/",
+        CustomerOpenInvoicesView.as_view(),
+        name="customer-open-invoices",
     ),
 ]

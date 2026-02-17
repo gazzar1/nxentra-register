@@ -10,5 +10,6 @@ class ProjectionsConfig(AppConfig):
         from projections import accounting  # noqa: F401
         from projections import accounts  # noqa: F401
         from projections import periods  # noqa: F401
+        from projections import period_balance  # noqa: F401
         from projections import subledger_balance  # noqa: F401
         from projections import statistical_entry  # noqa: F401

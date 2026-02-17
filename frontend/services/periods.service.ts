@@ -3,6 +3,7 @@ import apiClient from '@/lib/api-client';
 export interface FiscalPeriod {
   fiscal_year: number;
   period: number;
+  period_type: 'NORMAL' | 'ADJUSTMENT';
   start_date: string;
   end_date: string;
   status: 'OPEN' | 'CLOSED';
@@ -17,9 +18,48 @@ export interface FiscalPeriodConfig {
   open_to_period: number | null;
 }
 
+export interface FiscalYearStatus {
+  fiscal_year: number;
+  status: 'OPEN' | 'CLOSED';
+  closed_at: string | null;
+  retained_earnings_entry_public_id: string | null;
+}
+
 export interface PeriodsResponse {
   config: FiscalPeriodConfig | null;
   periods: FiscalPeriod[];
+  fiscal_year_status: FiscalYearStatus | null;
+}
+
+export interface CloseReadinessResult {
+  fiscal_year: number;
+  is_ready: boolean;
+  checks: {
+    check: string;
+    passed: boolean;
+    detail: string;
+  }[];
+}
+
+export interface FiscalYearCloseResult {
+  fiscal_year: number;
+  status: string;
+  closing_entry_public_id: string;
+  next_year_created: boolean;
+}
+
+export interface ClosingEntry {
+  entry_public_id: string;
+  entry_number: string | null;
+  date: string;
+  kind: string;
+  memo: string;
+  lines: {
+    account_code: string;
+    account_name: string;
+    debit: string;
+    credit: string;
+  }[];
 }
 
 export const periodsService = {
@@ -58,6 +98,24 @@ export const periodsService = {
       start_date: startDate,
       end_date: endDate,
     }),
+};
+
+export const fiscalYearService = {
+  checkCloseReadiness: (year: number) =>
+    apiClient.get<CloseReadinessResult>(`/reports/fiscal-years/${year}/close-readiness/`),
+
+  close: (year: number, retainedEarningsAccountCode: string) =>
+    apiClient.post<FiscalYearCloseResult>(`/reports/fiscal-years/${year}/close/`, {
+      retained_earnings_account_code: retainedEarningsAccountCode,
+    }),
+
+  reopen: (year: number, reason: string) =>
+    apiClient.post<{ fiscal_year: number; status: string }>(`/reports/fiscal-years/${year}/reopen/`, {
+      reason,
+    }),
+
+  closingEntries: (year: number) =>
+    apiClient.get<{ closing_entries: ClosingEntry[] }>(`/reports/fiscal-years/${year}/closing-entries/`),
 };
 
 // Account Inquiry Types

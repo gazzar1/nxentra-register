@@ -37,7 +37,11 @@ Design Principles:
 4. Commands compose policies as needed
 """
 
+import logging
+
 from django.core.exceptions import PermissionDenied
+
+logger = logging.getLogger("nxentra.accounting.policies")
 
 
 class PolicyViolation(Exception):
@@ -294,11 +298,14 @@ def can_delete_entry(actor, entry) -> tuple[bool, str]:
 def can_post_entry(actor, entry) -> tuple[bool, str]:
     """
     Check if a journal entry can be posted.
-    
+
     Rules:
     - Must belong to actor's company
     - Must be in DRAFT status
-    - Must be a postable kind (NORMAL, OPENING, ADJUSTMENT)
+    - Must be a postable kind (NORMAL, OPENING, ADJUSTMENT, CLOSING)
+    - CLOSING entries can only be posted to Period 13 (ADJUSTMENT period)
+    - NORMAL/OPENING entries cannot be posted to Period 13
+    - ADJUSTMENT entries can be posted to any open period
     """
     if not check_tenant_boundary(actor, entry):
         return False, "Cross-company action denied."
@@ -308,11 +315,41 @@ def can_post_entry(actor, entry) -> tuple[bool, str]:
     if entry.status != JournalEntry.Status.DRAFT:
         return False, "Only DRAFT entries can be posted."
 
-    postable_kinds = [JournalEntry.Kind.NORMAL, JournalEntry.Kind.OPENING, JournalEntry.Kind.ADJUSTMENT]
+    postable_kinds = [
+        JournalEntry.Kind.NORMAL,
+        JournalEntry.Kind.OPENING,
+        JournalEntry.Kind.ADJUSTMENT,
+        JournalEntry.Kind.CLOSING,
+    ]
     if entry.kind not in postable_kinds:
         return False, f"Cannot post {entry.kind} entries."
 
-    allowed, reason = can_post_to_period(actor, getattr(entry, "date", None))
+    # Determine target period
+    entry_period = getattr(entry, "period", None)
+
+    # CLOSING entries MUST target Period 13
+    if entry.kind == JournalEntry.Kind.CLOSING:
+        if entry_period != 13:
+            return False, "CLOSING entries can only be posted to Period 13 (adjustment period)."
+
+    # Enforce period_type + kind invariants
+    if entry_period is not None:
+        from projections.models import FiscalPeriod
+        fiscal_period = FiscalPeriod.objects.filter(
+            company=actor.company,
+            period=entry_period,
+        ).order_by("-fiscal_year").first()
+
+        if fiscal_period and fiscal_period.period_type == FiscalPeriod.PeriodType.ADJUSTMENT:
+            # Period 13 (ADJUSTMENT): only ADJUSTMENT and CLOSING entries allowed
+            if entry.kind not in [JournalEntry.Kind.ADJUSTMENT, JournalEntry.Kind.CLOSING]:
+                return False, "Period 13 (adjustment period) only accepts ADJUSTMENT and CLOSING entries."
+        elif fiscal_period and fiscal_period.period_type == FiscalPeriod.PeriodType.NORMAL:
+            # Normal periods: CLOSING entries not allowed
+            if entry.kind == JournalEntry.Kind.CLOSING:
+                return False, "CLOSING entries can only be posted to Period 13 (adjustment period)."
+
+    allowed, reason = can_post_to_period(actor, getattr(entry, "date", None), period=entry_period)
     if not allowed:
         return False, reason
 
@@ -562,48 +599,148 @@ def can_modify_dimension_value(actor, value) -> tuple[bool, str]:
 # Period Policies (for future period closing)
 # =============================================================================
 
-def can_post_to_period(actor, target_date, period=None) -> tuple[bool, str]:
+def can_post_to_period(actor, target_date, period=None, fiscal_year=None) -> tuple[bool, str]:
     """
     Check if posting is allowed for the given date/period.
-    
+
     Rules:
     - Period must be open
     - Date must fall within an open period
+    - Fiscal year must not be closed
+
+    Args:
+        actor: The actor context
+        target_date: Entry date
+        period: Optional explicit period number (e.g., 13 for adjustment)
+        fiscal_year: Optional explicit fiscal year (required when period=13)
     """
-    if not target_date:
+    if not target_date and period is None:
         return True, ""
 
     from datetime import datetime, date as date_type
-    from projections.models import FiscalPeriod
+    from projections.models import FiscalPeriod, FiscalYear as FiscalYearModel
     from accounting.aggregates import load_fiscal_period_aggregate
 
-    if isinstance(target_date, str):
-        target_date = datetime.fromisoformat(target_date).date()
-    elif isinstance(target_date, datetime):
-        target_date = target_date.date()
-    elif not isinstance(target_date, date_type):
-        return False, "Invalid entry date."
+    if target_date:
+        if isinstance(target_date, str):
+            target_date = datetime.fromisoformat(target_date).date()
+        elif isinstance(target_date, datetime):
+            target_date = target_date.date()
+        elif not isinstance(target_date, date_type):
+            return False, "Invalid entry date."
 
-    period_qs = FiscalPeriod.objects.filter(
-        company=actor.company,
-        start_date__lte=target_date,
-        end_date__gte=target_date,
-    )
-    if period is not None:
-        period_qs = period_qs.filter(period=period)
+    # If period 13 is explicitly requested, look up by period number + fiscal year
+    if period is not None and period == 13:
+        p13_qs = FiscalPeriod.objects.filter(
+            company=actor.company,
+            period=13,
+        )
+        if fiscal_year is not None:
+            # Use explicit fiscal year context
+            p13_qs = p13_qs.filter(fiscal_year=fiscal_year)
+        elif target_date:
+            # Determine fiscal year from date: find which year's normal periods contain this date
+            date_fp = FiscalPeriod.objects.filter(
+                company=actor.company,
+                start_date__lte=target_date,
+                end_date__gte=target_date,
+                period_type=FiscalPeriod.PeriodType.NORMAL,
+            ).first()
+            if date_fp:
+                p13_qs = p13_qs.filter(fiscal_year=date_fp.fiscal_year)
+        # Fall back to most recent only as last resort
+        fiscal_period = p13_qs.order_by("-fiscal_year").first()
+    elif target_date:
+        period_qs = FiscalPeriod.objects.filter(
+            company=actor.company,
+            start_date__lte=target_date,
+            end_date__gte=target_date,
+            period_type=FiscalPeriod.PeriodType.NORMAL,
+        )
+        if period is not None:
+            period_qs = period_qs.filter(period=period)
+        fiscal_period = period_qs.first()
+    else:
+        return True, ""
 
-    fiscal_period = period_qs.first()
     if not fiscal_period:
         return False, "No fiscal period defined for this date."
 
     if fiscal_period.status != FiscalPeriod.Status.OPEN:
-        return False, "Fiscal period is closed."
+        return False, f"Fiscal period {fiscal_period.period} is closed."
+
+    # Check fiscal year is not closed
+    fy = FiscalYearModel.objects.filter(
+        company=actor.company,
+        fiscal_year=fiscal_period.fiscal_year,
+    ).first()
+    if fy and fy.status == FiscalYearModel.Status.CLOSED:
+        return False, f"Fiscal year {fiscal_period.fiscal_year} is closed."
 
     aggregate = load_fiscal_period_aggregate(
         actor.company, fiscal_period.fiscal_year, fiscal_period.period
     )
     if aggregate.closed:
-        return False, "Fiscal period is closed."
+        return False, f"Fiscal period {fiscal_period.period} is closed."
+
+    return True, ""
+
+
+def can_post_operational_document(actor, target_date) -> tuple[bool, str]:
+    """
+    Check if operational documents (sales invoices, purchase bills, receipts,
+    payments, inventory ops) can be posted for the given date.
+
+    Operational documents are ALWAYS blocked from Period 13 (adjustment period).
+    Only ADJUSTMENT and CLOSING journal entries are allowed in Period 13.
+
+    Args:
+        actor: The actor context
+        target_date: The document date
+
+    Returns:
+        (True, "") if allowed, (False, reason) if blocked
+    """
+    # First check standard period posting
+    allowed, reason = can_post_to_period(actor, target_date)
+    if not allowed:
+        logger.warning(
+            "operational_document.posting_denied",
+            extra={
+                "company_id": actor.company.id,
+                "target_date": str(target_date),
+                "reason": reason,
+                "user_id": actor.user.id,
+            },
+        )
+        return False, reason
+
+    # Additional check: ensure date doesn't fall in an adjustment period
+    from datetime import datetime, date as date_type
+    from projections.models import FiscalPeriod
+
+    if isinstance(target_date, str):
+        target_date = datetime.fromisoformat(target_date).date()
+    elif isinstance(target_date, datetime):
+        target_date = target_date.date()
+
+    if target_date:
+        adj_period = FiscalPeriod.objects.filter(
+            company=actor.company,
+            start_date__lte=target_date,
+            end_date__gte=target_date,
+            period_type=FiscalPeriod.PeriodType.ADJUSTMENT,
+        ).first()
+        if adj_period:
+            logger.warning(
+                "operational_document.p13_blocked",
+                extra={
+                    "company_id": actor.company.id,
+                    "target_date": str(target_date),
+                    "user_id": actor.user.id,
+                },
+            )
+            return False, "Operational documents cannot be posted to the adjustment period (Period 13)."
 
     return True, ""
 

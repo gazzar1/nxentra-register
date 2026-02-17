@@ -1341,7 +1341,7 @@ class JournalEntry(AccountingReadModel):
         if self.status != self.Status.DRAFT:
             raise ValidationError("Only DRAFT entries can be posted.")
 
-        if self.kind not in [self.Kind.NORMAL, self.Kind.OPENING, self.Kind.ADJUSTMENT]:
+        if self.kind not in [self.Kind.NORMAL, self.Kind.OPENING, self.Kind.ADJUSTMENT, self.Kind.CLOSING]:
             raise ValidationError(f"Cannot post {self.kind} entries using post().")
 
         lines_qs = self.lines.select_related("account", "account__company")

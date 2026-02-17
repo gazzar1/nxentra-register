@@ -1,4 +1,4 @@
-from django.db import migrations
+from django.db import connection, migrations
 
 
 RLS_TABLES = [
@@ -50,9 +50,6 @@ def _build_rls_sql() -> str:
 
 
 def _build_rls_reverse_sql() -> str:
-    # Revert to the unsafe version (or just drop them if we were rolling back to state before 0008, 
-    # but here we are just reverting this fix, so we should restore the old broken policies? 
-    # Or just leave them? Let's restore the old ones to be strictly correct for rollback)
     statements = []
     for table in RLS_TABLES:
         if table == "accounts_company":
@@ -83,6 +80,20 @@ def _build_rls_reverse_sql() -> str:
     return "\n".join(statements)
 
 
+def apply_rls(apps, schema_editor):
+    if connection.vendor != "postgresql":
+        return
+    with connection.cursor() as cursor:
+        cursor.execute(_build_rls_sql())
+
+
+def reverse_rls(apps, schema_editor):
+    if connection.vendor != "postgresql":
+        return
+    with connection.cursor() as cursor:
+        cursor.execute(_build_rls_reverse_sql())
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -90,8 +101,5 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RunSQL(
-            sql=_build_rls_sql(),
-            reverse_sql=_build_rls_reverse_sql(),
-        ),
+        migrations.RunPython(apply_rls, reverse_rls),
     ]

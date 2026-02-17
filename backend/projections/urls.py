@@ -55,11 +55,21 @@ from .views import (
     CustomerBalanceDetailView,
     VendorBalanceListView,
     VendorBalanceDetailView,
+    # Customer/Vendor statement views
+    CustomerStatementView,
+    VendorStatementView,
     # Aging reports
     ARAgingReportView,
     APAgingReportView,
     # Account inquiry
     AccountInquiryView,
+    # Fiscal year management
+    FiscalYearCloseReadinessView,
+    FiscalYearCloseView,
+    FiscalYearReopenView,
+    FiscalYearClosingEntriesView,
+    # Reconciliation
+    ReconciliationCheckView,
     # Admin projection management
     AdminProjectionListView,
     AdminProjectionDetailView,
@@ -147,6 +157,18 @@ urlpatterns = [
         name="vendor-balance-detail",
     ),
 
+    # Customer/Vendor Statements
+    path(
+        "customer-statement/<str:code>/",
+        CustomerStatementView.as_view(),
+        name="customer-statement",
+    ),
+    path(
+        "vendor-statement/<str:code>/",
+        VendorStatementView.as_view(),
+        name="vendor-statement",
+    ),
+
     # Account Inquiry
     path(
         "account-inquiry/",
@@ -189,6 +211,35 @@ urlpatterns = [
         "periods/<int:fiscal_year>/<int:period>/dates/",
         FiscalPeriodDatesView.as_view(),
         name="period-dates",
+    ),
+
+    # Fiscal Year Management
+    path(
+        "fiscal-years/<int:year>/close-readiness/",
+        FiscalYearCloseReadinessView.as_view(),
+        name="fiscal-year-close-readiness",
+    ),
+    path(
+        "fiscal-years/<int:year>/close/",
+        FiscalYearCloseView.as_view(),
+        name="fiscal-year-close",
+    ),
+    path(
+        "fiscal-years/<int:year>/reopen/",
+        FiscalYearReopenView.as_view(),
+        name="fiscal-year-reopen",
+    ),
+    path(
+        "fiscal-years/<int:year>/closing-entries/",
+        FiscalYearClosingEntriesView.as_view(),
+        name="fiscal-year-closing-entries",
+    ),
+
+    # Reconciliation
+    path(
+        "reconciliation/",
+        ReconciliationCheckView.as_view(),
+        name="reconciliation-check",
     ),
 
     # System Status

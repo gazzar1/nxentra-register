@@ -102,6 +102,16 @@ def get_logging_config(debug: bool = False) -> dict:
             "propagate": False,
         },
         # Application loggers
+        "nxentra.accounting.commands": {
+            "handlers": ["console"],
+            "level": log_level,
+            "propagate": False,
+        },
+        "nxentra.accounting.policies": {
+            "handlers": ["console"],
+            "level": log_level,
+            "propagate": False,
+        },
         "accounts": {
             "handlers": ["console"],
             "level": log_level,

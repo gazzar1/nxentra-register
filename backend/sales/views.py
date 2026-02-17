@@ -387,3 +387,66 @@ class SalesInvoiceVoidView(APIView):
             "invoice": SalesInvoiceSerializer(result.data["invoice"]).data,
             "reversing_entry_id": result.data["reversing_entry"].id,
         })
+
+
+# =============================================================================
+# Open Invoices View (for receipt allocation)
+# =============================================================================
+
+class CustomerOpenInvoicesView(APIView):
+    """
+    GET /api/sales/customers/<customer_id>/open-invoices/
+
+    Returns all posted invoices for a customer that have an outstanding balance.
+    Used by the receipt form to show invoices available for allocation.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, customer_id):
+        from accounting.models import Customer
+        from decimal import Decimal
+
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        # Validate customer
+        try:
+            customer = Customer.objects.get(company=actor.company, pk=customer_id)
+        except Customer.DoesNotExist:
+            return Response({"detail": "Customer not found."}, status=404)
+
+        # Get posted invoices with outstanding balance
+        invoices = SalesInvoice.objects.filter(
+            company=actor.company,
+            customer=customer,
+            status=SalesInvoice.Status.POSTED,
+        ).order_by("invoice_date", "invoice_number")
+
+        open_invoices = []
+        for inv in invoices:
+            amount_due = inv.total_amount - inv.amount_paid
+            if amount_due > Decimal("0"):
+                open_invoices.append({
+                    "id": inv.id,
+                    "public_id": str(inv.public_id),
+                    "invoice_number": inv.invoice_number,
+                    "invoice_date": inv.invoice_date.isoformat(),
+                    "due_date": inv.due_date.isoformat() if inv.due_date else None,
+                    "total_amount": str(inv.total_amount),
+                    "amount_paid": str(inv.amount_paid),
+                    "amount_due": str(amount_due),
+                    "reference": inv.reference,
+                })
+
+        return Response({
+            "customer_id": customer_id,
+            "customer_code": customer.code,
+            "customer_name": customer.name,
+            "open_invoices": open_invoices,
+            "total_outstanding": str(sum(
+                inv.total_amount - inv.amount_paid
+                for inv in invoices
+                if (inv.total_amount - inv.amount_paid) > Decimal("0")
+            )),
+        })

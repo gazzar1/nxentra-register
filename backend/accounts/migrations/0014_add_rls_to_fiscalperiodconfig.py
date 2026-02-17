@@ -4,7 +4,7 @@ Add RLS policy to tables that were missed by earlier migrations.
 These tables were created AFTER the original RLS migration (0008_enable_rls.py)
 and were missed. Without RLS, a forgotten queryset filter could leak data.
 """
-from django.db import migrations
+from django.db import connection, migrations
 
 
 RLS_TABLES = [
@@ -50,6 +50,20 @@ def _build_rls_reverse_sql() -> str:
     return "\n".join(statements)
 
 
+def apply_rls(apps, schema_editor):
+    if connection.vendor != "postgresql":
+        return
+    with connection.cursor() as cursor:
+        cursor.execute(_build_rls_sql())
+
+
+def reverse_rls(apps, schema_editor):
+    if connection.vendor != "postgresql":
+        return
+    with connection.cursor() as cursor:
+        cursor.execute(_build_rls_reverse_sql())
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -59,8 +73,5 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RunSQL(
-            sql=_build_rls_sql(),
-            reverse_sql=_build_rls_reverse_sql(),
-        ),
+        migrations.RunPython(apply_rls, reverse_rls),
     ]

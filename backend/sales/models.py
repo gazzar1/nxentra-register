@@ -504,6 +504,14 @@ class SalesInvoice(ProjectionWriteGuard):
         help_text="Total invoice amount (subtotal - discount + tax)",
     )
 
+    # Payment tracking
+    amount_paid = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        default=Decimal("0"),
+        help_text="Total amount paid against this invoice",
+    )
+
     # Status and posting
     status = models.CharField(
         max_length=10,
@@ -568,6 +576,16 @@ class SalesInvoice(ProjectionWriteGuard):
 
     def __str__(self):
         return f"INV-{self.invoice_number}"
+
+    @property
+    def amount_due(self) -> Decimal:
+        """Calculate remaining amount due on invoice."""
+        return self.total_amount - self.amount_paid
+
+    @property
+    def is_fully_paid(self) -> bool:
+        """Check if invoice is fully paid."""
+        return self.amount_paid >= self.total_amount
 
     def recalculate_totals(self):
         """
@@ -748,3 +766,159 @@ class SalesInvoiceLine(ProjectionWriteGuard):
         self.net_amount = self.gross_amount - self.discount_amount
         self.tax_amount = self.net_amount * self.tax_rate
         self.line_total = self.net_amount + self.tax_amount
+
+
+class ReceiptAllocation(ProjectionWriteGuard):
+    """
+    Tracks allocation of customer receipts to sales invoices.
+
+    When a customer pays, the receipt amount can be allocated to one or more
+    open invoices. This model tracks those allocations.
+    """
+
+    allowed_write_contexts = {"command", "projection", "bootstrap", "migration"}
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="receipt_allocations",
+    )
+
+    public_id = models.UUIDField(
+        default=uuid.uuid4,
+        editable=False,
+        unique=True,
+    )
+
+    # The receipt that was allocated
+    receipt_public_id = models.UUIDField(
+        help_text="Public ID of the customer receipt",
+    )
+
+    receipt_date = models.DateField(
+        help_text="Date of the receipt",
+    )
+
+    # The invoice being paid
+    invoice = models.ForeignKey(
+        SalesInvoice,
+        on_delete=models.PROTECT,
+        related_name="receipt_allocations",
+    )
+
+    # Amount allocated from this receipt to this invoice
+    amount = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        help_text="Amount allocated to this invoice",
+    )
+
+    # Audit
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["company", "receipt_public_id"]),
+            models.Index(fields=["company", "invoice"]),
+        ]
+        verbose_name = "Receipt Allocation"
+        verbose_name_plural = "Receipt Allocations"
+
+    def __str__(self):
+        return f"Receipt {self.receipt_public_id} -> {self.invoice.invoice_number}: {self.amount}"
+
+
+class PaymentAllocation(ProjectionWriteGuard):
+    """
+    Tracks allocation of vendor payments to vendor bills.
+
+    Since we don't have a full PurchaseInvoice model yet, this uses
+    a bill_reference string to identify bills.
+    """
+
+    allowed_write_contexts = {"command", "projection", "bootstrap", "migration"}
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="payment_allocations",
+    )
+
+    public_id = models.UUIDField(
+        default=uuid.uuid4,
+        editable=False,
+        unique=True,
+    )
+
+    # The payment that was allocated
+    payment_public_id = models.UUIDField(
+        help_text="Public ID of the vendor payment",
+    )
+
+    payment_date = models.DateField(
+        help_text="Date of the payment",
+    )
+
+    # The vendor bill being paid (reference-based until we have full model)
+    vendor = models.ForeignKey(
+        "accounting.Vendor",
+        on_delete=models.PROTECT,
+        related_name="payment_allocations",
+    )
+
+    bill_reference = models.CharField(
+        max_length=100,
+        help_text="Vendor bill/invoice reference number",
+    )
+
+    bill_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Original bill date",
+    )
+
+    bill_amount = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Original bill total amount",
+    )
+
+    # Amount allocated from this payment to this bill
+    amount = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        help_text="Amount allocated to this bill",
+    )
+
+    # Audit
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["company", "payment_public_id"]),
+            models.Index(fields=["company", "vendor"]),
+            models.Index(fields=["company", "bill_reference"]),
+        ]
+        verbose_name = "Payment Allocation"
+        verbose_name_plural = "Payment Allocations"
+
+    def __str__(self):
+        return f"Payment {self.payment_public_id} -> {self.bill_reference}: {self.amount}"

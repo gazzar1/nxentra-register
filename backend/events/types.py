@@ -618,6 +618,7 @@ class FiscalPeriodsConfiguredData(BaseEventData):
     configured_by_id: int
     configured_by_email: str
     previous_period_count: int = 12
+    is_yearend_creation: bool = False
 
 
 @dataclass
@@ -657,6 +658,121 @@ class FiscalPeriodDatesUpdatedData(BaseEventData):
     updated_at: str
     updated_by_id: int
     updated_by_email: str
+
+
+# =============================================================================
+# Fiscal Year Events
+# =============================================================================
+
+@dataclass
+class ReceiptAllocationData(BaseEventData):
+    """Typed allocation for customer receipts."""
+    invoice_public_id: str
+    invoice_number: str = ""
+    amount: str = "0"
+
+
+@dataclass
+class PaymentAllocationData(BaseEventData):
+    """Typed allocation for vendor payments."""
+    bill_reference: str = ""
+    amount: str = "0"
+    bill_date: Optional[str] = None
+    bill_amount: Optional[str] = None
+
+
+@dataclass
+class FiscalYearCloseReadinessCheckedData(BaseEventData):
+    """Data for fiscal_year.close_readiness_checked event (audit trail)."""
+    company_public_id: str
+    fiscal_year: int
+    is_ready: bool
+    issues: List[str] = field(default_factory=list)
+    checked_at: str = ""
+    checked_by_id: Optional[int] = None
+    checked_by_email: str = ""
+
+
+@dataclass
+class FiscalYearClosedData(BaseEventData):
+    """
+    Data for fiscal_year.closed event.
+
+    Emitted when a fiscal year is formally closed. This is the completion
+    event after closing entries have been generated and all periods locked.
+    """
+    company_public_id: str
+    fiscal_year: int
+    retained_earnings_account_public_id: str
+    retained_earnings_account_code: str
+    closing_entry_public_id: str
+    net_income: str  # Decimal as string
+    total_revenue: str
+    total_expenses: str
+    closed_at: str
+    closed_by_id: int
+    closed_by_email: str
+    next_year_created: bool = True
+    next_year: Optional[int] = None
+
+
+@dataclass
+class FiscalYearReopenedData(BaseEventData):
+    """
+    Data for fiscal_year.reopened event.
+
+    Emitted when a closed fiscal year is reopened. Closing entries are
+    reversed (not deleted) to maintain audit trail.
+    """
+    company_public_id: str
+    fiscal_year: int
+    reason: str
+    reversal_entry_public_id: str
+    reopened_at: str
+    reopened_by_id: int
+    reopened_by_email: str
+
+
+@dataclass
+class ClosingEntryGeneratedData(BaseEventData):
+    """
+    Data for closing_entry.generated event.
+
+    Emitted when the year-end closing journal entry is created in Period 13.
+    This entry zeros out all temporary accounts (Revenue, Expense) to
+    retained earnings.
+    """
+    company_public_id: str
+    fiscal_year: int
+    entry_public_id: str
+    entry_number: int
+    retained_earnings_account_public_id: str
+    retained_earnings_account_code: str
+    net_income: str
+    total_revenue: str
+    total_expenses: str
+    accounts_closed: int  # Number of temporary accounts zeroed
+    generated_at: str
+    generated_by_id: int
+    generated_by_email: str
+
+
+@dataclass
+class ClosingEntryReversedData(BaseEventData):
+    """
+    Data for closing_entry.reversed event.
+
+    Emitted when closing entries are reversed due to fiscal year reopen.
+    The original closing entry is NOT deleted — a compensating reversal is created.
+    """
+    company_public_id: str
+    fiscal_year: int
+    original_entry_public_id: str
+    reversal_entry_public_id: str
+    reason: str
+    reversed_at: str
+    reversed_by_id: int
+    reversed_by_email: str
 
 
 # =============================================================================
@@ -1518,6 +1634,7 @@ class CustomerReceiptRecordedData(BaseEventData):
     recorded_at: str = ""
     recorded_by_id: Optional[int] = None
     recorded_by_email: str = ""
+    allocations: Optional[List[Dict[str, Any]]] = None  # Invoice allocations
 
 
 @dataclass
@@ -1544,6 +1661,7 @@ class VendorPaymentRecordedData(BaseEventData):
     recorded_at: str = ""
     recorded_by_id: Optional[int] = None
     recorded_by_email: str = ""
+    allocations: Optional[List[Dict[str, Any]]] = None  # Bill allocations
 
 
 # =============================================================================
@@ -1820,6 +1938,13 @@ class EventTypes:
     INVITATION_ACCEPTED = "invitation.accepted"
     INVITATION_CANCELLED = "invitation.cancelled"
 
+    # Fiscal year events
+    FISCAL_YEAR_CLOSE_READINESS_CHECKED = "fiscal_year.close_readiness_checked"
+    FISCAL_YEAR_CLOSED = "fiscal_year.closed"
+    FISCAL_YEAR_REOPENED = "fiscal_year.reopened"
+    CLOSING_ENTRY_GENERATED = "closing_entry.generated"
+    CLOSING_ENTRY_REVERSED = "closing_entry.reversed"
+
     # Cash application events
     CUSTOMER_RECEIPT_RECORDED = "cash.customer_receipt_recorded"
     VENDOR_PAYMENT_RECORDED = "cash.vendor_payment_recorded"
@@ -1864,7 +1989,13 @@ EVENT_DATA_CLASSES = {
     EventTypes.FISCAL_PERIOD_RANGE_SET: FiscalPeriodRangeSetData,
     EventTypes.FISCAL_PERIOD_CURRENT_SET: FiscalPeriodCurrentSetData,
     EventTypes.FISCAL_PERIOD_DATES_UPDATED: FiscalPeriodDatesUpdatedData,
-    
+
+    EventTypes.FISCAL_YEAR_CLOSE_READINESS_CHECKED: FiscalYearCloseReadinessCheckedData,
+    EventTypes.FISCAL_YEAR_CLOSED: FiscalYearClosedData,
+    EventTypes.FISCAL_YEAR_REOPENED: FiscalYearReopenedData,
+    EventTypes.CLOSING_ENTRY_GENERATED: ClosingEntryGeneratedData,
+    EventTypes.CLOSING_ENTRY_REVERSED: ClosingEntryReversedData,
+
     EventTypes.ANALYSIS_DIMENSION_CREATED: AnalysisDimensionCreatedData,
     EventTypes.ANALYSIS_DIMENSION_UPDATED: AnalysisDimensionUpdatedData,
     EventTypes.ANALYSIS_DIMENSION_DELETED: AnalysisDimensionDeletedData,

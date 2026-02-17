@@ -180,6 +180,12 @@ export const vendorsService = {
 // Customer Receipt Service
 // =============================================================================
 
+// Invoice allocation for receipts
+export interface ReceiptAllocation {
+  invoice_public_id: string;
+  amount: string;
+}
+
 export interface CustomerReceiptCreatePayload {
   customer_id: number;
   receipt_date: string;
@@ -188,6 +194,7 @@ export interface CustomerReceiptCreatePayload {
   ar_control_account_id: number;
   reference?: string;
   memo?: string;
+  allocations?: ReceiptAllocation[];
 }
 
 export interface CustomerReceiptResponse {
@@ -195,16 +202,53 @@ export interface CustomerReceiptResponse {
   journal_entry_id: number;
   amount: string;
   customer_code: string;
+  allocations?: Array<{
+    invoice_public_id: string;
+    invoice_number: string;
+    amount: string;
+  }>;
+}
+
+// Open invoice for allocation
+export interface OpenInvoice {
+  id: number;
+  public_id: string;
+  invoice_number: string;
+  invoice_date: string;
+  due_date: string | null;
+  total_amount: string;
+  amount_paid: string;
+  amount_due: string;
+  reference: string;
+}
+
+export interface OpenInvoicesResponse {
+  customer_id: number;
+  customer_code: string;
+  customer_name: string;
+  open_invoices: OpenInvoice[];
+  total_outstanding: string;
 }
 
 export const customerReceiptsService = {
   create: (data: CustomerReceiptCreatePayload) =>
     apiClient.post<CustomerReceiptResponse>('/accounting/customer-receipts/', data),
+
+  getOpenInvoices: (customerId: number) =>
+    apiClient.get<OpenInvoicesResponse>(`/sales/customers/${customerId}/open-invoices/`),
 };
 
 // =============================================================================
 // Vendor Payment Service
 // =============================================================================
+
+// Bill allocation for payments
+export interface PaymentAllocation {
+  bill_reference: string;
+  amount: string;
+  bill_date?: string;
+  bill_amount?: string;
+}
 
 export interface VendorPaymentCreatePayload {
   vendor_id: number;
@@ -214,6 +258,7 @@ export interface VendorPaymentCreatePayload {
   ap_control_account_id: number;
   reference?: string;
   memo?: string;
+  allocations?: PaymentAllocation[];
 }
 
 export interface VendorPaymentResponse {
@@ -221,6 +266,7 @@ export interface VendorPaymentResponse {
   journal_entry_id: number;
   amount: string;
   vendor_code: string;
+  allocations?: PaymentAllocation[];
 }
 
 export const vendorPaymentsService = {

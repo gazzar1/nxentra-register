@@ -44,10 +44,16 @@ class TenantConfig(AppConfig):
         try:
             # Check if tables exist (may not during initial migration)
             with connection.cursor() as cursor:
-                cursor.execute(
-                    "SELECT 1 FROM information_schema.tables "
-                    "WHERE table_name IN ('accounts_company', 'tenant_tenantdirectory')"
-                )
+                if connection.vendor == "sqlite":
+                    cursor.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' "
+                        "AND name IN ('accounts_company', 'tenant_tenantdirectory')"
+                    )
+                else:
+                    cursor.execute(
+                        "SELECT 1 FROM information_schema.tables "
+                        "WHERE table_name IN ('accounts_company', 'tenant_tenantdirectory')"
+                    )
                 tables = cursor.fetchall()
                 if len(tables) < 2:
                     # Tables don't exist yet (initial setup)

@@ -21,7 +21,7 @@ from rest_framework.views import APIView
 from datetime import date as date_type
 
 from accounts.authz import resolve_actor, require
-from projections.models import AccountBalance, FiscalPeriod, FiscalPeriodConfig
+from projections.models import AccountBalance, FiscalPeriod, FiscalPeriodConfig, FiscalYear, PeriodAccountBalance
 from projections.account_balance import AccountBalanceProjection
 
 
@@ -276,20 +276,20 @@ class AccountBalanceListView(APIView):
                 "account_id": bal.account_id,
                 "account_code": bal.account.code,
                 "account_name": bal.account.name,
+                "account_name_ar": bal.account.name_ar or bal.account.name,
                 "account_type": bal.account.account_type,
+                "normal_balance": bal.account.normal_balance,
                 "balance": str(bal.balance),
                 "debit_total": str(bal.debit_total),
                 "credit_total": str(bal.credit_total),
                 "entry_count": bal.entry_count,
                 "last_entry_date": bal.last_entry_date.isoformat() if bal.last_entry_date else None,
+                "last_updated": bal.updated_at.isoformat() if bal.updated_at else None,
             }
             for bal in balances
         ]
-        
-        return Response({
-            "balances": data,
-            "count": len(data),
-        })
+
+        return Response(data)
 
 
 class AccountBalanceDetailView(APIView):
@@ -375,13 +375,16 @@ class ProjectionStatusView(APIView):
             lag = projection.get_lag(actor.company)
             
             projections.append({
-                "name": projection.name,
+                "projection_name": projection.name,
+                "company_id": actor.company.id,
                 "consumes": projection.consumes,
                 "lag": lag,
+                "pending_events": lag,
                 "is_healthy": lag == 0,
                 "is_paused": bookmark.is_paused if bookmark else False,
                 "error_count": bookmark.error_count if bookmark else 0,
                 "last_error": bookmark.last_error if bookmark else "",
+                "last_event_sequence": bookmark.last_event_sequence if bookmark else None,
                 "last_processed_at": (
                     bookmark.last_processed_at.isoformat()
                     if bookmark and bookmark.last_processed_at
@@ -1170,6 +1173,7 @@ class FiscalPeriodListView(APIView):
             periods_data.append({
                 "fiscal_year": p.fiscal_year,
                 "period": p.period,
+                "period_type": p.period_type,
                 "start_date": p.start_date.isoformat(),
                 "end_date": p.end_date.isoformat(),
                 "status": p.status,
@@ -1192,9 +1196,24 @@ class FiscalPeriodListView(APIView):
                 "open_to_period": config.open_to_period,
             }
 
+        # Get fiscal year status
+        fy_status = None
+        fy_obj = FiscalYear.objects.filter(company=actor.company)
+        if fiscal_year:
+            fy_obj = fy_obj.filter(fiscal_year=int(fiscal_year))
+        fy_obj = fy_obj.first()
+        if fy_obj:
+            fy_status = {
+                "fiscal_year": fy_obj.fiscal_year,
+                "status": fy_obj.status,
+                "closed_at": fy_obj.closed_at.isoformat() if fy_obj.closed_at else None,
+                "retained_earnings_entry_public_id": fy_obj.retained_earnings_entry_public_id or None,
+            }
+
         return Response({
             "config": config_data,
             "periods": periods_data,
+            "fiscal_year_status": fy_status,
         })
 
 
@@ -1398,6 +1417,187 @@ class FiscalPeriodDatesView(APIView):
             "end_date": fp.end_date.isoformat(),
             "status": fp.status,
         })
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FISCAL YEAR MANAGEMENT ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class FiscalYearCloseReadinessView(APIView):
+    """
+    GET /api/reports/fiscal-years/<year>/close-readiness/
+
+    Check if a fiscal year is ready to be closed. Returns a readiness
+    report with any blocking issues.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, year):
+        actor = resolve_actor(request)
+        require(actor, "periods.configure")
+
+        from accounting.commands import check_close_readiness
+        result = check_close_readiness(actor, int(year))
+
+        if not result.success:
+            return Response(
+                {"detail": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(result.data)
+
+
+class FiscalYearCloseView(APIView):
+    """
+    POST /api/reports/fiscal-years/<year>/close/
+
+    Close a fiscal year. Generates closing entries, locks all periods,
+    and creates next year's periods.
+
+    Body: {"retained_earnings_account_code": "3100"}
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, year):
+        actor = resolve_actor(request)
+
+        re_account_code = request.data.get("retained_earnings_account_code")
+        if not re_account_code:
+            return Response(
+                {"detail": "retained_earnings_account_code is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from accounting.commands import close_fiscal_year
+        result = close_fiscal_year(actor, int(year), re_account_code)
+
+        if not result.success:
+            return Response(
+                {"detail": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(result.data, status=status.HTTP_200_OK)
+
+
+class FiscalYearReopenView(APIView):
+    """
+    POST /api/reports/fiscal-years/<year>/reopen/
+
+    Reopen a closed fiscal year. Reverses closing entries and reopens Period 13.
+
+    Body: {"reason": "Auditor requested adjustments"}
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, year):
+        actor = resolve_actor(request)
+
+        reason = request.data.get("reason", "").strip()
+        if not reason:
+            return Response(
+                {"detail": "reason is required to reopen a fiscal year."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from accounting.commands import reopen_fiscal_year
+        result = reopen_fiscal_year(actor, int(year), reason)
+
+        if not result.success:
+            return Response(
+                {"detail": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(result.data, status=status.HTTP_200_OK)
+
+
+class FiscalYearClosingEntriesView(APIView):
+    """
+    GET /api/reports/fiscal-years/<year>/closing-entries/
+
+    View closing journal entries for a fiscal year (preview or review).
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, year):
+        actor = resolve_actor(request)
+        require(actor, "reports.view")
+
+        from accounting.models import JournalEntry, JournalLine
+
+        closing_entries = JournalEntry.objects.filter(
+            company=actor.company,
+            kind=JournalEntry.Kind.CLOSING,
+            period=13,
+        ).order_by("-date", "-entry_number")
+
+        # Filter by fiscal year via period dates
+        fy_periods = FiscalPeriod.objects.filter(
+            company=actor.company,
+            fiscal_year=int(year),
+        )
+        if fy_periods.exists():
+            fy_start = fy_periods.order_by("period").first().start_date
+            fy_end = fy_periods.order_by("-period").first().end_date
+            closing_entries = closing_entries.filter(
+                date__gte=fy_start, date__lte=fy_end
+            )
+
+        entries_data = []
+        for entry in closing_entries:
+            lines = []
+            for line in entry.lines.all().select_related("account"):
+                lines.append({
+                    "account_code": line.account.code,
+                    "account_name": line.account.name,
+                    "debit": str(line.debit),
+                    "credit": str(line.credit),
+                    "memo": line.memo or "",
+                })
+            entries_data.append({
+                "entry_public_id": str(entry.public_id),
+                "entry_number": entry.entry_number,
+                "date": entry.date.isoformat(),
+                "memo": entry.memo,
+                "kind": entry.kind,
+                "status": entry.status,
+                "period": entry.period,
+                "lines": lines,
+            })
+
+        return Response({
+            "fiscal_year": int(year),
+            "closing_entries": entries_data,
+            "count": len(entries_data),
+        })
+
+
+class ReconciliationCheckView(APIView):
+    """
+    GET /api/reports/reconciliation/
+
+    Run AR/AP subledger tie-out reconciliation check.
+    Returns structured report with GL vs subledger balances.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        actor = resolve_actor(request)
+        require(actor, "reports.view")
+
+        from accounting.commands import run_reconciliation_check
+        result = run_reconciliation_check(actor)
+
+        if not result.success:
+            return Response(
+                {"detail": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(result.data)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3172,3 +3372,314 @@ class CashFlowStatementView(APIView):
                 total_change += (line.credit - line.debit)
 
         return total_change
+
+
+# =============================================================================
+# Customer / Vendor Statement Views
+# =============================================================================
+
+class CustomerStatementView(APIView):
+    """
+    GET /api/reports/customer-statement/<code>/
+
+    Returns a statement for a specific customer including:
+    - Customer info and current balance
+    - Transaction history
+    - Open invoices and aging breakdown
+    - Payment history
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, code):
+        from accounting.models import Customer, JournalLine
+        from sales.models import SalesInvoice, ReceiptAllocation
+        from projections.models import CustomerBalance
+        from datetime import timedelta
+
+        actor = resolve_actor(request)
+        require(actor, "reports.view")
+
+        # Get date filters
+        date_from = request.query_params.get("date_from")
+        date_to = request.query_params.get("date_to")
+
+        try:
+            customer = Customer.objects.get(
+                company=actor.company,
+                code=code,
+            )
+        except Customer.DoesNotExist:
+            return Response(
+                {"detail": "Customer not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Get customer balance
+        try:
+            balance = CustomerBalance.objects.get(
+                company=actor.company,
+                customer=customer,
+            )
+            balance_data = {
+                "balance": str(balance.balance),
+                "debit_total": str(balance.debit_total),
+                "credit_total": str(balance.credit_total),
+                "transaction_count": balance.transaction_count,
+                "last_invoice_date": balance.last_invoice_date.isoformat() if balance.last_invoice_date else None,
+                "last_payment_date": balance.last_payment_date.isoformat() if balance.last_payment_date else None,
+                "oldest_open_date": balance.oldest_open_date.isoformat() if balance.oldest_open_date else None,
+            }
+        except CustomerBalance.DoesNotExist:
+            balance_data = {
+                "balance": "0.00",
+                "debit_total": "0.00",
+                "credit_total": "0.00",
+                "transaction_count": 0,
+            }
+
+        # Get transactions (journal lines with customer counterparty)
+        transactions_query = JournalLine.objects.filter(
+            entry__company=actor.company,
+            entry__status="POSTED",
+            customer=customer,
+        ).select_related("entry", "account").order_by("-entry__date", "-entry__id")
+
+        if date_from:
+            transactions_query = transactions_query.filter(entry__date__gte=date_from)
+        if date_to:
+            transactions_query = transactions_query.filter(entry__date__lte=date_to)
+
+        transactions = []
+        running_balance = Decimal("0.00")
+        for line in transactions_query[:100]:  # Limit to 100 transactions
+            running_balance += line.debit - line.credit
+            transactions.append({
+                "date": line.entry.date.isoformat(),
+                "entry_number": line.entry.entry_number,
+                "description": line.entry.memo or line.description,
+                "reference": line.entry.reference,
+                "debit": str(line.debit),
+                "credit": str(line.credit),
+                "balance": str(running_balance),
+            })
+
+        # Reverse for chronological order
+        transactions.reverse()
+
+        # Get open invoices
+        open_invoices = []
+        invoices = SalesInvoice.objects.filter(
+            company=actor.company,
+            customer=customer,
+            status=SalesInvoice.Status.POSTED,
+        ).order_by("invoice_date")
+
+        for inv in invoices:
+            amount_due = inv.total_amount - inv.amount_paid
+            if amount_due > Decimal("0"):
+                open_invoices.append({
+                    "invoice_number": inv.invoice_number,
+                    "invoice_date": inv.invoice_date.isoformat(),
+                    "due_date": inv.due_date.isoformat() if inv.due_date else None,
+                    "total_amount": str(inv.total_amount),
+                    "amount_paid": str(inv.amount_paid),
+                    "amount_due": str(amount_due),
+                })
+
+        # Calculate aging buckets
+        today = date.today()
+        aging = {
+            "current": Decimal("0.00"),
+            "days_31_60": Decimal("0.00"),
+            "days_61_90": Decimal("0.00"),
+            "over_90": Decimal("0.00"),
+        }
+
+        for inv in open_invoices:
+            inv_date = date.fromisoformat(inv["invoice_date"])
+            days_old = (today - inv_date).days
+            amount_due = Decimal(inv["amount_due"])
+
+            if days_old <= 30:
+                aging["current"] += amount_due
+            elif days_old <= 60:
+                aging["days_31_60"] += amount_due
+            elif days_old <= 90:
+                aging["days_61_90"] += amount_due
+            else:
+                aging["over_90"] += amount_due
+
+        return Response({
+            "customer": {
+                "code": customer.code,
+                "name": customer.name,
+                "name_ar": customer.name_ar,
+                "email": customer.email,
+                "phone": customer.phone,
+                "address": customer.address,
+                "credit_limit": str(customer.credit_limit) if customer.credit_limit else None,
+                "payment_terms_days": customer.payment_terms_days,
+            },
+            "balance": balance_data,
+            "transactions": transactions,
+            "open_invoices": open_invoices,
+            "aging": {
+                "current": str(aging["current"]),
+                "days_31_60": str(aging["days_31_60"]),
+                "days_61_90": str(aging["days_61_90"]),
+                "over_90": str(aging["over_90"]),
+                "total": str(sum(aging.values())),
+            },
+        })
+
+
+class VendorStatementView(APIView):
+    """
+    GET /api/reports/vendor-statement/<code>/
+
+    Returns a statement for a specific vendor including:
+    - Vendor info and current balance
+    - Transaction history
+    - Payment history
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, code):
+        from accounting.models import Vendor, JournalLine
+        from sales.models import PaymentAllocation
+        from projections.models import VendorBalance
+        from datetime import timedelta
+
+        actor = resolve_actor(request)
+        require(actor, "reports.view")
+
+        # Get date filters
+        date_from = request.query_params.get("date_from")
+        date_to = request.query_params.get("date_to")
+
+        try:
+            vendor = Vendor.objects.get(
+                company=actor.company,
+                code=code,
+            )
+        except Vendor.DoesNotExist:
+            return Response(
+                {"detail": "Vendor not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Get vendor balance
+        try:
+            balance = VendorBalance.objects.get(
+                company=actor.company,
+                vendor=vendor,
+            )
+            balance_data = {
+                "balance": str(balance.balance),
+                "debit_total": str(balance.debit_total),
+                "credit_total": str(balance.credit_total),
+                "transaction_count": balance.transaction_count,
+                "last_bill_date": balance.last_bill_date.isoformat() if balance.last_bill_date else None,
+                "last_payment_date": balance.last_payment_date.isoformat() if balance.last_payment_date else None,
+                "oldest_open_date": balance.oldest_open_date.isoformat() if balance.oldest_open_date else None,
+            }
+        except VendorBalance.DoesNotExist:
+            balance_data = {
+                "balance": "0.00",
+                "debit_total": "0.00",
+                "credit_total": "0.00",
+                "transaction_count": 0,
+            }
+
+        # Get transactions (journal lines with vendor counterparty)
+        transactions_query = JournalLine.objects.filter(
+            entry__company=actor.company,
+            entry__status="POSTED",
+            vendor=vendor,
+        ).select_related("entry", "account").order_by("-entry__date", "-entry__id")
+
+        if date_from:
+            transactions_query = transactions_query.filter(entry__date__gte=date_from)
+        if date_to:
+            transactions_query = transactions_query.filter(entry__date__lte=date_to)
+
+        transactions = []
+        running_balance = Decimal("0.00")
+        for line in transactions_query[:100]:  # Limit to 100 transactions
+            running_balance += line.credit - line.debit  # AP is credit normal
+            transactions.append({
+                "date": line.entry.date.isoformat(),
+                "entry_number": line.entry.entry_number,
+                "description": line.entry.memo or line.description,
+                "reference": line.entry.reference,
+                "debit": str(line.debit),
+                "credit": str(line.credit),
+                "balance": str(running_balance),
+            })
+
+        # Reverse for chronological order
+        transactions.reverse()
+
+        # Get payment allocations for this vendor
+        payment_allocations = PaymentAllocation.objects.filter(
+            company=actor.company,
+            vendor=vendor,
+        ).order_by("-payment_date")[:50]
+
+        payments = [
+            {
+                "payment_date": alloc.payment_date.isoformat(),
+                "bill_reference": alloc.bill_reference,
+                "bill_date": alloc.bill_date.isoformat() if alloc.bill_date else None,
+                "bill_amount": str(alloc.bill_amount) if alloc.bill_amount else None,
+                "amount_paid": str(alloc.amount),
+            }
+            for alloc in payment_allocations
+        ]
+
+        # Calculate aging (based on oldest_open_date if available)
+        today = date.today()
+        aging = {
+            "current": Decimal("0.00"),
+            "days_31_60": Decimal("0.00"),
+            "days_61_90": Decimal("0.00"),
+            "over_90": Decimal("0.00"),
+        }
+
+        if balance_data.get("oldest_open_date") and Decimal(balance_data["balance"]) > 0:
+            oldest_date = date.fromisoformat(balance_data["oldest_open_date"])
+            days_old = (today - oldest_date).days
+            balance_amount = Decimal(balance_data["balance"])
+
+            if days_old <= 30:
+                aging["current"] = balance_amount
+            elif days_old <= 60:
+                aging["days_31_60"] = balance_amount
+            elif days_old <= 90:
+                aging["days_61_90"] = balance_amount
+            else:
+                aging["over_90"] = balance_amount
+
+        return Response({
+            "vendor": {
+                "code": vendor.code,
+                "name": vendor.name,
+                "name_ar": vendor.name_ar,
+                "email": vendor.email,
+                "phone": vendor.phone,
+                "address": vendor.address,
+                "payment_terms_days": vendor.payment_terms_days,
+                "bank_name": vendor.bank_name,
+                "bank_account": vendor.bank_account,
+            },
+            "balance": balance_data,
+            "transactions": transactions,
+            "payment_allocations": payments,
+            "aging": {
+                "current": str(aging["current"]),
+                "days_31_60": str(aging["days_31_60"]),
+                "days_61_90": str(aging["days_61_90"]),
+                "over_90": str(aging["over_90"]),
+                "total": str(sum(aging.values())),
+            },
+        })

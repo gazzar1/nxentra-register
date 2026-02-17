@@ -183,6 +183,54 @@ class HealthCheck:
             }
 
     @staticmethod
+    def check_reconciliation() -> Dict[str, Any]:
+        """
+        Check AR/AP reconciliation status across all active companies.
+
+        Note: Capped to first 100 companies to keep health check latency
+        bounded. For full coverage, use the reconciliation_check management
+        command (python manage.py reconciliation_check --strict).
+        """
+        try:
+            from accounts.models import Company
+            from accounts.rls import rls_bypass
+
+            with rls_bypass():
+                companies = list(Company.objects.filter(is_active=True)[:100])
+
+            if not companies:
+                return {"status": "skipped", "reason": "No active companies"}
+
+            from accounting.commands import validate_subledger_tieout
+
+            imbalances = []
+            for company in companies:
+                try:
+                    with rls_bypass():
+                        valid, errors = validate_subledger_tieout(company)
+                    if not valid:
+                        imbalances.append({
+                            "company": company.slug,
+                            "errors": errors[:3],
+                        })
+                except Exception:
+                    pass  # Skip companies that fail (e.g., no accounts)
+
+            if not imbalances:
+                return {
+                    "status": "healthy",
+                    "companies_checked": len(companies),
+                }
+            else:
+                return {
+                    "status": "degraded",
+                    "companies_checked": len(companies),
+                    "imbalances": imbalances[:10],
+                }
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    @staticmethod
     def get_full_health() -> Dict[str, Any]:
         """Get comprehensive health report."""
         checks = {
@@ -190,6 +238,7 @@ class HealthCheck:
             "redis": HealthCheck.check_redis(),
             "tenant_directory": HealthCheck.check_tenant_directory(),
             "projection_lag": HealthCheck.check_projection_lag(),
+            "reconciliation": HealthCheck.check_reconciliation(),
         }
 
         # Determine overall status

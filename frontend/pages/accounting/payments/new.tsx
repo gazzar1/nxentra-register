@@ -1,13 +1,14 @@
 import { GetServerSideProps } from "next";
+import { useState, useMemo } from "react";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import { ArrowLeft, Save } from "lucide-react";
-import { useForm, Controller } from "react-hook-form";
+import { ArrowLeft, Save, FileText, Plus, Trash2 } from "lucide-react";
+import { useForm, Controller, useFieldArray } from "react-hook-form";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -19,9 +20,29 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { useVendors, useAccounts } from "@/queries/useAccounts";
 import { useToast } from "@/components/ui/toaster";
-import { vendorPaymentsService, type VendorPaymentCreatePayload } from "@/services/accounts.service";
+import {
+  vendorPaymentsService,
+  type VendorPaymentCreatePayload,
+  type PaymentAllocation,
+} from "@/services/accounts.service";
+import { cn } from "@/lib/cn";
+
+interface BillAllocationFormData {
+  bill_reference: string;
+  amount: string;
+  bill_date?: string;
+  bill_amount?: string;
+}
 
 interface PaymentFormData {
   vendor_id: string;
@@ -31,6 +52,7 @@ interface PaymentFormData {
   ap_control_account_id: string;
   reference: string;
   memo: string;
+  allocations: BillAllocationFormData[];
 }
 
 export default function NewVendorPaymentPage() {
@@ -42,7 +64,7 @@ export default function NewVendorPaymentPage() {
 
   // Filter accounts by role
   const bankAccounts = accounts?.filter(
-    (a) => a.role === "CASH" && a.is_postable && !a.is_header
+    (a) => a.role === "LIQUIDITY" && a.is_postable && !a.is_header
   );
   const apControlAccounts = accounts?.filter(
     (a) => a.role === "PAYABLE_CONTROL" && a.is_postable && !a.is_header
@@ -52,6 +74,7 @@ export default function NewVendorPaymentPage() {
     register,
     control,
     handleSubmit,
+    watch,
     formState: { errors, isSubmitting },
   } = useForm<PaymentFormData>({
     defaultValues: {
@@ -62,10 +85,61 @@ export default function NewVendorPaymentPage() {
       ap_control_account_id: "",
       reference: "",
       memo: "",
+      allocations: [],
     },
   });
 
+  const { fields, append, remove } = useFieldArray({
+    control,
+    name: "allocations",
+  });
+
+  const paymentAmount = watch("amount");
+  const allocations = watch("allocations");
+
+  // Calculate total allocated amount
+  const totalAllocated = useMemo(() => {
+    return allocations
+      .filter((a) => parseFloat(a.amount || "0") > 0)
+      .reduce((sum, a) => sum + parseFloat(a.amount || "0"), 0);
+  }, [allocations]);
+
+  // Calculate unallocated amount
+  const unallocatedAmount = useMemo(() => {
+    const payment = parseFloat(paymentAmount || "0");
+    return Math.max(0, payment - totalAllocated);
+  }, [paymentAmount, totalAllocated]);
+
+  const handleAddAllocation = () => {
+    append({
+      bill_reference: "",
+      amount: unallocatedAmount > 0 ? unallocatedAmount.toFixed(2) : "",
+      bill_date: "",
+      bill_amount: "",
+    });
+  };
+
   const onSubmit = async (data: PaymentFormData) => {
+    // Build allocations array
+    const validAllocations: PaymentAllocation[] = data.allocations
+      .filter((a) => a.bill_reference && parseFloat(a.amount) > 0)
+      .map((a) => ({
+        bill_reference: a.bill_reference,
+        amount: a.amount,
+        bill_date: a.bill_date || undefined,
+        bill_amount: a.bill_amount || undefined,
+      }));
+
+    // Validate total allocated doesn't exceed payment amount
+    if (totalAllocated > parseFloat(data.amount)) {
+      toast({
+        title: t("accounting:allocationError", "Allocation Error"),
+        description: t("accounting:allocationExceedsPayment", "Total allocated amount exceeds payment amount."),
+        variant: "destructive",
+      });
+      return;
+    }
+
     try {
       const payload: VendorPaymentCreatePayload = {
         vendor_id: parseInt(data.vendor_id),
@@ -75,12 +149,15 @@ export default function NewVendorPaymentPage() {
         ap_control_account_id: parseInt(data.ap_control_account_id),
         reference: data.reference,
         memo: data.memo,
+        allocations: validAllocations.length > 0 ? validAllocations : undefined,
       };
 
       await vendorPaymentsService.create(payload);
       toast({
-        title: "Payment recorded",
-        description: `Vendor payment has been recorded successfully.`,
+        title: t("accounting:paymentRecorded", "Payment recorded"),
+        description: validAllocations.length > 0
+          ? t("accounting:paymentWithAllocations", `Payment recorded and applied to ${validAllocations.length} bill(s).`)
+          : t("accounting:paymentRecordedSuccess", "Vendor payment has been recorded successfully."),
       });
       router.push("/accounting/payments");
     } catch (error: any) {
@@ -90,6 +167,14 @@ export default function NewVendorPaymentPage() {
         variant: "destructive",
       });
     }
+  };
+
+  const formatCurrency = (amount: string | number) => {
+    const num = typeof amount === "string" ? parseFloat(amount) : amount;
+    return new Intl.NumberFormat(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(num);
   };
 
   return (
@@ -245,6 +330,128 @@ export default function NewVendorPaymentPage() {
                 rows={2}
               />
             </div>
+          </CardContent>
+        </Card>
+
+        {/* Bill Allocation Section */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle className="flex items-center gap-2">
+                  <FileText className="h-5 w-5" />
+                  {t("accounting:billAllocation", "Bill Allocation")}
+                </CardTitle>
+                <CardDescription>
+                  {t("accounting:billAllocationDescription", "Optionally specify which vendor bills this payment applies to")}
+                </CardDescription>
+              </div>
+              <Button type="button" variant="outline" size="sm" onClick={handleAddAllocation}>
+                <Plus className="h-4 w-4 me-2" />
+                {t("accounting:addBill", "Add Bill")}
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {fields.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-4">
+                {t("accounting:noBillAllocations", "No bill allocations added. Click 'Add Bill' to specify which bills this payment applies to.")}
+              </p>
+            ) : (
+              <>
+                <div className="rounded-md border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>{t("accounting:billReference", "Bill Reference")} *</TableHead>
+                        <TableHead>{t("accounting:billDate", "Bill Date")}</TableHead>
+                        <TableHead className="text-right">{t("accounting:billAmount", "Bill Amount")}</TableHead>
+                        <TableHead className="text-right">{t("accounting:payAmount", "Pay Amount")} *</TableHead>
+                        <TableHead className="w-12"></TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {fields.map((field, index) => (
+                        <TableRow key={field.id}>
+                          <TableCell>
+                            <Input
+                              {...register(`allocations.${index}.bill_reference` as const, {
+                                required: t("accounting:billReferenceRequired", "Bill reference is required"),
+                              })}
+                              placeholder={t("accounting:billReferencePlaceholder", "INV-001, PO-123, etc.")}
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Input
+                              type="date"
+                              {...register(`allocations.${index}.bill_date` as const)}
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              {...register(`allocations.${index}.bill_amount` as const)}
+                              placeholder="0.00"
+                              className="text-right"
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Input
+                              type="number"
+                              step="0.01"
+                              min="0.01"
+                              {...register(`allocations.${index}.amount` as const, {
+                                required: t("accounting:amountRequired", "Amount is required"),
+                                validate: (v) => parseFloat(v) > 0 || t("accounting:amountPositive", "Amount must be positive"),
+                              })}
+                              placeholder="0.00"
+                              className="text-right"
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => remove(index)}
+                              className="text-destructive hover:text-destructive"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+
+                {/* Allocation Summary */}
+                <div className="mt-4 flex justify-end">
+                  <div className="w-64 space-y-2 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">
+                        {t("accounting:paymentAmount", "Payment Amount")}:
+                      </span>
+                      <span className="ltr-number">{formatCurrency(paymentAmount || "0")}</span>
+                    </div>
+                    <div className="flex justify-between font-medium">
+                      <span>{t("accounting:totalAllocated", "Total Allocated")}:</span>
+                      <span className="ltr-number">{formatCurrency(totalAllocated)}</span>
+                    </div>
+                    <div className="flex justify-between border-t pt-2">
+                      <span className="text-muted-foreground">
+                        {t("accounting:unallocated", "Unallocated")}:
+                      </span>
+                      <span className={cn("ltr-number", unallocatedAmount > 0 && "text-amber-600")}>
+                        {formatCurrency(unallocatedAmount)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
           </CardContent>
         </Card>
 

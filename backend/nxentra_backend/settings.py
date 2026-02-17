@@ -210,12 +210,20 @@ VERIFICATION_TOKEN_EXPIRY_HOURS = int(os.getenv("VERIFICATION_TOKEN_EXPIRY_HOURS
 # =============================================================================
 # OpenAI Configuration (Voice Parsing)
 # =============================================================================
-# API key for OpenAI services (Whisper transcription, GPT-4o parsing)
+# API key for OpenAI services (transcription + structured parsing)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 # Voice feature settings
 VOICE_PARSING_ENABLED = os.getenv("VOICE_PARSING_ENABLED", "True") == "True"
-VOICE_MAX_AUDIO_SIZE_MB = int(os.getenv("VOICE_MAX_AUDIO_SIZE_MB", "25"))  # Whisper limit
+VOICE_MAX_AUDIO_SIZE_MB = int(os.getenv("VOICE_MAX_AUDIO_SIZE_MB", "25"))
+
+# Model selection — override via env vars to swap models without a deploy.
+# ASR (speech-to-text): uses OpenAI Transcriptions API
+#   Options: gpt-4o-mini-transcribe (recommended), gpt-4o-transcribe, whisper-1
+VOICE_ASR_MODEL = os.getenv("VOICE_ASR_MODEL", "gpt-4o-mini-transcribe")
+# Parsing (transcript → structured JSON): uses Chat Completions API
+#   Options: gpt-4o-mini (recommended), gpt-5.1, gpt-4o (legacy)
+VOICE_PARSE_MODEL = os.getenv("VOICE_PARSE_MODEL", "gpt-4o-mini")
 
 # =============================================================================
 # Rate Limiting

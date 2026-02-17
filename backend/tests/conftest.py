@@ -8,6 +8,13 @@ Updated to match actual Nxentra API signatures:
 - emit_event_no_actor() takes company, user as separate args
 """
 
+import os
+import django
+
+# Configure Django settings before any other imports
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "nxentra_backend.test_settings")
+django.setup()
+
 import pytest
 from django.conf import settings
 from decimal import Decimal

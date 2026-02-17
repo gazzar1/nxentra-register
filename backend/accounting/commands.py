@@ -20,8 +20,11 @@ from django.conf import settings
 from django.utils import timezone
 import hashlib
 import json
+import logging
 import uuid
 from decimal import Decimal
+
+logger = logging.getLogger("nxentra.accounting.commands")
 
 from accounts.authz import ActorContext, require
 from accounts.rls import rls_bypass
@@ -48,6 +51,7 @@ from accounting.policies import (
     can_delete_dimension_value,
     can_post_to_account,
     can_post_to_period,
+    can_post_operational_document,
     validate_line_counterparty,
     validate_counterparty_exists,
     validate_subledger_tieout,
@@ -71,6 +75,11 @@ from events.types import (
     FiscalPeriodRangeSetData,
     FiscalPeriodCurrentSetData,
     FiscalPeriodDatesUpdatedData,
+    FiscalYearClosedData,
+    FiscalYearReopenedData,
+    FiscalYearCloseReadinessCheckedData,
+    ClosingEntryGeneratedData,
+    ClosingEntryReversedData,
     JournalLineData,
     AnalysisDimensionCreatedData,
     AnalysisDimensionUpdatedData,
@@ -994,7 +1003,7 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
     if aggregate.status != JournalEntry.Status.DRAFT:
         return CommandResult.fail("Only DRAFT entries can be posted.")
 
-    postable_kinds = [JournalEntry.Kind.NORMAL, JournalEntry.Kind.OPENING, JournalEntry.Kind.ADJUSTMENT]
+    postable_kinds = [JournalEntry.Kind.NORMAL, JournalEntry.Kind.OPENING, JournalEntry.Kind.ADJUSTMENT, JournalEntry.Kind.CLOSING]
     if aggregate.kind not in postable_kinds:
         return CommandResult.fail(f"Cannot post {aggregate.kind} entries.")
 
@@ -1169,7 +1178,22 @@ def reverse_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
 
     reversal_public_id = uuid.uuid4()
     posted_at = timezone.now()
-    allowed, reason = can_post_to_period(actor, posted_at.date())
+
+    # Use the original entry's date for period resolution so the reversal
+    # lands in the same fiscal period as the original entry.
+    original_date = original.date
+    reversal_period = None
+    from projections.models import FiscalPeriod
+    reversal_fp = FiscalPeriod.objects.filter(
+        company=actor.company,
+        start_date__lte=original_date,
+        end_date__gte=original_date,
+        period_type=FiscalPeriod.PeriodType.NORMAL,
+    ).first()
+    if reversal_fp:
+        reversal_period = reversal_fp.period
+
+    allowed, reason = can_post_to_period(actor, original_date, period=reversal_period)
     if not allowed:
         return CommandResult.fail(reason)
 
@@ -1211,10 +1235,11 @@ def reverse_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
         data=JournalEntryPostedData(
             entry_public_id=str(reversal_public_id),
             entry_number=reversal_entry_number,
-            date=posted_at.date().isoformat(),
+            date=original_date.isoformat(),
             memo=f"Reversal of JE#{original.id}: {aggregate.memo}",
             memo_ar=f"عكس قيد #{original.id}: {aggregate.memo_ar}" if aggregate.memo_ar else "",
             kind=JournalEntry.Kind.REVERSAL,
+            period=reversal_period,
             currency=aggregate.currency or original.currency or actor.company.default_currency,
             exchange_rate=str(aggregate.exchange_rate or original.exchange_rate or "1.0"),
             posted_at=posted_at.isoformat(),
@@ -1374,7 +1399,7 @@ def open_period(
     """
     require(actor, "periods.reopen")
 
-    from projections.models import FiscalPeriod
+    from projections.models import FiscalPeriod, FiscalYear as FiscalYearModel
 
     fiscal_period = FiscalPeriod.objects.filter(
         company=actor.company,
@@ -1386,6 +1411,17 @@ def open_period(
 
     if fiscal_period.status == FiscalPeriod.Status.OPEN:
         return CommandResult.fail("Fiscal period is already open.")
+
+    # Block opening periods in a closed fiscal year (must reopen year first)
+    fy = FiscalYearModel.objects.filter(
+        company=actor.company,
+        fiscal_year=fiscal_year,
+    ).first()
+    if fy and fy.status == FiscalYearModel.Status.CLOSED:
+        return CommandResult.fail(
+            f"Cannot open period in closed fiscal year {fiscal_year}. "
+            "Reopen the fiscal year first."
+        )
 
     opened_at = timezone.now()
     event = emit_event(
@@ -1413,54 +1449,50 @@ def open_period(
     return CommandResult.ok(fiscal_period, event=event)
 
 
-def _calculate_period_boundaries(fiscal_year: int, start_month: int, period_count: int):
+def _calculate_period_boundaries(fiscal_year: int, start_month: int, period_count: int = 13):
     """
-    Calculate period start/end dates for a fiscal year divided into N periods.
+    Calculate monthly-aligned period boundaries for a fiscal year.
 
-    Divides the fiscal year into equal-length periods based on total days.
+    Standard ERP behavior: 12 monthly periods + 1 adjustment period (Period 13).
+    Period 13 shares the same end date as Period 12 — it's a logical period
+    for year-end adjustments and closing entries, not a calendar period.
 
     Args:
         fiscal_year: The fiscal year (calendar year the fiscal year starts)
         start_month: Month the fiscal year starts (1-12)
-        period_count: Number of periods (any positive integer)
+        period_count: Always 13 for standard ERP (12 normal + 1 adjustment)
 
     Returns:
-        List of dicts with period, start_date, end_date
+        List of dicts with period, start_date, end_date, period_type
     """
-    from datetime import date, timedelta
+    from datetime import date
     import calendar
 
-    # Calculate fiscal year start and end dates
-    fy_start_year = fiscal_year
-    fy_start = date(fy_start_year, start_month, 1)
-
-    # End is one year later minus one day
-    fy_end_month = start_month
-    fy_end_year = fy_start_year + 1
-    if fy_end_month == 1:
-        fy_end = date(fy_end_year, 1, 1) - timedelta(days=1)
-    else:
-        fy_end = date(fy_end_year, fy_end_month, 1) - timedelta(days=1)
-
-    total_days = (fy_end - fy_start).days + 1
-    base_days = total_days // period_count
-    remainder = total_days % period_count
-
     periods = []
-    current_start = fy_start
 
-    for i in range(period_count):
-        # Distribute remainder days across the first periods
-        days_in_period = base_days + (1 if i < remainder else 0)
-        period_end = current_start + timedelta(days=days_in_period - 1)
+    # Generate 12 monthly periods aligned to calendar months
+    for i in range(12):
+        month_index = (start_month - 1) + i
+        year = fiscal_year + (month_index // 12)
+        month = (month_index % 12) + 1
+        last_day = calendar.monthrange(year, month)[1]
 
         periods.append({
             "period": i + 1,
-            "start_date": current_start.isoformat(),
-            "end_date": period_end.isoformat(),
+            "start_date": date(year, month, 1).isoformat(),
+            "end_date": date(year, month, last_day).isoformat(),
+            "period_type": "NORMAL",
         })
 
-        current_start = period_end + timedelta(days=1)
+    # Period 13: Adjustment period — same end date as Period 12
+    # Start date = end date = last day of fiscal year
+    fy_end_date = periods[11]["end_date"]
+    periods.append({
+        "period": 13,
+        "start_date": fy_end_date,
+        "end_date": fy_end_date,
+        "period_type": "ADJUSTMENT",
+    })
 
     return periods
 
@@ -1469,21 +1501,24 @@ def _calculate_period_boundaries(fiscal_year: int, start_month: int, period_coun
 def configure_periods(
     actor: ActorContext,
     fiscal_year: int,
-    period_count: int,
+    period_count: int = 13,
 ) -> CommandResult:
     """
-    Configure the number of periods for a fiscal year.
-    Deletes existing periods and creates new ones with calculated boundaries.
+    Configure fiscal periods for a fiscal year.
+
+    Standard ERP: always 12 monthly periods + 1 adjustment period (Period 13).
+    The period_count parameter is accepted for backwards compatibility but
+    is always normalized to 13.
 
     Args:
         actor: The actor context
         fiscal_year: Fiscal year
-        period_count: Number of periods (1, 2, 3, 4, 6, or 12)
+        period_count: Ignored — always 13 (12 normal + 1 adjustment)
     """
     require(actor, "periods.configure")
 
-    if period_count < 1 or period_count > 999:
-        return CommandResult.fail("Period count must be between 1 and 999.")
+    # Standard ERP: always 13 periods (12 monthly + 1 adjustment)
+    period_count = 13
 
     from projections.models import FiscalPeriod, FiscalPeriodConfig
 
@@ -1545,7 +1580,7 @@ def set_period_range(
         company=actor.company,
         fiscal_year=fiscal_year,
     ).first()
-    max_period = config.period_count if config else 12
+    max_period = config.period_count if config else 13
 
     if open_from_period < 1 or open_to_period > max_period:
         return CommandResult.fail(f"Period range must be between 1 and {max_period}.")
@@ -1705,6 +1740,801 @@ def update_period_dates(
         period=period,
     )
     return CommandResult.ok(fiscal_period, event=event)
+
+
+# =============================================================================
+# Fiscal Year Close / Reopen Commands
+# =============================================================================
+
+def check_close_readiness(
+    actor: ActorContext,
+    fiscal_year: int,
+) -> CommandResult:
+    """
+    Check if a fiscal year is ready to be closed.
+
+    Preconditions checked:
+    1. All periods 1-12 must be CLOSED
+    2. Period 13 must exist and be OPEN (for closing entries)
+    3. No DRAFT or INCOMPLETE journal entries in the fiscal year
+    4. Subledger tie-out must pass
+    5. No projection lag
+    6. Fiscal year must not already be closed
+
+    Returns:
+        CommandResult with readiness data: {is_ready, issues}
+    """
+    require(actor, "periods.configure")
+
+    from projections.models import FiscalPeriod, FiscalYear as FiscalYearModel
+
+    checks = []
+
+    # Check 1: Fiscal year not already closed
+    fy = FiscalYearModel.objects.filter(
+        company=actor.company,
+        fiscal_year=fiscal_year,
+    ).first()
+    fy_not_closed = not (fy and fy.status == FiscalYearModel.Status.CLOSED)
+    checks.append({
+        "check": "Fiscal year not already closed",
+        "passed": fy_not_closed,
+        "detail": "" if fy_not_closed else f"Fiscal year {fiscal_year} is already closed.",
+    })
+
+    # Check 2: All normal periods (1-12) are closed
+    normal_periods = FiscalPeriod.objects.filter(
+        company=actor.company,
+        fiscal_year=fiscal_year,
+        period_type=FiscalPeriod.PeriodType.NORMAL,
+    )
+    open_normal = normal_periods.filter(status=FiscalPeriod.Status.OPEN)
+    all_normal_closed = not open_normal.exists()
+    open_nums = list(open_normal.values_list("period", flat=True)) if not all_normal_closed else []
+    checks.append({
+        "check": "All normal periods (1-12) closed",
+        "passed": all_normal_closed,
+        "detail": "" if all_normal_closed else f"Periods still open: {open_nums}",
+    })
+
+    # Check 3: Period 13 exists and is open
+    p13 = FiscalPeriod.objects.filter(
+        company=actor.company,
+        fiscal_year=fiscal_year,
+        period=13,
+    ).first()
+    p13_ready = p13 is not None and p13.status == FiscalPeriod.Status.OPEN
+    if not p13:
+        p13_detail = "Period 13 (adjustment) does not exist. Run configure_periods first."
+    elif p13.status != FiscalPeriod.Status.OPEN:
+        p13_detail = "Period 13 must be OPEN to post closing entries."
+    else:
+        p13_detail = ""
+    checks.append({
+        "check": "Period 13 (adjustment) exists and is open",
+        "passed": p13_ready,
+        "detail": p13_detail,
+    })
+
+    # Check 4: No draft/incomplete entries in this fiscal year
+    fy_periods = FiscalPeriod.objects.filter(
+        company=actor.company,
+        fiscal_year=fiscal_year,
+        period_type=FiscalPeriod.PeriodType.NORMAL,
+    ).order_by("period")
+    no_drafts = True
+    draft_detail = ""
+    if fy_periods.exists():
+        fy_start = fy_periods.first().start_date
+        fy_end = fy_periods.last().end_date
+        draft_count = JournalEntry.objects.filter(
+            company=actor.company,
+            status__in=[JournalEntry.Status.INCOMPLETE, JournalEntry.Status.DRAFT],
+            date__gte=fy_start, date__lte=fy_end,
+        ).count()
+        if draft_count > 0:
+            no_drafts = False
+            draft_detail = f"Found {draft_count} draft/incomplete journal entries."
+    checks.append({
+        "check": "No draft or incomplete journal entries",
+        "passed": no_drafts,
+        "detail": draft_detail,
+    })
+
+    # Check 5: Subledger tie-out
+    tieout_valid, tieout_errors = validate_subledger_tieout(actor.company)
+    checks.append({
+        "check": "Subledger tie-out balanced",
+        "passed": tieout_valid,
+        "detail": "; ".join(tieout_errors) if not tieout_valid else "",
+    })
+
+    # Check 6: Projection lag (all projections must be up to date)
+    from projections.base import projection_registry
+    total_lag = 0
+    for projection in projection_registry.all():
+        total_lag += projection.get_lag(actor.company)
+    projections_current = total_lag == 0
+    checks.append({
+        "check": "All projections up to date (no lag)",
+        "passed": projections_current,
+        "detail": "" if projections_current else f"{total_lag} events pending processing.",
+    })
+
+    is_ready = all(c["passed"] for c in checks)
+
+    # Emit audit event (keep issues list for backward compat in event payload)
+    issues = [c["detail"] for c in checks if not c["passed"]]
+    checked_at = timezone.now()
+    emit_event(
+        actor=actor,
+        event_type=EventTypes.FISCAL_YEAR_CLOSE_READINESS_CHECKED,
+        aggregate_type="FiscalYear",
+        aggregate_id=f"{actor.company.public_id}:{fiscal_year}",
+        idempotency_key=f"fiscal_year.close_readiness:{actor.company.public_id}:{fiscal_year}:{checked_at.isoformat()}",
+        data=FiscalYearCloseReadinessCheckedData(
+            company_public_id=str(actor.company.public_id),
+            fiscal_year=fiscal_year,
+            is_ready=is_ready,
+            issues=issues,
+            checked_at=checked_at.isoformat(),
+            checked_by_id=actor.user.id,
+            checked_by_email=actor.user.email,
+        ).to_dict(),
+    )
+
+    logger.info(
+        "fiscal_year.close_readiness_checked",
+        extra={
+            "company_id": actor.company.id,
+            "fiscal_year": fiscal_year,
+            "is_ready": is_ready,
+            "failed_checks": [c["check"] for c in checks if not c["passed"]],
+            "user_id": actor.user.id,
+        },
+    )
+
+    return CommandResult.ok({
+        "fiscal_year": fiscal_year,
+        "is_ready": is_ready,
+        "checks": checks,
+    })
+
+
+@transaction.atomic
+def close_fiscal_year(
+    actor: ActorContext,
+    fiscal_year: int,
+    retained_earnings_account_code: str,
+) -> CommandResult:
+    """
+    Close a fiscal year. This is the formal year-end close workflow.
+
+    Steps:
+    1. Verify close readiness (all preconditions)
+    2. Generate closing entries in Period 13 (zero out Revenue & Expense to Retained Earnings)
+    3. Lock all 13 periods (CLOSED)
+    4. Mark fiscal year as CLOSED
+    5. Create next fiscal year's 13 periods with Period 1 OPEN
+
+    Idempotent: If already closed, returns success with no-op.
+
+    Args:
+        actor: The actor context
+        fiscal_year: Fiscal year to close
+        retained_earnings_account_code: Account code for retained earnings (must be EQUITY type)
+    """
+    require(actor, "fiscal_year.close")
+
+    from projections.models import FiscalPeriod, FiscalPeriodConfig, FiscalYear as FiscalYearModel, AccountBalance
+
+    # Idempotency: already closed?
+    fy = FiscalYearModel.objects.filter(
+        company=actor.company,
+        fiscal_year=fiscal_year,
+    ).first()
+    if fy and fy.status == FiscalYearModel.Status.CLOSED:
+        return CommandResult.ok({"already_closed": True, "fiscal_year": fiscal_year})
+
+    # Validate retained earnings account
+    re_account = Account.objects.filter(
+        company=actor.company,
+        code=retained_earnings_account_code,
+    ).first()
+    if not re_account:
+        return CommandResult.fail(f"Retained earnings account '{retained_earnings_account_code}' not found.")
+    if re_account.account_type != Account.AccountType.EQUITY:
+        return CommandResult.fail(f"Account '{retained_earnings_account_code}' must be EQUITY type for retained earnings.")
+    if re_account.is_header:
+        return CommandResult.fail(f"Account '{retained_earnings_account_code}' is a header account. Use a postable account.")
+
+    # Check readiness (reuse logic but inline to avoid double event)
+    normal_periods = FiscalPeriod.objects.filter(
+        company=actor.company,
+        fiscal_year=fiscal_year,
+        period_type=FiscalPeriod.PeriodType.NORMAL,
+    )
+    open_normal = normal_periods.filter(status=FiscalPeriod.Status.OPEN)
+    if open_normal.exists():
+        open_nums = list(open_normal.values_list("period", flat=True))
+        return CommandResult.fail(f"Cannot close year: periods {open_nums} are still open. Close all normal periods first.")
+
+    p13 = FiscalPeriod.objects.filter(
+        company=actor.company,
+        fiscal_year=fiscal_year,
+        period=13,
+    ).first()
+    if not p13:
+        return CommandResult.fail("Period 13 (adjustment period) does not exist. Run configure_periods first.")
+
+    # Ensure P13 is open for closing entries
+    if p13.status != FiscalPeriod.Status.OPEN:
+        return CommandResult.fail("Period 13 must be OPEN to generate closing entries.")
+
+    # Check no drafts in P13
+    fy_periods = FiscalPeriod.objects.filter(
+        company=actor.company, fiscal_year=fiscal_year,
+        period_type=FiscalPeriod.PeriodType.NORMAL,
+    ).order_by("period")
+    if fy_periods.exists():
+        fy_start = fy_periods.first().start_date
+        fy_end = fy_periods.last().end_date
+        drafts = JournalEntry.objects.filter(
+            company=actor.company,
+            status__in=[JournalEntry.Status.INCOMPLETE, JournalEntry.Status.DRAFT],
+            date__gte=fy_start, date__lte=fy_end,
+        )
+        if drafts.exists():
+            return CommandResult.fail(f"Cannot close year: {drafts.count()} draft/incomplete entries exist.")
+
+    # Subledger tie-out
+    tieout_valid, tieout_errors = validate_subledger_tieout(actor.company)
+    if not tieout_valid:
+        return CommandResult.fail(f"Subledger tie-out failed: {'; '.join(tieout_errors)}")
+
+    # === STEP 1: Calculate net income from FISCAL-YEAR-SCOPED balances ===
+    # Use PeriodAccountBalance to get FY-scoped balances, not global AccountBalance.
+    # This ensures we only close THIS year's activity, not lifetime balances.
+    from projections.models import PeriodAccountBalance
+
+    revenue_accounts = Account.objects.filter(
+        company=actor.company,
+        account_type=Account.AccountType.REVENUE,
+        is_header=False,
+    )
+    expense_accounts = Account.objects.filter(
+        company=actor.company,
+        account_type=Account.AccountType.EXPENSE,
+        is_header=False,
+    )
+
+    total_revenue = Decimal("0.00")
+    total_expenses = Decimal("0.00")
+    closing_lines = []
+
+    def _fy_account_balance(acct):
+        """Sum period debit/credit for this account across all periods of the fiscal year."""
+        pabs = PeriodAccountBalance.objects.filter(
+            company=actor.company,
+            account=acct,
+            fiscal_year=fiscal_year,
+        )
+        total_debit = sum(p.period_debit for p in pabs)
+        total_credit = sum(p.period_credit for p in pabs)
+        return total_debit, total_credit
+
+    for acct in revenue_accounts:
+        fy_debit, fy_credit = _fy_account_balance(acct)
+        # Revenue: CREDIT normal. Net balance = credit - debit
+        net = fy_credit - fy_debit
+        if net == Decimal("0.00"):
+            continue
+        # To zero this account: reverse whatever it holds.
+        # If net > 0 (normal credit balance): debit revenue to zero it.
+        # If net < 0 (abnormal debit balance): credit revenue to zero it.
+        closing_lines.append({
+            "account_public_id": str(acct.public_id),
+            "account_code": acct.code,
+            "debit": str(net) if net > 0 else "0",
+            "credit": str(abs(net)) if net < 0 else "0",
+        })
+        total_revenue += net
+
+    for acct in expense_accounts:
+        fy_debit, fy_credit = _fy_account_balance(acct)
+        # Expense: DEBIT normal. Net balance = debit - credit
+        net = fy_debit - fy_credit
+        if net == Decimal("0.00"):
+            continue
+        # To zero this account: reverse whatever it holds.
+        # If net > 0 (normal debit balance): credit expense to zero it.
+        # If net < 0 (abnormal credit balance): debit expense to zero it.
+        closing_lines.append({
+            "account_public_id": str(acct.public_id),
+            "account_code": acct.code,
+            "debit": str(abs(net)) if net < 0 else "0",
+            "credit": str(net) if net > 0 else "0",
+        })
+        total_expenses += net
+
+    # Net income = total revenue credits minus total expense debits
+    net_income = total_revenue - total_expenses
+
+    # Add the retained earnings line (balancing entry)
+    # This line absorbs the net of all closing lines to keep the entry balanced.
+    re_debit_total = sum(Decimal(l["debit"]) for l in closing_lines)
+    re_credit_total = sum(Decimal(l["credit"]) for l in closing_lines)
+    re_difference = re_debit_total - re_credit_total
+
+    if re_difference > 0:
+        # More debits than credits in temp accounts -> net profit -> credit RE
+        closing_lines.append({
+            "account_public_id": str(re_account.public_id),
+            "account_code": re_account.code,
+            "debit": "0",
+            "credit": str(re_difference),
+        })
+    elif re_difference < 0:
+        # More credits than debits in temp accounts -> net loss -> debit RE
+        closing_lines.append({
+            "account_public_id": str(re_account.public_id),
+            "account_code": re_account.code,
+            "debit": str(abs(re_difference)),
+            "credit": "0",
+        })
+    # If re_difference == 0, no retained earnings line needed (but still close temp accounts)
+
+    # === STEP 2: Generate closing journal entry in P13 ===
+    closing_entry_public_id = str(uuid.uuid4())
+    entry_number = _next_company_sequence(actor.company, "journal_entry")
+    closed_at = timezone.now()
+
+    # Build full journal lines with line numbers
+    je_lines = []
+    for i, line in enumerate(closing_lines, 1):
+        je_lines.append({
+            "line_no": i,
+            "account_public_id": line["account_public_id"],
+            "account_code": line["account_code"],
+            "description": f"Year-end closing FY{fiscal_year}",
+            "debit": line["debit"],
+            "credit": line["credit"],
+        })
+
+    # Compute total debit/credit for the closing entry
+    closing_total_debit = sum(Decimal(l["debit"]) for l in je_lines)
+    closing_total_credit = sum(Decimal(l["credit"]) for l in je_lines)
+
+    if je_lines:
+        # Emit closing entry created + posted events
+        emit_event(
+            actor=actor,
+            event_type=EventTypes.JOURNAL_ENTRY_CREATED,
+            aggregate_type="JournalEntry",
+            aggregate_id=closing_entry_public_id,
+            idempotency_key=f"closing_entry.created:{actor.company.public_id}:{fiscal_year}:{closed_at.isoformat()}",
+            data=JournalEntryCreatedData(
+                entry_public_id=closing_entry_public_id,
+                date=p13.end_date.isoformat(),
+                memo=f"Year-end closing entries for FY{fiscal_year}",
+                memo_ar=f"قيود إقفال السنة المالية {fiscal_year}",
+                kind="CLOSING",
+                status="DRAFT",
+                period=13,
+                currency=actor.company.default_currency,
+                exchange_rate="1.0",
+                lines=je_lines,
+                created_by_id=actor.user.id,
+            ).to_dict(),
+        )
+
+        # Post the closing entry
+        emit_event(
+            actor=actor,
+            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+            aggregate_type="JournalEntry",
+            aggregate_id=closing_entry_public_id,
+            idempotency_key=f"closing_entry.posted:{actor.company.public_id}:{fiscal_year}:{closed_at.isoformat()}",
+            data=JournalEntryPostedData(
+                entry_public_id=closing_entry_public_id,
+                entry_number=str(entry_number),
+                date=p13.end_date.isoformat(),
+                memo=f"Year-end closing entries for FY{fiscal_year}",
+                memo_ar=f"قيود إقفال السنة المالية {fiscal_year}",
+                kind="CLOSING",
+                period=13,
+                total_debit=str(closing_total_debit),
+                total_credit=str(closing_total_credit),
+                lines=je_lines,
+                posted_at=closed_at.isoformat(),
+                posted_by_id=actor.user.id,
+                posted_by_email=actor.user.email,
+                currency=actor.company.default_currency,
+                exchange_rate="1.0",
+            ).to_dict(),
+        )
+
+    # Emit closing entry generated audit event
+    emit_event(
+        actor=actor,
+        event_type=EventTypes.CLOSING_ENTRY_GENERATED,
+        aggregate_type="FiscalYear",
+        aggregate_id=f"{actor.company.public_id}:{fiscal_year}",
+        idempotency_key=f"closing_entry.generated:{actor.company.public_id}:{fiscal_year}:{closed_at.isoformat()}",
+        data=ClosingEntryGeneratedData(
+            company_public_id=str(actor.company.public_id),
+            fiscal_year=fiscal_year,
+            entry_public_id=closing_entry_public_id,
+            entry_number=entry_number,
+            retained_earnings_account_public_id=str(re_account.public_id),
+            retained_earnings_account_code=re_account.code,
+            net_income=str(net_income),
+            total_revenue=str(total_revenue),
+            total_expenses=str(total_expenses),
+            accounts_closed=len(closing_lines) - (1 if net_income != 0 else 0),
+            generated_at=closed_at.isoformat(),
+            generated_by_id=actor.user.id,
+            generated_by_email=actor.user.email,
+        ).to_dict(),
+    )
+
+    # === STEP 3: Close all periods including P13 ===
+    for period_num in range(1, 14):
+        fp = FiscalPeriod.objects.filter(
+            company=actor.company, fiscal_year=fiscal_year, period=period_num,
+        ).first()
+        if fp and fp.status == FiscalPeriod.Status.OPEN:
+            emit_event(
+                actor=actor,
+                event_type=EventTypes.FISCAL_PERIOD_CLOSED,
+                aggregate_type="FiscalPeriod",
+                aggregate_id=f"{actor.company.public_id}:{fiscal_year}:{period_num}",
+                idempotency_key=f"fiscal_period.closed.yearend:{actor.company.public_id}:{fiscal_year}:{period_num}:{closed_at.isoformat()}",
+                data=FiscalPeriodClosedData(
+                    company_public_id=str(actor.company.public_id),
+                    fiscal_year=fiscal_year,
+                    period=period_num,
+                    closed_at=closed_at.isoformat(),
+                    closed_by_id=actor.user.id,
+                    closed_by_email=actor.user.email,
+                ).to_dict(),
+            )
+
+    # === STEP 4: Mark fiscal year as CLOSED ===
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.FISCAL_YEAR_CLOSED,
+        aggregate_type="FiscalYear",
+        aggregate_id=f"{actor.company.public_id}:{fiscal_year}",
+        idempotency_key=f"fiscal_year.closed:{actor.company.public_id}:{fiscal_year}:{closed_at.isoformat()}",
+        data=FiscalYearClosedData(
+            company_public_id=str(actor.company.public_id),
+            fiscal_year=fiscal_year,
+            retained_earnings_account_public_id=str(re_account.public_id),
+            retained_earnings_account_code=re_account.code,
+            closing_entry_public_id=closing_entry_public_id,
+            net_income=str(net_income),
+            total_revenue=str(total_revenue),
+            total_expenses=str(total_expenses),
+            closed_at=closed_at.isoformat(),
+            closed_by_id=actor.user.id,
+            closed_by_email=actor.user.email,
+            next_year_created=True,
+            next_year=fiscal_year + 1,
+        ).to_dict(),
+    )
+
+    # === STEP 5: Create next fiscal year periods ===
+    next_year = fiscal_year + 1
+    start_month = actor.company.fiscal_year_start_month or 1
+    next_periods = _calculate_period_boundaries(next_year, start_month)
+
+    next_configured_at = timezone.now()
+    emit_event(
+        actor=actor,
+        event_type=EventTypes.FISCAL_PERIODS_CONFIGURED,
+        aggregate_type="FiscalPeriod",
+        aggregate_id=f"{actor.company.public_id}:{next_year}",
+        idempotency_key=f"fiscal_periods.configured.yearend:{actor.company.public_id}:{next_year}:{closed_at.isoformat()}",
+        data=FiscalPeriodsConfiguredData(
+            company_public_id=str(actor.company.public_id),
+            fiscal_year=next_year,
+            period_count=13,
+            periods=next_periods,
+            configured_at=next_configured_at.isoformat(),
+            configured_by_id=actor.user.id,
+            configured_by_email=actor.user.email,
+            previous_period_count=0,
+            is_yearend_creation=True,
+        ).to_dict(),
+    )
+
+    _process_projections(actor.company)
+
+    # Post-close reconciliation: AR/AP tie-out
+    tieout_valid, tieout_errors = validate_subledger_tieout(actor.company)
+
+    logger.info(
+        "fiscal_year.closed",
+        extra={
+            "company_id": actor.company.id,
+            "fiscal_year": fiscal_year,
+            "net_income": str(net_income),
+            "closing_entry_public_id": closing_entry_public_id,
+            "next_year_created": next_year,
+            "tieout_balanced": tieout_valid,
+            "user_id": actor.user.id,
+        },
+    )
+
+    return CommandResult.ok({
+        "fiscal_year": fiscal_year,
+        "net_income": str(net_income),
+        "closing_entry_public_id": closing_entry_public_id,
+        "next_year_created": next_year,
+        "post_close_tieout": {
+            "balanced": tieout_valid,
+            "errors": tieout_errors,
+        },
+    }, event=event)
+
+
+def run_reconciliation_check(actor: ActorContext) -> CommandResult:
+    """
+    Run AR/AP subledger tie-out reconciliation.
+
+    Returns a structured report that can be stored in build artifacts
+    or displayed in the UI.
+    """
+    require(actor, "reports.view")
+
+    tieout_valid, tieout_errors = validate_subledger_tieout(actor.company)
+
+    from decimal import Decimal
+    from django.db.models import Sum
+    from projections.models import AccountBalance, CustomerBalance, VendorBalance
+
+    # Gather balances for the report
+    ar_controls = Account.objects.filter(
+        company=actor.company,
+        role=Account.AccountRole.RECEIVABLE_CONTROL,
+    )
+    ap_controls = Account.objects.filter(
+        company=actor.company,
+        role=Account.AccountRole.PAYABLE_CONTROL,
+    )
+
+    ar_gl_total = AccountBalance.objects.filter(
+        company=actor.company,
+        account__in=ar_controls,
+    ).aggregate(total=Sum("balance"))["total"] or Decimal("0")
+
+    ar_sub_total = CustomerBalance.objects.filter(
+        company=actor.company,
+    ).aggregate(total=Sum("balance"))["total"] or Decimal("0")
+
+    ap_gl_total = AccountBalance.objects.filter(
+        company=actor.company,
+        account__in=ap_controls,
+    ).aggregate(total=Sum("balance"))["total"] or Decimal("0")
+
+    ap_sub_total = VendorBalance.objects.filter(
+        company=actor.company,
+    ).aggregate(total=Sum("balance"))["total"] or Decimal("0")
+
+    return CommandResult.ok({
+        "balanced": tieout_valid,
+        "errors": tieout_errors,
+        "ar_reconciliation": {
+            "gl_control_balance": str(ar_gl_total),
+            "subledger_total": str(ar_sub_total),
+            "difference": str(ar_gl_total - ar_sub_total),
+            "balanced": ar_gl_total == ar_sub_total,
+        },
+        "ap_reconciliation": {
+            "gl_control_balance": str(ap_gl_total),
+            "subledger_total": str(ap_sub_total),
+            "difference": str(ap_gl_total - ap_sub_total),
+            "balanced": ap_gl_total == ap_sub_total,
+        },
+        "checked_at": timezone.now().isoformat(),
+    })
+
+
+@transaction.atomic
+def reopen_fiscal_year(
+    actor: ActorContext,
+    fiscal_year: int,
+    reason: str,
+) -> CommandResult:
+    """
+    Reopen a closed fiscal year.
+
+    This reverses the closing entries (creates compensating reversal entries)
+    and reopens Period 13. The original closing entries are NEVER deleted.
+
+    Requires:
+    - fiscal_year.reopen permission
+    - Reason is mandatory
+    - Fiscal year must be CLOSED
+
+    Args:
+        actor: The actor context
+        fiscal_year: Fiscal year to reopen
+        reason: Mandatory reason for reopening
+    """
+    require(actor, "fiscal_year.reopen")
+
+    if not reason or not reason.strip():
+        return CommandResult.fail("Reason is required to reopen a fiscal year.")
+
+    from projections.models import FiscalPeriod, FiscalYear as FiscalYearModel
+
+    fy = FiscalYearModel.objects.filter(
+        company=actor.company,
+        fiscal_year=fiscal_year,
+    ).first()
+    if not fy:
+        return CommandResult.fail(f"Fiscal year {fiscal_year} not found.")
+    if fy.status != FiscalYearModel.Status.CLOSED:
+        return CommandResult.fail(f"Fiscal year {fiscal_year} is not closed.")
+
+    reopened_at = timezone.now()
+
+    # Find the closing entry to reverse
+    original_closing_public_id = fy.retained_earnings_entry_public_id
+    reversal_entry_public_id = str(uuid.uuid4())
+
+    if original_closing_public_id:
+        # Reverse the closing entry (create a new reversal JE, don't delete)
+        original_entry = JournalEntry.objects.filter(
+            company=actor.company,
+            public_id=original_closing_public_id,
+        ).first()
+
+        if original_entry and original_entry.status == JournalEntry.Status.POSTED:
+            # Create reversal lines (swap debit/credit)
+            original_lines = original_entry.lines.all()
+            reversal_lines = []
+            for i, line in enumerate(original_lines, 1):
+                reversal_lines.append({
+                    "line_no": i,
+                    "account_public_id": str(line.account.public_id),
+                    "account_code": line.account.code,
+                    "description": f"Reversal of year-end closing FY{fiscal_year}: {reason}",
+                    "debit": str(line.credit),
+                    "credit": str(line.debit),
+                })
+
+            entry_number = _next_company_sequence(actor.company, "journal_entry")
+
+            # Reopen P13 first so we can post the reversal there
+            emit_event(
+                actor=actor,
+                event_type=EventTypes.FISCAL_PERIOD_OPENED,
+                aggregate_type="FiscalPeriod",
+                aggregate_id=f"{actor.company.public_id}:{fiscal_year}:13",
+                idempotency_key=f"fiscal_period.opened.reopen:{actor.company.public_id}:{fiscal_year}:13:{reopened_at.isoformat()}",
+                data=FiscalPeriodOpenedData(
+                    company_public_id=str(actor.company.public_id),
+                    fiscal_year=fiscal_year,
+                    period=13,
+                    opened_at=reopened_at.isoformat(),
+                    opened_by_id=actor.user.id,
+                    opened_by_email=actor.user.email,
+                ).to_dict(),
+            )
+
+            # Create and post the reversal entry
+            p13 = FiscalPeriod.objects.filter(
+                company=actor.company, fiscal_year=fiscal_year, period=13,
+            ).first()
+            reversal_date = p13.end_date.isoformat() if p13 else original_entry.date.isoformat()
+
+            # Compute reversal totals
+            reversal_total_debit = sum(Decimal(l.get("debit", "0")) for l in reversal_lines)
+            reversal_total_credit = sum(Decimal(l.get("credit", "0")) for l in reversal_lines)
+
+            emit_event(
+                actor=actor,
+                event_type=EventTypes.JOURNAL_ENTRY_CREATED,
+                aggregate_type="JournalEntry",
+                aggregate_id=reversal_entry_public_id,
+                idempotency_key=f"closing_reversal.created:{actor.company.public_id}:{fiscal_year}:{reopened_at.isoformat()}",
+                data=JournalEntryCreatedData(
+                    entry_public_id=reversal_entry_public_id,
+                    date=reversal_date,
+                    memo=f"Reversal of year-end closing FY{fiscal_year} - {reason}",
+                    memo_ar=f"عكس قيود إقفال السنة المالية {fiscal_year}",
+                    kind="CLOSING",
+                    status="DRAFT",
+                    period=13,
+                    currency=actor.company.default_currency,
+                    exchange_rate="1.0",
+                    lines=reversal_lines,
+                    created_by_id=actor.user.id,
+                ).to_dict(),
+            )
+
+            emit_event(
+                actor=actor,
+                event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+                aggregate_type="JournalEntry",
+                aggregate_id=reversal_entry_public_id,
+                idempotency_key=f"closing_reversal.posted:{actor.company.public_id}:{fiscal_year}:{reopened_at.isoformat()}",
+                data=JournalEntryPostedData(
+                    entry_public_id=reversal_entry_public_id,
+                    entry_number=str(entry_number),
+                    date=reversal_date,
+                    memo=f"Reversal of year-end closing FY{fiscal_year} - {reason}",
+                    memo_ar=f"عكس قيود إقفال السنة المالية {fiscal_year}",
+                    kind="CLOSING",
+                    period=13,
+                    total_debit=str(reversal_total_debit),
+                    total_credit=str(reversal_total_credit),
+                    lines=reversal_lines,
+                    posted_at=reopened_at.isoformat(),
+                    posted_by_id=actor.user.id,
+                    posted_by_email=actor.user.email,
+                    currency=actor.company.default_currency,
+                    exchange_rate="1.0",
+                ).to_dict(),
+            )
+
+            # Emit closing entry reversed audit event
+            emit_event(
+                actor=actor,
+                event_type=EventTypes.CLOSING_ENTRY_REVERSED,
+                aggregate_type="FiscalYear",
+                aggregate_id=f"{actor.company.public_id}:{fiscal_year}",
+                idempotency_key=f"closing_entry.reversed:{actor.company.public_id}:{fiscal_year}:{reopened_at.isoformat()}",
+                data=ClosingEntryReversedData(
+                    company_public_id=str(actor.company.public_id),
+                    fiscal_year=fiscal_year,
+                    original_entry_public_id=original_closing_public_id,
+                    reversal_entry_public_id=reversal_entry_public_id,
+                    reason=reason,
+                    reversed_at=reopened_at.isoformat(),
+                    reversed_by_id=actor.user.id,
+                    reversed_by_email=actor.user.email,
+                ).to_dict(),
+            )
+
+    # Emit fiscal year reopened event
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.FISCAL_YEAR_REOPENED,
+        aggregate_type="FiscalYear",
+        aggregate_id=f"{actor.company.public_id}:{fiscal_year}",
+        idempotency_key=f"fiscal_year.reopened:{actor.company.public_id}:{fiscal_year}:{reopened_at.isoformat()}",
+        data=FiscalYearReopenedData(
+            company_public_id=str(actor.company.public_id),
+            fiscal_year=fiscal_year,
+            reason=reason,
+            reversal_entry_public_id=reversal_entry_public_id,
+            reopened_at=reopened_at.isoformat(),
+            reopened_by_id=actor.user.id,
+            reopened_by_email=actor.user.email,
+        ).to_dict(),
+    )
+
+    _process_projections(actor.company)
+
+    logger.info(
+        "fiscal_year.reopened",
+        extra={
+            "company_id": actor.company.id,
+            "fiscal_year": fiscal_year,
+            "reason": reason,
+            "reversal_entry_public_id": reversal_entry_public_id,
+            "user_id": actor.user.id,
+        },
+    )
+
+    return CommandResult.ok({
+        "fiscal_year": fiscal_year,
+        "reversal_entry_public_id": reversal_entry_public_id,
+    }, event=event)
 
 
 # =============================================================================
@@ -2331,6 +3161,7 @@ def record_customer_receipt(
     ar_control_account_id: int,
     reference: str = "",
     memo: str = "",
+    allocations: list = None,
 ) -> CommandResult:
     """
     Record a payment received from a customer.
@@ -2343,6 +3174,7 @@ def record_customer_receipt(
     1. Create a posted journal entry
     2. Update account balances
     3. Update customer subledger balance
+    4. If allocations provided, update invoice paid amounts
 
     Args:
         actor: The actor context
@@ -2353,11 +3185,18 @@ def record_customer_receipt(
         ar_control_account_id: ID of AR control account to credit
         reference: External reference (check #, wire ref, etc.)
         memo: Optional memo
+        allocations: Optional list of invoice allocations. Each allocation is:
+            {
+                "invoice_public_id": str (UUID),
+                "amount": str (decimal amount to apply)
+            }
 
     Returns:
         CommandResult with the journal entry or error
     """
     from events.types import CustomerReceiptRecordedData
+    from sales.models import SalesInvoice, ReceiptAllocation
+    from projections.write_barrier import command_writes_allowed
 
     require(actor, "journal.post")
 
@@ -2401,6 +3240,69 @@ def record_customer_receipt(
     except (ValueError, TypeError):
         return CommandResult.fail("Invalid date format. Use ISO format (YYYY-MM-DD).")
 
+    # Enforce period policy: receipts are operational documents
+    allowed, reason = can_post_operational_document(actor, parsed_date)
+    if not allowed:
+        return CommandResult.fail(reason)
+
+    # Validate allocations if provided
+    validated_allocations = []
+    total_allocated = Decimal("0")
+
+    if allocations:
+        for idx, alloc in enumerate(allocations):
+            invoice_public_id = alloc.get("invoice_public_id")
+            alloc_amount_str = alloc.get("amount")
+
+            if not invoice_public_id:
+                return CommandResult.fail(f"Allocation {idx + 1}: invoice_public_id is required.")
+            if not alloc_amount_str:
+                return CommandResult.fail(f"Allocation {idx + 1}: amount is required.")
+
+            try:
+                alloc_amount = Decimal(alloc_amount_str)
+            except (ValueError, TypeError):
+                return CommandResult.fail(f"Allocation {idx + 1}: invalid amount format.")
+
+            if alloc_amount <= 0:
+                return CommandResult.fail(f"Allocation {idx + 1}: amount must be positive.")
+
+            # Find the invoice
+            try:
+                invoice = SalesInvoice.objects.get(
+                    company=actor.company,
+                    public_id=invoice_public_id,
+                    customer=customer,
+                )
+            except SalesInvoice.DoesNotExist:
+                return CommandResult.fail(
+                    f"Allocation {idx + 1}: Invoice not found or doesn't belong to this customer."
+                )
+
+            if invoice.status != SalesInvoice.Status.POSTED:
+                return CommandResult.fail(
+                    f"Allocation {idx + 1}: Invoice {invoice.invoice_number} is not posted."
+                )
+
+            # Check if allocation exceeds amount due
+            if alloc_amount > invoice.amount_due:
+                return CommandResult.fail(
+                    f"Allocation {idx + 1}: Amount {alloc_amount} exceeds invoice "
+                    f"{invoice.invoice_number} amount due ({invoice.amount_due})."
+                )
+
+            total_allocated += alloc_amount
+            validated_allocations.append({
+                "invoice": invoice,
+                "amount": alloc_amount,
+            })
+
+        # Total allocated cannot exceed receipt amount
+        if total_allocated > receipt_amount:
+            return CommandResult.fail(
+                f"Total allocated ({total_allocated}) exceeds receipt amount ({receipt_amount})."
+            )
+
     # Generate receipt public ID
     receipt_public_id = uuid.uuid4()
 
@@ -2435,14 +3337,22 @@ def record_customer_receipt(
     # We'll use the existing post_journal_entry flow
     from events.types import JournalEntryPostedData, JournalLineData
 
+    entry_number = f"JE-{actor.company.id}-{entry_sequence:06d}"
+
     line_data_list = []
     for line in lines:
+        # Resolve account_code for the line
+        if line["line_no"] == 1:
+            line_account_code = bank_account.code
+        else:
+            line_account_code = ar_control.code
         line_data_list.append(JournalLineData(
             line_no=line["line_no"],
             account_public_id=line["account_public_id"],
+            account_code=line_account_code,
+            description=line.get("memo", ""),
             debit=line.get("debit", "0"),
             credit=line.get("credit", "0"),
-            memo=line.get("memo", ""),
             customer_public_id=line.get("customer_public_id"),
             vendor_public_id=None,
         ))
@@ -2458,16 +3368,50 @@ def record_customer_receipt(
         idempotency_key=f"customer_receipt:{receipt_public_id}",
         data=JournalEntryPostedData(
             entry_public_id=str(entry_public_id),
-            entry_type=JournalEntry.EntryType.STANDARD,
+            entry_number=entry_number,
             date=receipt_date,
-            description=description,
+            memo=description,
+            kind=JournalEntry.Kind.NORMAL,
+            total_debit=str(receipt_amount),
+            total_credit=str(receipt_amount),
             lines=[ld.to_dict() for ld in line_data_list],
             posted_at=posted_at.isoformat(),
             posted_by_id=actor.user.id,
             posted_by_email=actor.user.email,
-            previous_status=JournalEntry.Status.INCOMPLETE,
+            currency=actor.company.default_currency,
+            exchange_rate="1.0",
         ).to_dict(),
     )
+
+    # Build allocation data for event
+    allocation_data = []
+
+    # Create receipt allocations and update invoice paid amounts
+    if validated_allocations:
+        with command_writes_allowed():
+            for alloc in validated_allocations:
+                invoice = alloc["invoice"]
+                alloc_amount = alloc["amount"]
+
+                # Create allocation record
+                ReceiptAllocation.objects.create(
+                    company=actor.company,
+                    receipt_public_id=receipt_public_id,
+                    receipt_date=parsed_date,
+                    invoice=invoice,
+                    amount=alloc_amount,
+                    created_by=actor.user,
+                )
+
+                # Update invoice amount_paid
+                invoice.amount_paid += alloc_amount
+                invoice.save(update_fields=["amount_paid"])
+
+                allocation_data.append({
+                    "invoice_public_id": str(invoice.public_id),
+                    "invoice_number": invoice.invoice_number,
+                    "amount": str(alloc_amount),
+                })
 
     # Emit customer receipt event
     receipt_event = emit_event(
@@ -2493,6 +3437,7 @@ def record_customer_receipt(
             recorded_at=posted_at.isoformat(),
             recorded_by_id=actor.user.id,
             recorded_by_email=actor.user.email,
+            allocations=allocation_data,
         ).to_dict(),
     )
 
@@ -2506,6 +3451,7 @@ def record_customer_receipt(
         "journal_entry": entry,
         "amount": str(receipt_amount),
         "customer_code": customer.code,
+        "allocations": allocation_data,
     }, event=receipt_event)
 
 
@@ -2519,6 +3465,7 @@ def record_vendor_payment(
     ap_control_account_id: int,
     reference: str = "",
     memo: str = "",
+    allocations: list = None,
 ) -> CommandResult:
     """
     Record a payment made to a vendor.
@@ -2531,6 +3478,7 @@ def record_vendor_payment(
     1. Create a posted journal entry
     2. Update account balances
     3. Update vendor subledger balance
+    4. If allocations provided, record bill payment allocations
 
     Args:
         actor: The actor context
@@ -2541,11 +3489,20 @@ def record_vendor_payment(
         ap_control_account_id: ID of AP control account to debit
         reference: External reference (check #, wire ref, etc.)
         memo: Optional memo
+        allocations: Optional list of bill allocations. Each allocation is:
+            {
+                "bill_reference": str (vendor's bill/invoice number),
+                "amount": str (decimal amount to apply),
+                "bill_date": str (optional, ISO date of original bill),
+                "bill_amount": str (optional, original bill total)
+            }
 
     Returns:
         CommandResult with the journal entry or error
     """
     from events.types import VendorPaymentRecordedData
+    from sales.models import PaymentAllocation
+    from projections.write_barrier import command_writes_allowed
 
     require(actor, "journal.post")
 
@@ -2589,6 +3546,63 @@ def record_vendor_payment(
     except (ValueError, TypeError):
         return CommandResult.fail("Invalid date format. Use ISO format (YYYY-MM-DD).")
 
+    # Enforce period policy: payments are operational documents
+    allowed, reason = can_post_operational_document(actor, parsed_date)
+    if not allowed:
+        return CommandResult.fail(reason)
+
+    # Validate allocations if provided
+    validated_allocations = []
+    total_allocated = Decimal("0")
+
+    if allocations:
+        for idx, alloc in enumerate(allocations):
+            bill_reference = alloc.get("bill_reference")
+            alloc_amount_str = alloc.get("amount")
+
+            if not bill_reference:
+                return CommandResult.fail(f"Allocation {idx + 1}: bill_reference is required.")
+            if not alloc_amount_str:
+                return CommandResult.fail(f"Allocation {idx + 1}: amount is required.")
+
+            try:
+                alloc_amount = Decimal(alloc_amount_str)
+            except (ValueError, TypeError):
+                return CommandResult.fail(f"Allocation {idx + 1}: invalid amount format.")
+
+            if alloc_amount <= 0:
+                return CommandResult.fail(f"Allocation {idx + 1}: amount must be positive.")
+
+            # Parse optional bill_date
+            bill_date = None
+            if alloc.get("bill_date"):
+                try:
+                    bill_date = date_cls.fromisoformat(alloc["bill_date"])
+                except (ValueError, TypeError):
+                    return CommandResult.fail(f"Allocation {idx + 1}: invalid bill_date format.")
+
+            # Parse optional bill_amount
+            bill_amount = None
+            if alloc.get("bill_amount"):
+                try:
+                    bill_amount = Decimal(alloc["bill_amount"])
+                except (ValueError, TypeError):
+                    return CommandResult.fail(f"Allocation {idx + 1}: invalid bill_amount format.")
+
+            total_allocated += alloc_amount
+            validated_allocations.append({
+                "bill_reference": bill_reference,
+                "amount": alloc_amount,
+                "bill_date": bill_date,
+                "bill_amount": bill_amount,
+            })
+
+        # Total allocated cannot exceed payment amount
+        if total_allocated > payment_amount:
+            return CommandResult.fail(
+                f"Total allocated ({total_allocated}) exceeds payment amount ({payment_amount})."
+            )
+
     # Generate payment public ID
     payment_public_id = uuid.uuid4()
 
@@ -2622,14 +3636,22 @@ def record_vendor_payment(
     # Create the journal entry
     from events.types import JournalEntryPostedData, JournalLineData
 
+    entry_number = f"JE-{actor.company.id}-{entry_sequence:06d}"
+
     line_data_list = []
     for line in lines:
+        # Resolve account_code for the line
+        if line["line_no"] == 1:
+            line_account_code = ap_control.code
+        else:
+            line_account_code = bank_account.code
         line_data_list.append(JournalLineData(
             line_no=line["line_no"],
             account_public_id=line["account_public_id"],
+            account_code=line_account_code,
+            description=line.get("memo", ""),
             debit=line.get("debit", "0"),
             credit=line.get("credit", "0"),
-            memo=line.get("memo", ""),
             customer_public_id=None,
             vendor_public_id=line.get("vendor_public_id"),
         ))
@@ -2645,16 +3667,46 @@ def record_vendor_payment(
         idempotency_key=f"vendor_payment:{payment_public_id}",
         data=JournalEntryPostedData(
             entry_public_id=str(entry_public_id),
-            entry_type=JournalEntry.EntryType.STANDARD,
+            entry_number=entry_number,
             date=payment_date,
-            description=description,
+            memo=description,
+            kind=JournalEntry.Kind.NORMAL,
+            total_debit=str(payment_amount),
+            total_credit=str(payment_amount),
             lines=[ld.to_dict() for ld in line_data_list],
             posted_at=posted_at.isoformat(),
             posted_by_id=actor.user.id,
             posted_by_email=actor.user.email,
-            previous_status=JournalEntry.Status.INCOMPLETE,
+            currency=actor.company.default_currency,
+            exchange_rate="1.0",
         ).to_dict(),
     )
+
+    # Build allocation data for event
+    allocation_data = []
+
+    # Create payment allocations
+    if validated_allocations:
+        with command_writes_allowed():
+            for alloc in validated_allocations:
+                PaymentAllocation.objects.create(
+                    company=actor.company,
+                    payment_public_id=payment_public_id,
+                    payment_date=parsed_date,
+                    vendor=vendor,
+                    bill_reference=alloc["bill_reference"],
+                    bill_date=alloc["bill_date"],
+                    bill_amount=alloc["bill_amount"],
+                    amount=alloc["amount"],
+                    created_by=actor.user,
+                )
+
+                allocation_data.append({
+                    "bill_reference": alloc["bill_reference"],
+                    "amount": str(alloc["amount"]),
+                    "bill_date": alloc["bill_date"].isoformat() if alloc["bill_date"] else None,
+                    "bill_amount": str(alloc["bill_amount"]) if alloc["bill_amount"] else None,
+                })
 
     # Emit vendor payment event
     payment_event = emit_event(
@@ -2680,6 +3732,7 @@ def record_vendor_payment(
             recorded_at=posted_at.isoformat(),
             recorded_by_id=actor.user.id,
             recorded_by_email=actor.user.email,
+            allocations=allocation_data,
         ).to_dict(),
     )
 
@@ -2693,6 +3746,7 @@ def record_vendor_payment(
         "journal_entry": entry,
         "amount": str(payment_amount),
         "vendor_code": vendor.code,
+        "allocations": allocation_data,
     }, event=payment_event)
 
 
