@@ -116,7 +116,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isLoading: false,
       isAuthenticated: false,
     });
-    router.push('/login');
+    // Use hard redirect to avoid race with axios interceptor's window.location.href
+    window.location.href = '/login';
   };
 
   const switchCompany = async (companyId: number) => {
