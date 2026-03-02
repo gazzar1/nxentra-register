@@ -15,7 +15,9 @@ export default function Document(props: DocumentProps) {
           rel="stylesheet"
         />
         <meta name="description" content="Nxentra - Financial Truth Engine" />
-        <link rel="icon" href="/favicon.ico" />
+        <link rel="icon" href="/favicon.ico" sizes="any" />
+        <link rel="icon" type="image/png" sizes="192x192" href="/android-chrome-192x192.png" />
+        <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
       </Head>
       <body>
         {/* Prevent flash of wrong theme */}
