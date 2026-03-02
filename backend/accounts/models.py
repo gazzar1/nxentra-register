@@ -154,7 +154,7 @@ class Company(ProjectionWriteGuard):
         verbose_name_plural = "Companies"
         ordering = ["name"]
 
-    allowed_write_contexts = {"projection", "bootstrap", "migration", "admin_emergency"}
+    allowed_write_contexts = {"projection", "bootstrap", "migration", "admin_emergency", "command"}
 
     def __str__(self):
         return self.name
