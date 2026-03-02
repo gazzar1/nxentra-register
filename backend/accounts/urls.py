@@ -11,6 +11,7 @@ Endpoints:
 """
 
 from django.urls import path
+from rest_framework_simplejwt.views import TokenBlacklistView
 
 from .views import (
     # Auth
@@ -74,6 +75,7 @@ urlpatterns = [
     # ==========================================================================
     path("auth/register/", RegisterView.as_view(), name="register"),
     path("auth/login/", LoginView.as_view(), name="login"),
+    path("auth/logout/", TokenBlacklistView.as_view(), name="logout"),
     path("auth/refresh/", NxentraTokenRefreshView.as_view(), name="token-refresh"),
     path("auth/me/", MeView.as_view(), name="me"),
     path("auth/switch-company/", SwitchCompanyView.as_view(), name="switch-company"),
