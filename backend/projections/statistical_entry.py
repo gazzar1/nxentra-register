@@ -68,7 +68,7 @@ class StatisticalEntryProjection(BaseProjection):
         ]
 
     def handle(self, event: BusinessEvent) -> None:
-        data = event.data
+        data = event.get_data()
 
         if event.event_type == EventTypes.STATISTICAL_ENTRY_CREATED:
             self._handle_created(event, data)

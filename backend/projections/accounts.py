@@ -41,8 +41,8 @@ class CompanyProjection(BaseProjection):
         ]
 
     def handle(self, event: BusinessEvent) -> None:
-        data = event.data
-        
+        data = event.get_data()
+
         if event.event_type == EventTypes.COMPANY_CREATED:
             Company.objects.update_or_create(
                 public_id=data["company_public_id"],
@@ -130,7 +130,7 @@ class UserProjection(BaseProjection):
         ]
 
     def handle(self, event: BusinessEvent) -> None:
-        data = event.data
+        data = event.get_data()
 
         if event.event_type == EventTypes.USER_CREATED:
             User.objects.update_or_create(
@@ -192,7 +192,7 @@ class MembershipProjection(BaseProjection):
         ]
 
     def handle(self, event: BusinessEvent) -> None:
-        data = event.data
+        data = event.get_data()
 
         if event.event_type == EventTypes.MEMBERSHIP_CREATED:
             company = Company.objects.filter(public_id=data["company_public_id"]).first()

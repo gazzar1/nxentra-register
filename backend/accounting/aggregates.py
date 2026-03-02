@@ -4,6 +4,13 @@ Aggregate definitions for event sourcing.
 Aggregates are reconstituted by replaying events from their event stream.
 Each aggregate type has a dedicated stream identified by (aggregate_type, aggregate_id).
 
+IMPORTANT: Always use event.get_data() — NEVER event.data
+==========================================================
+event.data only returns the inline JSON payload. For events using LEPH
+(Large Event Payload Handling) with external or chunked storage, event.data
+may be empty, truncated, or reference-only.  event.get_data() transparently
+resolves the full payload regardless of storage strategy.
+
 IMPORTANT: Aggregate Boundary Rules
 ===================================
 All events that modify an aggregate MUST be emitted with that aggregate's
@@ -40,7 +47,7 @@ class JournalEntryAggregate:
     reversed: bool = False
 
     def apply(self, event) -> None:
-        data = event.data
+        data = event.get_data()
 
         if event.event_type == EventTypes.JOURNAL_ENTRY_CREATED:
             self.date = data.get("date")
@@ -158,7 +165,7 @@ class AccountAggregate:
     deleted: bool = False
 
     def apply(self, event) -> None:
-        data = event.data
+        data = event.get_data()
         if event.event_type == EventTypes.ACCOUNT_CREATED:
             self.code = data.get("code", "")
             self.name = data.get("name", "")
@@ -208,7 +215,7 @@ class FiscalPeriodAggregate:
         elif event.event_type == EventTypes.FISCAL_PERIOD_OPENED:
             self.closed = False
         elif event.event_type == EventTypes.FISCAL_PERIOD_RANGE_SET:
-            data = event.data
+            data = event.get_data()
             open_from = data.get("open_from_period", 1)
             open_to = data.get("open_to_period", self.period)
             if open_from <= self.period <= open_to:

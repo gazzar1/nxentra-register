@@ -74,7 +74,7 @@ class AccountProjection(BaseProjection):
         ]
 
     def handle(self, event: BusinessEvent) -> None:
-        data = event.data
+        data = event.get_data()
         if event.event_type == EventTypes.ACCOUNT_CREATED:
             parent = None
             parent_public_id = data.get("parent_public_id")
@@ -146,7 +146,7 @@ class AnalysisDimensionProjection(BaseProjection):
         ]
 
     def handle(self, event: BusinessEvent) -> None:
-        data = event.data
+        data = event.get_data()
         if event.event_type == EventTypes.ANALYSIS_DIMENSION_CREATED:
             AnalysisDimension.objects.projection().update_or_create(
                 company=event.company,
@@ -268,7 +268,7 @@ class AccountAnalysisDefaultProjection(BaseProjection):
         ]
 
     def handle(self, event: BusinessEvent) -> None:
-        data = event.data
+        data = event.get_data()
         account = Account.objects.filter(
             company=event.company,
             public_id=data["account_public_id"],
@@ -326,7 +326,7 @@ class JournalEntryProjection(BaseProjection):
         ]
 
     def handle(self, event: BusinessEvent) -> None:
-        data = event.data
+        data = event.get_data()
 
         if event.event_type == EventTypes.JOURNAL_ENTRY_CREATED:
             entry, _ = JournalEntry.objects.projection().get_or_create(

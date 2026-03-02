@@ -1709,7 +1709,7 @@ class AdminAuditLogView(APIView):
                 "origin": event.origin,
                 "occurred_at": event.occurred_at.isoformat() if event.occurred_at else None,
                 "recorded_at": event.recorded_at.isoformat() if event.recorded_at else None,
-                "data_preview": str(event.data)[:200] if event.data else None,
+                "data_preview": str(event.get_data())[:200],
             })
 
         return Response({

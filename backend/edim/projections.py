@@ -47,7 +47,7 @@ class EdimBatchAuditProjection(BaseProjection):
         Currently logs events for auditing. Can be extended to
         build materialized audit tables if needed.
         """
-        data = event.data
+        data = event.get_data()
         batch_public_id = data.get("batch_public_id", "unknown")
 
         logger.info(

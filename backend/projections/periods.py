@@ -49,7 +49,7 @@ class FiscalPeriodProjection(BaseProjection):
         ]
 
     def handle(self, event: BusinessEvent) -> None:
-        data = event.data
+        data = event.get_data()
 
         if event.event_type == EventTypes.COMPANY_CREATED:
             company, _ = Company.objects.update_or_create(

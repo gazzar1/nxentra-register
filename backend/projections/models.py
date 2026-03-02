@@ -179,7 +179,7 @@ class AccountBalance(ProjectionOwnedModel):
         account_public_id = str(self.account.public_id)
 
         for event in events:
-            lines = event.data.get("lines", [])
+            lines = event.get_data().get("lines", [])
             for line_data in lines:
                 if line_data.get("account_public_id") != account_public_id:
                     continue

@@ -2841,6 +2841,12 @@ def grant_voice_access(
             "voice_enabled", "voice_quota", "voice_quota_reset_at", "updated_at"
         ])
 
+        # Ensure the company-level voice flag is also enabled
+        company = membership.company
+        if not company.voice_enabled:
+            company.voice_enabled = True
+            company.save(update_fields=["voice_enabled", "updated_at"])
+
     return CommandResult.ok({
         "membership_id": membership.id,
         "user_email": membership.user.email,

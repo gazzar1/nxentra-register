@@ -354,7 +354,17 @@ class BusinessEvent(models.Model):
             raise ValueError("idempotency_key is required")
 
         with transaction.atomic():
-            # Allocate per-company monotonic stream sequence
+            # ─── Company-wide serialization ───────────────────────────────
+            # select_for_update() on CompanyEventCounter serializes ALL
+            # event emissions for a company. This is intentional:
+            # it guarantees that per-aggregate sequence allocation (below)
+            # is also serialized, since only one transaction at a time can
+            # hold the row lock on CompanyEventCounter for a given company.
+            #
+            # If you ever shard or remove this lock, you MUST add explicit
+            # per-aggregate locking (e.g. AggregateEventCounter with
+            # select_for_update) to prevent aggregate sequence collisions.
+            # ──────────────────────────────────────────────────────────────
             try:
                 counter, _ = CompanyEventCounter.objects.select_for_update().get_or_create(
                     company=self.company
@@ -368,7 +378,12 @@ class BusinessEvent(models.Model):
             counter.refresh_from_db(fields=["last_sequence"])
             self.company_sequence = counter.last_sequence
 
-            # Allocate per-aggregate sequence (scoped by company)
+            # Per-aggregate sequence allocation.
+            # Safe from races: the select_for_update() above serializes
+            # all concurrent writers for this company. The UniqueConstraint
+            # (uniq_event_company_aggregate_sequence) provides a final
+            # safety net — collisions trigger IntegrityError, handled by
+            # the retry loop in _emit_event_core().
             if self.sequence == 0:
                 last_event = BusinessEvent.objects.filter(
                     company=self.company,

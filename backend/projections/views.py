@@ -143,14 +143,14 @@ class TrialBalanceView(APIView):
 
         # Process events
         for event in events:
-            entry_date_str = event.data.get("date")
+            entry_date_str = event.get_data().get("date")
             if not entry_date_str:
                 continue
 
             from datetime import datetime
             entry_date = datetime.fromisoformat(entry_date_str).date()
 
-            lines = event.data.get("lines", [])
+            lines = event.get_data().get("lines", [])
             for line in lines:
                 account_public_id = line.get("account_public_id")
                 if not account_public_id or account_public_id not in account_data:
@@ -515,7 +515,7 @@ class BalanceSheetView(APIView):
 
         # Process events
         for event in events:
-            entry_date_str = event.data.get("date")
+            entry_date_str = event.get_data().get("date")
             if not entry_date_str:
                 continue
 
@@ -525,7 +525,7 @@ class BalanceSheetView(APIView):
             if entry_date < period_start_date or entry_date > as_of_date:
                 continue
 
-            lines = event.data.get("lines", [])
+            lines = event.get_data().get("lines", [])
             for line in lines:
                 account_public_id = line.get("account_public_id")
                 if not account_public_id or account_public_id not in account_data:
@@ -956,7 +956,7 @@ class IncomeStatementView(APIView):
 
         # Process events
         for event in events:
-            entry_date_str = event.data.get("date")
+            entry_date_str = event.get_data().get("date")
             if not entry_date_str:
                 continue
 
@@ -968,7 +968,7 @@ class IncomeStatementView(APIView):
 
             _debug_events_in_period += 1
 
-            lines = event.data.get("lines", [])
+            lines = event.get_data().get("lines", [])
             for line in lines:
                 account_public_id = line.get("account_public_id")
                 if not account_public_id or account_public_id not in account_data:
@@ -2188,14 +2188,14 @@ class DashboardChartsView(APIView):
         account_activity = defaultdict(lambda: {"debits": Decimal("0.00"), "credits": Decimal("0.00"), "count": 0})
 
         for event in events:
-            entry_date_str = event.data.get("date")
+            entry_date_str = event.get_data().get("date")
             if not entry_date_str:
                 continue
 
             entry_date = datetime.fromisoformat(entry_date_str).date()
             month_key = entry_date.strftime("%Y-%m")
 
-            lines = event.data.get("lines", [])
+            lines = event.get_data().get("lines", [])
             for line in lines:
                 account_public_id = line.get("account_public_id")
                 if not account_public_id:
@@ -3394,7 +3394,7 @@ class CustomerStatementView(APIView):
         from accounting.models import Customer, JournalLine
         from sales.models import SalesInvoice, ReceiptAllocation
         from projections.models import CustomerBalance
-        from datetime import timedelta
+        from datetime import date, timedelta
 
         actor = resolve_actor(request)
         require(actor, "reports.view")
@@ -3548,7 +3548,7 @@ class VendorStatementView(APIView):
         from accounting.models import Vendor, JournalLine
         from sales.models import PaymentAllocation
         from projections.models import VendorBalance
-        from datetime import timedelta
+        from datetime import date, timedelta
 
         actor = resolve_actor(request)
         require(actor, "reports.view")
