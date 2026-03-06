@@ -36,16 +36,32 @@ if _use_postgres:
     DATABASES['default'].setdefault('TEST', {})
     DATABASES['default']['TEST']['SERIALIZE'] = True
 else:
-    # SQLite for local development
+    # SQLite for local development — use a dedicated file to avoid overlap
+    # with the dev database. pytest-django --reuse-db keeps the schema
+    # between runs for speed.
+    _test_db = BASE_DIR / 'test_db.sqlite3'
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': BASE_DIR / 'test_db.sqlite3',
+            'NAME': _test_db,
             'TEST': {
-                'NAME': BASE_DIR / 'test_db.sqlite3',
+                'NAME': _test_db,
             },
         }
     }
+
+    # Enable WAL mode + busy timeout to prevent "database is locked" errors.
+    # Django's sqlite3 backend runs connection_created signals where we can
+    # set PRAGMAs before any queries.
+    from django.db.backends.signals import connection_created
+
+    def _sqlite_wal_mode(sender, connection, **kwargs):
+        if connection.vendor == 'sqlite':
+            cursor = connection.cursor()
+            cursor.execute('PRAGMA journal_mode=WAL;')
+            cursor.execute('PRAGMA busy_timeout=5000;')
+
+    connection_created.connect(_sqlite_wal_mode)
 
 # Strip any tenant DB aliases (tests use default only)
 for key in list(DATABASES.keys()):

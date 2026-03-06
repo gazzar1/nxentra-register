@@ -8,7 +8,7 @@
 #   2. Authentication works (login flow)
 #   3. Core API endpoints return valid responses
 #   4. Frontend serves pages
-#   5. Reconciliation check passes
+#   5. Management commands (local only)
 #
 # Prerequisites:
 #   - Backend running at BASE_URL (default: http://localhost:8000)
@@ -138,11 +138,11 @@ test_api() {
     AUTH="Authorization: Bearer $TOKEN"
 
     # Chart of accounts
-    STATUS=$(http_get "$BASE_URL/api/accounts/" "$AUTH")
+    STATUS=$(http_get "$BASE_URL/api/accounting/accounts/" "$AUTH")
     if [ "$STATUS" = "200" ]; then
-        pass "GET /api/accounts/: $STATUS"
+        pass "GET /api/accounting/accounts/: $STATUS"
     else
-        fail "GET /api/accounts/: expected 200, got $STATUS"
+        fail "GET /api/accounting/accounts/: expected 200, got $STATUS"
     fi
 
     # Journal entries
@@ -154,11 +154,11 @@ test_api() {
     fi
 
     # Fiscal periods
-    STATUS=$(http_get "$BASE_URL/api/projections/fiscal-periods/" "$AUTH")
+    STATUS=$(http_get "$BASE_URL/api/reports/periods/" "$AUTH")
     if [ "$STATUS" = "200" ]; then
-        pass "GET /api/projections/fiscal-periods/: $STATUS"
+        pass "GET /api/reports/periods/: $STATUS"
     else
-        fail "GET /api/projections/fiscal-periods/: expected 200, got $STATUS"
+        fail "GET /api/reports/periods/: expected 200, got $STATUS"
     fi
 
     # Reconciliation
@@ -175,12 +175,20 @@ test_api() {
         fail "GET /api/reports/reconciliation/: expected 200, got $STATUS"
     fi
 
-    # Balance report
-    STATUS=$(http_get "$BASE_URL/api/projections/balance-report/" "$AUTH")
+    # Trial balance
+    STATUS=$(http_get "$BASE_URL/api/reports/trial-balance/" "$AUTH")
     if [ "$STATUS" = "200" ]; then
-        pass "GET /api/projections/balance-report/: $STATUS"
+        pass "GET /api/reports/trial-balance/: $STATUS"
     else
-        fail "GET /api/projections/balance-report/: expected 200, got $STATUS"
+        fail "GET /api/reports/trial-balance/: expected 200, got $STATUS"
+    fi
+
+    # Dashboard charts
+    STATUS=$(http_get "$BASE_URL/api/reports/dashboard-charts/" "$AUTH")
+    if [ "$STATUS" = "200" ]; then
+        pass "GET /api/reports/dashboard-charts/: $STATUS"
+    else
+        fail "GET /api/reports/dashboard-charts/: expected 200, got $STATUS"
     fi
 }
 

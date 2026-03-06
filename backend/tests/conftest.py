@@ -64,12 +64,13 @@ def _rls_bypass(db):
 
 @pytest.fixture
 def company(db):
-    """Create a test company."""
+    """Create a test company with a unique slug."""
+    uid = uuid4().hex[:8]
     return Company.objects.create(
         public_id=uuid4(),
         name="Test Company",
         name_ar="شركة اختبار",
-        slug="test-company",
+        slug=f"test-company-{uid}",
         default_currency="USD",
         fiscal_year_start_month=1,
         is_active=True,
@@ -79,10 +80,11 @@ def company(db):
 @pytest.fixture
 def second_company(db):
     """Create a second test company for multi-tenant tests."""
+    uid = uuid4().hex[:8]
     return Company.objects.create(
         public_id=uuid4(),
         name="Second Company",
-        slug="second-company",
+        slug=f"second-company-{uid}",
         default_currency="EUR",
         is_active=True,
     )

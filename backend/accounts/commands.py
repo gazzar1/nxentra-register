@@ -1073,8 +1073,10 @@ def update_membership_role(
     
     old_role = membership.role
     # Predict permissions after role change based on defaults (read model)
+    # Use Python-side filtering to avoid JSONField __contains (unsupported on SQLite)
     new_codes = set(
-        NxPermission.objects.filter(default_for_roles__contains=[new_role]).values_list("code", flat=True)
+        p.code for p in NxPermission.objects.all()
+        if new_role in (p.default_for_roles or [])
     )
     granted = sorted(new_codes - old_codes)
     revoked = sorted(old_codes - new_codes)

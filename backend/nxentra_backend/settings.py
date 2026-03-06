@@ -6,13 +6,44 @@ import dj_database_url
 from datetime import timedelta
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / ".env")
+load_dotenv(BASE_DIR / ".env", override=False)  # Real env vars take precedence
 
 
 
 SECRET_KEY = os.environ.get("SECRET_KEY", os.environ.get("DJANGO_SECRET_KEY", "changeme"))
 DEBUG = os.getenv("DEBUG", os.getenv("DJANGO_DEBUG", "True")) == "True"
 ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
+
+# =============================================================================
+# Production Security Hardening
+# =============================================================================
+# These settings are enforced when DEBUG is False (production/staging).
+if not DEBUG:
+    # Enforce HTTPS
+    SECURE_SSL_REDIRECT = True
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+    # HTTP Strict Transport Security (1 year, include subdomains, preload-ready)
+    SECURE_HSTS_SECONDS = 31_536_000
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+
+    # Secure cookies
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+
+    # Prevent browsers from MIME-sniffing
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+
+    # Deny iframing by default (clickjacking protection, reinforces XFrameOptionsMiddleware)
+    X_FRAME_OPTIONS = "DENY"
+
+    # Validate SECRET_KEY is not the default
+    if SECRET_KEY == "changeme":
+        raise ValueError(
+            "SECRET_KEY is set to the default 'changeme'. "
+            "Set a strong SECRET_KEY environment variable for production."
+        )
 
 # Test-mode flags used by read-model guards and event payload validation.
 # Include Django's manage.py test invocation.
@@ -170,6 +201,20 @@ CSRF_TRUSTED_ORIGINS = os.getenv(
     "CSRF_TRUSTED_ORIGINS",
     "http://localhost:3000"
 ).split(",")
+
+# Production guard: reject wildcard / localhost origins
+if not DEBUG:
+    _bad_origins = {"*", "http://localhost:3000", "http://127.0.0.1:3000"}
+    if _bad_origins & set(CORS_ALLOWED_ORIGINS):
+        raise ValueError(
+            "CORS_ALLOWED_ORIGINS contains localhost or wildcard entries. "
+            "Set production domains in the CORS_ALLOWED_ORIGINS env var."
+        )
+    if _bad_origins & set(CSRF_TRUSTED_ORIGINS):
+        raise ValueError(
+            "CSRF_TRUSTED_ORIGINS contains localhost or wildcard entries. "
+            "Set production domains in the CSRF_TRUSTED_ORIGINS env var."
+        )
 
 # =============================================================================
 # Email Configuration

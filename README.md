@@ -1,41 +1,40 @@
-# Nxentra Register/Login Stack
+# Nxentra Register — Smart ERP Platform
 
-This repository bootstraps a modern authentication and onboarding stack for the Nxentra Smart ERP platform. It provides a Next.js front end (deployable on Vercel) and a Django REST + PostgreSQL back end (deployable on DigitalOcean) that work together to onboard tenants and manage authentication.
+Multi-tenant accounting and ERP platform built with Django REST Framework (backend) and Next.js 14 (frontend).
 
 ## Architecture
 
-- **frontend/** – Next.js 14 + TailwindCSS application that provides Register, Login, Profile flows and animated onboarding feedback.
-- **backend/** – Django REST Framework API with JWT authentication that persists users and company workspace preferences to PostgreSQL.
+- **backend/** — Django 4.2 + DRF + PostgreSQL with Row-Level Security (RLS) for tenant isolation. Event-sourced accounting core with CQRS projections.
+- **frontend/** — Next.js 14 + TailwindCSS + shadcn/ui. JWT-authenticated SPA with Arabic/English support.
 
-## Features
+## Key Modules
 
-### Registration flow
+| Module | Description |
+|---|---|
+| **Accounting** | Double-entry journal entries, chart of accounts, fiscal periods (13-period), year-end close |
+| **Sales** | Sales invoices, customer AR subledger, receipts |
+| **Purchases** | Purchase bills, vendor AP subledger, payments |
+| **Inventory** | Warehouses, items, stock balances, adjustments, opening balance |
+| **Reports** | Trial balance, balance sheet, income statement, cash flow, AR/AP aging, account inquiry |
+| **Analysis Dimensions** | Configurable cost centers / departments / projects with per-account defaults |
+| **Tax** | Tax codes with configurable rates and posting profiles |
+| **Scratchpad** | Quick journal entry drafting with voice input (OpenAI) |
+| **Admin** | Multi-tenant company management, user roles & permissions, audit log |
 
-1. Collects core identity details (email, full name, password).
-2. Captures tenant configuration: company identifier (max 10 characters, no spaces), currency, language (Arabic/English), number of accounting periods, current period, thousand separator, decimal precision/separator, and date format.
-3. Displays an animated loader while the workspace is being prepared and then redirects the user to the profile view with the saved settings.
+## Local Development
 
-### Authentication
-
-- JWT based login/logout using `djangorestframework-simplejwt` with refresh token rotation and blacklisting.
-- Profile endpoint returns both user details and ERP configuration so the front end can render the workspace summary.
-
-## Local development
-
-### Back end
+### Backend
 
 ```bash
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
+cp .env.example .env          # Edit with your DB credentials
 python manage.py migrate
 python manage.py runserver 0.0.0.0:8000
 ```
 
-The API will be available at `http://localhost:8000/api/`.
-
-### Front end
+### Frontend
 
 ```bash
 cd frontend
@@ -43,17 +42,67 @@ npm install
 npm run dev
 ```
 
-The Next.js application will be available at `http://localhost:3000` and expects `NEXT_PUBLIC_API_URL` to point at the deployed Django API (defaults to `http://localhost:8000/api`).
+The app is available at `http://localhost:3000`. Set `NEXT_PUBLIC_API_URL=http://localhost:8000/api` in `frontend/.env.local`.
 
-## Deployment notes
+## Testing
 
-- Deploy the `frontend` directory to Vercel. Configure the environment variable `NEXT_PUBLIC_API_URL` with the public DigitalOcean API URL.
-- Deploy the `backend` directory to a DigitalOcean App Platform or Droplet. Provide the environment variables listed in `backend/.env.example` and make sure PostgreSQL is reachable (DigitalOcean Managed Database recommended).
-- Ensure HTTPS origins are whitelisted in both `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS`.
-- Run the projection consumer in production to keep read models current: `python manage.py run_projections --daemon --interval 5` (set `PROJECTIONS_SYNC=False` in production).
+```bash
+# Backend unit/integration tests (SQLite, fast)
+cd backend && python -m pytest tests/ accounting/tests/ events/tests/ accounts/tests/ --ignore=tests/e2e/
 
-## Next steps
+# Backend e2e tests (requires PostgreSQL)
+TEST_DATABASE_URL=postgres://user:pass@localhost:5432/nxentra_test python -m pytest tests/e2e/
 
-- Harden password policies and add multi-factor authentication.
-- Implement tenant-aware schema provisioning if each company requires an isolated database.
-- Add automated tests for serializers and UI components.
+# Frontend build check
+cd frontend && npm run build
+```
+
+## Production Deployment
+
+### Required Environment Variables
+
+| Variable | Example |
+|---|---|
+| `SECRET_KEY` | Long random string (≥50 chars) |
+| `DEBUG` | `False` |
+| `ALLOWED_HOSTS` | `app.nxentra.com` |
+| `DATABASE_URL` | `postgres://user:pass@host:5432/nxentra` |
+| `CORS_ALLOWED_ORIGINS` | `https://app.nxentra.com` |
+| `CSRF_TRUSTED_ORIGINS` | `https://app.nxentra.com` |
+| `REDIS_URL` | `redis://host:6379/0` |
+| `NEXT_PUBLIC_API_URL` | `https://api.nxentra.com/api` |
+
+### Security Checklist
+
+When `DEBUG=False`, the following are enforced automatically:
+- `SECURE_SSL_REDIRECT`, HSTS (1 year, preload-ready)
+- Secure session & CSRF cookies
+- SECRET_KEY validation (rejects default `changeme`)
+- CORS/CSRF origin validation (rejects localhost entries)
+
+Run the deploy check: `python manage.py check --deploy` — must return **0 warnings**.
+
+### Services
+
+- **Backend**: Gunicorn/Uvicorn behind nginx with HTTPS
+- **Projection consumer**: `python manage.py run_projections --daemon --interval 5` (set `PROJECTIONS_SYNC=False`)
+- **Celery worker**: `celery -A nxentra_backend worker -l info`
+- **Celery beat**: `celery -A nxentra_backend beat -l info`
+- **Frontend**: `npm run build && npm start` or deploy to Vercel
+
+### Pre-Release Validation
+
+```bash
+./scripts/security-check.sh    # Secrets, deps, deploy check, authz audit
+./scripts/rc-smoke-test.sh     # Health, auth, API, frontend smoke tests
+```
+
+## CI/CD
+
+GitHub Actions workflow (`.github/workflows/ci.yml`) runs on every push/PR to `main`:
+
+1. **Backend Tests** — unit + integration on SQLite
+2. **Backend E2E** — full tests on PostgreSQL 16
+3. **Frontend Build** — Next.js type-check + build
+4. **Security Check** — `manage.py check --deploy` + dependency audit
+5. **Quality Gate** — all jobs must pass to merge
