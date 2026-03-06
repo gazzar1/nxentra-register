@@ -136,6 +136,62 @@ export function Sidebar() {
       icon: <LayoutDashboard className="h-5 w-5 text-blue-500" />,
     },
     {
+      label: t("nav.setup", "Setup"),
+      icon: <Wrench className="h-5 w-5 text-cyan-500" />,
+      children: [
+        {
+          label: t("nav.periods"),
+          href: "/settings/periods",
+          icon: <Calendar className="h-4 w-4 text-purple-400" />,
+        },
+        {
+          label: t("nav.chartOfAccounts"),
+          href: "/accounting/chart-of-accounts",
+          icon: <FileText className="h-4 w-4 text-emerald-400" />,
+        },
+        {
+          label: t("nav.dimensions"),
+          href: "/settings/dimensions",
+          icon: <Layers className="h-4 w-4 text-cyan-400" />,
+        },
+        {
+          label: t("nav.vendors", "Vendors (AP)"),
+          href: "/accounting/vendors",
+          icon: <Truck className="h-4 w-4 text-amber-500" />,
+        },
+        {
+          label: t("nav.customers", "Customers (AR)"),
+          href: "/accounting/customers",
+          icon: <UserCircle className="h-4 w-4 text-sky-400" />,
+        },
+        {
+          label: t("nav.warehouses", "Warehouses"),
+          href: "/inventory/warehouses",
+          icon: <Warehouse className="h-4 w-4 text-cyan-400" />,
+        },
+        {
+          label: t("nav.items", "Items"),
+          href: "/accounting/items",
+          icon: <Package className="h-4 w-4 text-amber-400" />,
+        },
+        {
+          label: t("nav.taxCodes", "Tax Codes"),
+          href: "/accounting/tax-codes",
+          icon: <Percent className="h-4 w-4 text-rose-400" />,
+        },
+        {
+          label: t("nav.postingProfiles", "Posting Profiles"),
+          href: "/accounting/posting-profiles",
+          icon: <CreditCard className="h-4 w-4 text-fuchsia-400" />,
+        },
+        {
+          label: t("nav.integrations", "Integrations"),
+          href: "/settings/integrations",
+          icon: <Plug className="h-4 w-4 text-green-400" />,
+        },
+      ],
+    },
+    {
       label: t("nav.accounting"),
       icon: <BookOpen className="h-5 w-5 text-emerald-500" />,
       children: [
@@ -262,62 +318,6 @@ export function Sidebar() {
           label: t("nav.vendorStatement", "Vendor Statement"),
           href: "/reports/vendor-statement",
           icon: <Truck className="h-4 w-4 text-orange-400" />,
-        },
-      ],
-    },
-    {
-      label: t("nav.setup", "Setup"),
-      icon: <Wrench className="h-5 w-5 text-cyan-500" />,
-      children: [
-        {
-          label: t("nav.periods"),
-          href: "/settings/periods",
-          icon: <Calendar className="h-4 w-4 text-purple-400" />,
-        },
-        {
-          label: t("nav.chartOfAccounts"),
-          href: "/accounting/chart-of-accounts",
-          icon: <FileText className="h-4 w-4 text-emerald-400" />,
-        },
-        {
-          label: t("nav.dimensions"),
-          href: "/settings/dimensions",
-          icon: <Layers className="h-4 w-4 text-cyan-400" />,
-        },
-        {
-          label: t("nav.vendors", "Vendors (AP)"),
-          href: "/accounting/vendors",
-          icon: <Truck className="h-4 w-4 text-amber-500" />,
-        },
-        {
-          label: t("nav.customers", "Customers (AR)"),
-          href: "/accounting/customers",
-          icon: <UserCircle className="h-4 w-4 text-sky-400" />,
-        },
-        {
-          label: t("nav.warehouses", "Warehouses"),
-          href: "/inventory/warehouses",
-          icon: <Warehouse className="h-4 w-4 text-cyan-400" />,
-        },
-        {
-          label: t("nav.items", "Items"),
-          href: "/accounting/items",
-          icon: <Package className="h-4 w-4 text-amber-400" />,
-        },
-        {
-          label: t("nav.taxCodes", "Tax Codes"),
-          href: "/accounting/tax-codes",
-          icon: <Percent className="h-4 w-4 text-rose-400" />,
-        },
-        {
-          label: t("nav.postingProfiles", "Posting Profiles"),
-          href: "/accounting/posting-profiles",
-          icon: <CreditCard className="h-4 w-4 text-fuchsia-400" />,
-        },
-        {
-          label: t("nav.integrations", "Integrations"),
-          href: "/settings/integrations",
-          icon: <Plug className="h-4 w-4 text-green-400" />,
         },
       ],
     },
