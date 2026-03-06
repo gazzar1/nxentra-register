@@ -101,7 +101,7 @@ export function useFormKeyboardShortcuts({
     const container = formRef.current;
     if (!container) return;
 
-    container.addEventListener("keydown", handleKeyDown);
-    return () => container.removeEventListener("keydown", handleKeyDown);
+    container.addEventListener("keydown", handleKeyDown as EventListener);
+    return () => container.removeEventListener("keydown", handleKeyDown as EventListener);
   }, [enabled, formRef, onSave, onSubmit, onCancel, getFocusableFields]);
 }
