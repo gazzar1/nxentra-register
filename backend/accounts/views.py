@@ -305,10 +305,12 @@ class LoginView(TokenObtainPairView):
         response = super().post(request, *args, **kwargs)
 
         if response.status_code == 200:
-            # Log the login event to the TENANT database
-            # emit_event_no_actor() handles tenant context setup internally
+            # Update last_login (JWT flow skips django.contrib.auth.login())
             try:
                 user = User.objects.get(email=email)
+                from django.utils import timezone
+                user.last_login = timezone.now()
+                user.save(update_fields=["last_login"])
                 active_company = None
                 if user.active_company_id:
                     try:
