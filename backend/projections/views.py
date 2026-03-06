@@ -1210,10 +1210,19 @@ class FiscalPeriodListView(APIView):
                 "retained_earnings_entry_public_id": fy_obj.retained_earnings_entry_public_id or None,
             }
 
+        # All available fiscal years for year selector
+        available_years = list(
+            FiscalPeriod.objects.filter(company=actor.company)
+            .values_list("fiscal_year", flat=True)
+            .distinct()
+            .order_by("-fiscal_year")
+        )
+
         return Response({
             "config": config_data,
             "periods": periods_data,
             "fiscal_year_status": fy_status,
+            "available_years": available_years,
         })
 
 

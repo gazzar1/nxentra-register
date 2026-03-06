@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
-import { Lock, Unlock, Star, CheckCircle, XCircle, AlertTriangle } from "lucide-react";
+import { Lock, Unlock, Star, CheckCircle, XCircle, AlertTriangle, Plus, ChevronLeft, ChevronRight } from "lucide-react";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -42,6 +42,13 @@ export default function PeriodsPage() {
   const [config, setConfig] = useState<FiscalPeriodConfig | null>(null);
   const [fiscalYearStatus, setFiscalYearStatus] = useState<FiscalYearStatus | null>(null);
   const [loading, setLoading] = useState(true);
+  const [availableYears, setAvailableYears] = useState<number[]>([]);
+  const [selectedYear, setSelectedYear] = useState<number | null>(null);
+
+  // Create year state
+  const [createYearOpen, setCreateYearOpen] = useState(false);
+  const [newYear, setNewYear] = useState<string>("");
+  const [creatingYear, setCreatingYear] = useState(false);
 
   // Configuration state
   const [periodCount, setPeriodCount] = useState<string>("13");
@@ -77,14 +84,21 @@ export default function PeriodsPage() {
   const canClose = hasPermission("periods.close");
   const canReopen = hasPermission("periods.reopen");
 
-  const fiscalYear = config?.fiscal_year || new Date().getFullYear();
+  const fiscalYear = selectedYear || config?.fiscal_year || new Date().getFullYear();
 
-  const fetchPeriods = async () => {
+  const fetchPeriods = async (year?: number) => {
     try {
-      const { data } = await periodsService.list();
+      const { data } = await periodsService.list(year || selectedYear || undefined);
       setPeriods(data.periods || []);
       setConfig(data.config || null);
       setFiscalYearStatus(data.fiscal_year_status || null);
+      if (data.available_years?.length) {
+        setAvailableYears(data.available_years);
+        // On first load, default to the first (most recent) year
+        if (!selectedYear && !year) {
+          setSelectedYear(data.available_years[0]);
+        }
+      }
       if (data.config) {
         setPeriodCount(String(data.config.period_count));
         setOpenFrom(String(data.config.open_from_period || 1));
@@ -105,6 +119,46 @@ export default function PeriodsPage() {
   useEffect(() => {
     fetchPeriods();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleYearChange = (year: number) => {
+    setSelectedYear(year);
+    setLoading(true);
+    setCloseReadiness(null);
+    fetchPeriods(year);
+  };
+
+  const handleCreateYear = async () => {
+    const year = parseInt(newYear, 10);
+    if (!year || year < 2000 || year > 2100) {
+      toast({
+        title: t("messages.error"),
+        description: "Please enter a valid year (2000-2100)",
+        variant: "destructive",
+      });
+      return;
+    }
+    setCreatingYear(true);
+    try {
+      await periodsService.configure(year, 13);
+      toast({
+        title: t("messages.success"),
+        description: `Fiscal year ${year} created with 13 periods`,
+        variant: "success",
+      });
+      setCreateYearOpen(false);
+      setNewYear("");
+      setSelectedYear(year);
+      fetchPeriods(year);
+    } catch {
+      toast({
+        title: t("messages.error"),
+        description: `Failed to create fiscal year ${year}`,
+        variant: "destructive",
+      });
+    } finally {
+      setCreatingYear(false);
+    }
+  };
 
   const handleConfigure = async () => {
     setConfiguring(true);
@@ -354,6 +408,76 @@ export default function PeriodsPage() {
           title={t("settings:periods.title", "Fiscal Periods")}
           subtitle={t("settings:periods.subtitle", "Manage accounting periods and year-end close")}
         />
+
+        {/* Fiscal Year Selector */}
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1">
+            <Button
+              variant="outline"
+              size="icon"
+              className="h-8 w-8"
+              disabled={!availableYears.length || availableYears.indexOf(fiscalYear) === availableYears.length - 1}
+              onClick={() => {
+                const idx = availableYears.indexOf(fiscalYear);
+                if (idx < availableYears.length - 1) handleYearChange(availableYears[idx + 1]);
+              }}
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+            <div className="flex gap-1">
+              {availableYears.map((year) => (
+                <Button
+                  key={year}
+                  variant={year === fiscalYear ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => handleYearChange(year)}
+                >
+                  {year}
+                </Button>
+              ))}
+            </div>
+            <Button
+              variant="outline"
+              size="icon"
+              className="h-8 w-8"
+              disabled={!availableYears.length || availableYears.indexOf(fiscalYear) === 0}
+              onClick={() => {
+                const idx = availableYears.indexOf(fiscalYear);
+                if (idx > 0) handleYearChange(availableYears[idx - 1]);
+              }}
+            >
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+          {canConfigure && (
+            <>
+              {createYearOpen ? (
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="number"
+                    value={newYear}
+                    onChange={(e) => setNewYear(e.target.value)}
+                    placeholder="e.g., 2025"
+                    className="w-28 h-8"
+                    min={2000}
+                    max={2100}
+                  />
+                  <Button size="sm" onClick={handleCreateYear} disabled={creatingYear}>
+                    {creatingYear ? t("actions.loading", "Loading...") : t("actions.create", "Create")}
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => { setCreateYearOpen(false); setNewYear(""); }}>
+                    {t("actions.cancel", "Cancel")}
+                  </Button>
+                </div>
+              ) : (
+                <Button variant="outline" size="sm" onClick={() => setCreateYearOpen(true)}>
+                  <Plus className="h-4 w-4 me-1" />
+                  {t("settings:periods.createYear", "Create Fiscal Year")}
+                </Button>
+              )}
+            </>
+          )}
+        </div>
 
         {loading ? (
           <div className="flex justify-center py-12">

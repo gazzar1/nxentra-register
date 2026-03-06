@@ -29,6 +29,7 @@ export interface PeriodsResponse {
   config: FiscalPeriodConfig | null;
   periods: FiscalPeriod[];
   fiscal_year_status: FiscalYearStatus | null;
+  available_years: number[];
 }
 
 export interface CloseReadinessResult {
