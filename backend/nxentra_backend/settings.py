@@ -11,7 +11,7 @@ load_dotenv(BASE_DIR / ".env", override=False)  # Real env vars take precedence
 
 
 SECRET_KEY = os.environ.get("SECRET_KEY", os.environ.get("DJANGO_SECRET_KEY", "changeme"))
-DEBUG = os.getenv("DEBUG", os.getenv("DJANGO_DEBUG", "True")) == "True"
+DEBUG = os.getenv("DEBUG", os.getenv("DJANGO_DEBUG", "True")).strip().lower() in ("true", "1", "yes")
 ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
 
 # =============================================================================
@@ -202,19 +202,29 @@ CSRF_TRUSTED_ORIGINS = os.getenv(
     "http://localhost:3000"
 ).split(",")
 
-# Production guard: reject wildcard / localhost origins
-if not DEBUG:
+# Production guard: warn about wildcard / localhost origins.
+# Only raises during `runserver` or WSGI/ASGI serving — management commands
+# like `migrate`, `check`, and `collectstatic` are allowed through.
+if not DEBUG and not TESTING:
     _bad_origins = {"*", "http://localhost:3000", "http://127.0.0.1:3000"}
-    if _bad_origins & set(CORS_ALLOWED_ORIGINS):
-        raise ValueError(
-            "CORS_ALLOWED_ORIGINS contains localhost or wildcard entries. "
-            "Set production domains in the CORS_ALLOWED_ORIGINS env var."
-        )
-    if _bad_origins & set(CSRF_TRUSTED_ORIGINS):
-        raise ValueError(
-            "CSRF_TRUSTED_ORIGINS contains localhost or wildcard entries. "
-            "Set production domains in the CSRF_TRUSTED_ORIGINS env var."
-        )
+    _is_serving = (
+        "runserver" in sys.argv
+        or "gunicorn" in sys.argv[0] if sys.argv else False
+        or "uvicorn" in sys.argv[0] if sys.argv else False
+        or os.getenv("GUNICORN_CMD_ARGS") is not None
+        or os.getenv("SERVER_SOFTWARE", "").startswith(("gunicorn", "uvicorn", "daphne"))
+    )
+    if _is_serving:
+        if _bad_origins & set(CORS_ALLOWED_ORIGINS):
+            raise ValueError(
+                "CORS_ALLOWED_ORIGINS contains localhost or wildcard entries. "
+                "Set production domains in the CORS_ALLOWED_ORIGINS env var."
+            )
+        if _bad_origins & set(CSRF_TRUSTED_ORIGINS):
+            raise ValueError(
+                "CSRF_TRUSTED_ORIGINS contains localhost or wildcard entries. "
+                "Set production domains in the CSRF_TRUSTED_ORIGINS env var."
+            )
 
 # =============================================================================
 # Email Configuration
