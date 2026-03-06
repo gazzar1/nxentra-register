@@ -1,0 +1,97 @@
+# Nxentra Prometheus Alert Rules
+# Load into Prometheus via rule_files config or Grafana alerting.
+#
+# Runbook references:
+#   RB-001: High Projection Lag    → docs/OPS_PLAYBOOK.md#rb-001
+#   RB-002: DB Connection Issues   → docs/OPS_PLAYBOOK.md#rb-002
+#   RB-003: Tenant Inconsistency   → docs/OPS_PLAYBOOK.md#rb-003
+#   RB-004: Event Store Corruption → docs/OPS_PLAYBOOK.md#rb-004
+
+groups:
+  - name: nxentra.availability
+    rules:
+      - alert: HighErrorRate
+        expr: sum(rate(nxentra_request_duration_seconds_count{status="5xx"}[5m])) > 0.5
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High 5xx error rate ({{ $value | humanize }}/s)"
+          description: "More than 0.5 req/s returning 5xx for 5 minutes."
+          runbook: "Check application logs for stack traces. Run /_health/full for diagnostics."
+
+      - alert: HealthCheckFailing
+        expr: up{job="nxentra-backend"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Nxentra backend is down"
+          description: "Prometheus cannot reach the backend for 2 minutes."
+          runbook: "Check process status, restart if needed. Verify /_health/live."
+
+      - alert: SlowResponses
+        expr: histogram_quantile(0.95, sum(rate(nxentra_request_duration_seconds_bucket[5m])) by (le)) > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "P95 latency exceeds 5s ({{ $value | humanize }}s)"
+          description: "95th percentile response time is above 5 seconds."
+          runbook: "Check slow query logs, projection lag, and database health."
+
+  - name: nxentra.projections
+    rules:
+      - alert: HighProjectionLag
+        expr: sum(nxentra_projection_lag) > 500
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Projection lag is {{ $value }} events"
+          description: "Event processing is falling behind. Stale read models."
+          runbook: "See RB-001. Check projection consumer process, restart if needed."
+
+      - alert: CriticalProjectionLag
+        expr: sum(nxentra_projection_lag) > 5000
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical projection lag: {{ $value }} events"
+          description: "Projections are severely behind. Reports will show stale data."
+          runbook: "See RB-001. Immediate action: restart consumer, check for errors."
+
+  - name: nxentra.data_integrity
+    rules:
+      - alert: ReconciliationImbalance
+        expr: nxentra_reconciliation_imbalances > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Subledger reconciliation imbalance detected"
+          description: "AR/AP subledger does not tie out to GL control accounts."
+          runbook: "See RB-004. Run: python manage.py reconciliation_check --strict --json"
+
+      - alert: TenantDirectoryInconsistency
+        expr: nxentra_tenant_directory_missing > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} companies missing TenantDirectory entries"
+          description: "TenantDirectory is out of sync with Company table."
+          runbook: "See RB-003. Run: python manage.py seed_tenant_directory"
+
+  - name: nxentra.auth
+    rules:
+      - alert: HighLoginFailureRate
+        expr: sum(rate(nxentra_request_duration_seconds_count{endpoint="/api/auth/login/",status="4xx"}[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High login failure rate ({{ $value | humanize }}/s)"
+          description: "Elevated 4xx on login endpoint. Possible brute-force or credential stuffing."
+          runbook: "Check rate limiting, review auth logs for patterns. Consider IP blocking."

@@ -88,10 +88,10 @@ jobs:
             --create-db
 
   # ─────────────────────────────────────────────────────────
-  # Frontend: lint + build
+  # Frontend: test + build
   # ─────────────────────────────────────────────────────────
   frontend-build:
-    name: Frontend Build
+    name: Frontend Tests & Build
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -108,6 +108,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Run tests
+        run: npm test
 
       - name: Build
         run: npm run build

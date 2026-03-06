@@ -1,0 +1,117 @@
+{
+  "__meta": "Nxentra Grafana Dashboard — import into Grafana via Dashboard > Import",
+  "dashboard": {
+    "title": "Nxentra Operations",
+    "uid": "nxentra-ops",
+    "tags": ["nxentra", "production"],
+    "timezone": "browser",
+    "refresh": "30s",
+    "panels": [
+      {
+        "title": "Request Rate (5m)",
+        "type": "graph",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+        "targets": [
+          {
+            "expr": "sum(rate(nxentra_request_duration_seconds_count[5m])) by (status)",
+            "legendFormat": "{{status}}"
+          }
+        ]
+      },
+      {
+        "title": "Request Latency P95",
+        "type": "graph",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(nxentra_request_duration_seconds_bucket[5m])) by (le, endpoint))",
+            "legendFormat": "{{endpoint}}"
+          }
+        ]
+      },
+      {
+        "title": "Error Rate (5xx)",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 6, "x": 0, "y": 8 },
+        "targets": [
+          {
+            "expr": "sum(rate(nxentra_request_duration_seconds_count{status='5xx'}[5m]))"
+          }
+        ],
+        "thresholds": {
+          "steps": [
+            { "color": "green", "value": 0 },
+            { "color": "yellow", "value": 0.01 },
+            { "color": "red", "value": 0.1 }
+          ]
+        }
+      },
+      {
+        "title": "Active Requests",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 6, "x": 6, "y": 8 },
+        "targets": [
+          { "expr": "nxentra_active_requests" }
+        ]
+      },
+      {
+        "title": "Projection Lag (Total)",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 6, "x": 12, "y": 8 },
+        "targets": [
+          { "expr": "sum(nxentra_projection_lag)" }
+        ],
+        "thresholds": {
+          "steps": [
+            { "color": "green", "value": 0 },
+            { "color": "yellow", "value": 100 },
+            { "color": "red", "value": 1000 }
+          ]
+        }
+      },
+      {
+        "title": "Tenant Count",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 6, "x": 18, "y": 8 },
+        "targets": [
+          { "expr": "count(nxentra_tenant_mode)" }
+        ]
+      },
+      {
+        "title": "Projection Lag by Consumer",
+        "type": "graph",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+        "targets": [
+          {
+            "expr": "nxentra_projection_lag",
+            "legendFormat": "{{consumer}} / {{company_slug}}"
+          }
+        ]
+      },
+      {
+        "title": "Events Total by Type",
+        "type": "graph",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+        "targets": [
+          {
+            "expr": "sum(nxentra_events_total) by (event_type)",
+            "legendFormat": "{{event_type}}"
+          }
+        ]
+      },
+      {
+        "title": "Request Duration by Endpoint",
+        "type": "table",
+        "gridPos": { "h": 8, "w": 24, "x": 0, "y": 20 },
+        "targets": [
+          {
+            "expr": "topk(20, sum(rate(nxentra_request_duration_seconds_sum[5m])) by (endpoint) / sum(rate(nxentra_request_duration_seconds_count[5m])) by (endpoint))",
+            "legendFormat": "{{endpoint}}",
+            "format": "table",
+            "instant": true
+          }
+        ]
+      }
+    ]
+  }
+}
