@@ -71,7 +71,7 @@ export function Sidebar() {
       sales: ["/accounting/sales-invoices", "/accounting/receipts"],
       purchases: ["/accounting/purchase-bills", "/accounting/payments"],
       inventory: ["/inventory/balances", "/inventory/ledger", "/inventory/adjustments", "/inventory/opening-balance"],
-      properties: ["/properties/properties", "/properties/units", "/properties/lessees", "/properties/leases"],
+      properties: ["/properties/dashboard", "/properties/properties", "/properties/units", "/properties/lessees", "/properties/leases", "/properties/payments", "/properties/expenses", "/properties/alerts", "/properties/reports"],
       reports: ["/reports"],
       setup: ["/settings/periods", "/accounting/chart-of-accounts", "/settings/dimensions", "/accounting/vendors", "/accounting/customers", "/inventory/warehouses", "/accounting/items", "/accounting/tax-codes", "/accounting/posting-profiles", "/settings/integrations"],
       settings: ["/settings/company", "/users", "/settings/account", "/settings/audit"],
