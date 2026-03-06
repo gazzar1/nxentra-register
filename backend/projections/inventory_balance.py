@@ -50,7 +50,8 @@ class InventoryBalanceProjection(BaseProjection):
     4. InventoryBalance records are updated
 
     The projection is idempotent: processing the same event twice
-    will not double-count amounts (we track last_event per balance).
+    will not double-count amounts (guaranteed by ProjectionAppliedEvent
+    in BaseProjection.process_pending).
     """
 
     @property
@@ -202,10 +203,9 @@ class InventoryBalanceProjection(BaseProjection):
                 )
                 created = True
 
-            # Idempotency guard
-            if balance.last_event_id == event.id:
-                logger.debug(f"Event {event.id} already applied to {item.code}@{warehouse.code}")
-                return
+            # Note: Event-level idempotency is handled by ProjectionAppliedEvent
+            # in BaseProjection.process_pending(). No per-item guard here
+            # because a single event can have multiple entries for the same item/warehouse.
 
             # Apply weighted average calculation
             old_value = balance.qty_on_hand * balance.avg_cost
@@ -278,10 +278,9 @@ class InventoryBalanceProjection(BaseProjection):
                 )
                 return
 
-            # Idempotency guard
-            if balance.last_event_id == event.id:
-                logger.debug(f"Event {event.id} already applied to {item.code}@{warehouse.code}")
-                return
+            # Note: Event-level idempotency is handled by ProjectionAppliedEvent
+            # in BaseProjection.process_pending(). No per-item guard here
+            # because a single event can have multiple entries for the same item/warehouse.
 
             # Apply issue (avg_cost doesn't change on issue)
             balance.qty_on_hand -= qty_to_issue

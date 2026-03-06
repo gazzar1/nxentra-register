@@ -42,7 +42,8 @@ class AccountBalanceProjection(BaseProjection):
     4. AccountBalance records are updated
     
     The projection is idempotent: processing the same event twice
-    will not double-count amounts (we track last_event per account).
+    will not double-count amounts (guaranteed by ProjectionAppliedEvent
+    in BaseProjection.process_pending).
     """
     
     @property
@@ -217,16 +218,12 @@ class AccountBalanceProjection(BaseProjection):
                 )
                 created = True
             
-            # ═══════════════════════════════════════════════════════════════════
-            # Idempotency guard: don't apply the same event twice
-            # ═══════════════════════════════════════════════════════════════════
-            if balance.last_event_id == event.id:
-                logger.debug(f"Event {event.id} already applied to account {account.code}")
-                return
-            
-            # ═══════════════════════════════════════════════════════════════════
+            # Note: Event-level idempotency is handled by ProjectionAppliedEvent
+            # in BaseProjection.process_pending(). We do NOT guard per-account
+            # here because a single event can legitimately have multiple lines
+            # to the same account (allocations, tax, consolidated postings).
+
             # Apply the debit/credit
-            # ═══════════════════════════════════════════════════════════════════
             if debit > 0:
                 balance.apply_debit(debit)
             if credit > 0:

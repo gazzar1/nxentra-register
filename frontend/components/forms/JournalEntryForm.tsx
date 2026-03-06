@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { useFieldArray, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -22,6 +22,7 @@ import type { JournalEntryCreatePayload, AnalysisTagInput } from "@/types/journa
 import type { AccountAnalysisDefault, AnalysisDimension } from "@/types/account";
 import { periodsService, FiscalPeriod } from "@/services/periods.service";
 import { cn } from "@/lib/cn";
+import { useFormKeyboardShortcuts } from "@/lib/useFormKeyboardShortcuts";
 
 const analysisTagSchema = z.object({
   dimension_id: z.number(),
@@ -69,6 +70,7 @@ export function JournalEntryForm({
   const { data: accounts } = useAccounts({ status: "ACTIVE" });
   const { data: dimensions } = useDimensions();
   const [openPeriods, setOpenPeriods] = useState<FiscalPeriod[]>([]);
+  const formRef = useRef<HTMLFormElement>(null);
 
   // Cache account analysis defaults: accountCode -> defaults[]
   const [accountDefaultsCache, setAccountDefaultsCache] = useState<
@@ -271,8 +273,16 @@ export function JournalEntryForm({
   // Postable accounts only
   const postableAccounts = accounts?.filter((a) => a.is_postable && !a.is_header) || [];
 
+  useFormKeyboardShortcuts({
+    formRef,
+    onSave: () => form.handleSubmit((data) => handleSubmit(data, false))(),
+    onSubmit: () => form.handleSubmit((data) => handleSubmit(data, true))(),
+    onCancel,
+    enabled: !isSubmitting,
+  });
+
   return (
-    <form className="space-y-6">
+    <form ref={formRef} className="space-y-6">
       {/* Header Fields */}
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="space-y-2">

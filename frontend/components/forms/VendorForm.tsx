@@ -1,8 +1,10 @@
+import { useRef } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useTranslation } from "next-i18next";
 import { Button } from "@/components/ui/button";
+import { useFormKeyboardShortcuts } from "@/lib/useFormKeyboardShortcuts";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -55,6 +57,7 @@ export function VendorForm({
 }: VendorFormProps) {
   const { t } = useTranslation(["common", "accounting"]);
   const { data: accounts } = useAccounts();
+  const formRef = useRef<HTMLFormElement>(null);
 
   // Filter to only show AP control accounts
   const apAccounts = accounts?.filter(
@@ -108,8 +111,16 @@ export function VendorForm({
     });
   };
 
+  useFormKeyboardShortcuts({
+    formRef,
+    onSave: () => form.handleSubmit(handleSubmit)(),
+    onSubmit: () => form.handleSubmit(handleSubmit)(),
+    onCancel,
+    enabled: !isSubmitting,
+  });
+
   return (
-    <form onSubmit={form.handleSubmit(handleSubmit)} className="space-y-6">
+    <form ref={formRef} onSubmit={form.handleSubmit(handleSubmit)} className="space-y-6">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Code */}
         <div className="space-y-2">

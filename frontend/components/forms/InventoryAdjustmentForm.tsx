@@ -1,6 +1,7 @@
 // components/forms/InventoryAdjustmentForm.tsx
 // Form component for creating inventory adjustments
 
+import { useRef } from "react";
 import { useForm, useFieldArray } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -8,6 +9,7 @@ import { useTranslation } from "next-i18next";
 import { Plus, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { useFormKeyboardShortcuts } from "@/lib/useFormKeyboardShortcuts";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -50,6 +52,7 @@ export function InventoryAdjustmentForm({
   isSubmitting = false,
 }: InventoryAdjustmentFormProps) {
   const { t } = useTranslation(["common", "inventory"]);
+  const formRef = useRef<HTMLFormElement>(null);
 
   const { data: items } = useItems({ item_type: "INVENTORY", is_active: true });
   const { data: accounts } = useAccounts({ type: "EXPENSE" });
@@ -95,8 +98,15 @@ export function InventoryAdjustmentForm({
     append({ item_id: 0, warehouse_id: null, qty_delta: 0, unit_cost: null });
   };
 
+  useFormKeyboardShortcuts({
+    formRef,
+    onSave: () => handleSubmit(handleFormSubmit)(),
+    onSubmit: () => handleSubmit(handleFormSubmit)(),
+    enabled: !isSubmitting,
+  });
+
   return (
-    <form onSubmit={handleSubmit(handleFormSubmit)} className="space-y-6">
+    <form ref={formRef} onSubmit={handleSubmit(handleFormSubmit)} className="space-y-6">
       {/* Header Fields */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Date */}

@@ -9,12 +9,6 @@ This test proves the full pipeline works when LEPH external storage is used:
 4. Assert the trial balance totals match and is_balanced=True
 
 This is the test that proves LEPH doesn't break the accounting pipeline.
-
-NOTE: The AccountBalance projection uses last_event_id as an idempotency
-guard per account. This means within a SINGLE event, only ONE line per
-account is applied. Multiple lines to the same account in one event will
-silently drop all but the first. This is a known limitation — tests here
-use one line per account to match current behavior.
 """
 
 import pytest

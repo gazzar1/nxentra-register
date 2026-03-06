@@ -1,12 +1,14 @@
 // components/forms/WarehouseForm.tsx
 // Form component for creating and editing warehouses
 
+import { useRef } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useTranslation } from "next-i18next";
 
 import { Button } from "@/components/ui/button";
+import { useFormKeyboardShortcuts } from "@/lib/useFormKeyboardShortcuts";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -38,6 +40,7 @@ export function WarehouseForm({
   isEdit = false,
 }: WarehouseFormProps) {
   const { t } = useTranslation(["common", "inventory"]);
+  const formRef = useRef<HTMLFormElement>(null);
 
   const {
     register,
@@ -67,8 +70,15 @@ export function WarehouseForm({
     });
   };
 
+  useFormKeyboardShortcuts({
+    formRef,
+    onSave: () => handleSubmit(handleFormSubmit)(),
+    onSubmit: () => handleSubmit(handleFormSubmit)(),
+    enabled: !isSubmitting,
+  });
+
   return (
-    <form onSubmit={handleSubmit(handleFormSubmit)} className="space-y-6" autoComplete="off">
+    <form ref={formRef} onSubmit={handleSubmit(handleFormSubmit)} className="space-y-6" autoComplete="off">
       {/* Code */}
       <div className="space-y-2">
         <Label htmlFor="code">{t("common:code")} *</Label>

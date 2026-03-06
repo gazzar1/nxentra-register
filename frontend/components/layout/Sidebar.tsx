@@ -34,6 +34,7 @@ import {
   ScrollText,
   Scale,
   PackagePlus,
+  Wrench,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useSidebar } from "@/contexts/SidebarContext";
@@ -52,15 +53,32 @@ export function Sidebar() {
   const router = useRouter();
   const { user } = useAuth();
   const { isOpen, close } = useSidebar();
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({
-    accounting: true,
-    sales: true,
-    purchases: true,
-    inventory: true,
-    reports: true,
-    settings: true,
-    admin: true,
-  });
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+
+  // Auto-expand the section containing the active route on mount/route change
+  useEffect(() => {
+    const path = router.pathname;
+    const sectionForPath: Record<string, string[]> = {
+      accounting: ["/accounting/journal-entries", "/accounting/scratchpad", "/accounting/import"],
+      sales: ["/accounting/sales-invoices", "/accounting/receipts"],
+      purchases: ["/accounting/purchase-bills", "/accounting/payments"],
+      inventory: ["/inventory/balances", "/inventory/ledger", "/inventory/adjustments", "/inventory/opening-balance"],
+      reports: ["/reports"],
+      setup: ["/settings/periods", "/accounting/chart-of-accounts", "/settings/dimensions", "/accounting/vendors", "/accounting/customers", "/inventory/warehouses", "/accounting/items", "/accounting/tax-codes", "/accounting/posting-profiles", "/settings/integrations"],
+      settings: ["/settings/company", "/users", "/settings/account", "/settings/audit"],
+      admin: ["/admin"],
+    };
+
+    for (const [section, prefixes] of Object.entries(sectionForPath)) {
+      if (prefixes.some((prefix) => path === prefix || path.startsWith(prefix + "/"))) {
+        setExpanded((prev) => {
+          if (prev[section]) return prev; // already open
+          return { ...prev, [section]: true };
+        });
+        break;
+      }
+    }
+  }, [router.pathname]);
 
   // Ref for preserving sidebar scroll position
   const navRef = useRef<HTMLElement>(null);
@@ -122,11 +140,6 @@ export function Sidebar() {
       icon: <BookOpen className="h-5 w-5 text-emerald-500" />,
       children: [
         {
-          label: t("nav.chartOfAccounts"),
-          href: "/accounting/chart-of-accounts",
-          icon: <FileText className="h-4 w-4 text-emerald-400" />,
-        },
-        {
           label: t("nav.journalEntries"),
           href: "/accounting/journal-entries",
           icon: <FileText className="h-4 w-4 text-teal-400" />,
@@ -140,16 +153,6 @@ export function Sidebar() {
           label: t("nav.import", "Import Data"),
           href: "/accounting/import",
           icon: <Upload className="h-4 w-4 text-cyan-500" />,
-        },
-        {
-          label: t("nav.customers", "Customers (AR)"),
-          href: "/accounting/customers",
-          icon: <UserCircle className="h-4 w-4 text-sky-400" />,
-        },
-        {
-          label: t("nav.vendors", "Vendors (AP)"),
-          href: "/accounting/vendors",
-          icon: <Truck className="h-4 w-4 text-amber-500" />,
         },
       ],
     },
@@ -166,21 +169,6 @@ export function Sidebar() {
           label: t("nav.customerReceipts", "Receipts"),
           href: "/accounting/receipts",
           icon: <CreditCard className="h-4 w-4 text-emerald-400" />,
-        },
-        {
-          label: t("nav.items", "Items"),
-          href: "/accounting/items",
-          icon: <Package className="h-4 w-4 text-amber-400" />,
-        },
-        {
-          label: t("nav.taxCodes", "Tax Codes"),
-          href: "/accounting/tax-codes",
-          icon: <Percent className="h-4 w-4 text-rose-400" />,
-        },
-        {
-          label: t("nav.postingProfiles", "Posting Profiles"),
-          href: "/accounting/posting-profiles",
-          icon: <CreditCard className="h-4 w-4 text-fuchsia-400" />,
         },
       ],
     },
@@ -208,11 +196,6 @@ export function Sidebar() {
           label: t("nav.inventoryBalances", "Stock Balances"),
           href: "/inventory/balances",
           icon: <PackageOpen className="h-4 w-4 text-teal-400" />,
-        },
-        {
-          label: t("nav.warehouses", "Warehouses"),
-          href: "/inventory/warehouses",
-          icon: <Warehouse className="h-4 w-4 text-cyan-400" />,
         },
         {
           label: t("nav.stockLedger", "Stock Ledger"),
@@ -283,9 +266,60 @@ export function Sidebar() {
       ],
     },
     {
-      label: t("nav.users"),
-      href: "/users",
-      icon: <Users className="h-5 w-5 text-indigo-500" />,
+      label: t("nav.setup", "Setup"),
+      icon: <Wrench className="h-5 w-5 text-cyan-500" />,
+      children: [
+        {
+          label: t("nav.periods"),
+          href: "/settings/periods",
+          icon: <Calendar className="h-4 w-4 text-purple-400" />,
+        },
+        {
+          label: t("nav.chartOfAccounts"),
+          href: "/accounting/chart-of-accounts",
+          icon: <FileText className="h-4 w-4 text-emerald-400" />,
+        },
+        {
+          label: t("nav.dimensions"),
+          href: "/settings/dimensions",
+          icon: <Layers className="h-4 w-4 text-cyan-400" />,
+        },
+        {
+          label: t("nav.vendors", "Vendors (AP)"),
+          href: "/accounting/vendors",
+          icon: <Truck className="h-4 w-4 text-amber-500" />,
+        },
+        {
+          label: t("nav.customers", "Customers (AR)"),
+          href: "/accounting/customers",
+          icon: <UserCircle className="h-4 w-4 text-sky-400" />,
+        },
+        {
+          label: t("nav.warehouses", "Warehouses"),
+          href: "/inventory/warehouses",
+          icon: <Warehouse className="h-4 w-4 text-cyan-400" />,
+        },
+        {
+          label: t("nav.items", "Items"),
+          href: "/accounting/items",
+          icon: <Package className="h-4 w-4 text-amber-400" />,
+        },
+        {
+          label: t("nav.taxCodes", "Tax Codes"),
+          href: "/accounting/tax-codes",
+          icon: <Percent className="h-4 w-4 text-rose-400" />,
+        },
+        {
+          label: t("nav.postingProfiles", "Posting Profiles"),
+          href: "/accounting/posting-profiles",
+          icon: <CreditCard className="h-4 w-4 text-fuchsia-400" />,
+        },
+        {
+          label: t("nav.integrations", "Integrations"),
+          href: "/settings/integrations",
+          icon: <Plug className="h-4 w-4 text-green-400" />,
+        },
+      ],
     },
     {
       label: t("nav.settings"),
@@ -297,19 +331,9 @@ export function Sidebar() {
           icon: <Building2 className="h-4 w-4 text-slate-400" />,
         },
         {
-          label: t("nav.periods"),
-          href: "/settings/periods",
-          icon: <Calendar className="h-4 w-4 text-purple-400" />,
-        },
-        {
-          label: t("nav.dimensions"),
-          href: "/settings/dimensions",
-          icon: <Layers className="h-4 w-4 text-cyan-400" />,
-        },
-        {
-          label: t("nav.integrations", "Integrations"),
-          href: "/settings/integrations",
-          icon: <Plug className="h-4 w-4 text-green-400" />,
+          label: t("nav.users"),
+          href: "/users",
+          icon: <Users className="h-4 w-4 text-indigo-400" />,
         },
         {
           label: t("nav.account", "Account"),

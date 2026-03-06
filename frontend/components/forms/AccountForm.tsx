@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -5,6 +6,7 @@ import { useTranslation } from "next-i18next";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useFormKeyboardShortcuts } from "@/lib/useFormKeyboardShortcuts";
 import {
   Select,
   SelectContent,
@@ -123,6 +125,7 @@ export function AccountForm({
 }: AccountFormProps) {
   const { t } = useTranslation(["common", "accounting"]);
   const { data: accounts } = useAccounts();
+  const formRef = useRef<HTMLFormElement>(null);
 
   const form = useForm<AccountFormData>({
     resolver: zodResolver(accountSchema),
@@ -179,8 +182,16 @@ export function AccountForm({
   // Filter accounts that can be parents (headers only)
   const parentAccounts = accounts?.filter((a) => a.is_header) || [];
 
+  useFormKeyboardShortcuts({
+    formRef,
+    onSave: () => form.handleSubmit(handleSubmit)(),
+    onSubmit: () => form.handleSubmit(handleSubmit)(),
+    onCancel,
+    enabled: !isSubmitting,
+  });
+
   return (
-    <form onSubmit={form.handleSubmit(handleSubmit)} className="space-y-6">
+    <form ref={formRef} onSubmit={form.handleSubmit(handleSubmit)} className="space-y-6">
       {/* Code */}
       <div className="space-y-2">
         <Label htmlFor="code">{t("accounting:account.code")} *</Label>

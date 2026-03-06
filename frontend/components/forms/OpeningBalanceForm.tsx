@@ -1,6 +1,7 @@
 // components/forms/OpeningBalanceForm.tsx
 // Form component for recording inventory opening balances
 
+import { useRef } from "react";
 import { useForm, useFieldArray } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -8,6 +9,7 @@ import { useTranslation } from "next-i18next";
 import { Plus, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { useFormKeyboardShortcuts } from "@/lib/useFormKeyboardShortcuts";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -53,6 +55,8 @@ export function OpeningBalanceForm({
   const { data: accounts } = useAccounts({ type: "EQUITY" });
   const { data: warehouses } = useWarehouses({ is_active: true });
 
+  const formRef = useRef<HTMLFormElement>(null);
+
   const {
     register,
     handleSubmit,
@@ -91,13 +95,20 @@ export function OpeningBalanceForm({
     append({ item_id: 0, warehouse_id: null, qty: 0, unit_cost: 0 });
   };
 
+  useFormKeyboardShortcuts({
+    formRef,
+    onSave: () => handleSubmit(handleFormSubmit)(),
+    onSubmit: () => handleSubmit(handleFormSubmit)(),
+    enabled: !isSubmitting,
+  });
+
   // Calculate totals
   const lines = watch("lines");
   const totalValue = lines.reduce((sum, line) => sum + (line.qty || 0) * (line.unit_cost || 0), 0);
   const totalQty = lines.reduce((sum, line) => sum + (line.qty || 0), 0);
 
   return (
-    <form onSubmit={handleSubmit(handleFormSubmit)} className="space-y-6">
+    <form ref={formRef} onSubmit={handleSubmit(handleFormSubmit)} className="space-y-6">
       {/* Header Fields */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* As Of Date */}

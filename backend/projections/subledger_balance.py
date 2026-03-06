@@ -45,7 +45,8 @@ class SubledgerBalanceProjection(BaseProjection):
     4. CustomerBalance/VendorBalance records are updated
 
     The projection is idempotent: processing the same event twice
-    will not double-count amounts (we track last_event per balance).
+    will not double-count amounts (guaranteed by ProjectionAppliedEvent
+    in BaseProjection.process_pending).
     """
 
     @property
@@ -220,10 +221,9 @@ class SubledgerBalanceProjection(BaseProjection):
                 )
                 created = True
 
-            # Idempotency guard
-            if balance.last_event_id == event.id:
-                logger.debug(f"Event {event.id} already applied to customer {customer.code}")
-                return
+            # Note: Event-level idempotency is handled by ProjectionAppliedEvent
+            # in BaseProjection.process_pending(). No per-entity guard here
+            # because a single event can have multiple lines for the same customer.
 
             # Apply the debit/credit
             if debit > 0:
@@ -302,10 +302,9 @@ class SubledgerBalanceProjection(BaseProjection):
                 )
                 created = True
 
-            # Idempotency guard
-            if balance.last_event_id == event.id:
-                logger.debug(f"Event {event.id} already applied to vendor {vendor.code}")
-                return
+            # Note: Event-level idempotency is handled by ProjectionAppliedEvent
+            # in BaseProjection.process_pending(). No per-entity guard here
+            # because a single event can have multiple lines for the same vendor.
 
             # Apply the debit/credit
             if debit > 0:

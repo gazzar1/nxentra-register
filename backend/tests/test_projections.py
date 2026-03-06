@@ -155,6 +155,83 @@ class TestAccountBalanceProjection:
         cash_balance = AccountBalance.objects.get(company=company, account=cash_account)
         assert cash_balance.debit_total == Decimal("500.00")
     
+    def test_multiple_lines_same_account_in_single_event(
+        self, company, user, cash_account, revenue_account
+    ):
+        """
+        A single JE with two lines to the same account must apply BOTH lines.
+
+        This is normal accounting: e.g. consolidated posting, allocations,
+        tax lines hitting the same control account, batch imports.
+
+        Regression test for the bug where a per-account last_event_id guard
+        silently dropped the second line.
+        """
+        entry_public_id = str(uuid4())
+
+        event = emit_event(
+            company=company,
+            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+            aggregate_type="JournalEntry",
+            aggregate_id=entry_public_id,
+            data={
+                "entry_public_id": entry_public_id,
+                "entry_number": "JE-MULTI-001",
+                "date": date.today().isoformat(),
+                "memo": "Consolidated posting - two debits to same account",
+                "kind": "NORMAL",
+                "posted_at": "2024-01-01T12:00:00",
+                "posted_by_id": user.id,
+                "posted_by_email": user.email,
+                "total_debit": "100.00",
+                "total_credit": "100.00",
+                "lines": [
+                    {
+                        "line_no": 1,
+                        "account_public_id": str(cash_account.public_id),
+                        "account_code": cash_account.code,
+                        "description": "First allocation",
+                        "debit": "60.00",
+                        "credit": "0.00",
+                    },
+                    {
+                        "line_no": 2,
+                        "account_public_id": str(cash_account.public_id),
+                        "account_code": cash_account.code,
+                        "description": "Second allocation",
+                        "debit": "40.00",
+                        "credit": "0.00",
+                    },
+                    {
+                        "line_no": 3,
+                        "account_public_id": str(revenue_account.public_id),
+                        "account_code": revenue_account.code,
+                        "description": "Revenue",
+                        "debit": "0.00",
+                        "credit": "100.00",
+                    },
+                ],
+            },
+            caused_by_user=user,
+            idempotency_key=f"multi-line-test:{entry_public_id}",
+        )
+
+        projection = AccountBalanceProjection()
+        projection.process_pending(company)
+
+        # Cash account must reflect BOTH debit lines: 60 + 40 = 100
+        cash_balance = AccountBalance.objects.get(company=company, account=cash_account)
+        assert cash_balance.debit_total == Decimal("100.00"), (
+            f"Expected debit_total=100.00 but got {cash_balance.debit_total}. "
+            f"Second line to same account was silently dropped!"
+        )
+        assert cash_balance.entry_count == 2  # two lines applied
+        assert cash_balance.balance == Decimal("100.00")
+
+        # Revenue account should be correct too
+        rev_balance = AccountBalance.objects.get(company=company, account=revenue_account)
+        assert rev_balance.credit_total == Decimal("100.00")
+
     def test_memo_lines_excluded_from_balance(
         self, company, user, cash_account, memo_account
     ):

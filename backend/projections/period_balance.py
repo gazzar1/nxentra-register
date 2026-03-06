@@ -203,9 +203,9 @@ class PeriodAccountBalanceProjection(BaseProjection):
                     closing_balance=opening,
                 )
 
-            # Idempotency guard
-            if pab.last_event_id == event.id:
-                return
+            # Note: Event-level idempotency is handled by ProjectionAppliedEvent
+            # in BaseProjection.process_pending(). No per-account guard here
+            # because a single event can have multiple lines for the same account.
 
             # Apply movements
             if debit > 0:
