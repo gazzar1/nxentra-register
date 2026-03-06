@@ -20,6 +20,7 @@ urlpatterns = [
     path("api/scratchpad/", include("scratchpad.urls")),
     path("api/reports/", include("projections.urls")),
     path("api/edim/", include("edim.urls")),
+    path("api/properties/", include("properties.urls")),
     path("api/events/", include("events.urls")),
     path("api-auth/", include("rest_framework.urls")),
 ]

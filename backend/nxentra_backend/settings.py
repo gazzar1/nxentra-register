@@ -78,6 +78,7 @@ INSTALLED_APPS = [
     "scratchpad.apps.ScratchpadConfig",
     "projections.apps.ProjectionsConfig",
     "edim.apps.EdimConfig",
+    "properties.apps.PropertiesConfig",
     "channels",
     "django_celery_beat",  # Periodic tasks
     "django_celery_results",  # Task results

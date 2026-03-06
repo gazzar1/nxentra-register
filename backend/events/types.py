@@ -1959,6 +1959,32 @@ class EventTypes:
     STATISTICAL_ENTRY_REVERSED = "statistical.entry_reversed"
     STATISTICAL_ENTRY_DELETED = "statistical.entry_deleted"
 
+    # Property management events
+    PROPERTY_CREATED = "property.created"
+    PROPERTY_UPDATED = "property.updated"
+    UNIT_CREATED = "unit.created"
+    UNIT_STATUS_CHANGED = "unit.status_changed"
+    LESSEE_CREATED = "lessee.created"
+    LESSEE_UPDATED = "lessee.updated"
+    LEASE_CREATED = "lease.created"
+    LEASE_ACTIVATED = "lease.activated"
+    LEASE_TERMINATED = "lease.terminated"
+    LEASE_RENEWED = "lease.renewed"
+    RENT_SCHEDULE_GENERATED = "rent.schedule_generated"
+    RENT_DUE_POSTED = "rent.due_posted"
+    RENT_OVERDUE_DETECTED = "rent.overdue_detected"
+    RENT_LINE_WAIVED = "rent.line_waived"
+    RENT_PAYMENT_RECEIVED = "rent.payment_received"
+    RENT_PAYMENT_ALLOCATED = "rent.payment_allocated"
+    RENT_PAYMENT_VOIDED = "rent.payment_voided"
+    DEPOSIT_RECEIVED = "deposit.received"
+    DEPOSIT_ADJUSTED = "deposit.adjusted"
+    DEPOSIT_REFUNDED = "deposit.refunded"
+    DEPOSIT_FORFEITED = "deposit.forfeited"
+    LEASE_EXPIRY_ALERT = "lease.expiry_alert"
+    PROPERTY_EXPENSE_RECORDED = "property.expense_recorded"
+    PROPERTY_ACCOUNT_MAPPING_UPDATED = "property.account_mapping_updated"
+
 
 
 # =============================================================================
@@ -2136,3 +2162,65 @@ try:
     _register_edim_events()
 except ImportError:
     pass  # EDIM app not yet installed
+
+
+def _register_property_events():
+    """Register Property Management event data classes. Called at module load."""
+    from properties.event_types import (
+        PropertyCreatedData,
+        PropertyUpdatedData,
+        UnitCreatedData,
+        UnitStatusChangedData,
+        LesseeCreatedData,
+        LesseeUpdatedData,
+        LeaseCreatedData,
+        LeaseActivatedData,
+        LeaseTerminatedData,
+        LeaseRenewedData,
+        RentScheduleGeneratedData,
+        RentDuePostedData,
+        RentOverdueDetectedData,
+        RentLineWaivedData,
+        RentPaymentReceivedData,
+        RentPaymentAllocatedData,
+        RentPaymentVoidedData,
+        DepositReceivedData,
+        DepositAdjustedData,
+        DepositRefundedData,
+        DepositForfeitedData,
+        LeaseExpiryAlertData,
+        PropertyExpenseRecordedData,
+        PropertyAccountMappingUpdatedData,
+    )
+
+    EVENT_DATA_CLASSES.update({
+        EventTypes.PROPERTY_CREATED: PropertyCreatedData,
+        EventTypes.PROPERTY_UPDATED: PropertyUpdatedData,
+        EventTypes.UNIT_CREATED: UnitCreatedData,
+        EventTypes.UNIT_STATUS_CHANGED: UnitStatusChangedData,
+        EventTypes.LESSEE_CREATED: LesseeCreatedData,
+        EventTypes.LESSEE_UPDATED: LesseeUpdatedData,
+        EventTypes.LEASE_CREATED: LeaseCreatedData,
+        EventTypes.LEASE_ACTIVATED: LeaseActivatedData,
+        EventTypes.LEASE_TERMINATED: LeaseTerminatedData,
+        EventTypes.LEASE_RENEWED: LeaseRenewedData,
+        EventTypes.RENT_SCHEDULE_GENERATED: RentScheduleGeneratedData,
+        EventTypes.RENT_DUE_POSTED: RentDuePostedData,
+        EventTypes.RENT_OVERDUE_DETECTED: RentOverdueDetectedData,
+        EventTypes.RENT_LINE_WAIVED: RentLineWaivedData,
+        EventTypes.RENT_PAYMENT_RECEIVED: RentPaymentReceivedData,
+        EventTypes.RENT_PAYMENT_ALLOCATED: RentPaymentAllocatedData,
+        EventTypes.RENT_PAYMENT_VOIDED: RentPaymentVoidedData,
+        EventTypes.LEASE_EXPIRY_ALERT: LeaseExpiryAlertData,
+        EventTypes.DEPOSIT_RECEIVED: DepositReceivedData,
+        EventTypes.DEPOSIT_ADJUSTED: DepositAdjustedData,
+        EventTypes.DEPOSIT_REFUNDED: DepositRefundedData,
+        EventTypes.DEPOSIT_FORFEITED: DepositForfeitedData,
+        EventTypes.PROPERTY_EXPENSE_RECORDED: PropertyExpenseRecordedData,
+        EventTypes.PROPERTY_ACCOUNT_MAPPING_UPDATED: PropertyAccountMappingUpdatedData,
+    })
+
+try:
+    _register_property_events()
+except ImportError:
+    pass  # Properties app not yet installed

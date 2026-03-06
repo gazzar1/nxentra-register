@@ -35,6 +35,14 @@ import {
   Scale,
   PackagePlus,
   Wrench,
+  Home,
+  DoorOpen,
+  UserSquare2,
+  FileSignature,
+  Banknote,
+  AlertTriangle,
+  PieChart,
+  LayoutGrid,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useSidebar } from "@/contexts/SidebarContext";
@@ -63,6 +71,7 @@ export function Sidebar() {
       sales: ["/accounting/sales-invoices", "/accounting/receipts"],
       purchases: ["/accounting/purchase-bills", "/accounting/payments"],
       inventory: ["/inventory/balances", "/inventory/ledger", "/inventory/adjustments", "/inventory/opening-balance"],
+      properties: ["/properties/properties", "/properties/units", "/properties/lessees", "/properties/leases"],
       reports: ["/reports"],
       setup: ["/settings/periods", "/accounting/chart-of-accounts", "/settings/dimensions", "/accounting/vendors", "/accounting/customers", "/inventory/warehouses", "/accounting/items", "/accounting/tax-codes", "/accounting/posting-profiles", "/settings/integrations"],
       settings: ["/settings/company", "/users", "/settings/account", "/settings/audit"],
@@ -267,6 +276,57 @@ export function Sidebar() {
           label: t("nav.openingBalance", "Opening Balance"),
           href: "/inventory/opening-balance",
           icon: <PackagePlus className="h-4 w-4 text-lime-400" />,
+        },
+      ],
+    },
+    {
+      label: t("nav.properties", "Properties"),
+      icon: <Home className="h-5 w-5 text-amber-600" />,
+      children: [
+        {
+          label: t("nav.propDashboard", "Dashboard"),
+          href: "/properties/dashboard",
+          icon: <LayoutGrid className="h-4 w-4 text-amber-600" />,
+        },
+        {
+          label: t("nav.propertiesList", "Properties"),
+          href: "/properties/properties",
+          icon: <Building2 className="h-4 w-4 text-amber-500" />,
+        },
+        {
+          label: t("nav.units", "Units"),
+          href: "/properties/units",
+          icon: <DoorOpen className="h-4 w-4 text-amber-400" />,
+        },
+        {
+          label: t("nav.lessees", "Lessees"),
+          href: "/properties/lessees",
+          icon: <UserSquare2 className="h-4 w-4 text-orange-400" />,
+        },
+        {
+          label: t("nav.leases", "Leases"),
+          href: "/properties/leases",
+          icon: <FileSignature className="h-4 w-4 text-orange-500" />,
+        },
+        {
+          label: t("nav.collections", "Collections"),
+          href: "/properties/payments",
+          icon: <Banknote className="h-4 w-4 text-green-500" />,
+        },
+        {
+          label: t("nav.propExpenses", "Expenses"),
+          href: "/properties/expenses",
+          icon: <Receipt className="h-4 w-4 text-red-400" />,
+        },
+        {
+          label: t("nav.propAlerts", "Alerts"),
+          href: "/properties/alerts",
+          icon: <AlertTriangle className="h-4 w-4 text-yellow-500" />,
+        },
+        {
+          label: t("nav.propReports", "Reports"),
+          href: "/properties/reports",
+          icon: <PieChart className="h-4 w-4 text-pink-400" />,
         },
       ],
     },
