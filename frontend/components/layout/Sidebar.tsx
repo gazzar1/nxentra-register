@@ -43,6 +43,10 @@ import {
   AlertTriangle,
   PieChart,
   LayoutGrid,
+  Stethoscope,
+  HeartPulse,
+  CalendarCheck,
+  ClipboardCheck,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useSidebar } from "@/contexts/SidebarContext";
@@ -72,6 +76,7 @@ export function Sidebar() {
       purchases: ["/accounting/purchase-bills", "/accounting/payments"],
       inventory: ["/inventory/balances", "/inventory/ledger", "/inventory/adjustments", "/inventory/opening-balance"],
       properties: ["/properties/dashboard", "/properties/properties", "/properties/units", "/properties/lessees", "/properties/leases", "/properties/payments", "/properties/expenses", "/properties/alerts", "/properties/reports"],
+      clinic: ["/clinic/patients", "/clinic/doctors", "/clinic/visits", "/clinic/invoices", "/clinic/payments", "/clinic/settings"],
       reports: ["/reports"],
       setup: ["/settings/periods", "/accounting/chart-of-accounts", "/settings/dimensions", "/accounting/vendors", "/accounting/customers", "/inventory/warehouses", "/accounting/items", "/accounting/tax-codes", "/accounting/posting-profiles", "/settings/integrations"],
       settings: ["/settings/company", "/users", "/settings/account", "/settings/audit"],
@@ -327,6 +332,42 @@ export function Sidebar() {
           label: t("nav.propReports", "Reports"),
           href: "/properties/reports",
           icon: <PieChart className="h-4 w-4 text-pink-400" />,
+        },
+      ],
+    },
+    {
+      label: t("nav.clinic", "Clinic"),
+      icon: <Stethoscope className="h-5 w-5 text-teal-600" />,
+      children: [
+        {
+          label: t("nav.patients", "Patients"),
+          href: "/clinic/patients",
+          icon: <HeartPulse className="h-4 w-4 text-teal-500" />,
+        },
+        {
+          label: t("nav.doctors", "Doctors"),
+          href: "/clinic/doctors",
+          icon: <Stethoscope className="h-4 w-4 text-teal-400" />,
+        },
+        {
+          label: t("nav.visits", "Visits"),
+          href: "/clinic/visits",
+          icon: <CalendarCheck className="h-4 w-4 text-cyan-500" />,
+        },
+        {
+          label: t("nav.clinicInvoices", "Invoices"),
+          href: "/clinic/invoices",
+          icon: <ClipboardCheck className="h-4 w-4 text-blue-500" />,
+        },
+        {
+          label: t("nav.clinicPayments", "Payments"),
+          href: "/clinic/payments",
+          icon: <Banknote className="h-4 w-4 text-green-500" />,
+        },
+        {
+          label: t("nav.clinicSettings", "Settings"),
+          href: "/clinic/settings",
+          icon: <Settings className="h-4 w-4 text-gray-500" />,
         },
       ],
     },

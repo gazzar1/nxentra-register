@@ -2003,6 +2003,14 @@ class EventTypes:
     PROPERTY_EXPENSE_RECORDED = "property.expense_recorded"
     PROPERTY_ACCOUNT_MAPPING_UPDATED = "property.account_mapping_updated"
 
+    # Clinic events
+    CLINIC_PATIENT_CREATED = "clinic.patient_created"
+    CLINIC_PATIENT_UPDATED = "clinic.patient_updated"
+    CLINIC_VISIT_CREATED = "clinic.visit_created"
+    CLINIC_VISIT_COMPLETED = "clinic.visit_completed"
+    CLINIC_INVOICE_ISSUED = "clinic.invoice_issued"
+    CLINIC_PAYMENT_RECEIVED = "clinic.payment_received"
+    CLINIC_PAYMENT_VOIDED = "clinic.payment_voided"
 
 
 # =============================================================================

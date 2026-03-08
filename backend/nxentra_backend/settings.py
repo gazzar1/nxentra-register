@@ -79,6 +79,7 @@ INSTALLED_APPS = [
     "projections.apps.ProjectionsConfig",
     "edim.apps.EdimConfig",
     "properties.apps.PropertiesConfig",
+    "clinic.apps.ClinicConfig",
     "channels",
     "django_celery_beat",  # Periodic tasks
     "django_celery_results",  # Task results
