@@ -21,6 +21,7 @@ from events.views import (
     IntegritySummaryView,
     EventBookmarkListView,
 )
+from events.ingest import EventIngestView
 
 
 app_name = "events"
@@ -53,4 +54,7 @@ urlpatterns = [
 
     # Projection bookmarks
     path("bookmarks/", EventBookmarkListView.as_view(), name="bookmark-list"),
+
+    # External event ingestion
+    path("ingest/", EventIngestView.as_view(), name="event-ingest"),
 ]

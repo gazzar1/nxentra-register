@@ -615,3 +615,7 @@ class EventBookmark(models.Model):
             qs = qs.filter(company_sequence__gt=self.last_event.company_sequence)
 
         return qs.order_by("company_sequence")[:limit]
+
+
+# Import ExternalAPIKey so Django discovers it for migrations
+from events.api_keys import ExternalAPIKey  # noqa: E402, F401

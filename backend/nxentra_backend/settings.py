@@ -285,6 +285,7 @@ REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"] = {
     "registration": "5/hour",
     "resend_verification": "3/hour",
     "login": "10/minute",
+    "external_ingest": "120/minute",
 }
 
 CHANNEL_LAYERS = {
