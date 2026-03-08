@@ -92,7 +92,8 @@ class BaseProjection(ABC):
         bookmark.save()
         
         # Clear projected data (subclasses should override if needed)
-        self._clear_projected_data(company)
+        with projection_writes_allowed():
+            self._clear_projected_data(company)
 
         # Clear applied-event markers for rebuild
         ProjectionAppliedEvent.objects.filter(
