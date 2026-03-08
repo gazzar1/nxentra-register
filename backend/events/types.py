@@ -226,7 +226,6 @@ def validate_event_payload(event_type: str, data: Dict[str, Any]) -> None:
     enum_fields = {
         "account_type": set(Account.AccountType.values),
         "normal_balance": set(Account.NormalBalance.values),
-        "status": set(JournalEntry.Status.values),
         "kind": set(JournalEntry.Kind.values),
         "role": set(CompanyMembership.Role.values),
     }
