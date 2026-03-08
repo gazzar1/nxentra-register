@@ -26,6 +26,10 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 from django.conf import settings
 
+import logging
+
+_emitter_logger = logging.getLogger(__name__)
+
 from events.models import BusinessEvent
 from events.types import validate_event_payload, InvalidEventPayload, BaseEventData
 from events.payload_policy import (
@@ -34,6 +38,36 @@ from events.payload_policy import (
     determine_storage_strategy,
 )
 from events.serialization import compute_payload_hash, estimate_json_size
+
+
+def _schedule_projection_processing(company_id: int) -> None:
+    """
+    Schedule projection processing after the current transaction commits.
+
+    Uses Celery if available, otherwise processes synchronously as a fallback.
+    Runs via transaction.on_commit so projections only fire after the event
+    is durably persisted.
+    """
+    def _dispatch():
+        try:
+            from projections.tasks import process_company_projections
+            process_company_projections.delay(company_id=company_id)
+        except Exception:
+            # Celery not running or not configured — process synchronously
+            try:
+                from accounts.models import Company
+                from projections.base import projection_registry
+
+                company = Company.objects.get(id=company_id)
+                for projection in projection_registry.all():
+                    projection.process_pending(company=company, limit=100)
+            except Exception as exc:
+                _emitter_logger.warning(
+                    "Failed to process projections synchronously for company %s: %s",
+                    company_id, exc,
+                )
+
+    transaction.on_commit(_dispatch)
 
 
 def _emit_event_core(
@@ -145,7 +179,7 @@ def _emit_event_core(
     for attempt in range(3):
         try:
             with transaction.atomic():
-                return BusinessEvent.objects.create(
+                event_obj = BusinessEvent.objects.create(
                     company=company,
                     event_type=event_type,
                     aggregate_type=aggregate_type,
@@ -165,6 +199,8 @@ def _emit_event_core(
                     # Ledger Survivability: Origin tracking
                     origin=payload_origin.value,
                 )
+                _schedule_projection_processing(company.id)
+                return event_obj
         except IntegrityError:
             # Most likely:
             # 1) idempotency key collision (another worker inserted same key)
