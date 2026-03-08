@@ -11,6 +11,11 @@ class EdimConfig(AppConfig):
     name = "edim"
     verbose_name = "External Data Ingestion & Mapping"
 
-    def ready(self):
-        """Register EDIM projections when the app starts."""
-        import edim.projections  # noqa: F401
+    # Declarative vertical-module manifest.
+    # ProjectionsConfig.ready() auto-discovers and registers these.
+    projections = [
+        "edim.projections.EdimBatchAuditProjection",
+        "edim.projections.EdimConfigAuditProjection",
+    ]
+
+    event_types_module = "edim.event_types"

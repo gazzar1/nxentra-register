@@ -250,8 +250,20 @@ class ProjectionRegistry:
             cls._instance._projections = {}
         return cls._instance
     
-    def register(self, projection: BaseProjection) -> None:
-        """Register a projection."""
+    def register(self, projection: BaseProjection, *, allow_override: bool = False) -> None:
+        """
+        Register a projection.
+
+        Raises RuntimeError if a projection with the same name is already
+        registered, unless allow_override is True.
+        """
+        if not allow_override and projection.name in self._projections:
+            existing = type(self._projections[projection.name])
+            raise RuntimeError(
+                f"Duplicate projection name '{projection.name}': "
+                f"{type(projection).__qualname__} conflicts with "
+                f"already-registered {existing.__qualname__}"
+            )
         self._projections[projection.name] = projection
     
     def get(self, name: str) -> Optional[BaseProjection]:

@@ -7,9 +7,8 @@ class InventoryConfig(AppConfig):
     name = "inventory"
     verbose_name = "Inventory"
 
-    def ready(self):
-        # Import projections to register them
-        try:
-            from projections import inventory_balance  # noqa: F401
-        except ImportError:
-            pass
+    # Declarative vertical-module manifest.
+    # ProjectionsConfig.ready() auto-discovers and registers these.
+    projections = [
+        "projections.inventory_balance.InventoryBalanceProjection",
+    ]

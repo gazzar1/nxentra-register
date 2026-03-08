@@ -4,12 +4,15 @@ Property module event data classes.
 
 These define the canonical schema for property management events.
 They follow the BaseEventData pattern from events/types.py.
+
+Exposes REGISTERED_EVENTS dict consumed by ProjectionsConfig.ready()
+for automatic event-type registration.
 """
 
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 
-from events.types import BaseEventData
+from events.types import BaseEventData, EventTypes
 
 
 # =============================================================================
@@ -352,3 +355,35 @@ class PropertyAccountMappingUpdatedData(BaseEventData):
     company_public_id: str
     changes: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     updated_by_email: str = ""
+
+
+# =============================================================================
+# Module event registry — consumed by ProjectionsConfig.ready()
+# =============================================================================
+
+REGISTERED_EVENTS: dict[str, type[BaseEventData]] = {
+    EventTypes.PROPERTY_CREATED: PropertyCreatedData,
+    EventTypes.PROPERTY_UPDATED: PropertyUpdatedData,
+    EventTypes.UNIT_CREATED: UnitCreatedData,
+    EventTypes.UNIT_STATUS_CHANGED: UnitStatusChangedData,
+    EventTypes.LESSEE_CREATED: LesseeCreatedData,
+    EventTypes.LESSEE_UPDATED: LesseeUpdatedData,
+    EventTypes.LEASE_CREATED: LeaseCreatedData,
+    EventTypes.LEASE_ACTIVATED: LeaseActivatedData,
+    EventTypes.LEASE_TERMINATED: LeaseTerminatedData,
+    EventTypes.LEASE_RENEWED: LeaseRenewedData,
+    EventTypes.RENT_SCHEDULE_GENERATED: RentScheduleGeneratedData,
+    EventTypes.RENT_DUE_POSTED: RentDuePostedData,
+    EventTypes.RENT_OVERDUE_DETECTED: RentOverdueDetectedData,
+    EventTypes.RENT_LINE_WAIVED: RentLineWaivedData,
+    EventTypes.RENT_PAYMENT_RECEIVED: RentPaymentReceivedData,
+    EventTypes.RENT_PAYMENT_ALLOCATED: RentPaymentAllocatedData,
+    EventTypes.RENT_PAYMENT_VOIDED: RentPaymentVoidedData,
+    EventTypes.DEPOSIT_RECEIVED: DepositReceivedData,
+    EventTypes.DEPOSIT_ADJUSTED: DepositAdjustedData,
+    EventTypes.DEPOSIT_REFUNDED: DepositRefundedData,
+    EventTypes.DEPOSIT_FORFEITED: DepositForfeitedData,
+    EventTypes.LEASE_EXPIRY_ALERT: LeaseExpiryAlertData,
+    EventTypes.PROPERTY_EXPENSE_RECORDED: PropertyExpenseRecordedData,
+    EventTypes.PROPERTY_ACCOUNT_MAPPING_UPDATED: PropertyAccountMappingUpdatedData,
+}

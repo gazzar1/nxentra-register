@@ -17,7 +17,7 @@ from django.utils import timezone
 
 from events.types import EventTypes
 from events.models import BusinessEvent
-from projections.base import BaseProjection, projection_registry
+from projections.base import BaseProjection
 from projections.models import FiscalPeriod
 from properties.models import PropertyAccountMapping
 from accounting.models import Account, JournalEntry, JournalLine
@@ -482,5 +482,5 @@ class PropertyAccountingProjection(BaseProjection):
         )
 
 
-# Register with the global projection registry
-projection_registry.register(PropertyAccountingProjection())
+# Registration is handled by ProjectionsConfig.ready() via AppConfig.projections.
+# Do not add a module-level projection_registry.register() call here.

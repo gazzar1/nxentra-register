@@ -9,7 +9,7 @@ They follow the BaseEventData pattern from events/types.py.
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 
-from events.types import BaseEventData
+from events.types import BaseEventData, EventTypes
 
 
 # =============================================================================
@@ -190,3 +190,28 @@ class EdimCrosswalkUpdatedData(BaseEventData):
     """Data for edim_crosswalk.updated event."""
     crosswalk_public_id: str
     changes: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+
+
+# =============================================================================
+# Module event registry — consumed by ProjectionsConfig.ready()
+# =============================================================================
+
+REGISTERED_EVENTS: dict[str, type[BaseEventData]] = {
+    EventTypes.EDIM_SOURCE_SYSTEM_CREATED: EdimSourceSystemCreatedData,
+    EventTypes.EDIM_SOURCE_SYSTEM_UPDATED: EdimSourceSystemUpdatedData,
+    EventTypes.EDIM_SOURCE_SYSTEM_DEACTIVATED: EdimSourceSystemDeactivatedData,
+    EventTypes.EDIM_BATCH_STAGED: EdimBatchStagedData,
+    EventTypes.EDIM_BATCH_MAPPED: EdimBatchMappedData,
+    EventTypes.EDIM_BATCH_VALIDATED: EdimBatchValidatedData,
+    EventTypes.EDIM_BATCH_PREVIEWED: EdimBatchPreviewedData,
+    EventTypes.EDIM_BATCH_COMMITTED: EdimBatchCommittedData,
+    EventTypes.EDIM_BATCH_REJECTED: EdimBatchRejectedData,
+    EventTypes.EDIM_MAPPING_PROFILE_CREATED: EdimMappingProfileCreatedData,
+    EventTypes.EDIM_MAPPING_PROFILE_UPDATED: EdimMappingProfileUpdatedData,
+    EventTypes.EDIM_MAPPING_PROFILE_ACTIVATED: EdimMappingProfileActivatedData,
+    EventTypes.EDIM_MAPPING_PROFILE_DEPRECATED: EdimMappingProfileDeprecatedData,
+    EventTypes.EDIM_CROSSWALK_CREATED: EdimCrosswalkCreatedData,
+    EventTypes.EDIM_CROSSWALK_VERIFIED: EdimCrosswalkVerifiedData,
+    EventTypes.EDIM_CROSSWALK_REJECTED: EdimCrosswalkRejectedData,
+    EventTypes.EDIM_CROSSWALK_UPDATED: EdimCrosswalkUpdatedData,
+}

@@ -520,7 +520,7 @@ class TestProjectionRegistry:
     def test_all_projections_registered(self):
         """All expected projections should be registered."""
         names = projection_registry.names()
-        
+
         expected = [
             "account_read_model",
             "journal_entry_read_model",
@@ -530,8 +530,9 @@ class TestProjectionRegistry:
             "company_read_model",
             "user_read_model",
             "membership_read_model",
+            "property_accounting",
         ]
-        
+
         for name in expected:
             assert name in names, f"Projection '{name}' not registered"
     

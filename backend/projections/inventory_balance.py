@@ -30,7 +30,7 @@ from django.db import transaction
 from accounts.models import Company
 from events.models import BusinessEvent
 from events.types import EventTypes
-from projections.base import BaseProjection, projection_registry
+from projections.base import BaseProjection
 from projections.models import InventoryBalance
 from sales.models import Item
 from inventory.models import Warehouse
@@ -502,5 +502,5 @@ class InventoryBalanceProjection(BaseProjection):
         }
 
 
-# Register the projection
-projection_registry.register(InventoryBalanceProjection())
+# Registration is handled by ProjectionsConfig.ready() via AppConfig.projections.
+# Do not add a module-level projection_registry.register() call here.

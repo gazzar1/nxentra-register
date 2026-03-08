@@ -353,6 +353,25 @@ class BaseEventData:
         return result
 
 
+@dataclass
+class FinancialEventData(BaseEventData):
+    """
+    Base class for events that will be converted to journal entries
+    by a projection (Pattern B: projection creates JE from event).
+
+    New vertical modules should subclass this for any event that
+    carries a financial amount and should result in a journal entry.
+    Projections can rely on these fields being present.
+
+    Existing events (e.g. RentDuePostedData) are not required to adopt
+    this immediately — it is the canonical contract for new modules.
+    """
+    amount: str = "0"
+    currency: str = ""
+    transaction_date: str = ""
+    document_ref: str = ""
+
+
 # =============================================================================
 # Account Events
 # =============================================================================
@@ -2112,115 +2131,9 @@ EVENT_DATA_CLASSES = {
 }
 
 # =============================================================================
-# EDIM Event Data Classes (imported separately to avoid circular deps)
+# Vertical module event registration
 # =============================================================================
-
-def _register_edim_events():
-    """Register EDIM event data classes. Called at module load."""
-    from edim.event_types import (
-        EdimSourceSystemCreatedData,
-        EdimSourceSystemUpdatedData,
-        EdimSourceSystemDeactivatedData,
-        EdimBatchStagedData,
-        EdimBatchMappedData,
-        EdimBatchValidatedData,
-        EdimBatchPreviewedData,
-        EdimBatchCommittedData,
-        EdimBatchRejectedData,
-        EdimMappingProfileCreatedData,
-        EdimMappingProfileUpdatedData,
-        EdimMappingProfileActivatedData,
-        EdimMappingProfileDeprecatedData,
-        EdimCrosswalkCreatedData,
-        EdimCrosswalkVerifiedData,
-        EdimCrosswalkRejectedData,
-        EdimCrosswalkUpdatedData,
-    )
-
-    EVENT_DATA_CLASSES.update({
-        EventTypes.EDIM_SOURCE_SYSTEM_CREATED: EdimSourceSystemCreatedData,
-        EventTypes.EDIM_SOURCE_SYSTEM_UPDATED: EdimSourceSystemUpdatedData,
-        EventTypes.EDIM_SOURCE_SYSTEM_DEACTIVATED: EdimSourceSystemDeactivatedData,
-        EventTypes.EDIM_BATCH_STAGED: EdimBatchStagedData,
-        EventTypes.EDIM_BATCH_MAPPED: EdimBatchMappedData,
-        EventTypes.EDIM_BATCH_VALIDATED: EdimBatchValidatedData,
-        EventTypes.EDIM_BATCH_PREVIEWED: EdimBatchPreviewedData,
-        EventTypes.EDIM_BATCH_COMMITTED: EdimBatchCommittedData,
-        EventTypes.EDIM_BATCH_REJECTED: EdimBatchRejectedData,
-        EventTypes.EDIM_MAPPING_PROFILE_CREATED: EdimMappingProfileCreatedData,
-        EventTypes.EDIM_MAPPING_PROFILE_UPDATED: EdimMappingProfileUpdatedData,
-        EventTypes.EDIM_MAPPING_PROFILE_ACTIVATED: EdimMappingProfileActivatedData,
-        EventTypes.EDIM_MAPPING_PROFILE_DEPRECATED: EdimMappingProfileDeprecatedData,
-        EventTypes.EDIM_CROSSWALK_CREATED: EdimCrosswalkCreatedData,
-        EventTypes.EDIM_CROSSWALK_VERIFIED: EdimCrosswalkVerifiedData,
-        EventTypes.EDIM_CROSSWALK_REJECTED: EdimCrosswalkRejectedData,
-        EventTypes.EDIM_CROSSWALK_UPDATED: EdimCrosswalkUpdatedData,
-    })
-
-# Try to register EDIM events (may fail during initial migration)
-try:
-    _register_edim_events()
-except ImportError:
-    pass  # EDIM app not yet installed
-
-
-def _register_property_events():
-    """Register Property Management event data classes. Called at module load."""
-    from properties.event_types import (
-        PropertyCreatedData,
-        PropertyUpdatedData,
-        UnitCreatedData,
-        UnitStatusChangedData,
-        LesseeCreatedData,
-        LesseeUpdatedData,
-        LeaseCreatedData,
-        LeaseActivatedData,
-        LeaseTerminatedData,
-        LeaseRenewedData,
-        RentScheduleGeneratedData,
-        RentDuePostedData,
-        RentOverdueDetectedData,
-        RentLineWaivedData,
-        RentPaymentReceivedData,
-        RentPaymentAllocatedData,
-        RentPaymentVoidedData,
-        DepositReceivedData,
-        DepositAdjustedData,
-        DepositRefundedData,
-        DepositForfeitedData,
-        LeaseExpiryAlertData,
-        PropertyExpenseRecordedData,
-        PropertyAccountMappingUpdatedData,
-    )
-
-    EVENT_DATA_CLASSES.update({
-        EventTypes.PROPERTY_CREATED: PropertyCreatedData,
-        EventTypes.PROPERTY_UPDATED: PropertyUpdatedData,
-        EventTypes.UNIT_CREATED: UnitCreatedData,
-        EventTypes.UNIT_STATUS_CHANGED: UnitStatusChangedData,
-        EventTypes.LESSEE_CREATED: LesseeCreatedData,
-        EventTypes.LESSEE_UPDATED: LesseeUpdatedData,
-        EventTypes.LEASE_CREATED: LeaseCreatedData,
-        EventTypes.LEASE_ACTIVATED: LeaseActivatedData,
-        EventTypes.LEASE_TERMINATED: LeaseTerminatedData,
-        EventTypes.LEASE_RENEWED: LeaseRenewedData,
-        EventTypes.RENT_SCHEDULE_GENERATED: RentScheduleGeneratedData,
-        EventTypes.RENT_DUE_POSTED: RentDuePostedData,
-        EventTypes.RENT_OVERDUE_DETECTED: RentOverdueDetectedData,
-        EventTypes.RENT_LINE_WAIVED: RentLineWaivedData,
-        EventTypes.RENT_PAYMENT_RECEIVED: RentPaymentReceivedData,
-        EventTypes.RENT_PAYMENT_ALLOCATED: RentPaymentAllocatedData,
-        EventTypes.RENT_PAYMENT_VOIDED: RentPaymentVoidedData,
-        EventTypes.LEASE_EXPIRY_ALERT: LeaseExpiryAlertData,
-        EventTypes.DEPOSIT_RECEIVED: DepositReceivedData,
-        EventTypes.DEPOSIT_ADJUSTED: DepositAdjustedData,
-        EventTypes.DEPOSIT_REFUNDED: DepositRefundedData,
-        EventTypes.DEPOSIT_FORFEITED: DepositForfeitedData,
-        EventTypes.PROPERTY_EXPENSE_RECORDED: PropertyExpenseRecordedData,
-        EventTypes.PROPERTY_ACCOUNT_MAPPING_UPDATED: PropertyAccountMappingUpdatedData,
-    })
-
-try:
-    _register_property_events()
-except ImportError:
-    pass  # Properties app not yet installed
+# EDIM and Property event types are now registered declaratively via
+# their AppConfig.event_types_module + REGISTERED_EVENTS convention.
+# See ProjectionsConfig.ready() in projections/apps.py for the discovery
+# mechanism. The legacy _register_*_events() functions have been removed.

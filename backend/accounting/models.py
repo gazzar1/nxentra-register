@@ -2410,3 +2410,7 @@ class ExchangeRate(models.Model):
             return Decimal("1.0") / reverse_rate.rate
 
         return None
+
+
+# Import ModuleAccountMapping so Django discovers it for migrations.
+from accounting.mappings import ModuleAccountMapping  # noqa: E402, F401

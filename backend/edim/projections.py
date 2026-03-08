@@ -11,7 +11,7 @@ import logging
 
 from events.models import BusinessEvent
 from events.types import EventTypes
-from projections.base import BaseProjection, projection_registry
+from projections.base import BaseProjection
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +113,5 @@ class EdimConfigAuditProjection(BaseProjection):
         pass
 
 
-# Register projections
-projection_registry.register(EdimBatchAuditProjection())
-projection_registry.register(EdimConfigAuditProjection())
+# Registration is handled by ProjectionsConfig.ready() via AppConfig.projections.
+# Do not add a module-level projection_registry.register() call here.
