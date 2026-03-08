@@ -15,8 +15,9 @@ from datetime import datetime, date
 
 from django.utils import timezone
 
-from events.types import EventTypes
+from events.types import EventTypes, JournalEntryPostedData
 from events.models import BusinessEvent
+from events.emitter import emit_event_no_actor
 from projections.base import BaseProjection
 from projections.models import FiscalPeriod
 from properties.models import PropertyAccountMapping
@@ -449,32 +450,83 @@ class PropertyAccountingProjection(BaseProjection):
             exchange_rate=Decimal("1.0"),
         )
 
-        JournalLine.objects.projection().bulk_create([
-            JournalLine(
-                entry=entry,
-                company=company,
-                public_id=uuid.uuid4(),
-                line_no=1,
-                account=debit_account,
-                description=memo,
-                debit=amount,
-                credit=Decimal("0"),
+        debit_line = JournalLine(
+            entry=entry,
+            company=company,
+            public_id=uuid.uuid4(),
+            line_no=1,
+            account=debit_account,
+            description=memo,
+            debit=amount,
+            credit=Decimal("0"),
+            currency=currency,
+            exchange_rate=Decimal("1.0"),
+        )
+        credit_line = JournalLine(
+            entry=entry,
+            company=company,
+            public_id=uuid.uuid4(),
+            line_no=2,
+            account=credit_account,
+            description=memo,
+            debit=Decimal("0"),
+            credit=amount,
+            currency=currency,
+            exchange_rate=Decimal("1.0"),
+        )
+        JournalLine.objects.projection().bulk_create([debit_line, credit_line])
+
+        # Emit JOURNAL_ENTRY_POSTED so AccountBalanceProjection updates balances
+        lines_data = [
+            {
+                "line_public_id": str(debit_line.public_id),
+                "line_no": 1,
+                "account_public_id": str(debit_account.public_id),
+                "account_code": debit_account.code,
+                "description": memo,
+                "debit": str(amount),
+                "credit": "0",
+                "currency": currency,
+                "exchange_rate": "1.0",
+            },
+            {
+                "line_public_id": str(credit_line.public_id),
+                "line_no": 2,
+                "account_public_id": str(credit_account.public_id),
+                "account_code": credit_account.code,
+                "description": memo,
+                "debit": "0",
+                "credit": str(amount),
+                "currency": currency,
+                "exchange_rate": "1.0",
+            },
+        ]
+
+        emit_event_no_actor(
+            company=company,
+            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(entry.public_id),
+            idempotency_key=f"property.je.posted:{entry.public_id}",
+            metadata={"source_projection": PROJECTION_NAME},
+            data=JournalEntryPostedData(
+                entry_public_id=str(entry.public_id),
+                entry_number="",
+                date=str(entry_date),
+                memo=memo,
+                kind="NORMAL",
+                posted_at=str(now),
+                posted_by_id=0,
+                posted_by_email="system@property",
+                total_debit=str(amount),
+                total_credit=str(amount),
+                lines=lines_data,
+                period=period,
                 currency=currency,
-                exchange_rate=Decimal("1.0"),
+                exchange_rate="1.0",
             ),
-            JournalLine(
-                entry=entry,
-                company=company,
-                public_id=uuid.uuid4(),
-                line_no=2,
-                account=credit_account,
-                description=memo,
-                debit=Decimal("0"),
-                credit=amount,
-                currency=currency,
-                exchange_rate=Decimal("1.0"),
-            ),
-        ])
+            caused_by_event=event,
+        )
 
         logger.info(
             "Created journal entry %s for %s (event %s): %s",
