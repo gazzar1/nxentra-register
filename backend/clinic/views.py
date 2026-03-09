@@ -210,9 +210,10 @@ class PatientDocumentDetailView(APIView):
             return Response({"detail": "Document not found."}, status=404)
 
         # Delete the file from storage
-        if doc.file:
-            doc.file.delete(save=False)
-        doc.delete()
+        with command_writes_allowed():
+            if doc.file:
+                doc.file.delete(save=False)
+            doc.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
