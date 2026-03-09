@@ -5,7 +5,10 @@ API views for clinic module.
 Views handle HTTP requests and delegate business logic to commands.
 """
 
+import mimetypes
+
 from django.db import models as db_models
+from django.http import FileResponse, Http404
 
 from rest_framework import status
 from rest_framework.views import APIView
@@ -165,6 +168,33 @@ class PatientDocumentListCreateView(APIView):
             PatientDocumentSerializer(result.data["document"]).data,
             status=status.HTTP_201_CREATED,
         )
+
+
+class PatientDocumentDownloadView(APIView):
+    """Serve a patient document file through an authenticated API endpoint."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, patient_id, doc_id):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        try:
+            doc = PatientDocument.objects.select_related("patient").get(
+                pk=doc_id,
+                patient_id=patient_id,
+                patient__company=actor.company,
+            )
+        except PatientDocument.DoesNotExist:
+            raise Http404("Document not found.")
+
+        if not doc.file:
+            raise Http404("File not found.")
+
+        content_type = doc.mime_type or mimetypes.guess_type(doc.file.name)[0] or "application/octet-stream"
+        response = FileResponse(doc.file.open("rb"), content_type=content_type)
+        response["Content-Disposition"] = f'inline; filename="{doc.file_name}"'
+        return response
 
 
 # =============================================================================

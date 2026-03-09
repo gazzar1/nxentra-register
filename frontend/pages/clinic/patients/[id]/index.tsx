@@ -1,7 +1,7 @@
 import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useRouter } from "next/router";
-import { ArrowLeft, Pencil, Save, Upload, FileText, Image, X } from "lucide-react";
+import { ArrowLeft, Pencil, Save, Upload, FileText } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { AppLayout } from "@/components/layout";
@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { LoadingSpinner } from "@/components/common";
 import { usePatient, useUpdatePatient, usePatientDocuments, useUploadDocument } from "@/queries/useClinic";
+import { clinicDocumentsService } from "@/services/clinic.service";
 import { useToast } from "@/components/ui/toaster";
 import type { PatientDocument, DocumentType } from "@/types/clinic";
 import {
@@ -252,7 +253,7 @@ export default function PatientDetailPage() {
             ) : (
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {documents.map((doc) => (
-                  <DocumentCard key={doc.id} doc={doc} />
+                  <DocumentCard key={doc.id} doc={doc} patientId={id} />
                 ))}
               </div>
             )}
@@ -322,31 +323,57 @@ export default function PatientDetailPage() {
   );
 }
 
-function getMediaUrl(path: string) {
-  if (path.startsWith("http")) return path;
-  // Extract backend origin from API URL (strip /api suffix)
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
-  const origin = apiUrl.replace(/\/api\/?$/, "");
-  return `${origin}${path}`;
-}
-
-function DocumentCard({ doc }: { doc: PatientDocument }) {
+function DocumentCard({ doc, patientId }: { doc: PatientDocument; patientId: number }) {
   const isImage = isImageMime(doc.mime_type);
-  const fileUrl = getMediaUrl(doc.file);
+  const isPdf = doc.mime_type === "application/pdf";
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let revoked = false;
+    if (isImage || isPdf) {
+      clinicDocumentsService.download(patientId, doc.id).then((res) => {
+        if (!revoked) {
+          const url = URL.createObjectURL(res.data);
+          setBlobUrl(url);
+        }
+      }).catch(() => {});
+    }
+    return () => {
+      revoked = true;
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [patientId, doc.id, isImage, isPdf]);
+
+  const handleClick = async () => {
+    try {
+      const res = await clinicDocumentsService.download(patientId, doc.id);
+      const url = URL.createObjectURL(res.data);
+      window.open(url, "_blank");
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch {
+      // fallback: do nothing
+    }
+  };
 
   return (
-    <a
-      href={fileUrl}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="block border rounded-lg overflow-hidden hover:shadow-md transition-shadow"
+    <div
+      onClick={handleClick}
+      className="block border rounded-lg overflow-hidden hover:shadow-md transition-shadow cursor-pointer"
     >
-      <div className="h-32 bg-muted flex items-center justify-center">
-        {isImage ? (
+      <div className="h-40 bg-muted flex items-center justify-center">
+        {isImage && blobUrl ? (
           <img
-            src={fileUrl}
+            src={blobUrl}
             alt={doc.title}
             className="h-full w-full object-cover"
+          />
+        ) : isPdf && blobUrl ? (
+          <iframe
+            src={blobUrl}
+            title={doc.title}
+            className="h-full w-full pointer-events-none"
+            tabIndex={-1}
           />
         ) : (
           <FileText className="h-10 w-10 text-muted-foreground" />
@@ -367,7 +394,7 @@ function DocumentCard({ doc }: { doc: PatientDocument }) {
           {new Date(doc.uploaded_at).toLocaleDateString()}
         </p>
       </div>
-    </a>
+    </div>
   );
 }
 

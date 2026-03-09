@@ -47,6 +47,14 @@ export const clinicDocumentsService = {
     apiClient.post<PatientDocument>(`/clinic/patients/${patientId}/documents/`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     }),
+
+  downloadUrl: (patientId: number, docId: number) =>
+    `/clinic/patients/${patientId}/documents/${docId}/download/`,
+
+  download: (patientId: number, docId: number) =>
+    apiClient.get(`/clinic/patients/${patientId}/documents/${docId}/download/`, {
+      responseType: 'blob',
+    }),
 };
 
 // =============================================================================
