@@ -74,9 +74,9 @@ export default function PatientDetailPage() {
         date_of_birth: patient.date_of_birth || "",
         gender: patient.gender || "",
         blood_type: patient.blood_type || "",
-        allergies: patient.allergies,
-        chronic_diseases: patient.chronic_diseases,
-        current_medications: patient.current_medications,
+        allergies: (patient.allergies || []).join(", "),
+        chronic_diseases: (patient.chronic_diseases || []).join(", "),
+        current_medications: (patient.current_medications || []).join(", "),
         emergency_contact_name: patient.emergency_contact_name,
         emergency_contact_phone: patient.emergency_contact_phone,
         notes: patient.notes,
@@ -84,11 +84,18 @@ export default function PatientDetailPage() {
     }
   }, [patient]);
 
+  const parseList = (v: string) => v.split(",").map((s) => s.trim()).filter(Boolean);
+
   const handleSave = async () => {
     try {
-      const payload = { ...form };
+      const payload: Record<string, any> = {
+        ...form,
+        allergies: parseList(form.allergies || ""),
+        chronic_diseases: parseList(form.chronic_diseases || ""),
+        current_medications: parseList(form.current_medications || ""),
+      };
       if (payload.date_of_birth === "") payload.date_of_birth = null;
-      await updatePatient.mutateAsync({ id, data: payload });
+      await updatePatient.mutateAsync({ id, data: payload as any });
       toast({ title: "Patient updated" });
       setEditing(false);
     } catch (e: any) {
@@ -199,9 +206,9 @@ export default function PatientDetailPage() {
           <Card>
             <CardHeader><CardTitle>Medical Info</CardTitle></CardHeader>
             <CardContent className="space-y-3">
-              <ListField label="Allergies" items={form.allergies || []} editing={editing} onChange={(v) => setForm({ ...form, allergies: v })} />
-              <ListField label="Chronic Diseases" items={form.chronic_diseases || []} editing={editing} onChange={(v) => setForm({ ...form, chronic_diseases: v })} />
-              <ListField label="Current Medications" items={form.current_medications || []} editing={editing} onChange={(v) => setForm({ ...form, current_medications: v })} />
+              <ListField label="Allergies" value={form.allergies || ""} editing={editing} onChange={(v) => setForm({ ...form, allergies: v })} />
+              <ListField label="Chronic Diseases" value={form.chronic_diseases || ""} editing={editing} onChange={(v) => setForm({ ...form, chronic_diseases: v })} />
+              <ListField label="Current Medications" value={form.current_medications || ""} editing={editing} onChange={(v) => setForm({ ...form, current_medications: v })} />
             </CardContent>
           </Card>
 
@@ -371,14 +378,14 @@ function Field({ label, value, editing, onChange }: { label: string; value: stri
   );
 }
 
-function ListField({ label, items, editing, onChange }: { label: string; items: string[]; editing: boolean; onChange: (v: string[]) => void }) {
+function ListField({ label, value, editing, onChange }: { label: string; value: string; editing: boolean; onChange: (v: string) => void }) {
   if (editing) {
     return (
       <div>
         <Label className="text-xs text-muted-foreground">{label} (comma-separated)</Label>
         <Input
-          value={items.join(", ")}
-          onChange={(e) => onChange(e.target.value.split(",").map((s) => s.trim()).filter(Boolean))}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
         />
       </div>
     );
@@ -386,7 +393,7 @@ function ListField({ label, items, editing, onChange }: { label: string; items: 
   return (
     <div className="text-sm">
       <span className="text-muted-foreground">{label}:</span>{" "}
-      {items.length ? items.join(", ") : "None"}
+      {value || "None"}
     </div>
   );
 }
