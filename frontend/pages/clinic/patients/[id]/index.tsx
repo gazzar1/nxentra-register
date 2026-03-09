@@ -322,12 +322,21 @@ export default function PatientDetailPage() {
   );
 }
 
+function getMediaUrl(path: string) {
+  if (path.startsWith("http")) return path;
+  // Extract backend origin from API URL (strip /api suffix)
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+  const origin = apiUrl.replace(/\/api\/?$/, "");
+  return `${origin}${path}`;
+}
+
 function DocumentCard({ doc }: { doc: PatientDocument }) {
   const isImage = isImageMime(doc.mime_type);
+  const fileUrl = getMediaUrl(doc.file);
 
   return (
     <a
-      href={doc.file}
+      href={fileUrl}
       target="_blank"
       rel="noopener noreferrer"
       className="block border rounded-lg overflow-hidden hover:shadow-md transition-shadow"
@@ -335,7 +344,7 @@ function DocumentCard({ doc }: { doc: PatientDocument }) {
       <div className="h-32 bg-muted flex items-center justify-center">
         {isImage ? (
           <img
-            src={doc.file}
+            src={fileUrl}
             alt={doc.title}
             className="h-full w-full object-cover"
           />
