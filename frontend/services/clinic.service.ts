@@ -49,12 +49,15 @@ export const clinicDocumentsService = {
     }),
 
   downloadUrl: (patientId: number, docId: number) =>
-    `/clinic/patients/${patientId}/documents/${docId}/download/`,
+    `/clinic/patients/${patientId}/documents/${docId}/`,
 
   download: (patientId: number, docId: number) =>
-    apiClient.get(`/clinic/patients/${patientId}/documents/${docId}/download/`, {
+    apiClient.get(`/clinic/patients/${patientId}/documents/${docId}/`, {
       responseType: 'blob',
     }),
+
+  delete: (patientId: number, docId: number) =>
+    apiClient.delete(`/clinic/patients/${patientId}/documents/${docId}/`),
 };
 
 // =============================================================================

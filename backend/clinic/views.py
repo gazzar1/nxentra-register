@@ -170,15 +170,14 @@ class PatientDocumentListCreateView(APIView):
         )
 
 
-class PatientDocumentDownloadView(APIView):
-    """Serve a patient document file through an authenticated API endpoint."""
+class PatientDocumentDetailView(APIView):
+    """Download or delete a patient document."""
     permission_classes = [IsAuthenticated]
 
-    def get(self, request, patient_id, doc_id):
+    def _get_document(self, request, patient_id, doc_id):
         actor = resolve_actor(request)
         if not actor.company:
-            return Response({"detail": "No active company."}, status=400)
-
+            return None, Response({"detail": "No active company."}, status=400)
         try:
             doc = PatientDocument.objects.select_related("patient").get(
                 pk=doc_id,
@@ -186,8 +185,15 @@ class PatientDocumentDownloadView(APIView):
                 patient__company=actor.company,
             )
         except PatientDocument.DoesNotExist:
-            raise Http404("Document not found.")
+            return None, None
+        return doc, None
 
+    def get(self, request, patient_id, doc_id):
+        doc, err = self._get_document(request, patient_id, doc_id)
+        if err:
+            return err
+        if not doc:
+            raise Http404("Document not found.")
         if not doc.file:
             raise Http404("File not found.")
 
@@ -195,6 +201,19 @@ class PatientDocumentDownloadView(APIView):
         response = FileResponse(doc.file.open("rb"), content_type=content_type)
         response["Content-Disposition"] = f'inline; filename="{doc.file_name}"'
         return response
+
+    def delete(self, request, patient_id, doc_id):
+        doc, err = self._get_document(request, patient_id, doc_id)
+        if err:
+            return err
+        if not doc:
+            return Response({"detail": "Document not found."}, status=404)
+
+        # Delete the file from storage
+        if doc.file:
+            doc.file.delete(save=False)
+        doc.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 # =============================================================================

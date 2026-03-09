@@ -1,7 +1,7 @@
 import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useRouter } from "next/router";
-import { ArrowLeft, Pencil, Save, Upload, FileText } from "lucide-react";
+import { ArrowLeft, Pencil, Save, Upload, FileText, Trash2 } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { AppLayout } from "@/components/layout";
@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { LoadingSpinner } from "@/components/common";
-import { usePatient, useUpdatePatient, usePatientDocuments, useUploadDocument } from "@/queries/useClinic";
+import { usePatient, useUpdatePatient, usePatientDocuments, useUploadDocument, useDeleteDocument } from "@/queries/useClinic";
 import { clinicDocumentsService } from "@/services/clinic.service";
 import { useToast } from "@/components/ui/toaster";
 import type { PatientDocument, DocumentType } from "@/types/clinic";
@@ -57,6 +57,7 @@ export default function PatientDetailPage() {
   const { data: documents, isLoading: docsLoading } = usePatientDocuments(id);
   const updatePatient = useUpdatePatient();
   const uploadDocument = useUploadDocument();
+  const deleteDocument = useDeleteDocument();
   const { toast } = useToast();
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<Record<string, any>>({});
@@ -119,6 +120,16 @@ export default function PatientDetailPage() {
       setUploadForm({ title: "", document_type: "other", notes: "" });
     } catch (e: any) {
       toast({ title: e?.response?.data?.detail || "Upload failed", variant: "destructive" });
+    }
+  };
+
+  const handleDeleteDoc = async (docId: number) => {
+    if (!confirm("Delete this document?")) return;
+    try {
+      await deleteDocument.mutateAsync({ patientId: id, docId });
+      toast({ title: "Document deleted" });
+    } catch (e: any) {
+      toast({ title: e?.response?.data?.detail || "Delete failed", variant: "destructive" });
     }
   };
 
@@ -253,7 +264,7 @@ export default function PatientDetailPage() {
             ) : (
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {documents.map((doc) => (
-                  <DocumentCard key={doc.id} doc={doc} patientId={id} />
+                  <DocumentCard key={doc.id} doc={doc} patientId={id} onDelete={() => handleDeleteDoc(doc.id)} />
                 ))}
               </div>
             )}
@@ -323,7 +334,7 @@ export default function PatientDetailPage() {
   );
 }
 
-function DocumentCard({ doc, patientId }: { doc: PatientDocument; patientId: number }) {
+function DocumentCard({ doc, patientId, onDelete }: { doc: PatientDocument; patientId: number; onDelete: () => void }) {
   const isImage = isImageMime(doc.mime_type);
   const isPdf = doc.mime_type === "application/pdf";
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
@@ -357,42 +368,51 @@ function DocumentCard({ doc, patientId }: { doc: PatientDocument; patientId: num
   };
 
   return (
-    <div
-      onClick={handleClick}
-      className="block border rounded-lg overflow-hidden hover:shadow-md transition-shadow cursor-pointer"
-    >
-      <div className="h-40 bg-muted flex items-center justify-center">
-        {isImage && blobUrl ? (
-          <img
-            src={blobUrl}
-            alt={doc.title}
-            className="h-full w-full object-cover"
-          />
-        ) : isPdf && blobUrl ? (
-          <iframe
-            src={blobUrl}
-            title={doc.title}
-            className="h-full w-full pointer-events-none"
-            tabIndex={-1}
-          />
-        ) : (
-          <FileText className="h-10 w-10 text-muted-foreground" />
-        )}
-      </div>
-      <div className="p-3">
-        <p className="font-medium text-sm truncate">{doc.title}</p>
-        <div className="flex items-center justify-between mt-1">
-          <Badge className={DOC_TYPE_COLORS[doc.document_type] || DOC_TYPE_COLORS.other}>
-            {DOC_TYPE_LABELS[doc.document_type] || doc.document_type}
-          </Badge>
-          <span className="text-xs text-muted-foreground">{formatFileSize(doc.file_size)}</span>
+    <div className="relative block border rounded-lg overflow-hidden hover:shadow-md transition-shadow group">
+      <button
+        onClick={(e) => { e.stopPropagation(); onDelete(); }}
+        className="absolute top-2 right-2 z-10 p-1 rounded-full bg-white/80 hover:bg-red-100 text-muted-foreground hover:text-red-600 opacity-0 group-hover:opacity-100 transition-opacity"
+        title="Delete document"
+      >
+        <Trash2 className="h-4 w-4" />
+      </button>
+      <div
+        onClick={handleClick}
+        className="cursor-pointer"
+      >
+        <div className="h-40 bg-muted flex items-center justify-center">
+          {isImage && blobUrl ? (
+            <img
+              src={blobUrl}
+              alt={doc.title}
+              className="h-full w-full object-cover"
+            />
+          ) : isPdf && blobUrl ? (
+            <iframe
+              src={blobUrl}
+              title={doc.title}
+              className="h-full w-full pointer-events-none"
+              tabIndex={-1}
+            />
+          ) : (
+            <FileText className="h-10 w-10 text-muted-foreground" />
+          )}
         </div>
-        {doc.notes && (
-          <p className="text-xs text-muted-foreground mt-1 truncate">{doc.notes}</p>
-        )}
-        <p className="text-xs text-muted-foreground mt-1">
-          {new Date(doc.uploaded_at).toLocaleDateString()}
-        </p>
+        <div className="p-3">
+          <p className="font-medium text-sm truncate">{doc.title}</p>
+          <div className="flex items-center justify-between mt-1">
+            <Badge className={DOC_TYPE_COLORS[doc.document_type] || DOC_TYPE_COLORS.other}>
+              {DOC_TYPE_LABELS[doc.document_type] || doc.document_type}
+            </Badge>
+            <span className="text-xs text-muted-foreground">{formatFileSize(doc.file_size)}</span>
+          </div>
+          {doc.notes && (
+            <p className="text-xs text-muted-foreground mt-1 truncate">{doc.notes}</p>
+          )}
+          <p className="text-xs text-muted-foreground mt-1">
+            {new Date(doc.uploaded_at).toLocaleDateString()}
+          </p>
+        </div>
       </div>
     </div>
   );

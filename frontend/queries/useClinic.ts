@@ -122,6 +122,15 @@ export function useUploadDocument() {
   });
 }
 
+export function useDeleteDocument() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ patientId, docId }: { patientId: number; docId: number }) =>
+      clinicDocumentsService.delete(patientId, docId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: documentKeys.all }),
+  });
+}
+
 // =============================================================================
 // Doctor Hooks
 // =============================================================================
