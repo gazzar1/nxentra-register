@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   clinicPatientsService,
+  clinicDocumentsService,
   clinicDoctorsService,
   clinicVisitsService,
   clinicInvoicesService,
@@ -29,6 +30,12 @@ export const patientKeys = {
   list: (filters: Record<string, unknown>) => [...patientKeys.lists(), filters] as const,
   details: () => [...patientKeys.all, 'detail'] as const,
   detail: (id: number) => [...patientKeys.details(), id] as const,
+};
+
+export const documentKeys = {
+  all: ['clinic-documents'] as const,
+  lists: () => [...documentKeys.all, 'list'] as const,
+  list: (patientId: number) => [...documentKeys.lists(), patientId] as const,
 };
 
 export const doctorKeys = {
@@ -91,6 +98,27 @@ export function useUpdatePatient() {
     mutationFn: ({ id, data }: { id: number; data: PatientUpdatePayload }) =>
       clinicPatientsService.update(id, data).then((r) => r.data),
     onSuccess: () => qc.invalidateQueries({ queryKey: patientKeys.all }),
+  });
+}
+
+// =============================================================================
+// Document Hooks
+// =============================================================================
+
+export function usePatientDocuments(patientId: number) {
+  return useQuery({
+    queryKey: documentKeys.list(patientId),
+    queryFn: () => clinicDocumentsService.list(patientId).then((r) => r.data),
+    enabled: !!patientId,
+  });
+}
+
+export function useUploadDocument() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ patientId, formData }: { patientId: number; formData: FormData }) =>
+      clinicDocumentsService.upload(patientId, formData).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: documentKeys.all }),
   });
 }
 
