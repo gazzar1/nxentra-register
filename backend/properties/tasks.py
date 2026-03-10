@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from celery import shared_task
+from django.conf import settings
 from django.db import transaction
 
 from accounts.models import Company
@@ -51,6 +52,17 @@ def post_rent_dues_and_detect_overdue():
             )
 
 
+def _process_projections(company):
+    """Run all registered projections synchronously after events are emitted."""
+    if not settings.PROJECTIONS_SYNC:
+        return
+
+    from projections.base import projection_registry
+
+    for projection in projection_registry.all():
+        projection.process_pending(company, limit=1000)
+
+
 def _process_company(company):
     """Process rent schedule transitions for a single company."""
     # PRD A.8: use company timezone (field may not exist yet, default UTC)
@@ -84,6 +96,9 @@ def _process_company(company):
             grace_days = line.lease.grace_days or 0
             if line.due_date + timedelta(days=grace_days) < today:
                 _detect_overdue(company, line, today)
+
+    # Process projections after all events have been emitted
+    _process_projections(company)
 
 
 @transaction.atomic

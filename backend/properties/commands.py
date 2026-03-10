@@ -13,6 +13,7 @@ Pattern:
 5. Return CommandResult
 """
 
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from decimal import Decimal
@@ -25,6 +26,20 @@ from accounting.commands import CommandResult
 from events.emitter import emit_event
 from events.types import EventTypes
 from projections.write_barrier import command_writes_allowed
+
+
+def _process_projections(company, exclude: set[str] | None = None) -> None:
+    """Run all registered projections synchronously after a command emits events."""
+    if not settings.PROJECTIONS_SYNC:
+        return
+
+    from projections.base import projection_registry
+
+    excluded = exclude or set()
+    for projection in projection_registry.all():
+        if projection.name in excluded:
+            continue
+        projection.process_pending(company, limit=1000)
 
 from .models import (
     Property, Unit, Lessee, Lease, RentScheduleLine,
@@ -928,6 +943,7 @@ def activate_lease(
             ),
         )
 
+    _process_projections(actor.company)
     return CommandResult.ok(
         data={"lease": lease, "schedule_lines": schedule_lines},
         event=event,
@@ -1016,6 +1032,7 @@ def terminate_lease(
             ),
         )
 
+    _process_projections(actor.company)
     return CommandResult.ok(data={"lease": lease}, event=event)
 
 
@@ -1136,6 +1153,7 @@ def renew_lease(
         ),
     )
 
+    _process_projections(actor.company)
     return CommandResult.ok(
         data={"old_lease": old_lease, "new_lease": new_lease},
         event=event,
@@ -1225,6 +1243,7 @@ def record_rent_payment(
         ),
     )
 
+    _process_projections(actor.company)
     return CommandResult.ok(data={"payment": payment}, event=event)
 
 
@@ -1341,6 +1360,7 @@ def allocate_rent_payment(
             ),
         )
 
+    _process_projections(actor.company)
     return CommandResult.ok(data={"payment": payment, "allocations": created_allocations})
 
 
@@ -1412,6 +1432,7 @@ def void_payment(
         ),
     )
 
+    _process_projections(actor.company)
     return CommandResult.ok(data={"payment": payment}, event=event)
 
 
@@ -1516,6 +1537,7 @@ def record_deposit_transaction(
         data=data_class(**event_kwargs),
     )
 
+    _process_projections(actor.company)
     return CommandResult.ok(data={"transaction": txn}, event=event)
 
 
@@ -1574,6 +1596,7 @@ def waive_schedule_line(
         ),
     )
 
+    _process_projections(actor.company)
     return CommandResult.ok(data={"schedule_line": line}, event=event)
 
 
@@ -1656,4 +1679,5 @@ def record_property_expense(
         ),
     )
 
+    _process_projections(actor.company)
     return CommandResult.ok(data={"expense": expense}, event=event)
