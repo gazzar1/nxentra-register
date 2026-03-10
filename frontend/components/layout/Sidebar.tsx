@@ -190,40 +190,34 @@ export function Sidebar() {
 
   // Ref for preserving sidebar scroll position
   const navRef = useRef<HTMLElement>(null);
-  const SCROLL_KEY = "nxentra-sidebar-scroll";
+  const scrollPosRef = useRef(0);
 
+  // Save scroll position on every scroll so we never lose it
   useEffect(() => {
-    const restoreScroll = () => {
-      try {
-        const saved = sessionStorage.getItem(SCROLL_KEY);
-        if (saved && navRef.current) {
-          navRef.current.scrollTop = parseInt(saved, 10);
-        }
-      } catch {}
-    };
+    const nav = navRef.current;
+    if (!nav) return;
+    const onScroll = () => { scrollPosRef.current = nav.scrollTop; };
+    nav.addEventListener("scroll", onScroll, { passive: true });
+    return () => nav.removeEventListener("scroll", onScroll);
+  }, []);
 
-    const handleRouteChangeStart = () => {
-      try {
-        if (navRef.current) {
-          sessionStorage.setItem(SCROLL_KEY, String(navRef.current.scrollTop));
-        }
-      } catch {}
-    };
-
-    const handleRouteChangeComplete = () => {
-      close();
-      requestAnimationFrame(() => restoreScroll());
-    };
-
-    restoreScroll();
-    router.events.on("routeChangeStart", handleRouteChangeStart);
+  // After route change, close mobile menu (but do NOT reset scroll)
+  useEffect(() => {
+    const handleRouteChangeComplete = () => { close(); };
     router.events.on("routeChangeComplete", handleRouteChangeComplete);
-
-    return () => {
-      router.events.off("routeChangeStart", handleRouteChangeStart);
-      router.events.off("routeChangeComplete", handleRouteChangeComplete);
-    };
+    return () => { router.events.off("routeChangeComplete", handleRouteChangeComplete); };
   }, [router.events, close]);
+
+  // Restore scroll position after any re-render that might reset it
+  useEffect(() => {
+    const nav = navRef.current;
+    if (!nav || scrollPosRef.current === 0) return;
+    // Use rAF to restore after the browser has painted
+    const id = requestAnimationFrame(() => {
+      nav.scrollTop = scrollPosRef.current;
+    });
+    return () => cancelAnimationFrame(id);
+  });
 
   const isAdmin = user?.is_staff || user?.is_superuser;
 

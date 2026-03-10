@@ -408,7 +408,7 @@ def create_lease(
     rent_amount,
     due_day_rule: str,
     unit_id: int = None,
-    currency: str = "SAR",
+    currency: str = None,
     grace_days: int = 0,
     specific_due_day: int = None,
     deposit_amount=Decimal("0"),
@@ -420,6 +420,7 @@ def create_lease(
 ) -> CommandResult:
     """Create a new lease in draft status."""
     require(actor, "leases.manage")
+    currency = currency or actor.company.default_currency
 
     # Validate references
     try:
@@ -1153,12 +1154,13 @@ def record_rent_payment(
     amount,
     payment_date,
     method: str,
-    currency: str = "SAR",
+    currency: str = None,
     reference_no: str = None,
     notes: str = None,
 ) -> CommandResult:
     """Record a rent payment receipt against a lease."""
     require(actor, "collections.receive")
+    currency = currency or actor.company.default_currency
 
     try:
         lease = Lease.objects.select_related("lessee").get(
@@ -1440,7 +1442,7 @@ def record_deposit_transaction(
     transaction_type: str,
     amount,
     transaction_date,
-    currency: str = "SAR",
+    currency: str = None,
     reason: str = None,
     reference: str = None,
 ) -> CommandResult:
@@ -1451,6 +1453,7 @@ def record_deposit_transaction(
     Balance cannot go below zero.
     """
     require(actor, "deposits.manage")
+    currency = currency or actor.company.default_currency
 
     try:
         lease = Lease.objects.get(company=actor.company, pk=lease_id)
@@ -1586,7 +1589,7 @@ def record_property_expense(
     expense_date,
     amount,
     payment_mode: str,
-    currency: str = "SAR",
+    currency: str = None,
     unit_id: int = None,
     vendor_ref: str = None,
     description: str = None,
@@ -1594,6 +1597,7 @@ def record_property_expense(
 ) -> CommandResult:
     """Record a property expense."""
     require(actor, "expenses.manage")
+    currency = currency or actor.company.default_currency
 
     try:
         prop = Property.objects.get(company=actor.company, pk=property_id)

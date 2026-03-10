@@ -329,7 +329,7 @@ class MonthlyNetIncomeView(APIView):
                 "total_income": str(total_income),
                 "total_expenses": str(total_expenses),
                 "net_income": str(net_income),
-                "currency": "SAR",
+                "currency": company.default_currency,
             })
 
         return Response(rows)

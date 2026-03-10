@@ -115,7 +115,7 @@ class LeaseCreatedData(BaseEventData):
     start_date: str = ""
     end_date: str = ""
     rent_amount: str = ""
-    currency: str = "SAR"
+    currency: str = ""
     payment_frequency: str = ""
     deposit_amount: str = "0"
     created_by_email: str = ""
@@ -140,7 +140,7 @@ class LeaseActivatedData(BaseEventData):
     start_date: str = ""
     end_date: str = ""
     rent_amount: str = ""
-    currency: str = "SAR"
+    currency: str = ""
     deposit_amount: str = "0"
     payment_frequency: str = ""
     schedule_line_count: int = 0
@@ -182,7 +182,7 @@ class RentScheduleGeneratedData(BaseEventData):
     contract_no: str
     schedule_line_count: int = 0
     total_rent: str = "0"
-    currency: str = "SAR"
+    currency: str = ""
     first_due_date: str = ""
     last_due_date: str = ""
 
@@ -196,7 +196,7 @@ class RentDuePostedData(BaseEventData):
     installment_no: int = 0
     due_date: str = ""
     total_due: str = "0"
-    currency: str = "SAR"
+    currency: str = ""
 
 
 @dataclass
@@ -208,7 +208,7 @@ class RentOverdueDetectedData(BaseEventData):
     installment_no: int = 0
     due_date: str = ""
     outstanding: str = "0"
-    currency: str = "SAR"
+    currency: str = ""
     days_overdue: int = 0
 
 
@@ -236,7 +236,7 @@ class RentPaymentReceivedData(BaseEventData):
     lessee_public_id: str
     receipt_no: str = ""
     amount: str = "0"
-    currency: str = "SAR"
+    currency: str = ""
     payment_method: str = ""
     payment_date: str = ""
     received_by_email: str = ""
@@ -252,7 +252,7 @@ class RentPaymentAllocatedData(BaseEventData):
     receipt_no: str = ""
     contract_no: str = ""
     allocated_amount: str = "0"
-    currency: str = "SAR"
+    currency: str = ""
 
 
 @dataclass
@@ -262,7 +262,7 @@ class RentPaymentVoidedData(BaseEventData):
     lease_public_id: str
     receipt_no: str = ""
     amount: str = "0"
-    currency: str = "SAR"
+    currency: str = ""
     reason: str = ""
     voided_by_email: str = ""
     allocation_count_reversed: int = 0
@@ -279,7 +279,7 @@ class DepositReceivedData(BaseEventData):
     lease_public_id: str
     contract_no: str = ""
     amount: str = "0"
-    currency: str = "SAR"
+    currency: str = ""
     transaction_date: str = ""
 
 
@@ -290,7 +290,7 @@ class DepositAdjustedData(BaseEventData):
     lease_public_id: str
     contract_no: str = ""
     amount: str = "0"
-    currency: str = "SAR"
+    currency: str = ""
     reason: str = ""
     transaction_date: str = ""
 
@@ -302,7 +302,7 @@ class DepositRefundedData(BaseEventData):
     lease_public_id: str
     contract_no: str = ""
     amount: str = "0"
-    currency: str = "SAR"
+    currency: str = ""
     transaction_date: str = ""
 
 
@@ -313,7 +313,7 @@ class DepositForfeitedData(BaseEventData):
     lease_public_id: str
     contract_no: str = ""
     amount: str = "0"
-    currency: str = "SAR"
+    currency: str = ""
     reason: str = ""
     transaction_date: str = ""
 
@@ -331,7 +331,7 @@ class PropertyExpenseRecordedData(BaseEventData):
     company_public_id: str = ""
     category: str = ""
     amount: str = "0"
-    currency: str = "SAR"
+    currency: str = ""
     payment_mode: str = ""
     expense_date: str = ""
     description: str = ""
