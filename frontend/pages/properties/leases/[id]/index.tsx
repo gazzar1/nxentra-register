@@ -2,7 +2,7 @@ import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useRouter } from "next/router";
 import { useState } from "react";
-import { Play, XCircle, RefreshCw, DollarSign, Ban, Shield } from "lucide-react";
+import { Play, XCircle, RefreshCw, DollarSign, Ban, Shield, Pencil } from "lucide-react";
 import { AppLayout } from "@/components/layout";
 import { PageHeader, LoadingSpinner } from "@/components/common";
 import { Badge } from "@/components/ui/badge";
@@ -33,13 +33,14 @@ import {
   useActivateLease,
   useTerminateLease,
   useRenewLease,
+  useUpdateLease,
   useWaiveScheduleLine,
   usePayments,
   useCreatePayment,
   useDeposits,
   useCreateDeposit,
 } from "@/queries/useProperties";
-import type { PaymentMethod, DepositTransactionType } from "@/types/properties";
+import type { PaymentMethod, DepositTransactionType, PaymentFrequency, DueDayRule } from "@/types/properties";
 import { useToast } from "@/components/ui/toaster";
 import { cn } from "@/lib/cn";
 
@@ -91,6 +92,258 @@ function InfoRow({ label, value }: { label: string; value: string | null | undef
   );
 }
 
+function EditLeaseDialog({
+  lease,
+  open,
+  onOpenChange,
+  onSave,
+  isPending,
+}: {
+  lease: any;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSave: (payload: Record<string, any>) => void;
+  isPending: boolean;
+}) {
+  const [form, setForm] = useState({
+    contract_no: lease.contract_no,
+    start_date: lease.start_date,
+    end_date: lease.end_date,
+    handover_date: lease.handover_date || "",
+    payment_frequency: lease.payment_frequency as PaymentFrequency,
+    rent_amount: String(lease.rent_amount),
+    grace_days: String(lease.grace_days),
+    due_day_rule: lease.due_day_rule as DueDayRule,
+    specific_due_day: lease.specific_due_day ? String(lease.specific_due_day) : "",
+    deposit_amount: String(lease.deposit_amount),
+    renewal_option: lease.renewal_option,
+    notice_period_days: lease.notice_period_days ? String(lease.notice_period_days) : "",
+    terms_summary: lease.terms_summary || "",
+    document_ref: lease.document_ref || "",
+  });
+
+  // Reset form when dialog opens with fresh lease data
+  useState(() => {
+    if (open) {
+      setForm({
+        contract_no: lease.contract_no,
+        start_date: lease.start_date,
+        end_date: lease.end_date,
+        handover_date: lease.handover_date || "",
+        payment_frequency: lease.payment_frequency,
+        rent_amount: String(lease.rent_amount),
+        grace_days: String(lease.grace_days),
+        due_day_rule: lease.due_day_rule,
+        specific_due_day: lease.specific_due_day ? String(lease.specific_due_day) : "",
+        deposit_amount: String(lease.deposit_amount),
+        renewal_option: lease.renewal_option,
+        notice_period_days: lease.notice_period_days ? String(lease.notice_period_days) : "",
+        terms_summary: lease.terms_summary || "",
+        document_ref: lease.document_ref || "",
+      });
+    }
+  });
+
+  const handleSubmit = () => {
+    const payload: Record<string, any> = {
+      contract_no: form.contract_no,
+      start_date: form.start_date,
+      end_date: form.end_date,
+      handover_date: form.handover_date || null,
+      payment_frequency: form.payment_frequency,
+      rent_amount: Number(form.rent_amount),
+      grace_days: Number(form.grace_days),
+      due_day_rule: form.due_day_rule,
+      specific_due_day: form.specific_due_day ? Number(form.specific_due_day) : null,
+      deposit_amount: Number(form.deposit_amount),
+      renewal_option: form.renewal_option,
+      notice_period_days: form.notice_period_days ? Number(form.notice_period_days) : null,
+      terms_summary: form.terms_summary || null,
+      document_ref: form.document_ref || null,
+    };
+    onSave(payload);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Edit Lease</DialogTitle>
+          <DialogDescription>
+            Update lease details. Only draft leases can be edited.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="edit_contract_no">Contract No</Label>
+            <Input
+              id="edit_contract_no"
+              value={form.contract_no}
+              onChange={(e) => setForm({ ...form, contract_no: e.target.value })}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="edit_start_date">Start Date</Label>
+              <Input
+                id="edit_start_date"
+                type="date"
+                value={form.start_date}
+                onChange={(e) => setForm({ ...form, start_date: e.target.value })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="edit_end_date">End Date</Label>
+              <Input
+                id="edit_end_date"
+                type="date"
+                value={form.end_date}
+                onChange={(e) => setForm({ ...form, end_date: e.target.value })}
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="edit_rent_amount">Rent Amount</Label>
+              <Input
+                id="edit_rent_amount"
+                type="number"
+                value={form.rent_amount}
+                onChange={(e) => setForm({ ...form, rent_amount: e.target.value })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="edit_deposit_amount">Deposit Amount</Label>
+              <Input
+                id="edit_deposit_amount"
+                type="number"
+                value={form.deposit_amount}
+                onChange={(e) => setForm({ ...form, deposit_amount: e.target.value })}
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="edit_payment_frequency">Payment Frequency</Label>
+              <Select
+                value={form.payment_frequency}
+                onValueChange={(v) => setForm({ ...form, payment_frequency: v as PaymentFrequency })}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="monthly">Monthly</SelectItem>
+                  <SelectItem value="quarterly">Quarterly</SelectItem>
+                  <SelectItem value="semiannual">Semi-Annual</SelectItem>
+                  <SelectItem value="annual">Annual</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="edit_due_day_rule">Due Day Rule</Label>
+              <Select
+                value={form.due_day_rule}
+                onValueChange={(v) => setForm({ ...form, due_day_rule: v as DueDayRule })}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="first_day">First Day of Period</SelectItem>
+                  <SelectItem value="specific_day">Specific Day</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          {form.due_day_rule === "specific_day" && (
+            <div className="space-y-2">
+              <Label htmlFor="edit_specific_due_day">Specific Due Day (1-28)</Label>
+              <Input
+                id="edit_specific_due_day"
+                type="number"
+                min={1}
+                max={28}
+                value={form.specific_due_day}
+                onChange={(e) => setForm({ ...form, specific_due_day: e.target.value })}
+              />
+            </div>
+          )}
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="edit_grace_days">Grace Days</Label>
+              <Input
+                id="edit_grace_days"
+                type="number"
+                value={form.grace_days}
+                onChange={(e) => setForm({ ...form, grace_days: e.target.value })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="edit_handover_date">Handover Date</Label>
+              <Input
+                id="edit_handover_date"
+                type="date"
+                value={form.handover_date}
+                onChange={(e) => setForm({ ...form, handover_date: e.target.value })}
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="edit_notice_period">Notice Period (days)</Label>
+              <Input
+                id="edit_notice_period"
+                type="number"
+                value={form.notice_period_days}
+                onChange={(e) => setForm({ ...form, notice_period_days: e.target.value })}
+              />
+            </div>
+            <div className="flex items-center gap-2 pt-6">
+              <input
+                id="edit_renewal_option"
+                type="checkbox"
+                checked={form.renewal_option}
+                onChange={(e) => setForm({ ...form, renewal_option: e.target.checked })}
+                className="h-4 w-4"
+              />
+              <Label htmlFor="edit_renewal_option">Renewal Option</Label>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="edit_terms_summary">Terms Summary</Label>
+            <Textarea
+              id="edit_terms_summary"
+              value={form.terms_summary}
+              onChange={(e) => setForm({ ...form, terms_summary: e.target.value })}
+              rows={2}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="edit_document_ref">Document Reference</Label>
+            <Input
+              id="edit_document_ref"
+              value={form.document_ref}
+              onChange={(e) => setForm({ ...form, document_ref: e.target.value })}
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            onClick={handleSubmit}
+            disabled={!form.contract_no || !form.start_date || !form.end_date || !form.rent_amount || isPending}
+          >
+            {isPending ? "Saving..." : "Save Changes"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export default function LeaseDetailPage() {
   const router = useRouter();
   const id = Number(router.query.id);
@@ -99,8 +352,10 @@ export default function LeaseDetailPage() {
   const activateLease = useActivateLease();
   const terminateLease = useTerminateLease();
   const renewLease = useRenewLease();
+  const updateLease = useUpdateLease();
   const { toast } = useToast();
 
+  const [editOpen, setEditOpen] = useState(false);
   const [terminateOpen, setTerminateOpen] = useState(false);
   const [terminationReason, setTerminationReason] = useState("");
   const [renewOpen, setRenewOpen] = useState(false);
@@ -269,14 +524,24 @@ export default function LeaseDetailPage() {
                 {lease.status}
               </Badge>
               {lease.status === "draft" && (
-                <Button
-                  size="sm"
-                  onClick={handleActivate}
-                  disabled={activateLease.isPending}
-                >
-                  <Play className="mr-1 h-4 w-4" />
-                  {activateLease.isPending ? "Activating..." : "Activate"}
-                </Button>
+                <>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setEditOpen(true)}
+                  >
+                    <Pencil className="mr-1 h-4 w-4" />
+                    Edit
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={handleActivate}
+                    disabled={activateLease.isPending}
+                  >
+                    <Play className="mr-1 h-4 w-4" />
+                    {activateLease.isPending ? "Activating..." : "Activate"}
+                  </Button>
+                </>
               )}
               {lease.status === "active" && (
                 <>
@@ -824,6 +1089,29 @@ export default function LeaseDetailPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Edit Lease Dialog */}
+      {lease.status === "draft" && (
+        <EditLeaseDialog
+          lease={lease}
+          open={editOpen}
+          onOpenChange={setEditOpen}
+          onSave={async (payload) => {
+            try {
+              await updateLease.mutateAsync({ id, ...payload });
+              setEditOpen(false);
+              toast({ title: "Lease updated" });
+            } catch (err: any) {
+              toast({
+                title: "Update failed",
+                description: err?.response?.data?.detail || "Could not update lease.",
+                variant: "destructive",
+              });
+            }
+          }}
+          isPending={updateLease.isPending}
+        />
+      )}
 
       {/* Record Deposit Dialog */}
       <Dialog open={depositOpen} onOpenChange={setDepositOpen}>

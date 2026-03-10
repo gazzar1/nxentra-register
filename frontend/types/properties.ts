@@ -307,6 +307,27 @@ export interface LeaseCreatePayload {
   document_ref?: string | null;
 }
 
+export interface LeaseUpdatePayload {
+  contract_no?: string;
+  property_id?: number;
+  unit_id?: number | null;
+  lessee_id?: number;
+  start_date?: string;
+  end_date?: string;
+  handover_date?: string | null;
+  payment_frequency?: PaymentFrequency;
+  rent_amount?: number;
+  currency?: string;
+  grace_days?: number;
+  due_day_rule?: DueDayRule;
+  specific_due_day?: number | null;
+  deposit_amount?: number;
+  renewal_option?: boolean;
+  notice_period_days?: number | null;
+  terms_summary?: string | null;
+  document_ref?: string | null;
+}
+
 export type ExpenseCategory =
   | "maintenance"
   | "utilities"

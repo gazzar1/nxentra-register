@@ -39,6 +39,7 @@ from .event_types import (
     LesseeCreatedData,
     LesseeUpdatedData,
     LeaseCreatedData,
+    LeaseUpdatedData,
     LeaseActivatedData,
     LeaseTerminatedData,
     LeaseRenewedData,
@@ -494,6 +495,113 @@ def create_lease(
             payment_frequency=lease.payment_frequency,
             deposit_amount=str(lease.deposit_amount),
             created_by_email=actor.user.email,
+        ),
+    )
+
+    return CommandResult.ok(data={"lease": lease}, event=event)
+
+
+# =============================================================================
+# Lease Update Command
+# =============================================================================
+
+@transaction.atomic
+def update_lease(
+    actor: ActorContext,
+    lease_id: int,
+    **kwargs,
+) -> CommandResult:
+    """Update a draft lease. Only draft leases can be edited."""
+    require(actor, "leases.manage")
+
+    try:
+        lease = Lease.objects.select_for_update().get(
+            company=actor.company, pk=lease_id,
+        )
+    except Lease.DoesNotExist:
+        return CommandResult.fail("Lease not found.")
+
+    if lease.status != Lease.LeaseStatus.DRAFT:
+        return CommandResult.fail("Only draft leases can be edited.")
+
+    allowed_fields = {
+        "contract_no", "start_date", "end_date", "handover_date",
+        "payment_frequency", "rent_amount", "currency",
+        "grace_days", "due_day_rule", "specific_due_day",
+        "deposit_amount", "renewal_option", "notice_period_days",
+        "terms_summary", "document_ref",
+    }
+
+    # FK fields handled separately
+    fk_fields = {"property_id", "unit_id", "lessee_id"}
+
+    changes = {}
+
+    for field_name, new_value in kwargs.items():
+        if field_name in fk_fields:
+            if field_name == "property_id" and new_value:
+                try:
+                    prop = Property.objects.get(company=actor.company, pk=new_value)
+                except Property.DoesNotExist:
+                    return CommandResult.fail("Property not found.")
+                old_value = lease.property_id
+                if old_value != new_value:
+                    changes["property"] = {"old": old_value, "new": new_value}
+                    lease.property = prop
+            elif field_name == "unit_id":
+                old_value = lease.unit_id
+                if new_value:
+                    try:
+                        unit = Unit.objects.get(company=actor.company, pk=new_value)
+                    except Unit.DoesNotExist:
+                        return CommandResult.fail("Unit not found.")
+                    lease.unit = unit
+                else:
+                    lease.unit = None
+                if old_value != new_value:
+                    changes["unit"] = {"old": old_value, "new": new_value}
+            elif field_name == "lessee_id" and new_value:
+                try:
+                    lessee = Lessee.objects.get(company=actor.company, pk=new_value)
+                except Lessee.DoesNotExist:
+                    return CommandResult.fail("Lessee not found.")
+                old_value = lease.lessee_id
+                if old_value != new_value:
+                    changes["lessee"] = {"old": old_value, "new": new_value}
+                    lease.lessee = lessee
+        elif field_name in allowed_fields:
+            old_value = getattr(lease, field_name)
+            if str(old_value) != str(new_value) if old_value is not None else new_value is not None:
+                changes[field_name] = {"old": str(old_value), "new": str(new_value)}
+                setattr(lease, field_name, new_value)
+
+    # Validate contract_no uniqueness if changed
+    if "contract_no" in changes:
+        if Lease.objects.filter(
+            company=actor.company, contract_no=lease.contract_no,
+        ).exclude(pk=lease.pk).exists():
+            return CommandResult.fail(f"Lease with contract number '{lease.contract_no}' already exists.")
+
+    # Validate dates
+    if lease.start_date and lease.end_date and lease.start_date > lease.end_date:
+        return CommandResult.fail("Start date must be before or equal to end date.")
+
+    if not changes:
+        return CommandResult.ok(data={"lease": lease})
+
+    with command_writes_allowed():
+        lease.save()
+
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.LEASE_UPDATED,
+        aggregate_type="Lease",
+        aggregate_id=str(lease.public_id),
+        idempotency_key=f"lease.updated:{lease.public_id}:{lease.updated_at.isoformat()}",
+        data=LeaseUpdatedData(
+            lease_public_id=str(lease.public_id),
+            changes=changes,
+            updated_by_email=actor.user.email,
         ),
     )
 

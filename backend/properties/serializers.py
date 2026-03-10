@@ -247,6 +247,27 @@ class LeaseCreateSerializer(serializers.Serializer):
     document_ref = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True, default=None)
 
 
+class LeaseUpdateSerializer(serializers.Serializer):
+    contract_no = serializers.CharField(max_length=50, required=False)
+    property_id = serializers.IntegerField(required=False)
+    unit_id = serializers.IntegerField(required=False, allow_null=True)
+    lessee_id = serializers.IntegerField(required=False)
+    start_date = serializers.DateField(required=False)
+    end_date = serializers.DateField(required=False)
+    handover_date = serializers.DateField(required=False, allow_null=True)
+    payment_frequency = serializers.ChoiceField(choices=Lease.PaymentFrequency.choices, required=False)
+    rent_amount = serializers.DecimalField(max_digits=18, decimal_places=2, required=False)
+    currency = serializers.CharField(max_length=3, required=False)
+    grace_days = serializers.IntegerField(required=False)
+    due_day_rule = serializers.ChoiceField(choices=Lease.DueDayRule.choices, required=False)
+    specific_due_day = serializers.IntegerField(required=False, allow_null=True)
+    deposit_amount = serializers.DecimalField(max_digits=18, decimal_places=2, required=False)
+    renewal_option = serializers.BooleanField(required=False)
+    notice_period_days = serializers.IntegerField(required=False, allow_null=True)
+    terms_summary = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    document_ref = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True)
+
+
 class LeaseTerminateSerializer(serializers.Serializer):
     termination_reason = serializers.CharField()
 

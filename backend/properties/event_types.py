@@ -122,6 +122,14 @@ class LeaseCreatedData(BaseEventData):
 
 
 @dataclass
+class LeaseUpdatedData(BaseEventData):
+    """Data for lease.updated event."""
+    lease_public_id: str
+    changes: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    updated_by_email: str = ""
+
+
+@dataclass
 class LeaseActivatedData(BaseEventData):
     """Data for lease.activated event."""
     lease_public_id: str
@@ -369,6 +377,7 @@ REGISTERED_EVENTS: dict[str, type[BaseEventData]] = {
     EventTypes.LESSEE_CREATED: LesseeCreatedData,
     EventTypes.LESSEE_UPDATED: LesseeUpdatedData,
     EventTypes.LEASE_CREATED: LeaseCreatedData,
+    EventTypes.LEASE_UPDATED: LeaseUpdatedData,
     EventTypes.LEASE_ACTIVATED: LeaseActivatedData,
     EventTypes.LEASE_TERMINATED: LeaseTerminatedData,
     EventTypes.LEASE_RENEWED: LeaseRenewedData,

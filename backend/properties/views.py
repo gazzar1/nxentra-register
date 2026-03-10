@@ -22,7 +22,7 @@ from .serializers import (
     UnitSerializer, UnitCreateSerializer, UnitUpdateSerializer,
     LesseeSerializer, LesseeCreateSerializer, LesseeUpdateSerializer,
     LeaseSerializer, LeaseListSerializer, LeaseCreateSerializer,
-    LeaseTerminateSerializer, LeaseRenewSerializer,
+    LeaseUpdateSerializer, LeaseTerminateSerializer, LeaseRenewSerializer,
     RentScheduleLineSerializer,
     PaymentReceiptSerializer, PaymentCreateSerializer,
     PaymentAllocationSerializer, AllocatePaymentSerializer,
@@ -35,7 +35,7 @@ from .commands import (
     create_property, update_property,
     create_unit, update_unit,
     create_lessee, update_lessee,
-    create_lease, activate_lease, terminate_lease, renew_lease,
+    create_lease, update_lease, activate_lease, terminate_lease, renew_lease,
     record_rent_payment, allocate_rent_payment, void_payment,
     record_deposit_transaction, waive_schedule_line,
     record_property_expense,
@@ -348,6 +348,25 @@ class LeaseDetailView(APIView):
             return Response({"detail": "Lease not found."}, status=404)
 
         return Response(LeaseSerializer(lease).data)
+
+    def put(self, request, pk):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        serializer = LeaseUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        result = update_lease(actor, lease_id=pk, **serializer.validated_data)
+        if not result.success:
+            return Response({"detail": result.error}, status=400)
+
+        lease = Lease.objects.select_related(
+            "property", "unit", "lessee"
+        ).get(pk=result.data["lease"].pk)
+        return Response(LeaseSerializer(lease).data)
+
+    patch = put
 
 
 class LeaseActivateView(APIView):

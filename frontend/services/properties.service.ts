@@ -12,6 +12,7 @@ import type {
   Lease,
   LeaseListItem,
   LeaseCreatePayload,
+  LeaseUpdatePayload,
   LeaseRenewPayload,
   RentScheduleLine,
   PropertyAccountMapping,
@@ -93,6 +94,9 @@ export const leasesService = {
 
   create: (data: LeaseCreatePayload) =>
     apiClient.post<Lease>('/properties/leases/', data),
+
+  update: (id: number, data: LeaseUpdatePayload) =>
+    apiClient.patch<Lease>(`/properties/leases/${id}/`, data),
 
   activate: (id: number) =>
     apiClient.post<Lease>(`/properties/leases/${id}/activate/`),

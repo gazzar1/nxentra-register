@@ -1985,6 +1985,7 @@ class EventTypes:
     LESSEE_CREATED = "lessee.created"
     LESSEE_UPDATED = "lessee.updated"
     LEASE_CREATED = "lease.created"
+    LEASE_UPDATED = "lease.updated"
     LEASE_ACTIVATED = "lease.activated"
     LEASE_TERMINATED = "lease.terminated"
     LEASE_RENEWED = "lease.renewed"

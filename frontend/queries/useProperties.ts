@@ -21,6 +21,7 @@ import type {
   LesseeCreatePayload,
   LesseeUpdatePayload,
   LeaseCreatePayload,
+  LeaseUpdatePayload,
   LeaseRenewPayload,
   RentScheduleLine,
   PaymentCreatePayload,
@@ -285,6 +286,20 @@ export function useCreateLease() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: leaseKeys.lists() });
+    },
+  });
+}
+
+export function useUpdateLease() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, ...payload }: LeaseUpdatePayload & { id: number }) => {
+      const { data } = await leasesService.update(id, payload);
+      return data;
+    },
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: leaseKeys.lists() });
+      qc.invalidateQueries({ queryKey: leaseKeys.detail(variables.id) });
     },
   });
 }
