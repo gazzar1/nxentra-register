@@ -96,6 +96,7 @@ class AccountsConfig(AppConfig):
             order=90,
             nav_items=[
                 {"label": "Company Settings", "href": "/settings/company", "icon": "Building2", "translation_key": "nav.companySettings"},
+                {"label": "Modules", "href": "/settings/modules", "icon": "LayoutGrid", "translation_key": "nav.modules"},
                 {"label": "Users", "href": "/users", "icon": "Users", "translation_key": "nav.users"},
                 {"label": "Account", "href": "/settings/account", "icon": "KeyRound", "translation_key": "nav.account"},
                 {"label": "Event Audit", "href": "/settings/audit", "icon": "ShieldCheck", "translation_key": "nav.audit"},

@@ -1,6 +1,8 @@
+import { useEffect } from "react";
 import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
+import { useRouter } from "next/router";
 import Link from "next/link";
 import {
   BookOpen,
@@ -15,6 +17,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { PageHeader, LoadingSpinner } from "@/components/common";
 import { useAuth } from "@/contexts/AuthContext";
+import { useModules } from "@/queries/useModules";
 import { useTrialBalance, useDashboardCharts } from "@/queries/useReports";
 import { useJournalEntries } from "@/queries/useJournalEntries";
 import {
@@ -24,9 +27,31 @@ import {
   TopAccountsChart,
 } from "@/components/charts";
 
+const ONBOARDING_DONE_KEY = "nxentra-onboarding-modules-done";
+
 export default function DashboardPage() {
   const { t } = useTranslation(["common", "reports"]);
-  const { company } = useAuth();
+  const { company, membership } = useAuth();
+  const router = useRouter();
+  const { data: modules } = useModules();
+
+  // Redirect new OWNER users to module onboarding if no optional modules enabled
+  useEffect(() => {
+    if (!modules || !membership) return;
+    // Only redirect OWNER (the person who registered the company)
+    if (membership.role !== "OWNER") return;
+    // Check if onboarding was already completed/dismissed
+    try {
+      if (sessionStorage.getItem(ONBOARDING_DONE_KEY)) return;
+    } catch {}
+    // If any optional module is enabled, skip onboarding
+    const hasOptional = modules.some((m) => !m.is_core && m.is_enabled);
+    if (hasOptional) {
+      try { sessionStorage.setItem(ONBOARDING_DONE_KEY, "1"); } catch {}
+      return;
+    }
+    router.replace("/onboarding/modules");
+  }, [modules, membership, router]);
   const { data: trialBalance } = useTrialBalance();
   const { data: recentEntries } = useJournalEntries({ status: "POSTED" });
   const { data: chartData, isLoading: chartsLoading } = useDashboardCharts();

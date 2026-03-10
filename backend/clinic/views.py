@@ -17,6 +17,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
 
 from accounts.authz import resolve_actor
+from accounts.module_permissions import ModuleEnabled
 from accounting.mappings import ModuleAccountMapping
 from accounting.models import Account
 from projections.write_barrier import command_writes_allowed
@@ -45,7 +46,8 @@ from .projections import REQUIRED_ROLES, MODULE_NAME
 # =============================================================================
 
 class PatientListCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "clinic"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request):
         actor = resolve_actor(request)
@@ -87,7 +89,8 @@ class PatientListCreateView(APIView):
 
 
 class PatientDetailView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "clinic"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get_object(self, actor, pk):
         try:
@@ -128,7 +131,8 @@ class PatientDetailView(APIView):
 # =============================================================================
 
 class PatientDocumentListCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "clinic"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
     parser_classes = [MultiPartParser, FormParser]
 
     def get(self, request, patient_id):
@@ -172,7 +176,8 @@ class PatientDocumentListCreateView(APIView):
 
 class PatientDocumentDetailView(APIView):
     """Download or delete a patient document."""
-    permission_classes = [IsAuthenticated]
+    module_key = "clinic"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def _get_document(self, request, patient_id, doc_id):
         actor = resolve_actor(request)
@@ -222,7 +227,8 @@ class PatientDocumentDetailView(APIView):
 # =============================================================================
 
 class DoctorListCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "clinic"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request):
         actor = resolve_actor(request)
@@ -255,7 +261,8 @@ class DoctorListCreateView(APIView):
 
 
 class DoctorDetailView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "clinic"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request, pk):
         actor = resolve_actor(request)
@@ -275,7 +282,8 @@ class DoctorDetailView(APIView):
 # =============================================================================
 
 class VisitListCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "clinic"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request):
         actor = resolve_actor(request)
@@ -315,7 +323,8 @@ class VisitListCreateView(APIView):
 
 
 class VisitDetailView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "clinic"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request, pk):
         actor = resolve_actor(request)
@@ -333,7 +342,8 @@ class VisitDetailView(APIView):
 
 
 class VisitCompleteView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "clinic"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def post(self, request, pk):
         actor = resolve_actor(request)
@@ -356,7 +366,8 @@ class VisitCompleteView(APIView):
 # =============================================================================
 
 class InvoiceListCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "clinic"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request):
         actor = resolve_actor(request)
@@ -400,7 +411,8 @@ class InvoiceListCreateView(APIView):
 
 
 class InvoiceDetailView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "clinic"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request, pk):
         actor = resolve_actor(request)
@@ -418,7 +430,8 @@ class InvoiceDetailView(APIView):
 
 
 class InvoiceIssueView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "clinic"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def post(self, request, pk):
         actor = resolve_actor(request)
@@ -437,7 +450,8 @@ class InvoiceIssueView(APIView):
 # =============================================================================
 
 class PaymentListCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "clinic"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request):
         actor = resolve_actor(request)
@@ -478,7 +492,8 @@ class PaymentListCreateView(APIView):
 
 
 class PaymentVoidView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "clinic"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def post(self, request, pk):
         actor = resolve_actor(request)
@@ -500,7 +515,8 @@ class PaymentVoidView(APIView):
 # =============================================================================
 
 class ClinicAccountMappingView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "clinic"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request):
         actor = resolve_actor(request)

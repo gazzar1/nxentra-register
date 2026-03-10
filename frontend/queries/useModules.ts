@@ -46,6 +46,7 @@ export function useModules() {
   return useQuery({
     queryKey: moduleKeys.all,
     queryFn: () => apiClient.get<ModuleInfo[]>('/modules/').then((r) => r.data),
+    staleTime: 5 * 60 * 1000, // Cache for 5 minutes (same as sidebar)
   });
 }
 

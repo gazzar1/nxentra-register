@@ -4,6 +4,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { SidebarProvider } from "@/contexts/SidebarContext";
 import { Sidebar } from "./Sidebar";
 import { Header } from "./Header";
+import { ModuleGuard } from "./ModuleGuard";
 import { LoadingScreen } from "@/components/common/LoadingScreen";
 
 export function AppLayout({ children }: PropsWithChildren) {
@@ -34,7 +35,9 @@ export function AppLayout({ children }: PropsWithChildren) {
           <div className="no-print">
             <Header />
           </div>
-          <main className="flex-1 overflow-y-auto p-4 md:p-6 print:p-0 print:overflow-visible">{children}</main>
+          <main className="flex-1 overflow-y-auto p-4 md:p-6 print:p-0 print:overflow-visible">
+            <ModuleGuard>{children}</ModuleGuard>
+          </main>
         </div>
       </div>
     </SidebarProvider>

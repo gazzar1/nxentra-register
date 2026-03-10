@@ -11,6 +11,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
 from accounts.authz import resolve_actor
+from accounts.module_permissions import ModuleEnabled
 from .models import (
     Property, Unit, Lessee, Lease, RentScheduleLine,
     PaymentReceipt, PaymentAllocation, SecurityDepositTransaction,
@@ -47,7 +48,8 @@ from .commands import (
 # =============================================================================
 
 class PropertyListCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request):
         actor = resolve_actor(request)
@@ -84,7 +86,8 @@ class PropertyListCreateView(APIView):
 
 
 class PropertyDetailView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get_object(self, actor, pk):
         try:
@@ -125,7 +128,8 @@ class PropertyDetailView(APIView):
 # =============================================================================
 
 class UnitListCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request):
         actor = resolve_actor(request)
@@ -162,7 +166,8 @@ class UnitListCreateView(APIView):
 
 
 class UnitDetailView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get_object(self, actor, pk):
         try:
@@ -205,7 +210,8 @@ class UnitDetailView(APIView):
 # =============================================================================
 
 class LesseeListCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request):
         actor = resolve_actor(request)
@@ -242,7 +248,8 @@ class LesseeListCreateView(APIView):
 
 
 class LesseeDetailView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get_object(self, actor, pk):
         try:
@@ -283,7 +290,8 @@ class LesseeDetailView(APIView):
 # =============================================================================
 
 class LeaseListCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request):
         actor = resolve_actor(request)
@@ -324,7 +332,8 @@ class LeaseListCreateView(APIView):
 
 
 class LeaseDetailView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request, pk):
         actor = resolve_actor(request)
@@ -342,7 +351,8 @@ class LeaseDetailView(APIView):
 
 
 class LeaseActivateView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def post(self, request, pk):
         actor = resolve_actor(request)
@@ -357,7 +367,8 @@ class LeaseActivateView(APIView):
 
 
 class LeaseTerminateView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def post(self, request, pk):
         actor = resolve_actor(request)
@@ -379,7 +390,8 @@ class LeaseTerminateView(APIView):
 
 
 class LeaseRenewView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def post(self, request, pk):
         actor = resolve_actor(request)
@@ -404,7 +416,8 @@ class LeaseRenewView(APIView):
 
 
 class LeaseScheduleView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request, pk):
         actor = resolve_actor(request)
@@ -421,7 +434,8 @@ class LeaseScheduleView(APIView):
 
 
 class WaiveScheduleLineView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def post(self, request, pk):
         actor = resolve_actor(request)
@@ -447,7 +461,8 @@ class WaiveScheduleLineView(APIView):
 # =============================================================================
 
 class PaymentListCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request):
         actor = resolve_actor(request)
@@ -486,7 +501,8 @@ class PaymentListCreateView(APIView):
 
 
 class PaymentDetailView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request, pk):
         actor = resolve_actor(request)
@@ -504,7 +520,8 @@ class PaymentDetailView(APIView):
 
 
 class PaymentAllocateView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def post(self, request, pk):
         actor = resolve_actor(request)
@@ -528,7 +545,8 @@ class PaymentAllocateView(APIView):
 
 
 class PaymentAllocationsListView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request, pk):
         actor = resolve_actor(request)
@@ -547,7 +565,8 @@ class PaymentAllocationsListView(APIView):
 
 
 class PaymentVoidView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def post(self, request, pk):
         actor = resolve_actor(request)
@@ -573,7 +592,8 @@ class PaymentVoidView(APIView):
 # =============================================================================
 
 class DepositListCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request):
         actor = resolve_actor(request)
@@ -612,7 +632,8 @@ class DepositListCreateView(APIView):
 # =============================================================================
 
 class ExpenseListCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request):
         actor = resolve_actor(request)
@@ -651,7 +672,8 @@ class ExpenseListCreateView(APIView):
 
 
 class ExpenseDetailView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request, pk):
         actor = resolve_actor(request)
@@ -673,7 +695,8 @@ class ExpenseDetailView(APIView):
 # =============================================================================
 
 class PropertyAccountMappingView(APIView):
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request):
         actor = resolve_actor(request)

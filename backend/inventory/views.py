@@ -10,6 +10,7 @@ from rest_framework.permissions import IsAuthenticated
 from decimal import Decimal
 
 from accounts.authz import resolve_actor
+from accounts.module_permissions import ModuleEnabled
 from .models import Warehouse, StockLedgerEntry
 from .serializers import (
     WarehouseSerializer,
@@ -140,7 +141,8 @@ class InventoryBalanceViewSet(viewsets.ReadOnlyModelViewSet):
     - has_stock: Filter by whether has stock (true/false)
     """
 
-    permission_classes = [IsAuthenticated]
+    module_key = "inventory"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
     serializer_class = InventoryBalanceSerializer
 
     def get_queryset(self):
@@ -211,7 +213,8 @@ class StockLedgerViewSet(viewsets.ReadOnlyModelViewSet):
     - posted_before: Filter by posted before date
     """
 
-    permission_classes = [IsAuthenticated]
+    module_key = "inventory"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
     serializer_class = StockLedgerEntrySerializer
 
     def get_queryset(self):
@@ -257,7 +260,8 @@ class InventoryAdjustmentViewSet(viewsets.ViewSet):
     - POST /api/inventory/adjustments/ - Create adjustment
     """
 
-    permission_classes = [IsAuthenticated]
+    module_key = "inventory"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def create(self, request):
         serializer = InventoryAdjustmentSerializer(data=request.data)
@@ -321,7 +325,8 @@ class InventoryOpeningBalanceViewSet(viewsets.ViewSet):
     - POST /api/inventory/opening-balance/ - Record opening balances
     """
 
-    permission_classes = [IsAuthenticated]
+    module_key = "inventory"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def create(self, request):
         serializer = InventoryOpeningBalanceSerializer(data=request.data)
@@ -390,7 +395,8 @@ class StockAvailabilityViewSet(viewsets.ViewSet):
     - qty: Quantity to check (default 1)
     """
 
-    permission_classes = [IsAuthenticated]
+    module_key = "inventory"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def retrieve(self, request, pk=None):
         company = request.user.active_company

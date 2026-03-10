@@ -11,6 +11,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
 from accounts.authz import resolve_actor
+from accounts.module_permissions import ModuleEnabled
 from .models import PurchaseBill
 from .serializers import (
     PurchaseBillSerializer, PurchaseBillCreateSerializer, PurchaseBillListSerializer,
@@ -26,7 +27,8 @@ from .commands import (
 
 class PurchaseBillListCreateView(APIView):
     """List all purchase bills or create a new one."""
-    permission_classes = [IsAuthenticated]
+    module_key = "purchases"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request):
         actor = resolve_actor(request)
@@ -66,7 +68,8 @@ class PurchaseBillListCreateView(APIView):
 
 class PurchaseBillDetailView(APIView):
     """Retrieve, update or delete a purchase bill."""
-    permission_classes = [IsAuthenticated]
+    module_key = "purchases"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request, pk):
         actor = resolve_actor(request)
@@ -88,7 +91,8 @@ class PurchaseBillDetailView(APIView):
 
 class PurchaseBillPostView(APIView):
     """Post a purchase bill."""
-    permission_classes = [IsAuthenticated]
+    module_key = "purchases"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def post(self, request, pk):
         import traceback
@@ -114,7 +118,8 @@ class PurchaseBillPostView(APIView):
 
 class PurchaseBillVoidView(APIView):
     """Void a purchase bill."""
-    permission_classes = [IsAuthenticated]
+    module_key = "purchases"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def post(self, request, pk):
         actor = resolve_actor(request)

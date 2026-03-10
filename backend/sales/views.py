@@ -11,6 +11,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
 from accounts.authz import resolve_actor
+from accounts.module_permissions import ModuleEnabled
 from .models import Item, TaxCode, PostingProfile, SalesInvoice
 from .serializers import (
     ItemSerializer, ItemCreateSerializer, ItemUpdateSerializer,
@@ -266,7 +267,8 @@ class PostingProfileDetailView(APIView):
 
 class SalesInvoiceListCreateView(APIView):
     """List all sales invoices or create a new one."""
-    permission_classes = [IsAuthenticated]
+    module_key = "sales"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request):
         actor = resolve_actor(request)
@@ -306,7 +308,8 @@ class SalesInvoiceListCreateView(APIView):
 
 class SalesInvoiceDetailView(APIView):
     """Retrieve, update or delete a sales invoice."""
-    permission_classes = [IsAuthenticated]
+    module_key = "sales"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request, pk):
         actor = resolve_actor(request)
@@ -349,7 +352,8 @@ class SalesInvoiceDetailView(APIView):
 
 class SalesInvoicePostView(APIView):
     """Post a sales invoice."""
-    permission_classes = [IsAuthenticated]
+    module_key = "sales"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def post(self, request, pk):
         actor = resolve_actor(request)
@@ -370,7 +374,8 @@ class SalesInvoicePostView(APIView):
 
 class SalesInvoiceVoidView(APIView):
     """Void a sales invoice."""
-    permission_classes = [IsAuthenticated]
+    module_key = "sales"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def post(self, request, pk):
         actor = resolve_actor(request)
@@ -400,7 +405,8 @@ class CustomerOpenInvoicesView(APIView):
     Returns all posted invoices for a customer that have an outstanding balance.
     Used by the receipt form to show invoices available for allocation.
     """
-    permission_classes = [IsAuthenticated]
+    module_key = "sales"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request, customer_id):
         from accounting.models import Customer
