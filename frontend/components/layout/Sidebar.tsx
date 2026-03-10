@@ -54,8 +54,9 @@ import { useSidebarNav, type SidebarSection } from "@/queries/useModules";
 import { cn } from "@/lib/cn";
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 
-// Module-level variable survives component remounts (pages pattern)
+// Module-level variables survive component remounts (pages pattern)
 let _savedScrollTop = 0;
+let _savedExpanded: Record<string, boolean> = {};
 
 // Map icon name strings from API to lucide-react components
 const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -165,13 +166,18 @@ export function Sidebar() {
   const { user } = useAuth();
   const { isOpen, close } = useSidebar();
   const { data: sections } = useSidebarNav();
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [expanded, setExpanded] = useState<Record<string, boolean>>(_savedExpanded);
 
   // Build nav items from API data
   const navItems = useMemo(() => {
     if (!sections) return [];
     return sectionsToNavItems(sections, t);
   }, [sections, t]);
+
+  // Sync expanded state to module-level variable so it survives remounts
+  useEffect(() => {
+    _savedExpanded = expanded;
+  }, [expanded]);
 
   // Auto-expand the section containing the active route
   useEffect(() => {
