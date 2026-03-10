@@ -52,7 +52,10 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useSidebar } from "@/contexts/SidebarContext";
 import { useSidebarNav, type SidebarSection } from "@/queries/useModules";
 import { cn } from "@/lib/cn";
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+
+// Module-level variable survives component remounts (pages pattern)
+let _savedScrollTop = 0;
 
 // Map icon name strings from API to lucide-react components
 const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -188,44 +191,32 @@ export function Sidebar() {
     }
   }, [router.pathname, sections, t]);
 
-  // Ref for preserving sidebar scroll position across navigations
+  // Preserve sidebar scroll position across navigations.
+  // Because each page wraps its own <AppLayout>, the Sidebar remounts on
+  // every route change.  A module-level variable (_savedScrollTop) survives
+  // the remount so we can restore the position when the new instance mounts.
   const navRef = useRef<HTMLElement>(null);
-  const scrollPosRef = useRef(0);
-  const isNavigatingRef = useRef(false);
 
-  // Track scroll position (but not during navigation when browser resets to 0)
+  // On mount: restore saved scroll position
   useEffect(() => {
     const nav = navRef.current;
-    if (!nav) return;
-    const onScroll = () => {
-      if (!isNavigatingRef.current) {
-        scrollPosRef.current = nav.scrollTop;
-      }
-    };
-    nav.addEventListener("scroll", onScroll, { passive: true });
-    return () => nav.removeEventListener("scroll", onScroll);
+    if (nav && _savedScrollTop > 0) {
+      nav.scrollTop = _savedScrollTop;
+    }
   }, []);
 
-  // Freeze scroll tracking during route changes, restore after
+  // Continuously save scroll position so it's always up-to-date
+  const handleScroll = useCallback(() => {
+    if (navRef.current) {
+      _savedScrollTop = navRef.current.scrollTop;
+    }
+  }, []);
+
+  // Close mobile sidebar on navigation
   useEffect(() => {
-    const handleStart = () => { isNavigatingRef.current = true; };
-    const handleComplete = () => {
-      close();
-      // Restore scroll position after navigation settles
-      requestAnimationFrame(() => {
-        if (navRef.current && scrollPosRef.current > 0) {
-          navRef.current.scrollTop = scrollPosRef.current;
-        }
-        // Unfreeze after restore
-        isNavigatingRef.current = false;
-      });
-    };
-    router.events.on("routeChangeStart", handleStart);
+    const handleComplete = () => { close(); };
     router.events.on("routeChangeComplete", handleComplete);
-    return () => {
-      router.events.off("routeChangeStart", handleStart);
-      router.events.off("routeChangeComplete", handleComplete);
-    };
+    return () => { router.events.off("routeChangeComplete", handleComplete); };
   }, [router.events, close]);
 
   const isAdmin = user?.is_staff || user?.is_superuser;
@@ -349,7 +340,7 @@ export function Sidebar() {
         </div>
 
         {/* Navigation */}
-        <nav ref={navRef} className="flex-1 overflow-y-auto p-4">
+        <nav ref={navRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4">
           <div className="space-y-1">{allNavItems.map((item) => renderNavItem(item))}</div>
         </nav>
       </aside>
