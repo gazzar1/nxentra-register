@@ -159,7 +159,7 @@ class PropertyAccountingProjection(BaseProjection):
         contract_no = data.get("contract_no", "")
         installment_no = data.get("installment_no", "")
         memo = f"Rent due: {contract_no} #{installment_no}"
-        entry_date = _parse_date(data.get("due_date")) or event.created_at.date()
+        entry_date = _parse_date(data.get("due_date")) or event.occurred_at.date()
 
         self._create_posted_entry(
             event=event,
@@ -181,7 +181,7 @@ class PropertyAccountingProjection(BaseProjection):
         amount = Decimal(str(data.get("amount", 0)))
         receipt_no = data.get("receipt_no", "")
         memo = f"Payment received: {receipt_no}"
-        entry_date = _parse_date(data.get("payment_date")) or event.created_at.date()
+        entry_date = _parse_date(data.get("payment_date")) or event.occurred_at.date()
 
         self._create_posted_entry(
             event=event,
@@ -204,7 +204,7 @@ class PropertyAccountingProjection(BaseProjection):
         receipt_no = data.get("receipt_no", "")
         contract_no = data.get("contract_no", "")
         memo = f"Rent payment: {receipt_no} \u2192 {contract_no}"
-        entry_date = event.created_at.date()
+        entry_date = event.occurred_at.date()
 
         self._create_posted_entry(
             event=event,
@@ -226,7 +226,7 @@ class PropertyAccountingProjection(BaseProjection):
         amount = Decimal(str(data.get("amount", 0)))
         receipt_no = data.get("receipt_no", "")
         memo = f"VOID: {receipt_no}"
-        entry_date = event.created_at.date()
+        entry_date = event.occurred_at.date()
 
         self._create_posted_entry(
             event=event,
@@ -248,7 +248,7 @@ class PropertyAccountingProjection(BaseProjection):
         amount = Decimal(str(data.get("amount", 0)))
         contract_no = data.get("contract_no", "")
         memo = f"Deposit received: {contract_no}"
-        entry_date = _parse_date(data.get("transaction_date")) or event.created_at.date()
+        entry_date = _parse_date(data.get("transaction_date")) or event.occurred_at.date()
 
         self._create_posted_entry(
             event=event,
@@ -270,7 +270,7 @@ class PropertyAccountingProjection(BaseProjection):
         amount = Decimal(str(data.get("amount", 0)))
         contract_no = data.get("contract_no", "")
         memo = f"Deposit adjustment: {contract_no}"
-        entry_date = _parse_date(data.get("transaction_date")) or event.created_at.date()
+        entry_date = _parse_date(data.get("transaction_date")) or event.occurred_at.date()
 
         # Positive amount = decrease in deposit (refund-like):
         #   DR Security Deposits / CR Cash/Bank
@@ -304,7 +304,7 @@ class PropertyAccountingProjection(BaseProjection):
         amount = Decimal(str(data.get("amount", 0)))
         contract_no = data.get("contract_no", "")
         memo = f"Deposit refund: {contract_no}"
-        entry_date = _parse_date(data.get("transaction_date")) or event.created_at.date()
+        entry_date = _parse_date(data.get("transaction_date")) or event.occurred_at.date()
 
         self._create_posted_entry(
             event=event,
@@ -326,7 +326,7 @@ class PropertyAccountingProjection(BaseProjection):
         amount = Decimal(str(data.get("amount", 0)))
         contract_no = data.get("contract_no", "")
         memo = f"Deposit forfeited: {contract_no}"
-        entry_date = _parse_date(data.get("transaction_date")) or event.created_at.date()
+        entry_date = _parse_date(data.get("transaction_date")) or event.occurred_at.date()
 
         self._create_posted_entry(
             event=event,
@@ -358,7 +358,7 @@ class PropertyAccountingProjection(BaseProjection):
 
         amount = Decimal(str(data.get("amount", 0)))
         category = data.get("category", "")
-        entry_date = _parse_date(data.get("expense_date")) or event.created_at.date()
+        entry_date = _parse_date(data.get("expense_date")) or event.occurred_at.date()
 
         if payment_mode == "credit":
             memo = f"Property expense (credit): {category}"
