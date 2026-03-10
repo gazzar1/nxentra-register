@@ -1197,9 +1197,15 @@ def record_rent_payment(
         return CommandResult.fail(
             "Property account mapping must be configured before receiving payments."
         )
+    missing = []
+    if not mapping.cash_bank_account_id:
+        missing.append("Cash / Bank")
     if not mapping.unapplied_cash_account_id:
+        missing.append("Unapplied Cash")
+    if missing:
         return CommandResult.fail(
-            "Unapplied cash account must be configured before receiving payments."
+            f"Property account mapping is incomplete — missing: {', '.join(missing)}. "
+            "Go to Properties → Settings to configure the required accounts."
         )
 
     if PaymentReceipt.objects.filter(company=actor.company, receipt_no=receipt_no).exists():
@@ -1621,6 +1627,28 @@ def record_property_expense(
     """Record a property expense."""
     require(actor, "expenses.manage")
     currency = currency or actor.company.default_currency
+
+    # Validate account mapping exists for journal entry creation
+    try:
+        mapping = PropertyAccountMapping.objects.get(company=actor.company)
+    except PropertyAccountMapping.DoesNotExist:
+        return CommandResult.fail(
+            "Property account mapping must be configured before recording expenses. "
+            "Go to Properties → Settings to set up accounts."
+        )
+
+    missing = []
+    if not mapping.property_expense_account_id:
+        missing.append("Property Expense")
+    if payment_mode == "cash_paid" and not mapping.cash_bank_account_id:
+        missing.append("Cash / Bank")
+    if payment_mode == "credit" and not mapping.accounts_payable_account_id:
+        missing.append("Accounts Payable")
+    if missing:
+        return CommandResult.fail(
+            f"Property account mapping is incomplete — missing: {', '.join(missing)}. "
+            "Go to Properties → Settings to configure the required accounts."
+        )
 
     try:
         prop = Property.objects.get(company=actor.company, pk=property_id)
