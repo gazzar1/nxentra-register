@@ -34,6 +34,7 @@ import {
   useExpenseBreakdownReport,
   useDepositLiabilityReport,
 } from "@/queries/useProperties";
+import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/cn";
 
 type ReportTab =
@@ -228,6 +229,8 @@ function RentRollReport() {
 }
 
 function OverdueReport() {
+  const { company } = useAuth();
+  const cur = company?.default_currency || "USD";
   const { data, isLoading } = useOverdueReport();
   if (isLoading) return <LoadingSpinner />;
   if (!data?.length)
@@ -249,7 +252,7 @@ function OverdueReport() {
               </div>
               <div className="text-right">
                 <div className="text-lg font-bold text-red-600">
-                  {Number(lessee.total_overdue).toLocaleString()} SAR
+                  {Number(lessee.total_overdue).toLocaleString()} {cur}
                 </div>
                 <div className="text-xs text-muted-foreground">
                   {lessee.overdue_count} overdue installments
@@ -501,6 +504,8 @@ function ExpensesReport({
 }: {
   params?: { date_from?: string; date_to?: string };
 }) {
+  const { company } = useAuth();
+  const cur = company?.default_currency || "USD";
   const { data, isLoading } = useExpenseBreakdownReport(params);
   if (isLoading) return <LoadingSpinner />;
   if (!data)
@@ -527,7 +532,7 @@ function ExpensesReport({
                       {r.property_code} - {r.property_name}
                     </td>
                     <td className="px-4 py-3 text-right font-medium">
-                      {Number(r.total).toLocaleString()} SAR
+                      {Number(r.total).toLocaleString()} {cur}
                     </td>
                   </tr>
                 ))}
@@ -556,7 +561,7 @@ function ExpensesReport({
                       {CATEGORY_LABELS[r.category] || r.category}
                     </td>
                     <td className="px-4 py-3 text-right font-medium">
-                      {Number(r.total).toLocaleString()} SAR
+                      {Number(r.total).toLocaleString()} {cur}
                     </td>
                   </tr>
                 ))}
@@ -570,6 +575,8 @@ function ExpensesReport({
 }
 
 function DepositsReport() {
+  const { company } = useAuth();
+  const cur = company?.default_currency || "USD";
   const { data, isLoading } = useDepositLiabilityReport();
   if (isLoading) return <LoadingSpinner />;
   if (!data?.leases?.length)
@@ -583,7 +590,7 @@ function DepositsReport() {
             Total Deposit Liability
           </div>
           <div className="text-2xl font-bold">
-            {Number(data.total_liability).toLocaleString()} SAR
+            {Number(data.total_liability).toLocaleString()} {cur}
           </div>
         </CardContent>
       </Card>

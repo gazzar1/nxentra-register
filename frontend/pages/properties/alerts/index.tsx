@@ -6,6 +6,7 @@ import { AppLayout } from "@/components/layout";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader, EmptyState, LoadingSpinner } from "@/components/common";
 import { usePropertyAlerts } from "@/queries/useProperties";
+import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/cn";
 
 const SEVERITY_COLORS: Record<string, string> = {
@@ -21,6 +22,8 @@ const TYPE_COLORS: Record<string, string> = {
 
 export default function AlertsPage() {
   const router = useRouter();
+  const { company } = useAuth();
+  const cur = company?.default_currency || "USD";
   const { data: alerts, isLoading } = usePropertyAlerts();
 
   const expiryAlerts = alerts?.filter((a) => a.type === "expiry") ?? [];
@@ -185,7 +188,7 @@ export default function AlertsPage() {
                           </td>
                           <td className="px-4 py-3">{alert.due_date}</td>
                           <td className="px-4 py-3 text-right">
-                            {Number(alert.outstanding).toLocaleString()} SAR
+                            {Number(alert.outstanding).toLocaleString()} {cur}
                           </td>
                           <td className="px-4 py-3 text-right font-mono text-red-600">
                             {alert.days_overdue}

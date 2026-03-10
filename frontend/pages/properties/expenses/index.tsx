@@ -33,6 +33,7 @@ import {
 import { useToast } from "@/components/ui/toaster";
 import { cn } from "@/lib/cn";
 import type { ExpenseCategory, ExpensePaymentMode } from "@/types/properties";
+import { useAuth } from "@/contexts/AuthContext";
 
 const CATEGORY_LABELS: Record<string, string> = {
   maintenance: "Maintenance",
@@ -59,6 +60,8 @@ const PAID_STATUS_COLORS: Record<string, string> = {
 };
 
 export default function ExpensesPage() {
+  const { company } = useAuth();
+  const cur = company?.default_currency || "USD";
   const { data: expenses, isLoading } = useExpenses();
   const { data: properties } = useProperties();
   const createExpense = useCreateExpense();
@@ -142,7 +145,7 @@ export default function ExpensesPage() {
                 Total Expenses
               </div>
               <div className="text-xl font-bold">
-                {totalExpenses.toLocaleString()} SAR
+                {totalExpenses.toLocaleString()} {cur}
               </div>
             </CardContent>
           </Card>

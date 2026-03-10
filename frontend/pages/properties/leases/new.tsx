@@ -9,11 +9,13 @@ import { Card, CardContent } from "@/components/ui/card";
 import { useToast } from "@/components/ui/toaster";
 import { useCreateLease, useProperties, useUnits, useLessees } from "@/queries/useProperties";
 import type { PaymentFrequency, DueDayRule } from "@/types/properties";
+import { useAuth } from "@/contexts/AuthContext";
 import { useState } from "react";
 
 export default function NewLeasePage() {
   const router = useRouter();
   const { toast } = useToast();
+  const { company } = useAuth();
   const createLease = useCreateLease();
   const { data: properties } = useProperties();
   const { data: lessees } = useLessees();
@@ -32,7 +34,7 @@ export default function NewLeasePage() {
     end_date: "",
     payment_frequency: "monthly" as PaymentFrequency,
     rent_amount: "",
-    currency: "SAR",
+    currency: company?.default_currency || "USD",
     grace_days: "0",
     due_day_rule: "first_day" as DueDayRule,
     specific_due_day: "",

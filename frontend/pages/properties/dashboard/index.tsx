@@ -14,12 +14,15 @@ import { AppLayout } from "@/components/layout";
 import { Card, CardContent } from "@/components/ui/card";
 import { PageHeader, LoadingSpinner } from "@/components/common";
 import { usePropertyDashboard } from "@/queries/useProperties";
+import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/cn";
 import { useRouter } from "next/router";
 
 export default function PropertyDashboardPage() {
   const { data: dashboard, isLoading } = usePropertyDashboard();
+  const { company } = useAuth();
   const router = useRouter();
+  const cur = company?.default_currency || "USD";
 
   if (isLoading) {
     return (
@@ -66,30 +69,30 @@ export default function PropertyDashboardPage() {
     },
     {
       label: "Total Overdue",
-      value: `${Number(dashboard.total_overdue).toLocaleString()} SAR`,
+      value: `${Number(dashboard.total_overdue).toLocaleString()} ${cur}`,
       sub: `${dashboard.overdue_count} installments`,
       icon: <AlertTriangle className="h-5 w-5 text-red-500" />,
       alert: dashboard.overdue_count > 0,
     },
     {
       label: "Monthly Billed",
-      value: `${Number(dashboard.monthly_billed).toLocaleString()} SAR`,
+      value: `${Number(dashboard.monthly_billed).toLocaleString()} ${cur}`,
       icon: <DollarSign className="h-5 w-5 text-blue-500" />,
     },
     {
       label: "Monthly Collected",
-      value: `${Number(dashboard.monthly_collected).toLocaleString()} SAR`,
+      value: `${Number(dashboard.monthly_collected).toLocaleString()} ${cur}`,
       icon: <TrendingUp className="h-5 w-5 text-green-500" />,
     },
     {
       label: "Monthly Expenses",
-      value: `${Number(dashboard.monthly_expenses).toLocaleString()} SAR`,
+      value: `${Number(dashboard.monthly_expenses).toLocaleString()} ${cur}`,
       icon: <TrendingDown className="h-5 w-5 text-red-400" />,
       onClick: () => router.push("/properties/expenses"),
     },
     {
       label: "Deposit Liability",
-      value: `${Number(dashboard.deposit_liability).toLocaleString()} SAR`,
+      value: `${Number(dashboard.deposit_liability).toLocaleString()} ${cur}`,
       icon: <DollarSign className="h-5 w-5 text-purple-500" />,
     },
   ];
