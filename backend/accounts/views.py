@@ -11,6 +11,7 @@ Serializers are PURE PARSING + VALIDATION - they never call .save()
 """
 
 from rest_framework import status
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -2338,13 +2339,14 @@ class CompanyModulesView(APIView):
         return Response(result)
 
     def put(self, request):
-        from accounts.authz import resolve_actor, require
+        from accounts.authz import resolve_actor
         from accounts.module_registry import module_registry, ModuleCategory
         from accounts.models import CompanyModule
         from projections.write_barrier import command_writes_allowed
 
         actor = resolve_actor(request)
-        require(actor, "OWNER", "ADMIN")
+        if not actor.is_admin:
+            raise PermissionDenied("Only owners and admins can manage modules.")
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
 
