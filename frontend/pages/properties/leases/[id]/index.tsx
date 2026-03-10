@@ -2,7 +2,7 @@ import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useRouter } from "next/router";
 import { useState } from "react";
-import { Play, XCircle, RefreshCw, DollarSign, Ban, Shield, Pencil } from "lucide-react";
+import { Play, XCircle, RefreshCw, DollarSign, Ban, Shield, Pencil, ArrowRight } from "lucide-react";
 import { AppLayout } from "@/components/layout";
 import { PageHeader, LoadingSpinner } from "@/components/common";
 import { Badge } from "@/components/ui/badge";
@@ -37,6 +37,7 @@ import {
   useWaiveScheduleLine,
   usePayments,
   useCreatePayment,
+  useAllocatePayment,
   useDeposits,
   useCreateDeposit,
 } from "@/queries/useProperties";
@@ -371,6 +372,12 @@ export default function LeaseDetailPage() {
   const createPayment = useCreatePayment();
   const { data: deposits, isLoading: depositsLoading } = useDeposits({ lease: id });
   const createDeposit = useCreateDeposit();
+  const allocatePayment = useAllocatePayment();
+
+  const [allocateOpen, setAllocateOpen] = useState(false);
+  const [allocatePaymentId, setAllocatePaymentId] = useState<number | null>(null);
+  const [allocatePaymentAmount, setAllocatePaymentAmount] = useState(0);
+  const [allocations, setAllocations] = useState<Record<number, string>>({});
 
   const [waiveOpen, setWaiveOpen] = useState(false);
   const [waiveLineId, setWaiveLineId] = useState<number | null>(null);
@@ -781,6 +788,7 @@ export default function LeaseDetailPage() {
                         <th className="px-4 py-3 text-left font-medium">Method</th>
                         <th className="px-4 py-3 text-left font-medium">Reference</th>
                         <th className="px-4 py-3 text-center font-medium">Status</th>
+                        <th className="px-4 py-3 text-center font-medium">Actions</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -800,6 +808,24 @@ export default function LeaseDetailPage() {
                               <Badge className={cn("text-xs", ALLOCATION_STATUS_COLORS[p.allocation_status])}>
                                 {p.allocation_status.replace("_", " ")}
                               </Badge>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            {!p.voided && p.allocation_status !== "fully_allocated" && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 text-xs"
+                                onClick={() => {
+                                  setAllocatePaymentId(p.id);
+                                  setAllocatePaymentAmount(Number(p.amount));
+                                  setAllocations({});
+                                  setAllocateOpen(true);
+                                }}
+                              >
+                                <ArrowRight className="mr-1 h-3 w-3" />
+                                Allocate
+                              </Button>
                             )}
                           </td>
                         </tr>
@@ -1112,6 +1138,120 @@ export default function LeaseDetailPage() {
           isPending={updateLease.isPending}
         />
       )}
+
+      {/* Allocate Payment Dialog */}
+      <Dialog open={allocateOpen} onOpenChange={setAllocateOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Allocate Payment</DialogTitle>
+            <DialogDescription>
+              Distribute the payment amount across outstanding rent installments.
+            </DialogDescription>
+          </DialogHeader>
+          {schedule && (
+            <div className="space-y-4">
+              <div className="text-sm">
+                <span className="text-muted-foreground">Payment Amount: </span>
+                <span className="font-bold">{allocatePaymentAmount.toLocaleString()} {lease.currency}</span>
+                <span className="text-muted-foreground ml-4">Allocated: </span>
+                <span className={cn(
+                  "font-bold",
+                  Object.values(allocations).reduce((s, v) => s + (Number(v) || 0), 0) > allocatePaymentAmount
+                    ? "text-red-600"
+                    : "text-green-600"
+                )}>
+                  {Object.values(allocations).reduce((s, v) => s + (Number(v) || 0), 0).toLocaleString()} {lease.currency}
+                </span>
+              </div>
+              <div className="rounded-lg border max-h-[40vh] overflow-y-auto">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-background">
+                    <tr className="border-b bg-muted/50">
+                      <th className="px-3 py-2 text-left font-medium">#</th>
+                      <th className="px-3 py-2 text-left font-medium">Due Date</th>
+                      <th className="px-3 py-2 text-right font-medium">Outstanding</th>
+                      <th className="px-3 py-2 text-center font-medium">Status</th>
+                      <th className="px-3 py-2 text-right font-medium">Allocate</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {schedule
+                      .filter((l) => Number(l.outstanding) > 0)
+                      .map((line) => (
+                        <tr key={line.id} className="border-b">
+                          <td className="px-3 py-2">{line.installment_no}</td>
+                          <td className="px-3 py-2">{line.due_date}</td>
+                          <td className="px-3 py-2 text-right text-red-600">
+                            {Number(line.outstanding).toLocaleString()}
+                          </td>
+                          <td className="px-3 py-2 text-center">
+                            <Badge className={cn("text-xs", SCHEDULE_STATUS_COLORS[line.status])}>
+                              {line.status}
+                            </Badge>
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            <Input
+                              type="number"
+                              className="w-28 h-7 text-sm text-right ml-auto"
+                              placeholder="0"
+                              min={0}
+                              max={Number(line.outstanding)}
+                              value={allocations[line.id] || ""}
+                              onChange={(e) => setAllocations({
+                                ...allocations,
+                                [line.id]: e.target.value,
+                              })}
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+              {schedule.filter((l) => Number(l.outstanding) > 0).length === 0 && (
+                <p className="text-sm text-muted-foreground text-center py-4">
+                  No outstanding installments to allocate to.
+                </p>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAllocateOpen(false)}>Cancel</Button>
+            <Button
+              onClick={async () => {
+                const allocs = Object.entries(allocations)
+                  .filter(([, v]) => Number(v) > 0)
+                  .map(([lineId, amount]) => ({
+                    schedule_line_id: Number(lineId),
+                    amount: Number(amount),
+                  }));
+                if (!allocs.length) return;
+                try {
+                  await allocatePayment.mutateAsync({
+                    id: allocatePaymentId!,
+                    allocations: allocs,
+                  });
+                  setAllocateOpen(false);
+                  toast({ title: "Payment allocated" });
+                } catch (err: any) {
+                  toast({
+                    title: "Allocation failed",
+                    description: err?.response?.data?.detail || "Could not allocate payment.",
+                    variant: "destructive",
+                  });
+                }
+              }}
+              disabled={
+                Object.values(allocations).reduce((s, v) => s + (Number(v) || 0), 0) === 0 ||
+                Object.values(allocations).reduce((s, v) => s + (Number(v) || 0), 0) > allocatePaymentAmount ||
+                allocatePayment.isPending
+              }
+            >
+              {allocatePayment.isPending ? "Allocating..." : "Allocate"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Record Deposit Dialog */}
       <Dialog open={depositOpen} onOpenChange={setDepositOpen}>
