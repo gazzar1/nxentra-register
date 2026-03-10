@@ -635,33 +635,25 @@ class PropertyDashboardView(APIView):
             t=Coalesce(Sum("amount"), Decimal(0))
         )["t"]
 
-        # Deposit liability
-        deposit_liability = SecurityDepositTransaction.objects.filter(
+        # Deposit liability — contractual deposit from active leases
+        # Uses lease deposit_amount (the obligation), supplemented by
+        # actual transactions for leases that have them.
+        active_lease_deposits = Lease.objects.filter(
             company=company,
+            status=Lease.LeaseStatus.ACTIVE,
         ).aggregate(
-            received=Coalesce(
-                Sum("amount", filter=Q(transaction_type="received")),
-                Decimal(0),
-            ),
-            adjusted=Coalesce(
-                Sum("amount", filter=Q(transaction_type="adjusted")),
-                Decimal(0),
-            ),
-            refunded=Coalesce(
-                Sum("amount", filter=Q(transaction_type="refunded")),
-                Decimal(0),
-            ),
-            forfeited=Coalesce(
-                Sum("amount", filter=Q(transaction_type="forfeited")),
-                Decimal(0),
-            ),
-        )
-        total_deposit = (
-            deposit_liability["received"]
-            + deposit_liability["adjusted"]
-            - deposit_liability["refunded"]
-            - deposit_liability["forfeited"]
-        )
+            t=Coalesce(Sum("deposit_amount"), Decimal(0)),
+        )["t"]
+
+        # Subtract refunds/forfeitures from actual transactions
+        deposit_reductions = SecurityDepositTransaction.objects.filter(
+            company=company,
+            transaction_type__in=["refunded", "forfeited"],
+        ).aggregate(
+            t=Coalesce(Sum("amount"), Decimal(0)),
+        )["t"]
+
+        total_deposit = active_lease_deposits - deposit_reductions
 
         return Response({
             "active_leases": active_leases,
