@@ -188,36 +188,45 @@ export function Sidebar() {
     }
   }, [router.pathname, sections, t]);
 
-  // Ref for preserving sidebar scroll position
+  // Ref for preserving sidebar scroll position across navigations
   const navRef = useRef<HTMLElement>(null);
   const scrollPosRef = useRef(0);
+  const isNavigatingRef = useRef(false);
 
-  // Save scroll position on every scroll so we never lose it
+  // Track scroll position (but not during navigation when browser resets to 0)
   useEffect(() => {
     const nav = navRef.current;
     if (!nav) return;
-    const onScroll = () => { scrollPosRef.current = nav.scrollTop; };
+    const onScroll = () => {
+      if (!isNavigatingRef.current) {
+        scrollPosRef.current = nav.scrollTop;
+      }
+    };
     nav.addEventListener("scroll", onScroll, { passive: true });
     return () => nav.removeEventListener("scroll", onScroll);
   }, []);
 
-  // After route change, close mobile menu (but do NOT reset scroll)
+  // Freeze scroll tracking during route changes, restore after
   useEffect(() => {
-    const handleRouteChangeComplete = () => { close(); };
-    router.events.on("routeChangeComplete", handleRouteChangeComplete);
-    return () => { router.events.off("routeChangeComplete", handleRouteChangeComplete); };
+    const handleStart = () => { isNavigatingRef.current = true; };
+    const handleComplete = () => {
+      close();
+      // Restore scroll position after navigation settles
+      requestAnimationFrame(() => {
+        if (navRef.current && scrollPosRef.current > 0) {
+          navRef.current.scrollTop = scrollPosRef.current;
+        }
+        // Unfreeze after restore
+        isNavigatingRef.current = false;
+      });
+    };
+    router.events.on("routeChangeStart", handleStart);
+    router.events.on("routeChangeComplete", handleComplete);
+    return () => {
+      router.events.off("routeChangeStart", handleStart);
+      router.events.off("routeChangeComplete", handleComplete);
+    };
   }, [router.events, close]);
-
-  // Restore scroll position after any re-render that might reset it
-  useEffect(() => {
-    const nav = navRef.current;
-    if (!nav || scrollPosRef.current === 0) return;
-    // Use rAF to restore after the browser has painted
-    const id = requestAnimationFrame(() => {
-      nav.scrollTop = scrollPosRef.current;
-    });
-    return () => cancelAnimationFrame(id);
-  });
 
   const isAdmin = user?.is_staff || user?.is_superuser;
 
