@@ -65,6 +65,9 @@ from .views import (
     VoiceGrantAccessView,
     VoiceRevokeAccessView,
     VoiceRefillQuotaView,
+    # Module & Sidebar
+    SidebarView,
+    CompanyModulesView,
 )
 
 app_name = "accounts"
@@ -152,4 +155,10 @@ urlpatterns = [
     path("voice/users/<int:membership_id>/grant/", VoiceGrantAccessView.as_view(), name="voice-grant"),
     path("voice/users/<int:membership_id>/revoke/", VoiceRevokeAccessView.as_view(), name="voice-revoke"),
     path("voice/users/<int:membership_id>/refill/", VoiceRefillQuotaView.as_view(), name="voice-refill"),
+
+    # ==========================================================================
+    # Module & Sidebar
+    # ==========================================================================
+    path("sidebar/", SidebarView.as_view(), name="sidebar"),
+    path("modules/", CompanyModulesView.as_view(), name="modules"),
 ]

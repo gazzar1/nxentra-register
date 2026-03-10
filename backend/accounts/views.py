@@ -2257,3 +2257,113 @@ class VoiceRefillQuotaView(APIView):
             return Response({"detail": result.error}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response(result.data)
+
+
+# =============================================================================
+# Module & Sidebar
+# =============================================================================
+
+class SidebarView(APIView):
+    """
+    GET /api/sidebar/ -> Full sidebar navigation for the current company.
+
+    Returns core sections (always present) plus enabled optional modules.
+    Each section includes icon name, label, and child nav items.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from accounts.authz import resolve_actor
+        from accounts.module_registry import module_registry, ModuleCategory
+        from accounts.models import CompanyModule
+
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        # Get enabled module keys for this company
+        enabled_records = CompanyModule.objects.filter(
+            company=actor.company, is_enabled=True,
+        ).values_list("module_key", flat=True)
+        enabled_keys = set(enabled_records)
+
+        sections = []
+        for mod in module_registry.all_modules():
+            # Core modules always included
+            if mod["category"] == ModuleCategory.CORE:
+                sections.append(mod)
+                continue
+            # Optional modules only if enabled
+            if mod["key"] in enabled_keys:
+                sections.append(mod)
+
+        return Response(sections)
+
+
+class CompanyModulesView(APIView):
+    """
+    GET /api/modules/ -> List all available modules and their enablement status.
+    PUT /api/modules/ -> Update enabled modules for the current company.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from accounts.authz import resolve_actor
+        from accounts.module_registry import module_registry, ModuleCategory
+        from accounts.models import CompanyModule
+
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        enabled_records = {
+            r.module_key: r.is_enabled
+            for r in CompanyModule.objects.filter(company=actor.company)
+        }
+
+        result = []
+        for mod in module_registry.all_modules():
+            result.append({
+                "key": mod["key"],
+                "label": mod["label"],
+                "icon": mod["icon"],
+                "category": mod["category"],
+                "is_core": mod["category"] == ModuleCategory.CORE,
+                "is_enabled": (
+                    True if mod["category"] == ModuleCategory.CORE
+                    else enabled_records.get(mod["key"], False)
+                ),
+            })
+
+        return Response(result)
+
+    def put(self, request):
+        from accounts.authz import resolve_actor, require
+        from accounts.module_registry import module_registry, ModuleCategory
+        from accounts.models import CompanyModule
+        from projections.write_barrier import command_writes_allowed
+
+        actor = resolve_actor(request)
+        require(actor, "OWNER", "ADMIN")
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        modules = request.data
+        if not isinstance(modules, list):
+            return Response({"detail": "Expected a list of {key, is_enabled}."}, status=400)
+
+        optional_keys = {m["key"] for m in module_registry.optional_modules()}
+
+        with command_writes_allowed():
+            for item in modules:
+                key = item.get("key")
+                enabled = item.get("is_enabled", False)
+                if key not in optional_keys:
+                    continue
+                CompanyModule.objects.update_or_create(
+                    company=actor.company,
+                    module_key=key,
+                    defaults={"is_enabled": enabled},
+                )
+
+        return Response({"detail": "Modules updated."})

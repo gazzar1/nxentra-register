@@ -25,3 +25,25 @@ class PropertiesConfig(AppConfig):
         "ACCOUNTS_PAYABLE",
         "PROPERTY_EXPENSE",
     ]
+
+    def ready(self):
+        from accounts.module_registry import module_registry, ModuleCategory
+
+        module_registry.register(
+            "properties",
+            label="Properties",
+            icon="Home",
+            category=ModuleCategory.VERTICAL,
+            order=60,
+            nav_items=[
+                {"label": "Dashboard", "href": "/properties/dashboard", "icon": "LayoutGrid", "translation_key": "nav.propDashboard"},
+                {"label": "Properties", "href": "/properties/properties", "icon": "Building2", "translation_key": "nav.propertiesList"},
+                {"label": "Units", "href": "/properties/units", "icon": "DoorOpen", "translation_key": "nav.units"},
+                {"label": "Lessees", "href": "/properties/lessees", "icon": "UserSquare2", "translation_key": "nav.lessees"},
+                {"label": "Leases", "href": "/properties/leases", "icon": "FileSignature", "translation_key": "nav.leases"},
+                {"label": "Collections", "href": "/properties/payments", "icon": "Banknote", "translation_key": "nav.collections"},
+                {"label": "Expenses", "href": "/properties/expenses", "icon": "Receipt", "translation_key": "nav.propExpenses"},
+                {"label": "Alerts", "href": "/properties/alerts", "icon": "AlertTriangle", "translation_key": "nav.propAlerts"},
+                {"label": "Reports", "href": "/properties/reports", "icon": "PieChart", "translation_key": "nav.propReports"},
+            ],
+        )

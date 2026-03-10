@@ -573,6 +573,41 @@ class NxPermission(ProjectionWriteGuard):
         return f"{self.code} - {self.name}"
 
 
+class CompanyModule(models.Model):
+    """
+    Tracks which optional modules are enabled for a company.
+
+    Core modules (accounting, reports, settings) are always enabled and
+    do not need entries here. Only horizontal and vertical modules
+    (sales, purchases, inventory, clinic, properties, etc.) are tracked.
+    """
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="enabled_modules",
+    )
+    module_key = models.CharField(
+        max_length=50,
+        help_text="Module identifier matching the registry key (e.g. 'clinic', 'sales')",
+    )
+    is_enabled = models.BooleanField(default=True)
+    enabled_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "module_key"],
+                name="uniq_company_module",
+            ),
+        ]
+        ordering = ["company", "module_key"]
+
+    def __str__(self):
+        status = "enabled" if self.is_enabled else "disabled"
+        return f"{self.company.name}: {self.module_key} ({status})"
+
+
 class EmailVerificationToken(models.Model):
     """
     Secure email verification tokens.
