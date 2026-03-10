@@ -512,9 +512,10 @@ def update_property_account_mapping(
     """Update (or create) the property account mapping for the company."""
     require(actor, "properties.manage")
 
-    mapping, created = PropertyAccountMapping.objects.get_or_create(
-        company=actor.company,
-    )
+    with command_writes_allowed():
+        mapping, created = PropertyAccountMapping.objects.get_or_create(
+            company=actor.company,
+        )
 
     # Validate and set each account FK
     account_fields = [
