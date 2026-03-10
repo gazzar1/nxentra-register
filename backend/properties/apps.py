@@ -45,5 +45,6 @@ class PropertiesConfig(AppConfig):
                 {"label": "Expenses", "href": "/properties/expenses", "icon": "Receipt", "translation_key": "nav.propExpenses"},
                 {"label": "Alerts", "href": "/properties/alerts", "icon": "AlertTriangle", "translation_key": "nav.propAlerts"},
                 {"label": "Reports", "href": "/properties/reports", "icon": "PieChart", "translation_key": "nav.propReports"},
+                {"label": "Settings", "href": "/properties/settings", "icon": "Settings", "translation_key": "nav.propSettings"},
             ],
         )
