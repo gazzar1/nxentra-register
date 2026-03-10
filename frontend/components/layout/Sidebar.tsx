@@ -197,13 +197,18 @@ export function Sidebar() {
   // the remount so we can restore the position when the new instance mounts.
   const navRef = useRef<HTMLElement>(null);
 
-  // On mount: restore saved scroll position
+  // Restore saved scroll position once nav items are rendered.
+  // Must depend on allNavItems because on first mount the nav content
+  // is empty (API data hasn't loaded yet), so scrollTop has no effect.
   useEffect(() => {
     const nav = navRef.current;
     if (nav && _savedScrollTop > 0) {
-      nav.scrollTop = _savedScrollTop;
+      // Use rAF to ensure the DOM has been painted with the new content
+      requestAnimationFrame(() => {
+        nav.scrollTop = _savedScrollTop;
+      });
     }
-  }, []);
+  }, [allNavItems]);
 
   // Continuously save scroll position so it's always up-to-date
   const handleScroll = useCallback(() => {
