@@ -14,7 +14,7 @@ from accounts.models import Company
 from accounts.rls import rls_bypass
 from accounting.commands import _next_company_sequence
 from accounting.models import JournalEntry
-from projections.write_barrier import command_writes_allowed
+from projections.write_barrier import projection_writes_allowed
 
 
 class Command(BaseCommand):
@@ -61,7 +61,7 @@ class Command(BaseCommand):
                 with transaction.atomic():
                     sequence_value = _next_company_sequence(company, "journal_entry_number")
                     entry_number = f"JE-{company.id}-{sequence_value:06d}"
-                    with command_writes_allowed():
+                    with projection_writes_allowed():
                         entry.entry_number = entry_number
                         entry.save(update_fields=["entry_number"])
                     self.stdout.write(f"    {entry_number} → JE #{entry.id} ({entry.date}): {entry.memo[:60]}")
