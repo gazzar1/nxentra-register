@@ -64,6 +64,7 @@ export default function DimensionsPage() {
     name_ar: "",
     description: "",
     description_ar: "",
+    dimension_kind: "ANALYTIC",
     is_required_on_posting: false,
     applies_to_account_types: [],
     display_order: 0,
@@ -128,6 +129,7 @@ export default function DimensionsPage() {
       name_ar: "",
       description: "",
       description_ar: "",
+      dimension_kind: "ANALYTIC",
       is_required_on_posting: false,
       applies_to_account_types: [],
       display_order: dimensions.length,
@@ -143,6 +145,7 @@ export default function DimensionsPage() {
       name_ar: dim.name_ar,
       description: dim.description,
       description_ar: dim.description_ar,
+      dimension_kind: dim.dimension_kind || "ANALYTIC",
       is_required_on_posting: dim.is_required_on_posting,
       applies_to_account_types: dim.applies_to_account_types,
       display_order: dim.display_order,
@@ -325,6 +328,7 @@ export default function DimensionsPage() {
                     <TableRow>
                       <TableHead>{t("accounting:dimensions.code", "Code")}</TableHead>
                       <TableHead>{t("accounting:dimensions.name", "Name")}</TableHead>
+                      <TableHead>Kind</TableHead>
                       <TableHead>{t("accounting:dimensions.definitionType", "Definition Type")}</TableHead>
                       <TableHead>{t("accounting:dimensions.required", "Required")}</TableHead>
                       <TableHead>{t("accounting:dimensions.codesCount", "Codes")}</TableHead>
@@ -337,7 +341,7 @@ export default function DimensionsPage() {
                   <TableBody>
                     {dimensions.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={canManage ? 7 : 6} className="text-center text-muted-foreground py-8">
+                        <TableCell colSpan={canManage ? 8 : 7} className="text-center text-muted-foreground py-8">
                           {t("accounting:dimensions.empty", "No analysis dimensions defined yet")}
                         </TableCell>
                       </TableRow>
@@ -346,6 +350,11 @@ export default function DimensionsPage() {
                         <TableRow key={dim.id}>
                           <TableCell className="font-mono text-sm">{dim.code}</TableCell>
                           <TableCell>{getText(dim.name, dim.name_ar)}</TableCell>
+                          <TableCell>
+                            <Badge variant={dim.dimension_kind === "CONTEXT" ? "default" : "outline"}>
+                              {dim.dimension_kind === "CONTEXT" ? "Context" : "Analytic"}
+                            </Badge>
+                          </TableCell>
                           <TableCell>
                             <Badge variant={dim.applies_to_account_types.length > 0 ? "default" : "secondary"}>
                               {getDefinitionTypeLabel(dim)}
@@ -582,6 +591,27 @@ export default function DimensionsPage() {
                   />
                 </div>
               </div>
+              <div className="space-y-2">
+                <Label>Dimension Kind</Label>
+                <Select
+                  value={dimForm.dimension_kind || "ANALYTIC"}
+                  onValueChange={(value) => setDimForm({ ...dimForm, dimension_kind: value as 'CONTEXT' | 'ANALYTIC' })}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="CONTEXT">Context</SelectItem>
+                    <SelectItem value="ANALYTIC">Analytic</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  {dimForm.dimension_kind === "CONTEXT"
+                    ? "Business meaning of the transaction (e.g. Property, Doctor, Project). Auto-derived from vertical modules."
+                    : "Optional reporting enrichment (e.g. Campaign, Segment). Manually tagged on journal entries."}
+                </p>
+              </div>
+
               <div className="space-y-2">
                 <Label>{t("accounting:dimensions.definitionType", "Definition Type")}</Label>
                 <Select
