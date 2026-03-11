@@ -22,6 +22,7 @@ from projections.base import BaseProjection
 from projections.models import FiscalPeriod
 from properties.models import PropertyAccountMapping
 from accounting.models import Account, JournalEntry, JournalLine
+from accounting.commands import _next_company_sequence
 
 
 logger = logging.getLogger(__name__)
@@ -437,9 +438,14 @@ class PropertyAccountingProjection(BaseProjection):
         now = timezone.now()
         currency = getattr(company, "default_currency", "USD")
 
+        # Generate proper entry number using the same sequence as manual entries
+        sequence_value = _next_company_sequence(company, "journal_entry_number")
+        entry_number = f"JE-{company.id}-{sequence_value:06d}"
+
         entry = JournalEntry.objects.projection().create(
             company=company,
             public_id=uuid.uuid4(),
+            entry_number=entry_number,
             date=entry_date,
             period=period,
             memo=memo,
@@ -511,7 +517,7 @@ class PropertyAccountingProjection(BaseProjection):
             metadata={"source_projection": PROJECTION_NAME},
             data=JournalEntryPostedData(
                 entry_public_id=str(entry.public_id),
-                entry_number="",
+                entry_number=entry_number,
                 date=str(entry_date),
                 memo=memo,
                 kind="NORMAL",
