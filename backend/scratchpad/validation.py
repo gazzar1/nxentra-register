@@ -16,7 +16,8 @@ from decimal import Decimal
 from typing import Dict, List, Any, Optional
 
 from accounts.models import Company
-from .models import ScratchpadRow, ScratchpadRowDimension, AccountDimensionRule
+from accounting.dimension_validation import check_account_dimension_rules
+from .models import ScratchpadRow, ScratchpadRowDimension
 
 
 def validate_row(row: ScratchpadRow, company: Company) -> Dict[str, Any]:
@@ -119,125 +120,29 @@ def _check_dimension_rules(row: ScratchpadRow, company: Company) -> List[Dict[st
     """
     Check dimension rules for both debit and credit accounts.
 
-    Rules are checked from AccountDimensionRule model.
+    Delegates to the shared validation in accounting.dimension_validation.
     """
     errors = []
+    row_dims = list(row.dimensions.all())
+    row_dimension_ids = {d.dimension_id for d in row_dims}
 
-    # Get row dimensions as a set of dimension IDs
-    row_dimension_ids = set(
-        dim.dimension_id for dim in row.dimensions.all()
-    )
-
-    # Check debit account rules
     if row.debit_account:
-        errors.extend(_check_account_dimension_rules(
-            row.debit_account,
-            row_dimension_ids,
-            row.dimensions.all(),
-            "debit",
-            company,
+        errors.extend(check_account_dimension_rules(
+            account=row.debit_account,
+            dimension_ids=row_dimension_ids,
+            dimension_entries=row_dims,
+            side="debit",
+            company=company,
         ))
 
-    # Check credit account rules
     if row.credit_account:
-        errors.extend(_check_account_dimension_rules(
-            row.credit_account,
-            row_dimension_ids,
-            row.dimensions.all(),
-            "credit",
-            company,
+        errors.extend(check_account_dimension_rules(
+            account=row.credit_account,
+            dimension_ids=row_dimension_ids,
+            dimension_entries=row_dims,
+            side="credit",
+            company=company,
         ))
-
-    return errors
-
-
-def _check_account_dimension_rules(
-    account,
-    row_dimension_ids: set,
-    row_dimensions,
-    side: str,
-    company: Company,
-) -> List[Dict[str, str]]:
-    """Check dimension rules for a specific account."""
-    errors = []
-
-    # Get rules for this account
-    rules = AccountDimensionRule.objects.filter(
-        account=account,
-    ).select_related("dimension")
-
-    for rule in rules:
-        if rule.rule_type == AccountDimensionRule.RuleType.REQUIRED:
-            # Check if required dimension is present
-            if rule.dimension_id not in row_dimension_ids:
-                errors.append({
-                    "field": f"{side}_dimension_{rule.dimension.code}",
-                    "code": "DIMENSION_REQUIRED",
-                    "message": f"Dimension '{rule.dimension.name}' is required for account {account.code}.",
-                })
-            else:
-                # Check if dimension has a value
-                dim_entry = next(
-                    (d for d in row_dimensions if d.dimension_id == rule.dimension_id),
-                    None
-                )
-                if dim_entry and not dim_entry.dimension_value_id:
-                    errors.append({
-                        "field": f"{side}_dimension_{rule.dimension.code}",
-                        "code": "DIMENSION_VALUE_REQUIRED",
-                        "message": f"A value for dimension '{rule.dimension.name}' is required for account {account.code}.",
-                    })
-
-        elif rule.rule_type == AccountDimensionRule.RuleType.FORBIDDEN:
-            # Check if forbidden dimension is present
-            if rule.dimension_id in row_dimension_ids:
-                # Check if it has a value (empty is OK for forbidden)
-                dim_entry = next(
-                    (d for d in row_dimensions if d.dimension_id == rule.dimension_id),
-                    None
-                )
-                if dim_entry and dim_entry.dimension_value_id:
-                    errors.append({
-                        "field": f"{side}_dimension_{rule.dimension.code}",
-                        "code": "DIMENSION_FORBIDDEN",
-                        "message": f"Dimension '{rule.dimension.name}' is not allowed for account {account.code}.",
-                    })
-
-    # Also check global dimension requirements from AnalysisDimension.is_required_on_posting
-    from accounting.models import AnalysisDimension
-
-    required_dimensions = AnalysisDimension.objects.filter(
-        company=company,
-        is_active=True,
-        is_required_on_posting=True,
-    )
-
-    for dim in required_dimensions:
-        # Check if this dimension applies to the account type
-        if dim.applies_to_account(account):
-            if dim.id not in row_dimension_ids:
-                # Check if there's already an AccountDimensionRule that overrides this
-                override_rule = next(
-                    (r for r in rules if r.dimension_id == dim.id),
-                    None
-                )
-                if not override_rule:
-                    errors.append({
-                        "field": f"{side}_dimension_{dim.code}",
-                        "code": "DIMENSION_REQUIRED",
-                        "message": f"Dimension '{dim.name}' is required for this account type.",
-                    })
-            else:
-                dim_entry = next(
-                    (d for d in row_dimensions if d.dimension_id == dim.id),
-                    None
-                )
-                if dim_entry and not dim_entry.dimension_value_id:
-                    errors.append({
-                        "field": f"{side}_dimension_{dim.code}",
-                        "code": "DIMENSION_VALUE_REQUIRED",
-                        "message": f"A value for dimension '{dim.name}' is required.",
-                    })
 
     return errors
 

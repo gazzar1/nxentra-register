@@ -157,6 +157,7 @@ class AnalysisDimensionProjection(BaseProjection):
                     "name_ar": data.get("name_ar", ""),
                     "description": data.get("description", ""),
                     "description_ar": data.get("description_ar", ""),
+                    "dimension_kind": data.get("dimension_kind", "ANALYTIC"),
                     "is_required_on_posting": data.get("is_required_on_posting", False),
                     "applies_to_account_types": data.get("applies_to_account_types", []),
                     "display_order": data.get("display_order", 0),

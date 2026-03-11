@@ -806,6 +806,7 @@ class AnalysisDimensionCreatedData(BaseEventData):
     name_ar: str = ""
     description: str = ""
     description_ar: str = ""
+    dimension_kind: str = "ANALYTIC"
     is_required_on_posting: bool = False
     applies_to_account_types: List[str] = field(default_factory=list)
     display_order: int = 0

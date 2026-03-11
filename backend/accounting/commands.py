@@ -56,6 +56,7 @@ from accounting.policies import (
     validate_counterparty_exists,
     validate_subledger_tieout,
 )
+from accounting.dimension_validation import validate_line_dimensions
 from events.emitter import emit_event
 from projections.write_barrier import command_writes_allowed
 from events.types import (
@@ -1058,6 +1059,21 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
             if not valid:
                 return CommandResult.fail(reason)
 
+        # Validate dimension rules (REQUIRED / FORBIDDEN per account)
+        resolved_tags = _resolve_analysis_tags_to_public_ids(
+            actor.company, line.get("analysis_tags", [])
+        )
+        dimension_errors = validate_line_dimensions(
+            account=account,
+            analysis_tags=resolved_tags,
+            company=actor.company,
+        )
+        if dimension_errors:
+            error_messages = "; ".join(e["message"] for e in dimension_errors)
+            return CommandResult.fail(
+                f"Line {line.get('line_no', '?')}: {error_messages}"
+            )
+
         line_data.append(JournalLineData(
             line_no=line.get("line_no"),
             account_public_id=str(account.public_id),
@@ -1070,9 +1086,7 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
             currency=line.get("currency") or aggregate.currency or entry.currency or actor.company.default_currency,
             exchange_rate=str(line.get("exchange_rate") or aggregate.exchange_rate or entry.exchange_rate or "1.0"),
             is_memo_line=account.is_memo_account,
-            analysis_tags=_resolve_analysis_tags_to_public_ids(
-                actor.company, line.get("analysis_tags", [])
-            ),
+            analysis_tags=resolved_tags,
             customer_public_id=customer_public_id,
             vendor_public_id=vendor_public_id,
         ).to_dict())
@@ -2549,13 +2563,14 @@ def create_analysis_dimension(
     name_ar: str = "",
     description: str = "",
     description_ar: str = "",
+    dimension_kind: str = "ANALYTIC",
     is_required_on_posting: bool = False,
     applies_to_account_types: list = None,
     display_order: int = 0,
 ) -> CommandResult:
     """
     Create a new analysis dimension.
-    
+
     Args:
         actor: The actor context
         code: Dimension code (unique per company)
@@ -2563,14 +2578,20 @@ def create_analysis_dimension(
         name_ar: Arabic name
         description: Description
         description_ar: Arabic description
+        dimension_kind: CONTEXT (business meaning) or ANALYTIC (optional enrichment)
         is_required_on_posting: If True, must be filled when posting
         applies_to_account_types: List of account types, empty = all
         display_order: Order for UI display
-    
+
     Returns:
         CommandResult with created AnalysisDimension or error
     """
     require(actor, "accounts.manage")
+
+    # Validate dimension_kind
+    valid_kinds = {k.value for k in AnalysisDimension.DimensionKind}
+    if dimension_kind not in valid_kinds:
+        return CommandResult.fail(f"Invalid dimension_kind '{dimension_kind}'. Must be one of: {', '.join(valid_kinds)}")
 
     # Check for duplicate code
     if AnalysisDimension.objects.filter(company=actor.company, code=code).exists():
@@ -2585,6 +2606,7 @@ def create_analysis_dimension(
         "name_ar": name_ar,
         "description": description,
         "description_ar": description_ar,
+        "dimension_kind": dimension_kind,
         "is_required_on_posting": is_required_on_posting,
         "applies_to_account_types": applies_to_account_types or [],
         "display_order": display_order,
@@ -2604,6 +2626,7 @@ def create_analysis_dimension(
             name_ar=name_ar,
             description=description,
             description_ar=description_ar,
+            dimension_kind=dimension_kind,
             is_required_on_posting=is_required_on_posting,
             applies_to_account_types=applies_to_account_types or [],
             display_order=display_order,
@@ -2645,7 +2668,7 @@ def update_analysis_dimension(
     changes = {}
     allowed_fields = {
         "name", "name_ar", "description", "description_ar",
-        "is_required_on_posting", "applies_to_account_types",
+        "dimension_kind", "is_required_on_posting", "applies_to_account_types",
         "display_order", "is_active"
     }
     

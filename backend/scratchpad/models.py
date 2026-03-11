@@ -10,7 +10,7 @@ committed do they become immutable BusinessEvents and JournalEntries.
 Models:
 - ScratchpadRow: Staging area for journal entry preparation (mutable)
 - ScratchpadRowDimension: Dynamic dimension values per row
-- AccountDimensionRule: Required/forbidden dimensions per account
+- AccountDimensionRule: Moved to accounting.models (re-exported here for backward compat)
 """
 
 from django.db import models
@@ -20,7 +20,7 @@ from decimal import Decimal
 import uuid
 
 from accounts.models import Company
-from accounting.models import Account, AnalysisDimension, AnalysisDimensionValue
+from accounting.models import Account, AccountDimensionRule, AnalysisDimension, AnalysisDimensionValue  # noqa: F401
 
 
 class ScratchpadRow(models.Model):
@@ -281,66 +281,6 @@ class ScratchpadRowDimension(models.Model):
     def __str__(self):
         value = self.dimension_value.code if self.dimension_value else self.raw_value
         return f"{self.dimension.code}={value}"
-
-
-class AccountDimensionRule(models.Model):
-    """
-    Rules for which dimensions are required/forbidden per account.
-
-    Extends the global AnalysisDimension.is_required_on_posting with
-    fine-grained per-account control. For example:
-    - "Cost Center" required for Expense accounts
-    - "Project" required for specific project expense accounts
-    - "Department" forbidden for certain inter-company accounts
-    """
-
-    class RuleType(models.TextChoices):
-        REQUIRED = "REQUIRED", "Required"
-        FORBIDDEN = "FORBIDDEN", "Forbidden"
-        OPTIONAL = "OPTIONAL", "Optional"
-
-    company = models.ForeignKey(
-        Company,
-        on_delete=models.CASCADE,
-        related_name="dimension_rules",
-    )
-    account = models.ForeignKey(
-        Account,
-        on_delete=models.CASCADE,
-        related_name="dimension_rules",
-    )
-    dimension = models.ForeignKey(
-        AnalysisDimension,
-        on_delete=models.CASCADE,
-        related_name="account_rules",
-    )
-    rule_type = models.CharField(
-        max_length=12,
-        choices=RuleType.choices,
-        default=RuleType.OPTIONAL,
-    )
-    # Optional: default value when required (for auto-fill suggestions)
-    default_value = models.ForeignKey(
-        AnalysisDimensionValue,
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        related_name="+",
-        help_text="Default value to suggest when this dimension is required",
-    )
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(
-                fields=["account", "dimension"],
-                name="uniq_account_dimension_rule",
-            ),
-        ]
-        verbose_name = "Account Dimension Rule"
-        verbose_name_plural = "Account Dimension Rules"
-
-    def __str__(self):
-        return f"{self.account.code} - {self.dimension.code}: {self.rule_type}"
 
 
 class VoiceUsageEvent(models.Model):

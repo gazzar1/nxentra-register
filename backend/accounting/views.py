@@ -633,7 +633,7 @@ class AnalysisDimensionDetailView(APIView):
         # Only allow specific fields to be updated
         allowed_fields = {
             "name", "name_ar", "description", "description_ar",
-            "is_required_on_posting", "applies_to_account_types",
+            "dimension_kind", "is_required_on_posting", "applies_to_account_types",
             "display_order", "is_active",
         }
         updates = {k: v for k, v in request.data.items() if k in allowed_fields}

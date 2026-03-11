@@ -1722,12 +1722,24 @@ class AnalysisDimension(AccountingReadModel):
     description = models.TextField(blank=True, default="")
     description_ar = models.TextField(blank=True, default="")
     
+    # Semantic classification
+    class DimensionKind(models.TextChoices):
+        CONTEXT = "CONTEXT", "Context"      # Business meaning (property, doctor, project)
+        ANALYTIC = "ANALYTIC", "Analytic"   # Optional enrichment (campaign, segment)
+
+    dimension_kind = models.CharField(
+        max_length=10,
+        choices=DimensionKind.choices,
+        default=DimensionKind.ANALYTIC,
+        help_text="CONTEXT = business meaning of the transaction; ANALYTIC = optional reporting enrichment.",
+    )
+
     # Configuration
     is_required_on_posting = models.BooleanField(
         default=False,
         help_text="If True, lines must have this dimension when posting",
     )
-    
+
     is_active = models.BooleanField(default=True)
     
     # Which account types require this dimension?
@@ -2071,6 +2083,72 @@ class AccountAnalysisDefault(AccountingReadModel):
         if self.default_value_id and self.company_id and self.default_value.company_id != self.company_id:
             raise ValidationError("AccountAnalysisDefault company must match value company.")
         super().save(*args, **kwargs)
+
+
+# =============================================================================
+# Account Dimension Rules
+# =============================================================================
+
+
+class AccountDimensionRule(models.Model):
+    """
+    Rules for which dimensions are required/forbidden per account.
+
+    Extends the global AnalysisDimension.is_required_on_posting with
+    fine-grained per-account control. For example:
+    - "Cost Center" required for Expense accounts
+    - "Project" required for specific project expense accounts
+    - "Department" forbidden for certain inter-company accounts
+    """
+
+    class RuleType(models.TextChoices):
+        REQUIRED = "REQUIRED", "Required"
+        FORBIDDEN = "FORBIDDEN", "Forbidden"
+        OPTIONAL = "OPTIONAL", "Optional"
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="dimension_rules",
+    )
+    account = models.ForeignKey(
+        Account,
+        on_delete=models.CASCADE,
+        related_name="dimension_rules",
+    )
+    dimension = models.ForeignKey(
+        AnalysisDimension,
+        on_delete=models.CASCADE,
+        related_name="account_rules",
+    )
+    rule_type = models.CharField(
+        max_length=12,
+        choices=RuleType.choices,
+        default=RuleType.OPTIONAL,
+    )
+    # Optional: default value when required (for auto-fill suggestions)
+    default_value = models.ForeignKey(
+        AnalysisDimensionValue,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        help_text="Default value to suggest when this dimension is required",
+    )
+
+    class Meta:
+        db_table = "scratchpad_accountdimensionrule"  # Keep existing table
+        constraints = [
+            models.UniqueConstraint(
+                fields=["account", "dimension"],
+                name="uniq_account_dimension_rule",
+            ),
+        ]
+        verbose_name = "Account Dimension Rule"
+        verbose_name_plural = "Account Dimension Rules"
+
+    def __str__(self):
+        return f"{self.account.code} - {self.dimension.code}: {self.rule_type}"
 
 
 # =============================================================================

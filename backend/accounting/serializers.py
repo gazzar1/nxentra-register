@@ -602,7 +602,7 @@ class AnalysisDimensionSerializer(serializers.ModelSerializer):
         fields = [
             "id", "public_id", "company", "code", "name", "name_ar",
             "description", "description_ar",
-            "is_required_on_posting", "is_active",
+            "dimension_kind", "is_required_on_posting", "is_active",
             "applies_to_account_types", "display_order",
             "values", "created_at", "updated_at",
         ]
@@ -616,6 +616,11 @@ class AnalysisDimensionCreateSerializer(serializers.Serializer):
     name_ar = serializers.CharField(max_length=100, required=False, allow_blank=True, default="")
     description = serializers.CharField(required=False, allow_blank=True, default="")
     description_ar = serializers.CharField(required=False, allow_blank=True, default="")
+    dimension_kind = serializers.ChoiceField(
+        choices=AnalysisDimension.DimensionKind.choices,
+        required=False,
+        default="ANALYTIC",
+    )
     is_required_on_posting = serializers.BooleanField(required=False, default=False)
     applies_to_account_types = serializers.ListField(
         child=serializers.ChoiceField(choices=Account.AccountType.choices),
