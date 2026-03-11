@@ -221,7 +221,7 @@ class JournalEntryListCreateView(APIView):
         
         entries = JournalEntry.objects.filter(
             company=actor.company
-        ).order_by("-date", "-entry_number", "-id").prefetch_related("lines", "lines__account")
+        ).order_by("-entry_number", "-date", "-id").prefetch_related("lines", "lines__account")
         
         serializer = JournalEntrySerializer(entries, many=True)
         return Response(serializer.data)

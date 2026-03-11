@@ -1317,7 +1317,7 @@ class JournalEntry(AccountingReadModel):
             models.Index(fields=["company", "status"]),
             models.Index(fields=["company", "entry_number"]),
         ]
-        ordering = ["-date", "-id"]
+        ordering = ["-entry_number", "-date", "-id"]
 
     def __str__(self):
         num = self.entry_number or f"#{self.id}"

@@ -3,24 +3,17 @@ import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Plus, Download, FileSpreadsheet, FileText, List, Rows } from "lucide-react";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
@@ -39,20 +32,41 @@ import { useJournalEntries } from "@/queries/useJournalEntries";
 import { useAuth } from "@/contexts/AuthContext";
 import { exportService, ExportFormat } from "@/services/export.service";
 import { useToast } from "@/components/ui/toaster";
-import type { JournalEntryStatus } from "@/types/journal";
 
 export default function JournalEntriesPage() {
   const { t } = useTranslation(["common", "accounting"]);
   const router = useRouter();
   const { toast } = useToast();
   const { company } = useAuth();
-  const [statusFilter, setStatusFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [isExporting, setIsExporting] = useState(false);
+  const [activeTab, setActiveTab] = useState("posted");
 
-  const { data: entries, isLoading } = useJournalEntries(
-    statusFilter !== "all" ? { status: statusFilter as JournalEntryStatus } : undefined
-  );
+  const { data: entries, isLoading } = useJournalEntries();
+
+  // Split entries into posted vs drafts/incomplete
+  const { postedEntries, draftEntries } = useMemo(() => {
+    if (!entries) return { postedEntries: [], draftEntries: [] };
+    const posted = entries.filter(
+      (e) => e.status === "POSTED" || e.status === "REVERSED"
+    );
+    const drafts = entries.filter(
+      (e) => e.status === "DRAFT" || e.status === "INCOMPLETE"
+    );
+    return { postedEntries: posted, draftEntries: drafts };
+  }, [entries]);
+
+  const currentEntries = activeTab === "posted" ? postedEntries : draftEntries;
+
+  const filteredEntries = currentEntries.filter((entry) => {
+    if (!search) return true;
+    const searchLower = search.toLowerCase();
+    return (
+      entry.entry_number?.toLowerCase().includes(searchLower) ||
+      entry.memo?.toLowerCase().includes(searchLower) ||
+      entry.date.includes(search)
+    );
+  });
 
   const handleExport = async (format: ExportFormat, detail: 'summary' | 'lines') => {
     setIsExporting(true);
@@ -60,7 +74,7 @@ export default function JournalEntriesPage() {
       await exportService.exportJournalEntries({
         format,
         detail,
-        status: statusFilter !== "all" ? statusFilter : undefined,
+        status: activeTab === "posted" ? "POSTED" : undefined,
       });
       toast({
         title: t("common:success"),
@@ -89,15 +103,74 @@ export default function JournalEntriesPage() {
     return new Date(date).toLocaleDateString(router.locale === "ar" ? "ar-SA" : "en-US");
   };
 
-  const filteredEntries = entries?.filter((entry) => {
-    if (!search) return true;
-    const searchLower = search.toLowerCase();
+  const renderTable = (items: typeof filteredEntries, showStatus: boolean) => {
+    if (isLoading) {
+      return (
+        <div className="flex justify-center py-12">
+          <LoadingSpinner size="lg" />
+        </div>
+      );
+    }
+
+    if (!items || items.length === 0) {
+      return (
+        <EmptyState
+          title={t("messages.noData")}
+          action={
+            <Link href="/accounting/journal-entries/new">
+              <Button>
+                <Plus className="me-2 h-4 w-4" />
+                {t("accounting:journalEntries.createEntry")}
+              </Button>
+            </Link>
+          }
+        />
+      );
+    }
+
     return (
-      entry.entry_number?.toLowerCase().includes(searchLower) ||
-      entry.memo?.toLowerCase().includes(searchLower) ||
-      entry.date.includes(search)
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>{t("accounting:journalEntry.entryNumber")}</TableHead>
+            <TableHead>{t("accounting:journalEntry.date")}</TableHead>
+            <TableHead>{t("accounting:journalEntry.memo")}</TableHead>
+            <TableHead className="text-end">{t("accounting:totals.totalDebit")}</TableHead>
+            <TableHead className="text-end">{t("accounting:totals.totalCredit")}</TableHead>
+            {showStatus && <TableHead>{t("accounting:journalEntry.status")}</TableHead>}
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {items.map((entry) => (
+            <TableRow
+              key={entry.id}
+              className="cursor-pointer"
+              onClick={() => router.push(`/accounting/journal-entries/${entry.id}`)}
+            >
+              <TableCell className="font-mono ltr-code">
+                {entry.entry_number || `#${entry.id}`}
+              </TableCell>
+              <TableCell>{formatDate(entry.date)}</TableCell>
+              <TableCell className="max-w-xs truncate">
+                {entry.memo || "-"}
+              </TableCell>
+              <TableCell className="text-end ltr-number">
+                {formatCurrency(entry.total_debit)}
+              </TableCell>
+              <TableCell className="text-end ltr-number">
+                {formatCurrency(entry.total_credit)}
+              </TableCell>
+              {showStatus && (
+                <TableCell>
+                  <StatusBadge status={entry.status} />
+                </TableCell>
+              )}
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
     );
-  });
+  };
 
   return (
     <AppLayout>
@@ -169,85 +242,41 @@ export default function JournalEntriesPage() {
 
         <Card>
           <CardContent className="pt-6">
-            {/* Filters */}
-            <div className="flex flex-col sm:flex-row gap-4 mb-6">
-              <Input
-                placeholder={t("actions.search")}
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="max-w-sm"
-              />
-              <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger className="w-40">
-                  <SelectValue placeholder={t("accounting:journalEntry.status")} />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All</SelectItem>
-                  <SelectItem value="INCOMPLETE">{t("status.incomplete")}</SelectItem>
-                  <SelectItem value="DRAFT">{t("status.draft")}</SelectItem>
-                  <SelectItem value="POSTED">{t("status.posted")}</SelectItem>
-                  <SelectItem value="REVERSED">{t("status.reversed")}</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            {/* Table */}
-            {isLoading ? (
-              <div className="flex justify-center py-12">
-                <LoadingSpinner size="lg" />
+            <Tabs value={activeTab} onValueChange={setActiveTab}>
+              <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 mb-6">
+                <TabsList>
+                  <TabsTrigger value="posted">
+                    {t("status.posted", "Posted")}
+                    {postedEntries.length > 0 && (
+                      <span className="ms-2 rounded-full bg-muted px-2 py-0.5 text-xs">
+                        {postedEntries.length}
+                      </span>
+                    )}
+                  </TabsTrigger>
+                  <TabsTrigger value="drafts">
+                    {t("accounting:journalEntries.drafts", "Drafts")}
+                    {draftEntries.length > 0 && (
+                      <span className="ms-2 rounded-full bg-muted px-2 py-0.5 text-xs">
+                        {draftEntries.length}
+                      </span>
+                    )}
+                  </TabsTrigger>
+                </TabsList>
+                <Input
+                  placeholder={t("actions.search")}
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="max-w-sm"
+                />
               </div>
-            ) : !filteredEntries || filteredEntries.length === 0 ? (
-              <EmptyState
-                title={t("messages.noData")}
-                action={
-                  <Link href="/accounting/journal-entries/new">
-                    <Button>
-                      <Plus className="me-2 h-4 w-4" />
-                      {t("accounting:journalEntries.createEntry")}
-                    </Button>
-                  </Link>
-                }
-              />
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>{t("accounting:journalEntry.entryNumber")}</TableHead>
-                    <TableHead>{t("accounting:journalEntry.date")}</TableHead>
-                    <TableHead>{t("accounting:journalEntry.memo")}</TableHead>
-                    <TableHead className="text-end">{t("accounting:totals.totalDebit")}</TableHead>
-                    <TableHead className="text-end">{t("accounting:totals.totalCredit")}</TableHead>
-                    <TableHead>{t("accounting:journalEntry.status")}</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filteredEntries.map((entry) => (
-                    <TableRow
-                      key={entry.id}
-                      className="cursor-pointer"
-                      onClick={() => router.push(`/accounting/journal-entries/${entry.id}`)}
-                    >
-                      <TableCell className="font-mono ltr-code">
-                        {entry.entry_number || `#${entry.id}`}
-                      </TableCell>
-                      <TableCell>{formatDate(entry.date)}</TableCell>
-                      <TableCell className="max-w-xs truncate">
-                        {entry.memo || "-"}
-                      </TableCell>
-                      <TableCell className="text-end ltr-number">
-                        {formatCurrency(entry.total_debit)}
-                      </TableCell>
-                      <TableCell className="text-end ltr-number">
-                        {formatCurrency(entry.total_credit)}
-                      </TableCell>
-                      <TableCell>
-                        <StatusBadge status={entry.status} />
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
+
+              <TabsContent value="posted">
+                {renderTable(filteredEntries, false)}
+              </TabsContent>
+              <TabsContent value="drafts">
+                {renderTable(filteredEntries, true)}
+              </TabsContent>
+            </Tabs>
           </CardContent>
         </Card>
       </div>
