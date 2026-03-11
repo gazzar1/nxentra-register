@@ -10,6 +10,8 @@ import type {
   ReportFilters,
   PeriodReportFilters,
   DashboardCharts,
+  DimensionAnalysis,
+  DimensionAnalysisFilters,
 } from '@/types/report';
 
 export const reportsService = {
@@ -54,6 +56,9 @@ export const reportsService = {
     apiClient.get<DashboardCharts>('/reports/dashboard-charts/', {
       params: fiscalYear ? { fiscal_year: fiscalYear } : undefined,
     }),
+
+  dimensionAnalysis: (params: DimensionAnalysisFilters) =>
+    apiClient.get<DimensionAnalysis>('/reports/dimension-analysis/', { params }),
 
   getCashFlowStatement: (params?: Record<string, string>) =>
     apiClient.get('/reports/cash-flow-statement/', { params }),

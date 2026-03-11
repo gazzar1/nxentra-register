@@ -196,6 +196,7 @@ export interface AnalysisDimension {
   name_ar: string;
   description: string;
   description_ar: string;
+  dimension_kind: 'CONTEXT' | 'ANALYTIC';
   is_required_on_posting: boolean;
   is_active: boolean;
   applies_to_account_types: AccountType[];
@@ -211,6 +212,7 @@ export interface AnalysisDimensionCreatePayload {
   name_ar?: string;
   description?: string;
   description_ar?: string;
+  dimension_kind?: 'CONTEXT' | 'ANALYTIC';
   is_required_on_posting?: boolean;
   applies_to_account_types?: AccountType[];
   display_order?: number;

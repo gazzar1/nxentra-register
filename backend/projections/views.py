@@ -1150,6 +1150,183 @@ class IncomeStatementView(APIView):
         return True
 
 
+class DimensionAnalysisView(APIView):
+    """
+    GET /api/reports/dimension-analysis/
+
+    Revenue and expenses grouped by a CONTEXT dimension (e.g. property, unit, lessee).
+
+    Query params:
+    - dimension_code: Code of the dimension to group by (required)
+    - date_from: Start date (YYYY-MM-DD)
+    - date_to: End date (YYYY-MM-DD)
+    - fiscal_year: Fiscal year (filters by period dates)
+    - period_from: Starting period number
+    - period_to: Ending period number
+
+    Returns rows grouped by dimension value, each with revenue, expenses, and net income.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from accounting.models import (
+            Account, AnalysisDimension, JournalEntry,
+            JournalLine, JournalLineAnalysis,
+        )
+        from django.db.models import Sum, Q
+        from django.db.models.functions import Coalesce
+
+        actor = resolve_actor(request)
+        require(actor, "reports.view")
+        company = actor.company
+
+        dimension_code = request.query_params.get("dimension_code")
+        if not dimension_code:
+            return Response(
+                {"detail": "dimension_code query param is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Resolve the dimension
+        try:
+            dimension = AnalysisDimension.objects.get(
+                company=company, code=dimension_code, is_active=True,
+            )
+        except AnalysisDimension.DoesNotExist:
+            return Response(
+                {"detail": f"Dimension '{dimension_code}' not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Build date filter from fiscal year/period or direct dates
+        date_from = None
+        date_to = None
+
+        fiscal_year = request.query_params.get("fiscal_year")
+        period_from_param = request.query_params.get("period_from")
+        period_to_param = request.query_params.get("period_to")
+
+        if fiscal_year and period_from_param and period_to_param:
+            periods = FiscalPeriod.objects.filter(
+                company=company,
+                fiscal_year=int(fiscal_year),
+                period__gte=int(period_from_param),
+                period__lte=int(period_to_param),
+            ).order_by("period")
+            if periods.exists():
+                date_from = periods.first().start_date
+                date_to = periods.last().end_date
+
+        # Direct date params override period-based dates
+        direct_from = request.query_params.get("date_from")
+        direct_to = request.query_params.get("date_to")
+        if direct_from:
+            date_from = date_type.fromisoformat(direct_from)
+        if direct_to:
+            date_to = date_type.fromisoformat(direct_to)
+
+        # Query JournalLineAnalysis for this dimension, joined with journal lines
+        qs = JournalLineAnalysis.objects.filter(
+            company=company,
+            dimension=dimension,
+            journal_line__entry__status=JournalEntry.Status.POSTED,
+        ).select_related(
+            "dimension_value",
+            "journal_line__entry",
+            "journal_line__account",
+        )
+
+        if date_from:
+            qs = qs.filter(journal_line__entry__date__gte=date_from)
+        if date_to:
+            qs = qs.filter(journal_line__entry__date__lte=date_to)
+
+        # Aggregate by dimension value and account type
+        # We need revenue vs expense breakdown per dimension value
+        revenue_types = [
+            Account.AccountType.REVENUE,
+            Account.AccountType.CONTRA_REVENUE,
+        ]
+        expense_types = [
+            Account.AccountType.EXPENSE,
+            Account.AccountType.CONTRA_EXPENSE,
+        ]
+
+        # Build result per dimension value
+        value_data = {}
+
+        for analysis in qs:
+            line = analysis.journal_line
+            account = line.account
+            val = analysis.dimension_value
+            val_key = val.code
+
+            if val_key not in value_data:
+                value_data[val_key] = {
+                    "value_code": val.code,
+                    "value_name": val.name,
+                    "value_name_ar": val.name_ar or val.name,
+                    "revenue": Decimal("0.00"),
+                    "expenses": Decimal("0.00"),
+                }
+
+            row = value_data[val_key]
+
+            # Determine net amount based on normal balance
+            if account.normal_balance == Account.NormalBalance.CREDIT:
+                net = line.credit - line.debit
+            else:
+                net = line.debit - line.credit
+
+            if account.account_type in revenue_types:
+                if account.account_type == Account.AccountType.CONTRA_REVENUE:
+                    row["revenue"] -= net
+                else:
+                    row["revenue"] += net
+            elif account.account_type in expense_types:
+                if account.account_type == Account.AccountType.CONTRA_EXPENSE:
+                    row["expenses"] -= net
+                else:
+                    row["expenses"] += net
+
+        # Build response rows sorted by value code
+        rows = []
+        total_revenue = Decimal("0.00")
+        total_expenses = Decimal("0.00")
+
+        for val_key in sorted(value_data.keys()):
+            row = value_data[val_key]
+            net_income = row["revenue"] - row["expenses"]
+            total_revenue += row["revenue"]
+            total_expenses += row["expenses"]
+
+            rows.append({
+                "value_code": row["value_code"],
+                "value_name": row["value_name"],
+                "value_name_ar": row["value_name_ar"],
+                "revenue": str(row["revenue"]),
+                "expenses": str(row["expenses"]),
+                "net_income": str(net_income),
+            })
+
+        total_net = total_revenue - total_expenses
+
+        return Response({
+            "dimension_code": dimension.code,
+            "dimension_name": dimension.name,
+            "dimension_name_ar": dimension.name_ar or dimension.name,
+            "date_from": date_from.isoformat() if date_from else None,
+            "date_to": date_to.isoformat() if date_to else None,
+            "currency": getattr(company, "default_currency", "USD"),
+            "rows": rows,
+            "totals": {
+                "revenue": str(total_revenue),
+                "expenses": str(total_expenses),
+                "net_income": str(total_net),
+            },
+        })
+
+
 class FiscalPeriodListView(APIView):
     """
     GET /api/reports/periods/

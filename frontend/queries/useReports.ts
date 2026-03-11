@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { reportsService } from '@/services/reports.service';
-import type { ReportFilters, PeriodReportFilters, IncomeStatementFilters } from '@/types/report';
+import type { ReportFilters, PeriodReportFilters, IncomeStatementFilters, DimensionAnalysisFilters } from '@/types/report';
 
 // Query keys factory
 export const reportKeys = {
@@ -14,6 +14,7 @@ export const reportKeys = {
   accountBalances: (filters?: Record<string, unknown>) => [...reportKeys.all, 'account-balances', filters] as const,
   accountBalance: (code: string) => [...reportKeys.all, 'account-balance', code] as const,
   projectionStatus: () => [...reportKeys.all, 'projection-status'] as const,
+  dimensionAnalysis: (filters: DimensionAnalysisFilters) => [...reportKeys.all, 'dimension-analysis', filters] as const,
 };
 
 export function useTrialBalance(filters?: ReportFilters) {
@@ -108,6 +109,17 @@ export function useProjectionStatus() {
       return data;
     },
     refetchInterval: 30000, // Refresh every 30 seconds
+  });
+}
+
+export function useDimensionAnalysis(filters: DimensionAnalysisFilters | null) {
+  return useQuery({
+    queryKey: reportKeys.dimensionAnalysis(filters!),
+    queryFn: async () => {
+      const { data } = await reportsService.dimensionAnalysis(filters!);
+      return data;
+    },
+    enabled: !!filters?.dimension_code,
   });
 }
 

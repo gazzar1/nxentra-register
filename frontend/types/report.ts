@@ -194,3 +194,39 @@ export interface DashboardCharts {
   monthly_net_income: MonthlyNetIncome[];
   top_accounts: TopAccount[];
 }
+
+// Dimension Analysis Report
+export interface DimensionAnalysisRow {
+  value_code: string;
+  value_name: string;
+  value_name_ar: string;
+  revenue: string;
+  expenses: string;
+  net_income: string;
+}
+
+export interface DimensionAnalysisTotals {
+  revenue: string;
+  expenses: string;
+  net_income: string;
+}
+
+export interface DimensionAnalysis {
+  dimension_code: string;
+  dimension_name: string;
+  dimension_name_ar: string;
+  date_from: string | null;
+  date_to: string | null;
+  currency: string;
+  rows: DimensionAnalysisRow[];
+  totals: DimensionAnalysisTotals;
+}
+
+export interface DimensionAnalysisFilters {
+  dimension_code: string;
+  date_from?: string;
+  date_to?: string;
+  fiscal_year?: number;
+  period_from?: number;
+  period_to?: number;
+}

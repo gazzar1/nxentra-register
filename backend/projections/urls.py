@@ -40,6 +40,7 @@ from .views import (
     ProjectionStatusView,
     BalanceSheetView,
     IncomeStatementView,
+    DimensionAnalysisView,
     CashFlowStatementView,
     FiscalPeriodListView,
     FiscalPeriodCloseView,
@@ -97,6 +98,11 @@ urlpatterns = [
         "income-statement/",
         IncomeStatementView.as_view(),
         name="income-statement",
+    ),
+    path(
+        "dimension-analysis/",
+        DimensionAnalysisView.as_view(),
+        name="dimension-analysis",
     ),
     path(
         "cash-flow-statement/",
