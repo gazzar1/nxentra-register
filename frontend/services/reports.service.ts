@@ -12,20 +12,42 @@ import type {
   DashboardCharts,
   DimensionAnalysis,
   DimensionAnalysisFilters,
+  DimensionDrilldown,
+  DimensionDrilldownFilters,
+  DimensionCrossTab,
+  DimensionCrossTabFilters,
 } from '@/types/report';
 
 export const reportsService = {
   trialBalance: (params?: ReportFilters) =>
     apiClient.get<TrialBalance>('/reports/trial-balance/', { params }),
 
-  periodTrialBalance: (params: PeriodReportFilters) =>
-    apiClient.get<PeriodTrialBalance>('/reports/trial-balance/', { params }),
+  periodTrialBalance: (params: PeriodReportFilters) => {
+    const queryParams: Record<string, unknown> = {
+      fiscal_year: params.fiscal_year,
+      period_from: params.period_from,
+      period_to: params.period_to,
+    };
+    if (params.dimension_filters && params.dimension_filters.length > 0) {
+      queryParams.dimension_filters = JSON.stringify(params.dimension_filters);
+    }
+    return apiClient.get<PeriodTrialBalance>('/reports/trial-balance/', { params: queryParams });
+  },
 
   balanceSheet: (params?: ReportFilters) =>
     apiClient.get<BalanceSheet>('/reports/balance-sheet/', { params }),
 
-  periodBalanceSheet: (params: PeriodReportFilters) =>
-    apiClient.get<BalanceSheet>('/reports/balance-sheet/', { params }),
+  periodBalanceSheet: (params: PeriodReportFilters) => {
+    const queryParams: Record<string, unknown> = {
+      fiscal_year: params.fiscal_year,
+      period_from: params.period_from,
+      period_to: params.period_to,
+    };
+    if (params.dimension_filters && params.dimension_filters.length > 0) {
+      queryParams.dimension_filters = JSON.stringify(params.dimension_filters);
+    }
+    return apiClient.get<BalanceSheet>('/reports/balance-sheet/', { params: queryParams });
+  },
 
   incomeStatement: (params?: ReportFilters) =>
     apiClient.get<IncomeStatement>('/reports/income-statement/', { params }),
@@ -59,6 +81,12 @@ export const reportsService = {
 
   dimensionAnalysis: (params: DimensionAnalysisFilters) =>
     apiClient.get<DimensionAnalysis>('/reports/dimension-analysis/', { params }),
+
+  dimensionDrilldown: (params: DimensionDrilldownFilters) =>
+    apiClient.get<DimensionDrilldown>('/reports/dimension-drilldown/', { params }),
+
+  dimensionCrossTab: (params: DimensionCrossTabFilters) =>
+    apiClient.get<DimensionCrossTab>('/reports/dimension-crosstab/', { params }),
 
   getCashFlowStatement: (params?: Record<string, string>) =>
     apiClient.get('/reports/cash-flow-statement/', { params }),

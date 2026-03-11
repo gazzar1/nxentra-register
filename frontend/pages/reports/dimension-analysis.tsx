@@ -22,15 +22,21 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
 import { PageHeader, LoadingSpinner, EmptyState } from "@/components/common";
 import { useBilingualText } from "@/components/common/BilingualText";
-import { useDimensionAnalysis } from "@/queries/useReports";
+import { useDimensionAnalysis, useDimensionDrilldown } from "@/queries/useReports";
 import { dimensionsService } from "@/services/accounts.service";
 import { periodsService } from "@/services/periods.service";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/cn";
-import type { DimensionAnalysisFilters } from "@/types/report";
+import type { DimensionAnalysisFilters, DimensionDrilldownFilters } from "@/types/report";
 
 export default function DimensionAnalysisPage() {
   const { t } = useTranslation(["common", "reports"]);
@@ -42,6 +48,9 @@ export default function DimensionAnalysisPage() {
   const [fiscalYear, setFiscalYear] = useState<number>(currentYear);
   const [periodFrom, setPeriodFrom] = useState<number | null>(null);
   const [periodTo, setPeriodTo] = useState<number | null>(null);
+
+  // Drilldown state
+  const [drilldownValueCode, setDrilldownValueCode] = useState<string | null>(null);
 
   // Fetch CONTEXT dimensions
   const { data: dimensions, isLoading: dimsLoading } = useQuery({
@@ -94,6 +103,23 @@ export default function DimensionAnalysisPage() {
   }, [dimensionCode, fiscalYear, periodFrom, periodTo]);
 
   const { data: report, isLoading, isError } = useDimensionAnalysis(filters);
+
+  // Drilldown query
+  const drilldownFilters: DimensionDrilldownFilters | null = useMemo(() => {
+    if (!dimensionCode || !drilldownValueCode) return null;
+    const f: DimensionDrilldownFilters = {
+      dimension_code: dimensionCode,
+      value_code: drilldownValueCode,
+    };
+    if (periodFrom && periodTo) {
+      f.fiscal_year = fiscalYear;
+      f.period_from = periodFrom;
+      f.period_to = periodTo;
+    }
+    return f;
+  }, [dimensionCode, drilldownValueCode, fiscalYear, periodFrom, periodTo]);
+
+  const { data: drilldown, isLoading: drilldownLoading } = useDimensionDrilldown(drilldownFilters);
 
   const formatAmount = (val: string) => {
     const num = parseFloat(val);
@@ -257,7 +283,11 @@ export default function DimensionAnalysisPage() {
                     {report.rows.map((row) => {
                       const netNum = parseFloat(row.net_income);
                       return (
-                        <TableRow key={row.value_code}>
+                        <TableRow
+                          key={row.value_code}
+                          className="cursor-pointer hover:bg-muted/50"
+                          onClick={() => setDrilldownValueCode(row.value_code)}
+                        >
                           <TableCell className="font-mono">
                             {row.value_code}
                           </TableCell>
@@ -321,6 +351,89 @@ export default function DimensionAnalysisPage() {
             </CardContent>
           </Card>
         )}
+
+        {/* Drilldown Dialog */}
+        <Dialog
+          open={!!drilldownValueCode}
+          onOpenChange={(open) => {
+            if (!open) setDrilldownValueCode(null);
+          }}
+        >
+          <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>
+                {drilldown
+                  ? `${getText(drilldown.dimension_name, drilldown.dimension_name_ar)}: ${getText(drilldown.value_name, drilldown.value_name_ar)} (${drilldown.value_code})`
+                  : "Loading..."}
+              </DialogTitle>
+            </DialogHeader>
+
+            {drilldownLoading ? (
+              <div className="flex justify-center py-8">
+                <LoadingSpinner />
+              </div>
+            ) : drilldown && drilldown.entries.length === 0 ? (
+              <div className="py-8 text-center text-muted-foreground">
+                No journal entries found for this dimension value.
+              </div>
+            ) : drilldown ? (
+              <div className="space-y-4">
+                {drilldown.date_from && drilldown.date_to && (
+                  <p className="text-sm text-muted-foreground">
+                    Period: {drilldown.date_from} to {drilldown.date_to}
+                  </p>
+                )}
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-[100px]">Date</TableHead>
+                      <TableHead className="w-[80px]">Account</TableHead>
+                      <TableHead>Description</TableHead>
+                      <TableHead className="text-right w-[120px]">Debit</TableHead>
+                      <TableHead className="text-right w-[120px]">Credit</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {drilldown.entries.map((entry, idx) => (
+                      <TableRow key={`${entry.entry_public_id}-${entry.line_no}`}>
+                        <TableCell className="text-sm">{entry.entry_date}</TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {entry.account_code}
+                        </TableCell>
+                        <TableCell className="text-sm">
+                          <div>{getText(entry.account_name, entry.account_name_ar)}</div>
+                          {entry.description && entry.description !== entry.account_name && (
+                            <div className="text-xs text-muted-foreground">{entry.entry_memo}</div>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {parseFloat(entry.debit) > 0 ? formatAmount(entry.debit) : "-"}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {parseFloat(entry.credit) > 0 ? formatAmount(entry.credit) : "-"}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                    <TableRow className="border-t-2 font-bold">
+                      <TableCell colSpan={3}>Total</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {formatAmount(drilldown.total_debit)}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {formatAmount(drilldown.total_credit)}
+                      </TableCell>
+                    </TableRow>
+                  </TableBody>
+                </Table>
+                {drilldown.currency && (
+                  <p className="text-xs text-muted-foreground">
+                    All amounts in {drilldown.currency}
+                  </p>
+                )}
+              </div>
+            ) : null}
+          </DialogContent>
+        </Dialog>
       </div>
     </AppLayout>
   );

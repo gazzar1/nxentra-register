@@ -2,7 +2,7 @@ import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import Link from "next/link";
-import { BarChart3, FileSpreadsheet, PieChart, Layers } from "lucide-react";
+import { BarChart3, FileSpreadsheet, PieChart, Layers, Grid3X3 } from "lucide-react";
 import { AppLayout } from "@/components/layout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/common";
@@ -34,6 +34,12 @@ export default function ReportsIndexPage() {
       description: "Revenue & expenses by property, unit, or other dimension",
       href: "/reports/dimension-analysis",
       icon: <Layers className="h-8 w-8" />,
+    },
+    {
+      title: "Dimension Cross-Tab",
+      description: "Cross-tabulation of amounts across two dimensions",
+      href: "/reports/dimension-crosstab",
+      icon: <Grid3X3 className="h-8 w-8" />,
     },
   ];
 

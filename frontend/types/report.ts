@@ -160,6 +160,7 @@ export interface PeriodReportFilters {
   fiscal_year: number;
   period_from: number;
   period_to: number;
+  dimension_filters?: DimensionFilter[];
 }
 
 // Dashboard chart types
@@ -226,6 +227,82 @@ export interface DimensionAnalysisFilters {
   dimension_code: string;
   date_from?: string;
   date_to?: string;
+  fiscal_year?: number;
+  period_from?: number;
+  period_to?: number;
+}
+
+// Dimension Drilldown (journal entries for a specific dimension value)
+export interface DimensionDrilldownEntry {
+  entry_date: string;
+  entry_public_id: string;
+  entry_memo: string;
+  line_no: number;
+  account_code: string;
+  account_name: string;
+  account_name_ar: string;
+  description: string;
+  debit: string;
+  credit: string;
+}
+
+export interface DimensionDrilldown {
+  dimension_code: string;
+  dimension_name: string;
+  dimension_name_ar: string;
+  value_code: string;
+  value_name: string;
+  value_name_ar: string;
+  date_from: string | null;
+  date_to: string | null;
+  currency: string;
+  entries: DimensionDrilldownEntry[];
+  total_debit: string;
+  total_credit: string;
+}
+
+export interface DimensionDrilldownFilters {
+  dimension_code: string;
+  value_code: string;
+  date_from?: string;
+  date_to?: string;
+  fiscal_year?: number;
+  period_from?: number;
+  period_to?: number;
+}
+
+// Dimension Cross-Tab Report
+export interface DimensionCrossTabColumn {
+  code: string;
+  name: string;
+  name_ar: string;
+}
+
+export interface DimensionCrossTabRow {
+  code: string;
+  name: string;
+  name_ar: string;
+  values: string[];
+  total: string;
+}
+
+export interface DimensionCrossTab {
+  row_dimension: { code: string; name: string; name_ar: string };
+  col_dimension: { code: string; name: string; name_ar: string };
+  metric: string;
+  date_from: string | null;
+  date_to: string | null;
+  currency: string;
+  columns: DimensionCrossTabColumn[];
+  rows: DimensionCrossTabRow[];
+  column_totals: string[];
+  grand_total: string;
+}
+
+export interface DimensionCrossTabFilters {
+  row_dimension: string;
+  col_dimension: string;
+  metric?: string;
   fiscal_year?: number;
   period_from?: number;
   period_to?: number;

@@ -25,7 +25,91 @@ from projections.models import AccountBalance, FiscalPeriod, FiscalPeriodConfig,
 from projections.account_balance import AccountBalanceProjection
 
 
-class TrialBalanceView(APIView):
+class DimensionFilterMixin:
+    """
+    Shared logic for dimension filtering on report views.
+
+    Parse dimension_filters query param and filter journal event lines.
+    """
+
+    def _parse_dimension_filters(self, request):
+        """Parse dimension_filters JSON from query params."""
+        import json
+        raw = request.query_params.get("dimension_filters", "")
+        if not raw:
+            return []
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    def _build_dimension_filter_context(self, company, dimension_filters):
+        """Build lookup dicts for dimension filter matching."""
+        from accounting.models import AnalysisDimension, AnalysisDimensionValue
+
+        dim_filter_map = {}
+        for df in dimension_filters:
+            dim_code = df.get("dimension_code")
+            if dim_code:
+                dim_filter_map[dim_code] = {
+                    "from": df.get("code_from", ""),
+                    "to": df.get("code_to", ""),
+                }
+
+        dim_public_id_to_code = {}
+        value_public_id_to_code = {}
+
+        if dim_filter_map:
+            for dim in AnalysisDimension.objects.filter(company=company):
+                dim_public_id_to_code[str(dim.public_id)] = dim.code
+            for val in AnalysisDimensionValue.objects.filter(company=company):
+                value_public_id_to_code[str(val.public_id)] = val.code
+
+        return dim_filter_map, dim_public_id_to_code, value_public_id_to_code
+
+    def _line_matches_dimension_filters(
+        self, analysis_tags, dim_filter_map,
+        dim_public_id_to_code, value_public_id_to_code
+    ):
+        """Check if a journal line's analysis tags match dimension filters."""
+        if not dim_filter_map:
+            return True
+
+        line_dims = {}
+        for tag in analysis_tags:
+            dim_code = tag.get("dimension_code")
+            value_code = tag.get("value_code")
+
+            if not dim_code:
+                dim_public_id = tag.get("dimension_public_id")
+                if dim_public_id:
+                    dim_code = dim_public_id_to_code.get(str(dim_public_id))
+
+            if not value_code:
+                value_public_id = tag.get("value_public_id")
+                if value_public_id:
+                    value_code = value_public_id_to_code.get(str(value_public_id))
+
+            if dim_code and value_code:
+                line_dims[dim_code] = value_code
+
+        for dim_code, range_filter in dim_filter_map.items():
+            code_from = range_filter.get("from", "")
+            code_to = range_filter.get("to", "")
+
+            if dim_code not in line_dims:
+                return False
+
+            value_code = line_dims[dim_code]
+            if code_from and value_code < code_from:
+                return False
+            if code_to and value_code > code_to:
+                return False
+
+        return True
+
+
+class TrialBalanceView(DimensionFilterMixin, APIView):
     """
     GET /api/reports/trial-balance/
 
@@ -54,13 +138,16 @@ class TrialBalanceView(APIView):
         period_to = request.query_params.get("period_to")
         fiscal_year = request.query_params.get("fiscal_year")
 
+        dimension_filters = self._parse_dimension_filters(request)
+
         if period_from and period_to and fiscal_year:
             # Period-filtered trial balance
             return self._get_period_trial_balance(
                 actor,
                 int(fiscal_year),
                 int(period_from),
-                int(period_to)
+                int(period_to),
+                dimension_filters=dimension_filters,
             )
 
         # Default: current balances from projection
@@ -78,7 +165,8 @@ class TrialBalanceView(APIView):
 
         return Response(result)
 
-    def _get_period_trial_balance(self, actor, fiscal_year: int, period_from: int, period_to: int):
+    def _get_period_trial_balance(self, actor, fiscal_year: int, period_from: int, period_to: int,
+                                   dimension_filters=None):
         """
         Compute trial balance for a specific period range.
 
@@ -135,6 +223,13 @@ class TrialBalanceView(APIView):
                 "period_credit": Decimal("0.00"),
             }
 
+        # Build dimension filter context
+        dim_filter_map, dim_pid_to_code, val_pid_to_code = (
+            self._build_dimension_filter_context(
+                actor.company, dimension_filters or [],
+            )
+        )
+
         # Query all posted events
         events = BusinessEvent.objects.filter(
             company=actor.company,
@@ -158,6 +253,14 @@ class TrialBalanceView(APIView):
 
                 if line.get("is_memo_line", False):
                     continue
+
+                # Check dimension filters
+                if dim_filter_map:
+                    analysis_tags = line.get("analysis_tags", [])
+                    if not self._line_matches_dimension_filters(
+                        analysis_tags, dim_filter_map, dim_pid_to_code, val_pid_to_code
+                    ):
+                        continue
 
                 debit = Decimal(line.get("debit", "0"))
                 credit = Decimal(line.get("credit", "0"))
@@ -229,6 +332,7 @@ class TrialBalanceView(APIView):
             "period_to": period_to,
             "period_start_date": period_start_date.isoformat(),
             "period_end_date": period_end_date.isoformat(),
+            "dimension_filters": dimension_filters or [],
             "accounts": result_accounts,
             "totals": {
                 "opening_balance": str(total_opening_balance),
@@ -402,7 +506,7 @@ class ProjectionStatusView(APIView):
         })
 
 
-class BalanceSheetView(APIView):
+class BalanceSheetView(DimensionFilterMixin, APIView):
     """
     GET /api/reports/balance-sheet/
 
@@ -429,13 +533,16 @@ class BalanceSheetView(APIView):
         period_to = request.query_params.get("period_to")
         fiscal_year = request.query_params.get("fiscal_year")
 
+        dimension_filters = self._parse_dimension_filters(request)
+
         if period_from and period_to and fiscal_year:
             # Period-filtered balance sheet
             return self._get_period_balance_sheet(
                 actor,
                 int(fiscal_year),
                 int(period_from),
-                int(period_to)
+                int(period_to),
+                dimension_filters=dimension_filters,
             )
 
         # Default: current balances from projection
@@ -454,7 +561,8 @@ class BalanceSheetView(APIView):
             actor, balances, date.today().isoformat()
         )
 
-    def _get_period_balance_sheet(self, actor, fiscal_year: int, period_from: int, period_to: int):
+    def _get_period_balance_sheet(self, actor, fiscal_year: int, period_from: int, period_to: int,
+                                  dimension_filters=None):
         """
         Compute balance sheet as of the end of a specific period range.
 
@@ -507,6 +615,13 @@ class BalanceSheetView(APIView):
                 "credit_total": Decimal("0.00"),
             }
 
+        # Build dimension filter context
+        dim_filter_map, dim_pid_to_code, val_pid_to_code = (
+            self._build_dimension_filter_context(
+                actor.company, dimension_filters or [],
+            )
+        )
+
         # Query all posted events up to as_of_date
         events = BusinessEvent.objects.filter(
             company=actor.company,
@@ -533,6 +648,14 @@ class BalanceSheetView(APIView):
 
                 if line.get("is_memo_line", False):
                     continue
+
+                # Check dimension filters
+                if dim_filter_map:
+                    analysis_tags = line.get("analysis_tags", [])
+                    if not self._line_matches_dimension_filters(
+                        analysis_tags, dim_filter_map, dim_pid_to_code, val_pid_to_code
+                    ):
+                        continue
 
                 debit = Decimal(line.get("debit", "0"))
                 credit = Decimal(line.get("credit", "0"))
@@ -743,7 +866,7 @@ class BalanceSheetView(APIView):
         })
 
 
-class IncomeStatementView(APIView):
+class IncomeStatementView(DimensionFilterMixin, APIView):
     """
     GET /api/reports/income-statement/
 
@@ -1091,63 +1214,7 @@ class IncomeStatementView(APIView):
 
         return Response(response_data)
 
-    def _line_matches_dimension_filters(
-        self, analysis_tags: list, dim_filter_map: dict,
-        dim_public_id_to_code: dict, value_public_id_to_code: dict
-    ) -> bool:
-        """
-        Check if a journal line's analysis tags match the dimension filters.
-
-        A line matches if for each filtered dimension:
-        - The line has a tag for that dimension
-        - The tag's value code is within the code_from to code_to range
-
-        Handles both tag formats:
-        - {dimension_public_id, value_public_id} (from posted events)
-        - {dimension_code, value_code} (from some event paths)
-        """
-        if not dim_filter_map:
-            return True
-
-        # Build lookup of line's dimension tags
-        line_dims = {}
-        for tag in analysis_tags:
-            # Try direct codes first (some events store them directly)
-            dim_code = tag.get("dimension_code")
-            value_code = tag.get("value_code")
-
-            # If no direct codes, resolve from public_ids
-            if not dim_code:
-                dim_public_id = tag.get("dimension_public_id")
-                if dim_public_id:
-                    dim_code = dim_public_id_to_code.get(str(dim_public_id))
-
-            if not value_code:
-                value_public_id = tag.get("value_public_id")
-                if value_public_id:
-                    value_code = value_public_id_to_code.get(str(value_public_id))
-
-            if dim_code and value_code:
-                line_dims[dim_code] = value_code
-
-        # Check each dimension filter
-        for dim_code, range_filter in dim_filter_map.items():
-            code_from = range_filter.get("from", "")
-            code_to = range_filter.get("to", "")
-
-            # If dimension filter is specified, line must have this dimension
-            if dim_code not in line_dims:
-                return False
-
-            value_code = line_dims[dim_code]
-
-            # Check code range (string comparison)
-            if code_from and value_code < code_from:
-                return False
-            if code_to and value_code > code_to:
-                return False
-
-        return True
+    # _line_matches_dimension_filters is inherited from DimensionFilterMixin
 
 
 class DimensionAnalysisView(APIView):
@@ -1363,6 +1430,390 @@ class DimensionAnalysisView(APIView):
                 "expenses": str(total_expenses),
                 "net_income": str(total_net),
             },
+        })
+
+
+class DimensionDrilldownView(APIView):
+    """
+    GET /api/reports/dimension-drilldown/
+
+    Returns journal entries for a specific dimension value.
+
+    Query params:
+    - dimension_code: Code of the dimension (required)
+    - value_code: Code of the dimension value (required)
+    - date_from: Start date (YYYY-MM-DD)
+    - date_to: End date (YYYY-MM-DD)
+    - fiscal_year: Fiscal year (filters by period dates)
+    - period_from: Starting period number
+    - period_to: Ending period number
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from accounting.models import (
+            AnalysisDimension, AnalysisDimensionValue,
+            JournalEntry, JournalLineAnalysis,
+        )
+
+        actor = resolve_actor(request)
+        require(actor, "reports.view")
+        company = actor.company
+
+        dimension_code = request.query_params.get("dimension_code")
+        value_code = request.query_params.get("value_code")
+
+        if not dimension_code or not value_code:
+            return Response(
+                {"detail": "dimension_code and value_code query params are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Resolve dimension and value
+        try:
+            dimension = AnalysisDimension.objects.get(
+                company=company, code=dimension_code, is_active=True,
+            )
+        except AnalysisDimension.DoesNotExist:
+            return Response(
+                {"detail": f"Dimension '{dimension_code}' not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            dim_value = AnalysisDimensionValue.objects.get(
+                company=company, dimension=dimension, code=value_code,
+            )
+        except AnalysisDimensionValue.DoesNotExist:
+            return Response(
+                {"detail": f"Dimension value '{value_code}' not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Build date filter
+        date_from = None
+        date_to = None
+
+        fiscal_year = request.query_params.get("fiscal_year")
+        period_from_param = request.query_params.get("period_from")
+        period_to_param = request.query_params.get("period_to")
+
+        if fiscal_year and period_from_param and period_to_param:
+            periods = FiscalPeriod.objects.filter(
+                company=company,
+                fiscal_year=int(fiscal_year),
+                period__gte=int(period_from_param),
+                period__lte=int(period_to_param),
+            ).order_by("period")
+            if periods.exists():
+                date_from = periods.first().start_date
+                date_to = periods.last().end_date
+
+        direct_from = request.query_params.get("date_from")
+        direct_to = request.query_params.get("date_to")
+        if direct_from:
+            date_from = date_type.fromisoformat(direct_from)
+        if direct_to:
+            date_to = date_type.fromisoformat(direct_to)
+
+        # Find all journal lines tagged with this dimension value
+        qs = JournalLineAnalysis.objects.filter(
+            company=company,
+            dimension=dimension,
+            dimension_value=dim_value,
+            journal_line__entry__status=JournalEntry.Status.POSTED,
+        ).select_related(
+            "journal_line__entry",
+            "journal_line__account",
+        ).order_by("journal_line__entry__date", "journal_line__entry__id")
+
+        if date_from:
+            qs = qs.filter(journal_line__entry__date__gte=date_from)
+        if date_to:
+            qs = qs.filter(journal_line__entry__date__lte=date_to)
+
+        entries = []
+        total_debit = Decimal("0.00")
+        total_credit = Decimal("0.00")
+
+        for analysis in qs:
+            line = analysis.journal_line
+            entry = line.entry
+            account = line.account
+
+            entries.append({
+                "entry_date": entry.date.isoformat(),
+                "entry_public_id": str(entry.public_id),
+                "entry_memo": entry.memo,
+                "line_no": line.line_no,
+                "account_code": account.code,
+                "account_name": account.name,
+                "account_name_ar": account.name_ar or account.name,
+                "description": line.description,
+                "debit": str(line.debit),
+                "credit": str(line.credit),
+            })
+
+            total_debit += line.debit
+            total_credit += line.credit
+
+        return Response({
+            "dimension_code": dimension.code,
+            "dimension_name": dimension.name,
+            "dimension_name_ar": dimension.name_ar or dimension.name,
+            "value_code": dim_value.code,
+            "value_name": dim_value.name,
+            "value_name_ar": dim_value.name_ar or dim_value.name,
+            "date_from": date_from.isoformat() if date_from else None,
+            "date_to": date_to.isoformat() if date_to else None,
+            "currency": getattr(company, "default_currency", "USD"),
+            "entries": entries,
+            "total_debit": str(total_debit),
+            "total_credit": str(total_credit),
+        })
+
+
+class DimensionCrossTabView(APIView):
+    """
+    GET /api/reports/dimension-crosstab/
+
+    Cross-tabulation of net income across two dimensions.
+
+    Query params:
+    - row_dimension: Code of the row dimension (required)
+    - col_dimension: Code of the column dimension (required)
+    - metric: "net_income" (default), "revenue", or "expenses"
+    - fiscal_year / period_from / period_to: Period filter
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from accounting.models import (
+            Account, AnalysisDimension, AnalysisDimensionValue,
+            JournalEntry, JournalLineAnalysis,
+        )
+        from django.db.models import Q
+        from collections import defaultdict
+
+        actor = resolve_actor(request)
+        require(actor, "reports.view")
+        company = actor.company
+
+        row_dim_code = request.query_params.get("row_dimension")
+        col_dim_code = request.query_params.get("col_dimension")
+        metric = request.query_params.get("metric", "net_income")
+
+        if not row_dim_code or not col_dim_code:
+            return Response(
+                {"detail": "row_dimension and col_dimension query params are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if row_dim_code == col_dim_code:
+            return Response(
+                {"detail": "row_dimension and col_dimension must be different."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Resolve dimensions
+        try:
+            row_dim = AnalysisDimension.objects.get(
+                company=company, code=row_dim_code, is_active=True,
+            )
+        except AnalysisDimension.DoesNotExist:
+            return Response(
+                {"detail": f"Dimension '{row_dim_code}' not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            col_dim = AnalysisDimension.objects.get(
+                company=company, code=col_dim_code, is_active=True,
+            )
+        except AnalysisDimension.DoesNotExist:
+            return Response(
+                {"detail": f"Dimension '{col_dim_code}' not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Build date filter
+        date_from = None
+        date_to = None
+
+        fiscal_year = request.query_params.get("fiscal_year")
+        period_from_param = request.query_params.get("period_from")
+        period_to_param = request.query_params.get("period_to")
+
+        if fiscal_year and period_from_param and period_to_param:
+            periods = FiscalPeriod.objects.filter(
+                company=company,
+                fiscal_year=int(fiscal_year),
+                period__gte=int(period_from_param),
+                period__lte=int(period_to_param),
+            ).order_by("period")
+            if periods.exists():
+                date_from = periods.first().start_date
+                date_to = periods.last().end_date
+
+        # Revenue/expense account types
+        revenue_types = [
+            Account.AccountType.REVENUE,
+            Account.AccountType.CONTRA_REVENUE,
+        ]
+        expense_types = [
+            Account.AccountType.EXPENSE,
+            Account.AccountType.CONTRA_EXPENSE,
+        ]
+
+        # Find all journal lines tagged with BOTH dimensions
+        # Strategy: find lines that have analysis records for the row dimension,
+        # then for each, check if they also have the col dimension.
+
+        row_qs = JournalLineAnalysis.objects.filter(
+            company=company,
+            dimension=row_dim,
+            journal_line__entry__status=JournalEntry.Status.POSTED,
+        ).select_related(
+            "dimension_value",
+            "journal_line__entry",
+            "journal_line__account",
+        )
+
+        if date_from:
+            row_qs = row_qs.filter(journal_line__entry__date__gte=date_from)
+        if date_to:
+            row_qs = row_qs.filter(journal_line__entry__date__lte=date_to)
+
+        # Get all col dimension analyses for the same lines
+        row_line_ids = set()
+        row_line_data = {}  # line_id -> {row_value_code, account, debit, credit}
+
+        for analysis in row_qs:
+            line = analysis.journal_line
+            row_line_ids.add(line.id)
+            row_line_data[line.id] = {
+                "row_value_code": analysis.dimension_value.code,
+                "row_value_name": analysis.dimension_value.name,
+                "row_value_name_ar": analysis.dimension_value.name_ar or analysis.dimension_value.name,
+                "account": line.account,
+                "debit": line.debit,
+                "credit": line.credit,
+            }
+
+        # Fetch col dimension analyses for these lines
+        col_analyses = JournalLineAnalysis.objects.filter(
+            company=company,
+            dimension=col_dim,
+            journal_line_id__in=row_line_ids,
+        ).select_related("dimension_value")
+
+        col_by_line = {}
+        for ca in col_analyses:
+            col_by_line[ca.journal_line_id] = {
+                "col_value_code": ca.dimension_value.code,
+                "col_value_name": ca.dimension_value.name,
+                "col_value_name_ar": ca.dimension_value.name_ar or ca.dimension_value.name,
+            }
+
+        # Build cross-tab: {row_code: {col_code: {revenue, expenses}}}
+        cross = defaultdict(lambda: defaultdict(lambda: {"revenue": Decimal("0.00"), "expenses": Decimal("0.00")}))
+        row_meta = {}  # row_code -> {name, name_ar}
+        col_meta = {}  # col_code -> {name, name_ar}
+
+        for line_id, row_data in row_line_data.items():
+            col_data = col_by_line.get(line_id)
+            if not col_data:
+                continue
+
+            row_code = row_data["row_value_code"]
+            col_code = col_data["col_value_code"]
+            account = row_data["account"]
+
+            row_meta[row_code] = {"name": row_data["row_value_name"], "name_ar": row_data["row_value_name_ar"]}
+            col_meta[col_code] = {"name": col_data["col_value_name"], "name_ar": col_data["col_value_name_ar"]}
+
+            # Calculate net amount for this line
+            if account.normal_balance == Account.NormalBalance.CREDIT:
+                net = row_data["credit"] - row_data["debit"]
+            else:
+                net = row_data["debit"] - row_data["credit"]
+
+            cell = cross[row_code][col_code]
+
+            if account.account_type in revenue_types:
+                if account.account_type == Account.AccountType.CONTRA_REVENUE:
+                    cell["revenue"] -= net
+                else:
+                    cell["revenue"] += net
+            elif account.account_type in expense_types:
+                if account.account_type == Account.AccountType.CONTRA_EXPENSE:
+                    cell["expenses"] -= net
+                else:
+                    cell["expenses"] += net
+
+        # Build response
+        sorted_row_codes = sorted(row_meta.keys())
+        sorted_col_codes = sorted(col_meta.keys())
+
+        columns = [
+            {
+                "code": code,
+                "name": col_meta[code]["name"],
+                "name_ar": col_meta[code]["name_ar"],
+            }
+            for code in sorted_col_codes
+        ]
+
+        def cell_value(cell_data):
+            if metric == "revenue":
+                return cell_data["revenue"]
+            elif metric == "expenses":
+                return cell_data["expenses"]
+            else:
+                return cell_data["revenue"] - cell_data["expenses"]
+
+        rows = []
+        col_totals = defaultdict(lambda: Decimal("0.00"))
+        grand_total = Decimal("0.00")
+
+        for row_code in sorted_row_codes:
+            row_values = []
+            row_total = Decimal("0.00")
+            for col_code in sorted_col_codes:
+                val = cell_value(cross[row_code][col_code])
+                row_values.append(str(val))
+                row_total += val
+                col_totals[col_code] += val
+
+            grand_total += row_total
+
+            rows.append({
+                "code": row_code,
+                "name": row_meta[row_code]["name"],
+                "name_ar": row_meta[row_code]["name_ar"],
+                "values": row_values,
+                "total": str(row_total),
+            })
+
+        return Response({
+            "row_dimension": {
+                "code": row_dim.code,
+                "name": row_dim.name,
+                "name_ar": row_dim.name_ar or row_dim.name,
+            },
+            "col_dimension": {
+                "code": col_dim.code,
+                "name": col_dim.name,
+                "name_ar": col_dim.name_ar or col_dim.name,
+            },
+            "metric": metric,
+            "date_from": date_from.isoformat() if date_from else None,
+            "date_to": date_to.isoformat() if date_to else None,
+            "currency": getattr(company, "default_currency", "USD"),
+            "columns": columns,
+            "rows": rows,
+            "column_totals": [str(col_totals[c]) for c in sorted_col_codes],
+            "grand_total": str(grand_total),
         })
 
 

@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { reportsService } from '@/services/reports.service';
-import type { ReportFilters, PeriodReportFilters, IncomeStatementFilters, DimensionAnalysisFilters } from '@/types/report';
+import type { ReportFilters, PeriodReportFilters, IncomeStatementFilters, DimensionAnalysisFilters, DimensionDrilldownFilters, DimensionCrossTabFilters } from '@/types/report';
 
 // Query keys factory
 export const reportKeys = {
@@ -15,6 +15,8 @@ export const reportKeys = {
   accountBalance: (code: string) => [...reportKeys.all, 'account-balance', code] as const,
   projectionStatus: () => [...reportKeys.all, 'projection-status'] as const,
   dimensionAnalysis: (filters: DimensionAnalysisFilters) => [...reportKeys.all, 'dimension-analysis', filters] as const,
+  dimensionDrilldown: (filters: DimensionDrilldownFilters) => [...reportKeys.all, 'dimension-drilldown', filters] as const,
+  dimensionCrossTab: (filters: DimensionCrossTabFilters) => [...reportKeys.all, 'dimension-crosstab', filters] as const,
 };
 
 export function useTrialBalance(filters?: ReportFilters) {
@@ -120,6 +122,28 @@ export function useDimensionAnalysis(filters: DimensionAnalysisFilters | null) {
       return data;
     },
     enabled: !!filters?.dimension_code,
+  });
+}
+
+export function useDimensionDrilldown(filters: DimensionDrilldownFilters | null) {
+  return useQuery({
+    queryKey: reportKeys.dimensionDrilldown(filters!),
+    queryFn: async () => {
+      const { data } = await reportsService.dimensionDrilldown(filters!);
+      return data;
+    },
+    enabled: !!filters?.dimension_code && !!filters?.value_code,
+  });
+}
+
+export function useDimensionCrossTab(filters: DimensionCrossTabFilters | null) {
+  return useQuery({
+    queryKey: reportKeys.dimensionCrossTab(filters!),
+    queryFn: async () => {
+      const { data } = await reportsService.dimensionCrossTab(filters!);
+      return data;
+    },
+    enabled: !!filters?.row_dimension && !!filters?.col_dimension,
   });
 }
 

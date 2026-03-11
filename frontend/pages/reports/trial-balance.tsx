@@ -4,10 +4,10 @@ import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import { useRouter } from "next/router";
 import { useQuery } from "@tanstack/react-query";
-import { Printer, Filter } from "lucide-react";
+import { Printer, Filter, Plus, X } from "lucide-react";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Select,
   SelectContent,
@@ -28,8 +28,15 @@ import { PageHeader, LoadingSpinner, EmptyState } from "@/components/common";
 import { useBilingualText } from "@/components/common/BilingualText";
 import { useTrialBalance, usePeriodTrialBalance } from "@/queries/useReports";
 import { periodsService } from "@/services/periods.service";
+import { dimensionsService } from "@/services/accounts.service";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/cn";
+
+interface DimensionFilterState {
+  dimension_code: string;
+  code_from: string;
+  code_to: string;
+}
 
 export default function TrialBalancePage() {
   const { t } = useTranslation(["common", "reports"]);
@@ -43,6 +50,25 @@ export default function TrialBalancePage() {
   const [periodFrom, setPeriodFrom] = useState<number | null>(null);
   const [periodTo, setPeriodTo] = useState<number | null>(null);
   const [filterApplied, setFilterApplied] = useState(false);
+
+  // Dimension filter state
+  const [dimensionFilters, setDimensionFilters] = useState<DimensionFilterState[]>([]);
+
+  // Fetch available dimensions
+  const { data: dimensions } = useQuery({
+    queryKey: ["dimensions"],
+    queryFn: async () => {
+      const { data } = await dimensionsService.list();
+      return data;
+    },
+  });
+
+  // Available dimensions for adding filters (exclude already selected)
+  const availableDimensions = useMemo(() => {
+    if (!dimensions) return [];
+    const selectedCodes = new Set(dimensionFilters.map((df) => df.dimension_code));
+    return dimensions.filter((d) => !selectedCodes.has(d.code));
+  }, [dimensions, dimensionFilters]);
 
   // Fetch available periods
   const { data: periodsData, isLoading: periodsLoading } = useQuery({
@@ -73,7 +99,14 @@ export default function TrialBalancePage() {
   // Determine which query to use
   const periodFilters =
     filterApplied && periodFrom !== null && periodTo !== null
-      ? { fiscal_year: fiscalYear, period_from: periodFrom, period_to: periodTo }
+      ? {
+          fiscal_year: fiscalYear,
+          period_from: periodFrom,
+          period_to: periodTo,
+          dimension_filters: dimensionFilters.filter(
+            (df) => df.dimension_code && (df.code_from || df.code_to)
+          ),
+        }
       : null;
 
   // Fetch trial balance data
@@ -112,7 +145,34 @@ export default function TrialBalancePage() {
   const handleClearFilter = () => {
     setPeriodFrom(null);
     setPeriodTo(null);
+    setDimensionFilters([]);
     setFilterApplied(false);
+  };
+
+  // Add a new dimension filter
+  const handleAddDimensionFilter = () => {
+    if (availableDimensions.length > 0) {
+      setDimensionFilters([
+        ...dimensionFilters,
+        { dimension_code: "", code_from: "", code_to: "" },
+      ]);
+    }
+  };
+
+  // Update a dimension filter
+  const handleUpdateDimensionFilter = (
+    index: number,
+    field: keyof DimensionFilterState,
+    value: string
+  ) => {
+    const updated = [...dimensionFilters];
+    updated[index] = { ...updated[index], [field]: value };
+    setDimensionFilters(updated);
+  };
+
+  // Remove a dimension filter
+  const handleRemoveDimensionFilter = (index: number) => {
+    setDimensionFilters(dimensionFilters.filter((_, i) => i !== index));
   };
 
   // When fiscal year changes, reset period selections
@@ -238,6 +298,169 @@ export default function TrialBalancePage() {
             </div>
           </CardContent>
         </Card>
+
+        {/* Dimension Filters Card */}
+        {dimensions && dimensions.length > 0 && (
+          <Card className="no-print">
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base">
+                  {t("reports:filters.dimensionFilters", "Analysis Dimension Filters")}
+                </CardTitle>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleAddDimensionFilter}
+                  disabled={availableDimensions.length === 0}
+                >
+                  <Plus className="me-2 h-4 w-4" />
+                  {t("reports:filters.addDimension", "Add Filter")}
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {dimensionFilters.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  {t("reports:filters.noDimensionFilters", "No dimension filters applied. Click 'Add Filter' to filter by analysis dimensions.")}
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  {dimensionFilters.map((df, index) => {
+                    const selectedDimension = dimensions?.find(
+                      (d) => d.code === df.dimension_code
+                    );
+                    const dimensionValues = selectedDimension?.values ?? [];
+                    const sortedValues = [...dimensionValues].sort((a, b) =>
+                      a.code.localeCompare(b.code)
+                    );
+
+                    return (
+                      <div key={index} className="flex flex-wrap items-end gap-3 p-3 border rounded-lg">
+                        <div className="space-y-1 flex-1 min-w-[150px]">
+                          <label className="text-xs font-medium text-muted-foreground">
+                            {t("reports:filters.dimension", "Dimension")}
+                          </label>
+                          <Select
+                            value={df.dimension_code}
+                            onValueChange={(v) => {
+                              const updated = [...dimensionFilters];
+                              updated[index] = {
+                                dimension_code: v,
+                                code_from: "",
+                                code_to: "",
+                              };
+                              setDimensionFilters(updated);
+                            }}
+                          >
+                            <SelectTrigger className="h-9">
+                              <SelectValue
+                                placeholder={t("reports:filters.selectDimension", "Select...")}
+                              />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {dimensions
+                                .filter(
+                                  (d) =>
+                                    d.code === df.dimension_code ||
+                                    !dimensionFilters.some(
+                                      (f, i) => i !== index && f.dimension_code === d.code
+                                    )
+                                )
+                                .map((d) => (
+                                  <SelectItem key={d.code} value={d.code}>
+                                    {getText(d.name, d.name_ar)}
+                                  </SelectItem>
+                                ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        <div className="space-y-1 w-40">
+                          <label className="text-xs font-medium text-muted-foreground">
+                            {t("reports:filters.codeFrom", "Code From")}
+                          </label>
+                          <Select
+                            value={df.code_from || "__all__"}
+                            onValueChange={(v) =>
+                              handleUpdateDimensionFilter(
+                                index,
+                                "code_from",
+                                v === "__all__" ? "" : v
+                              )
+                            }
+                            disabled={!df.dimension_code || sortedValues.length === 0}
+                          >
+                            <SelectTrigger className="h-9">
+                              <SelectValue
+                                placeholder={t("reports:filters.selectCode", "Select...")}
+                              />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="__all__">
+                                {t("reports:filters.allCodes", "(All)")}
+                              </SelectItem>
+                              {sortedValues.map((v) => (
+                                <SelectItem key={v.code} value={v.code}>
+                                  {v.code} - {getText(v.name, v.name_ar)}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        <div className="space-y-1 w-40">
+                          <label className="text-xs font-medium text-muted-foreground">
+                            {t("reports:filters.codeTo", "Code To")}
+                          </label>
+                          <Select
+                            value={df.code_to || "__all__"}
+                            onValueChange={(v) =>
+                              handleUpdateDimensionFilter(
+                                index,
+                                "code_to",
+                                v === "__all__" ? "" : v
+                              )
+                            }
+                            disabled={!df.dimension_code || sortedValues.length === 0}
+                          >
+                            <SelectTrigger className="h-9">
+                              <SelectValue
+                                placeholder={t("reports:filters.selectCode", "Select...")}
+                              />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="__all__">
+                                {t("reports:filters.allCodes", "(All)")}
+                              </SelectItem>
+                              {sortedValues
+                                .filter(
+                                  (v) => !df.code_from || v.code >= df.code_from
+                                )
+                                .map((v) => (
+                                  <SelectItem key={v.code} value={v.code}>
+                                    {v.code} - {getText(v.name, v.name_ar)}
+                                  </SelectItem>
+                                ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-9 w-9"
+                          onClick={() => handleRemoveDimensionFilter(index)}
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
         {/* Trial Balance Table */}
         <Card className="print:shadow-none print:border-0">
