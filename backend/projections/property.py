@@ -20,8 +20,11 @@ from events.models import BusinessEvent
 from events.emitter import emit_event_no_actor
 from projections.base import BaseProjection
 from projections.models import FiscalPeriod
-from properties.models import PropertyAccountMapping
-from accounting.models import Account, JournalEntry, JournalLine
+from properties.models import PropertyAccountMapping, Lease, Property, Unit
+from accounting.models import (
+    Account, AnalysisDimension, AnalysisDimensionValue,
+    JournalEntry, JournalLine, JournalLineAnalysis,
+)
 from accounting.commands import _next_company_sequence
 
 
@@ -162,6 +165,9 @@ class PropertyAccountingProjection(BaseProjection):
         memo = f"Rent due: {contract_no} #{installment_no}"
         entry_date = _parse_date(data.get("due_date")) or event.occurred_at.date()
 
+        dimension_context = self._resolve_lease_dimensions(
+            event.company, data.get("lease_public_id"),
+        )
         self._create_posted_entry(
             event=event,
             entry_date=entry_date,
@@ -169,6 +175,7 @@ class PropertyAccountingProjection(BaseProjection):
             debit_account=debit_account,
             credit_account=credit_account,
             amount=amount,
+            dimension_context=dimension_context,
         )
 
     def _handle_payment_received(self, event, data, mapping):
@@ -184,6 +191,9 @@ class PropertyAccountingProjection(BaseProjection):
         memo = f"Payment received: {receipt_no}"
         entry_date = _parse_date(data.get("payment_date")) or event.occurred_at.date()
 
+        dimension_context = self._resolve_lease_dimensions(
+            event.company, data.get("lease_public_id"),
+        )
         self._create_posted_entry(
             event=event,
             entry_date=entry_date,
@@ -191,6 +201,7 @@ class PropertyAccountingProjection(BaseProjection):
             debit_account=debit_account,
             credit_account=credit_account,
             amount=amount,
+            dimension_context=dimension_context,
         )
 
     def _handle_payment_allocated(self, event, data, mapping):
@@ -207,6 +218,9 @@ class PropertyAccountingProjection(BaseProjection):
         memo = f"Rent payment: {receipt_no} \u2192 {contract_no}"
         entry_date = event.occurred_at.date()
 
+        dimension_context = self._resolve_lease_dimensions(
+            event.company, data.get("lease_public_id"),
+        )
         self._create_posted_entry(
             event=event,
             entry_date=entry_date,
@@ -214,6 +228,7 @@ class PropertyAccountingProjection(BaseProjection):
             debit_account=debit_account,
             credit_account=credit_account,
             amount=amount,
+            dimension_context=dimension_context,
         )
 
     def _handle_payment_voided(self, event, data, mapping):
@@ -229,6 +244,9 @@ class PropertyAccountingProjection(BaseProjection):
         memo = f"VOID: {receipt_no}"
         entry_date = event.occurred_at.date()
 
+        dimension_context = self._resolve_lease_dimensions(
+            event.company, data.get("lease_public_id"),
+        )
         self._create_posted_entry(
             event=event,
             entry_date=entry_date,
@@ -236,6 +254,7 @@ class PropertyAccountingProjection(BaseProjection):
             debit_account=debit_account,
             credit_account=credit_account,
             amount=amount,
+            dimension_context=dimension_context,
         )
 
     def _handle_deposit_received(self, event, data, mapping):
@@ -251,6 +270,9 @@ class PropertyAccountingProjection(BaseProjection):
         memo = f"Deposit received: {contract_no}"
         entry_date = _parse_date(data.get("transaction_date")) or event.occurred_at.date()
 
+        dimension_context = self._resolve_lease_dimensions(
+            event.company, data.get("lease_public_id"),
+        )
         self._create_posted_entry(
             event=event,
             entry_date=entry_date,
@@ -258,6 +280,7 @@ class PropertyAccountingProjection(BaseProjection):
             debit_account=debit_account,
             credit_account=credit_account,
             amount=amount,
+            dimension_context=dimension_context,
         )
 
     def _handle_deposit_adjusted(self, event, data, mapping):
@@ -285,6 +308,9 @@ class PropertyAccountingProjection(BaseProjection):
             credit_account = security_account
             amount = abs(amount)
 
+        dimension_context = self._resolve_lease_dimensions(
+            event.company, data.get("lease_public_id"),
+        )
         self._create_posted_entry(
             event=event,
             entry_date=entry_date,
@@ -292,6 +318,7 @@ class PropertyAccountingProjection(BaseProjection):
             debit_account=debit_account,
             credit_account=credit_account,
             amount=amount,
+            dimension_context=dimension_context,
         )
 
     def _handle_deposit_refunded(self, event, data, mapping):
@@ -307,6 +334,9 @@ class PropertyAccountingProjection(BaseProjection):
         memo = f"Deposit refund: {contract_no}"
         entry_date = _parse_date(data.get("transaction_date")) or event.occurred_at.date()
 
+        dimension_context = self._resolve_lease_dimensions(
+            event.company, data.get("lease_public_id"),
+        )
         self._create_posted_entry(
             event=event,
             entry_date=entry_date,
@@ -314,6 +344,7 @@ class PropertyAccountingProjection(BaseProjection):
             debit_account=debit_account,
             credit_account=credit_account,
             amount=amount,
+            dimension_context=dimension_context,
         )
 
     def _handle_deposit_forfeited(self, event, data, mapping):
@@ -329,6 +360,9 @@ class PropertyAccountingProjection(BaseProjection):
         memo = f"Deposit forfeited: {contract_no}"
         entry_date = _parse_date(data.get("transaction_date")) or event.occurred_at.date()
 
+        dimension_context = self._resolve_lease_dimensions(
+            event.company, data.get("lease_public_id"),
+        )
         self._create_posted_entry(
             event=event,
             entry_date=entry_date,
@@ -336,6 +370,7 @@ class PropertyAccountingProjection(BaseProjection):
             debit_account=debit_account,
             credit_account=credit_account,
             amount=amount,
+            dimension_context=dimension_context,
         )
 
     def _handle_expense_recorded(self, event, data, mapping):
@@ -366,6 +401,9 @@ class PropertyAccountingProjection(BaseProjection):
         else:
             memo = f"Property expense: {category}"
 
+        dimension_context = self._resolve_property_dimensions(
+            event.company, data.get("property_public_id"), data.get("unit_public_id"),
+        )
         self._create_posted_entry(
             event=event,
             entry_date=entry_date,
@@ -373,6 +411,7 @@ class PropertyAccountingProjection(BaseProjection):
             debit_account=debit_account,
             credit_account=credit_account,
             amount=amount,
+            dimension_context=dimension_context,
         )
 
     # ------------------------------------------------------------------
@@ -399,8 +438,123 @@ class PropertyAccountingProjection(BaseProjection):
             return False
         return True
 
+    def _resolve_lease_dimensions(self, company, lease_public_id):
+        """
+        Derive dimension context from a lease.
+
+        Returns dict like {"property": "P001", "unit": "U504", "lessee": "T122"}
+        mapping dimension codes to value codes.
+        """
+        if not lease_public_id:
+            return {}
+        try:
+            lease = Lease.objects.select_related(
+                "property", "unit", "lessee"
+            ).get(company=company, public_id=lease_public_id)
+        except Lease.DoesNotExist:
+            logger.warning("Lease %s not found for dimension derivation", lease_public_id)
+            return {}
+
+        context = {}
+        if lease.property:
+            context["property"] = lease.property.code
+        if lease.unit:
+            context["unit"] = lease.unit.unit_code
+        if lease.lessee:
+            context["lessee"] = lease.lessee.code
+        return context
+
+    def _resolve_property_dimensions(self, company, property_public_id, unit_public_id=None):
+        """Derive dimension context from a property (and optional unit)."""
+        context = {}
+        if property_public_id:
+            try:
+                prop = Property.objects.get(company=company, public_id=property_public_id)
+                context["property"] = prop.code
+            except Property.DoesNotExist:
+                pass
+        if unit_public_id:
+            try:
+                unit = Unit.objects.get(company=company, public_id=unit_public_id)
+                context["unit"] = unit.unit_code
+            except Unit.DoesNotExist:
+                pass
+        return context
+
+    def _attach_dimensions(self, company, lines, dimension_context):
+        """
+        Create JournalLineAnalysis records for the given journal lines.
+
+        Args:
+            company: Company instance
+            lines: list of JournalLine instances
+            dimension_context: dict of {dimension_code: value_code}
+        """
+        if not dimension_context:
+            return
+
+        # Batch-fetch matching dimensions and values
+        dim_codes = list(dimension_context.keys())
+        dimensions = {
+            d.code: d for d in AnalysisDimension.objects.filter(
+                company=company,
+                code__in=dim_codes,
+                is_active=True,
+            )
+        }
+
+        if not dimensions:
+            return
+
+        # Fetch all matching values in one query
+        value_lookups = []
+        for dim_code, val_code in dimension_context.items():
+            dim = dimensions.get(dim_code)
+            if dim:
+                value_lookups.append((dim.id, val_code))
+
+        if not value_lookups:
+            return
+
+        from django.db.models import Q
+        q = Q()
+        for dim_id, val_code in value_lookups:
+            q |= Q(dimension_id=dim_id, code=val_code)
+
+        values = {
+            (v.dimension_id, v.code): v
+            for v in AnalysisDimensionValue.objects.filter(q, company=company, is_active=True)
+        }
+
+        # Create JournalLineAnalysis for each line x dimension
+        analysis_records = []
+        for line in lines:
+            for dim_code, val_code in dimension_context.items():
+                dim = dimensions.get(dim_code)
+                if not dim:
+                    continue
+                val = values.get((dim.id, val_code))
+                if not val:
+                    logger.debug(
+                        "Dimension value %s=%s not found for company %s — skipping",
+                        dim_code, val_code, company.name,
+                    )
+                    continue
+                analysis_records.append(JournalLineAnalysis(
+                    journal_line=line,
+                    company=company,
+                    dimension=dim,
+                    dimension_value=val,
+                ))
+
+        if analysis_records:
+            JournalLineAnalysis.objects.projection().bulk_create(
+                analysis_records, ignore_conflicts=True
+            )
+
     def _create_posted_entry(self, *, event, entry_date, memo,
-                             debit_account, credit_account, amount):
+                             debit_account, credit_account, amount,
+                             dimension_context=None):
         """
         Create a fully-posted JournalEntry with two lines (debit and credit).
 
@@ -481,6 +635,10 @@ class PropertyAccountingProjection(BaseProjection):
             exchange_rate=Decimal("1.0"),
         )
         JournalLine.objects.projection().bulk_create([debit_line, credit_line])
+
+        # Attach analysis dimensions (property, unit, lessee) to journal lines
+        if dimension_context:
+            self._attach_dimensions(company, [debit_line, credit_line], dimension_context)
 
         # Emit JOURNAL_ENTRY_POSTED so AccountBalanceProjection updates balances
         lines_data = [
