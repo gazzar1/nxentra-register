@@ -1225,22 +1225,6 @@ class DimensionAnalysisView(APIView):
         if direct_to:
             date_to = date_type.fromisoformat(direct_to)
 
-        # Query JournalLineAnalysis for this dimension, joined with journal lines
-        qs = JournalLineAnalysis.objects.filter(
-            company=company,
-            dimension=dimension,
-            journal_line__entry__status=JournalEntry.Status.POSTED,
-        ).select_related(
-            "dimension_value",
-            "journal_line__entry",
-            "journal_line__account",
-        )
-
-        if date_from:
-            qs = qs.filter(journal_line__entry__date__gte=date_from)
-        if date_to:
-            qs = qs.filter(journal_line__entry__date__lte=date_to)
-
         # Aggregate by dimension value and account type
         # We need revenue vs expense breakdown per dimension value
         revenue_types = [
@@ -1252,42 +1236,97 @@ class DimensionAnalysisView(APIView):
             Account.AccountType.CONTRA_EXPENSE,
         ]
 
-        # Build result per dimension value
         value_data = {}
 
-        for analysis in qs:
-            line = analysis.journal_line
-            account = line.account
-            val = analysis.dimension_value
-            val_key = val.code
+        # Fast path: use DimensionBalance when no date filters
+        if not date_from and not date_to:
+            from projections.models import DimensionBalance as DimBal
 
-            if val_key not in value_data:
-                value_data[val_key] = {
-                    "value_code": val.code,
-                    "value_name": val.name,
-                    "value_name_ar": val.name_ar or val.name,
-                    "revenue": Decimal("0.00"),
-                    "expenses": Decimal("0.00"),
-                }
+            dim_balances = DimBal.objects.filter(
+                company=company,
+                dimension=dimension,
+            ).select_related("dimension_value", "account")
 
-            row = value_data[val_key]
+            for bal in dim_balances:
+                account = bal.account
+                val = bal.dimension_value
+                val_key = val.code
 
-            # Determine net amount based on normal balance
-            if account.normal_balance == Account.NormalBalance.CREDIT:
-                net = line.credit - line.debit
-            else:
-                net = line.debit - line.credit
+                if val_key not in value_data:
+                    value_data[val_key] = {
+                        "value_code": val.code,
+                        "value_name": val.name,
+                        "value_name_ar": val.name_ar or val.name,
+                        "revenue": Decimal("0.00"),
+                        "expenses": Decimal("0.00"),
+                    }
 
-            if account.account_type in revenue_types:
-                if account.account_type == Account.AccountType.CONTRA_REVENUE:
-                    row["revenue"] -= net
+                row = value_data[val_key]
+
+                if account.normal_balance == Account.NormalBalance.CREDIT:
+                    net = bal.credit_total - bal.debit_total
                 else:
-                    row["revenue"] += net
-            elif account.account_type in expense_types:
-                if account.account_type == Account.AccountType.CONTRA_EXPENSE:
-                    row["expenses"] -= net
+                    net = bal.debit_total - bal.credit_total
+
+                if account.account_type in revenue_types:
+                    if account.account_type == Account.AccountType.CONTRA_REVENUE:
+                        row["revenue"] -= net
+                    else:
+                        row["revenue"] += net
+                elif account.account_type in expense_types:
+                    if account.account_type == Account.AccountType.CONTRA_EXPENSE:
+                        row["expenses"] -= net
+                    else:
+                        row["expenses"] += net
+        else:
+            # Slow path: scan JournalLineAnalysis with date filters
+            qs = JournalLineAnalysis.objects.filter(
+                company=company,
+                dimension=dimension,
+                journal_line__entry__status=JournalEntry.Status.POSTED,
+            ).select_related(
+                "dimension_value",
+                "journal_line__entry",
+                "journal_line__account",
+            )
+
+            if date_from:
+                qs = qs.filter(journal_line__entry__date__gte=date_from)
+            if date_to:
+                qs = qs.filter(journal_line__entry__date__lte=date_to)
+
+            for analysis in qs:
+                line = analysis.journal_line
+                account = line.account
+                val = analysis.dimension_value
+                val_key = val.code
+
+                if val_key not in value_data:
+                    value_data[val_key] = {
+                        "value_code": val.code,
+                        "value_name": val.name,
+                        "value_name_ar": val.name_ar or val.name,
+                        "revenue": Decimal("0.00"),
+                        "expenses": Decimal("0.00"),
+                    }
+
+                row = value_data[val_key]
+
+                if account.normal_balance == Account.NormalBalance.CREDIT:
+                    net = line.credit - line.debit
                 else:
-                    row["expenses"] += net
+                    net = line.debit - line.credit
+
+                if account.account_type in revenue_types:
+                    if account.account_type == Account.AccountType.CONTRA_REVENUE:
+                        row["revenue"] -= net
+                    else:
+                        row["revenue"] += net
+                elif account.account_type in expense_types:
+                    if account.account_type == Account.AccountType.CONTRA_EXPENSE:
+                        row["expenses"] -= net
+                    else:
+                        row["expenses"] += net
 
         # Build response rows sorted by value code
         rows = []

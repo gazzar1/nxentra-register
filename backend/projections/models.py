@@ -878,6 +878,79 @@ class VendorBalance(ProjectionOwnedModel):
         self.balance = self.credit_total - self.debit_total
 
 
+class DimensionBalance(ProjectionOwnedModel):
+    """
+    Pre-aggregated balance per dimension value × account.
+
+    Maintains running debit/credit totals so that the Dimension Analysis
+    report can read balances directly rather than aggregating
+    JournalLineAnalysis on every request.
+
+    Updated incrementally by DimensionBalanceProjection when
+    JOURNAL_ENTRY_POSTED events are processed.
+    """
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="dimension_balances",
+    )
+
+    dimension = models.ForeignKey(
+        "accounting.AnalysisDimension",
+        on_delete=models.CASCADE,
+        related_name="balances",
+    )
+
+    dimension_value = models.ForeignKey(
+        "accounting.AnalysisDimensionValue",
+        on_delete=models.CASCADE,
+        related_name="balances",
+    )
+
+    account = models.ForeignKey(
+        Account,
+        on_delete=models.CASCADE,
+        related_name="dimension_balances",
+    )
+
+    debit_total = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+
+    credit_total = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+
+    entry_count = models.PositiveIntegerField(default=0)
+    last_updated = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "dimension_value", "account"],
+                name="uniq_dimension_balance",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["company", "dimension"],
+                name="idx_dimbal_company_dim",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.dimension.code}={self.dimension_value.code} "
+            f"acct={self.account.code} "
+            f"D={self.debit_total} C={self.credit_total}"
+        )
+
+
 class ProjectionAppliedEvent(ProjectionOwnedModel):
     """
     Tracks which events were applied by each projection to ensure idempotency.
