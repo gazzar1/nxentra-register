@@ -24,7 +24,11 @@ from events.emitter import emit_event_no_actor
 from projections.base import BaseProjection
 from projections.models import FiscalPeriod
 from accounting.mappings import ModuleAccountMapping
-from accounting.models import JournalEntry, JournalLine
+from accounting.models import (
+    AnalysisDimension, AnalysisDimensionValue,
+    JournalEntry, JournalLine, JournalLineAnalysis,
+)
+from clinic.models import Doctor, Patient
 
 
 logger = logging.getLogger(__name__)
@@ -119,6 +123,12 @@ class ClinicAccountingProjection(BaseProjection):
         memo = f"Clinic invoice: {invoice_no}"
         entry_date = _parse_date(data.get("transaction_date")) or event.created_at.date()
 
+        dimension_context = self._resolve_clinic_dimensions(
+            event.company,
+            patient_public_id=data.get("patient_public_id"),
+            visit_public_id=data.get("visit_public_id"),
+        )
+
         self._create_posted_entry(
             event=event,
             entry_date=entry_date,
@@ -126,6 +136,7 @@ class ClinicAccountingProjection(BaseProjection):
             debit_account=ar,
             credit_account=revenue,
             amount=amount,
+            dimension_context=dimension_context,
         )
 
     def _handle_payment_received(self, event, data, mapping):
@@ -141,6 +152,12 @@ class ClinicAccountingProjection(BaseProjection):
         memo = f"Clinic payment: {doc_ref}"
         entry_date = _parse_date(data.get("transaction_date")) or event.created_at.date()
 
+        dimension_context = self._resolve_clinic_dimensions(
+            event.company,
+            patient_public_id=data.get("patient_public_id"),
+            invoice_public_id=data.get("invoice_public_id"),
+        )
+
         self._create_posted_entry(
             event=event,
             entry_date=entry_date,
@@ -148,6 +165,7 @@ class ClinicAccountingProjection(BaseProjection):
             debit_account=cash,
             credit_account=ar,
             amount=amount,
+            dimension_context=dimension_context,
         )
 
     def _handle_payment_voided(self, event, data, mapping):
@@ -163,6 +181,12 @@ class ClinicAccountingProjection(BaseProjection):
         memo = f"VOID clinic payment: {doc_ref}"
         entry_date = _parse_date(data.get("transaction_date")) or event.created_at.date()
 
+        dimension_context = self._resolve_clinic_dimensions(
+            event.company,
+            patient_public_id=data.get("patient_public_id"),
+            invoice_public_id=data.get("invoice_public_id"),
+        )
+
         self._create_posted_entry(
             event=event,
             entry_date=entry_date,
@@ -170,6 +194,7 @@ class ClinicAccountingProjection(BaseProjection):
             debit_account=ar,
             credit_account=cash,
             amount=amount,
+            dimension_context=dimension_context,
         )
 
     # ------------------------------------------------------------------
@@ -193,7 +218,8 @@ class ClinicAccountingProjection(BaseProjection):
         return True
 
     def _create_posted_entry(self, *, event, entry_date, memo,
-                             debit_account, credit_account, amount):
+                             debit_account, credit_account, amount,
+                             dimension_context=None):
         company = event.company
 
         if amount <= 0:
@@ -259,6 +285,10 @@ class ClinicAccountingProjection(BaseProjection):
         )
         JournalLine.objects.projection().bulk_create([debit_line, credit_line])
 
+        # Attach analysis dimensions (patient, doctor) to journal lines
+        if dimension_context:
+            self._attach_dimensions(company, [debit_line, credit_line], dimension_context)
+
         # Emit JOURNAL_ENTRY_POSTED so AccountBalanceProjection updates balances
         lines_data = [
             {
@@ -315,6 +345,128 @@ class ClinicAccountingProjection(BaseProjection):
             "Created journal entry %s for %s (event %s): %s",
             entry.public_id, event.event_type, event.id, memo,
         )
+
+    # ------------------------------------------------------------------
+    # Dimension derivation
+    # ------------------------------------------------------------------
+
+    def _resolve_clinic_dimensions(self, company, patient_public_id=None,
+                                   visit_public_id=None, invoice_public_id=None):
+        """
+        Derive dimension context from clinic entities.
+
+        Returns dict like {"patient": "PAT001", "doctor": "DOC01"}
+        mapping dimension codes to value codes.
+        """
+        context = {}
+
+        # Resolve patient
+        if patient_public_id:
+            try:
+                patient = Patient.objects.get(
+                    company=company, public_id=patient_public_id,
+                )
+                context["patient"] = patient.code
+            except Patient.DoesNotExist:
+                logger.warning("Patient %s not found for dimension derivation", patient_public_id)
+
+        # Resolve doctor from visit or invoice→visit
+        doctor = None
+        if visit_public_id:
+            from clinic.models import Visit
+            try:
+                visit = Visit.objects.select_related("doctor").get(
+                    company=company, public_id=visit_public_id,
+                )
+                doctor = visit.doctor
+            except Visit.DoesNotExist:
+                pass
+        elif invoice_public_id:
+            from clinic.models import Invoice
+            try:
+                invoice = Invoice.objects.select_related("visit__doctor").get(
+                    company=company, public_id=invoice_public_id,
+                )
+                if invoice.visit:
+                    doctor = invoice.visit.doctor
+            except Invoice.DoesNotExist:
+                pass
+
+        if doctor:
+            context["doctor"] = doctor.code
+
+        return context
+
+    def _attach_dimensions(self, company, lines, dimension_context):
+        """
+        Create JournalLineAnalysis records for the given journal lines.
+
+        Args:
+            company: Company instance
+            lines: list of JournalLine instances
+            dimension_context: dict of {dimension_code: value_code}
+        """
+        if not dimension_context:
+            return
+
+        # Batch-fetch matching dimensions and values
+        dim_codes = list(dimension_context.keys())
+        dimensions = {
+            d.code: d for d in AnalysisDimension.objects.filter(
+                company=company,
+                code__in=dim_codes,
+                is_active=True,
+            )
+        }
+
+        if not dimensions:
+            return
+
+        # Fetch all matching values in one query
+        value_lookups = []
+        for dim_code, val_code in dimension_context.items():
+            dim = dimensions.get(dim_code)
+            if dim:
+                value_lookups.append((dim.id, val_code))
+
+        if not value_lookups:
+            return
+
+        from django.db.models import Q
+        q = Q()
+        for dim_id, val_code in value_lookups:
+            q |= Q(dimension_id=dim_id, code=val_code)
+
+        values = {
+            (v.dimension_id, v.code): v
+            for v in AnalysisDimensionValue.objects.filter(q, company=company, is_active=True)
+        }
+
+        # Create JournalLineAnalysis for each line x dimension
+        analysis_records = []
+        for line in lines:
+            for dim_code, val_code in dimension_context.items():
+                dim = dimensions.get(dim_code)
+                if not dim:
+                    continue
+                val = values.get((dim.id, val_code))
+                if not val:
+                    logger.debug(
+                        "Dimension value %s=%s not found for company %s — skipping",
+                        dim_code, val_code, company.name,
+                    )
+                    continue
+                analysis_records.append(JournalLineAnalysis(
+                    journal_line=line,
+                    company=company,
+                    dimension=dim,
+                    dimension_value=val,
+                ))
+
+        if analysis_records:
+            JournalLineAnalysis.objects.projection().bulk_create(
+                analysis_records, ignore_conflicts=True
+            )
 
     def _clear_projected_data(self, company) -> None:
         """Clear clinic-generated journal entries for rebuild."""
