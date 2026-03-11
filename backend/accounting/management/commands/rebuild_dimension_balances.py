@@ -82,7 +82,7 @@ class Command(BaseCommand):
                 ))
 
             if to_create:
-                DimensionBalance.objects.projection().bulk_create(
+                DimensionBalance.objects.bulk_create(
                     to_create, ignore_conflicts=True,
                 )
 
