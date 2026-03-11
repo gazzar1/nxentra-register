@@ -13,6 +13,7 @@ CORE_PROJECTION_MODULES = [
     "projections.account_balance",
     "projections.accounting",
     "projections.accounts",
+    "projections.dimension_sync",
     "projections.periods",
     "projections.period_balance",
     "projections.subledger_balance",

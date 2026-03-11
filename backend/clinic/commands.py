@@ -18,6 +18,7 @@ from projections.write_barrier import command_writes_allowed
 
 from .models import Patient, PatientDocument, Doctor, Visit, Invoice, Payment
 from .event_types import (
+    DoctorCreatedData,
     PatientCreatedData,
     PatientUpdatedData,
     VisitCreatedData,
@@ -192,6 +193,7 @@ def upload_document(
 # =============================================================================
 
 @transaction.atomic
+@transaction.atomic
 def create_doctor(
     actor: ActorContext,
     code: str,
@@ -215,7 +217,24 @@ def create_doctor(
             phone=phone,
         )
 
-    return CommandResult.ok(data={"doctor": doctor})
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.CLINIC_DOCTOR_CREATED,
+        aggregate_type="Doctor",
+        aggregate_id=str(doctor.public_id),
+        idempotency_key=f"clinic.doctor.created:{doctor.public_id}",
+        data=DoctorCreatedData(
+            doctor_public_id=str(doctor.public_id),
+            company_public_id=str(actor.company.public_id),
+            code=doctor.code,
+            name=doctor.name,
+            name_ar=doctor.name_ar,
+            specialization=doctor.specialization,
+            created_by_email=actor.user.email,
+        ),
+    )
+
+    return CommandResult.ok(data={"doctor": doctor}, event=event)
 
 
 # =============================================================================

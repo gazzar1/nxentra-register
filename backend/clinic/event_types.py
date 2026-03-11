@@ -17,6 +17,17 @@ from events.types import BaseEventData, FinancialEventData, EventTypes
 # =============================================================================
 
 @dataclass
+class DoctorCreatedData(BaseEventData):
+    doctor_public_id: str = ""
+    company_public_id: str = ""
+    code: str = ""
+    name: str = ""
+    name_ar: str = ""
+    specialization: str = ""
+    created_by_email: str = ""
+
+
+@dataclass
 class PatientCreatedData(BaseEventData):
     patient_public_id: str = ""
     company_public_id: str = ""
@@ -95,6 +106,7 @@ class PaymentVoidedData(FinancialEventData):
 # =============================================================================
 
 REGISTERED_EVENTS: dict[str, type[BaseEventData]] = {
+    EventTypes.CLINIC_DOCTOR_CREATED: DoctorCreatedData,
     EventTypes.CLINIC_PATIENT_CREATED: PatientCreatedData,
     EventTypes.CLINIC_PATIENT_UPDATED: PatientUpdatedData,
     EventTypes.CLINIC_VISIT_CREATED: VisitCreatedData,

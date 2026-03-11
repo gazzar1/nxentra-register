@@ -2006,6 +2006,7 @@ class EventTypes:
     PROPERTY_ACCOUNT_MAPPING_UPDATED = "property.account_mapping_updated"
 
     # Clinic events
+    CLINIC_DOCTOR_CREATED = "clinic.doctor_created"
     CLINIC_PATIENT_CREATED = "clinic.patient_created"
     CLINIC_PATIENT_UPDATED = "clinic.patient_updated"
     CLINIC_VISIT_CREATED = "clinic.visit_created"
