@@ -86,6 +86,9 @@ class AccountsConfig(AppConfig):
                 {"label": "Vendor Balances", "href": "/reports/vendor-balances", "icon": "Truck", "translation_key": "nav.vendorBalances"},
                 {"label": "Customer Statement", "href": "/reports/customer-statement", "icon": "UserCircle", "translation_key": "nav.customerStatement"},
                 {"label": "Vendor Statement", "href": "/reports/vendor-statement", "icon": "Truck", "translation_key": "nav.vendorStatement"},
+                {"label": "Dimension Analysis", "href": "/reports/dimension-analysis", "icon": "Layers"},
+                {"label": "Dimension Cross-Tab", "href": "/reports/dimension-crosstab", "icon": "Layers"},
+                {"label": "P&L Comparison", "href": "/reports/dimension-pl-comparison", "icon": "Layers"},
             ],
         )
         module_registry.register(
