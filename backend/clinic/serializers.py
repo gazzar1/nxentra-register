@@ -185,7 +185,7 @@ class InvoiceCreateSerializer(serializers.Serializer):
     due_date = serializers.DateField(required=False, allow_null=True, default=None)
     discount = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, default="0")
     tax = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, default="0")
-    currency = serializers.CharField(max_length=3, required=False, default="SAR")
+    currency = serializers.CharField(max_length=3, required=False, default="")
     notes = serializers.CharField(required=False, allow_blank=True, default="")
 
 

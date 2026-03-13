@@ -1730,3 +1730,251 @@ class VendorPaymentCreateView(APIView):
             "vendor_code": result.data["vendor_code"],
             "allocations": result.data.get("allocations", []),
         }, status=status.HTTP_201_CREATED)
+
+
+# =============================================================================
+# Exchange Rates
+# =============================================================================
+
+class ExchangeRateListCreateView(APIView):
+    """
+    GET  /api/accounting/exchange-rates/
+    POST /api/accounting/exchange-rates/
+
+    List and create exchange rates.
+
+    GET query params:
+    - from_currency: Filter by source currency
+    - to_currency: Filter by target currency
+    - rate_type: Filter by rate type (SPOT, AVERAGE, CLOSING)
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from accounting.models import ExchangeRate
+
+        actor = resolve_actor(request)
+        require(actor, "settings.view")
+
+        qs = ExchangeRate.objects.filter(company=actor.company)
+
+        from_currency = request.query_params.get("from_currency")
+        to_currency = request.query_params.get("to_currency")
+        rate_type = request.query_params.get("rate_type")
+
+        if from_currency:
+            qs = qs.filter(from_currency=from_currency)
+        if to_currency:
+            qs = qs.filter(to_currency=to_currency)
+        if rate_type:
+            qs = qs.filter(rate_type=rate_type)
+
+        qs = qs.order_by("-effective_date", "from_currency", "to_currency")[:200]
+
+        return Response([
+            {
+                "id": rate.id,
+                "public_id": str(rate.public_id),
+                "from_currency": rate.from_currency,
+                "to_currency": rate.to_currency,
+                "rate": str(rate.rate),
+                "effective_date": rate.effective_date.isoformat(),
+                "rate_type": rate.rate_type,
+                "source": rate.source,
+                "created_at": rate.created_at.isoformat(),
+                "updated_at": rate.updated_at.isoformat(),
+            }
+            for rate in qs
+        ])
+
+    def post(self, request):
+        from accounting.models import ExchangeRate
+        from decimal import Decimal, InvalidOperation
+        from datetime import date
+
+        actor = resolve_actor(request)
+        require(actor, "settings.edit")
+
+        from_currency = request.data.get("from_currency", "").upper().strip()
+        to_currency = request.data.get("to_currency", "").upper().strip()
+        rate_str = request.data.get("rate")
+        effective_date = request.data.get("effective_date")
+        rate_type = request.data.get("rate_type", "SPOT")
+        source = request.data.get("source", "Manual")
+
+        if not from_currency or len(from_currency) != 3:
+            return Response({"detail": "from_currency must be a 3-letter ISO code."}, status=status.HTTP_400_BAD_REQUEST)
+        if not to_currency or len(to_currency) != 3:
+            return Response({"detail": "to_currency must be a 3-letter ISO code."}, status=status.HTTP_400_BAD_REQUEST)
+        if from_currency == to_currency:
+            return Response({"detail": "from_currency and to_currency must be different."}, status=status.HTTP_400_BAD_REQUEST)
+        if not rate_str:
+            return Response({"detail": "rate is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if not effective_date:
+            return Response({"detail": "effective_date is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            rate_val = Decimal(str(rate_str))
+            if rate_val <= 0:
+                raise ValueError()
+        except (InvalidOperation, ValueError):
+            return Response({"detail": "rate must be a positive number."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if rate_type not in ("SPOT", "AVERAGE", "CLOSING"):
+            return Response({"detail": "rate_type must be SPOT, AVERAGE, or CLOSING."}, status=status.HTTP_400_BAD_REQUEST)
+
+        rate_obj, created = ExchangeRate.objects.update_or_create(
+            company=actor.company,
+            from_currency=from_currency,
+            to_currency=to_currency,
+            effective_date=effective_date,
+            rate_type=rate_type,
+            defaults={
+                "rate": rate_val,
+                "source": source,
+            },
+        )
+
+        return Response({
+            "id": rate_obj.id,
+            "public_id": str(rate_obj.public_id),
+            "from_currency": rate_obj.from_currency,
+            "to_currency": rate_obj.to_currency,
+            "rate": str(rate_obj.rate),
+            "effective_date": rate_obj.effective_date.isoformat(),
+            "rate_type": rate_obj.rate_type,
+            "source": rate_obj.source,
+            "created": created,
+        }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+
+class ExchangeRateDetailView(APIView):
+    """
+    GET    /api/accounting/exchange-rates/<id>/
+    PUT    /api/accounting/exchange-rates/<id>/
+    DELETE /api/accounting/exchange-rates/<id>/
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        from accounting.models import ExchangeRate
+
+        actor = resolve_actor(request)
+        require(actor, "settings.view")
+
+        rate = get_object_or_404(ExchangeRate, pk=pk, company=actor.company)
+        return Response({
+            "id": rate.id,
+            "public_id": str(rate.public_id),
+            "from_currency": rate.from_currency,
+            "to_currency": rate.to_currency,
+            "rate": str(rate.rate),
+            "effective_date": rate.effective_date.isoformat(),
+            "rate_type": rate.rate_type,
+            "source": rate.source,
+        })
+
+    def put(self, request, pk):
+        from accounting.models import ExchangeRate
+        from decimal import Decimal, InvalidOperation
+
+        actor = resolve_actor(request)
+        require(actor, "settings.edit")
+
+        rate_obj = get_object_or_404(ExchangeRate, pk=pk, company=actor.company)
+
+        rate_str = request.data.get("rate")
+        if rate_str is not None:
+            try:
+                rate_val = Decimal(str(rate_str))
+                if rate_val <= 0:
+                    raise ValueError()
+                rate_obj.rate = rate_val
+            except (InvalidOperation, ValueError):
+                return Response({"detail": "rate must be a positive number."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if "effective_date" in request.data:
+            rate_obj.effective_date = request.data["effective_date"]
+        if "rate_type" in request.data:
+            if request.data["rate_type"] not in ("SPOT", "AVERAGE", "CLOSING"):
+                return Response({"detail": "Invalid rate_type."}, status=status.HTTP_400_BAD_REQUEST)
+            rate_obj.rate_type = request.data["rate_type"]
+        if "source" in request.data:
+            rate_obj.source = request.data["source"]
+
+        rate_obj.save()
+
+        return Response({
+            "id": rate_obj.id,
+            "public_id": str(rate_obj.public_id),
+            "from_currency": rate_obj.from_currency,
+            "to_currency": rate_obj.to_currency,
+            "rate": str(rate_obj.rate),
+            "effective_date": rate_obj.effective_date.isoformat(),
+            "rate_type": rate_obj.rate_type,
+            "source": rate_obj.source,
+        })
+
+    def delete(self, request, pk):
+        from accounting.models import ExchangeRate
+
+        actor = resolve_actor(request)
+        require(actor, "settings.edit")
+
+        rate_obj = get_object_or_404(ExchangeRate, pk=pk, company=actor.company)
+        rate_obj.delete()
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ExchangeRateLookupView(APIView):
+    """
+    GET /api/accounting/exchange-rates/lookup/
+
+    Lookup the applicable exchange rate for a given currency pair and date.
+
+    Query params:
+    - from_currency (required)
+    - to_currency (required)
+    - date (required, ISO format)
+    - rate_type (optional, default: SPOT)
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from accounting.models import ExchangeRate
+
+        actor = resolve_actor(request)
+
+        from_currency = request.query_params.get("from_currency", "").upper()
+        to_currency = request.query_params.get("to_currency", "").upper()
+        date_str = request.query_params.get("date")
+        rate_type = request.query_params.get("rate_type", "SPOT")
+
+        if not from_currency or not to_currency or not date_str:
+            return Response(
+                {"detail": "from_currency, to_currency, and date are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from datetime import date as date_type
+        try:
+            lookup_date = date_type.fromisoformat(date_str)
+        except ValueError:
+            return Response({"detail": "Invalid date format."}, status=status.HTTP_400_BAD_REQUEST)
+
+        rate = ExchangeRate.get_rate(actor.company, from_currency, to_currency, lookup_date, rate_type)
+
+        if rate is None:
+            return Response({
+                "rate": None,
+                "message": f"No exchange rate found for {from_currency}/{to_currency} on or before {date_str}.",
+            })
+
+        return Response({
+            "from_currency": from_currency,
+            "to_currency": to_currency,
+            "date": date_str,
+            "rate_type": rate_type,
+            "rate": str(rate),
+        })

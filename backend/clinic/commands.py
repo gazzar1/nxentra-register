@@ -193,7 +193,6 @@ def upload_document(
 # =============================================================================
 
 @transaction.atomic
-@transaction.atomic
 def create_doctor(
     actor: ActorContext,
     code: str,
@@ -363,7 +362,7 @@ def create_invoice(
     due_date: str = None,
     discount: str = "0",
     tax: str = "0",
-    currency: str = "SAR",
+    currency: str = None,
     notes: str = "",
 ) -> CommandResult:
     """Create a draft invoice."""
@@ -384,6 +383,7 @@ def create_invoice(
     subtotal = sum(Decimal(item.get("amount", "0")) for item in line_items)
     total = subtotal - Decimal(discount) + Decimal(tax)
     invoice_no = _next_invoice_no(actor.company)
+    resolved_currency = currency or actor.company.default_currency
 
     with command_writes_allowed():
         invoice = Invoice.objects.create(
@@ -398,7 +398,7 @@ def create_invoice(
             discount=Decimal(discount),
             tax=Decimal(tax),
             total=total,
-            currency=currency,
+            currency=resolved_currency,
             notes=notes,
         )
 

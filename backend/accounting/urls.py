@@ -52,6 +52,10 @@ from .views import (
     # Admin views
     SeedStatusView,
     SeedAccountsView,
+    # Exchange rate views
+    ExchangeRateListCreateView,
+    ExchangeRateDetailView,
+    ExchangeRateLookupView,
 )
 
 app_name = "accounting"
@@ -209,6 +213,25 @@ urlpatterns = [
         "statistical-entries/<int:pk>/post/",
         StatisticalEntryPostView.as_view(),
         name="statistical-entry-post",
+    ),
+
+    # ==========================================================================
+    # Exchange Rates
+    # ==========================================================================
+    path(
+        "exchange-rates/",
+        ExchangeRateListCreateView.as_view(),
+        name="exchange-rate-list-create",
+    ),
+    path(
+        "exchange-rates/lookup/",
+        ExchangeRateLookupView.as_view(),
+        name="exchange-rate-lookup",
+    ),
+    path(
+        "exchange-rates/<int:pk>/",
+        ExchangeRateDetailView.as_view(),
+        name="exchange-rate-detail",
     ),
 
     # ==========================================================================

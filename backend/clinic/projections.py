@@ -244,7 +244,7 @@ class ClinicAccountingProjection(BaseProjection):
 
         period = _resolve_period(company, entry_date)
         now = timezone.now()
-        currency = getattr(company, "default_currency", "SAR")
+        currency = getattr(company, "default_currency", "USD")
 
         entry = JournalEntry.objects.projection().create(
             company=company,

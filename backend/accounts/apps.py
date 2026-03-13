@@ -103,5 +103,6 @@ class AccountsConfig(AppConfig):
                 {"label": "Users", "href": "/users", "icon": "Users", "translation_key": "nav.users"},
                 {"label": "Account", "href": "/settings/account", "icon": "KeyRound", "translation_key": "nav.account"},
                 {"label": "Event Audit", "href": "/settings/audit", "icon": "ShieldCheck", "translation_key": "nav.audit"},
+                {"label": "Exchange Rates", "href": "/settings/exchange-rates", "icon": "ArrowLeftRight"},
             ],
         )

@@ -16,11 +16,13 @@ import {
 } from "@/components/ui/select";
 import { useAccounts, useDimensions } from "@/queries/useAccounts";
 import { accountsService } from "@/services/accounts.service";
+import { exchangeRatesService } from "@/services/exchange-rates.service";
 import { useAuth } from "@/contexts/AuthContext";
 import { useBilingualText } from "@/components/common/BilingualText";
 import type { JournalEntryCreatePayload, AnalysisTagInput } from "@/types/journal";
 import type { AccountAnalysisDefault, AnalysisDimension } from "@/types/account";
 import { periodsService, FiscalPeriod } from "@/services/periods.service";
+import { currencyOptions } from "@/lib/constants";
 import { cn } from "@/lib/cn";
 import { useFormKeyboardShortcuts } from "@/lib/useFormKeyboardShortcuts";
 
@@ -46,6 +48,8 @@ const journalEntrySchema = z.object({
   period: z.number().optional(),
   memo: z.string().optional(),
   memo_ar: z.string().optional(),
+  currency: z.string().optional(),
+  exchange_rate: z.number().optional(),
   lines: z.array(journalLineSchema).min(2, "At least 2 lines required"),
 });
 
@@ -70,7 +74,10 @@ export function JournalEntryForm({
   const { data: accounts } = useAccounts({ status: "ACTIVE" });
   const { data: dimensions } = useDimensions();
   const [openPeriods, setOpenPeriods] = useState<FiscalPeriod[]>([]);
+  const [exchangeRateLoading, setExchangeRateLoading] = useState(false);
+  const [isForeignCurrency, setIsForeignCurrency] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
+  const functionalCurrency = company?.functional_currency || company?.default_currency || "USD";
 
   // Cache account analysis defaults: accountCode -> defaults[]
   const [accountDefaultsCache, setAccountDefaultsCache] = useState<
@@ -88,6 +95,8 @@ export function JournalEntryForm({
       period: initialData?.period,
       memo: initialData?.memo || "",
       memo_ar: initialData?.memo_ar || "",
+      currency: initialData?.currency || company?.default_currency || "USD",
+      exchange_rate: initialData?.exchange_rate,
       lines: initialData?.lines || [
         { account_id: 0, debit: 0, credit: 0, description: "", description_ar: "", analysis_tags: [] },
         { account_id: 0, debit: 0, credit: 0, description: "", description_ar: "", analysis_tags: [] },
@@ -105,6 +114,8 @@ export function JournalEntryForm({
         period: initialData.period,
         memo: initialData.memo || "",
         memo_ar: initialData.memo_ar || "",
+        currency: initialData.currency || company?.default_currency || "USD",
+        exchange_rate: initialData.exchange_rate,
         lines: initialData.lines || [
           { account_id: 0, debit: 0, credit: 0, description: "", description_ar: "", analysis_tags: [] },
           { account_id: 0, debit: 0, credit: 0, description: "", description_ar: "", analysis_tags: [] },
@@ -156,6 +167,36 @@ export function JournalEntryForm({
     },
     [accounts, dimensions, accountDefaultsCache, form]
   );
+
+  // Auto-fetch exchange rate when currency or date changes
+  const watchedCurrency = form.watch("currency");
+  const watchedDate = form.watch("date");
+
+  useEffect(() => {
+    const currency = watchedCurrency || company?.default_currency || "USD";
+    const isForeign = currency !== functionalCurrency;
+    setIsForeignCurrency(isForeign);
+
+    if (!isForeign) {
+      form.setValue("exchange_rate", undefined);
+      return;
+    }
+
+    if (!watchedDate) return;
+
+    setExchangeRateLoading(true);
+    exchangeRatesService
+      .lookup({ from_currency: currency, to_currency: functionalCurrency, date: watchedDate })
+      .then(({ data }) => {
+        if (data.rate) {
+          form.setValue("exchange_rate", parseFloat(data.rate));
+        }
+      })
+      .catch(() => {
+        // No rate found — user can enter manually
+      })
+      .finally(() => setExchangeRateLoading(false));
+  }, [watchedCurrency, watchedDate, functionalCurrency]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     periodsService.list().then(({ data }) => {
@@ -234,10 +275,11 @@ export function JournalEntryForm({
   const difference = Math.abs(totals.debit - totals.credit);
   const isBalanced = difference < 0.01;
 
+  const selectedCurrency = form.watch("currency") || company?.default_currency || "USD";
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat(undefined, {
       style: "currency",
-      currency: company?.default_currency || "USD",
+      currency: selectedCurrency,
       minimumFractionDigits: 2,
     }).format(amount);
   };
@@ -254,6 +296,8 @@ export function JournalEntryForm({
         period: data.period,
         memo: data.memo,
         memo_ar: data.memo_ar,
+        currency: data.currency,
+        exchange_rate: data.exchange_rate,
         lines: validLines.map((line, index) => ({
           line_no: index + 1,
           account_id: line.account_id,
@@ -317,6 +361,52 @@ export function JournalEntryForm({
             </SelectContent>
           </Select>
         </div>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="space-y-2">
+          <Label>Currency</Label>
+          <Select
+            value={form.watch("currency") || company?.default_currency || "USD"}
+            onValueChange={(value) => form.setValue("currency", value)}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Currency" />
+            </SelectTrigger>
+            <SelectContent>
+              {currencyOptions.map((c) => (
+                <SelectItem key={c} value={c}>
+                  {c}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        {isForeignCurrency && (
+          <div className="space-y-2">
+            <Label htmlFor="exchange_rate">
+              Exchange Rate (1 {watchedCurrency} = ? {functionalCurrency})
+            </Label>
+            <Input
+              id="exchange_rate"
+              type="number"
+              step="0.00000001"
+              min="0"
+              value={form.watch("exchange_rate") ?? ""}
+              onChange={(e) => {
+                const val = e.target.value;
+                form.setValue("exchange_rate", val ? parseFloat(val) : undefined);
+              }}
+              placeholder={exchangeRateLoading ? "Looking up..." : "e.g. 3.75"}
+              disabled={exchangeRateLoading}
+            />
+            {!exchangeRateLoading && form.watch("exchange_rate") && (
+              <p className="text-xs text-muted-foreground">
+                Amounts will be converted to {functionalCurrency} at this rate when posted
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2">

@@ -1074,22 +1074,65 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
                 f"Line {line.get('line_no', '?')}: {error_messages}"
             )
 
+        # ── Multi-currency conversion ──────────────────────────────────
+        # If the line's currency differs from the company's functional
+        # currency, convert debit/credit to functional currency and
+        # preserve the original amounts in amount_currency.
+        line_currency = line.get("currency") or aggregate.currency or entry.currency or actor.company.default_currency
+        line_exchange_rate = Decimal(str(line.get("exchange_rate") or aggregate.exchange_rate or entry.exchange_rate or "1.0"))
+        original_debit = Decimal(str(line.get("debit", "0")))
+        original_credit = Decimal(str(line.get("credit", "0")))
+
+        functional_currency = actor.company.functional_currency or actor.company.default_currency
+
+        if line_currency != functional_currency:
+            # Auto-lookup rate if not explicitly provided (still default 1.0)
+            if line_exchange_rate == Decimal("1.0"):
+                from accounting.models import ExchangeRate
+                from datetime import datetime
+                entry_date = datetime.fromisoformat(aggregate.date or entry.date.isoformat()).date()
+                looked_up_rate = ExchangeRate.get_rate(
+                    actor.company, line_currency, functional_currency, entry_date
+                )
+                if looked_up_rate:
+                    line_exchange_rate = looked_up_rate
+
+            # Store original foreign amount, convert debit/credit
+            amount_currency_val = original_debit if original_debit > 0 else -original_credit if original_credit > 0 else Decimal("0")
+            converted_debit = (original_debit * line_exchange_rate).quantize(Decimal("0.01"))
+            converted_credit = (original_credit * line_exchange_rate).quantize(Decimal("0.01"))
+        else:
+            # Same currency — no conversion needed
+            amount_currency_val = line.get("amount_currency")
+            if amount_currency_val is not None:
+                amount_currency_val = Decimal(str(amount_currency_val))
+            converted_debit = original_debit
+            converted_credit = original_credit
+
         line_data.append(JournalLineData(
             line_no=line.get("line_no"),
             account_public_id=str(account.public_id),
             account_code=account.code,
             description=line.get("description", ""),
             description_ar=line.get("description_ar", ""),
-            debit=str(line.get("debit", "0")),
-            credit=str(line.get("credit", "0")),
-            amount_currency=str(line.get("amount_currency")) if line.get("amount_currency") is not None else None,
-            currency=line.get("currency") or aggregate.currency or entry.currency or actor.company.default_currency,
-            exchange_rate=str(line.get("exchange_rate") or aggregate.exchange_rate or entry.exchange_rate or "1.0"),
+            debit=str(converted_debit),
+            credit=str(converted_credit),
+            amount_currency=str(amount_currency_val) if amount_currency_val is not None else None,
+            currency=line_currency,
+            exchange_rate=str(line_exchange_rate),
             is_memo_line=account.is_memo_account,
             analysis_tags=resolved_tags,
             customer_public_id=customer_public_id,
             vendor_public_id=vendor_public_id,
         ).to_dict())
+
+    # Recalculate totals from converted line data (functional currency)
+    converted_total_debit = sum(
+        Decimal(ld.get("debit", "0")) for ld in line_data if not ld.get("is_memo_line")
+    )
+    converted_total_credit = sum(
+        Decimal(ld.get("credit", "0")) for ld in line_data if not ld.get("is_memo_line")
+    )
 
     # Emit event
     event = emit_event(
@@ -1111,8 +1154,8 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
             posted_at=posted_at.isoformat(),
             posted_by_id=actor.user.id,
             posted_by_email=actor.user.email,
-            total_debit=str(aggregate.total_debit),
-            total_credit=str(aggregate.total_credit),
+            total_debit=str(converted_total_debit),
+            total_credit=str(converted_total_credit),
             lines=line_data,
         ).to_dict(),
     )

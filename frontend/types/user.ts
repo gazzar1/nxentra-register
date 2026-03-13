@@ -20,6 +20,7 @@ export interface Company {
   name_ar: string;
   slug: string;
   default_currency: string;
+  functional_currency: string;
   fiscal_year_start_month: number;
   is_active: boolean;
   created_at: string;

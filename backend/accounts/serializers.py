@@ -266,6 +266,7 @@ class CompanyOutputSerializer(serializers.Serializer):
     name_ar = serializers.CharField(read_only=True)
     slug = serializers.SlugField(read_only=True)
     default_currency = serializers.CharField(read_only=True)
+    functional_currency = serializers.CharField(read_only=True)
     fiscal_year_start_month = serializers.IntegerField(read_only=True)
     is_active = serializers.BooleanField(read_only=True)
 
@@ -377,7 +378,7 @@ class CompanyModelSerializer(serializers.ModelSerializer):
         model = Company
         fields = [
             "id", "public_id", "name", "name_ar", "slug",
-            "default_currency", "fiscal_year_start_month",
+            "default_currency", "functional_currency", "fiscal_year_start_month",
             "is_active", "created_at", "updated_at",
         ]
         read_only_fields = fields
