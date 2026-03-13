@@ -22,6 +22,7 @@ urlpatterns = [
     path("api/edim/", include("edim.urls")),
     path("api/properties/", include("properties.urls")),
     path("api/clinic/", include("clinic.urls")),
+    path("api/shopify/", include("shopify_connector.urls")),
     path("api/events/", include("events.urls")),
     path("api-auth/", include("rest_framework.urls")),
 ]

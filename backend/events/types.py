@@ -2015,6 +2015,12 @@ class EventTypes:
     CLINIC_PAYMENT_RECEIVED = "clinic.payment_received"
     CLINIC_PAYMENT_VOIDED = "clinic.payment_voided"
 
+    # Shopify Connector
+    SHOPIFY_STORE_CONNECTED = "shopify.store_connected"
+    SHOPIFY_STORE_DISCONNECTED = "shopify.store_disconnected"
+    SHOPIFY_ORDER_PAID = "shopify.order_paid"
+    SHOPIFY_REFUND_CREATED = "shopify.refund_created"
+
 
 # =============================================================================
 # Event Type to Data Class Mapping (for validation/documentation)
