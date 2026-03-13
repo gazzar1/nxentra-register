@@ -43,6 +43,7 @@ from .views import (
     DimensionAnalysisView,
     DimensionDrilldownView,
     DimensionCrossTabView,
+    DimensionPLComparisonView,
     CashFlowStatementView,
     FiscalPeriodListView,
     FiscalPeriodCloseView,
@@ -115,6 +116,11 @@ urlpatterns = [
         "dimension-crosstab/",
         DimensionCrossTabView.as_view(),
         name="dimension-crosstab",
+    ),
+    path(
+        "dimension-pl-comparison/",
+        DimensionPLComparisonView.as_view(),
+        name="dimension-pl-comparison",
     ),
     path(
         "cash-flow-statement/",

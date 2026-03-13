@@ -307,3 +307,53 @@ export interface DimensionCrossTabFilters {
   period_from?: number;
   period_to?: number;
 }
+
+// Dimension P&L Comparison
+export interface DimensionPLComparisonAccount {
+  code: string;
+  name: string;
+  name_ar: string;
+  amount_a: string;
+  amount_b: string;
+  variance: string;
+  variance_pct: string | null;
+}
+
+export interface DimensionPLComparisonSection {
+  title: string;
+  title_ar: string;
+  accounts: DimensionPLComparisonAccount[];
+  total_a: string;
+  total_b: string;
+  variance: string;
+  variance_pct: string | null;
+}
+
+export interface DimensionPLComparison {
+  dimension: { code: string; name: string; name_ar: string };
+  value_a: { code: string; name: string; name_ar: string };
+  value_b: { code: string; name: string; name_ar: string };
+  fiscal_year: number;
+  period_from: number;
+  period_to: number;
+  period_start_date: string;
+  period_end_date: string;
+  currency: string;
+  revenue: DimensionPLComparisonSection;
+  expenses: DimensionPLComparisonSection;
+  net_income_a: string;
+  net_income_b: string;
+  net_variance: string;
+  net_variance_pct: string | null;
+  is_profit_a: boolean;
+  is_profit_b: boolean;
+}
+
+export interface DimensionPLComparisonFilters {
+  dimension_code: string;
+  value_a: string;
+  value_b: string;
+  fiscal_year: number;
+  period_from: number;
+  period_to: number;
+}

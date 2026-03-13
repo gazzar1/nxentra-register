@@ -16,6 +16,8 @@ import type {
   DimensionDrilldownFilters,
   DimensionCrossTab,
   DimensionCrossTabFilters,
+  DimensionPLComparison,
+  DimensionPLComparisonFilters,
 } from '@/types/report';
 
 export const reportsService = {
@@ -87,6 +89,9 @@ export const reportsService = {
 
   dimensionCrossTab: (params: DimensionCrossTabFilters) =>
     apiClient.get<DimensionCrossTab>('/reports/dimension-crosstab/', { params }),
+
+  dimensionPLComparison: (params: DimensionPLComparisonFilters) =>
+    apiClient.get<DimensionPLComparison>('/reports/dimension-pl-comparison/', { params }),
 
   getCashFlowStatement: (params?: Record<string, string>) =>
     apiClient.get('/reports/cash-flow-statement/', { params }),

@@ -2,7 +2,7 @@ import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import Link from "next/link";
-import { BarChart3, FileSpreadsheet, PieChart, Layers, Grid3X3 } from "lucide-react";
+import { BarChart3, FileSpreadsheet, PieChart, Layers, Grid3X3, GitCompareArrows } from "lucide-react";
 import { AppLayout } from "@/components/layout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/common";
@@ -40,6 +40,12 @@ export default function ReportsIndexPage() {
       description: "Cross-tabulation of amounts across two dimensions",
       href: "/reports/dimension-crosstab",
       icon: <Grid3X3 className="h-8 w-8" />,
+    },
+    {
+      title: "Dimension P&L Comparison",
+      description: "Side-by-side income statement for two dimension values",
+      href: "/reports/dimension-pl-comparison",
+      icon: <GitCompareArrows className="h-8 w-8" />,
     },
   ];
 

@@ -1817,6 +1817,321 @@ class DimensionCrossTabView(APIView):
         })
 
 
+class DimensionPLComparisonView(DimensionFilterMixin, APIView):
+    """
+    GET /api/reports/dimension-pl-comparison/
+
+    Side-by-side income statement comparison for two dimension values.
+
+    Query params (all required):
+    - dimension_code: Code of the CONTEXT dimension
+    - value_a: First dimension value code
+    - value_b: Second dimension value code
+    - fiscal_year / period_from / period_to: Period filter (required)
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from accounting.models import Account, AnalysisDimension, AnalysisDimensionValue
+        from events.models import BusinessEvent
+        from events.types import EventTypes
+        from datetime import datetime
+
+        actor = resolve_actor(request)
+        require(actor, "reports.view")
+        company = actor.company
+
+        dimension_code = request.query_params.get("dimension_code")
+        value_a_code = request.query_params.get("value_a")
+        value_b_code = request.query_params.get("value_b")
+        fiscal_year = request.query_params.get("fiscal_year")
+        period_from_param = request.query_params.get("period_from")
+        period_to_param = request.query_params.get("period_to")
+
+        if not dimension_code or not value_a_code or not value_b_code:
+            return Response(
+                {"detail": "dimension_code, value_a, and value_b are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not fiscal_year or not period_from_param or not period_to_param:
+            return Response(
+                {"detail": "fiscal_year, period_from, and period_to are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        fiscal_year = int(fiscal_year)
+        period_from = int(period_from_param)
+        period_to = int(period_to_param)
+
+        # Resolve dimension
+        try:
+            dimension = AnalysisDimension.objects.get(
+                company=company, code=dimension_code, is_active=True,
+            )
+        except AnalysisDimension.DoesNotExist:
+            return Response(
+                {"detail": f"Dimension '{dimension_code}' not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Resolve dimension values
+        try:
+            val_a = AnalysisDimensionValue.objects.get(
+                dimension=dimension, code=value_a_code,
+            )
+        except AnalysisDimensionValue.DoesNotExist:
+            return Response(
+                {"detail": f"Dimension value '{value_a_code}' not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            val_b = AnalysisDimensionValue.objects.get(
+                dimension=dimension, code=value_b_code,
+            )
+        except AnalysisDimensionValue.DoesNotExist:
+            return Response(
+                {"detail": f"Dimension value '{value_b_code}' not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Get period date boundaries
+        periods = FiscalPeriod.objects.filter(
+            company=company,
+            fiscal_year=fiscal_year,
+            period__gte=period_from,
+            period__lte=period_to,
+        ).order_by("period")
+
+        if not periods.exists():
+            return Response(
+                {"detail": f"No periods found for fiscal year {fiscal_year} periods {period_from}-{period_to}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        period_start_date = periods.first().start_date
+        period_end_date = periods.last().end_date
+
+        # Get all FINANCIAL accounts
+        accounts = Account.objects.filter(
+            company=company,
+            ledger_domain=Account.LedgerDomain.FINANCIAL,
+        ).order_by("code")
+
+        account_lookup = {}
+        for account in accounts:
+            account_lookup[str(account.public_id)] = account
+
+        # Build dimension filter for value_a and value_b separately
+        dim_public_id_to_code = {}
+        value_public_id_to_code = {}
+
+        for dim in AnalysisDimension.objects.filter(company=company):
+            dim_public_id_to_code[str(dim.public_id)] = dim.code
+        for val in AnalysisDimensionValue.objects.filter(company=company):
+            value_public_id_to_code[str(val.public_id)] = val.code
+
+        # Accumulators: {account_code: {debit_a, credit_a, debit_b, credit_b}}
+        acc_data = {}
+        for account in accounts:
+            acc_data[account.code] = {
+                "account": account,
+                "debit_a": Decimal("0.00"),
+                "credit_a": Decimal("0.00"),
+                "debit_b": Decimal("0.00"),
+                "credit_b": Decimal("0.00"),
+            }
+
+        # Scan events
+        events = BusinessEvent.objects.filter(
+            company=company,
+            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+        ).order_by("company_sequence")
+
+        for event in events:
+            entry_date_str = event.get_data().get("date")
+            if not entry_date_str:
+                continue
+
+            entry_date = datetime.fromisoformat(entry_date_str).date()
+            if entry_date < period_start_date or entry_date > period_end_date:
+                continue
+
+            lines = event.get_data().get("lines", [])
+            for line in lines:
+                account_public_id = line.get("account_public_id")
+                if not account_public_id or account_public_id not in account_lookup:
+                    continue
+
+                if line.get("is_memo_line", False):
+                    continue
+
+                account = account_lookup[account_public_id]
+                analysis_tags = line.get("analysis_tags", [])
+
+                # Determine which dimension value this line belongs to
+                line_value_code = None
+                for tag in analysis_tags:
+                    dim_code = tag.get("dimension_code")
+                    v_code = tag.get("value_code")
+
+                    if not dim_code:
+                        dim_pid = tag.get("dimension_public_id")
+                        if dim_pid:
+                            dim_code = dim_public_id_to_code.get(str(dim_pid))
+
+                    if not v_code:
+                        v_pid = tag.get("value_public_id")
+                        if v_pid:
+                            v_code = value_public_id_to_code.get(str(v_pid))
+
+                    if dim_code == dimension_code and v_code:
+                        line_value_code = v_code
+                        break
+
+                if line_value_code not in (value_a_code, value_b_code):
+                    continue
+
+                debit = Decimal(line.get("debit", "0"))
+                credit = Decimal(line.get("credit", "0"))
+
+                if debit == 0 and credit == 0:
+                    continue
+
+                entry = acc_data.get(account.code)
+                if not entry:
+                    continue
+
+                if line_value_code == value_a_code:
+                    entry["debit_a"] += debit
+                    entry["credit_a"] += credit
+                else:
+                    entry["debit_b"] += debit
+                    entry["credit_b"] += credit
+
+        # Build income statement sections
+        revenue_accounts = []
+        expense_accounts = []
+
+        total_revenue_a = Decimal("0.00")
+        total_revenue_b = Decimal("0.00")
+        total_expenses_a = Decimal("0.00")
+        total_expenses_b = Decimal("0.00")
+
+        for code in sorted(acc_data.keys()):
+            entry = acc_data[code]
+            account = entry["account"]
+
+            # Calculate balance based on normal balance direction
+            if account.normal_balance == Account.NormalBalance.DEBIT:
+                balance_a = entry["debit_a"] - entry["credit_a"]
+                balance_b = entry["debit_b"] - entry["credit_b"]
+            else:
+                balance_a = entry["credit_a"] - entry["debit_a"]
+                balance_b = entry["credit_b"] - entry["debit_b"]
+
+            if balance_a == 0 and balance_b == 0:
+                continue
+
+            variance = balance_a - balance_b
+            variance_pct = None
+            if balance_b != 0:
+                variance_pct = str(((balance_a - balance_b) / abs(balance_b) * 100).quantize(Decimal("0.01")))
+
+            item = {
+                "code": account.code,
+                "name": account.name,
+                "name_ar": account.name_ar or account.name,
+                "amount_a": str(balance_a),
+                "amount_b": str(balance_b),
+                "variance": str(variance),
+                "variance_pct": variance_pct,
+            }
+
+            if account.account_type == Account.AccountType.REVENUE:
+                revenue_accounts.append(item)
+                total_revenue_a += balance_a
+                total_revenue_b += balance_b
+            elif account.account_type == Account.AccountType.CONTRA_REVENUE:
+                revenue_accounts.append(item)
+                total_revenue_a -= balance_a
+                total_revenue_b -= balance_b
+            elif account.account_type == Account.AccountType.EXPENSE:
+                expense_accounts.append(item)
+                total_expenses_a += balance_a
+                total_expenses_b += balance_b
+            elif account.account_type == Account.AccountType.CONTRA_EXPENSE:
+                expense_accounts.append(item)
+                total_expenses_a -= balance_a
+                total_expenses_b -= balance_b
+
+        net_income_a = total_revenue_a - total_expenses_a
+        net_income_b = total_revenue_b - total_expenses_b
+        net_variance = net_income_a - net_income_b
+        net_variance_pct = None
+        if net_income_b != 0:
+            net_variance_pct = str(((net_income_a - net_income_b) / abs(net_income_b) * 100).quantize(Decimal("0.01")))
+
+        revenue_variance = total_revenue_a - total_revenue_b
+        revenue_variance_pct = None
+        if total_revenue_b != 0:
+            revenue_variance_pct = str(((total_revenue_a - total_revenue_b) / abs(total_revenue_b) * 100).quantize(Decimal("0.01")))
+
+        expenses_variance = total_expenses_a - total_expenses_b
+        expenses_variance_pct = None
+        if total_expenses_b != 0:
+            expenses_variance_pct = str(((total_expenses_a - total_expenses_b) / abs(total_expenses_b) * 100).quantize(Decimal("0.01")))
+
+        return Response({
+            "dimension": {
+                "code": dimension.code,
+                "name": dimension.name,
+                "name_ar": dimension.name_ar or dimension.name,
+            },
+            "value_a": {
+                "code": val_a.code,
+                "name": val_a.name,
+                "name_ar": val_a.name_ar or val_a.name,
+            },
+            "value_b": {
+                "code": val_b.code,
+                "name": val_b.name,
+                "name_ar": val_b.name_ar or val_b.name,
+            },
+            "fiscal_year": fiscal_year,
+            "period_from": period_from,
+            "period_to": period_to,
+            "period_start_date": period_start_date.isoformat(),
+            "period_end_date": period_end_date.isoformat(),
+            "currency": getattr(company, "default_currency", "USD"),
+            "revenue": {
+                "title": "Total Revenue",
+                "title_ar": "إجمالي الإيرادات",
+                "accounts": revenue_accounts,
+                "total_a": str(total_revenue_a),
+                "total_b": str(total_revenue_b),
+                "variance": str(revenue_variance),
+                "variance_pct": revenue_variance_pct,
+            },
+            "expenses": {
+                "title": "Total Expenses",
+                "title_ar": "إجمالي المصروفات",
+                "accounts": expense_accounts,
+                "total_a": str(total_expenses_a),
+                "total_b": str(total_expenses_b),
+                "variance": str(expenses_variance),
+                "variance_pct": expenses_variance_pct,
+            },
+            "net_income_a": str(net_income_a),
+            "net_income_b": str(net_income_b),
+            "net_variance": str(net_variance),
+            "net_variance_pct": net_variance_pct,
+            "is_profit_a": net_income_a > 0,
+            "is_profit_b": net_income_b > 0,
+        })
+
+
 class FiscalPeriodListView(APIView):
     """
     GET /api/reports/periods/

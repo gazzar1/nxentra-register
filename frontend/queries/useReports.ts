@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { reportsService } from '@/services/reports.service';
-import type { ReportFilters, PeriodReportFilters, IncomeStatementFilters, DimensionAnalysisFilters, DimensionDrilldownFilters, DimensionCrossTabFilters } from '@/types/report';
+import type { ReportFilters, PeriodReportFilters, IncomeStatementFilters, DimensionAnalysisFilters, DimensionDrilldownFilters, DimensionCrossTabFilters, DimensionPLComparisonFilters } from '@/types/report';
 
 // Query keys factory
 export const reportKeys = {
@@ -17,6 +17,7 @@ export const reportKeys = {
   dimensionAnalysis: (filters: DimensionAnalysisFilters) => [...reportKeys.all, 'dimension-analysis', filters] as const,
   dimensionDrilldown: (filters: DimensionDrilldownFilters) => [...reportKeys.all, 'dimension-drilldown', filters] as const,
   dimensionCrossTab: (filters: DimensionCrossTabFilters) => [...reportKeys.all, 'dimension-crosstab', filters] as const,
+  dimensionPLComparison: (filters: DimensionPLComparisonFilters) => [...reportKeys.all, 'dimension-pl-comparison', filters] as const,
 };
 
 export function useTrialBalance(filters?: ReportFilters) {
@@ -144,6 +145,17 @@ export function useDimensionCrossTab(filters: DimensionCrossTabFilters | null) {
       return data;
     },
     enabled: !!filters?.row_dimension && !!filters?.col_dimension,
+  });
+}
+
+export function useDimensionPLComparison(filters: DimensionPLComparisonFilters | null) {
+  return useQuery({
+    queryKey: reportKeys.dimensionPLComparison(filters!),
+    queryFn: async () => {
+      const { data } = await reportsService.dimensionPLComparison(filters!);
+      return data;
+    },
+    enabled: !!filters?.dimension_code && !!filters?.value_a && !!filters?.value_b,
   });
 }
 
