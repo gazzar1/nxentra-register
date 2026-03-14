@@ -49,6 +49,13 @@ export interface ShopifyWebhookResult {
   webhooks_registered: boolean;
 }
 
+export interface ShopifyAccountMapping {
+  role: string;
+  account_id: number | null;
+  account_code: string;
+  account_name: string;
+}
+
 // =============================================================================
 // Service
 // =============================================================================
@@ -70,4 +77,11 @@ export const shopifyService = {
   // Orders
   getOrders: () =>
     apiClient.get<ShopifyOrder[]>("/shopify/orders/"),
+
+  // Account mapping
+  getAccountMapping: () =>
+    apiClient.get<ShopifyAccountMapping[]>("/shopify/account-mapping/"),
+
+  updateAccountMapping: (data: ShopifyAccountMapping[]) =>
+    apiClient.put("/shopify/account-mapping/", data),
 };

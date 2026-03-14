@@ -18,10 +18,14 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.authz import resolve_actor, require
+from accounting.mappings import ModuleAccountMapping
+from accounting.models import Account
+from projections.write_barrier import command_writes_allowed
 
 from . import commands
 from .models import ShopifyStore, ShopifyOrder, ShopifyRefund
 from .serializers import ShopifyStoreSerializer, ShopifyOrderSerializer
+from .projections import MODULE_NAME
 
 
 logger = logging.getLogger(__name__)
@@ -280,3 +284,81 @@ class ShopifyOrdersView(APIView):
         ).order_by("-shopify_created_at")[:100]
 
         return Response(ShopifyOrderSerializer(orders, many=True).data)
+
+
+# =============================================================================
+# Account Mapping
+# =============================================================================
+
+ACCOUNT_ROLES = [
+    "SALES_REVENUE",
+    "ACCOUNTS_RECEIVABLE",
+    "SALES_TAX_PAYABLE",
+    "SALES_DISCOUNTS",
+    "CASH_BANK",
+    "PAYMENT_PROCESSING_FEES",
+]
+
+
+class ShopifyAccountMappingView(APIView):
+    """
+    GET /api/shopify/account-mapping/
+    PUT /api/shopify/account-mapping/
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        actor = resolve_actor(request)
+        require(actor, "settings.view")
+
+        mapping = ModuleAccountMapping.get_mapping(actor.company, MODULE_NAME)
+        result = []
+        for role in ACCOUNT_ROLES:
+            account = mapping.get(role)
+            result.append({
+                "role": role,
+                "account_id": account.id if account else None,
+                "account_code": account.code if account else "",
+                "account_name": account.name if account else "",
+            })
+        return Response(result)
+
+    def put(self, request):
+        actor = resolve_actor(request)
+        require(actor, "settings.edit")
+
+        mappings = request.data
+        if not isinstance(mappings, list):
+            return Response(
+                {"detail": "Expected a list of role mappings."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with command_writes_allowed():
+            for item in mappings:
+                role = item.get("role")
+                account_id = item.get("account_id")
+
+                if role not in ACCOUNT_ROLES:
+                    continue
+
+                account = None
+                if account_id:
+                    try:
+                        account = Account.objects.get(
+                            company=actor.company, pk=account_id,
+                        )
+                    except Account.DoesNotExist:
+                        return Response(
+                            {"detail": f"Account {account_id} not found."},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+
+                ModuleAccountMapping.objects.update_or_create(
+                    company=actor.company,
+                    module=MODULE_NAME,
+                    role=role,
+                    defaults={"account": account},
+                )
+
+        return Response({"detail": "Account mappings updated."})

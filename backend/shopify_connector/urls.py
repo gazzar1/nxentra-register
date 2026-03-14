@@ -17,4 +17,7 @@ urlpatterns = [
 
     # Data views
     path("orders/", views.ShopifyOrdersView.as_view(), name="shopify-orders"),
+
+    # Account mapping
+    path("account-mapping/", views.ShopifyAccountMappingView.as_view(), name="shopify-account-mapping"),
 ]

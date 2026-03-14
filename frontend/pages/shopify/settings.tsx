@@ -12,6 +12,8 @@ import {
   Loader2,
   Unplug,
   Webhook,
+  Save,
+  Settings,
 } from "lucide-react";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
@@ -23,7 +25,9 @@ import { useToast } from "@/components/ui/toaster";
 import {
   shopifyService,
   ShopifyStore,
+  ShopifyAccountMapping,
 } from "@/services/shopify.service";
+import { useAccounts } from "@/queries/useAccounts";
 
 export default function ShopifySettingsPage() {
   const { t } = useTranslation(["common"]);
@@ -36,6 +40,12 @@ export default function ShopifySettingsPage() {
   const [connecting, setConnecting] = useState(false);
   const [registeringWebhooks, setRegisteringWebhooks] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
+
+  // Account mapping
+  const { data: accounts } = useAccounts();
+  const [mappings, setMappings] = useState<ShopifyAccountMapping[]>([]);
+  const [mappingForm, setMappingForm] = useState<Record<string, number | null>>({});
+  const [savingMappings, setSavingMappings] = useState(false);
 
   const fetchStore = async () => {
     setLoading(true);
@@ -53,8 +63,37 @@ export default function ShopifySettingsPage() {
     }
   };
 
+  const fetchMappings = async () => {
+    try {
+      const { data } = await shopifyService.getAccountMapping();
+      setMappings(data);
+      const initial: Record<string, number | null> = {};
+      data.forEach((m) => { initial[m.role] = m.account_id; });
+      setMappingForm(initial);
+    } catch {
+      // Mapping not available yet
+    }
+  };
+
+  const handleSaveMappings = async () => {
+    setSavingMappings(true);
+    try {
+      const payload = mappings.map((m) => ({
+        ...m,
+        account_id: mappingForm[m.role] ?? null,
+      }));
+      await shopifyService.updateAccountMapping(payload);
+      toast({ title: "Account mappings saved." });
+    } catch {
+      toast({ title: "Failed to save mappings.", variant: "destructive" });
+    } finally {
+      setSavingMappings(false);
+    }
+  };
+
   useEffect(() => {
     fetchStore();
+    fetchMappings();
 
     // Check for OAuth callback result
     if (router.query.connected === "true") {
@@ -121,6 +160,18 @@ export default function ShopifySettingsPage() {
   };
 
   const isConnected = store?.status === "ACTIVE";
+
+  const postableAccounts =
+    accounts?.filter((a) => !a.is_header && a.status === "ACTIVE") || [];
+
+  const ROLE_LABELS: Record<string, string> = {
+    SALES_REVENUE: "Sales Revenue",
+    ACCOUNTS_RECEIVABLE: "Accounts Receivable",
+    SALES_TAX_PAYABLE: "Sales Tax Payable",
+    SALES_DISCOUNTS: "Sales Discounts",
+    CASH_BANK: "Cash / Bank Account",
+    PAYMENT_PROCESSING_FEES: "Payment Processing Fees",
+  };
 
   return (
     <AppLayout>
@@ -266,6 +317,48 @@ export default function ShopifySettingsPage() {
               </CardContent>
             </Card>
 
+            {/* Account Mappings */}
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between">
+                <CardTitle className="flex items-center gap-2">
+                  <Settings className="h-5 w-5" />
+                  Account Mappings
+                </CardTitle>
+                <Button onClick={handleSaveMappings} disabled={savingMappings} size="sm">
+                  <Save className="me-2 h-4 w-4" />
+                  {savingMappings ? "Saving..." : "Save Mappings"}
+                </Button>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-sm text-muted-foreground">
+                  Map each Shopify accounting role to a GL account from your Chart of Accounts.
+                  These accounts are used when orders and refunds generate journal entries.
+                </p>
+                {mappings.map((m) => (
+                  <div key={m.role}>
+                    <Label>{ROLE_LABELS[m.role] || m.role}</Label>
+                    <select
+                      className="w-full border rounded-md px-3 py-2 text-sm mt-1"
+                      value={mappingForm[m.role] ?? ""}
+                      onChange={(e) =>
+                        setMappingForm({
+                          ...mappingForm,
+                          [m.role]: e.target.value ? Number(e.target.value) : null,
+                        })
+                      }
+                    >
+                      <option value="">— Not mapped —</option>
+                      {postableAccounts.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.code} — {a.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+
             {/* How It Works */}
             <Card>
               <CardHeader>
@@ -279,14 +372,6 @@ export default function ShopifySettingsPage() {
                   <li>When a refund is issued, Nxentra creates a reversal entry automatically</li>
                   <li>All entries appear in your Journal Entries and financial reports</li>
                 </ol>
-                <p className="mt-4 text-sm text-muted-foreground">
-                  Make sure to configure the account mappings in{" "}
-                  <Link href="/settings/modules" className="underline">
-                    Settings &rarr; Modules &rarr; Shopify
-                  </Link>{" "}
-                  to map the Shopify account roles (Sales Revenue, Accounts Receivable, etc.)
-                  to your chart of accounts.
-                </p>
               </CardContent>
             </Card>
           </>
