@@ -34,7 +34,7 @@ class ShopifyConnectorConfig(AppConfig):
             category=ModuleCategory.VERTICAL,
             order=75,
             nav_items=[
-                {"label": "Dashboard", "href": "/shopify/dashboard", "icon": "LayoutDashboard"},
+                {"label": "Dashboard", "href": "/shopify", "icon": "LayoutDashboard"},
                 {"label": "Orders", "href": "/shopify/orders", "icon": "ShoppingBag"},
                 {"label": "Settings", "href": "/shopify/settings", "icon": "Settings"},
             ],
