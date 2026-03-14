@@ -51,7 +51,9 @@ class ShopifyInstallView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Normalize domain
+        # Normalize domain — strip protocol, trailing slashes
+        shop_domain = shop_domain.removeprefix("https://").removeprefix("http://")
+        shop_domain = shop_domain.rstrip("/")
         if not shop_domain.endswith(".myshopify.com"):
             shop_domain = f"{shop_domain}.myshopify.com"
 
