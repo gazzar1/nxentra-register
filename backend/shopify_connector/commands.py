@@ -158,7 +158,7 @@ def register_webhooks(actor: ActorContext, store_id: int) -> CommandResult:
     for topic in SHOPIFY_WEBHOOK_TOPICS:
         try:
             resp = requests.post(
-                f"https://{store.shop_domain}/admin/api/2024-01/webhooks.json",
+                f"https://{store.shop_domain}/admin/api/2026-01/webhooks.json",
                 headers=headers,
                 json={
                     "webhook": {
