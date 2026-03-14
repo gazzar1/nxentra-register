@@ -275,6 +275,17 @@ VOICE_ASR_MODEL = os.getenv("VOICE_ASR_MODEL", "gpt-4o-mini-transcribe")
 VOICE_PARSE_MODEL = os.getenv("VOICE_PARSE_MODEL", "gpt-4o-mini")
 
 # =============================================================================
+# Shopify Connector
+# =============================================================================
+SHOPIFY_API_KEY = os.getenv("SHOPIFY_API_KEY", "")
+SHOPIFY_API_SECRET = os.getenv("SHOPIFY_API_SECRET", "")
+SHOPIFY_APP_URL = os.getenv("SHOPIFY_APP_URL", "")
+SHOPIFY_SCOPES = os.getenv(
+    "SHOPIFY_SCOPES",
+    "read_customers,read_discounts,read_fulfillments,read_inventory,read_locations,read_orders,read_products,read_returns,read_shopify_payments_payouts",
+)
+
+# =============================================================================
 # Rate Limiting
 # =============================================================================
 REST_FRAMEWORK["DEFAULT_THROTTLE_CLASSES"] = [
