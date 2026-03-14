@@ -168,6 +168,7 @@ export default function ShopifySettingsPage() {
     SALES_REVENUE: "Sales Revenue",
     ACCOUNTS_RECEIVABLE: "Accounts Receivable",
     SALES_TAX_PAYABLE: "Sales Tax Payable",
+    SHIPPING_REVENUE: "Shipping Revenue",
     SALES_DISCOUNTS: "Sales Discounts",
     CASH_BANK: "Cash / Bank Account",
     PAYMENT_PROCESSING_FEES: "Payment Processing Fees",

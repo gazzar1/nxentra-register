@@ -49,6 +49,7 @@ class ShopifyOrderPaidData(FinancialEventData):
     order_name: str = ""
     subtotal: str = "0"
     total_tax: str = "0"
+    total_shipping: str = "0"
     total_discounts: str = "0"
     financial_status: str = ""
     gateway: str = ""

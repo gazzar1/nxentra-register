@@ -39,6 +39,7 @@ ROLE_SALES_REVENUE = "SALES_REVENUE"
 ROLE_ACCOUNTS_RECEIVABLE = "ACCOUNTS_RECEIVABLE"
 ROLE_SALES_TAX_PAYABLE = "SALES_TAX_PAYABLE"
 ROLE_SALES_DISCOUNTS = "SALES_DISCOUNTS"
+ROLE_SHIPPING_REVENUE = "SHIPPING_REVENUE"
 ROLE_CASH_BANK = "CASH_BANK"
 
 
@@ -137,10 +138,12 @@ class ShopifyAccountingProjection(BaseProjection):
             return
 
         tax_account = mapping.get(ROLE_SALES_TAX_PAYABLE)
+        shipping_account = mapping.get(ROLE_SHIPPING_REVENUE)
 
         total_price = Decimal(str(data.get("amount", "0")))
         subtotal = Decimal(str(data.get("subtotal", "0")))
         total_tax = Decimal(str(data.get("total_tax", "0")))
+        total_shipping = Decimal(str(data.get("total_shipping", "0")))
         order_name = data.get("order_name", data.get("order_number", ""))
         entry_date = _parse_date(data.get("transaction_date")) or event.created_at.date()
         currency = data.get("currency") or getattr(event.company, "default_currency", "USD")
@@ -211,6 +214,18 @@ class ShopifyAccountingProjection(BaseProjection):
                 public_id=uuid.uuid4(), line_no=line_no,
                 account=tax_account, description=f"Sales tax: {order_name}",
                 debit=Decimal("0"), credit=total_tax,
+                currency=currency, exchange_rate=Decimal("1.0"),
+            ))
+
+        # CR Shipping Revenue — if applicable
+        if total_shipping > 0:
+            ship_acct = shipping_account or revenue  # fall back to sales revenue
+            line_no += 1
+            lines.append(JournalLine(
+                entry=entry, company=event.company,
+                public_id=uuid.uuid4(), line_no=line_no,
+                account=ship_acct, description=f"Shipping: {order_name}",
+                debit=Decimal("0"), credit=total_shipping,
                 currency=currency, exchange_rate=Decimal("1.0"),
             ))
 

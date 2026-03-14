@@ -20,6 +20,7 @@ class ShopifyConnectorConfig(AppConfig):
         "ACCOUNTS_RECEIVABLE",
         "PAYMENT_PROCESSING_FEES",
         "SALES_TAX_PAYABLE",
+        "SHIPPING_REVENUE",
         "SALES_DISCOUNTS",
         "CASH_BANK",
     ]

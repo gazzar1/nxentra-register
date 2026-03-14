@@ -295,6 +295,11 @@ def process_order_paid(store: ShopifyStore, payload: dict) -> CommandResult:
     total_discounts = Decimal(str(payload.get("total_discounts", "0")))
     currency = payload.get("currency", "USD")
 
+    # Calculate total shipping from shipping_lines
+    total_shipping = Decimal("0")
+    for sl in payload.get("shipping_lines", []):
+        total_shipping += Decimal(str(sl.get("price", "0")))
+
     with command_writes_allowed():
         order = ShopifyOrder.objects.create(
             company=store.company,
@@ -347,6 +352,7 @@ def process_order_paid(store: ShopifyStore, payload: dict) -> CommandResult:
             order_name=order.shopify_order_name,
             subtotal=str(subtotal_price),
             total_tax=str(total_tax),
+            total_shipping=str(total_shipping),
             total_discounts=str(total_discounts),
             financial_status=payload.get("financial_status", ""),
             gateway=order.gateway,
