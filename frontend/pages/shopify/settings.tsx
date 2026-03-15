@@ -14,6 +14,7 @@ import {
   Webhook,
   Save,
   Settings,
+  RefreshCw,
 } from "lucide-react";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
@@ -40,6 +41,7 @@ export default function ShopifySettingsPage() {
   const [connecting, setConnecting] = useState(false);
   const [registeringWebhooks, setRegisteringWebhooks] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
+  const [syncingPayouts, setSyncingPayouts] = useState(false);
 
   // Account mapping
   const { data: accounts } = useAccounts();
@@ -159,6 +161,21 @@ export default function ShopifySettingsPage() {
     }
   };
 
+  const handleSyncPayouts = async () => {
+    setSyncingPayouts(true);
+    try {
+      const { data } = await shopifyService.syncPayouts();
+      toast({
+        title: `Payout sync complete: ${data.created} new, ${data.skipped} already synced`,
+      });
+      fetchStore(); // refresh last_sync_at
+    } catch {
+      toast({ title: "Failed to sync payouts.", variant: "destructive" });
+    } finally {
+      setSyncingPayouts(false);
+    }
+  };
+
   const isConnected = store?.status === "ACTIVE";
 
   const postableAccounts =
@@ -166,7 +183,7 @@ export default function ShopifySettingsPage() {
 
   const ROLE_LABELS: Record<string, string> = {
     SALES_REVENUE: "Sales Revenue",
-    ACCOUNTS_RECEIVABLE: "Accounts Receivable",
+    SHOPIFY_CLEARING: "Shopify Clearing",
     SALES_TAX_PAYABLE: "Sales Tax Payable",
     SHIPPING_REVENUE: "Shipping Revenue",
     SALES_DISCOUNTS: "Sales Discounts",
@@ -303,6 +320,14 @@ export default function ShopifySettingsPage() {
                     Register Webhooks
                   </Button>
                 )}
+                <Button onClick={handleSyncPayouts} disabled={syncingPayouts}>
+                  {syncingPayouts ? (
+                    <Loader2 className="me-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="me-2 h-4 w-4" />
+                  )}
+                  Sync Payouts
+                </Button>
                 <Button
                   variant="destructive"
                   onClick={handleDisconnect}
@@ -368,9 +393,10 @@ export default function ShopifySettingsPage() {
               <CardContent>
                 <ol className="list-decimal list-inside space-y-2 text-sm text-muted-foreground">
                   <li>When a customer pays for an order, Shopify sends a webhook to Nxentra</li>
-                  <li>Nxentra creates a journal entry: DR Accounts Receivable / CR Sales Revenue</li>
+                  <li>Nxentra creates a journal entry: DR Shopify Clearing / CR Sales Revenue</li>
                   <li>If the order includes tax, a separate line credits Sales Tax Payable</li>
                   <li>When a refund is issued, Nxentra creates a reversal entry automatically</li>
+                  <li>When Shopify sends a payout, Nxentra clears the balance: DR Bank / DR Fees / CR Shopify Clearing</li>
                   <li>All entries appear in your Journal Entries and financial reports</li>
                 </ol>
               </CardContent>

@@ -173,6 +173,9 @@ class ShopifyWebhookView(APIView):
         handler = {
             "orders/paid": commands.process_order_paid,
             "refunds/create": commands.process_refund,
+            "fulfillments/create": commands.process_fulfillment,
+            "disputes/create": commands.process_dispute,
+            "disputes/update": commands.process_dispute,
             "app/uninstalled": commands.process_app_uninstalled,
         }.get(topic)
 
@@ -203,7 +206,8 @@ class ShopifyWebhookView(APIView):
 class ShopifyStoreView(APIView):
     """
     GET /api/shopify/store/
-    Returns the connected store details for the current company.
+    Returns connected store(s) for the current company.
+    Supports ?store_id=<public_id> for a specific store.
     """
     permission_classes = [IsAuthenticated]
 
@@ -211,11 +215,26 @@ class ShopifyStoreView(APIView):
         actor = resolve_actor(request)
         require(actor, "settings.view")
 
-        try:
-            store = ShopifyStore.objects.get(company=actor.company)
-            return Response(ShopifyStoreSerializer(store).data)
-        except ShopifyStore.DoesNotExist:
-            return Response({"connected": False}, status=status.HTTP_200_OK)
+        store_id = request.query_params.get("store_id")
+        if store_id:
+            try:
+                store = ShopifyStore.objects.get(
+                    company=actor.company, public_id=store_id,
+                )
+                return Response(ShopifyStoreSerializer(store).data)
+            except ShopifyStore.DoesNotExist:
+                return Response(
+                    {"error": "Store not found"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+        stores = ShopifyStore.objects.filter(company=actor.company)
+        if not stores.exists():
+            return Response({"connected": False, "stores": []}, status=status.HTTP_200_OK)
+        return Response({
+            "connected": True,
+            "stores": ShopifyStoreSerializer(stores, many=True).data,
+        })
 
 
 class ShopifyRegisterWebhooksView(APIView):
@@ -228,8 +247,18 @@ class ShopifyRegisterWebhooksView(APIView):
     def post(self, request):
         actor = resolve_actor(request)
 
+        store_id = request.data.get("store_id") or request.query_params.get("store_id")
         try:
-            store = ShopifyStore.objects.get(company=actor.company)
+            if store_id:
+                store = ShopifyStore.objects.get(
+                    company=actor.company, public_id=store_id,
+                )
+            else:
+                store = ShopifyStore.objects.filter(
+                    company=actor.company,
+                ).exclude(status=ShopifyStore.Status.DISCONNECTED).first()
+                if not store:
+                    raise ShopifyStore.DoesNotExist
         except ShopifyStore.DoesNotExist:
             return Response(
                 {"error": "No connected store"},
@@ -268,6 +297,41 @@ class ShopifyDisconnectView(APIView):
         return Response({"status": "disconnected"})
 
 
+class ShopifySyncPayoutsView(APIView):
+    """
+    POST /api/shopify/sync-payouts/
+    Fetches recent payouts from Shopify Payments and creates settlement events.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        actor = resolve_actor(request)
+        require(actor, "settings.edit")
+
+        try:
+            store = ShopifyStore.objects.get(
+                company=actor.company,
+                status=ShopifyStore.Status.ACTIVE,
+            )
+        except ShopifyStore.DoesNotExist:
+            return Response(
+                {"error": "No active Shopify store"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        result = commands.sync_payouts(store)
+        if not result.success:
+            return Response(
+                {"error": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response({
+            "created": result.data.get("created", 0),
+            "skipped": result.data.get("skipped", 0),
+        })
+
+
 class ShopifyOrdersView(APIView):
     """
     GET /api/shopify/orders/
@@ -292,12 +356,13 @@ class ShopifyOrdersView(APIView):
 
 ACCOUNT_ROLES = [
     "SALES_REVENUE",
-    "ACCOUNTS_RECEIVABLE",
+    "SHOPIFY_CLEARING",
     "SALES_TAX_PAYABLE",
     "SHIPPING_REVENUE",
     "SALES_DISCOUNTS",
     "CASH_BANK",
     "PAYMENT_PROCESSING_FEES",
+    "CHARGEBACK_EXPENSE",
 ]
 
 
@@ -363,3 +428,101 @@ class ShopifyAccountMappingView(APIView):
                 )
 
         return Response({"detail": "Account mappings updated."})
+
+
+class ShopifyPayoutVerifyView(APIView):
+    """POST: Fetch and verify transactions for a payout."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, payout_id):
+        actor = resolve_actor(request)
+        require(actor, "reports.view")
+
+        try:
+            store = ShopifyStore.objects.get(company=actor.company, status="ACTIVE")
+        except ShopifyStore.DoesNotExist:
+            return Response(
+                {"detail": "No active Shopify store."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        result = commands.verify_payout(store, payout_id)
+        if not result.success:
+            return Response(
+                {"detail": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(result.data)
+
+
+class ShopifyPayoutTransactionsView(APIView):
+    """GET: List transactions for a payout."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, payout_id):
+        actor = resolve_actor(request)
+        require(actor, "reports.view")
+
+        from .models import ShopifyPayoutTransaction
+
+        try:
+            payout = ShopifyPayout.objects.get(
+                company=actor.company, shopify_payout_id=payout_id,
+            )
+        except ShopifyPayout.DoesNotExist:
+            return Response(
+                {"detail": "Payout not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        transactions = payout.transactions.all().order_by("-processed_at")
+        data = [
+            {
+                "id": t.id,
+                "shopify_transaction_id": t.shopify_transaction_id,
+                "transaction_type": t.transaction_type,
+                "amount": str(t.amount),
+                "fee": str(t.fee),
+                "net": str(t.net),
+                "currency": t.currency,
+                "source_order_id": t.source_order_id,
+                "source_type": t.source_type,
+                "verified": t.verified,
+                "local_order_name": (
+                    t.local_order.shopify_order_name if t.local_order else None
+                ),
+                "processed_at": t.processed_at.isoformat() if t.processed_at else None,
+            }
+            for t in transactions
+        ]
+        return Response({
+            "payout_id": payout.shopify_payout_id,
+            "payout_net": str(payout.net_amount),
+            "payout_fees": str(payout.fees),
+            "payout_gross": str(payout.gross_amount),
+            "transactions": data,
+            "count": len(data),
+        })
+
+
+class ShopifyClearingBalanceView(APIView):
+    """GET: Return current Shopify Clearing account balance for the company."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        actor = resolve_actor(request)
+        require(actor, "reports.view")
+
+        from .management.commands.check_clearing_balance import compute_clearing_balance
+        data = compute_clearing_balance(actor.company)
+
+        if data is None:
+            return Response(
+                {"detail": "No SHOPIFY_CLEARING account mapped."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        return Response(data)

@@ -17,7 +17,15 @@ urlpatterns = [
 
     # Data views
     path("orders/", views.ShopifyOrdersView.as_view(), name="shopify-orders"),
+    path("sync-payouts/", views.ShopifySyncPayoutsView.as_view(), name="shopify-sync-payouts"),
 
     # Account mapping
     path("account-mapping/", views.ShopifyAccountMappingView.as_view(), name="shopify-account-mapping"),
+
+    # Payout verification (Layer 2 reconciliation)
+    path("payouts/<int:payout_id>/verify/", views.ShopifyPayoutVerifyView.as_view(), name="shopify-payout-verify"),
+    path("payouts/<int:payout_id>/transactions/", views.ShopifyPayoutTransactionsView.as_view(), name="shopify-payout-transactions"),
+
+    # Monitoring
+    path("clearing-balance/", views.ShopifyClearingBalanceView.as_view(), name="shopify-clearing-balance"),
 ]

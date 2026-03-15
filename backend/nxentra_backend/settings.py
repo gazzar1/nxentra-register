@@ -80,6 +80,7 @@ INSTALLED_APPS = [
     "edim.apps.EdimConfig",
     "properties.apps.PropertiesConfig",
     "clinic.apps.ClinicConfig",
+    "platform_connectors.apps.PlatformConnectorsConfig",
     "shopify_connector.apps.ShopifyConnectorConfig",
     "channels",
     "django_celery_beat",  # Periodic tasks

@@ -2020,6 +2020,92 @@ class EventTypes:
     SHOPIFY_STORE_DISCONNECTED = "shopify.store_disconnected"
     SHOPIFY_ORDER_PAID = "shopify.order_paid"
     SHOPIFY_REFUND_CREATED = "shopify.refund_created"
+    SHOPIFY_PAYOUT_SETTLED = "shopify.payout_settled"
+    SHOPIFY_ORDER_FULFILLED = "shopify.order_fulfilled"
+    SHOPIFY_DISPUTE_CREATED = "shopify.dispute_created"
+
+    # Platform-agnostic commerce events (used by new platform connectors)
+    PLATFORM_ORDER_PAID = "platform.order_paid"
+    PLATFORM_REFUND_CREATED = "platform.refund_created"
+    PLATFORM_PAYOUT_SETTLED = "platform.payout_settled"
+    PLATFORM_DISPUTE_CREATED = "platform.dispute_created"
+    PLATFORM_FULFILLMENT_CREATED = "platform.fulfillment_created"
+
+
+# =============================================================================
+# Platform-agnostic Event Data Classes
+# =============================================================================
+
+@dataclass
+class PlatformOrderPaidData(FinancialEventData):
+    """
+    Generic order-paid event emitted by any platform connector.
+
+    The platform_slug field identifies the source platform (e.g. 'stripe').
+    Shopify keeps its own events for backward compatibility; new platforms
+    use these generic events.
+    """
+    platform_slug: str = ""
+    platform_order_id: str = ""
+    order_number: str = ""
+    order_name: str = ""
+    subtotal: str = "0"
+    total_tax: str = "0"
+    total_shipping: str = "0"
+    total_discounts: str = "0"
+    financial_status: str = ""
+    gateway: str = ""
+    customer_email: str = ""
+    customer_name: str = ""
+    line_items: list = field(default_factory=list)
+
+
+@dataclass
+class PlatformRefundCreatedData(FinancialEventData):
+    """Generic refund event from any platform connector."""
+    platform_slug: str = ""
+    platform_refund_id: str = ""
+    platform_order_id: str = ""
+    order_number: str = ""
+    reason: str = ""
+
+
+@dataclass
+class PlatformPayoutSettledData(FinancialEventData):
+    """Generic payout/settlement event from any platform connector."""
+    platform_slug: str = ""
+    platform_payout_id: str = ""
+    gross_amount: str = "0"
+    fees: str = "0"
+    net_amount: str = "0"
+    payout_date: str = ""
+    platform_status: str = ""
+
+
+@dataclass
+class PlatformDisputeCreatedData(FinancialEventData):
+    """Generic chargeback/dispute event from any platform connector."""
+    platform_slug: str = ""
+    platform_dispute_id: str = ""
+    platform_order_id: str = ""
+    order_name: str = ""
+    dispute_amount: str = "0"
+    chargeback_fee: str = "0"
+    reason: str = ""
+    dispute_status: str = ""
+
+
+@dataclass
+class PlatformFulfillmentCreatedData(FinancialEventData):
+    """Generic fulfillment event for COGS recognition."""
+    platform_slug: str = ""
+    platform_fulfillment_id: str = ""
+    platform_order_id: str = ""
+    order_name: str = ""
+    fulfillment_date: str = ""
+    total_cogs: str = "0"
+    cogs_lines: list = field(default_factory=list)
+    unmatched_skus: list = field(default_factory=list)
 
 
 # =============================================================================
@@ -2144,6 +2230,13 @@ EVENT_DATA_CLASSES = {
     EventTypes.INVENTORY_STOCK_ISSUED: StockIssuedData,
     EventTypes.INVENTORY_ADJUSTED: InventoryAdjustedData,
     EventTypes.INVENTORY_OPENING_BALANCE: InventoryOpeningBalanceData,
+
+    # Platform-agnostic commerce events
+    EventTypes.PLATFORM_ORDER_PAID: PlatformOrderPaidData,
+    EventTypes.PLATFORM_REFUND_CREATED: PlatformRefundCreatedData,
+    EventTypes.PLATFORM_PAYOUT_SETTLED: PlatformPayoutSettledData,
+    EventTypes.PLATFORM_DISPUTE_CREATED: PlatformDisputeCreatedData,
+    EventTypes.PLATFORM_FULFILLMENT_CREATED: PlatformFulfillmentCreatedData,
 }
 
 # =============================================================================

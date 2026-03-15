@@ -78,6 +78,10 @@ export const shopifyService = {
   getOrders: () =>
     apiClient.get<ShopifyOrder[]>("/shopify/orders/"),
 
+  // Payouts
+  syncPayouts: () =>
+    apiClient.post<{ created: number; skipped: number }>("/shopify/sync-payouts/"),
+
   // Account mapping
   getAccountMapping: () =>
     apiClient.get<ShopifyAccountMapping[]>("/shopify/account-mapping/"),

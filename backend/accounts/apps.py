@@ -66,6 +66,7 @@ class AccountsConfig(AppConfig):
             order=20,
             nav_items=[
                 {"label": "Journal Entries", "href": "/accounting/journal-entries", "icon": "FileText", "translation_key": "nav.journalEntries"},
+                {"label": "Bank Reconciliation", "href": "/accounting/bank-reconciliation", "icon": "Building2"},
                 {"label": "Scratchpad", "href": "/accounting/scratchpad", "icon": "ClipboardList", "translation_key": "nav.scratchpad"},
                 {"label": "Import Data", "href": "/accounting/import", "icon": "Upload", "translation_key": "nav.import"},
             ],

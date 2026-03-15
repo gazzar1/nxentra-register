@@ -1548,6 +1548,16 @@ class JournalLine(AccountingReadModel):
         help_text="Required when posting to AP control accounts",
     )
 
+    # Bank reconciliation fields
+    reconciled = models.BooleanField(
+        default=False,
+        help_text="Whether this line has been reconciled against a bank statement",
+    )
+    reconciled_date = models.DateField(
+        null=True, blank=True,
+        help_text="Date this line was reconciled",
+    )
+
     class Meta:
         unique_together = ("entry", "line_no")
         ordering = ["entry", "line_no"]
@@ -2488,6 +2498,257 @@ class ExchangeRate(models.Model):
             return Decimal("1.0") / reverse_rate.rate
 
         return None
+
+
+# =============================================================================
+# Bank Reconciliation
+# =============================================================================
+
+class BankStatement(models.Model):
+    """
+    An imported bank statement for reconciliation.
+
+    A statement covers a date range for a specific bank/cash account
+    and contains individual transaction lines to be matched against
+    journal entries.
+    """
+
+    class Status(models.TextChoices):
+        IMPORTED = "IMPORTED", "Imported"
+        IN_PROGRESS = "IN_PROGRESS", "In Progress"
+        RECONCILED = "RECONCILED", "Reconciled"
+
+    class Source(models.TextChoices):
+        MANUAL = "MANUAL", "Manual Entry"
+        CSV = "CSV", "CSV Import"
+        OFX = "OFX", "OFX/QFX Import"
+        BANK_FEED = "BANK_FEED", "Bank Feed"
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="bank_statements",
+    )
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+
+    account = models.ForeignKey(
+        Account,
+        on_delete=models.PROTECT,
+        related_name="bank_statements",
+        help_text="The bank/cash GL account this statement is for.",
+    )
+
+    # Statement period
+    statement_date = models.DateField(
+        help_text="As-of date on the bank statement",
+    )
+    period_start = models.DateField()
+    period_end = models.DateField()
+
+    # Balances from the bank
+    opening_balance = models.DecimalField(max_digits=18, decimal_places=2)
+    closing_balance = models.DecimalField(max_digits=18, decimal_places=2)
+    currency = models.CharField(max_length=3, default="USD")
+
+    source = models.CharField(
+        max_length=20,
+        choices=Source.choices,
+        default=Source.CSV,
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.IMPORTED,
+    )
+
+    # Reference / notes
+    reference = models.CharField(max_length=255, blank=True)
+    notes = models.TextField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "bank_statement"
+        ordering = ["-statement_date"]
+        indexes = [
+            models.Index(fields=["company", "account", "statement_date"]),
+        ]
+
+    def __str__(self):
+        return f"Statement {self.account.code} {self.statement_date}"
+
+    @property
+    def line_count(self):
+        return self.lines.count()
+
+    @property
+    def matched_count(self):
+        return self.lines.exclude(match_status="UNMATCHED").count()
+
+
+class BankStatementLine(models.Model):
+    """
+    Individual transaction line from a bank statement.
+
+    Positive amount = deposit (money in), negative = withdrawal (money out).
+    Matched against JournalLine records during reconciliation.
+    """
+
+    class MatchStatus(models.TextChoices):
+        UNMATCHED = "UNMATCHED", "Unmatched"
+        AUTO_MATCHED = "AUTO_MATCHED", "Auto-Matched"
+        MANUAL_MATCHED = "MANUAL_MATCHED", "Manual Match"
+        EXCLUDED = "EXCLUDED", "Excluded"
+
+    class TransactionType(models.TextChoices):
+        DEPOSIT = "DEPOSIT", "Deposit"
+        WITHDRAWAL = "WITHDRAWAL", "Withdrawal"
+        FEE = "FEE", "Fee"
+        INTEREST = "INTEREST", "Interest"
+        TRANSFER = "TRANSFER", "Transfer"
+        OTHER = "OTHER", "Other"
+
+    statement = models.ForeignKey(
+        BankStatement,
+        on_delete=models.CASCADE,
+        related_name="lines",
+    )
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="bank_statement_lines",
+    )
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+
+    # Transaction data from bank
+    line_date = models.DateField()
+    description = models.CharField(max_length=500)
+    reference = models.CharField(
+        max_length=255, blank=True,
+        help_text="Check number, transfer ref, etc.",
+    )
+    amount = models.DecimalField(
+        max_digits=18, decimal_places=2,
+        help_text="Positive = deposit, negative = withdrawal",
+    )
+    transaction_type = models.CharField(
+        max_length=20,
+        choices=TransactionType.choices,
+        default=TransactionType.OTHER,
+    )
+
+    # Matching
+    match_status = models.CharField(
+        max_length=20,
+        choices=MatchStatus.choices,
+        default=MatchStatus.UNMATCHED,
+    )
+    matched_journal_line = models.ForeignKey(
+        JournalLine,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="bank_matches",
+        help_text="The journal line this bank transaction was matched to.",
+    )
+    match_confidence = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="Auto-match confidence score (0-100)",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "bank_statement_line"
+        ordering = ["line_date", "id"]
+        indexes = [
+            models.Index(fields=["company", "match_status"]),
+            models.Index(fields=["statement", "match_status"]),
+        ]
+
+    def __str__(self):
+        return f"{self.line_date} {self.description[:40]} {self.amount}"
+
+
+class BankReconciliation(models.Model):
+    """
+    A completed or in-progress bank reconciliation session.
+
+    Tracks the reconciliation of a bank statement against the GL,
+    computing the difference between the bank's closing balance
+    and the GL balance for the account.
+    """
+
+    class Status(models.TextChoices):
+        DRAFT = "DRAFT", "Draft"
+        COMPLETED = "COMPLETED", "Completed"
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="bank_reconciliations",
+    )
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+
+    account = models.ForeignKey(
+        Account,
+        on_delete=models.PROTECT,
+        related_name="reconciliations",
+    )
+    statement = models.ForeignKey(
+        BankStatement,
+        on_delete=models.CASCADE,
+        related_name="reconciliations",
+    )
+
+    reconciliation_date = models.DateField()
+
+    # Balances
+    statement_closing_balance = models.DecimalField(max_digits=18, decimal_places=2)
+    gl_balance = models.DecimalField(
+        max_digits=18, decimal_places=2,
+        help_text="GL balance for this account as of reconciliation date",
+    )
+    adjusted_gl_balance = models.DecimalField(
+        max_digits=18, decimal_places=2, default=0,
+        help_text="GL balance after outstanding items",
+    )
+    difference = models.DecimalField(
+        max_digits=18, decimal_places=2, default=0,
+        help_text="Statement closing - adjusted GL = should be 0 when reconciled",
+    )
+
+    # Stats
+    matched_count = models.IntegerField(default=0)
+    unmatched_count = models.IntegerField(default=0)
+    outstanding_deposits = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    outstanding_withdrawals = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.DRAFT,
+    )
+    reconciled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    reconciled_at = models.DateTimeField(null=True, blank=True)
+    notes = models.TextField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "bank_reconciliation"
+        ordering = ["-reconciliation_date"]
+
+    def __str__(self):
+        return f"Recon {self.account.code} {self.reconciliation_date} ({self.status})"
 
 
 # Import ModuleAccountMapping so Django discovers it for migrations.

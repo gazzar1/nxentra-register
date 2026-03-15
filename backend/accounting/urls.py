@@ -58,6 +58,19 @@ from .views import (
     ExchangeRateLookupView,
 )
 
+from .bank_views import (
+    BankStatementListCreateView,
+    BankStatementCSVImportView,
+    BankStatementDetailView,
+    BankAutoMatchView,
+    BankManualMatchView,
+    BankUnmatchView,
+    BankExcludeLineView,
+    BankReconcileView,
+    BankUnreconciledLinesView,
+    CommerceReconciliationView,
+)
+
 app_name = "accounting"
 
 urlpatterns = [
@@ -246,5 +259,63 @@ urlpatterns = [
         "admin/seed-accounts/",
         SeedAccountsView.as_view(),
         name="admin-seed-accounts",
+    ),
+
+    # ==========================================================================
+    # Bank Reconciliation
+    # ==========================================================================
+    path(
+        "bank-statements/",
+        BankStatementListCreateView.as_view(),
+        name="bank-statement-list-create",
+    ),
+    path(
+        "bank-statements/parse-csv/",
+        BankStatementCSVImportView.as_view(),
+        name="bank-statement-parse-csv",
+    ),
+    path(
+        "bank-statements/match/",
+        BankManualMatchView.as_view(),
+        name="bank-statement-manual-match",
+    ),
+    path(
+        "bank-statements/unmatch/",
+        BankUnmatchView.as_view(),
+        name="bank-statement-unmatch",
+    ),
+    path(
+        "bank-statements/exclude/",
+        BankExcludeLineView.as_view(),
+        name="bank-statement-exclude",
+    ),
+    path(
+        "bank-statements/<int:pk>/",
+        BankStatementDetailView.as_view(),
+        name="bank-statement-detail",
+    ),
+    path(
+        "bank-statements/<int:pk>/auto-match/",
+        BankAutoMatchView.as_view(),
+        name="bank-statement-auto-match",
+    ),
+    path(
+        "bank-statements/<int:pk>/reconcile/",
+        BankReconcileView.as_view(),
+        name="bank-statement-reconcile",
+    ),
+    path(
+        "bank-reconciliation/unreconciled/",
+        BankUnreconciledLinesView.as_view(),
+        name="bank-reconciliation-unreconciled",
+    ),
+
+    # ==========================================================================
+    # Commerce Reconciliation (Three-Column View)
+    # ==========================================================================
+    path(
+        "commerce-reconciliation/",
+        CommerceReconciliationView.as_view(),
+        name="commerce-reconciliation",
     ),
 ]

@@ -17,12 +17,13 @@ class ShopifyConnectorConfig(AppConfig):
     # GL account roles this module requires
     account_roles = [
         "SALES_REVENUE",
-        "ACCOUNTS_RECEIVABLE",
+        "SHOPIFY_CLEARING",
         "PAYMENT_PROCESSING_FEES",
         "SALES_TAX_PAYABLE",
         "SHIPPING_REVENUE",
         "SALES_DISCOUNTS",
         "CASH_BANK",
+        "CHARGEBACK_EXPENSE",
     ]
 
     def ready(self):
@@ -37,6 +38,12 @@ class ShopifyConnectorConfig(AppConfig):
             nav_items=[
                 {"label": "Dashboard", "href": "/shopify", "icon": "LayoutDashboard"},
                 {"label": "Orders", "href": "/shopify/orders", "icon": "ShoppingBag"},
+                {"label": "Payouts", "href": "/shopify/payouts", "icon": "Banknote"},
                 {"label": "Settings", "href": "/shopify/settings", "icon": "Settings"},
             ],
         )
+
+        # Register with platform connector registry
+        from platform_connectors.registry import connector_registry
+        from shopify_connector.connector import ShopifyConnector
+        connector_registry.register(ShopifyConnector())

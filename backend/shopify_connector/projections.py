@@ -7,10 +7,11 @@ using ModuleAccountMapping for account resolution.
 
 Account roles used by this module:
     SALES_REVENUE — Product/service revenue
-    ACCOUNTS_RECEIVABLE — Customer receivable (cleared when Stripe payout lands)
+    SHOPIFY_CLEARING — Platform clearing (holds funds until payout)
     SALES_TAX_PAYABLE — Collected sales tax
     SALES_DISCOUNTS — Discount contra-revenue
     CASH_BANK — Cash/bank for direct payments
+    PAYMENT_PROCESSING_FEES — Payment processing fees (Shopify Payments)
 """
 
 import logging
@@ -37,11 +38,13 @@ PROJECTION_NAME = "shopify_accounting"
 
 # Account roles
 ROLE_SALES_REVENUE = "SALES_REVENUE"
-ROLE_ACCOUNTS_RECEIVABLE = "ACCOUNTS_RECEIVABLE"
+ROLE_SHOPIFY_CLEARING = "SHOPIFY_CLEARING"
 ROLE_SALES_TAX_PAYABLE = "SALES_TAX_PAYABLE"
 ROLE_SALES_DISCOUNTS = "SALES_DISCOUNTS"
 ROLE_SHIPPING_REVENUE = "SHIPPING_REVENUE"
 ROLE_CASH_BANK = "CASH_BANK"
+ROLE_PROCESSING_FEES = "PAYMENT_PROCESSING_FEES"
+ROLE_CHARGEBACK_EXPENSE = "CHARGEBACK_EXPENSE"
 
 
 def _parse_date(value):
@@ -64,20 +67,41 @@ def _resolve_period(company, entry_date):
     return entry_date.month
 
 
+def _resolve_store_domain(company, store_public_id):
+    """Resolve shop_domain from a store_public_id."""
+    if not store_public_id:
+        return None
+    from shopify_connector.models import ShopifyStore
+    try:
+        return ShopifyStore.objects.values_list("shop_domain", flat=True).get(
+            company=company, public_id=store_public_id,
+        )
+    except ShopifyStore.DoesNotExist:
+        return None
+
+
 class ShopifyAccountingProjection(BaseProjection):
     """
     Creates journal entries from Shopify financial events.
 
     Order paid:
-        DR Accounts Receivable   (total_price)
+        DR Shopify Clearing      (total_price)
         CR Sales Revenue         (subtotal)
         CR Sales Tax Payable     (total_tax)     — if > 0
-        DR Sales Discounts       (total_discounts) — if > 0
-        CR Sales Discounts Offset                   — netted into revenue
+        CR Shipping Revenue      (total_shipping) — if > 0
 
     Refund created:
         DR Sales Revenue         (amount)
-        CR Accounts Receivable   (amount)
+        CR Shopify Clearing      (amount)
+
+    Payout settled:
+        DR Cash/Bank             (net_amount)
+        DR Processing Fees       (fees)
+        CR Shopify Clearing      (gross_amount)
+
+    Order fulfilled (COGS):
+        DR Cost of Goods Sold    (qty × avg_cost per item)
+        CR Inventory             (qty × avg_cost per item)
     """
 
     @property
@@ -89,6 +113,9 @@ class ShopifyAccountingProjection(BaseProjection):
         return [
             EventTypes.SHOPIFY_ORDER_PAID,
             EventTypes.SHOPIFY_REFUND_CREATED,
+            EventTypes.SHOPIFY_PAYOUT_SETTLED,
+            EventTypes.SHOPIFY_ORDER_FULFILLED,
+            EventTypes.SHOPIFY_DISPUTE_CREATED,
         ]
 
     def handle(self, event: BusinessEvent) -> None:
@@ -108,15 +135,45 @@ class ShopifyAccountingProjection(BaseProjection):
             )
             return
 
+        # Resolve dimension context for tagging JE lines
+        dimension_context = self._resolve_dimensions(company, data)
+
         handler = {
             EventTypes.SHOPIFY_ORDER_PAID: self._handle_order_paid,
             EventTypes.SHOPIFY_REFUND_CREATED: self._handle_refund_created,
+            EventTypes.SHOPIFY_PAYOUT_SETTLED: self._handle_payout_settled,
+            EventTypes.SHOPIFY_ORDER_FULFILLED: self._handle_order_fulfilled,
+            EventTypes.SHOPIFY_DISPUTE_CREATED: self._handle_dispute_created,
         }.get(event.event_type)
 
         if handler:
-            handler(event, data, mapping)
+            handler(event, data, mapping, dimension_context)
 
-    def _handle_order_paid(self, event, data, mapping):
+    def _resolve_dimensions(self, company, data):
+        """
+        Resolve dimension context for a Shopify event.
+
+        Returns dict like {"platform": "shopify", "store": "shopify:my-store.myshopify.com"}
+        """
+        store_public_id = data.get("store_public_id")
+        shop_domain = _resolve_store_domain(company, store_public_id)
+        try:
+            from platform_connectors.dimensions import resolve_platform_dimensions
+            return resolve_platform_dimensions(company, "shopify", shop_domain)
+        except Exception:
+            return {}
+
+    def _attach_dimensions(self, company, lines, dimension_context):
+        """Attach dimension tags to journal lines."""
+        if not dimension_context:
+            return
+        try:
+            from platform_connectors.je_builder import _attach_dimensions
+            _attach_dimensions(company, lines, dimension_context)
+        except Exception:
+            logger.debug("Could not attach dimensions — platform_connectors not available")
+
+    def _handle_order_paid(self, event, data, mapping, dimension_context=None):
         """
         Multi-line journal entry for a paid order.
 
@@ -128,11 +185,11 @@ class ShopifyAccountingProjection(BaseProjection):
         Shopify's subtotal_price already excludes discounts, so:
           total_price = subtotal_price + total_tax
         """
-        ar = mapping.get(ROLE_ACCOUNTS_RECEIVABLE)
+        ar = mapping.get(ROLE_SHOPIFY_CLEARING)
         revenue = mapping.get(ROLE_SALES_REVENUE)
         if not ar or not revenue:
             logger.warning(
-                "Shopify account mapping missing ACCOUNTS_RECEIVABLE or SALES_REVENUE "
+                "Shopify account mapping missing SHOPIFY_CLEARING or SALES_REVENUE "
                 "for company %s — skipping order %s",
                 event.company, data.get("order_number"),
             )
@@ -235,6 +292,7 @@ class ShopifyAccountingProjection(BaseProjection):
         total_credit = sum(l.credit for l in lines)
 
         JournalLine.objects.projection().bulk_create(lines)
+        self._attach_dimensions(event.company, lines, dimension_context)
 
         if total_debit != total_credit:
             logger.error(
@@ -323,12 +381,12 @@ class ShopifyAccountingProjection(BaseProjection):
             entry.public_id, order_name, event.id,
         )
 
-    def _handle_refund_created(self, event, data, mapping):
+    def _handle_refund_created(self, event, data, mapping, dimension_context=None):
         """
         Reversal entry for a refund.
         DR Sales Revenue / CR Accounts Receivable
         """
-        ar = mapping.get(ROLE_ACCOUNTS_RECEIVABLE)
+        ar = mapping.get(ROLE_SHOPIFY_CLEARING)
         revenue = mapping.get(ROLE_SALES_REVENUE)
         if not ar or not revenue:
             logger.warning(
@@ -391,6 +449,7 @@ class ShopifyAccountingProjection(BaseProjection):
             currency=currency, exchange_rate=Decimal("1.0"),
         )
         JournalLine.objects.projection().bulk_create([debit_line, credit_line])
+        self._attach_dimensions(event.company, [debit_line, credit_line], dimension_context)
 
         lines_data = [
             {
@@ -455,6 +514,684 @@ class ShopifyAccountingProjection(BaseProjection):
         logger.info(
             "Created refund journal entry %s for order %s",
             entry.public_id, order_number,
+        )
+
+    def _handle_payout_settled(self, event, data, mapping, dimension_context=None):
+        """
+        Settlement entry when Shopify sends a payout to bank.
+
+        DR Cash/Bank             net_amount
+        DR Processing Fees       fees (if > 0)
+        CR Shopify Clearing      gross_amount
+        """
+        clearing = mapping.get(ROLE_SHOPIFY_CLEARING)
+        bank = mapping.get(ROLE_CASH_BANK)
+        if not clearing or not bank:
+            logger.warning(
+                "Shopify account mapping missing SHOPIFY_CLEARING or CASH_BANK "
+                "for company %s — skipping payout %s",
+                event.company, data.get("shopify_payout_id"),
+            )
+            return
+
+        fees_account = mapping.get(ROLE_PROCESSING_FEES)
+
+        gross_amount = Decimal(str(data.get("gross_amount", "0")))
+        fees = Decimal(str(data.get("fees", "0")))
+        net_amount = Decimal(str(data.get("net_amount", "0")))
+        payout_id = data.get("shopify_payout_id", "")
+        entry_date = _parse_date(data.get("payout_date") or data.get("transaction_date")) or event.created_at.date()
+        currency = data.get("currency") or getattr(event.company, "default_currency", "USD")
+        memo = f"Shopify payout: {payout_id}"
+
+        if gross_amount == 0:
+            logger.warning(
+                "Skipping Shopify payout %s — zero gross amount",
+                payout_id,
+            )
+            return
+
+        is_negative_payout = gross_amount < 0
+
+        # Idempotency
+        if JournalEntry.objects.filter(
+            company=event.company, memo=memo,
+            status=JournalEntry.Status.POSTED,
+        ).exists():
+            logger.info("Journal entry already exists for '%s' — skipping", memo)
+            return
+
+        period = _resolve_period(event.company, entry_date)
+        now = timezone.now()
+
+        entry = JournalEntry.objects.projection().create(
+            company=event.company,
+            public_id=uuid.uuid4(),
+            date=entry_date,
+            period=period,
+            memo=memo,
+            kind=JournalEntry.Kind.NORMAL,
+            status=JournalEntry.Status.POSTED,
+            posted_at=now,
+            currency=currency,
+            exchange_rate=Decimal("1.0"),
+            source_module="shopify_connector",
+            source_document=str(payout_id),
+        )
+
+        lines = []
+        line_no = 0
+        abs_gross = abs(gross_amount)
+        abs_net = abs(net_amount)
+
+        if is_negative_payout:
+            # Negative payout: refunds exceeded charges in this period.
+            # DR Shopify Clearing (reverse accumulated credits)
+            # DR Processing Fees (fees still charged)
+            # CR Cash/Bank (money leaves bank account)
+            line_no += 1
+            lines.append(JournalLine(
+                entry=entry, company=event.company,
+                public_id=uuid.uuid4(), line_no=line_no,
+                account=clearing, description=f"Negative payout reversal: {payout_id}",
+                debit=abs_gross, credit=Decimal("0"),
+                currency=currency, exchange_rate=Decimal("1.0"),
+            ))
+
+            if fees > 0 and fees_account:
+                line_no += 1
+                lines.append(JournalLine(
+                    entry=entry, company=event.company,
+                    public_id=uuid.uuid4(), line_no=line_no,
+                    account=fees_account, description=f"Processing fees: Payout {payout_id}",
+                    debit=fees, credit=Decimal("0"),
+                    currency=currency, exchange_rate=Decimal("1.0"),
+                ))
+            elif fees > 0 and not fees_account:
+                logger.warning(
+                    "No PROCESSING_FEES account mapped — fees of %s absorbed into clearing for payout %s",
+                    fees, payout_id,
+                )
+                lines[0].debit = abs_net  # Clearing absorbs fees
+
+            line_no += 1
+            lines.append(JournalLine(
+                entry=entry, company=event.company,
+                public_id=uuid.uuid4(), line_no=line_no,
+                account=bank, description=f"Negative payout: {payout_id}",
+                debit=Decimal("0"), credit=abs_net,
+                currency=currency, exchange_rate=Decimal("1.0"),
+            ))
+        else:
+            # Normal positive payout:
+            # DR Cash/Bank (net amount deposited)
+            # DR Processing Fees (fees deducted)
+            # CR Shopify Clearing (gross amount released)
+            line_no += 1
+            lines.append(JournalLine(
+                entry=entry, company=event.company,
+                public_id=uuid.uuid4(), line_no=line_no,
+                account=bank, description=memo,
+                debit=net_amount, credit=Decimal("0"),
+                currency=currency, exchange_rate=Decimal("1.0"),
+            ))
+
+            if fees > 0 and fees_account:
+                line_no += 1
+                lines.append(JournalLine(
+                    entry=entry, company=event.company,
+                    public_id=uuid.uuid4(), line_no=line_no,
+                    account=fees_account, description=f"Processing fees: Payout {payout_id}",
+                    debit=fees, credit=Decimal("0"),
+                    currency=currency, exchange_rate=Decimal("1.0"),
+                ))
+            elif fees > 0 and not fees_account:
+                logger.warning(
+                    "No PROCESSING_FEES account mapped — fees of %s included in bank deposit for payout %s",
+                    fees, payout_id,
+                )
+                lines[0].debit = gross_amount  # DR bank the full gross
+
+            line_no += 1
+            lines.append(JournalLine(
+                entry=entry, company=event.company,
+                public_id=uuid.uuid4(), line_no=line_no,
+                account=clearing, description=memo,
+                debit=Decimal("0"), credit=gross_amount,
+                currency=currency, exchange_rate=Decimal("1.0"),
+            ))
+
+        # Balance validation
+        total_debit = sum(l.debit for l in lines)
+        total_credit = sum(l.credit for l in lines)
+
+        JournalLine.objects.projection().bulk_create(lines)
+        self._attach_dimensions(event.company, lines, dimension_context)
+
+        if total_debit != total_credit:
+            logger.error(
+                "Unbalanced Shopify payout JE %s: debit=%s credit=%s — saved as INCOMPLETE",
+                payout_id, total_debit, total_credit,
+            )
+            entry.status = JournalEntry.Status.INCOMPLETE
+            entry.posted_at = None
+            entry.save(update_fields=["status", "posted_at"])
+
+            from accounts.models import Notification
+            Notification.notify_company_admins(
+                company=event.company,
+                title=f"Unbalanced Shopify payout: {payout_id}",
+                message=(
+                    f"Journal entry for Shopify payout {payout_id} is unbalanced "
+                    f"(Debit: {total_debit}, Credit: {total_credit}). "
+                    f"Saved as INCOMPLETE — please review account mappings."
+                ),
+                level=Notification.Level.ERROR,
+                link=f"/accounting/journal-entries/{entry.id}",
+                source_module="shopify_connector",
+            )
+            return
+
+        # Assign entry number
+        seq = _next_company_sequence(event.company, "journal_entry_number")
+        entry_number = f"JE-{event.company_id}-{seq:06d}"
+        entry.entry_number = entry_number
+        entry.save(update_fields=["entry_number"])
+
+        # Emit JOURNAL_ENTRY_POSTED
+        lines_data = []
+        for line in lines:
+            lines_data.append({
+                "line_public_id": str(line.public_id),
+                "line_no": line.line_no,
+                "account_public_id": str(line.account.public_id),
+                "account_code": line.account.code,
+                "description": line.description,
+                "debit": str(line.debit),
+                "credit": str(line.credit),
+                "currency": currency,
+                "exchange_rate": "1.0",
+            })
+
+        emit_event_no_actor(
+            company=event.company,
+            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(entry.public_id),
+            idempotency_key=f"shopify.payout.je.posted:{entry.public_id}",
+            metadata={"source_projection": PROJECTION_NAME},
+            data=JournalEntryPostedData(
+                entry_public_id=str(entry.public_id),
+                entry_number=entry_number,
+                date=str(entry_date),
+                memo=memo,
+                kind="NORMAL",
+                posted_at=str(now),
+                posted_by_id=0,
+                posted_by_email="system@shopify",
+                total_debit=str(total_debit),
+                total_credit=str(total_credit),
+                lines=lines_data,
+                period=period,
+                currency=currency,
+                exchange_rate="1.0",
+            ),
+            caused_by_event=event,
+        )
+
+        # Update local payout record
+        from shopify_connector.models import ShopifyPayout
+        ShopifyPayout.objects.filter(
+            company=event.company,
+            shopify_payout_id=data.get("shopify_payout_id"),
+        ).update(
+            status=ShopifyPayout.Status.PROCESSED,
+            journal_entry_id=entry.public_id,
+        )
+
+        logger.info(
+            "Created payout journal entry %s for Shopify payout %s (event %s)",
+            entry.public_id, payout_id, event.id,
+        )
+
+    def _handle_order_fulfilled(self, event, data, mapping, dimension_context=None):
+        """
+        COGS entry when a Shopify order is fulfilled.
+
+        For each matched inventory item:
+        DR Cost of Goods Sold    (qty × avg_cost)
+        CR Inventory             (qty × avg_cost)
+
+        Uses per-item COGS and inventory accounts from the Item model,
+        not module-level account mapping.
+        Also emits INVENTORY_STOCK_ISSUED for the inventory balance projection.
+        """
+        cogs_lines = data.get("cogs_lines", [])
+        if not cogs_lines:
+            logger.info(
+                "Fulfillment %s has no matched COGS lines — skipping",
+                data.get("shopify_fulfillment_id"),
+            )
+            return
+
+        total_cogs = Decimal(str(data.get("total_cogs", "0")))
+        fulfillment_id = data.get("shopify_fulfillment_id", "")
+        order_name = data.get("order_name", "")
+        entry_date = _parse_date(
+            data.get("fulfillment_date") or data.get("transaction_date")
+        ) or event.created_at.date()
+        currency = data.get("currency") or getattr(event.company, "default_currency", "USD")
+        memo = f"Shopify COGS: {order_name} (Fulfillment {fulfillment_id})"
+
+        if total_cogs <= 0:
+            logger.warning(
+                "Skipping COGS for fulfillment %s — zero total COGS", fulfillment_id,
+            )
+            return
+
+        # Idempotency
+        if JournalEntry.objects.filter(
+            company=event.company, memo=memo,
+            status=JournalEntry.Status.POSTED,
+        ).exists():
+            logger.info("COGS journal entry already exists for '%s' — skipping", memo)
+            return
+
+        # Resolve accounts for each line
+        from accounting.models import Account
+
+        period = _resolve_period(event.company, entry_date)
+        now = timezone.now()
+
+        entry = JournalEntry.objects.projection().create(
+            company=event.company,
+            public_id=uuid.uuid4(),
+            date=entry_date,
+            period=period,
+            memo=memo,
+            kind=JournalEntry.Kind.NORMAL,
+            status=JournalEntry.Status.POSTED,
+            posted_at=now,
+            currency=currency,
+            exchange_rate=Decimal("1.0"),
+            source_module="shopify_connector",
+            source_document=str(fulfillment_id),
+        )
+
+        lines = []
+        line_no = 0
+        stock_entries = []  # For INVENTORY_STOCK_ISSUED event
+
+        for cl in cogs_lines:
+            cogs_value = Decimal(str(cl.get("cogs_value", "0")))
+            if cogs_value <= 0:
+                continue
+
+            cogs_account_id = cl.get("cogs_account_id")
+            inventory_account_id = cl.get("inventory_account_id")
+
+            try:
+                cogs_account = Account.objects.get(
+                    id=cogs_account_id, company=event.company,
+                )
+                inventory_account = Account.objects.get(
+                    id=inventory_account_id, company=event.company,
+                )
+            except Account.DoesNotExist:
+                logger.warning(
+                    "COGS or Inventory account not found for item %s — skipping line",
+                    cl.get("item_code"),
+                )
+                continue
+
+            item_code = cl.get("item_code", "")
+            qty = cl.get("qty", "0")
+
+            # DR Cost of Goods Sold
+            line_no += 1
+            lines.append(JournalLine(
+                entry=entry, company=event.company,
+                public_id=uuid.uuid4(), line_no=line_no,
+                account=cogs_account,
+                description=f"COGS: {item_code} × {qty}",
+                debit=cogs_value, credit=Decimal("0"),
+                currency=currency, exchange_rate=Decimal("1.0"),
+            ))
+
+            # CR Inventory
+            line_no += 1
+            lines.append(JournalLine(
+                entry=entry, company=event.company,
+                public_id=uuid.uuid4(), line_no=line_no,
+                account=inventory_account,
+                description=f"Inventory issued: {item_code} × {qty}",
+                debit=Decimal("0"), credit=cogs_value,
+                currency=currency, exchange_rate=Decimal("1.0"),
+            ))
+
+            # Build stock entry for INVENTORY_STOCK_ISSUED event
+            if cl.get("item_public_id") and cl.get("warehouse_public_id"):
+                stock_entries.append({
+                    "item_public_id": cl["item_public_id"],
+                    "warehouse_public_id": cl["warehouse_public_id"],
+                    "qty_delta": str(-Decimal(str(qty))),
+                    "unit_cost": str(cl.get("unit_cost", "0")),
+                    "value_delta": str(-cogs_value),
+                    "costing_method_snapshot": "WEIGHTED_AVERAGE",
+                })
+
+        if not lines:
+            # No valid lines — clean up
+            entry.delete()
+            return
+
+        # Balance validation
+        total_debit = sum(l.debit for l in lines)
+        total_credit = sum(l.credit for l in lines)
+
+        JournalLine.objects.projection().bulk_create(lines)
+        self._attach_dimensions(event.company, lines, dimension_context)
+
+        if total_debit != total_credit:
+            logger.error(
+                "Unbalanced COGS JE for fulfillment %s: debit=%s credit=%s — saved as INCOMPLETE",
+                fulfillment_id, total_debit, total_credit,
+            )
+            entry.status = JournalEntry.Status.INCOMPLETE
+            entry.posted_at = None
+            entry.save(update_fields=["status", "posted_at"])
+
+            from accounts.models import Notification
+            Notification.notify_company_admins(
+                company=event.company,
+                title=f"Unbalanced COGS entry: {order_name}",
+                message=(
+                    f"COGS journal entry for fulfillment {fulfillment_id} is unbalanced "
+                    f"(Debit: {total_debit}, Credit: {total_credit}). "
+                    f"Saved as INCOMPLETE — please review item account configuration."
+                ),
+                level=Notification.Level.ERROR,
+                link=f"/accounting/journal-entries/{entry.id}",
+                source_module="shopify_connector",
+            )
+            return
+
+        # Assign entry number
+        seq = _next_company_sequence(event.company, "journal_entry_number")
+        entry_number = f"JE-{event.company_id}-{seq:06d}"
+        entry.entry_number = entry_number
+        entry.save(update_fields=["entry_number"])
+
+        # Emit JOURNAL_ENTRY_POSTED
+        lines_data = []
+        for line in lines:
+            lines_data.append({
+                "line_public_id": str(line.public_id),
+                "line_no": line.line_no,
+                "account_public_id": str(line.account.public_id),
+                "account_code": line.account.code,
+                "description": line.description,
+                "debit": str(line.debit),
+                "credit": str(line.credit),
+                "currency": currency,
+                "exchange_rate": "1.0",
+            })
+
+        emit_event_no_actor(
+            company=event.company,
+            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(entry.public_id),
+            idempotency_key=f"shopify.cogs.je.posted:{entry.public_id}",
+            metadata={"source_projection": PROJECTION_NAME},
+            data=JournalEntryPostedData(
+                entry_public_id=str(entry.public_id),
+                entry_number=entry_number,
+                date=str(entry_date),
+                memo=memo,
+                kind="NORMAL",
+                posted_at=str(now),
+                posted_by_id=0,
+                posted_by_email="system@shopify",
+                total_debit=str(total_debit),
+                total_credit=str(total_credit),
+                lines=lines_data,
+                period=period,
+                currency=currency,
+                exchange_rate="1.0",
+            ),
+            caused_by_event=event,
+        )
+
+        # Emit INVENTORY_STOCK_ISSUED for inventory balance projection
+        if stock_entries:
+            emit_event_no_actor(
+                company=event.company,
+                event_type=EventTypes.INVENTORY_STOCK_ISSUED,
+                aggregate_type="StockLedger",
+                aggregate_id=str(event.company.public_id),
+                idempotency_key=f"shopify.fulfillment.stock.issued:{fulfillment_id}",
+                metadata={"source_projection": PROJECTION_NAME},
+                data={
+                    "source_type": "SHOPIFY_FULFILLMENT",
+                    "source_id": str(fulfillment_id),
+                    "company_public_id": str(event.company.public_id),
+                    "entries": stock_entries,
+                    "total_cogs": str(total_cogs),
+                    "journal_entry_public_id": str(entry.public_id),
+                },
+                caused_by_event=event,
+            )
+
+        # Update local fulfillment record
+        from shopify_connector.models import ShopifyFulfillment
+        ShopifyFulfillment.objects.filter(
+            company=event.company,
+            shopify_fulfillment_id=data.get("shopify_fulfillment_id"),
+        ).update(
+            status=ShopifyFulfillment.Status.PROCESSED,
+            journal_entry_id=entry.public_id,
+        )
+
+        logger.info(
+            "Created COGS journal entry %s for fulfillment %s (%s lines, COGS %s %s)",
+            entry.public_id, fulfillment_id, len(cogs_lines), currency, total_cogs,
+        )
+
+    def _handle_dispute_created(self, event, data, mapping, dimension_context=None):
+        """
+        Create a chargeback journal entry when a Shopify dispute is received.
+
+        Journal entry:
+        DR Chargeback Expense   (dispute amount)
+        DR Processing Fees      (chargeback fee, if any)
+        CR Shopify Clearing     (total = amount + fee)
+
+        The clearing account is credited because the disputed funds are
+        being pulled back by the payment processor.
+        """
+        clearing = mapping.get(ROLE_SHOPIFY_CLEARING)
+        chargeback_account = mapping.get(ROLE_CHARGEBACK_EXPENSE)
+        fees_account = mapping.get(ROLE_PROCESSING_FEES)
+
+        if not clearing or not chargeback_account:
+            logger.warning(
+                "Shopify account mapping missing SHOPIFY_CLEARING or CHARGEBACK_EXPENSE "
+                "for company %s — skipping dispute %s",
+                event.company, data.get("shopify_dispute_id"),
+            )
+            return
+
+        dispute_amount = Decimal(str(data.get("dispute_amount", "0")))
+        chargeback_fee = Decimal(str(data.get("chargeback_fee", "0")))
+        dispute_id = data.get("shopify_dispute_id", "")
+        order_name = data.get("order_name", "")
+        currency = data.get("currency") or getattr(event.company, "default_currency", "USD")
+        entry_date = _parse_date(data.get("transaction_date")) or event.created_at.date()
+        memo = f"Shopify chargeback: Dispute {dispute_id} ({order_name})"
+
+        if dispute_amount <= 0:
+            logger.warning(
+                "Skipping dispute %s — non-positive amount %s",
+                dispute_id, dispute_amount,
+            )
+            return
+
+        # Idempotency
+        if JournalEntry.objects.filter(
+            company=event.company, memo=memo,
+            status=JournalEntry.Status.POSTED,
+        ).exists():
+            logger.info("Journal entry already exists for '%s' — skipping", memo)
+            return
+
+        period = _resolve_period(event.company, entry_date)
+        now = timezone.now()
+
+        entry = JournalEntry.objects.projection().create(
+            company=event.company,
+            public_id=uuid.uuid4(),
+            date=entry_date,
+            period=period,
+            memo=memo,
+            kind=JournalEntry.Kind.NORMAL,
+            status=JournalEntry.Status.POSTED,
+            posted_at=now,
+            currency=currency,
+            exchange_rate=Decimal("1.0"),
+            source_module="shopify_connector",
+            source_document=str(dispute_id),
+        )
+
+        lines = []
+        line_no = 0
+
+        # DR Chargeback Expense — disputed amount
+        line_no += 1
+        lines.append(JournalLine(
+            entry=entry, company=event.company,
+            public_id=uuid.uuid4(), line_no=line_no,
+            account=chargeback_account,
+            description=f"Chargeback: {order_name} (Dispute {dispute_id})",
+            debit=dispute_amount, credit=Decimal("0"),
+            currency=currency, exchange_rate=Decimal("1.0"),
+        ))
+
+        # DR Processing Fees — chargeback fee
+        if chargeback_fee > 0 and fees_account:
+            line_no += 1
+            lines.append(JournalLine(
+                entry=entry, company=event.company,
+                public_id=uuid.uuid4(), line_no=line_no,
+                account=fees_account,
+                description=f"Chargeback fee: Dispute {dispute_id}",
+                debit=chargeback_fee, credit=Decimal("0"),
+                currency=currency, exchange_rate=Decimal("1.0"),
+            ))
+
+        # CR Shopify Clearing — total pulled back
+        total_credit = dispute_amount + chargeback_fee
+        line_no += 1
+        lines.append(JournalLine(
+            entry=entry, company=event.company,
+            public_id=uuid.uuid4(), line_no=line_no,
+            account=clearing,
+            description=f"Chargeback clearing: Dispute {dispute_id}",
+            debit=Decimal("0"), credit=total_credit,
+            currency=currency, exchange_rate=Decimal("1.0"),
+        ))
+
+        # Balance validation
+        total_debit = sum(l.debit for l in lines)
+        total_credit_check = sum(l.credit for l in lines)
+
+        JournalLine.objects.projection().bulk_create(lines)
+        self._attach_dimensions(event.company, lines, dimension_context)
+
+        if total_debit != total_credit_check:
+            logger.error(
+                "Unbalanced chargeback JE %s: debit=%s credit=%s",
+                dispute_id, total_debit, total_credit_check,
+            )
+            entry.status = JournalEntry.Status.INCOMPLETE
+            entry.posted_at = None
+            entry.save(update_fields=["status", "posted_at"])
+
+            from accounts.models import Notification
+            Notification.notify_company_admins(
+                company=event.company,
+                title=f"Unbalanced chargeback entry: Dispute {dispute_id}",
+                message=(
+                    f"Journal entry for chargeback dispute {dispute_id} is unbalanced "
+                    f"(Debit: {total_debit}, Credit: {total_credit_check}). "
+                    f"Saved as INCOMPLETE — please review account mappings."
+                ),
+                level=Notification.Level.ERROR,
+                link=f"/accounting/journal-entries/{entry.id}",
+                source_module="shopify_connector",
+            )
+            return
+
+        # Assign entry number
+        seq = _next_company_sequence(event.company, "journal_entry_number")
+        entry_number = f"JE-{event.company_id}-{seq:06d}"
+        entry.entry_number = entry_number
+        entry.save(update_fields=["entry_number"])
+
+        # Emit JOURNAL_ENTRY_POSTED
+        lines_data = []
+        for line in lines:
+            lines_data.append({
+                "line_public_id": str(line.public_id),
+                "line_no": line.line_no,
+                "account_public_id": str(line.account.public_id),
+                "account_code": line.account.code,
+                "description": line.description,
+                "debit": str(line.debit),
+                "credit": str(line.credit),
+                "currency": currency,
+                "exchange_rate": "1.0",
+            })
+
+        emit_event_no_actor(
+            company=event.company,
+            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(entry.public_id),
+            idempotency_key=f"shopify.dispute.je.posted:{entry.public_id}",
+            metadata={"source_projection": PROJECTION_NAME},
+            data=JournalEntryPostedData(
+                entry_public_id=str(entry.public_id),
+                entry_number=entry_number,
+                date=str(entry_date),
+                memo=memo,
+                kind="NORMAL",
+                posted_at=str(now),
+                posted_by_id=0,
+                posted_by_email="system@shopify",
+                total_debit=str(total_debit),
+                total_credit=str(total_credit_check),
+                lines=lines_data,
+                period=period,
+                currency=currency,
+                exchange_rate="1.0",
+            ),
+            caused_by_event=event,
+        )
+
+        # Update local dispute record
+        from shopify_connector.models import ShopifyDispute
+        ShopifyDispute.objects.filter(
+            company=event.company,
+            shopify_dispute_id=data.get("shopify_dispute_id"),
+        ).update(
+            status=ShopifyDispute.Status.PROCESSED,
+            journal_entry_id=entry.public_id,
+        )
+
+        logger.info(
+            "Created chargeback journal entry %s for dispute %s (%s %s)",
+            entry.public_id, dispute_id, currency, dispute_amount,
         )
 
     def _clear_projected_data(self, company) -> None:
