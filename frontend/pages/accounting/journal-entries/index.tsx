@@ -91,10 +91,10 @@ export default function JournalEntriesPage() {
     }
   };
 
-  const formatCurrency = (amount: string) => {
+  const formatCurrency = (amount: string, entryCurrency?: string) => {
     return new Intl.NumberFormat(undefined, {
       style: "currency",
-      currency: company?.default_currency || "USD",
+      currency: entryCurrency || company?.default_currency || "USD",
       minimumFractionDigits: 2,
     }).format(parseFloat(amount));
   };
@@ -155,10 +155,10 @@ export default function JournalEntriesPage() {
                 {entry.memo || "-"}
               </TableCell>
               <TableCell className="text-end ltr-number">
-                {formatCurrency(entry.total_debit)}
+                {formatCurrency(entry.total_debit, entry.currency)}
               </TableCell>
               <TableCell className="text-end ltr-number">
-                {formatCurrency(entry.total_credit)}
+                {formatCurrency(entry.total_credit, entry.currency)}
               </TableCell>
               {showStatus && (
                 <TableCell>

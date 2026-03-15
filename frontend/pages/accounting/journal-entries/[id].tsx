@@ -52,7 +52,7 @@ export default function JournalEntryDetailPage() {
   const formatCurrency = (amount: string) => {
     return new Intl.NumberFormat(undefined, {
       style: "currency",
-      currency: company?.default_currency || "USD",
+      currency: entry?.currency || company?.default_currency || "USD",
       minimumFractionDigits: 2,
     }).format(parseFloat(amount));
   };

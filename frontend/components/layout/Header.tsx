@@ -15,6 +15,7 @@ import {
 import { LanguageSwitcher } from "./LanguageSwitcher";
 import { CompanySwitcher } from "./CompanySwitcher";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
+import { NotificationBell } from "./NotificationBell";
 
 export function Header() {
   const { t } = useTranslation("common");
@@ -50,6 +51,9 @@ export function Header() {
 
         {/* Language Switcher */}
         <LanguageSwitcher />
+
+        {/* Notifications */}
+        <NotificationBell />
 
         {/* User Menu */}
         <DropdownMenu>

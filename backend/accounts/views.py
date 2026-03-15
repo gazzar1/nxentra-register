@@ -2369,3 +2369,77 @@ class CompanyModulesView(APIView):
                 )
 
         return Response({"detail": "Modules updated."})
+
+
+# ==========================================================================
+# Notifications
+# ==========================================================================
+
+class NotificationListView(APIView):
+    """
+    GET  /api/notifications/           -> list notifications for current user
+    POST /api/notifications/read-all/  -> mark all as read (separate URL)
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from accounts.models import Notification
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response([], status=200)
+
+        qs = Notification.objects.filter(
+            company=actor.company,
+            user=actor.user,
+        ).order_by("-created_at")[:50]
+
+        data = [
+            {
+                "id": n.id,
+                "title": n.title,
+                "message": n.message,
+                "level": n.level,
+                "is_read": n.is_read,
+                "link": n.link,
+                "source_module": n.source_module,
+                "created_at": n.created_at.isoformat(),
+            }
+            for n in qs
+        ]
+        unread_count = Notification.objects.filter(
+            company=actor.company, user=actor.user, is_read=False,
+        ).count()
+
+        return Response({"notifications": data, "unread_count": unread_count})
+
+
+class NotificationMarkReadView(APIView):
+    """POST /api/notifications/<pk>/read/ -> mark single notification as read."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        from accounts.models import Notification
+        actor = resolve_actor(request)
+        try:
+            n = Notification.objects.get(
+                pk=pk, company=actor.company, user=actor.user,
+            )
+        except Notification.DoesNotExist:
+            return Response({"detail": "Not found."}, status=404)
+
+        n.is_read = True
+        n.save(update_fields=["is_read"])
+        return Response({"status": "ok"})
+
+
+class NotificationMarkAllReadView(APIView):
+    """POST /api/notifications/read-all/ -> mark all notifications as read."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from accounts.models import Notification
+        actor = resolve_actor(request)
+        updated = Notification.objects.filter(
+            company=actor.company, user=actor.user, is_read=False,
+        ).update(is_read=True)
+        return Response({"marked_read": updated})

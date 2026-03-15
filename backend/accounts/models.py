@@ -759,3 +759,85 @@ class Invitation(models.Model):
     @property
     def is_valid(self):
         return self.status == self.Status.PENDING and not self.is_expired
+
+
+class Notification(models.Model):
+    """
+    In-app notification for a user within a company.
+
+    Notifications are operational data — any module can create them
+    to alert users about important events (unbalanced JEs, sync errors, etc.).
+    """
+
+    class Level(models.TextChoices):
+        INFO = "INFO", "Info"
+        WARNING = "WARNING", "Warning"
+        ERROR = "ERROR", "Error"
+        SUCCESS = "SUCCESS", "Success"
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="notifications",
+    )
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="notifications",
+        help_text="Recipient user",
+    )
+    title = models.CharField(max_length=255)
+    message = models.TextField(blank=True, default="")
+    level = models.CharField(
+        max_length=10,
+        choices=Level.choices,
+        default=Level.INFO,
+    )
+    is_read = models.BooleanField(default=False)
+    link = models.CharField(
+        max_length=500,
+        blank=True,
+        default="",
+        help_text="Optional URL to navigate to when clicked",
+    )
+    source_module = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        help_text="Module that created this notification (e.g. shopify_connector)",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["company", "user", "is_read"]),
+            models.Index(fields=["company", "user", "-created_at"]),
+        ]
+
+    def __str__(self):
+        return f"[{self.level}] {self.title} → {self.user}"
+
+    @classmethod
+    def notify_company_admins(cls, company, title, message, level="WARNING", link="", source_module=""):
+        """
+        Create a notification for all admin/owner members of a company.
+        Callable from anywhere (projections, commands, views).
+        """
+        memberships = CompanyMembership.objects.filter(
+            company=company,
+            role__in=[CompanyMembership.Role.OWNER, CompanyMembership.Role.ADMIN],
+        ).select_related("user")
+        notifications = [
+            cls(
+                company=company,
+                user=m.user,
+                title=title,
+                message=message,
+                level=level,
+                link=link,
+                source_module=source_module,
+            )
+            for m in memberships
+        ]
+        return cls.objects.bulk_create(notifications)

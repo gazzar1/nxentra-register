@@ -68,6 +68,10 @@ from .views import (
     # Module & Sidebar
     SidebarView,
     CompanyModulesView,
+    # Notifications
+    NotificationListView,
+    NotificationMarkReadView,
+    NotificationMarkAllReadView,
 )
 
 app_name = "accounts"
@@ -161,4 +165,11 @@ urlpatterns = [
     # ==========================================================================
     path("sidebar/", SidebarView.as_view(), name="sidebar"),
     path("modules/", CompanyModulesView.as_view(), name="modules"),
+
+    # ==========================================================================
+    # Notifications
+    # ==========================================================================
+    path("notifications/", NotificationListView.as_view(), name="notification-list"),
+    path("notifications/<int:pk>/read/", NotificationMarkReadView.as_view(), name="notification-read"),
+    path("notifications/read-all/", NotificationMarkAllReadView.as_view(), name="notification-read-all"),
 ]

@@ -27,6 +27,7 @@ from projections.base import BaseProjection
 from projections.models import FiscalPeriod
 from accounting.mappings import ModuleAccountMapping
 from accounting.models import JournalEntry, JournalLine
+from accounting.commands import _next_company_sequence
 
 
 logger = logging.getLogger(__name__)
@@ -229,7 +230,42 @@ class ShopifyAccountingProjection(BaseProjection):
                 currency=currency, exchange_rate=Decimal("1.0"),
             ))
 
+        # Balance validation — save as INCOMPLETE if unbalanced
+        total_debit = sum(l.debit for l in lines)
+        total_credit = sum(l.credit for l in lines)
+
         JournalLine.objects.projection().bulk_create(lines)
+
+        if total_debit != total_credit:
+            logger.error(
+                "Unbalanced Shopify JE for order %s: debit=%s credit=%s — saved as INCOMPLETE",
+                order_name, total_debit, total_credit,
+            )
+            entry.status = JournalEntry.Status.INCOMPLETE
+            entry.posted_at = None
+            entry.save(update_fields=["status", "posted_at"])
+
+            # Notify company admins
+            from accounts.models import Notification
+            Notification.notify_company_admins(
+                company=event.company,
+                title=f"Unbalanced Shopify order: {order_name}",
+                message=(
+                    f"Journal entry for Shopify order {order_name} is unbalanced "
+                    f"(Debit: {total_debit}, Credit: {total_credit}). "
+                    f"Saved as INCOMPLETE — please review account mappings."
+                ),
+                level=Notification.Level.ERROR,
+                link=f"/accounting/journal-entries/{entry.id}",
+                source_module="shopify_connector",
+            )
+            return
+
+        # Assign proper entry number (only for balanced/posted entries)
+        seq = _next_company_sequence(event.company, "journal_entry_number")
+        entry_number = f"JE-{event.company_id}-{seq:06d}"
+        entry.entry_number = entry_number
+        entry.save(update_fields=["entry_number"])
 
         # Emit JOURNAL_ENTRY_POSTED for balance projection
         lines_data = []
@@ -255,15 +291,15 @@ class ShopifyAccountingProjection(BaseProjection):
             metadata={"source_projection": PROJECTION_NAME},
             data=JournalEntryPostedData(
                 entry_public_id=str(entry.public_id),
-                entry_number="",
+                entry_number=entry_number,
                 date=str(entry_date),
                 memo=memo,
                 kind="NORMAL",
                 posted_at=str(now),
                 posted_by_id=0,
                 posted_by_email="system@shopify",
-                total_debit=str(total_price),
-                total_credit=str(total_price),
+                total_debit=str(total_debit),
+                total_credit=str(total_credit),
                 lines=lines_data,
                 period=period,
                 currency=currency,
@@ -334,6 +370,12 @@ class ShopifyAccountingProjection(BaseProjection):
             source_document=str(refund_id),
         )
 
+        # Assign proper entry number
+        seq = _next_company_sequence(event.company, "journal_entry_number")
+        entry_number = f"JE-{event.company_id}-{seq:06d}"
+        entry.entry_number = entry_number
+        entry.save(update_fields=["entry_number"])
+
         debit_line = JournalLine(
             entry=entry, company=event.company,
             public_id=uuid.uuid4(), line_no=1,
@@ -384,7 +426,7 @@ class ShopifyAccountingProjection(BaseProjection):
             metadata={"source_projection": PROJECTION_NAME},
             data=JournalEntryPostedData(
                 entry_public_id=str(entry.public_id),
-                entry_number="",
+                entry_number=entry_number,
                 date=str(entry_date),
                 memo=memo,
                 kind="NORMAL",
