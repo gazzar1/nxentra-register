@@ -42,11 +42,16 @@ export default function ShopifyDashboardPage() {
         ]);
 
         if (storeRes.status === "fulfilled") {
-          const d = storeRes.value.data;
-          if ("connected" in d && d.connected === false) {
+          const d = storeRes.value.data as any;
+          if (!d.connected) {
             setStore(null);
-          } else {
+          } else if (d.stores && d.stores.length > 0) {
+            setStore(d.stores[0] as ShopifyStore);
+          } else if (d.status) {
+            // Direct store object (legacy format)
             setStore(d as ShopifyStore);
+          } else {
+            setStore(null);
           }
         }
 

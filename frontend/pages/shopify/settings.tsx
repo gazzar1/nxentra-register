@@ -53,10 +53,15 @@ export default function ShopifySettingsPage() {
     setLoading(true);
     try {
       const { data } = await shopifyService.getStore();
-      if ("connected" in data && data.connected === false) {
+      const d = data as any;
+      if (!d.connected) {
         setStore(null);
+      } else if (d.stores && d.stores.length > 0) {
+        setStore(d.stores[0] as ShopifyStore);
+      } else if (d.status) {
+        setStore(d as ShopifyStore);
       } else {
-        setStore(data as ShopifyStore);
+        setStore(null);
       }
     } catch {
       setStore(null);
