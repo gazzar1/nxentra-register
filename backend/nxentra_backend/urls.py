@@ -23,6 +23,7 @@ urlpatterns = [
     path("api/properties/", include("properties.urls")),
     path("api/clinic/", include("clinic.urls")),
     path("api/shopify/", include("shopify_connector.urls")),
+    path("api/stripe/", include("stripe_connector.urls")),
     path("api/platforms/", include("platform_connectors.urls")),
     path("api/events/", include("events.urls")),
     path("api-auth/", include("rest_framework.urls")),
