@@ -7,20 +7,43 @@ import {
   Loader2,
   AlertTriangle,
   Unplug,
+  Settings,
+  Save,
 } from "lucide-react";
 import { AppLayout } from "@/components/layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/common";
 import { useToast } from "@/components/ui/toaster";
-import { stripeService, StripeAccount } from "@/services/stripe.service";
+import {
+  stripeService,
+  StripeAccount,
+  StripeAccountMapping,
+} from "@/services/stripe.service";
+import { useAccounts } from "@/queries/useAccounts";
+
+const ROLE_LABELS: Record<string, string> = {
+  SALES_REVENUE: "Sales Revenue",
+  STRIPE_CLEARING: "Stripe Clearing",
+  PAYMENT_PROCESSING_FEES: "Payment Processing Fees",
+  SALES_TAX_PAYABLE: "Sales Tax Payable",
+  CASH_BANK: "Cash / Bank Account",
+  CHARGEBACK_EXPENSE: "Chargeback Expense",
+};
 
 export default function StripeSettingsPage() {
   const { toast } = useToast();
   const [account, setAccount] = useState<StripeAccount | null>(null);
   const [loading, setLoading] = useState(true);
   const [disconnecting, setDisconnecting] = useState(false);
+
+  // Account mapping
+  const { data: accounts } = useAccounts();
+  const [mappings, setMappings] = useState<StripeAccountMapping[]>([]);
+  const [mappingForm, setMappingForm] = useState<Record<string, number | null>>({});
+  const [savingMappings, setSavingMappings] = useState(false);
 
   async function loadAccount() {
     setLoading(true);
@@ -36,8 +59,21 @@ export default function StripeSettingsPage() {
     }
   }
 
+  async function fetchMappings() {
+    try {
+      const { data } = await stripeService.getAccountMapping();
+      setMappings(data);
+      const initial: Record<string, number | null> = {};
+      data.forEach((m) => { initial[m.role] = m.account_id; });
+      setMappingForm(initial);
+    } catch {
+      // Mapping not available yet
+    }
+  }
+
   useEffect(() => {
     loadAccount();
+    fetchMappings();
   }, []);
 
   async function handleDisconnect() {
@@ -54,7 +90,25 @@ export default function StripeSettingsPage() {
     }
   }
 
+  async function handleSaveMappings() {
+    setSavingMappings(true);
+    try {
+      const payload = mappings.map((m) => ({
+        ...m,
+        account_id: mappingForm[m.role] ?? null,
+      }));
+      await stripeService.updateAccountMapping(payload);
+      toast({ title: "Account mappings saved." });
+    } catch {
+      toast({ title: "Failed to save mappings.", variant: "destructive" });
+    } finally {
+      setSavingMappings(false);
+    }
+  }
+
   const isConnected = account?.status === "ACTIVE";
+  const postableAccounts =
+    accounts?.filter((a) => !a.is_header && a.status === "ACTIVE") || [];
 
   return (
     <AppLayout>
@@ -96,6 +150,7 @@ export default function StripeSettingsPage() {
           </Card>
         ) : (
           <>
+            {/* Connection Status */}
             <Card>
               <CardHeader>
                 <CardTitle>Connection Status</CardTitle>
@@ -151,6 +206,50 @@ export default function StripeSettingsPage() {
               </Card>
             )}
           </>
+        )}
+
+        {/* Account Mappings — always show when mappings exist */}
+        {mappings.length > 0 && (
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between">
+              <CardTitle className="flex items-center gap-2">
+                <Settings className="h-5 w-5" />
+                Account Mappings
+              </CardTitle>
+              <Button onClick={handleSaveMappings} disabled={savingMappings} size="sm">
+                <Save className="me-2 h-4 w-4" />
+                {savingMappings ? "Saving..." : "Save Mappings"}
+              </Button>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                Map each Stripe accounting role to a GL account from your Chart of Accounts.
+                These accounts are used when charges and refunds generate journal entries.
+              </p>
+              {mappings.map((m) => (
+                <div key={m.role}>
+                  <Label>{ROLE_LABELS[m.role] || m.role}</Label>
+                  <select
+                    className="w-full border rounded-md px-3 py-2 text-sm mt-1"
+                    value={mappingForm[m.role] ?? ""}
+                    onChange={(e) =>
+                      setMappingForm({
+                        ...mappingForm,
+                        [m.role]: e.target.value ? Number(e.target.value) : null,
+                      })
+                    }
+                  >
+                    <option value="">— Not mapped —</option>
+                    {postableAccounts.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.code} — {a.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
         )}
       </div>
     </AppLayout>

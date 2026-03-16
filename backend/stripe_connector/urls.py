@@ -7,6 +7,9 @@ urlpatterns = [
     path("account/", views.StripeAccountView.as_view(), name="stripe-account"),
     path("disconnect/", views.StripeDisconnectView.as_view(), name="stripe-disconnect"),
 
+    # Account mapping
+    path("account-mapping/", views.StripeAccountMappingView.as_view(), name="stripe-account-mapping"),
+
     # Data views
     path("charges/", views.StripeChargesView.as_view(), name="stripe-charges"),
 

@@ -114,6 +114,13 @@ export interface StripePayoutReconciliation {
   transactions: StripeTransactionMatch[];
 }
 
+export interface StripeAccountMapping {
+  role: string;
+  account_id: number | null;
+  account_code: string;
+  account_name: string;
+}
+
 // =============================================================================
 // Service
 // =============================================================================
@@ -125,6 +132,13 @@ export const stripeService = {
 
   disconnect: () =>
     apiClient.post<{ status: string }>("/stripe/disconnect/"),
+
+  // Account mapping
+  getAccountMapping: () =>
+    apiClient.get<StripeAccountMapping[]>("/stripe/account-mapping/"),
+
+  updateAccountMapping: (data: StripeAccountMapping[]) =>
+    apiClient.put("/stripe/account-mapping/", data),
 
   // Charges
   getCharges: () =>
