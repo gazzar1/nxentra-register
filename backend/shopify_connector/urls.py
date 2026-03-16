@@ -28,4 +28,9 @@ urlpatterns = [
 
     # Monitoring
     path("clearing-balance/", views.ShopifyClearingBalanceView.as_view(), name="shopify-clearing-balance"),
+
+    # Payout reconciliation
+    path("payouts/", views.ShopifyPayoutsListView.as_view(), name="shopify-payouts-list"),
+    path("reconciliation/", views.ShopifyReconciliationSummaryView.as_view(), name="shopify-reconciliation-summary"),
+    path("reconciliation/<int:payout_id>/", views.ShopifyPayoutReconciliationView.as_view(), name="shopify-payout-reconciliation"),
 ]

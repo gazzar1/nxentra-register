@@ -23,7 +23,7 @@ from accounting.models import Account
 from projections.write_barrier import command_writes_allowed
 
 from . import commands
-from .models import ShopifyStore, ShopifyOrder, ShopifyRefund
+from .models import ShopifyStore, ShopifyOrder, ShopifyRefund, ShopifyPayout
 from .serializers import ShopifyStoreSerializer, ShopifyOrderSerializer
 from .projections import MODULE_NAME
 
@@ -526,3 +526,153 @@ class ShopifyClearingBalanceView(APIView):
             )
 
         return Response(data)
+
+
+# =============================================================================
+# Payout Reconciliation
+# =============================================================================
+
+class ShopifyReconciliationSummaryView(APIView):
+    """
+    GET /api/shopify/reconciliation/
+    Returns payout reconciliation summary for a date range.
+
+    Query params:
+        date_from (required): YYYY-MM-DD
+        date_to (required): YYYY-MM-DD
+        store_id: optional store public_id to filter
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from datetime import date as date_type
+        from .reconciliation import reconciliation_summary, summary_to_dict
+
+        actor = resolve_actor(request)
+        require(actor, "reports.view")
+
+        date_from_str = request.query_params.get("date_from")
+        date_to_str = request.query_params.get("date_to")
+
+        if not date_from_str or not date_to_str:
+            return Response(
+                {"detail": "date_from and date_to query params required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            date_from = date_type.fromisoformat(date_from_str)
+            date_to = date_type.fromisoformat(date_to_str)
+        except ValueError:
+            return Response(
+                {"detail": "Invalid date format. Use YYYY-MM-DD."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        store = None
+        store_id = request.query_params.get("store_id")
+        if store_id:
+            store = ShopifyStore.objects.filter(
+                company=actor.company, public_id=store_id,
+            ).first()
+
+        summary = reconciliation_summary(actor.company, date_from, date_to, store)
+        return Response(summary_to_dict(summary))
+
+
+class ShopifyPayoutReconciliationView(APIView):
+    """
+    GET /api/shopify/reconciliation/<payout_id>/
+    Returns detailed reconciliation for a single payout.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, payout_id):
+        from .reconciliation import reconcile_payout, payout_recon_to_dict
+        from .models import ShopifyPayout
+
+        actor = resolve_actor(request)
+        require(actor, "reports.view")
+
+        try:
+            payout = ShopifyPayout.objects.get(
+                company=actor.company, shopify_payout_id=payout_id,
+            )
+        except ShopifyPayout.DoesNotExist:
+            return Response(
+                {"detail": "Payout not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        recon = reconcile_payout(actor.company, payout)
+        return Response(payout_recon_to_dict(recon))
+
+
+class ShopifyPayoutsListView(APIView):
+    """
+    GET /api/shopify/payouts/
+    List payouts with reconciliation status.
+
+    Query params:
+        page: page number (default 1)
+        status: filter by recon status (verified|discrepancy|unverified|no_transactions)
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from django.db.models import Count, Q
+        from .reconciliation import reconcile_payout
+
+        actor = resolve_actor(request)
+        require(actor, "reports.view")
+
+        payouts = ShopifyPayout.objects.filter(
+            company=actor.company,
+        ).select_related("store").order_by("-payout_date")
+
+        page = int(request.query_params.get("page", 1))
+        page_size = 25
+        offset = (page - 1) * page_size
+        total = payouts.count()
+        payouts_page = payouts[offset:offset + page_size]
+
+        results = []
+        for payout in payouts_page:
+            has_transactions = payout.transactions.exists()
+            txn_stats = payout.transactions.aggregate(
+                total=Count("id"),
+                verified=Count("id", filter=Q(verified=True)),
+            )
+
+            if not has_transactions:
+                recon_status = "no_transactions"
+            else:
+                recon = reconcile_payout(actor.company, payout)
+                recon_status = recon.status
+
+            results.append({
+                "shopify_payout_id": payout.shopify_payout_id,
+                "payout_date": str(payout.payout_date),
+                "gross_amount": str(payout.gross_amount),
+                "fees": str(payout.fees),
+                "net_amount": str(payout.net_amount),
+                "currency": payout.currency,
+                "shopify_status": payout.shopify_status,
+                "store_domain": payout.store.shop_domain,
+                "reconciliation_status": recon_status,
+                "transactions_total": txn_stats["total"],
+                "transactions_verified": txn_stats["verified"],
+                "journal_entry_id": str(payout.journal_entry_id) if payout.journal_entry_id else None,
+            })
+
+        # Filter by recon status if requested
+        status_filter = request.query_params.get("status")
+        if status_filter:
+            results = [r for r in results if r["reconciliation_status"] == status_filter]
+
+        return Response({
+            "results": results,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        })
