@@ -1,0 +1,117 @@
+version: "3.9"
+
+services:
+  # ── PostgreSQL ──────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: nxentra
+      POSTGRES_USER: nxentra
+      POSTGRES_PASSWORD: nxentra
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nxentra"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Redis ───────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Django API ──────────────────────────────────────────────
+  backend:
+    build: ./backend
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://nxentra:nxentra@db:5432/nxentra
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: >
+      bash -c "
+        python manage.py migrate --noinput &&
+        gunicorn nxentra_backend.wsgi:application
+          --bind 0.0.0.0:8000
+          --workers 3
+          --timeout 120
+          --reload
+      "
+
+  # ── Celery Worker ───────────────────────────────────────────
+  celery-worker:
+    build: ./backend
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://nxentra:nxentra@db:5432/nxentra
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: celery -A nxentra_backend worker -l info --concurrency=2
+
+  # ── Celery Beat (periodic tasks) ────────────────────────────
+  celery-beat:
+    build: ./backend
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://nxentra:nxentra@db:5432/nxentra
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: celery -A nxentra_backend beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler
+
+  # ── Projection Consumer ─────────────────────────────────────
+  projection-consumer:
+    build: ./backend
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://nxentra:nxentra@db:5432/nxentra
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: python manage.py run_projections
+
+  # ── Next.js Frontend ────────────────────────────────────────
+  frontend:
+    build: ./frontend
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:

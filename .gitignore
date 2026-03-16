@@ -12,6 +12,7 @@ backend/**/__pycache__/
 *.pyc
 
 # Env files
+.env
 frontend/.env
 frontend/.env.local
 backend/.env
