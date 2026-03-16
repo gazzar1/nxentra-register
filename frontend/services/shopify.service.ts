@@ -88,4 +88,108 @@ export const shopifyService = {
 
   updateAccountMapping: (data: ShopifyAccountMapping[]) =>
     apiClient.put("/shopify/account-mapping/", data),
+
+  // Reconciliation
+  getPayouts: (page = 1, status?: string) => {
+    const params: Record<string, string | number> = { page };
+    if (status) params.status = status;
+    return apiClient.get<PayoutsListResponse>("/shopify/payouts/", { params });
+  },
+
+  getReconciliationSummary: (dateFrom: string, dateTo: string) =>
+    apiClient.get<ReconciliationSummary>("/shopify/reconciliation/", {
+      params: { date_from: dateFrom, date_to: dateTo },
+    }),
+
+  getPayoutReconciliation: (payoutId: number) =>
+    apiClient.get<PayoutReconciliation>(`/shopify/reconciliation/${payoutId}/`),
+
+  verifyPayout: (payoutId: number) =>
+    apiClient.post(`/shopify/payouts/${payoutId}/verify/`),
+
+  getClearingBalance: () =>
+    apiClient.get("/shopify/clearing-balance/"),
 };
+
+// =============================================================================
+// Reconciliation Types
+// =============================================================================
+
+export interface PayoutListItem {
+  shopify_payout_id: number;
+  payout_date: string;
+  gross_amount: string;
+  fees: string;
+  net_amount: string;
+  currency: string;
+  shopify_status: string;
+  store_domain: string;
+  reconciliation_status: "verified" | "partial" | "discrepancy" | "no_transactions" | "unverified";
+  transactions_total: number;
+  transactions_verified: number;
+  journal_entry_id: string | null;
+}
+
+export interface PayoutsListResponse {
+  results: PayoutListItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface ReconciliationSummary {
+  date_from: string;
+  date_to: string;
+  total_payouts: number;
+  verified_payouts: number;
+  discrepancy_payouts: number;
+  unverified_payouts: number;
+  total_gross: string;
+  total_fees: string;
+  total_net: string;
+  total_transactions: number;
+  matched_transactions: number;
+  unmatched_transactions: number;
+  match_rate: string;
+  unmatched_order_total: string;
+  payouts: PayoutSummaryItem[];
+}
+
+export interface PayoutSummaryItem {
+  shopify_payout_id: number;
+  payout_date: string;
+  net_amount: string;
+  fees: string;
+  status: string;
+  matched: number;
+  total: number;
+}
+
+export interface TransactionMatch {
+  shopify_transaction_id: number;
+  transaction_type: string;
+  amount: string;
+  fee: string;
+  net: string;
+  matched: boolean;
+  matched_to: string;
+  variance: string;
+}
+
+export interface PayoutReconciliation {
+  shopify_payout_id: number;
+  payout_date: string;
+  gross_amount: string;
+  fees: string;
+  net_amount: string;
+  currency: string;
+  status: string;
+  total_transactions: number;
+  matched_transactions: number;
+  unmatched_transactions: number;
+  gross_variance: string;
+  fee_variance: string;
+  net_variance: string;
+  discrepancies: string[];
+  transactions: TransactionMatch[];
+}
