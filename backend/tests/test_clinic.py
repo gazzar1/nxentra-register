@@ -41,6 +41,17 @@ from clinic.projections import ClinicAccountingProjection
 # Fixtures
 # =============================================================================
 
+@pytest.fixture(autouse=True)
+def clinic_module_enabled(db, company):
+    """Enable the clinic module for the test company."""
+    from accounts.models import CompanyModule
+    return CompanyModule.objects.get_or_create(
+        company=company,
+        module_key="clinic",
+        defaults={"is_enabled": True},
+    )[0]
+
+
 @pytest.fixture
 def ar_account(db, company):
     return Account.objects.create(

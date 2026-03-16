@@ -93,9 +93,10 @@ def second_company(db):
 @pytest.fixture
 def user(db, company):
     """Create a test user with owner membership."""
+    uid = uuid4().hex[:8]
     user = User.objects.create_user(
         public_id=uuid4(),
-        email="owner@test.com",
+        email=f"owner-{uid}@test.com",
         password="testpass123",
         name="Test Owner",
     )
@@ -107,9 +108,10 @@ def user(db, company):
 @pytest.fixture
 def admin_user(db, company):
     """Create an admin user."""
+    uid = uuid4().hex[:8]
     user = User.objects.create_user(
         public_id=uuid4(),
-        email="admin@test.com",
+        email=f"admin-{uid}@test.com",
         password="testpass123",
         name="Test Admin",
     )
@@ -121,9 +123,10 @@ def admin_user(db, company):
 @pytest.fixture
 def regular_user(db, company):
     """Create a regular user."""
+    uid = uuid4().hex[:8]
     user = User.objects.create_user(
         public_id=uuid4(),
-        email="user@test.com",
+        email=f"user-{uid}@test.com",
         password="testpass123",
         name="Test User",
     )
@@ -171,9 +174,10 @@ def user_membership(db, company, regular_user):
 @pytest.fixture
 def deactivated_membership(db, company):
     """Create a deactivated membership."""
+    uid = uuid4().hex[:8]
     user = User.objects.create_user(
         public_id=uuid4(),
-        email="inactive@test.com",
+        email=f"inactive-{uid}@test.com",
         password="testpass123",
         name="Inactive User",
     )
