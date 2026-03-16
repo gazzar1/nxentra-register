@@ -123,6 +123,19 @@ export default function StripeReconciliationPage() {
     loadData();
   }, [dateFrom, dateTo]);
 
+  async function handleVerifyPayout(payoutId: string) {
+    try {
+      await stripeService.verifyPayout(payoutId);
+      await loadData();
+      if (expandedPayout === payoutId) {
+        const res = await stripeService.getPayoutReconciliation(payoutId);
+        setPayoutDetail(res.data);
+      }
+    } catch {
+      // Error handled by api client
+    }
+  }
+
   async function togglePayoutDetail(payoutId: string) {
     if (expandedPayout === payoutId) {
       setExpandedPayout(null);
@@ -345,6 +358,7 @@ export default function StripeReconciliationPage() {
                             detail={payoutDetail}
                             loading={detailLoading}
                             currency={payout.currency}
+                            onVerify={() => handleVerifyPayout(payout.stripe_payout_id)}
                           />
                         )}
                       </div>
@@ -366,10 +380,12 @@ function PayoutDetailPanel({
   detail,
   loading,
   currency,
+  onVerify,
 }: {
   detail: StripePayoutReconciliation | null;
   loading: boolean;
   currency: string;
+  onVerify: () => void;
 }) {
   if (loading) {
     return (
@@ -382,12 +398,19 @@ function PayoutDetailPanel({
   if (!detail) {
     return (
       <div className="px-6 py-6 bg-muted/30">
-        <p className="text-sm text-muted-foreground">
-          No transaction data available for this payout.
-        </p>
+        <div className="flex items-center justify-between">
+          <p className="text-sm text-muted-foreground">
+            No transaction data available. Run reconciliation to match transactions.
+          </p>
+          <Button size="sm" onClick={onVerify}>
+            Reconcile Payout
+          </Button>
+        </div>
       </div>
     );
   }
+
+  const hasUnmatched = detail.unmatched_transactions > 0;
 
   return (
     <div className="bg-muted/30 border-t">
@@ -417,6 +440,17 @@ function PayoutDetailPanel({
             {detail.discrepancies.map((d, i) => (
               <p key={i} className="text-xs text-red-400/80">{d}</p>
             ))}
+          </div>
+        )}
+
+        {hasUnmatched && (
+          <div className="mt-4 flex items-center justify-between rounded-lg border border-yellow-500/30 bg-yellow-500/5 p-3">
+            <p className="text-sm text-yellow-400">
+              {detail.unmatched_transactions} unmatched transaction{detail.unmatched_transactions > 1 ? "s" : ""}
+            </p>
+            <Button size="sm" variant="outline" onClick={onVerify}>
+              Reconcile Now
+            </Button>
           </div>
         )}
       </div>

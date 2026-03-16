@@ -274,6 +274,65 @@ class StripePayoutReconciliationView(APIView):
         })
 
 
+class StripePayoutVerifyView(APIView):
+    """POST /api/stripe/payouts/<payout_id>/verify/ — match transactions to local charges."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, payout_id):
+        actor = resolve_actor(request)
+        if not actor:
+            return Response(status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            payout = StripePayout.objects.get(
+                company=actor.company,
+                stripe_payout_id=payout_id,
+            )
+        except StripePayout.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        matched = 0
+        unmatched = 0
+
+        for txn in StripePayoutTransaction.objects.filter(payout=payout, verified=False):
+            if txn.transaction_type == "charge" and txn.source_id:
+                try:
+                    charge = StripeCharge.objects.get(
+                        company=actor.company,
+                        stripe_charge_id=txn.source_id,
+                    )
+                    txn.local_charge = charge
+                    txn.verified = True
+                    txn.save(update_fields=["local_charge", "verified"])
+                    matched += 1
+                except StripeCharge.DoesNotExist:
+                    unmatched += 1
+            elif txn.transaction_type == "refund" and txn.source_id:
+                # Try to match refund to a charge
+                from .models import StripeRefund
+                if StripeRefund.objects.filter(
+                    company=actor.company,
+                    stripe_refund_id=txn.source_id,
+                ).exists():
+                    txn.verified = True
+                    txn.save(update_fields=["verified"])
+                    matched += 1
+                else:
+                    unmatched += 1
+            elif txn.transaction_type in ("adjustment", "payout"):
+                txn.verified = True
+                txn.save(update_fields=["verified"])
+                matched += 1
+            else:
+                unmatched += 1
+
+        return Response({
+            "status": "verified",
+            "matched": matched,
+            "unmatched": unmatched,
+        })
+
+
 class StripeDisconnectView(APIView):
     permission_classes = [IsAuthenticated]
 

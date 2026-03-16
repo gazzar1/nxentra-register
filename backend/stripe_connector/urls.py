@@ -14,4 +14,5 @@ urlpatterns = [
     path("payouts/", views.StripePayoutsListView.as_view(), name="stripe-payouts-list"),
     path("reconciliation/", views.StripeReconciliationSummaryView.as_view(), name="stripe-reconciliation-summary"),
     path("reconciliation/<str:payout_id>/", views.StripePayoutReconciliationView.as_view(), name="stripe-payout-reconciliation"),
+    path("payouts/<str:payout_id>/verify/", views.StripePayoutVerifyView.as_view(), name="stripe-payout-verify"),
 ]

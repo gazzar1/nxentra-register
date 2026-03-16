@@ -143,4 +143,7 @@ export const stripeService = {
 
   getPayoutReconciliation: (payoutId: string) =>
     apiClient.get<StripePayoutReconciliation>(`/stripe/reconciliation/${payoutId}/`),
+
+  verifyPayout: (payoutId: string) =>
+    apiClient.post(`/stripe/payouts/${payoutId}/verify/`),
 };
