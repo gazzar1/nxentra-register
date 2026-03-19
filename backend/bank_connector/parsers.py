@@ -14,17 +14,35 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 
+def _decode_content(raw: bytes) -> str:
+    """Decode bytes with BOM handling and latin-1 fallback."""
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return raw.decode("latin-1")
+
+
+def _detect_delimiter(text: str) -> str:
+    """Auto-detect CSV delimiter by inspecting the first line."""
+    first_line = text.split("\n", 1)[0]
+    # Count candidate delimiters in the header line
+    candidates = [(",", first_line.count(",")),
+                  (";", first_line.count(";")),
+                  ("\t", first_line.count("\t")),
+                  ("|", first_line.count("|"))]
+    # Pick the one with the most occurrences (minimum 1)
+    best = max(candidates, key=lambda c: c[1])
+    return best[0] if best[1] > 0 else ","
+
+
 def parse_csv_file(uploaded_file) -> list[dict[str, Any]]:
     """Parse an uploaded CSV file into a list of dicts."""
     content = uploaded_file.read()
     if isinstance(content, bytes):
-        # Try UTF-8 with BOM first, then latin-1 fallback
-        try:
-            content = content.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            content = content.decode("latin-1")
+        content = _decode_content(content)
 
-    reader = csv.DictReader(io.StringIO(content))
+    delimiter = _detect_delimiter(content)
+    reader = csv.DictReader(io.StringIO(content), delimiter=delimiter)
     rows = []
     for row in reader:
         cleaned = {
@@ -40,12 +58,10 @@ def get_csv_headers(uploaded_file) -> list[str]:
     """Read just the headers from a CSV file, then reset the pointer."""
     content = uploaded_file.read()
     if isinstance(content, bytes):
-        try:
-            content = content.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            content = content.decode("latin-1")
+        content = _decode_content(content)
 
-    reader = csv.reader(io.StringIO(content))
+    delimiter = _detect_delimiter(content)
+    reader = csv.reader(io.StringIO(content), delimiter=delimiter)
     headers = next(reader, [])
     # Reset file pointer for subsequent reads
     uploaded_file.seek(0)
@@ -56,12 +72,10 @@ def preview_csv(uploaded_file, max_rows: int = 5) -> dict:
     """Return headers and first N rows for column mapping UI."""
     content = uploaded_file.read()
     if isinstance(content, bytes):
-        try:
-            content = content.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            content = content.decode("latin-1")
+        content = _decode_content(content)
 
-    reader = csv.DictReader(io.StringIO(content))
+    delimiter = _detect_delimiter(content)
+    reader = csv.DictReader(io.StringIO(content), delimiter=delimiter)
     headers = reader.fieldnames or []
     headers = [h.strip().lstrip("\ufeff") for h in headers]
 
