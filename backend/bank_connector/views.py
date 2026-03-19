@@ -264,6 +264,18 @@ class BankStatementImportView(APIView):
 
             tx_date = row["transaction_date"]
             amount = row["amount"]
+            description = row.get("description", "")
+
+            # Duplicate detection: same account + date + description + amount
+            if BankTransaction.objects.filter(
+                company=actor.company,
+                bank_account=bank_account,
+                transaction_date=tx_date,
+                description=description,
+                amount=amount,
+            ).exists():
+                skipped += 1
+                continue
 
             # Track period
             if min_date is None or tx_date < min_date:
@@ -283,7 +295,7 @@ class BankStatementImportView(APIView):
                 bank_account=bank_account,
                 transaction_date=tx_date,
                 value_date=row.get("value_date"),
-                description=row.get("description", ""),
+                description=description,
                 reference=row.get("reference", ""),
                 amount=amount,
                 transaction_type=row.get("transaction_type", "CREDIT"),
