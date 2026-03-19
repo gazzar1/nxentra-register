@@ -110,6 +110,9 @@ DATE_FORMATS = [
     "%d %b %Y",       # 15 Aug 2024
     "%d %B %Y",       # 15 August 2024
     "%b %d, %Y",      # Aug 15, 2024
+    "%a %b %d %Y",    # Wed Mar 04 2026 (CIB format)
+    "%a %d %b %Y",    # Wed 04 Mar 2026
+    "%B %d, %Y",      # August 15, 2024
 ]
 
 
