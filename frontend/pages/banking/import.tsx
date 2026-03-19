@@ -560,11 +560,39 @@ export default function BankImportPage() {
                         <p className="text-sm font-medium text-yellow-800 mb-2">
                           {result.errors.length} rows had issues:
                         </p>
-                        {result.errors.map((err, i) => (
+                        {result.errors.slice(0, 10).map((err, i) => (
                           <p key={i} className="text-xs text-yellow-700">
                             {err}
                           </p>
                         ))}
+                        {result.errors.length > 10 && (
+                          <p className="text-xs text-yellow-600 mt-1">
+                            ...and {result.errors.length - 10} more
+                          </p>
+                        )}
+                      </div>
+                    )}
+                    {result.debug && result.created === 0 && (
+                      <div className="mt-4 w-full max-w-2xl rounded-lg border border-blue-200 bg-blue-50 p-4 text-left">
+                        <p className="text-sm font-medium text-blue-800 mb-2">
+                          Debug Info (no transactions created):
+                        </p>
+                        <p className="text-xs text-blue-700">
+                          <strong>CSV columns detected:</strong>{" "}
+                          {result.debug.raw_row_keys.join(", ")}
+                        </p>
+                        <p className="text-xs text-blue-700 mt-1">
+                          <strong>Sample row:</strong>{" "}
+                          {JSON.stringify(result.debug.raw_row_sample)}
+                        </p>
+                        <p className="text-xs text-blue-700 mt-1">
+                          <strong>Mapped date:</strong> {result.debug.mapped_date}
+                          {" | "}
+                          <strong>Mapped amount:</strong> {result.debug.mapped_amount}
+                          {" | "}
+                          <strong>Mapped description:</strong>{" "}
+                          {result.debug.mapped_description}
+                        </p>
                       </div>
                     )}
                     <div className="flex gap-3 mt-6">

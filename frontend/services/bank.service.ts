@@ -80,6 +80,13 @@ export interface ImportResult {
   period_end: string | null;
   total_credits: string;
   total_debits: string;
+  debug?: {
+    raw_row_keys: string[];
+    raw_row_sample: Record<string, string>;
+    mapped_date: string;
+    mapped_amount: string;
+    mapped_description: string;
+  };
 }
 
 export interface ColumnMapping {

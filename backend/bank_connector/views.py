@@ -221,8 +221,21 @@ class BankStatementImportView(APIView):
         except Exception as e:
             return Response({"detail": f"Error parsing CSV: {str(e)}"}, status=400)
 
+        if not raw_rows:
+            return Response({"detail": "CSV file is empty or has no data rows."}, status=400)
+
         # Apply column mapping
         mapped_rows = apply_column_mapping(raw_rows, mapping)
+
+        # Debug: check first mapped row
+        first_mapped = mapped_rows[0] if mapped_rows else {}
+        debug_info = {
+            "raw_row_keys": list(raw_rows[0].keys()) if raw_rows else [],
+            "raw_row_sample": {k: str(v)[:50] for k, v in (raw_rows[0].items() if raw_rows else [])},
+            "mapped_date": str(first_mapped.get("transaction_date")),
+            "mapped_amount": str(first_mapped.get("amount")),
+            "mapped_description": str(first_mapped.get("description", ""))[:50],
+        }
 
         # Create statement
         statement = BankStatement.objects.create(
@@ -299,6 +312,7 @@ class BankStatementImportView(APIView):
             "period_end": str(max_date) if max_date else None,
             "total_credits": str(total_credits),
             "total_debits": str(total_debits),
+            "debug": debug_info,
         })
 
 
