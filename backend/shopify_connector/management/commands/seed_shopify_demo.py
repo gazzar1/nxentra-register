@@ -79,6 +79,10 @@ class Command(BaseCommand):
         )
         parser.add_argument(
             "--flush", action="store_true",
+            help="Delete existing demo data before seeding",
+        )
+        parser.add_argument(
+            "--flush-only", action="store_true",
             help="Delete existing Shopify demo data before seeding",
         )
 
@@ -99,8 +103,11 @@ class Command(BaseCommand):
 
         self.stdout.write(f"Seeding Shopify demo data for: {company.name}")
 
-        if options["flush"]:
+        if options["flush"] or options["flush_only"]:
             self._flush(company)
+            if options["flush_only"]:
+                self.stdout.write(self.style.SUCCESS("Flush complete."))
+                return
 
         # Ensure GL accounts and mappings exist
         self._ensure_accounts(company)
