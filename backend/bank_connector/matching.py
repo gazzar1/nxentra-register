@@ -18,6 +18,9 @@ from django.utils import timezone
 
 from .models import BankAccount, BankTransaction
 
+# Lazy imports for accounting models (avoid circular imports)
+# These are imported inside functions that need them.
+
 logger = logging.getLogger(__name__)
 
 # Confidence thresholds
@@ -203,6 +206,195 @@ def _is_payout_already_matched(company, payout):
 
 
 # =============================================================================
+# Journal Entry Reconciliation
+# =============================================================================
+
+def _reconcile_payout_je(company, platform, payout_obj, bank_tx):
+    """
+    When a bank transaction is matched to a payout:
+    1. If the payout has a JE, mark the Cash/Bank line as reconciled
+    2. If the payout has no JE, create one, then mark reconciled
+
+    Returns dict with je_status info.
+    """
+    from accounting.models import JournalEntry, JournalLine
+    from projections.write_barrier import command_writes_allowed
+
+    je_public_id = payout_obj.journal_entry_id
+    je = None
+
+    # Step 1: Find existing JE or create one
+    if je_public_id:
+        try:
+            je = JournalEntry.objects.get(
+                public_id=je_public_id,
+                status=JournalEntry.Status.POSTED,
+            )
+        except JournalEntry.DoesNotExist:
+            logger.warning(
+                "Payout %s has journal_entry_id %s but JE not found or not POSTED",
+                payout_obj.pk, je_public_id,
+            )
+
+    if not je:
+        # Create a JE for this payout
+        je = _create_payout_je(company, platform, payout_obj)
+        if not je:
+            logger.warning(
+                "Could not create JE for %s payout %s — account mapping may be missing",
+                platform, payout_obj.pk,
+            )
+            return {"je_status": "no_je", "je_id": None, "reconciled": False}
+
+    # Step 2: Find the Cash/Bank line in the JE and mark reconciled
+    # For positive payouts: Cash/Bank is the debit line
+    # For negative payouts: Cash/Bank is the credit line
+    # Use the LIQUIDITY role to identify the bank account line
+    cash_line = je.lines.filter(
+        account__role="LIQUIDITY",
+        reconciled=False,
+    ).first()
+
+    if not cash_line:
+        # Fallback: find by debit > 0 (most payouts are positive)
+        cash_line = je.lines.filter(
+            debit__gt=0,
+            reconciled=False,
+        ).first()
+
+    if cash_line:
+        with command_writes_allowed():
+            cash_line.reconciled = True
+            cash_line.reconciled_date = bank_tx.transaction_date
+            cash_line.save(update_fields=["reconciled", "reconciled_date"])
+
+        logger.info(
+            "Reconciled JE %s line %s for %s payout %s ↔ bank tx %s",
+            je.entry_number, cash_line.line_no, platform, payout_obj.pk, bank_tx.id,
+        )
+        return {
+            "je_status": "reconciled",
+            "je_id": str(je.public_id),
+            "je_number": je.entry_number,
+            "reconciled": True,
+        }
+
+    logger.warning(
+        "JE %s has no unreconciled Cash/Bank line for payout %s",
+        je.entry_number, payout_obj.pk,
+    )
+    return {
+        "je_status": "no_cash_line",
+        "je_id": str(je.public_id),
+        "reconciled": False,
+    }
+
+
+def _create_payout_je(company, platform, payout_obj):
+    """
+    Create a journal entry for a payout that doesn't have one.
+
+    Uses the same account mapping and structure as PlatformAccountingProjection:
+      DR Cash/Bank        (net_amount)
+      DR Processing Fees  (fees)
+        CR Platform Clearing  (gross_amount)
+    """
+    from platform_connectors.je_builder import build_journal_entry, JERequest, JELine
+    from accounting.mappings import ModuleAccountMapping
+
+    module_key = f"platform_{platform}"
+    mapping = ModuleAccountMapping.get_mapping(company, module_key)
+    if not mapping:
+        return None
+
+    clearing = mapping.get("PLATFORM_CLEARING")
+    cash_bank = mapping.get("CASH_BANK")
+    fees_account = mapping.get("PAYMENT_PROCESSING_FEES")
+
+    if not clearing or not cash_bank:
+        logger.warning(
+            "Missing account mapping for %s: CLEARING=%s, CASH_BANK=%s",
+            module_key, clearing, cash_bank,
+        )
+        return None
+
+    net_amount = payout_obj.net_amount
+    fees = payout_obj.fees
+    gross_amount = payout_obj.gross_amount
+
+    # Build payout ID for memo
+    if platform == "stripe":
+        payout_id_str = payout_obj.stripe_payout_id
+    elif platform == "shopify":
+        payout_id_str = str(payout_obj.shopify_payout_id)
+    else:
+        payout_id_str = str(payout_obj.pk)
+
+    memo = f"{platform.title()} payout: {payout_id_str}"
+
+    lines = []
+    if net_amount >= 0:
+        # Normal payout: DR Cash, DR Fees, CR Clearing
+        lines.append(JELine(
+            account=cash_bank,
+            description=f"Payout deposit: {payout_id_str}",
+            debit=net_amount,
+        ))
+        if fees > 0 and fees_account:
+            lines.append(JELine(
+                account=fees_account,
+                description=f"Processing fees: {payout_id_str}",
+                debit=fees,
+            ))
+        lines.append(JELine(
+            account=clearing,
+            description=f"Payout settlement: {payout_id_str}",
+            credit=gross_amount,
+        ))
+    else:
+        # Negative payout: DR Clearing, CR Cash
+        lines.append(JELine(
+            account=clearing,
+            description=f"Negative payout: {payout_id_str}",
+            debit=abs(gross_amount),
+        ))
+        if fees > 0 and fees_account:
+            lines.append(JELine(
+                account=fees_account,
+                description=f"Processing fees: {payout_id_str}",
+                debit=fees,
+            ))
+        lines.append(JELine(
+            account=cash_bank,
+            description=f"Payout withdrawal: {payout_id_str}",
+            credit=abs(net_amount),
+        ))
+
+    je = build_journal_entry(JERequest(
+        company=company,
+        entry_date=payout_obj.payout_date,
+        memo=memo,
+        source_module=module_key,
+        source_document=payout_id_str,
+        currency=payout_obj.currency,
+        lines=lines,
+        projection_name="bank_reconciliation",
+        posted_by_email="system@reconciliation",
+    ))
+
+    if je:
+        # Store JE reference on the payout
+        payout_obj.journal_entry_id = je.public_id
+        payout_obj.save(update_fields=["journal_entry_id"])
+        logger.info(
+            "Created JE %s for %s payout %s",
+            je.entry_number, platform, payout_id_str,
+        )
+
+    return je
+
+
+# =============================================================================
 # Auto-Matching
 # =============================================================================
 
@@ -257,12 +449,23 @@ def auto_match_transactions(company, bank_account_id=None):
             tx.matched_by = "auto"
             tx.save()
 
+            # Reconcile the payout's journal entry
+            payout_obj = _get_payout_object(
+                company, best_payout["platform"], best_payout["id"]
+            )
+            je_result = {}
+            if payout_obj:
+                je_result = _reconcile_payout_je(
+                    company, best_payout["platform"], payout_obj, tx
+                )
+
             matches.append({
                 "bank_transaction_id": tx.id,
                 "payout_platform": best_payout["platform"],
                 "payout_id": best_payout["payout_id"],
                 "confidence": best_confidence,
                 "amount": str(tx.amount),
+                "je_reconciled": je_result.get("reconciled", False),
             })
 
             # Remove from available payouts to prevent double-matching
@@ -305,7 +508,14 @@ def manual_match(company, bank_transaction_id, platform, payout_id):
     tx.matched_by = "manual"
     tx.save()
 
-    return {"status": "matched", "bank_transaction_id": tx.id}
+    # Reconcile the payout's journal entry
+    je_result = _reconcile_payout_je(company, platform, payout_obj, tx)
+
+    return {
+        "status": "matched",
+        "bank_transaction_id": tx.id,
+        **je_result,
+    }
 
 
 # =============================================================================

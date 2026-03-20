@@ -151,6 +151,17 @@ function PayoutExplainerPanel({
         </div>
       )}
 
+      {/* Journal entry status */}
+      {explanation.payout_external_id && (
+        <div className="text-xs text-muted-foreground flex items-center gap-2">
+          <span>Date: {explanation.payout_date}</span>
+          <span>·</span>
+          <span>Currency: {explanation.currency}</span>
+          <span>·</span>
+          <span>Status: {explanation.payout_status}</span>
+        </div>
+      )}
+
       {/* Matched bank transaction */}
       {explanation.bank_transaction && (
         <div className="bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-md p-3">
@@ -363,8 +374,9 @@ export default function ReconciliationPage() {
     setAutoMatching(true);
     try {
       const { data } = await bankService.autoMatch();
+      const jeCount = data.matches.filter((m: any) => m.je_reconciled).length;
       toast({
-        title: `Auto-matched ${data.matched} of ${data.total} transactions.`,
+        title: `Auto-matched ${data.matched} of ${data.total} transactions.${jeCount > 0 ? ` ${jeCount} journal entries reconciled.` : ""}`,
       });
       loadData();
       setExpandedTxId(null);
@@ -394,8 +406,13 @@ export default function ReconciliationPage() {
 
   async function handleManualMatch(txId: number, suggestion: PayoutSuggestion) {
     try {
-      await bankService.manualMatch(txId, suggestion.platform, suggestion.id);
-      toast({ title: "Transaction matched to payout." });
+      const { data } = await bankService.manualMatch(txId, suggestion.platform, suggestion.id);
+      const jeMsg = data.reconciled
+        ? ` Journal entry ${data.je_number || ""} reconciled.`
+        : data.je_status === "no_je"
+        ? " (No journal entry found — account mapping may be needed)"
+        : "";
+      toast({ title: `Transaction matched to payout.${jeMsg}` });
       setExpandedTxId(null);
       setExplanation(null);
       loadData();
