@@ -64,6 +64,22 @@ class ShopifyStore(models.Model):
     # OAuth state parameter for CSRF protection
     oauth_nonce = models.CharField(max_length=64, blank=True)
 
+    # Default accounts for auto-creating Items from Shopify products
+    default_inventory_account = models.ForeignKey(
+        "accounting.Account", on_delete=models.SET_NULL,
+        null=True, blank=True, related_name="+",
+        help_text="Default inventory asset account for auto-created Items",
+    )
+    default_cogs_account = models.ForeignKey(
+        "accounting.Account", on_delete=models.SET_NULL,
+        null=True, blank=True, related_name="+",
+        help_text="Default COGS expense account for auto-created Items",
+    )
+    product_sync_enabled = models.BooleanField(
+        default=False,
+        help_text="Auto-create Items from Shopify product webhooks",
+    )
+
     last_sync_at = models.DateTimeField(null=True, blank=True)
     error_message = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -546,6 +562,65 @@ class ShopifyDispute(models.Model):
         db_table = "shopify_dispute"
         unique_together = [("company", "shopify_dispute_id")]
         ordering = ["-created_at"]
+
+
+class ShopifyProduct(models.Model):
+    """
+    Maps a Shopify product variant to a Nxentra Item.
+
+    Each Shopify variant (which has its own SKU) maps to one Item.
+    The parent Shopify product ID is stored for grouping/display.
+    """
+
+    company = models.ForeignKey(
+        Company, on_delete=models.CASCADE, related_name="shopify_products",
+    )
+    store = models.ForeignKey(
+        ShopifyStore, on_delete=models.CASCADE, related_name="products",
+    )
+
+    # Shopify identifiers
+    shopify_product_id = models.BigIntegerField(db_index=True)
+    shopify_variant_id = models.BigIntegerField(db_index=True)
+
+    # Shopify data snapshot
+    title = models.CharField(max_length=500)
+    variant_title = models.CharField(max_length=500, blank=True, default="")
+    sku = models.CharField(max_length=255, blank=True, default="", db_index=True)
+    barcode = models.CharField(max_length=255, blank=True, default="")
+    shopify_price = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    shopify_inventory_item_id = models.BigIntegerField(
+        null=True, blank=True,
+        help_text="Shopify inventory_item_id for future inventory level sync",
+    )
+
+    # Link to Nxentra Item
+    item = models.ForeignKey(
+        "sales.Item", on_delete=models.SET_NULL,
+        null=True, blank=True, related_name="shopify_variants",
+    )
+
+    # Sync state
+    auto_created = models.BooleanField(
+        default=False,
+        help_text="Whether the linked Item was auto-created by sync",
+    )
+    last_synced_at = models.DateTimeField(auto_now=True)
+    raw_data = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "shopify_product"
+        unique_together = [("company", "shopify_variant_id")]
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        label = f"{self.title}"
+        if self.variant_title:
+            label += f" - {self.variant_title}"
+        if self.sku:
+            label += f" ({self.sku})"
+        return label
 
     def __str__(self):
         return f"Dispute {self.shopify_dispute_id} ({self.currency} {self.amount})"

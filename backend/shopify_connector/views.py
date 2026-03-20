@@ -176,6 +176,8 @@ class ShopifyWebhookView(APIView):
             "fulfillments/create": commands.process_fulfillment,
             "disputes/create": commands.process_dispute,
             "disputes/update": commands.process_dispute,
+            "products/create": commands.process_product_webhook,
+            "products/update": commands.process_product_webhook,
             "app/uninstalled": commands.process_app_uninstalled,
         }.get(topic)
 
@@ -330,6 +332,45 @@ class ShopifySyncPayoutsView(APIView):
             "created": result.data.get("created", 0),
             "skipped": result.data.get("skipped", 0),
         })
+
+
+class ShopifySyncProductsView(APIView):
+    """
+    POST /api/shopify/sync-products/
+    Pull products from Shopify and create/link Nxentra Items.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        actor = resolve_actor(request)
+        require(actor, "settings.edit")
+
+        try:
+            store = ShopifyStore.objects.get(
+                company=actor.company,
+                status=ShopifyStore.Status.ACTIVE,
+            )
+        except ShopifyStore.DoesNotExist:
+            return Response(
+                {"error": "No active Shopify store"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        inventory_account_id = request.data.get("inventory_account_id")
+        cogs_account_id = request.data.get("cogs_account_id")
+
+        result = commands.sync_products(
+            store,
+            inventory_account_id=inventory_account_id,
+            cogs_account_id=cogs_account_id,
+        )
+        if not result.success:
+            return Response(
+                {"error": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(result.data)
 
 
 class ShopifyOrdersView(APIView):

@@ -55,6 +55,8 @@ SHOPIFY_WEBHOOK_TOPICS = [
     "fulfillments/create",
     "disputes/create",
     "disputes/update",
+    "products/create",
+    "products/update",
     "app/uninstalled",
 ]
 
@@ -1199,3 +1201,270 @@ def _extract_gateway(payload: dict) -> str:
     if gateways:
         return gateways[0]
     return payload.get("gateway", "")
+
+
+# =============================================================================
+# Product Sync
+# =============================================================================
+
+def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_id=None) -> CommandResult:
+    """
+    Pull products from Shopify and create/link Nxentra Items.
+
+    For each variant with a SKU:
+    - If a ShopifyProduct mapping exists, update Shopify data snapshot
+    - If an Item with matching code exists, link it
+    - If no Item exists, auto-create one (INVENTORY if accounts provided, else NON_STOCK)
+
+    Returns CommandResult with counts: created, linked, updated, skipped.
+    """
+    from .models import ShopifyProduct
+    from sales.models import Item
+
+    if store.status != ShopifyStore.Status.ACTIVE:
+        return CommandResult.fail("Store is not active.")
+
+    if not store.access_token:
+        return CommandResult.fail("No access token — reconnect the store.")
+
+    company = store.company
+
+    # Resolve default accounts
+    inv_account = _resolve_account(company, inventory_account_id or (
+        store.default_inventory_account_id
+    ))
+    cogs_account = _resolve_account(company, cogs_account_id or (
+        store.default_cogs_account_id
+    ))
+
+    headers = {
+        "X-Shopify-Access-Token": store.access_token,
+        "Content-Type": "application/json",
+    }
+
+    created = 0
+    linked = 0
+    updated = 0
+    skipped = 0
+    errors = []
+
+    url = f"https://{store.shop_domain}/admin/api/2026-01/products.json?limit=250"
+
+    while url:
+        try:
+            resp = requests.get(url, headers=headers, timeout=30)
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            logger.error("Shopify products API error: %s", e)
+            return CommandResult.fail(f"Shopify API error: {e}")
+
+        products = resp.json().get("products", [])
+
+        for product in products:
+            product_id = product.get("id")
+            product_title = product.get("title", "")
+
+            for variant in product.get("variants", []):
+                variant_id = variant.get("id")
+                sku = (variant.get("sku") or "").strip()
+
+                if not sku:
+                    skipped += 1
+                    continue
+
+                price = Decimal(str(variant.get("price", "0")))
+                variant_title = variant.get("title", "") if variant.get("title") != "Default Title" else ""
+
+                # Check existing mapping
+                mapping = ShopifyProduct.objects.filter(
+                    company=company, shopify_variant_id=variant_id,
+                ).first()
+
+                if mapping:
+                    # Update snapshot
+                    mapping.title = product_title
+                    mapping.variant_title = variant_title
+                    mapping.sku = sku
+                    mapping.shopify_price = price
+                    mapping.shopify_inventory_item_id = variant.get("inventory_item_id")
+                    mapping.raw_data = variant
+                    mapping.save()
+                    updated += 1
+                    continue
+
+                # Find or create Item
+                item = Item.objects.filter(company=company, code=sku).first()
+                auto_created = False
+
+                if not item:
+                    item = _create_item_from_variant(
+                        company, sku, product_title, variant_title, price,
+                        inv_account, cogs_account,
+                    )
+                    auto_created = True
+                    created += 1
+                else:
+                    linked += 1
+
+                # Create mapping
+                ShopifyProduct.objects.create(
+                    company=company,
+                    store=store,
+                    shopify_product_id=product_id,
+                    shopify_variant_id=variant_id,
+                    title=product_title,
+                    variant_title=variant_title,
+                    sku=sku,
+                    shopify_price=price,
+                    shopify_inventory_item_id=variant.get("inventory_item_id"),
+                    item=item,
+                    auto_created=auto_created,
+                    raw_data=variant,
+                )
+
+        # Pagination: follow Link header
+        url = _get_next_page_url(resp)
+
+    logger.info(
+        "Product sync for %s: %d created, %d linked, %d updated, %d skipped",
+        store.shop_domain, created, linked, updated, skipped,
+    )
+
+    return CommandResult.ok(data={
+        "created": created,
+        "linked": linked,
+        "updated": updated,
+        "skipped": skipped,
+        "errors": errors,
+    })
+
+
+@transaction.atomic
+def process_product_webhook(store: ShopifyStore, payload: dict) -> CommandResult:
+    """
+    Handle products/create and products/update webhooks.
+
+    Updates ShopifyProduct mapping and linked Item if auto_created.
+    If product_sync_enabled and no mapping exists, creates one.
+    """
+    from .models import ShopifyProduct
+    from sales.models import Item
+
+    company = store.company
+    product_id = payload.get("id")
+    product_title = payload.get("title", "")
+
+    if not product_id:
+        return CommandResult.fail("No product ID in payload.")
+
+    created = 0
+    updated = 0
+
+    for variant in payload.get("variants", []):
+        variant_id = variant.get("id")
+        sku = (variant.get("sku") or "").strip()
+
+        if not sku:
+            continue
+
+        price = Decimal(str(variant.get("price", "0")))
+        variant_title = variant.get("title", "") if variant.get("title") != "Default Title" else ""
+
+        mapping = ShopifyProduct.objects.filter(
+            company=company, shopify_variant_id=variant_id,
+        ).first()
+
+        if mapping:
+            # Update snapshot
+            mapping.title = product_title
+            mapping.variant_title = variant_title
+            mapping.sku = sku
+            mapping.shopify_price = price
+            mapping.shopify_inventory_item_id = variant.get("inventory_item_id")
+            mapping.raw_data = variant
+            mapping.save()
+
+            # Update auto-created Items (don't overwrite manually edited ones)
+            if mapping.auto_created and mapping.item:
+                with command_writes_allowed():
+                    item = mapping.item
+                    item.name = f"{product_title} - {variant_title}" if variant_title else product_title
+                    item.default_unit_price = price
+                    item.save(update_fields=["name", "default_unit_price", "updated_at"])
+
+            updated += 1
+        elif store.product_sync_enabled:
+            # Auto-create mapping for new variants
+            inv_account = _resolve_account(company, store.default_inventory_account_id)
+            cogs_account = _resolve_account(company, store.default_cogs_account_id)
+
+            item = Item.objects.filter(company=company, code=sku).first()
+            auto_created = False
+
+            if not item:
+                item = _create_item_from_variant(
+                    company, sku, product_title, variant_title, price,
+                    inv_account, cogs_account,
+                )
+                auto_created = True
+
+            ShopifyProduct.objects.create(
+                company=company,
+                store=store,
+                shopify_product_id=product_id,
+                shopify_variant_id=variant_id,
+                title=product_title,
+                variant_title=variant_title,
+                sku=sku,
+                shopify_price=price,
+                shopify_inventory_item_id=variant.get("inventory_item_id"),
+                item=item,
+                auto_created=auto_created,
+                raw_data=variant,
+            )
+            created += 1
+
+    return CommandResult.ok(data={"created": created, "updated": updated})
+
+
+def _create_item_from_variant(company, sku, product_title, variant_title, price,
+                              inv_account, cogs_account):
+    """Create a Nxentra Item from a Shopify variant."""
+    from sales.models import Item
+
+    name = f"{product_title} - {variant_title}" if variant_title else product_title
+    item_type = Item.ItemType.INVENTORY if (inv_account and cogs_account) else Item.ItemType.NON_STOCK
+
+    with command_writes_allowed():
+        item = Item.objects.create(
+            company=company,
+            code=sku,
+            name=name[:255],
+            item_type=item_type,
+            default_unit_price=price,
+            inventory_account=inv_account if item_type == Item.ItemType.INVENTORY else None,
+            cogs_account=cogs_account if item_type == Item.ItemType.INVENTORY else None,
+        )
+
+    logger.info("Auto-created Item %s (%s) from Shopify variant", sku, item_type)
+    return item
+
+
+def _resolve_account(company, account_id):
+    """Resolve an account by ID, returning None if not found."""
+    if not account_id:
+        return None
+    from accounting.models import Account
+    return Account.objects.filter(company=company, id=account_id).first()
+
+
+def _get_next_page_url(response):
+    """Extract next page URL from Shopify's Link header pagination."""
+    link_header = response.headers.get("Link", "")
+    if not link_header:
+        return None
+    for part in link_header.split(","):
+        if 'rel="next"' in part:
+            url = part.split(";")[0].strip().strip("<>")
+            return url
+    return None

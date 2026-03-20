@@ -18,6 +18,7 @@ urlpatterns = [
     # Data views
     path("orders/", views.ShopifyOrdersView.as_view(), name="shopify-orders"),
     path("sync-payouts/", views.ShopifySyncPayoutsView.as_view(), name="shopify-sync-payouts"),
+    path("sync-products/", views.ShopifySyncProductsView.as_view(), name="shopify-sync-products"),
 
     # Account mapping
     path("account-mapping/", views.ShopifyAccountMappingView.as_view(), name="shopify-account-mapping"),
