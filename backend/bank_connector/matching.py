@@ -302,12 +302,16 @@ def _create_payout_je(company, platform, payout_obj):
     from platform_connectors.je_builder import build_journal_entry, JERequest, JELine
     from accounting.mappings import ModuleAccountMapping
 
-    module_key = f"platform_{platform}"
+    # Module keys in DB: "shopify_connector", "stripe_connector"
+    module_key = f"{platform}_connector"
     mapping = ModuleAccountMapping.get_mapping(company, module_key)
     if not mapping:
+        logger.warning("No account mapping found for module %s", module_key)
         return None
 
-    clearing = mapping.get("PLATFORM_CLEARING")
+    # Clearing account role varies by platform: SHOPIFY_CLEARING, STRIPE_CLEARING
+    clearing_role = f"{platform.upper()}_CLEARING"
+    clearing = mapping.get(clearing_role)
     cash_bank = mapping.get("CASH_BANK")
     fees_account = mapping.get("PAYMENT_PROCESSING_FEES")
 
@@ -374,7 +378,7 @@ def _create_payout_je(company, platform, payout_obj):
         company=company,
         entry_date=payout_obj.payout_date,
         memo=memo,
-        source_module=module_key,
+        source_module=f"{platform}_connector",
         source_document=payout_id_str,
         currency=payout_obj.currency,
         lines=lines,
