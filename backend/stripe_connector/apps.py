@@ -29,7 +29,7 @@ class StripeConnectorConfig(AppConfig):
                 {"label": "Dashboard", "href": "/stripe", "icon": "LayoutDashboard"},
                 {"label": "Charges", "href": "/stripe/charges", "icon": "Receipt"},
                 {"label": "Payouts", "href": "/stripe/payouts", "icon": "Banknote"},
-                {"label": "Reconciliation", "href": "/stripe/reconciliation", "icon": "Scale"},
+                {"label": "Payout Verification", "href": "/stripe/reconciliation", "icon": "Scale"},
                 {"label": "Settings", "href": "/stripe/settings", "icon": "Settings"},
             ],
         )

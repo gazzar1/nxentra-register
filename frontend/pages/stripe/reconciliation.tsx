@@ -161,8 +161,8 @@ export default function StripeReconciliationPage() {
     <AppLayout>
       <div className="space-y-6">
         <PageHeader
-          title="Stripe Reconciliation"
-          subtitle="Match Stripe payouts to charges, fees, and bank deposits"
+          title="Payout Verification"
+          subtitle="Verify Stripe payout transactions against local charges and fees"
         />
 
         {/* Date Range */}

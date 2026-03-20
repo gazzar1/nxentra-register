@@ -39,7 +39,7 @@ class ShopifyConnectorConfig(AppConfig):
                 {"label": "Dashboard", "href": "/shopify", "icon": "LayoutDashboard"},
                 {"label": "Orders", "href": "/shopify/orders", "icon": "ShoppingBag"},
                 {"label": "Payouts", "href": "/shopify/payouts", "icon": "Banknote"},
-                {"label": "Reconciliation", "href": "/shopify/reconciliation", "icon": "Scale"},
+                {"label": "Payout Verification", "href": "/shopify/reconciliation", "icon": "Scale"},
                 {"label": "Settings", "href": "/shopify/settings", "icon": "Settings"},
             ],
         )

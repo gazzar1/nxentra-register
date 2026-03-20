@@ -165,8 +165,8 @@ export default function ReconciliationPage() {
     <AppLayout>
       <div className="space-y-6">
         <PageHeader
-          title="Payout Reconciliation"
-          subtitle="Match Shopify payouts to orders, fees, and bank deposits"
+          title="Payout Verification"
+          subtitle="Verify Shopify payout transactions against local orders and fees"
         />
 
         {/* Date Range */}
