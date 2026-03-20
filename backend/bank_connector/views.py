@@ -557,8 +557,9 @@ class AutoMatchView(APIView):
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
 
+        from django.db import transaction
         bank_account_id = request.data.get("bank_account_id")
-        with projection_writes_allowed():
+        with transaction.atomic(), projection_writes_allowed():
             result = auto_match_transactions(actor.company, bank_account_id)
         return Response(result)
 
@@ -599,7 +600,8 @@ class ManualMatchView(APIView):
                 status=400,
             )
 
-        with projection_writes_allowed():
+        from django.db import transaction
+        with transaction.atomic(), projection_writes_allowed():
             result = manual_match(
                 actor.company, int(bank_transaction_id), platform, int(payout_id)
             )
