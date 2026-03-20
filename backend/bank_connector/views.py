@@ -551,14 +551,14 @@ class AutoMatchView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        from projections.write_barrier import command_writes_allowed
+        from projections.write_barrier import projection_writes_allowed
 
         actor = resolve_actor(request)
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
 
         bank_account_id = request.data.get("bank_account_id")
-        with command_writes_allowed():
+        with projection_writes_allowed():
             result = auto_match_transactions(actor.company, bank_account_id)
         return Response(result)
 
@@ -583,7 +583,7 @@ class ManualMatchView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        from projections.write_barrier import command_writes_allowed
+        from projections.write_barrier import projection_writes_allowed
 
         actor = resolve_actor(request)
         if not actor.company:
@@ -599,7 +599,7 @@ class ManualMatchView(APIView):
                 status=400,
             )
 
-        with command_writes_allowed():
+        with projection_writes_allowed():
             result = manual_match(
                 actor.company, int(bank_transaction_id), platform, int(payout_id)
             )

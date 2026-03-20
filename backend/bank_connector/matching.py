@@ -218,7 +218,7 @@ def _reconcile_payout_je(company, platform, payout_obj, bank_tx):
     Returns dict with je_status info.
     """
     from accounting.models import JournalEntry, JournalLine
-    from projections.write_barrier import command_writes_allowed
+    from projections.write_barrier import projection_writes_allowed
 
     je_public_id = payout_obj.journal_entry_id
     je = None
@@ -263,7 +263,7 @@ def _reconcile_payout_je(company, platform, payout_obj, bank_tx):
         ).first()
 
     if cash_line:
-        with command_writes_allowed():
+        with projection_writes_allowed():
             cash_line.reconciled = True
             cash_line.reconciled_date = bank_tx.transaction_date
             cash_line.save(update_fields=["reconciled", "reconciled_date"])
