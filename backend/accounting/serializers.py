@@ -233,12 +233,15 @@ class JournalLineSerializer(serializers.ModelSerializer):
             "customer", "customer_code", "customer_name",
             "vendor", "vendor_code", "vendor_name",
             "has_counterparty", "counterparty_kind",
+            # Bank reconciliation
+            "reconciled", "reconciled_date",
         ]
         read_only_fields = [
             "public_id", "line_no", "is_debit", "amount",
             "account_code", "account_name", "account_name_ar", "analysis_tags",
             "customer_code", "customer_name", "vendor_code", "vendor_name",
             "has_counterparty", "counterparty_kind",
+            "reconciled", "reconciled_date",
         ]
 
 

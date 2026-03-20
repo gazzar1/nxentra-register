@@ -3,7 +3,7 @@ import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import { useRouter } from "next/router";
 import { useState } from "react";
-import { ArrowLeft, Send, Undo2, Trash2, Pencil, Printer } from "lucide-react";
+import { ArrowLeft, Send, Undo2, Trash2, Pencil, Printer, CheckCircle2 } from "lucide-react";
 import Link from "next/link";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
@@ -249,6 +249,7 @@ export default function JournalEntryDetailPage() {
                   <TableHead>{t("accounting:journalLine.description")}</TableHead>
                   <TableHead className="text-end">{t("accounting:journalLine.debit")}</TableHead>
                   <TableHead className="text-end">{t("accounting:journalLine.credit")}</TableHead>
+                  <TableHead className="w-16 text-center">Reconciled</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -270,6 +271,11 @@ export default function JournalEntryDetailPage() {
                     <TableCell className="text-end ltr-number font-medium">
                       {parseFloat(line.credit) > 0 ? formatCurrency(line.credit) : "-"}
                     </TableCell>
+                    <TableCell className="text-center">
+                      {line.reconciled && (
+                        <CheckCircle2 className="h-4 w-4 text-green-600 mx-auto" />
+                      )}
+                    </TableCell>
                   </TableRow>
                 ))}
                 {/* Totals Row */}
@@ -283,6 +289,7 @@ export default function JournalEntryDetailPage() {
                   <TableCell className="text-end ltr-number">
                     {formatCurrency(entry.total_credit)}
                   </TableCell>
+                  <TableCell />
                 </TableRow>
               </TableBody>
             </Table>
