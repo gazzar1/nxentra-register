@@ -25,6 +25,9 @@ export interface JournalLine {
   // Counterparty info (from subledger postings)
   customer_name?: string;
   vendor_name?: string;
+  // Bank reconciliation
+  reconciled?: boolean;
+  reconciled_date?: string | null;
 }
 
 export interface AnalysisTag {
