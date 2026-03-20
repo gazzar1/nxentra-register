@@ -22,6 +22,14 @@ from accounts.authz import resolve_actor
 
 from .models import BankAccount, BankStatement, BankTransaction
 from .parsers import parse_csv_file, preview_csv, apply_column_mapping
+from .matching import (
+    auto_match_transactions,
+    get_match_suggestions,
+    manual_match,
+    explain_payout,
+    get_reconciliation_overview,
+    get_unmatched_payouts,
+)
 
 
 # ─── Bank Accounts ──────────────────────────────────────────────
@@ -518,3 +526,110 @@ class BankSummaryView(APIView):
             "unmatched": unmatched,
             "match_rate": round(matched / total_transactions * 100, 1) if total_transactions else 0,
         })
+
+
+# ─── Reconciliation ─────────────────────────────────────────────
+
+
+class ReconciliationOverviewView(APIView):
+    """Unified reconciliation overview — bank + payout stats."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        overview = get_reconciliation_overview(actor.company)
+        return Response(overview)
+
+
+class AutoMatchView(APIView):
+    """Run auto-matching engine on unmatched bank deposits."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        bank_account_id = request.data.get("bank_account_id")
+        result = auto_match_transactions(actor.company, bank_account_id)
+        return Response(result)
+
+
+class MatchSuggestionsView(APIView):
+    """Get match suggestions for a specific bank transaction."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        suggestions = get_match_suggestions(actor.company, pk)
+        return Response({"suggestions": suggestions})
+
+
+class ManualMatchView(APIView):
+    """Manually match a bank transaction to a payout."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        bank_transaction_id = request.data.get("bank_transaction_id")
+        platform = request.data.get("platform")
+        payout_id = request.data.get("payout_id")
+
+        if not all([bank_transaction_id, platform, payout_id]):
+            return Response(
+                {"detail": "bank_transaction_id, platform, and payout_id are required."},
+                status=400,
+            )
+
+        result = manual_match(
+            actor.company, int(bank_transaction_id), platform, int(payout_id)
+        )
+        if "error" in result:
+            return Response({"detail": result["error"]}, status=400)
+        return Response(result)
+
+
+class PayoutExplainerView(APIView):
+    """Break down a payout into its component transactions."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, platform, pk):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        if platform not in ("stripe", "shopify"):
+            return Response({"detail": "Invalid platform."}, status=400)
+
+        result = explain_payout(actor.company, platform, pk)
+        if "error" in result:
+            return Response({"detail": result["error"]}, status=404)
+        return Response(result)
+
+
+class UnmatchedPayoutsView(APIView):
+    """List all platform payouts not yet matched to bank transactions."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        payouts = get_unmatched_payouts(actor.company)
+        return Response({"payouts": payouts})

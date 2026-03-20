@@ -17,6 +17,7 @@ class BankConnectorConfig(AppConfig):
             category=ModuleCategory.VERTICAL,
             order=78,
             nav_items=[
+                {"label": "Reconciliation", "href": "/banking/reconciliation", "icon": "Zap"},
                 {"label": "Accounts", "href": "/banking/accounts", "icon": "Building2"},
                 {"label": "Transactions", "href": "/banking/transactions", "icon": "ArrowLeftRight"},
                 {"label": "Import", "href": "/banking/import", "icon": "Upload"},

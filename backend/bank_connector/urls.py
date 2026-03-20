@@ -20,4 +20,12 @@ urlpatterns = [
 
     # Summary
     path("summary/", views.BankSummaryView.as_view(), name="bank-summary"),
+
+    # Reconciliation
+    path("reconciliation/overview/", views.ReconciliationOverviewView.as_view(), name="recon-overview"),
+    path("reconciliation/auto-match/", views.AutoMatchView.as_view(), name="recon-auto-match"),
+    path("reconciliation/suggestions/<int:pk>/", views.MatchSuggestionsView.as_view(), name="recon-suggestions"),
+    path("reconciliation/match/", views.ManualMatchView.as_view(), name="recon-manual-match"),
+    path("reconciliation/explain/<str:platform>/<int:pk>/", views.PayoutExplainerView.as_view(), name="recon-explain"),
+    path("reconciliation/unmatched-payouts/", views.UnmatchedPayoutsView.as_view(), name="recon-unmatched-payouts"),
 ]
