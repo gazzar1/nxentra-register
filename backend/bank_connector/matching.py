@@ -250,23 +250,41 @@ def _reconcile_payout_je(company, platform, payout_obj, bank_tx):
     # For positive payouts: Cash/Bank is the debit line
     # For negative payouts: Cash/Bank is the credit line
     # Use the LIQUIDITY role to identify the bank account line
-    cash_line = je.lines.filter(
-        account__role="LIQUIDITY",
-        reconciled=False,
-    ).first()
+    all_lines = list(je.lines.select_related("account").all())
+    logger.info(
+        "JE %s has %d lines: %s",
+        je.entry_number, len(all_lines),
+        [(l.line_no, l.account.code, l.account.role, l.reconciled) for l in all_lines],
+    )
+
+    cash_line = None
+    for l in all_lines:
+        if l.account.role == "LIQUIDITY" and not l.reconciled:
+            cash_line = l
+            break
 
     if not cash_line:
         # Fallback: find by debit > 0 (most payouts are positive)
-        cash_line = je.lines.filter(
-            debit__gt=0,
-            reconciled=False,
-        ).first()
+        for l in all_lines:
+            if l.debit > 0 and not l.reconciled:
+                cash_line = l
+                break
 
     if cash_line:
+        logger.info(
+            "Marking line %d (account %s) as reconciled for bank tx %s",
+            cash_line.line_no, cash_line.account.code, bank_tx.id,
+        )
         with projection_writes_allowed():
             cash_line.reconciled = True
             cash_line.reconciled_date = bank_tx.transaction_date
             cash_line.save(update_fields=["reconciled", "reconciled_date"])
+        # Verify the save persisted
+        cash_line.refresh_from_db()
+        logger.info(
+            "After save: line %d reconciled=%s reconciled_date=%s",
+            cash_line.line_no, cash_line.reconciled, cash_line.reconciled_date,
+        )
 
         logger.info(
             "Reconciled JE %s line %s for %s payout %s ↔ bank tx %s",
