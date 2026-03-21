@@ -3615,6 +3615,182 @@ class APAgingReportView(APIView):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# TAX SUMMARY REPORT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TaxSummaryReportView(APIView):
+    """
+    GET /api/reports/tax-summary/
+
+    Tax summary report for VAT/GST filing.
+    Aggregates output tax (sales) and input tax (purchases) by tax code
+    for a given date range, showing net tax position.
+
+    Query params:
+    - date_from: Start date (YYYY-MM-DD), defaults to first day of current month
+    - date_to: End date (YYYY-MM-DD), defaults to today
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from django.db.models import Sum, Count
+        from sales.models import SalesInvoiceLine, SalesInvoice, TaxCode
+        from purchases.models import PurchaseBillLine, PurchaseBill
+
+        actor = resolve_actor(request)
+        require(actor, "reports.view")
+
+        # Parse date range
+        date_from_param = request.query_params.get("date_from")
+        date_to_param = request.query_params.get("date_to")
+
+        today = date_type.today()
+        if date_from_param:
+            try:
+                date_from = date_type.fromisoformat(date_from_param)
+            except ValueError:
+                return Response(
+                    {"detail": "Invalid date_from format. Use YYYY-MM-DD."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            date_from = today.replace(day=1)
+
+        if date_to_param:
+            try:
+                date_to = date_type.fromisoformat(date_to_param)
+            except ValueError:
+                return Response(
+                    {"detail": "Invalid date_to format. Use YYYY-MM-DD."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            date_to = today
+
+        # --- Output Tax (Sales) ---
+        output_lines = (
+            SalesInvoiceLine.objects
+            .filter(
+                invoice__company=actor.company,
+                invoice__status=SalesInvoice.InvoiceStatus.POSTED,
+                invoice__invoice_date__gte=date_from,
+                invoice__invoice_date__lte=date_to,
+                tax_code__isnull=False,
+                tax_amount__gt=0,
+            )
+            .values(
+                "tax_code__id",
+                "tax_code__code",
+                "tax_code__name",
+                "tax_code__rate",
+                "tax_code__tax_account__code",
+                "tax_code__tax_account__name",
+            )
+            .annotate(
+                taxable_amount=Sum("net_amount"),
+                total_tax=Sum("tax_amount"),
+                invoice_count=Count("invoice", distinct=True),
+            )
+            .order_by("tax_code__code")
+        )
+
+        output_tax_rows = []
+        output_taxable_total = Decimal("0")
+        output_tax_total = Decimal("0")
+        for row in output_lines:
+            taxable = row["taxable_amount"] or Decimal("0")
+            tax = row["total_tax"] or Decimal("0")
+            output_taxable_total += taxable
+            output_tax_total += tax
+            output_tax_rows.append({
+                "tax_code": row["tax_code__code"],
+                "tax_name": row["tax_code__name"],
+                "rate": str(row["tax_code__rate"]),
+                "tax_account_code": row["tax_code__tax_account__code"],
+                "tax_account_name": row["tax_code__tax_account__name"],
+                "taxable_amount": str(taxable),
+                "tax_amount": str(tax),
+                "invoice_count": row["invoice_count"],
+            })
+
+        # --- Input Tax (Purchases) ---
+        input_lines = (
+            PurchaseBillLine.objects
+            .filter(
+                bill__company=actor.company,
+                bill__status=PurchaseBill.BillStatus.POSTED,
+                bill__bill_date__gte=date_from,
+                bill__bill_date__lte=date_to,
+                tax_code__isnull=False,
+                tax_amount__gt=0,
+            )
+            .values(
+                "tax_code__id",
+                "tax_code__code",
+                "tax_code__name",
+                "tax_code__rate",
+                "tax_code__recoverable",
+                "tax_code__tax_account__code",
+                "tax_code__tax_account__name",
+            )
+            .annotate(
+                taxable_amount=Sum("net_amount"),
+                total_tax=Sum("tax_amount"),
+                bill_count=Count("bill", distinct=True),
+            )
+            .order_by("tax_code__code")
+        )
+
+        input_tax_rows = []
+        input_taxable_total = Decimal("0")
+        input_tax_total = Decimal("0")
+        input_recoverable_total = Decimal("0")
+        input_non_recoverable_total = Decimal("0")
+        for row in input_lines:
+            taxable = row["taxable_amount"] or Decimal("0")
+            tax = row["total_tax"] or Decimal("0")
+            recoverable = row["tax_code__recoverable"]
+            input_taxable_total += taxable
+            input_tax_total += tax
+            if recoverable:
+                input_recoverable_total += tax
+            else:
+                input_non_recoverable_total += tax
+            input_tax_rows.append({
+                "tax_code": row["tax_code__code"],
+                "tax_name": row["tax_code__name"],
+                "rate": str(row["tax_code__rate"]),
+                "recoverable": recoverable,
+                "tax_account_code": row["tax_code__tax_account__code"],
+                "tax_account_name": row["tax_code__tax_account__name"],
+                "taxable_amount": str(taxable),
+                "tax_amount": str(tax),
+                "bill_count": row["bill_count"],
+            })
+
+        net_tax = output_tax_total - input_recoverable_total
+
+        return Response({
+            "date_from": date_from.isoformat(),
+            "date_to": date_to.isoformat(),
+            "output_tax": {
+                "rows": output_tax_rows,
+                "taxable_total": str(output_taxable_total),
+                "tax_total": str(output_tax_total),
+            },
+            "input_tax": {
+                "rows": input_tax_rows,
+                "taxable_total": str(input_taxable_total),
+                "tax_total": str(input_tax_total),
+                "recoverable_total": str(input_recoverable_total),
+                "non_recoverable_total": str(input_non_recoverable_total),
+            },
+            "net_tax": str(net_tax),
+        })
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # CUSTOMER/VENDOR BALANCE ENDPOINTS (Subledger)
 # ═══════════════════════════════════════════════════════════════════════════════
 

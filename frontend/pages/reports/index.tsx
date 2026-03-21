@@ -2,7 +2,7 @@ import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import Link from "next/link";
-import { BarChart3, FileSpreadsheet, PieChart, Layers, Grid3X3, GitCompareArrows, Clock, Users } from "lucide-react";
+import { BarChart3, FileSpreadsheet, PieChart, Layers, Grid3X3, GitCompareArrows, Clock, Users, Receipt } from "lucide-react";
 import { AppLayout } from "@/components/layout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/common";
@@ -40,6 +40,12 @@ export default function ReportsIndexPage() {
       description: "Accounts Payable aging by vendor",
       href: "/reports/ap-aging",
       icon: <Users className="h-8 w-8" />,
+    },
+    {
+      title: "Tax Summary",
+      description: "Tax collected vs. tax paid for VAT/GST filing",
+      href: "/reports/tax-summary",
+      icon: <Receipt className="h-8 w-8" />,
     },
     {
       title: "Dimension Analysis",

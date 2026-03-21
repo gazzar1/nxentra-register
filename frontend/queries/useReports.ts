@@ -179,6 +179,21 @@ export function useARAging(asOf?: string) {
   });
 }
 
+export function useTaxSummary(dateFrom?: string, dateTo?: string) {
+  return useQuery({
+    queryKey: [...reportKeys.all, 'tax-summary', dateFrom, dateTo] as const,
+    queryFn: async () => {
+      const params: Record<string, string> = {};
+      if (dateFrom) params.date_from = dateFrom;
+      if (dateTo) params.date_to = dateTo;
+      const { data } = await reportsService.taxSummary(
+        Object.keys(params).length > 0 ? params : undefined
+      );
+      return data;
+    },
+  });
+}
+
 export function useAPAging(asOf?: string) {
   return useQuery({
     queryKey: [...reportKeys.all, 'ap-aging', asOf] as const,

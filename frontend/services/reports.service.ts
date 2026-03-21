@@ -109,6 +109,9 @@ export const reportsService = {
 
   apAging: (params?: { as_of?: string }) =>
     apiClient.get<AgingReportResponse>('/reports/ap-aging/', { params }),
+
+  taxSummary: (params?: { date_from?: string; date_to?: string }) =>
+    apiClient.get<TaxSummaryResponse>('/reports/tax-summary/', { params }),
 };
 
 // Statement response types
@@ -185,6 +188,37 @@ export interface AgingReportResponse {
     total: string;
   };
   subledger_tied_out: boolean;
+}
+
+export interface TaxSummaryRow {
+  tax_code: string;
+  tax_name: string;
+  rate: string;
+  tax_account_code: string;
+  tax_account_name: string;
+  taxable_amount: string;
+  tax_amount: string;
+  invoice_count?: number;
+  bill_count?: number;
+  recoverable?: boolean;
+}
+
+export interface TaxSummaryResponse {
+  date_from: string;
+  date_to: string;
+  output_tax: {
+    rows: TaxSummaryRow[];
+    taxable_total: string;
+    tax_total: string;
+  };
+  input_tax: {
+    rows: TaxSummaryRow[];
+    taxable_total: string;
+    tax_total: string;
+    recoverable_total: string;
+    non_recoverable_total: string;
+  };
+  net_tax: string;
 }
 
 export interface VendorStatementResponse {

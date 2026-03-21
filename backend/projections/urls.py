@@ -65,6 +65,8 @@ from .views import (
     # Aging reports
     ARAgingReportView,
     APAgingReportView,
+    # Tax summary
+    TaxSummaryReportView,
     # Account inquiry
     AccountInquiryView,
     # Fiscal year management
@@ -143,6 +145,13 @@ urlpatterns = [
         "ap-aging/",
         APAgingReportView.as_view(),
         name="ap-aging",
+    ),
+
+    # Tax Summary
+    path(
+        "tax-summary/",
+        TaxSummaryReportView.as_view(),
+        name="tax-summary",
     ),
 
     # Account Balances
