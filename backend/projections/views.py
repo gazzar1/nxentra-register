@@ -3411,7 +3411,7 @@ class DashboardWidgetsView(APIView):
                     "memo": memo,
                     "source": source,
                     "amount": str(total_debit),
-                    "created_at": event.created_at.isoformat() if event.created_at else "",
+                    "created_at": event.recorded_at.isoformat() if event.recorded_at else "",
                 })
 
             return Response({
