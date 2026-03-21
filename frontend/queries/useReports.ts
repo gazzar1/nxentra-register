@@ -168,3 +168,23 @@ export function useDashboardCharts(fiscalYear?: number) {
     },
   });
 }
+
+export function useARAging(asOf?: string) {
+  return useQuery({
+    queryKey: [...reportKeys.all, 'ar-aging', asOf] as const,
+    queryFn: async () => {
+      const { data } = await reportsService.arAging(asOf ? { as_of: asOf } : undefined);
+      return data;
+    },
+  });
+}
+
+export function useAPAging(asOf?: string) {
+  return useQuery({
+    queryKey: [...reportKeys.all, 'ap-aging', asOf] as const,
+    queryFn: async () => {
+      const { data } = await reportsService.apAging(asOf ? { as_of: asOf } : undefined);
+      return data;
+    },
+  });
+}

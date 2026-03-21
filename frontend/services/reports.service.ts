@@ -102,6 +102,13 @@ export const reportsService = {
 
   vendorStatement: (code: string, params?: { date_from?: string; date_to?: string }) =>
     apiClient.get<VendorStatementResponse>(`/reports/vendor-statement/${code}/`, { params }),
+
+  // Aging Reports
+  arAging: (params?: { as_of?: string }) =>
+    apiClient.get<AgingReportResponse>('/reports/ar-aging/', { params }),
+
+  apAging: (params?: { as_of?: string }) =>
+    apiClient.get<AgingReportResponse>('/reports/ap-aging/', { params }),
 };
 
 // Statement response types
@@ -149,6 +156,35 @@ export interface CustomerStatementResponse {
     over_90: string;
     total: string;
   };
+}
+
+export interface AgingBucketEntry {
+  customer_code?: string;
+  customer_name?: string;
+  vendor_code?: string;
+  vendor_name?: string;
+  balance: string;
+  oldest_open_date: string | null;
+}
+
+export interface AgingReportResponse {
+  as_of: string;
+  bucket_names: string[];
+  bucket_labels: Record<string, string>;
+  buckets: {
+    current: AgingBucketEntry[];
+    days_31_60: AgingBucketEntry[];
+    days_61_90: AgingBucketEntry[];
+    over_90: AgingBucketEntry[];
+  };
+  totals: {
+    current: string;
+    days_31_60: string;
+    days_61_90: string;
+    over_90: string;
+    total: string;
+  };
+  subledger_tied_out: boolean;
 }
 
 export interface VendorStatementResponse {
