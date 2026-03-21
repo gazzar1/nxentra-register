@@ -5,6 +5,7 @@ import { SidebarProvider } from "@/contexts/SidebarContext";
 import { Sidebar } from "./Sidebar";
 import { Header } from "./Header";
 import { ModuleGuard } from "./ModuleGuard";
+import { CommandPalette } from "./CommandPalette";
 import { LoadingScreen } from "@/components/common/LoadingScreen";
 
 export function AppLayout({ children }: PropsWithChildren) {
@@ -27,6 +28,7 @@ export function AppLayout({ children }: PropsWithChildren) {
 
   return (
     <SidebarProvider>
+      <CommandPalette />
       <div className="flex h-screen print:block print:h-auto">
         <div className="no-print">
           <Sidebar />
