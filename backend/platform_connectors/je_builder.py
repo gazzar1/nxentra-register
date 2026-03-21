@@ -76,15 +76,17 @@ def _resolve_period(company, entry_date):
     return entry_date.month
 
 
-def _fix_fx_rounding(lines):
+def _fix_fx_rounding(lines, entry, company, currency, fx_rate):
     """
     Fix penny rounding imbalance caused by independent per-line FX conversion.
 
-    When multiple foreign-currency lines are each rounded to 2 decimal places,
-    the sum of credits may differ from the sum of debits by a small amount
-    (typically 0.01). Adjusts the largest converted line to absorb the
-    difference. Only applies for trivial imbalances (≤ 0.05).
+    Adds a visible rounding line to a dedicated FX Rounding account
+    (following SAP/Oracle/NetSuite convention). Falls back to adjusting the
+    largest line if no rounding account is configured.
+    Only applies for trivial imbalances (≤ 0.05).
     """
+    from accounting.models import Account
+
     total_debit = sum(l.debit for l in lines)
     total_credit = sum(l.credit for l in lines)
     diff = total_debit - total_credit
@@ -92,24 +94,53 @@ def _fix_fx_rounding(lines):
     if diff == Decimal("0") or abs(diff) > Decimal("0.05"):
         return
 
-    if diff > 0:
-        credit_lines = [l for l in lines if l.credit > 0]
-        if credit_lines:
-            target = max(credit_lines, key=lambda l: l.credit)
-            target.credit += diff
-        else:
-            target = max(lines, key=lambda l: l.debit)
-            target.debit -= diff
-    else:
-        debit_lines = [l for l in lines if l.debit > 0]
-        if debit_lines:
-            target = max(debit_lines, key=lambda l: l.debit)
-            target.debit -= diff
-        else:
-            target = max(lines, key=lambda l: l.credit)
-            target.credit += diff
+    rounding_account = Account.objects.filter(
+        company=company,
+        role=Account.AccountRole.FX_ROUNDING,
+        is_postable=True,
+    ).first()
 
-    logger.debug("FX rounding adjustment: %s applied to line %s", diff, target.line_no)
+    if not rounding_account:
+        # Fallback: adjust the largest line
+        if diff > 0:
+            credit_lines = [l for l in lines if l.credit > 0]
+            target = max(credit_lines, key=lambda l: l.credit) if credit_lines else max(lines, key=lambda l: l.debit)
+            if target.credit > 0:
+                target.credit += diff
+            else:
+                target.debit -= diff
+        else:
+            debit_lines = [l for l in lines if l.debit > 0]
+            target = max(debit_lines, key=lambda l: l.debit) if debit_lines else max(lines, key=lambda l: l.credit)
+            if target.debit > 0:
+                target.debit -= diff
+            else:
+                target.credit += diff
+        logger.debug("FX rounding adjustment (no rounding account): %s on line %s", diff, target.line_no)
+        return
+
+    next_line_no = max(l.line_no for l in lines) + 1
+    if diff > 0:
+        rounding_line = JournalLine(
+            entry=entry, company=company,
+            public_id=uuid.uuid4(), line_no=next_line_no,
+            account=rounding_account,
+            description="FX rounding adjustment",
+            debit=Decimal("0"), credit=diff,
+            currency=currency, exchange_rate=fx_rate,
+        )
+    else:
+        rounding_line = JournalLine(
+            entry=entry, company=company,
+            public_id=uuid.uuid4(), line_no=next_line_no,
+            account=rounding_account,
+            description="FX rounding adjustment",
+            debit=abs(diff), credit=Decimal("0"),
+            currency=currency, exchange_rate=fx_rate,
+        )
+
+    lines.append(rounding_line)
+    logger.info("FX rounding line added: %s %s to account %s", "CR" if diff > 0 else "DR", abs(diff), rounding_account.code)
 
 
 def build_journal_entry(req: JERequest) -> JournalEntry | None:
@@ -195,7 +226,7 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
 
     # Fix FX rounding imbalance before saving
     if is_foreign and fx_rate != Decimal("1.0"):
-        _fix_fx_rounding(db_lines)
+        _fix_fx_rounding(db_lines, entry, req.company, req.currency, fx_rate)
 
     JournalLine.objects.projection().bulk_create(db_lines)
 

@@ -305,6 +305,7 @@ class Account(AccountingReadModel):
         SERVICE = "SERVICE", "Service Revenue"
         OTHER_INCOME = "OTHER_INCOME", "Other Income"
         FINANCIAL_INCOME = "FINANCIAL_INCOME", "Financial Income"
+        FX_ROUNDING = "FX_ROUNDING", "FX Rounding Differences"
         CONTRA_REVENUE = "CONTRA_REVENUE", "Contra Revenue"
 
         # Expense roles

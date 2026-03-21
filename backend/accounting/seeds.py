@@ -150,6 +150,16 @@ SEED_ACCOUNTS: List[SeedAccountTemplate] = [
         description="Losses from currency exchange rate fluctuations",
         description_ar="الخسائر الناتجة عن تقلبات أسعار صرف العملات",
     ),
+    SeedAccountTemplate(
+        default_code="4950",
+        name="FX Rounding Differences",
+        name_ar="فروقات تقريب العملة",
+        account_type="REVENUE",
+        role="FX_ROUNDING",
+        ledger_domain="FINANCIAL",
+        description="Rounding differences from multi-currency conversion",
+        description_ar="فروقات التقريب الناتجة عن تحويل العملات المتعددة",
+    ),
 ]
 
 

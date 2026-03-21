@@ -108,18 +108,20 @@ def _convert_amount(amount, exchange_rate):
     return (amount * exchange_rate).quantize(Decimal("0.01"))
 
 
-def _fix_fx_rounding(lines):
+def _fix_fx_rounding(lines, entry, company, currency, fx_rate):
     """
     Fix penny rounding imbalance caused by independent per-line FX conversion.
 
     When multiple foreign-currency lines are each rounded to 2 decimal places,
     the sum of credits may differ from the sum of debits by a small amount
-    (typically 0.01). This is standard in multi-currency accounting — SAP,
-    Oracle, and NetSuite all apply a similar adjustment to the largest line.
+    (typically 0.01).
 
-    Adjusts the largest converted line's debit or credit to absorb the
-    difference. Only applies for trivial imbalances (≤ 0.05).
+    Following SAP/Oracle/NetSuite convention, adds a visible rounding line
+    to a dedicated FX Rounding account rather than silently adjusting
+    existing lines. Only applies for trivial imbalances (≤ 0.05).
     """
+    from accounting.models import Account
+
     total_debit = sum(l.debit for l in lines)
     total_credit = sum(l.credit for l in lines)
     diff = total_debit - total_credit
@@ -130,29 +132,59 @@ def _fix_fx_rounding(lines):
     if abs(diff) > Decimal("0.05"):
         return  # Too large to be a rounding error — don't touch
 
-    # Find the largest line on the side that needs adjusting
-    if diff > 0:
-        # Debits exceed credits — reduce the largest debit or increase largest credit
-        credit_lines = [l for l in lines if l.credit > 0]
-        if credit_lines:
-            target = max(credit_lines, key=lambda l: l.credit)
-            target.credit += diff
-        else:
-            target = max(lines, key=lambda l: l.debit)
-            target.debit -= diff
-    else:
-        # Credits exceed debits — reduce largest credit or increase largest debit
-        debit_lines = [l for l in lines if l.debit > 0]
-        if debit_lines:
-            target = max(debit_lines, key=lambda l: l.debit)
-            target.debit -= diff  # diff is negative, so this adds
-        else:
-            target = max(lines, key=lambda l: l.credit)
-            target.credit += diff  # diff is negative, so this subtracts
+    # Find the FX rounding account
+    rounding_account = Account.objects.filter(
+        company=company,
+        role=Account.AccountRole.FX_ROUNDING,
+        is_postable=True,
+    ).first()
 
-    logger.debug(
-        "FX rounding adjustment: %s applied to line %s (account %s)",
-        diff, target.line_no, target.account.code,
+    if not rounding_account:
+        # Fallback: adjust the largest line (pre-seed behavior)
+        if diff > 0:
+            credit_lines = [l for l in lines if l.credit > 0]
+            target = max(credit_lines, key=lambda l: l.credit) if credit_lines else max(lines, key=lambda l: l.debit)
+            if target.credit > 0:
+                target.credit += diff
+            else:
+                target.debit -= diff
+        else:
+            debit_lines = [l for l in lines if l.debit > 0]
+            target = max(debit_lines, key=lambda l: l.debit) if debit_lines else max(lines, key=lambda l: l.credit)
+            if target.debit > 0:
+                target.debit -= diff
+            else:
+                target.credit += diff
+        logger.debug("FX rounding adjustment (no rounding account): %s on line %s", diff, target.line_no)
+        return
+
+    # Add a dedicated rounding line
+    next_line_no = max(l.line_no for l in lines) + 1
+    if diff > 0:
+        # Debits exceed credits — add credit rounding line
+        rounding_line = JournalLine(
+            entry=entry, company=company,
+            public_id=uuid.uuid4(), line_no=next_line_no,
+            account=rounding_account,
+            description="FX rounding adjustment",
+            debit=Decimal("0"), credit=diff,
+            currency=currency, exchange_rate=fx_rate,
+        )
+    else:
+        # Credits exceed debits — add debit rounding line
+        rounding_line = JournalLine(
+            entry=entry, company=company,
+            public_id=uuid.uuid4(), line_no=next_line_no,
+            account=rounding_account,
+            description="FX rounding adjustment",
+            debit=abs(diff), credit=Decimal("0"),
+            currency=currency, exchange_rate=fx_rate,
+        )
+
+    lines.append(rounding_line)
+    logger.info(
+        "FX rounding line added: %s %s to account %s",
+        "CR" if diff > 0 else "DR", abs(diff), rounding_account.code,
     )
 
 
@@ -376,7 +408,7 @@ class ShopifyAccountingProjection(BaseProjection):
 
         # Fix FX rounding imbalance before saving
         if is_foreign:
-            _fix_fx_rounding(lines)
+            _fix_fx_rounding(lines, entry, event.company, currency, fx_rate)
 
         # Balance validation — save as INCOMPLETE if unbalanced
         total_debit = sum(l.debit for l in lines)
@@ -750,7 +782,7 @@ class ShopifyAccountingProjection(BaseProjection):
 
         # Fix FX rounding imbalance before saving
         if is_foreign:
-            _fix_fx_rounding(lines)
+            _fix_fx_rounding(lines, entry, event.company, currency, fx_rate)
 
         # Balance validation
         total_debit = sum(l.debit for l in lines)
@@ -984,7 +1016,7 @@ class ShopifyAccountingProjection(BaseProjection):
 
         # Fix FX rounding imbalance before saving
         if is_foreign:
-            _fix_fx_rounding(lines)
+            _fix_fx_rounding(lines, entry, event.company, currency, fx_rate)
 
         # Balance validation
         total_debit = sum(l.debit for l in lines)
@@ -1213,7 +1245,7 @@ class ShopifyAccountingProjection(BaseProjection):
 
         # Fix FX rounding imbalance before saving
         if is_foreign:
-            _fix_fx_rounding(lines)
+            _fix_fx_rounding(lines, entry, event.company, currency, fx_rate)
 
         # Balance validation
         total_debit = sum(l.debit for l in lines)
