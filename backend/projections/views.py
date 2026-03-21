@@ -3668,7 +3668,7 @@ class TaxSummaryReportView(APIView):
         else:
             date_to = today
 
-        # --- Output Tax (Sales) ---
+        # --- Output Tax (Sales Invoices) ---
         output_lines = (
             SalesInvoiceLine.objects
             .filter(
@@ -3712,7 +3712,59 @@ class TaxSummaryReportView(APIView):
                 "taxable_amount": str(taxable),
                 "tax_amount": str(tax),
                 "invoice_count": row["invoice_count"],
+                "source": "sales_invoice",
             })
+
+        # --- Output Tax (Shopify Orders) ---
+        try:
+            from shopify_connector.models import ShopifyOrder
+            from accounting.mappings import ModuleAccountMapping
+
+            shopify_tax_data = (
+                ShopifyOrder.objects
+                .filter(
+                    company=actor.company,
+                    status=ShopifyOrder.Status.PROCESSED,
+                    order_date__gte=date_from,
+                    order_date__lte=date_to,
+                    total_tax__gt=0,
+                )
+                .aggregate(
+                    taxable_amount=Sum("subtotal_price"),
+                    total_tax=Sum("total_tax"),
+                    order_count=Count("id"),
+                )
+            )
+
+            shopify_tax = shopify_tax_data["total_tax"] or Decimal("0")
+            shopify_taxable = shopify_tax_data["taxable_amount"] or Decimal("0")
+            shopify_count = shopify_tax_data["order_count"] or 0
+
+            if shopify_tax > 0:
+                # Resolve the tax account from Shopify module mapping
+                mapping = ModuleAccountMapping.get_mapping(actor.company, "shopify_connector")
+                tax_account = mapping.get("SALES_TAX_PAYABLE") if mapping else None
+                tax_account_code = tax_account.code if tax_account else "—"
+                tax_account_name = tax_account.name if tax_account else "Shopify Tax"
+
+                # Estimate effective rate from the data
+                effective_rate = shopify_tax / shopify_taxable if shopify_taxable else Decimal("0")
+
+                output_taxable_total += shopify_taxable
+                output_tax_total += shopify_tax
+                output_tax_rows.append({
+                    "tax_code": "SHOPIFY",
+                    "tax_name": "Shopify Sales Tax",
+                    "rate": str(effective_rate.quantize(Decimal("0.0001"))),
+                    "tax_account_code": tax_account_code,
+                    "tax_account_name": tax_account_name,
+                    "taxable_amount": str(shopify_taxable),
+                    "tax_amount": str(shopify_tax),
+                    "invoice_count": shopify_count,
+                    "source": "shopify",
+                })
+        except ImportError:
+            pass  # Shopify module not installed
 
         # --- Input Tax (Purchases) ---
         input_lines = (

@@ -173,6 +173,7 @@ export default function TaxSummaryPage() {
                   <TableRow>
                     <TableHead>Tax Code</TableHead>
                     <TableHead>Name</TableHead>
+                    <TableHead>Source</TableHead>
                     <TableHead className="text-right">Rate</TableHead>
                     <TableHead>GL Account</TableHead>
                     <TableHead className="text-right">Invoices</TableHead>
@@ -185,6 +186,16 @@ export default function TaxSummaryPage() {
                     <TableRow key={row.tax_code}>
                       <TableCell className="font-mono font-medium">{row.tax_code}</TableCell>
                       <TableCell>{row.tax_name}</TableCell>
+                      <TableCell>
+                        <span className={cn(
+                          "inline-block px-2 py-0.5 rounded text-xs font-medium",
+                          row.source === "shopify"
+                            ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
+                            : "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+                        )}>
+                          {row.source === "shopify" ? "Shopify" : "Invoice"}
+                        </span>
+                      </TableCell>
                       <TableCell className="text-right font-mono">{formatRate(row.rate)}</TableCell>
                       <TableCell className="text-sm text-muted-foreground">
                         <span className="font-mono">{row.tax_account_code}</span>{" "}
@@ -198,7 +209,7 @@ export default function TaxSummaryPage() {
                 </TableBody>
                 <TableFooter>
                   <TableRow>
-                    <TableCell colSpan={5} className="font-semibold">Total Output Tax</TableCell>
+                    <TableCell colSpan={6} className="font-semibold">Total Output Tax</TableCell>
                     <TableCell className="text-right font-mono font-semibold">
                       {formatNumber(outputTax.taxable_total)}
                     </TableCell>

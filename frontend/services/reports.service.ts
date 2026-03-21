@@ -201,6 +201,7 @@ export interface TaxSummaryRow {
   invoice_count?: number;
   bill_count?: number;
   recoverable?: boolean;
+  source?: string;
 }
 
 export interface TaxSummaryResponse {
