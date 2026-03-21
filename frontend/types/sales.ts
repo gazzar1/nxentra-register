@@ -212,6 +212,7 @@ export interface SalesInvoice {
   customer: number;
   customer_code?: string;
   customer_name?: string;
+  customer_email?: string;
   posting_profile: number;
   posting_profile_code?: string;
   posting_profile_name?: string;

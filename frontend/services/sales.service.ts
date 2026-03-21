@@ -108,4 +108,10 @@ export const salesInvoicesService = {
       `/sales/invoices/${id}/void/`,
       { reason }
     ),
+
+  email: (id: number, data: { recipient_email: string; message?: string }) =>
+    apiClient.post<{ detail: string; recipient_email: string }>(
+      `/sales/invoices/${id}/email/`,
+      data
+    ),
 };

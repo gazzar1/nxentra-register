@@ -465,6 +465,158 @@ class SalesInvoicePDFView(APIView):
 
 
 # =============================================================================
+# Email Invoice
+# =============================================================================
+
+class SalesInvoiceEmailView(APIView):
+    """
+    POST /api/sales/invoices/<pk>/email/
+
+    Sends the invoice as a PDF attachment to the specified email address.
+
+    Request body:
+    - recipient_email: Email address to send to (defaults to customer email)
+    - message: Optional custom message to include in the email body
+    """
+    module_key = "sales"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
+
+    def post(self, request, pk):
+        import base64
+        import logging
+        from pathlib import Path
+        from django.core.mail import EmailMultiAlternatives
+        from django.template.loader import render_to_string
+        from django.utils.html import strip_tags
+        from django.conf import settings
+
+        logger = logging.getLogger(__name__)
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        try:
+            invoice = SalesInvoice.objects.select_related(
+                "customer", "posting_profile", "posted_journal_entry"
+            ).prefetch_related(
+                "lines__item", "lines__account", "lines__tax_code"
+            ).get(company=actor.company, pk=pk)
+        except SalesInvoice.DoesNotExist:
+            return Response({"detail": "Invoice not found."}, status=404)
+
+        # Recipient
+        recipient_email = request.data.get("recipient_email", "").strip()
+        if not recipient_email:
+            recipient_email = invoice.customer.email
+        if not recipient_email:
+            return Response(
+                {"detail": "No recipient email provided and customer has no email on file."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        custom_message = request.data.get("message", "").strip()
+        company = actor.company
+        currency = getattr(company, "default_currency", "USD") or "USD"
+
+        # Format dates
+        def fmt_date(d):
+            if not d:
+                return None
+            return d.strftime("%B %d, %Y")
+
+        def fmt_amount(val):
+            return f"{val:,.2f}"
+
+        # Build the invoice URL
+        frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:3000")
+        invoice_url = f"{frontend_url}/accounting/sales-invoices/{invoice.id}"
+
+        # Render email HTML
+        email_context = {
+            "company_name": company.name,
+            "customer_name": invoice.customer.name,
+            "invoice_number": invoice.invoice_number,
+            "invoice_date": fmt_date(invoice.invoice_date),
+            "due_date": fmt_date(invoice.due_date),
+            "subtotal": fmt_amount(invoice.subtotal),
+            "total_tax": fmt_amount(invoice.total_tax),
+            "total_amount": fmt_amount(invoice.total_amount),
+            "currency": currency,
+            "invoice_url": invoice_url,
+            "custom_message": custom_message,
+        }
+        html_message = render_to_string("emails/sales_invoice.html", email_context)
+        plain_message = strip_tags(html_message)
+
+        # Generate PDF
+        company_logo_uri = ""
+        if company.logo:
+            try:
+                logo_path = Path(company.logo.path)
+                if logo_path.exists():
+                    logo_data = logo_path.read_bytes()
+                    ext = logo_path.suffix.lower().lstrip(".")
+                    mime = {
+                        "png": "image/png", "jpg": "image/jpeg",
+                        "jpeg": "image/jpeg", "gif": "image/gif",
+                        "svg": "image/svg+xml",
+                    }.get(ext, "image/png")
+                    company_logo_uri = f"data:{mime};base64,{base64.b64encode(logo_data).decode()}"
+            except Exception:
+                pass
+
+        pdf_context = {
+            "invoice": invoice,
+            "company_name": company.name,
+            "company_logo_uri": company_logo_uri,
+            "currency": currency,
+        }
+        pdf_html = render_to_string("pdf/sales_invoice.html", pdf_context)
+
+        import weasyprint
+        pdf_bytes = weasyprint.HTML(string=pdf_html).write_pdf()
+
+        # Send email with PDF attachment
+        subject = f"Invoice {invoice.invoice_number} from {company.name}"
+        from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "no-reply@nxentra.com")
+
+        try:
+            email = EmailMultiAlternatives(
+                subject=subject,
+                body=plain_message,
+                from_email=from_email,
+                to=[recipient_email],
+            )
+            email.attach_alternative(html_message, "text/html")
+            email.attach(
+                f"{invoice.invoice_number}.pdf",
+                pdf_bytes,
+                "application/pdf",
+            )
+            email.send(fail_silently=False)
+
+            logger.info(
+                "Invoice %s emailed to %s by user %s",
+                invoice.invoice_number, recipient_email, actor.user.email,
+            )
+
+            return Response({
+                "detail": f"Invoice emailed to {recipient_email}",
+                "recipient_email": recipient_email,
+            })
+
+        except Exception as e:
+            logger.error(
+                "Failed to email invoice %s to %s: %s",
+                invoice.invoice_number, recipient_email, e,
+            )
+            return Response(
+                {"detail": f"Failed to send email: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+
+# =============================================================================
 # Open Invoices View (for receipt allocation)
 # =============================================================================
 

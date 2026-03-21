@@ -28,6 +28,7 @@ from .views import (
     SalesInvoicePostView,
     SalesInvoiceVoidView,
     SalesInvoicePDFView,
+    SalesInvoiceEmailView,
     # Open invoices for allocation
     CustomerOpenInvoicesView,
 )
@@ -104,6 +105,11 @@ urlpatterns = [
         "invoices/<int:pk>/pdf/",
         SalesInvoicePDFView.as_view(),
         name="invoice-pdf",
+    ),
+    path(
+        "invoices/<int:pk>/email/",
+        SalesInvoiceEmailView.as_view(),
+        name="invoice-email",
     ),
 
     # ==========================================================================

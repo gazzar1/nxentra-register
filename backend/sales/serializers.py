@@ -228,6 +228,7 @@ class SalesInvoiceSerializer(serializers.ModelSerializer):
     lines = SalesInvoiceLineSerializer(many=True, read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     customer_code = serializers.CharField(source="customer.code", read_only=True)
+    customer_email = serializers.CharField(source="customer.email", read_only=True, default="")
     posting_profile_code = serializers.CharField(source="posting_profile.code", read_only=True)
     posted_by_email = serializers.CharField(source="posted_by.email", read_only=True, default=None)
     posted_journal_entry_number = serializers.CharField(
@@ -238,7 +239,7 @@ class SalesInvoiceSerializer(serializers.ModelSerializer):
         model = SalesInvoice
         fields = [
             "id", "public_id", "invoice_number", "invoice_date", "due_date",
-            "customer", "customer_name", "customer_code",
+            "customer", "customer_name", "customer_code", "customer_email",
             "posting_profile", "posting_profile_code",
             "subtotal", "total_discount", "total_tax", "total_amount",
             "status", "posted_at", "posted_by", "posted_by_email",
@@ -249,7 +250,7 @@ class SalesInvoiceSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "id", "public_id",
-            "customer_name", "customer_code", "posting_profile_code",
+            "customer_name", "customer_code", "customer_email", "posting_profile_code",
             "subtotal", "total_discount", "total_tax", "total_amount",
             "status", "posted_at", "posted_by", "posted_by_email",
             "posted_journal_entry", "posted_journal_entry_number",

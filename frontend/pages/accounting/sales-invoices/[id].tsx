@@ -3,7 +3,7 @@ import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import { ArrowLeft, Pencil, Send, XCircle, FileText, Printer, Download } from "lucide-react";
+import { ArrowLeft, Pencil, Send, XCircle, FileText, Printer, Download, Mail } from "lucide-react";
 import { useState } from "react";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,18 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader, LoadingSpinner } from "@/components/common";
 import { useSalesInvoice, usePostSalesInvoice, useVoidSalesInvoice } from "@/queries/useSales";
+import { salesInvoicesService } from "@/services/sales.service";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useToast } from "@/components/ui/toaster";
 import { INVOICE_STATUS_COLORS, INVOICE_STATUS_LABELS } from "@/types/sales";
 import { cn } from "@/lib/cn";
@@ -35,6 +47,10 @@ export default function SalesInvoiceDetailPage() {
   const voidInvoice = useVoidSalesInvoice();
   const [postDialog, setPostDialog] = useState(false);
   const [voidDialog, setVoidDialog] = useState(false);
+  const [emailDialog, setEmailDialog] = useState(false);
+  const [emailTo, setEmailTo] = useState("");
+  const [emailMessage, setEmailMessage] = useState("");
+  const [emailSending, setEmailSending] = useState(false);
 
   const handlePost = async () => {
     if (!invoice) return;
@@ -73,6 +89,36 @@ export default function SalesInvoiceDetailPage() {
       });
     } finally {
       setVoidDialog(false);
+    }
+  };
+
+  const handleOpenEmailDialog = () => {
+    setEmailTo(invoice?.customer_email || "");
+    setEmailMessage("");
+    setEmailDialog(true);
+  };
+
+  const handleSendEmail = async () => {
+    if (!invoice || !emailTo.trim()) return;
+    setEmailSending(true);
+    try {
+      const { data } = await salesInvoicesService.email(invoice.id, {
+        recipient_email: emailTo.trim(),
+        message: emailMessage.trim() || undefined,
+      });
+      toast({
+        title: "Invoice emailed",
+        description: data.detail,
+      });
+      setEmailDialog(false);
+    } catch (error: any) {
+      toast({
+        title: "Email failed",
+        description: error?.response?.data?.detail || "Failed to send email.",
+        variant: "destructive",
+      });
+    } finally {
+      setEmailSending(false);
     }
   };
 
@@ -155,6 +201,10 @@ export default function SalesInvoiceDetailPage() {
               >
                 <Download className="h-4 w-4 me-2" />
                 Download PDF
+              </Button>
+              <Button variant="outline" onClick={handleOpenEmailDialog}>
+                <Mail className="h-4 w-4 me-2" />
+                Email Invoice
               </Button>
               {invoice.status === "DRAFT" && (
                 <>
@@ -414,6 +464,47 @@ export default function SalesInvoiceDetailPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      {/* Email Invoice dialog */}
+      <Dialog open={emailDialog} onOpenChange={setEmailDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Email Invoice</DialogTitle>
+            <DialogDescription>
+              Send invoice {invoice.invoice_number} as a PDF attachment.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div>
+              <Label htmlFor="email-to">Recipient Email</Label>
+              <Input
+                id="email-to"
+                type="email"
+                placeholder="customer@example.com"
+                value={emailTo}
+                onChange={(e) => setEmailTo(e.target.value)}
+              />
+            </div>
+            <div>
+              <Label htmlFor="email-message">Message (optional)</Label>
+              <Textarea
+                id="email-message"
+                placeholder="Add a personal note to the email..."
+                value={emailMessage}
+                onChange={(e) => setEmailMessage(e.target.value)}
+                rows={3}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEmailDialog(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleSendEmail} disabled={!emailTo.trim() || emailSending}>
+              {emailSending ? "Sending..." : "Send Email"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </AppLayout>
   );
 }

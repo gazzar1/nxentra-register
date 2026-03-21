@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Invoice {{ invoice_number }}</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: #1f2937;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f9fafb;
+        }
+        .container {
+            background-color: #ffffff;
+            border-radius: 8px;
+            padding: 40px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #e5e7eb;
+        }
+        .header h1 {
+            color: #374151;
+            font-size: 24px;
+            margin: 0 0 5px 0;
+        }
+        .invoice-number {
+            color: #6b7280;
+            font-size: 16px;
+            font-family: 'Courier New', monospace;
+        }
+        .greeting {
+            margin-bottom: 20px;
+        }
+        .summary-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        .summary-table td {
+            padding: 8px 12px;
+            border-bottom: 1px solid #f3f4f6;
+        }
+        .summary-table .label {
+            color: #6b7280;
+            font-size: 14px;
+            width: 40%;
+        }
+        .summary-table .value {
+            font-weight: 500;
+            text-align: right;
+        }
+        .total-row td {
+            border-top: 2px solid #d1d5db;
+            border-bottom: none;
+            padding-top: 12px;
+            font-size: 18px;
+            font-weight: 700;
+        }
+        .total-row .value {
+            color: #111827;
+        }
+        .cta-container {
+            text-align: center;
+            margin: 30px 0;
+        }
+        .cta-button {
+            display: inline-block;
+            padding: 12px 32px;
+            background-color: #3b82f6;
+            color: #ffffff;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 14px;
+        }
+        .note {
+            color: #6b7280;
+            font-size: 13px;
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid #e5e7eb;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #e5e7eb;
+            color: #9ca3af;
+            font-size: 12px;
+        }
+        {% if custom_message %}.custom-message {
+            background-color: #f0f9ff;
+            border-left: 3px solid #3b82f6;
+            padding: 12px 16px;
+            margin: 20px 0;
+            font-size: 14px;
+            color: #374151;
+        }{% endif %}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>{{ company_name }}</h1>
+            <div class="invoice-number">Invoice {{ invoice_number }}</div>
+        </div>
+
+        <div class="greeting">
+            <p>Dear {{ customer_name }},</p>
+            <p>Please find attached your invoice <strong>{{ invoice_number }}</strong>.</p>
+        </div>
+
+        {% if custom_message %}
+        <div class="custom-message">
+            {{ custom_message }}
+        </div>
+        {% endif %}
+
+        <table class="summary-table">
+            <tr>
+                <td class="label">Invoice Date</td>
+                <td class="value">{{ invoice_date }}</td>
+            </tr>
+            {% if due_date %}
+            <tr>
+                <td class="label">Due Date</td>
+                <td class="value">{{ due_date }}</td>
+            </tr>
+            {% endif %}
+            <tr>
+                <td class="label">Subtotal</td>
+                <td class="value">{{ currency }} {{ subtotal }}</td>
+            </tr>
+            {% if total_tax != "0.00" %}
+            <tr>
+                <td class="label">Tax</td>
+                <td class="value">{{ currency }} {{ total_tax }}</td>
+            </tr>
+            {% endif %}
+            <tr class="total-row">
+                <td class="label">Total Amount</td>
+                <td class="value">{{ currency }} {{ total_amount }}</td>
+            </tr>
+        </table>
+
+        <div class="cta-container">
+            <a href="{{ invoice_url }}" class="cta-button">View Invoice Online</a>
+        </div>
+
+        <div class="note">
+            <p>A PDF copy of this invoice is attached to this email.</p>
+            {% if due_date %}
+            <p>Payment is due by <strong>{{ due_date }}</strong>.</p>
+            {% endif %}
+        </div>
+
+        <div class="footer">
+            <p>{{ company_name }} &bull; Sent via Nxentra</p>
+        </div>
+    </div>
+</body>
+</html>
