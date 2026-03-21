@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  @page {
+    size: A4;
+    margin: 1.5cm;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    font-size: 11px;
+    color: #1a1a1a;
+    line-height: 1.5;
+  }
+
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    border-bottom: 2px solid #e5e7eb;
+    padding-bottom: 16px;
+    margin-bottom: 24px;
+  }
+
+  .header-left { flex: 1; }
+
+  .company-logo {
+    max-height: 60px;
+    max-width: 180px;
+    margin-bottom: 8px;
+  }
+
+  .company-name {
+    font-size: 14px;
+    font-weight: 700;
+    color: #374151;
+  }
+
+  .header-right { text-align: right; }
+
+  .invoice-title {
+    font-size: 22px;
+    font-weight: 700;
+    color: #111827;
+    letter-spacing: 1px;
+  }
+
+  .invoice-number {
+    font-size: 14px;
+    font-family: 'Courier New', Courier, monospace;
+    color: #4b5563;
+    margin-top: 4px;
+  }
+
+  .status-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    margin-top: 6px;
+  }
+
+  .status-posted { background: #d1fae5; color: #065f46; }
+  .status-draft { background: #fef3c7; color: #92400e; }
+  .status-voided { background: #fee2e2; color: #991b1b; }
+
+  .info-grid {
+    display: flex;
+    gap: 40px;
+    margin-bottom: 24px;
+  }
+
+  .info-section { flex: 1; }
+
+  .info-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: #6b7280;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+  }
+
+  .customer-name {
+    font-size: 15px;
+    font-weight: 600;
+    color: #111827;
+  }
+
+  .customer-detail {
+    font-size: 11px;
+    color: #4b5563;
+  }
+
+  .detail-grid {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 4px 12px;
+    font-size: 11px;
+  }
+
+  .detail-label { color: #6b7280; }
+  .detail-value { font-weight: 500; text-align: right; }
+
+  /* Line items table */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 24px;
+  }
+
+  thead tr {
+    border-bottom: 2px solid #d1d5db;
+  }
+
+  th {
+    padding: 8px 6px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #374151;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  th.text-left { text-align: left; }
+  th.text-right { text-align: right; }
+
+  td {
+    padding: 6px;
+    border-bottom: 1px solid #e5e7eb;
+    vertical-align: top;
+  }
+
+  td.text-right { text-align: right; }
+
+  td.mono {
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 10px;
+  }
+
+  .line-desc { font-weight: 500; }
+  .line-item-code {
+    font-size: 9px;
+    color: #6b7280;
+    font-family: 'Courier New', Courier, monospace;
+  }
+  .line-number { color: #9ca3af; }
+  .tax-code-label {
+    font-size: 9px;
+    color: #6b7280;
+    display: block;
+  }
+
+  /* Totals */
+  .totals-wrapper {
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  .totals {
+    width: 250px;
+  }
+
+  .totals-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    font-size: 11px;
+  }
+
+  .totals-label { color: #6b7280; }
+
+  .totals-value {
+    font-family: 'Courier New', Courier, monospace;
+    font-weight: 500;
+  }
+
+  .discount-value { color: #dc2626; }
+
+  .total-row {
+    border-top: 2px solid #d1d5db;
+    margin-top: 8px;
+    padding-top: 8px;
+    font-size: 15px;
+    font-weight: 700;
+  }
+
+  .total-row .totals-value {
+    font-size: 15px;
+    font-weight: 700;
+  }
+
+  /* Notes & footer */
+  .notes-section {
+    margin-top: 24px;
+    padding-top: 12px;
+    border-top: 1px solid #e5e7eb;
+  }
+
+  .notes-title {
+    font-size: 10px;
+    font-weight: 600;
+    color: #6b7280;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+
+  .notes-text {
+    font-size: 11px;
+    color: #374151;
+  }
+
+  .je-ref {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid #e5e7eb;
+    font-size: 10px;
+    color: #6b7280;
+  }
+
+  .je-ref .mono {
+    font-family: 'Courier New', Courier, monospace;
+  }
+
+  .footer {
+    margin-top: 40px;
+    padding-top: 12px;
+    border-top: 1px solid #e5e7eb;
+    text-align: center;
+    font-size: 9px;
+    color: #9ca3af;
+  }
+</style>
+</head>
+<body>
+
+  <!-- Header -->
+  <div class="header">
+    <div class="header-left">
+      {% if company_logo_uri %}
+        <img src="{{ company_logo_uri }}" class="company-logo" alt="">
+      {% endif %}
+      <div class="company-name">{{ company_name }}</div>
+    </div>
+    <div class="header-right">
+      <div class="invoice-title">SALES INVOICE</div>
+      <div class="invoice-number">{{ invoice.invoice_number }}</div>
+      <div class="status-badge status-{{ invoice.status|lower }}">{{ invoice.get_status_display }}</div>
+    </div>
+  </div>
+
+  <!-- Customer & Invoice Info -->
+  <div class="info-grid">
+    <div class="info-section">
+      <div class="info-label">Bill To</div>
+      <div class="customer-name">{{ invoice.customer.name }}</div>
+      <div class="customer-detail" style="font-family: 'Courier New', monospace;">{{ invoice.customer.code }}</div>
+      {% if invoice.customer.address %}
+        <div class="customer-detail">{{ invoice.customer.address }}</div>
+      {% endif %}
+      {% if invoice.customer.email %}
+        <div class="customer-detail">{{ invoice.customer.email }}</div>
+      {% endif %}
+      {% if invoice.customer.phone %}
+        <div class="customer-detail">{{ invoice.customer.phone }}</div>
+      {% endif %}
+    </div>
+    <div class="info-section">
+      <div class="detail-grid" style="text-align: right;">
+        <span class="detail-label">Invoice Date:</span>
+        <span class="detail-value">{{ invoice.invoice_date|date:"M d, Y" }}</span>
+        {% if invoice.due_date %}
+          <span class="detail-label">Due Date:</span>
+          <span class="detail-value">{{ invoice.due_date|date:"M d, Y" }}</span>
+        {% endif %}
+        <span class="detail-label">Posting Profile:</span>
+        <span class="detail-value">{{ invoice.posting_profile.code }}</span>
+        {% if invoice.reference %}
+          <span class="detail-label">Reference:</span>
+          <span class="detail-value">{{ invoice.reference }}</span>
+        {% endif %}
+        <span class="detail-label">Currency:</span>
+        <span class="detail-value">{{ currency }}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Line Items -->
+  <table>
+    <thead>
+      <tr>
+        <th class="text-left" style="width: 30px;">#</th>
+        <th class="text-left">Description</th>
+        <th class="text-left" style="width: 60px;">Account</th>
+        <th class="text-right" style="width: 50px;">Qty</th>
+        <th class="text-right" style="width: 70px;">Unit Price</th>
+        <th class="text-right" style="width: 70px;">Discount</th>
+        <th class="text-right" style="width: 70px;">Net</th>
+        <th class="text-right" style="width: 70px;">Tax</th>
+        <th class="text-right" style="width: 80px;">Total</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for line in invoice.lines.all %}
+      <tr>
+        <td class="line-number">{{ line.line_number }}</td>
+        <td>
+          <div class="line-desc">{{ line.description }}</div>
+          {% if line.item %}
+            <div class="line-item-code">{{ line.item.code }}</div>
+          {% endif %}
+        </td>
+        <td class="mono">{{ line.account.code }}</td>
+        <td class="text-right mono">{{ line.quantity|floatformat:0 }}</td>
+        <td class="text-right mono">{{ line.unit_price|floatformat:2 }}</td>
+        <td class="text-right mono">
+          {% if line.discount_amount > 0 %}{{ line.discount_amount|floatformat:2 }}{% else %}&mdash;{% endif %}
+        </td>
+        <td class="text-right mono">{{ line.net_amount|floatformat:2 }}</td>
+        <td class="text-right mono">
+          {{ line.tax_amount|floatformat:2 }}
+          {% if line.tax_code %}
+            <span class="tax-code-label">{{ line.tax_code.code }}</span>
+          {% endif %}
+        </td>
+        <td class="text-right mono" style="font-weight: 500;">{{ line.line_total|floatformat:2 }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <!-- Totals -->
+  <div class="totals-wrapper">
+    <div class="totals">
+      <div class="totals-row">
+        <span class="totals-label">Subtotal</span>
+        <span class="totals-value">{{ invoice.subtotal|floatformat:2 }}</span>
+      </div>
+      <div class="totals-row">
+        <span class="totals-label">Total Discount</span>
+        <span class="totals-value discount-value">-{{ invoice.total_discount|floatformat:2 }}</span>
+      </div>
+      <div class="totals-row">
+        <span class="totals-label">Total Tax</span>
+        <span class="totals-value">{{ invoice.total_tax|floatformat:2 }}</span>
+      </div>
+      <div class="totals-row total-row">
+        <span>Total Amount</span>
+        <span class="totals-value">{{ currency }} {{ invoice.total_amount|floatformat:2 }}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Notes -->
+  {% if invoice.notes %}
+  <div class="notes-section">
+    <div class="notes-title">Notes</div>
+    <div class="notes-text">{{ invoice.notes }}</div>
+  </div>
+  {% endif %}
+
+  <!-- Journal Entry Reference -->
+  {% if invoice.posted_journal_entry %}
+  <div class="je-ref">
+    Journal Entry: <span class="mono">{{ invoice.posted_journal_entry.entry_number }}</span>
+    {% if invoice.posted_at %}
+      &nbsp;&bull;&nbsp; Posted: {{ invoice.posted_at|date:"M d, Y" }}
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <!-- Footer -->
+  <div class="footer">
+    {{ company_name }} &bull; Generated by Nxentra
+  </div>
+
+</body>
+</html>

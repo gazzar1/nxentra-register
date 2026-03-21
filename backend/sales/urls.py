@@ -27,6 +27,7 @@ from .views import (
     SalesInvoiceDetailView,
     SalesInvoicePostView,
     SalesInvoiceVoidView,
+    SalesInvoicePDFView,
     # Open invoices for allocation
     CustomerOpenInvoicesView,
 )
@@ -98,6 +99,11 @@ urlpatterns = [
         "invoices/<int:pk>/void/",
         SalesInvoiceVoidView.as_view(),
         name="invoice-void",
+    ),
+    path(
+        "invoices/<int:pk>/pdf/",
+        SalesInvoicePDFView.as_view(),
+        name="invoice-pdf",
     ),
 
     # ==========================================================================

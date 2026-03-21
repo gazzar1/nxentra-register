@@ -395,6 +395,76 @@ class SalesInvoiceVoidView(APIView):
 
 
 # =============================================================================
+# PDF Generation
+# =============================================================================
+
+class SalesInvoicePDFView(APIView):
+    """
+    GET /api/sales/invoices/<pk>/pdf/
+
+    Returns a PDF file for the sales invoice.
+    Query params:
+    - inline: if "1", display in browser instead of downloading
+    """
+    module_key = "sales"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
+
+    def get(self, request, pk):
+        import base64
+        from pathlib import Path
+        from django.http import HttpResponse
+        from django.template.loader import render_to_string
+
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        try:
+            invoice = SalesInvoice.objects.select_related(
+                "customer", "posting_profile", "posted_by", "posted_journal_entry"
+            ).prefetch_related(
+                "lines__item", "lines__account", "lines__tax_code"
+            ).get(company=actor.company, pk=pk)
+        except SalesInvoice.DoesNotExist:
+            return Response({"detail": "Invoice not found."}, status=404)
+
+        # Company logo as data URI for embedding in PDF
+        company = actor.company
+        company_logo_uri = ""
+        if company.logo:
+            try:
+                logo_path = Path(company.logo.path)
+                if logo_path.exists():
+                    logo_data = logo_path.read_bytes()
+                    ext = logo_path.suffix.lower().lstrip(".")
+                    mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "gif": "image/gif", "svg": "image/svg+xml"}.get(ext, "image/png")
+                    company_logo_uri = f"data:{mime};base64,{base64.b64encode(logo_data).decode()}"
+            except Exception:
+                pass
+
+        currency = getattr(company, "default_currency", "USD") or "USD"
+
+        context = {
+            "invoice": invoice,
+            "company_name": company.name,
+            "company_logo_uri": company_logo_uri,
+            "currency": currency,
+        }
+
+        html_string = render_to_string("pdf/sales_invoice.html", context)
+
+        import weasyprint
+        pdf_bytes = weasyprint.HTML(string=html_string).write_pdf()
+
+        disposition = "inline" if request.query_params.get("inline") == "1" else "attachment"
+        filename = f"{invoice.invoice_number}.pdf"
+
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'{disposition}; filename="{filename}"'
+        return response
+
+
+# =============================================================================
 # Open Invoices View (for receipt allocation)
 # =============================================================================
 

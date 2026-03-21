@@ -3,7 +3,7 @@ import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import { ArrowLeft, Pencil, Send, XCircle, FileText, Printer } from "lucide-react";
+import { ArrowLeft, Pencil, Send, XCircle, FileText, Printer, Download } from "lucide-react";
 import { useState } from "react";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
@@ -133,6 +133,28 @@ export default function SalesInvoiceDetailPage() {
               >
                 <Printer className="h-4 w-4 me-2" />
                 Print
+              </Button>
+              <Button
+                variant="outline"
+                onClick={async () => {
+                  const { getAccessToken } = await import("@/lib/auth-storage");
+                  const token = getAccessToken();
+                  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+                  const res = await fetch(`${apiUrl}/sales/invoices/${invoice.id}/pdf/`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                  });
+                  if (!res.ok) { toast({ title: "PDF generation failed", variant: "destructive" }); return; }
+                  const blob = await res.blob();
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `${invoice.invoice_number}.pdf`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }}
+              >
+                <Download className="h-4 w-4 me-2" />
+                Download PDF
               </Button>
               {invoice.status === "DRAFT" && (
                 <>
