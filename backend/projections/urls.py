@@ -53,6 +53,7 @@ from .views import (
     FiscalPeriodCurrentView,
     FiscalPeriodDatesView,
     DashboardChartsView,
+    DashboardWidgetsView,
     SubledgerTieOutView,
     # Customer/Vendor balance views
     CustomerBalanceListView,
@@ -287,6 +288,11 @@ urlpatterns = [
         "dashboard-charts/",
         DashboardChartsView.as_view(),
         name="dashboard-charts",
+    ),
+    path(
+        "dashboard-widgets/",
+        DashboardWidgetsView.as_view(),
+        name="dashboard-widgets",
     ),
 
     # Admin Projection Management

@@ -194,6 +194,16 @@ export function useTaxSummary(dateFrom?: string, dateTo?: string) {
   });
 }
 
+export function useDashboardWidgets() {
+  return useQuery({
+    queryKey: [...reportKeys.all, 'dashboard-widgets'] as const,
+    queryFn: async () => {
+      const { data } = await reportsService.dashboardWidgets();
+      return data;
+    },
+  });
+}
+
 export function useAPAging(asOf?: string) {
   return useQuery({
     queryKey: [...reportKeys.all, 'ap-aging', asOf] as const,

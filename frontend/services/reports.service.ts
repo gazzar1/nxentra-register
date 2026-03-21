@@ -112,6 +112,9 @@ export const reportsService = {
 
   taxSummary: (params?: { date_from?: string; date_to?: string }) =>
     apiClient.get<TaxSummaryResponse>('/reports/tax-summary/', { params }),
+
+  dashboardWidgets: () =>
+    apiClient.get<DashboardWidgetsResponse>('/reports/dashboard-widgets/'),
 };
 
 // Statement response types
@@ -266,4 +269,32 @@ export interface VendorStatementResponse {
     over_90: string;
     total: string;
   };
+}
+
+export interface DashboardWidgetsResponse {
+  cash_position: {
+    accounts: Array<{
+      code: string;
+      name: string;
+      balance: string;
+    }>;
+    total: string;
+  };
+  ar_overdue: {
+    current: string;
+    days_31_60: string;
+    days_61_90: string;
+    over_90: string;
+    total: string;
+    overdue_total: string;
+    customer_count: number;
+  };
+  recent_activity: Array<{
+    date: string;
+    entry_number: string;
+    memo: string;
+    source: string;
+    amount: string;
+    created_at: string;
+  }>;
 }
