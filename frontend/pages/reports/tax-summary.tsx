@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
-import { Printer, ArrowUpRight, ArrowDownLeft, Calculator } from "lucide-react";
+import { Printer, Download, ArrowUpRight, ArrowDownLeft, Calculator } from "lucide-react";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -19,6 +19,7 @@ import {
 import { PageHeader, LoadingSpinner, EmptyState } from "@/components/common";
 import { useTaxSummary } from "@/queries/useReports";
 import { cn } from "@/lib/cn";
+import { downloadCSV } from "@/lib/export";
 
 const formatNumber = (value: string | number) => {
   return parseFloat(String(value)).toLocaleString(undefined, {
@@ -49,6 +50,32 @@ export default function TaxSummaryPage() {
     );
   }
 
+  const handleExportCSV = () => {
+    if (!data) return;
+    const rows: Record<string, unknown>[] = [];
+    rows.push({ section: "OUTPUT TAX (SALES)", tax_code: "", tax_name: "", rate: "", taxable_amount: "", tax_amount: "" });
+    for (const r of data.output_tax.rows) {
+      rows.push({ section: "", tax_code: r.tax_code, tax_name: r.tax_name, rate: r.rate, taxable_amount: r.taxable_amount, tax_amount: r.tax_amount });
+    }
+    rows.push({ section: "", tax_code: "", tax_name: "Total Output Tax", rate: "", taxable_amount: data.output_tax.taxable_total, tax_amount: data.output_tax.tax_total });
+    rows.push({ section: "", tax_code: "", tax_name: "", rate: "", taxable_amount: "", tax_amount: "" });
+    rows.push({ section: "INPUT TAX (PURCHASES)", tax_code: "", tax_name: "", rate: "", taxable_amount: "", tax_amount: "" });
+    for (const r of data.input_tax.rows) {
+      rows.push({ section: "", tax_code: r.tax_code, tax_name: r.tax_name, rate: r.rate, taxable_amount: r.taxable_amount, tax_amount: r.tax_amount });
+    }
+    rows.push({ section: "", tax_code: "", tax_name: "Total Input Tax", rate: "", taxable_amount: data.input_tax.taxable_total, tax_amount: data.input_tax.tax_total });
+    rows.push({ section: "", tax_code: "", tax_name: "", rate: "", taxable_amount: "", tax_amount: "" });
+    rows.push({ section: "NET TAX", tax_code: "", tax_name: "", rate: "", taxable_amount: "", tax_amount: data.net_tax });
+    downloadCSV(rows, "tax-summary", [
+      { key: "section", label: "Section" },
+      { key: "tax_code", label: "Tax Code" },
+      { key: "tax_name", label: "Name" },
+      { key: "rate", label: "Rate" },
+      { key: "taxable_amount", label: "Taxable Amount" },
+      { key: "tax_amount", label: "Tax Amount" },
+    ]);
+  };
+
   const outputTax = data?.output_tax;
   const inputTax = data?.input_tax;
   const netTax = data ? parseFloat(data.net_tax) : 0;
@@ -60,15 +87,16 @@ export default function TaxSummaryPage() {
           title="Tax Summary"
           subtitle="Output tax (sales) vs. input tax (purchases) for VAT/GST filing"
           actions={
-            <Button
-              variant="outline"
-              size="sm"
-              className="no-print"
-              onClick={() => window.print()}
-            >
-              <Printer className="mr-2 h-4 w-4" />
-              Print
-            </Button>
+            <div className="flex gap-2 no-print">
+              <Button variant="outline" size="sm" onClick={handleExportCSV}>
+                <Download className="mr-2 h-4 w-4" />
+                CSV
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => window.print()}>
+                <Printer className="mr-2 h-4 w-4" />
+                Print
+              </Button>
+            </div>
           }
         />
 

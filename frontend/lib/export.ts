@@ -156,6 +156,91 @@ export function exportJournalEntriesCSV(
 }
 
 /**
+ * Export income statement to CSV
+ */
+export function exportIncomeStatementCSV(
+  data: {
+    revenue: { accounts: Array<{ code: string; name: string; amount: string; is_header: boolean }> };
+    expenses: { accounts: Array<{ code: string; name: string; amount: string; is_header: boolean }> };
+    total_revenue: string;
+    total_expenses: string;
+    net_income: string;
+  },
+  filename = "income-statement"
+) {
+  const rows: Record<string, unknown>[] = [];
+
+  // Revenue section
+  rows.push({ code: "", name: "REVENUE", amount: "" });
+  for (const a of data.revenue.accounts) {
+    if (!a.is_header) rows.push({ code: a.code, name: a.name, amount: a.amount });
+  }
+  rows.push({ code: "", name: "Total Revenue", amount: data.total_revenue });
+  rows.push({ code: "", name: "", amount: "" });
+
+  // Expenses section
+  rows.push({ code: "", name: "EXPENSES", amount: "" });
+  for (const a of data.expenses.accounts) {
+    if (!a.is_header) rows.push({ code: a.code, name: a.name, amount: a.amount });
+  }
+  rows.push({ code: "", name: "Total Expenses", amount: data.total_expenses });
+  rows.push({ code: "", name: "", amount: "" });
+
+  // Net income
+  rows.push({ code: "", name: "Net Income", amount: data.net_income });
+
+  downloadCSV(rows, filename, [
+    { key: "code", label: "Account Code" },
+    { key: "name", label: "Account Name" },
+    { key: "amount", label: "Amount" },
+  ]);
+}
+
+/**
+ * Export balance sheet to CSV
+ */
+export function exportBalanceSheetCSV(
+  data: {
+    assets: { accounts: Array<{ code: string; name: string; balance: string; is_header: boolean }> };
+    liabilities: { accounts: Array<{ code: string; name: string; balance: string; is_header: boolean }> };
+    equity: { accounts: Array<{ code: string; name: string; balance: string; is_header: boolean }> };
+    total_assets: string;
+    total_liabilities: string;
+    total_equity: string;
+    total_liabilities_and_equity: string;
+  },
+  filename = "balance-sheet"
+) {
+  const rows: Record<string, unknown>[] = [];
+
+  const addSection = (
+    label: string,
+    accounts: Array<{ code: string; name: string; balance: string; is_header: boolean }>,
+    total: string,
+    totalLabel: string
+  ) => {
+    rows.push({ code: "", name: label, balance: "" });
+    for (const a of accounts) {
+      if (!a.is_header) rows.push({ code: a.code, name: a.name, balance: a.balance });
+    }
+    rows.push({ code: "", name: totalLabel, balance: total });
+    rows.push({ code: "", name: "", balance: "" });
+  };
+
+  addSection("ASSETS", data.assets.accounts, data.total_assets, "Total Assets");
+  addSection("LIABILITIES", data.liabilities.accounts, data.total_liabilities, "Total Liabilities");
+  addSection("EQUITY", data.equity.accounts, data.total_equity, "Total Equity");
+
+  rows.push({ code: "", name: "Total Liabilities & Equity", balance: data.total_liabilities_and_equity });
+
+  downloadCSV(rows, filename, [
+    { key: "code", label: "Account Code" },
+    { key: "name", label: "Account Name" },
+    { key: "balance", label: "Balance" },
+  ]);
+}
+
+/**
  * Export statement transactions to CSV
  */
 export function exportTransactionsCSV(

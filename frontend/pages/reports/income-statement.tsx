@@ -4,7 +4,7 @@ import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import { useRouter } from "next/router";
 import { useQuery } from "@tanstack/react-query";
-import { Printer, Filter, Plus, X } from "lucide-react";
+import { Printer, Download, Filter, Plus, X } from "lucide-react";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -23,6 +23,7 @@ import { periodsService } from "@/services/periods.service";
 import { dimensionsService } from "@/services/accounts.service";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/cn";
+import { exportIncomeStatementCSV } from "@/lib/export";
 import type { IncomeStatementSection, DimensionFilter } from "@/types/report";
 
 interface DimensionFilterState {
@@ -129,6 +130,12 @@ export default function IncomeStatementPage() {
     window.print();
   };
 
+  const handleExportCSV = () => {
+    if (data) {
+      exportIncomeStatementCSV(data);
+    }
+  };
+
   const handleApplyFilter = () => {
     if (periodFrom !== null && periodTo !== null) {
       setFilterApplied(true);
@@ -217,10 +224,16 @@ export default function IncomeStatementPage() {
             title={t("reports:incomeStatement.title")}
             subtitle={t("reports:incomeStatement.subtitle")}
             actions={
-              <Button variant="outline" onClick={handlePrint}>
-                <Printer className="me-2 h-4 w-4" />
-                {t("reports:actions.print")}
-              </Button>
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={handleExportCSV}>
+                  <Download className="me-2 h-4 w-4" />
+                  CSV
+                </Button>
+                <Button variant="outline" onClick={handlePrint}>
+                  <Printer className="me-2 h-4 w-4" />
+                  {t("reports:actions.print")}
+                </Button>
+              </div>
             }
           />
         </div>

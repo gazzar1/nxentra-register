@@ -4,7 +4,7 @@ import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import { useRouter } from "next/router";
 import { useQuery } from "@tanstack/react-query";
-import { Printer, Filter, Plus, X } from "lucide-react";
+import { Printer, Download, Filter, Plus, X } from "lucide-react";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,6 +31,7 @@ import { periodsService } from "@/services/periods.service";
 import { dimensionsService } from "@/services/accounts.service";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/cn";
+import { exportTrialBalanceCSV } from "@/lib/export";
 
 interface DimensionFilterState {
   dimension_code: string;
@@ -136,6 +137,21 @@ export default function TrialBalancePage() {
     window.print();
   };
 
+  const handleExportCSV = () => {
+    if (periodFilters && periodData) {
+      const mapped = periodData.accounts.map((a) => ({
+        code: a.code,
+        name: a.name,
+        debit: a.period_debit,
+        credit: a.period_credit,
+        balance: a.closing_balance,
+      }));
+      exportTrialBalanceCSV(mapped);
+    } else if (defaultData?.accounts) {
+      exportTrialBalanceCSV(defaultData.accounts);
+    }
+  };
+
   const handleApplyFilter = () => {
     if (periodFrom !== null && periodTo !== null) {
       setFilterApplied(true);
@@ -192,10 +208,16 @@ export default function TrialBalancePage() {
             title={t("reports:trialBalance.title")}
             subtitle={t("reports:trialBalance.subtitle")}
             actions={
-              <Button variant="outline" onClick={handlePrint}>
-                <Printer className="me-2 h-4 w-4" />
-                {t("reports:actions.print")}
-              </Button>
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={handleExportCSV}>
+                  <Download className="me-2 h-4 w-4" />
+                  CSV
+                </Button>
+                <Button variant="outline" onClick={handlePrint}>
+                  <Printer className="me-2 h-4 w-4" />
+                  {t("reports:actions.print")}
+                </Button>
+              </div>
             }
           />
         </div>
