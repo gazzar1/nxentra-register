@@ -1978,3 +1978,116 @@ class ExchangeRateLookupView(APIView):
             "rate_type": rate_type,
             "rate": str(rate),
         })
+
+
+# =============================================================================
+# Core Account Mapping (FX Gain/Loss, FX Rounding, etc.)
+# =============================================================================
+
+CORE_MODULE_NAME = "core"
+CORE_ACCOUNT_ROLES = [
+    "FX_GAIN",
+    "FX_LOSS",
+    "FX_ROUNDING",
+]
+
+CORE_ROLE_DEFAULTS = {
+    "FX_GAIN": "FINANCIAL_INCOME",
+    "FX_LOSS": "FINANCIAL_EXPENSE",
+    "FX_ROUNDING": "FX_ROUNDING",
+}
+
+
+class CoreAccountMappingView(APIView):
+    """
+    GET: Return current core account mappings (FX gain/loss/rounding).
+    PUT: Update core account mappings.
+
+    If no mapping exists yet, auto-initializes from seeded accounts by role.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        from .mappings import ModuleAccountMapping
+        mapping = ModuleAccountMapping.get_mapping(actor.company, CORE_MODULE_NAME)
+
+        # Auto-initialize from seeded accounts if no mappings exist
+        if not mapping:
+            self._auto_initialize(actor.company)
+            mapping = ModuleAccountMapping.get_mapping(actor.company, CORE_MODULE_NAME)
+
+        result = []
+        for role in CORE_ACCOUNT_ROLES:
+            account = mapping.get(role)
+            result.append({
+                "role": role,
+                "account_id": account.id if account else None,
+                "account_code": account.code if account else "",
+                "account_name": account.name if account else "",
+            })
+        return Response(result)
+
+    def put(self, request):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        mappings = request.data
+        if not isinstance(mappings, list):
+            return Response({"detail": "Expected a list of role mappings."}, status=400)
+
+        from .mappings import ModuleAccountMapping
+        from projections.write_barrier import command_writes_allowed
+
+        with command_writes_allowed():
+            for item in mappings:
+                role = item.get("role")
+                account_id = item.get("account_id")
+
+                if role not in CORE_ACCOUNT_ROLES:
+                    continue
+
+                account = None
+                if account_id:
+                    try:
+                        account = Account.objects.get(
+                            company=actor.company, pk=account_id,
+                        )
+                    except Account.DoesNotExist:
+                        return Response(
+                            {"detail": f"Account {account_id} not found."},
+                            status=400,
+                        )
+
+                ModuleAccountMapping.objects.update_or_create(
+                    company=actor.company,
+                    module=CORE_MODULE_NAME,
+                    role=role,
+                    defaults={"account": account},
+                )
+
+        return Response({"detail": "Account mappings updated."})
+
+    def _auto_initialize(self, company):
+        """Auto-create mappings from seeded accounts by matching role."""
+        from .mappings import ModuleAccountMapping
+        from projections.write_barrier import command_writes_allowed
+
+        with command_writes_allowed():
+            for core_role, account_role in CORE_ROLE_DEFAULTS.items():
+                account = Account.objects.filter(
+                    company=company,
+                    role=account_role,
+                    is_postable=True,
+                ).first()
+                if account:
+                    ModuleAccountMapping.objects.get_or_create(
+                        company=company,
+                        module=CORE_MODULE_NAME,
+                        role=core_role,
+                        defaults={"account": account},
+                    )

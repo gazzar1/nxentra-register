@@ -70,6 +70,7 @@ class AccountsConfig(AppConfig):
                 {"label": "Currency Revaluation", "href": "/accounting/currency-revaluation", "icon": "ArrowLeftRight"},
                 {"label": "Scratchpad", "href": "/accounting/scratchpad", "icon": "ClipboardList", "translation_key": "nav.scratchpad"},
                 {"label": "Import Data", "href": "/accounting/import", "icon": "Upload", "translation_key": "nav.import"},
+                {"label": "Accounting Settings", "href": "/accounting/settings", "icon": "Settings"},
             ],
         )
         module_registry.register(

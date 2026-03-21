@@ -5178,23 +5178,26 @@ class CurrencyRevaluationView(APIView):
                 status=status.HTTP_200_OK,
             )
 
-        # Find the FX gain and FX loss accounts
+        # Find the FX gain and FX loss accounts (prefer core mapping, fallback to role)
         from accounting.models import Account
-        fx_gain_account = Account.objects.filter(
+        from accounting.mappings import ModuleAccountMapping
+
+        core_mapping = ModuleAccountMapping.get_mapping(actor.company, "core")
+        fx_gain_account = core_mapping.get("FX_GAIN") or Account.objects.filter(
             company=actor.company,
-            account_role="FINANCIAL_INCOME",
+            role="FINANCIAL_INCOME",
             is_postable=True,
         ).first()
 
-        fx_loss_account = Account.objects.filter(
+        fx_loss_account = core_mapping.get("FX_LOSS") or Account.objects.filter(
             company=actor.company,
-            account_role="FINANCIAL_EXPENSE",
+            role="FINANCIAL_EXPENSE",
             is_postable=True,
         ).first()
 
         if not fx_gain_account or not fx_loss_account:
             return Response(
-                {"error": "FX Gain (FINANCIAL_INCOME) and FX Loss (FINANCIAL_EXPENSE) accounts are required."},
+                {"error": "FX Gain and FX Loss accounts must be configured in Accounting Settings."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

@@ -86,6 +86,7 @@ def _fix_fx_rounding(lines, entry, company, currency, fx_rate):
     Only applies for trivial imbalances (≤ 0.05).
     """
     from accounting.models import Account
+    from accounting.mappings import ModuleAccountMapping
 
     total_debit = sum(l.debit for l in lines)
     total_credit = sum(l.credit for l in lines)
@@ -94,11 +95,13 @@ def _fix_fx_rounding(lines, entry, company, currency, fx_rate):
     if diff == Decimal("0") or abs(diff) > Decimal("0.05"):
         return
 
-    rounding_account = Account.objects.filter(
-        company=company,
-        role=Account.AccountRole.FX_ROUNDING,
-        is_postable=True,
-    ).first()
+    rounding_account = ModuleAccountMapping.get_account(company, "core", "FX_ROUNDING")
+    if not rounding_account:
+        rounding_account = Account.objects.filter(
+            company=company,
+            role=Account.AccountRole.FX_ROUNDING,
+            is_postable=True,
+        ).first()
 
     if not rounding_account:
         # Fallback: adjust the largest line

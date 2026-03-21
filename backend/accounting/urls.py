@@ -56,6 +56,8 @@ from .views import (
     ExchangeRateListCreateView,
     ExchangeRateDetailView,
     ExchangeRateLookupView,
+    # Core account mapping
+    CoreAccountMappingView,
 )
 
 from .bank_views import (
@@ -317,5 +319,14 @@ urlpatterns = [
         "commerce-reconciliation/",
         CommerceReconciliationView.as_view(),
         name="commerce-reconciliation",
+    ),
+
+    # ==========================================================================
+    # Core Account Mapping (FX Gain/Loss/Rounding)
+    # ==========================================================================
+    path(
+        "core-account-mapping/",
+        CoreAccountMappingView.as_view(),
+        name="core-account-mapping",
     ),
 ]

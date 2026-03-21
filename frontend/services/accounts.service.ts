@@ -278,6 +278,25 @@ export const vendorPaymentsService = {
 // Statistical Entry Service
 // =============================================================================
 
+// =============================================================================
+// Core Account Mapping (FX Gain/Loss/Rounding)
+// =============================================================================
+
+export interface CoreAccountMapping {
+  role: string;
+  account_id: number | null;
+  account_code: string | null;
+  account_name: string | null;
+}
+
+export const coreAccountMappingService = {
+  get: () =>
+    apiClient.get<CoreAccountMapping[]>('/accounting/core-account-mapping/'),
+
+  update: (mappings: { role: string; account_id: number | null }[]) =>
+    apiClient.put<CoreAccountMapping[]>('/accounting/core-account-mapping/', { mappings }),
+};
+
 export const statisticalEntriesService = {
   list: (params?: { account_id?: number; status?: string }) =>
     apiClient.get<StatisticalEntry[]>('/accounting/statistical-entries/', { params }),
