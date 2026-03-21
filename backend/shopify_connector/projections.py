@@ -108,6 +108,54 @@ def _convert_amount(amount, exchange_rate):
     return (amount * exchange_rate).quantize(Decimal("0.01"))
 
 
+def _fix_fx_rounding(lines):
+    """
+    Fix penny rounding imbalance caused by independent per-line FX conversion.
+
+    When multiple foreign-currency lines are each rounded to 2 decimal places,
+    the sum of credits may differ from the sum of debits by a small amount
+    (typically 0.01). This is standard in multi-currency accounting — SAP,
+    Oracle, and NetSuite all apply a similar adjustment to the largest line.
+
+    Adjusts the largest converted line's debit or credit to absorb the
+    difference. Only applies for trivial imbalances (≤ 0.05).
+    """
+    total_debit = sum(l.debit for l in lines)
+    total_credit = sum(l.credit for l in lines)
+    diff = total_debit - total_credit
+
+    if diff == Decimal("0"):
+        return  # Already balanced
+
+    if abs(diff) > Decimal("0.05"):
+        return  # Too large to be a rounding error — don't touch
+
+    # Find the largest line on the side that needs adjusting
+    if diff > 0:
+        # Debits exceed credits — reduce the largest debit or increase largest credit
+        credit_lines = [l for l in lines if l.credit > 0]
+        if credit_lines:
+            target = max(credit_lines, key=lambda l: l.credit)
+            target.credit += diff
+        else:
+            target = max(lines, key=lambda l: l.debit)
+            target.debit -= diff
+    else:
+        # Credits exceed debits — reduce largest credit or increase largest debit
+        debit_lines = [l for l in lines if l.debit > 0]
+        if debit_lines:
+            target = max(debit_lines, key=lambda l: l.debit)
+            target.debit -= diff  # diff is negative, so this adds
+        else:
+            target = max(lines, key=lambda l: l.credit)
+            target.credit += diff  # diff is negative, so this subtracts
+
+    logger.debug(
+        "FX rounding adjustment: %s applied to line %s (account %s)",
+        diff, target.line_no, target.account.code,
+    )
+
+
 class ShopifyAccountingProjection(BaseProjection):
     """
     Creates journal entries from Shopify financial events.
@@ -325,6 +373,10 @@ class ShopifyAccountingProjection(BaseProjection):
                 amount_currency=-total_shipping if is_foreign else None,
                 currency=currency, exchange_rate=fx_rate,
             ))
+
+        # Fix FX rounding imbalance before saving
+        if is_foreign:
+            _fix_fx_rounding(lines)
 
         # Balance validation — save as INCOMPLETE if unbalanced
         total_debit = sum(l.debit for l in lines)
@@ -696,6 +748,10 @@ class ShopifyAccountingProjection(BaseProjection):
             ln.line_no = line_no
             lines.append(ln)
 
+        # Fix FX rounding imbalance before saving
+        if is_foreign:
+            _fix_fx_rounding(lines)
+
         # Balance validation
         total_debit = sum(l.debit for l in lines)
         total_credit = sum(l.credit for l in lines)
@@ -926,6 +982,10 @@ class ShopifyAccountingProjection(BaseProjection):
             entry.delete()
             return
 
+        # Fix FX rounding imbalance before saving
+        if is_foreign:
+            _fix_fx_rounding(lines)
+
         # Balance validation
         total_debit = sum(l.debit for l in lines)
         total_credit = sum(l.credit for l in lines)
@@ -1150,6 +1210,10 @@ class ShopifyAccountingProjection(BaseProjection):
             amount_currency=-total_credit_foreign if is_foreign else None,
             currency=currency, exchange_rate=fx_rate,
         ))
+
+        # Fix FX rounding imbalance before saving
+        if is_foreign:
+            _fix_fx_rounding(lines)
 
         # Balance validation
         total_debit = sum(l.debit for l in lines)

@@ -76,6 +76,42 @@ def _resolve_period(company, entry_date):
     return entry_date.month
 
 
+def _fix_fx_rounding(lines):
+    """
+    Fix penny rounding imbalance caused by independent per-line FX conversion.
+
+    When multiple foreign-currency lines are each rounded to 2 decimal places,
+    the sum of credits may differ from the sum of debits by a small amount
+    (typically 0.01). Adjusts the largest converted line to absorb the
+    difference. Only applies for trivial imbalances (≤ 0.05).
+    """
+    total_debit = sum(l.debit for l in lines)
+    total_credit = sum(l.credit for l in lines)
+    diff = total_debit - total_credit
+
+    if diff == Decimal("0") or abs(diff) > Decimal("0.05"):
+        return
+
+    if diff > 0:
+        credit_lines = [l for l in lines if l.credit > 0]
+        if credit_lines:
+            target = max(credit_lines, key=lambda l: l.credit)
+            target.credit += diff
+        else:
+            target = max(lines, key=lambda l: l.debit)
+            target.debit -= diff
+    else:
+        debit_lines = [l for l in lines if l.debit > 0]
+        if debit_lines:
+            target = max(debit_lines, key=lambda l: l.debit)
+            target.debit -= diff
+        else:
+            target = max(lines, key=lambda l: l.credit)
+            target.credit += diff
+
+    logger.debug("FX rounding adjustment: %s applied to line %s", diff, target.line_no)
+
+
 def build_journal_entry(req: JERequest) -> JournalEntry | None:
     """
     Create a balanced, posted journal entry with lines and emit the
@@ -156,6 +192,10 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
             currency=req.currency,
             exchange_rate=fx_rate,
         ))
+
+    # Fix FX rounding imbalance before saving
+    if is_foreign and fx_rate != Decimal("1.0"):
+        _fix_fx_rounding(db_lines)
 
     JournalLine.objects.projection().bulk_create(db_lines)
 
