@@ -2495,7 +2495,7 @@ class ExchangeRate(models.Model):
         ).order_by("-effective_date").first()
 
         if reverse_rate and reverse_rate.rate != 0:
-            return Decimal("1.0") / reverse_rate.rate
+            return (Decimal("1.0") / reverse_rate.rate).quantize(Decimal("0.000001"))
 
         return None
 

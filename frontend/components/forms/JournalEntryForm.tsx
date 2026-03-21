@@ -189,7 +189,8 @@ export function JournalEntryForm({
       .lookup({ from_currency: currency, to_currency: functionalCurrency, date: watchedDate })
       .then(({ data }) => {
         if (data.rate) {
-          form.setValue("exchange_rate", parseFloat(data.rate));
+          // Round to 6 decimal places to match backend field precision
+          form.setValue("exchange_rate", Math.round(parseFloat(data.rate) * 1000000) / 1000000);
         }
       })
       .catch(() => {
