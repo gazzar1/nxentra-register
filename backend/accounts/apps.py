@@ -83,6 +83,8 @@ class AccountsConfig(AppConfig):
                 {"label": "Income Statement", "href": "/reports/income-statement", "icon": "BarChart3", "translation_key": "nav.incomeStatement"},
                 {"label": "Cash Flow", "href": "/reports/cash-flow", "icon": "BarChart3", "translation_key": "nav.cashFlowStatement"},
                 {"label": "Account Inquiry", "href": "/reports/account-inquiry", "icon": "FileText", "translation_key": "nav.accountInquiry"},
+                {"label": "AR Aging", "href": "/reports/ar-aging", "icon": "Clock"},
+                {"label": "AP Aging", "href": "/reports/ap-aging", "icon": "Clock"},
                 {"label": "Customer Balances", "href": "/reports/customer-balances", "icon": "UserCircle", "translation_key": "nav.customerBalances"},
                 {"label": "Vendor Balances", "href": "/reports/vendor-balances", "icon": "Truck", "translation_key": "nav.vendorBalances"},
                 {"label": "Customer Statement", "href": "/reports/customer-statement", "icon": "UserCircle", "translation_key": "nav.customerStatement"},
