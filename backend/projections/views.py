@@ -3308,113 +3308,126 @@ class DashboardWidgetsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        import logging
+        logger = logging.getLogger(__name__)
+
         from accounting.models import Account
         from events.models import BusinessEvent
         from events.types import EventTypes
         from projections.subledger_balance import SubledgerBalanceProjection
-        from datetime import datetime
 
         actor = resolve_actor(request)
         require(actor, "reports.view")
 
-        # ═══════════════════════════════════════════════════════════════════
-        # 1. Cash Position — accounts with role LIQUIDITY
-        # ═══════════════════════════════════════════════════════════════════
-        liquidity_accounts = Account.objects.filter(
-            company=actor.company,
-            role=Account.AccountRole.LIQUIDITY,
-            is_header=False,
-        )
-        liquidity_ids = {a.id: a for a in liquidity_accounts}
-
-        cash_balances = AccountBalance.objects.filter(
-            company=actor.company,
-            account_id__in=liquidity_ids.keys(),
-        )
-
-        cash_accounts = []
-        cash_total = Decimal("0.00")
-        for bal in cash_balances:
-            acct = liquidity_ids[bal.account_id]
-            cash_accounts.append({
-                "code": acct.code,
-                "name": acct.name,
-                "balance": str(bal.balance),
-            })
-            cash_total += bal.balance
-
-        cash_accounts.sort(key=lambda x: Decimal(x["balance"]), reverse=True)
-
-        # ═══════════════════════════════════════════════════════════════════
-        # 2. AR Overdue — from aging projection
-        # ═══════════════════════════════════════════════════════════════════
         try:
-            projection = SubledgerBalanceProjection()
-            aging_data = projection.get_customer_aging(actor.company)
-            totals = aging_data.get("totals", {})
-            ar_overdue = {
-                "current": str(totals.get("current", "0.00")),
-                "days_31_60": str(totals.get("days_31_60", "0.00")),
-                "days_61_90": str(totals.get("days_61_90", "0.00")),
-                "over_90": str(totals.get("over_90", "0.00")),
-                "total": str(totals.get("total", "0.00")),
-                "overdue_total": str(
-                    Decimal(str(totals.get("days_31_60", "0.00")))
-                    + Decimal(str(totals.get("days_61_90", "0.00")))
-                    + Decimal(str(totals.get("over_90", "0.00")))
-                ),
-                "customer_count": sum(
-                    len(entries)
-                    for bucket, entries in aging_data.get("buckets", {}).items()
-                    if bucket != "current"
-                ),
-            }
-        except Exception:
-            ar_overdue = {
-                "current": "0.00",
-                "days_31_60": "0.00",
-                "days_61_90": "0.00",
-                "over_90": "0.00",
-                "total": "0.00",
-                "overdue_total": "0.00",
-                "customer_count": 0,
-            }
+            # ═══════════════════════════════════════════════════════════════
+            # 1. Cash Position — accounts with role LIQUIDITY
+            # ═══════════════════════════════════════════════════════════════
+            liquidity_accounts = Account.objects.filter(
+                company=actor.company,
+                role=Account.AccountRole.LIQUIDITY,
+                is_header=False,
+            )
+            liquidity_ids = {a.id: a for a in liquidity_accounts}
 
-        # ═══════════════════════════════════════════════════════════════════
-        # 3. Recent Activity — last 10 posted journal entries
-        # ═══════════════════════════════════════════════════════════════════
-        recent_events = BusinessEvent.objects.filter(
-            company=actor.company,
-            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
-        ).order_by("-company_sequence")[:10]
+            cash_balances = AccountBalance.objects.filter(
+                company=actor.company,
+                account_id__in=liquidity_ids.keys(),
+            )
 
-        recent_activity = []
-        for event in recent_events:
-            data = event.get_data()
-            entry_date = data.get("date", "")
-            memo = data.get("memo", "")
-            entry_number = data.get("entry_number", "")
-            source = data.get("source", "manual")
-            lines = data.get("lines", [])
-            total_debit = sum(Decimal(l.get("debit", "0")) for l in lines if not l.get("is_memo_line"))
+            cash_accounts = []
+            cash_total = Decimal("0.00")
+            for bal in cash_balances:
+                acct = liquidity_ids[bal.account_id]
+                cash_accounts.append({
+                    "code": acct.code,
+                    "name": acct.name,
+                    "balance": str(bal.balance),
+                })
+                cash_total += bal.balance
 
-            recent_activity.append({
-                "date": entry_date,
-                "entry_number": entry_number,
-                "memo": memo,
-                "source": source,
-                "amount": str(total_debit),
-                "created_at": event.created_at.isoformat() if event.created_at else "",
+            cash_accounts.sort(key=lambda x: Decimal(x["balance"]), reverse=True)
+
+            # ═══════════════════════════════════════════════════════════════
+            # 2. AR Overdue — from aging projection
+            # ═══════════════════════════════════════════════════════════════
+            try:
+                projection = SubledgerBalanceProjection()
+                aging_data = projection.get_customer_aging(actor.company)
+                totals = aging_data.get("totals", {})
+                ar_overdue = {
+                    "current": str(totals.get("current", "0.00")),
+                    "days_31_60": str(totals.get("days_31_60", "0.00")),
+                    "days_61_90": str(totals.get("days_61_90", "0.00")),
+                    "over_90": str(totals.get("over_90", "0.00")),
+                    "total": str(totals.get("total", "0.00")),
+                    "overdue_total": str(
+                        Decimal(str(totals.get("days_31_60", "0.00")))
+                        + Decimal(str(totals.get("days_61_90", "0.00")))
+                        + Decimal(str(totals.get("over_90", "0.00")))
+                    ),
+                    "customer_count": sum(
+                        len(entries)
+                        for bucket, entries in aging_data.get("buckets", {}).items()
+                        if bucket != "current"
+                    ),
+                }
+            except Exception:
+                ar_overdue = {
+                    "current": "0.00",
+                    "days_31_60": "0.00",
+                    "days_61_90": "0.00",
+                    "over_90": "0.00",
+                    "total": "0.00",
+                    "overdue_total": "0.00",
+                    "customer_count": 0,
+                }
+
+            # ═══════════════════════════════════════════════════════════════
+            # 3. Recent Activity — last 10 posted journal entries
+            # ═══════════════════════════════════════════════════════════════
+            recent_events = BusinessEvent.objects.filter(
+                company=actor.company,
+                event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+            ).order_by("-company_sequence")[:10]
+
+            recent_activity = []
+            for event in recent_events:
+                ev_data = event.get_data()
+                entry_date = ev_data.get("date", "")
+                memo = ev_data.get("memo", "")
+                entry_number = ev_data.get("entry_number", "")
+                source = ev_data.get("source", "manual")
+                lines = ev_data.get("lines", [])
+                total_debit = sum(
+                    Decimal(l.get("debit", "0"))
+                    for l in lines
+                    if not l.get("is_memo_line")
+                )
+
+                recent_activity.append({
+                    "date": entry_date,
+                    "entry_number": entry_number,
+                    "memo": memo,
+                    "source": source,
+                    "amount": str(total_debit),
+                    "created_at": event.created_at.isoformat() if event.created_at else "",
+                })
+
+            return Response({
+                "cash_position": {
+                    "accounts": cash_accounts,
+                    "total": str(cash_total),
+                },
+                "ar_overdue": ar_overdue,
+                "recent_activity": recent_activity,
             })
-
-        return Response({
-            "cash_position": {
-                "accounts": cash_accounts,
-                "total": str(cash_total),
-            },
-            "ar_overdue": ar_overdue,
-            "recent_activity": recent_activity,
-        })
+        except Exception as e:
+            logger.exception("DashboardWidgetsView error")
+            return Response(
+                {"detail": f"Dashboard widgets error: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
 
 class SubledgerTieOutView(APIView):
