@@ -47,6 +47,7 @@ import {
   HeartPulse,
   CalendarCheck,
   ClipboardCheck,
+  ArrowLeftRight,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useSidebar } from "@/contexts/SidebarContext";
@@ -102,6 +103,7 @@ const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
   HeartPulse,
   CalendarCheck,
   ClipboardCheck,
+  ArrowLeftRight,
 };
 
 // Color map per section key for visual distinction

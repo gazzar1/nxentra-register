@@ -115,6 +115,12 @@ export const reportsService = {
 
   dashboardWidgets: () =>
     apiClient.get<DashboardWidgetsResponse>('/reports/dashboard-widgets/'),
+
+  currencyRevaluation: (params?: { revaluation_date?: string }) =>
+    apiClient.get<CurrencyRevaluationResponse>('/reports/currency-revaluation/', { params }),
+
+  postCurrencyRevaluation: (data: { revaluation_date: string }) =>
+    apiClient.post<CurrencyRevaluationPostResponse>('/reports/currency-revaluation/', data),
 };
 
 // Statement response types
@@ -269,6 +275,35 @@ export interface VendorStatementResponse {
     over_90: string;
     total: string;
   };
+}
+
+export interface CurrencyRevaluationAdjustment {
+  account_id: number;
+  account_code: string;
+  account_name: string;
+  currency: string;
+  foreign_balance: string;
+  current_functional_balance: string;
+  current_rate: string;
+  revalued_balance: string;
+  unrealized_gain_loss: string;
+}
+
+export interface CurrencyRevaluationResponse {
+  revaluation_date: string;
+  functional_currency: string;
+  adjustments: CurrencyRevaluationAdjustment[];
+  total_gain_loss: string;
+  has_adjustments: boolean;
+}
+
+export interface CurrencyRevaluationPostResponse {
+  message: string;
+  entry_id?: number;
+  entry_number?: string;
+  total_gain_loss?: string;
+  adjustments_count?: number;
+  posted?: boolean;
 }
 
 export interface DashboardWidgetsResponse {

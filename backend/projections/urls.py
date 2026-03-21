@@ -77,6 +77,8 @@ from .views import (
     FiscalYearClosingEntriesView,
     # Reconciliation
     ReconciliationCheckView,
+    # Currency revaluation
+    CurrencyRevaluationView,
     # Admin projection management
     AdminProjectionListView,
     AdminProjectionDetailView,
@@ -274,6 +276,13 @@ urlpatterns = [
         "reconciliation/",
         ReconciliationCheckView.as_view(),
         name="reconciliation-check",
+    ),
+
+    # Currency Revaluation
+    path(
+        "currency-revaluation/",
+        CurrencyRevaluationView.as_view(),
+        name="currency-revaluation",
     ),
 
     # System Status

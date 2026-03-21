@@ -44,6 +44,7 @@ import {
   HeartPulse,
   CalendarCheck,
   ClipboardCheck,
+  ArrowLeftRight,
   Search,
 } from "lucide-react";
 import { useSidebarNav, type SidebarSection } from "@/queries/useModules";
@@ -92,6 +93,7 @@ const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
   HeartPulse,
   CalendarCheck,
   ClipboardCheck,
+  ArrowLeftRight,
 };
 
 export function CommandPalette() {

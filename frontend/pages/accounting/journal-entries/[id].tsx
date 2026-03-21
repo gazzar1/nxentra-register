@@ -49,10 +49,13 @@ export default function JournalEntryDetailPage() {
   const [showReverseConfirm, setShowReverseConfirm] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
-  const formatCurrency = (amount: string) => {
+  const functionalCurrency = company?.functional_currency || company?.default_currency || "USD";
+  const isForeignCurrency = entry?.currency && entry.currency !== functionalCurrency;
+
+  const formatCurrency = (amount: string, currency?: string) => {
     return new Intl.NumberFormat(undefined, {
       style: "currency",
-      currency: entry?.currency || company?.default_currency || "USD",
+      currency: currency || entry?.currency || company?.default_currency || "USD",
       minimumFractionDigits: 2,
     }).format(parseFloat(amount));
   };
@@ -207,8 +210,23 @@ export default function JournalEntryDetailPage() {
               </div>
               <div>
                 <dt className="text-sm text-muted-foreground">{t("accounting:journalEntry.currency")}</dt>
-                <dd className="font-medium">{entry.currency || "-"}</dd>
+                <dd className="font-medium">
+                  {entry.currency || "-"}
+                  {isForeignCurrency && (
+                    <span className="ms-2 inline-flex items-center rounded-full bg-blue-500/10 px-2 py-0.5 text-xs text-blue-500">
+                      Foreign
+                    </span>
+                  )}
+                </dd>
               </div>
+              {isForeignCurrency && (
+                <div>
+                  <dt className="text-sm text-muted-foreground">Exchange Rate</dt>
+                  <dd className="font-medium font-mono">
+                    1 {entry.currency} = {parseFloat(entry.exchange_rate).toFixed(6)} {functionalCurrency}
+                  </dd>
+                </div>
+              )}
               <div>
                 <dt className="text-sm text-muted-foreground">{t("accounting:journalEntry.status")}</dt>
                 <dd><StatusBadge status={entry.status} /></dd>
@@ -247,8 +265,19 @@ export default function JournalEntryDetailPage() {
                   <TableHead className="w-16">{t("accounting:journalLine.lineNo")}</TableHead>
                   <TableHead>{t("accounting:journalLine.account")}</TableHead>
                   <TableHead>{t("accounting:journalLine.description")}</TableHead>
-                  <TableHead className="text-end">{t("accounting:journalLine.debit")}</TableHead>
-                  <TableHead className="text-end">{t("accounting:journalLine.credit")}</TableHead>
+                  {isForeignCurrency && (
+                    <TableHead className="text-end">
+                      Foreign ({entry.currency})
+                    </TableHead>
+                  )}
+                  <TableHead className="text-end">
+                    {t("accounting:journalLine.debit")}
+                    {isForeignCurrency && <span className="text-xs text-muted-foreground ms-1">({functionalCurrency})</span>}
+                  </TableHead>
+                  <TableHead className="text-end">
+                    {t("accounting:journalLine.credit")}
+                    {isForeignCurrency && <span className="text-xs text-muted-foreground ms-1">({functionalCurrency})</span>}
+                  </TableHead>
                   <TableHead className="w-16 text-center">Reconciled</TableHead>
                 </TableRow>
               </TableHeader>
@@ -265,11 +294,21 @@ export default function JournalEntryDetailPage() {
                     <TableCell className="text-muted-foreground">
                       {line.description || "-"}
                     </TableCell>
+                    {isForeignCurrency && (
+                      <TableCell className="text-end ltr-number font-medium text-blue-500">
+                        {line.amount_currency
+                          ? formatCurrency(
+                              String(Math.abs(parseFloat(line.amount_currency))),
+                              entry.currency
+                            )
+                          : "-"}
+                      </TableCell>
+                    )}
                     <TableCell className="text-end ltr-number font-medium">
-                      {parseFloat(line.debit) > 0 ? formatCurrency(line.debit) : "-"}
+                      {parseFloat(line.debit) > 0 ? formatCurrency(line.debit, functionalCurrency) : "-"}
                     </TableCell>
                     <TableCell className="text-end ltr-number font-medium">
-                      {parseFloat(line.credit) > 0 ? formatCurrency(line.credit) : "-"}
+                      {parseFloat(line.credit) > 0 ? formatCurrency(line.credit, functionalCurrency) : "-"}
                     </TableCell>
                     <TableCell className="text-center">
                       {line.reconciled && (
@@ -283,11 +322,12 @@ export default function JournalEntryDetailPage() {
                   <TableCell colSpan={3} className="text-end">
                     {t("accounting:totals.totalDebit")} / {t("accounting:totals.totalCredit")}
                   </TableCell>
+                  {isForeignCurrency && <TableCell />}
                   <TableCell className="text-end ltr-number">
-                    {formatCurrency(entry.total_debit)}
+                    {formatCurrency(entry.total_debit, functionalCurrency)}
                   </TableCell>
                   <TableCell className="text-end ltr-number">
-                    {formatCurrency(entry.total_credit)}
+                    {formatCurrency(entry.total_credit, functionalCurrency)}
                   </TableCell>
                   <TableCell />
                 </TableRow>

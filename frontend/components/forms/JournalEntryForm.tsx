@@ -276,13 +276,22 @@ export function JournalEntryForm({
   const isBalanced = difference < 0.01;
 
   const selectedCurrency = form.watch("currency") || company?.default_currency || "USD";
-  const formatCurrency = (amount: number) => {
+  const watchedExchangeRate = form.watch("exchange_rate");
+  const formatCurrency = (amount: number, currency?: string) => {
     return new Intl.NumberFormat(undefined, {
       style: "currency",
-      currency: selectedCurrency,
+      currency: currency || selectedCurrency,
       minimumFractionDigits: 2,
     }).format(amount);
   };
+
+  // Converted totals for foreign currency entries
+  const convertedTotals = isForeignCurrency && watchedExchangeRate
+    ? {
+        debit: totals.debit * watchedExchangeRate,
+        credit: totals.credit * watchedExchangeRate,
+      }
+    : null;
 
   const handleSubmit = async (data: JournalEntryFormData, saveAsDraft: boolean) => {
     // Filter out empty lines
@@ -450,10 +459,21 @@ export function JournalEntryForm({
           {/* Header */}
           <div className="grid grid-cols-12 gap-2 border-b bg-muted p-3 text-sm font-medium">
             <div className="col-span-1">#</div>
-            <div className="col-span-4">{t("accounting:journalLine.account")}</div>
-            <div className="col-span-3">{t("accounting:journalLine.description")}</div>
-            <div className="col-span-2 text-end">{t("accounting:journalLine.debit")}</div>
-            <div className="col-span-2 text-end">{t("accounting:journalLine.credit")}</div>
+            <div className={isForeignCurrency ? "col-span-3" : "col-span-4"}>{t("accounting:journalLine.account")}</div>
+            <div className={isForeignCurrency ? "col-span-2" : "col-span-3"}>{t("accounting:journalLine.description")}</div>
+            <div className="col-span-2 text-end">
+              {t("accounting:journalLine.debit")}
+              {isForeignCurrency && <span className="text-xs text-muted-foreground ms-1">({selectedCurrency})</span>}
+            </div>
+            <div className="col-span-2 text-end">
+              {t("accounting:journalLine.credit")}
+              {isForeignCurrency && <span className="text-xs text-muted-foreground ms-1">({selectedCurrency})</span>}
+            </div>
+            {isForeignCurrency && (
+              <div className="col-span-2 text-end text-blue-500">
+                {functionalCurrency}
+              </div>
+            )}
           </div>
 
           {/* Lines */}
@@ -467,7 +487,7 @@ export function JournalEntryForm({
                   <div className="col-span-1 text-sm text-muted-foreground">
                     {index + 1}
                   </div>
-                  <div className="col-span-4">
+                  <div className={isForeignCurrency ? "col-span-3" : "col-span-4"}>
                     <Select
                       value={watchedLines[index]?.account_id?.toString() || ""}
                       onValueChange={(value) => handleAccountChange(index, parseInt(value))}
@@ -485,7 +505,7 @@ export function JournalEntryForm({
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="col-span-3">
+                  <div className={isForeignCurrency ? "col-span-2" : "col-span-3"}>
                     <Input
                       {...form.register(`lines.${index}.description`)}
                       placeholder={t("accounting:journalLine.description")}
@@ -510,14 +530,13 @@ export function JournalEntryForm({
                       className="text-end ltr-number"
                       disabled={watchedLines[index]?.debit > 0}
                     />
-                    {fields.length > 2 && (
+                    {!isForeignCurrency && fields.length > 2 && (
                       <Button
                         type="button"
                         variant="ghost"
                         size="icon"
                         onClick={() => {
                           remove(index);
-                          // Clean up dimensions state for this line
                           setLineDimensions((prev) => {
                             const updated = { ...prev };
                             delete updated[index];
@@ -530,6 +549,36 @@ export function JournalEntryForm({
                       </Button>
                     )}
                   </div>
+                  {isForeignCurrency && (
+                    <div className="col-span-2 flex items-center gap-2">
+                      <span className="text-end ltr-number text-sm text-blue-500 w-full text-end">
+                        {watchedExchangeRate
+                          ? formatCurrency(
+                              ((watchedLines[index]?.debit || 0) + (watchedLines[index]?.credit || 0)) * watchedExchangeRate,
+                              functionalCurrency
+                            )
+                          : "-"}
+                      </span>
+                      {fields.length > 2 && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => {
+                            remove(index);
+                            setLineDimensions((prev) => {
+                              const updated = { ...prev };
+                              delete updated[index];
+                              return updated;
+                            });
+                          }}
+                          className="shrink-0"
+                        >
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Analysis Dimensions for this line */}
@@ -581,14 +630,21 @@ export function JournalEntryForm({
           {/* Totals */}
           <div className="grid grid-cols-12 gap-2 bg-muted p-3 font-medium">
             <div className="col-span-1"></div>
-            <div className="col-span-4">{t("accounting:totals.totalDebit")}</div>
-            <div className="col-span-3"></div>
+            <div className={isForeignCurrency ? "col-span-3" : "col-span-4"}>{t("accounting:totals.totalDebit")}</div>
+            <div className={isForeignCurrency ? "col-span-2" : "col-span-3"}></div>
             <div className="col-span-2 text-end ltr-number">
               {formatCurrency(totals.debit)}
             </div>
             <div className="col-span-2 text-end ltr-number">
               {formatCurrency(totals.credit)}
             </div>
+            {isForeignCurrency && (
+              <div className="col-span-2 text-end ltr-number text-blue-500">
+                {convertedTotals
+                  ? formatCurrency(convertedTotals.debit, functionalCurrency)
+                  : "-"}
+              </div>
+            )}
           </div>
         </div>
 

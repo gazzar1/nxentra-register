@@ -5034,3 +5034,246 @@ class VendorStatementView(APIView):
                 "total": str(sum(aging.values())),
             },
         })
+
+
+class CurrencyRevaluationView(APIView):
+    """
+    GET /api/reports/currency-revaluation/
+        Preview unrealized FX gains/losses on foreign-currency account balances.
+        Query params: revaluation_date (default: today)
+
+    POST /api/reports/currency-revaluation/
+        Create an adjustment journal entry for the unrealized FX gains/losses.
+        Body: { "revaluation_date": "YYYY-MM-DD" }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def _calculate_revaluation(self, company, revaluation_date):
+        """
+        Calculate unrealized FX gains/losses.
+
+        For each account with foreign currency journal lines:
+        1. Sum foreign currency amounts (amount_currency)
+        2. Sum functional currency amounts (debit - credit)
+        3. Look up current exchange rate
+        4. Revalued = foreign_balance * current_rate
+        5. Unrealized gain/loss = revalued - current_functional_balance
+        """
+        from django.db.models import Sum
+        from django.db.models.functions import Coalesce
+        from accounting.models import JournalLine, ExchangeRate
+
+        functional_currency = company.functional_currency or company.default_currency
+
+        # Find all posted journal lines with foreign currencies
+        foreign_lines = (
+            JournalLine.objects
+            .filter(
+                company=company,
+                entry__status="POSTED",
+                entry__date__lte=revaluation_date,
+            )
+            .exclude(currency="")
+            .exclude(currency=functional_currency)
+            .values("account__id", "account__code", "account__name", "currency")
+            .annotate(
+                foreign_debit=Coalesce(Sum("debit"), Decimal("0")),
+                foreign_credit=Coalesce(Sum("credit"), Decimal("0")),
+                total_amount_currency=Coalesce(Sum("amount_currency"), Decimal("0")),
+            )
+        )
+
+        adjustments = []
+        total_gain_loss = Decimal("0")
+
+        for group in foreign_lines:
+            account_id = group["account__id"]
+            account_code = group["account__code"]
+            account_name = group["account__name"]
+            line_currency = group["currency"]
+            functional_debit = group["foreign_debit"]
+            functional_credit = group["foreign_credit"]
+            foreign_amount = group["total_amount_currency"]
+
+            # Current functional currency balance for this account+currency
+            current_functional_balance = functional_debit - functional_credit
+
+            # Look up current exchange rate
+            current_rate = ExchangeRate.get_rate(
+                company, line_currency, functional_currency, revaluation_date
+            )
+            if not current_rate:
+                continue
+
+            # Calculate what the balance should be at current rate
+            revalued_balance = (foreign_amount * current_rate).quantize(Decimal("0.01"))
+
+            # Unrealized gain/loss = revalued - current
+            unrealized = revalued_balance - current_functional_balance
+
+            if abs(unrealized) < Decimal("0.01"):
+                continue
+
+            adjustments.append({
+                "account_id": account_id,
+                "account_code": account_code,
+                "account_name": account_name,
+                "currency": line_currency,
+                "foreign_balance": str(foreign_amount),
+                "current_functional_balance": str(current_functional_balance),
+                "current_rate": str(current_rate),
+                "revalued_balance": str(revalued_balance),
+                "unrealized_gain_loss": str(unrealized),
+            })
+
+            total_gain_loss += unrealized
+
+        return adjustments, total_gain_loss
+
+    def get(self, request):
+        actor = resolve_actor(request)
+        revaluation_date_str = request.query_params.get("revaluation_date")
+        if revaluation_date_str:
+            revaluation_date = date_type.fromisoformat(revaluation_date_str)
+        else:
+            revaluation_date = date_type.today()
+
+        try:
+            adjustments, total_gain_loss = self._calculate_revaluation(
+                actor.company, revaluation_date
+            )
+        except Exception as e:
+            import traceback
+            return Response(
+                {"error": str(e), "detail": traceback.format_exc()},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response({
+            "revaluation_date": revaluation_date.isoformat(),
+            "functional_currency": actor.company.functional_currency or actor.company.default_currency,
+            "adjustments": adjustments,
+            "total_gain_loss": str(total_gain_loss),
+            "has_adjustments": len(adjustments) > 0,
+        })
+
+    def post(self, request):
+        """Create a revaluation adjustment journal entry."""
+        actor = resolve_actor(request)
+        require(actor, "journal.create")
+
+        revaluation_date_str = request.data.get("revaluation_date")
+        if revaluation_date_str:
+            revaluation_date = date_type.fromisoformat(revaluation_date_str)
+        else:
+            revaluation_date = date_type.today()
+
+        adjustments, total_gain_loss = self._calculate_revaluation(
+            actor.company, revaluation_date
+        )
+
+        if not adjustments:
+            return Response(
+                {"message": "No foreign currency adjustments needed."},
+                status=status.HTTP_200_OK,
+            )
+
+        # Find the FX gain and FX loss accounts
+        from accounting.models import Account
+        fx_gain_account = Account.objects.filter(
+            company=actor.company,
+            account_role="FINANCIAL_INCOME",
+            is_postable=True,
+        ).first()
+
+        fx_loss_account = Account.objects.filter(
+            company=actor.company,
+            account_role="FINANCIAL_EXPENSE",
+            is_postable=True,
+        ).first()
+
+        if not fx_gain_account or not fx_loss_account:
+            return Response(
+                {"error": "FX Gain (FINANCIAL_INCOME) and FX Loss (FINANCIAL_EXPENSE) accounts are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Build journal entry lines
+        from accounting.commands import create_journal_entry, post_journal_entry
+        functional_currency = actor.company.functional_currency or actor.company.default_currency
+
+        lines = []
+        for adj in adjustments:
+            unrealized = Decimal(adj["unrealized_gain_loss"])
+            account_id = adj["account_id"]
+
+            if unrealized > 0:
+                lines.append({
+                    "account_id": account_id,
+                    "description": f"FX revaluation {adj['currency']} @ {adj['current_rate']}",
+                    "debit": str(unrealized),
+                    "credit": "0",
+                })
+            else:
+                lines.append({
+                    "account_id": account_id,
+                    "description": f"FX revaluation {adj['currency']} @ {adj['current_rate']}",
+                    "debit": "0",
+                    "credit": str(abs(unrealized)),
+                })
+
+        # Add offsetting FX gain/loss entries
+        total_gains = sum(
+            Decimal(a["unrealized_gain_loss"]) for a in adjustments
+            if Decimal(a["unrealized_gain_loss"]) > 0
+        )
+        total_losses = sum(
+            abs(Decimal(a["unrealized_gain_loss"])) for a in adjustments
+            if Decimal(a["unrealized_gain_loss"]) < 0
+        )
+
+        if total_gains > 0:
+            lines.append({
+                "account_id": fx_gain_account.id,
+                "description": "Unrealized FX gain",
+                "debit": "0",
+                "credit": str(total_gains),
+            })
+
+        if total_losses > 0:
+            lines.append({
+                "account_id": fx_loss_account.id,
+                "description": "Unrealized FX loss",
+                "debit": str(total_losses),
+                "credit": "0",
+            })
+
+        # Create the JE
+        result = create_journal_entry(
+            actor=actor,
+            date=revaluation_date,
+            memo=f"Currency revaluation as of {revaluation_date.isoformat()}",
+            memo_ar=f"إعادة تقييم العملات بتاريخ {revaluation_date.isoformat()}",
+            lines=lines,
+            kind="ADJUSTMENT",
+            currency=functional_currency,
+        )
+
+        if not result.success:
+            return Response(
+                {"error": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Auto-post the revaluation entry
+        entry = result.data
+        post_result = post_journal_entry(actor=actor, entry_id=entry.id)
+
+        return Response({
+            "message": "Currency revaluation journal entry created and posted.",
+            "entry_id": entry.id,
+            "entry_number": entry.entry_number,
+            "total_gain_loss": str(total_gain_loss),
+            "adjustments_count": len(adjustments),
+            "posted": post_result.success,
+        }, status=status.HTTP_201_CREATED)

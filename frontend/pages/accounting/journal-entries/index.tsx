@@ -135,6 +135,7 @@ export default function JournalEntriesPage() {
             <TableHead>{t("accounting:journalEntry.entryNumber")}</TableHead>
             <TableHead>{t("accounting:journalEntry.date")}</TableHead>
             <TableHead>{t("accounting:journalEntry.memo")}</TableHead>
+            <TableHead className="text-center">{t("accounting:journalEntry.currency")}</TableHead>
             <TableHead className="text-end">{t("accounting:totals.totalDebit")}</TableHead>
             <TableHead className="text-end">{t("accounting:totals.totalCredit")}</TableHead>
             {showStatus && <TableHead>{t("accounting:journalEntry.status")}</TableHead>}
@@ -153,6 +154,15 @@ export default function JournalEntriesPage() {
               <TableCell>{formatDate(entry.date)}</TableCell>
               <TableCell className="max-w-xs truncate">
                 {entry.memo || "-"}
+              </TableCell>
+              <TableCell className="text-center">
+                {entry.currency && entry.currency !== (company?.functional_currency || company?.default_currency || "USD") ? (
+                  <span className="inline-flex items-center rounded-full bg-blue-500/10 px-2 py-0.5 text-xs font-medium text-blue-500">
+                    {entry.currency}
+                  </span>
+                ) : (
+                  <span className="text-xs text-muted-foreground">{entry.currency || "-"}</span>
+                )}
               </TableCell>
               <TableCell className="text-end ltr-number">
                 {formatCurrency(entry.total_debit, entry.currency)}
