@@ -3673,7 +3673,7 @@ class TaxSummaryReportView(APIView):
             SalesInvoiceLine.objects
             .filter(
                 invoice__company=actor.company,
-                invoice__status=SalesInvoice.InvoiceStatus.POSTED,
+                invoice__status=SalesInvoice.Status.POSTED,
                 invoice__invoice_date__gte=date_from,
                 invoice__invoice_date__lte=date_to,
                 tax_code__isnull=False,
@@ -3719,7 +3719,7 @@ class TaxSummaryReportView(APIView):
             PurchaseBillLine.objects
             .filter(
                 bill__company=actor.company,
-                bill__status=PurchaseBill.BillStatus.POSTED,
+                bill__status=PurchaseBill.Status.POSTED,
                 bill__bill_date__gte=date_from,
                 bill__bill_date__lte=date_to,
                 tax_code__isnull=False,
