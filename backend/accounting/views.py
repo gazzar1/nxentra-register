@@ -9,6 +9,8 @@ CRITICAL: All mutations (create, update, delete) MUST go through commands
 to ensure events are emitted. Views should never directly call .save() on models.
 """
 
+import logging
+
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -17,6 +19,8 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 
 from django.db.models import Exists, OuterRef
 from django.shortcuts import get_object_or_404
+
+logger = logging.getLogger(__name__)
 
 from accounts.authz import resolve_actor, require
 from .models import (
@@ -2013,12 +2017,20 @@ class CoreAccountMappingView(APIView):
             return Response({"detail": "No active company."}, status=400)
 
         from .mappings import ModuleAccountMapping
-        mapping = ModuleAccountMapping.get_mapping(actor.company, CORE_MODULE_NAME)
+
+        try:
+            mapping = ModuleAccountMapping.get_mapping(actor.company, CORE_MODULE_NAME)
+        except Exception:
+            mapping = {}
 
         # Auto-initialize from seeded accounts if no mappings exist
         if not mapping:
-            self._auto_initialize(actor.company)
-            mapping = ModuleAccountMapping.get_mapping(actor.company, CORE_MODULE_NAME)
+            try:
+                self._auto_initialize(actor.company)
+                mapping = ModuleAccountMapping.get_mapping(actor.company, CORE_MODULE_NAME)
+            except Exception:
+                logger.exception("Failed to auto-initialize core account mappings")
+                mapping = {}
 
         result = []
         for role in CORE_ACCOUNT_ROLES:
@@ -2037,6 +2049,8 @@ class CoreAccountMappingView(APIView):
             return Response({"detail": "No active company."}, status=400)
 
         mappings = request.data
+        if isinstance(mappings, dict) and "mappings" in mappings:
+            mappings = mappings["mappings"]
         if not isinstance(mappings, list):
             return Response({"detail": "Expected a list of role mappings."}, status=400)
 
