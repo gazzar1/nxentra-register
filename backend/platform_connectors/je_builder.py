@@ -21,7 +21,7 @@ from events.types import EventTypes, JournalEntryPostedData
 from events.models import BusinessEvent
 from events.emitter import emit_event_no_actor
 from projections.models import FiscalPeriod
-from accounting.models import JournalEntry, JournalLine
+from accounting.models import JournalEntry, JournalLine, ExchangeRate
 from accounting.commands import _next_company_sequence
 
 logger = logging.getLogger(__name__)
@@ -96,6 +96,23 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
         logger.info("Journal entry already exists for '%s' — skipping", req.memo)
         return None
 
+    # Multi-currency: auto-resolve exchange rate if not explicitly provided
+    functional_currency = req.company.functional_currency or req.company.default_currency or "USD"
+    is_foreign = req.currency != functional_currency
+    fx_rate = req.exchange_rate
+
+    if is_foreign and fx_rate == Decimal("1.0"):
+        looked_up_rate = ExchangeRate.get_rate(
+            req.company, req.currency, functional_currency, req.entry_date
+        )
+        if looked_up_rate:
+            fx_rate = looked_up_rate
+        else:
+            logger.warning(
+                "No exchange rate found for %s→%s on %s (company %s) — using 1.0",
+                req.currency, functional_currency, req.entry_date, req.company,
+            )
+
     period = _resolve_period(req.company, req.entry_date)
     now = timezone.now()
 
@@ -109,14 +126,23 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
         status=JournalEntry.Status.POSTED,
         posted_at=now,
         currency=req.currency,
-        exchange_rate=req.exchange_rate,
+        exchange_rate=fx_rate,
         source_module=req.source_module,
         source_document=req.source_document,
     )
 
-    # Create journal lines
+    # Create journal lines — convert amounts if foreign currency
     db_lines = []
     for i, line in enumerate(req.lines, start=1):
+        if is_foreign and fx_rate != Decimal("1.0"):
+            converted_debit = (line.debit * fx_rate).quantize(Decimal("0.01"))
+            converted_credit = (line.credit * fx_rate).quantize(Decimal("0.01"))
+            amount_currency = line.debit if line.debit > 0 else (-line.credit if line.credit > 0 else Decimal("0"))
+        else:
+            converted_debit = line.debit
+            converted_credit = line.credit
+            amount_currency = None
+
         db_lines.append(JournalLine(
             entry=entry,
             company=req.company,
@@ -124,10 +150,11 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
             line_no=i,
             account=line.account,
             description=line.description,
-            debit=line.debit,
-            credit=line.credit,
+            debit=converted_debit,
+            credit=converted_credit,
+            amount_currency=amount_currency,
             currency=req.currency,
-            exchange_rate=req.exchange_rate,
+            exchange_rate=fx_rate,
         ))
 
     JournalLine.objects.projection().bulk_create(db_lines)
@@ -178,7 +205,7 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
             "debit": str(db_line.debit),
             "credit": str(db_line.credit),
             "currency": req.currency,
-            "exchange_rate": str(req.exchange_rate),
+            "exchange_rate": str(fx_rate),
         })
 
     # Attach dimension tags if context provided
@@ -208,7 +235,7 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
             lines=lines_data,
             period=period,
             currency=req.currency,
-            exchange_rate=str(req.exchange_rate),
+            exchange_rate=str(fx_rate),
         ),
         caused_by_event=req.caused_by_event,
     )

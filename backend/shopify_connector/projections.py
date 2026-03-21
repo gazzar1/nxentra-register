@@ -27,7 +27,7 @@ from events.emitter import emit_event_no_actor
 from projections.base import BaseProjection
 from projections.models import FiscalPeriod
 from accounting.mappings import ModuleAccountMapping
-from accounting.models import JournalEntry, JournalLine
+from accounting.models import JournalEntry, JournalLine, ExchangeRate
 from accounting.commands import _next_company_sequence
 
 
@@ -78,6 +78,34 @@ def _resolve_store_domain(company, store_public_id):
         )
     except ShopifyStore.DoesNotExist:
         return None
+
+
+def _resolve_exchange_rate(company, currency, entry_date):
+    """
+    Resolve exchange rate for converting currency to functional currency.
+
+    Returns (exchange_rate, is_foreign) tuple.
+    If currency == functional currency, returns (Decimal("1.0"), False).
+    If no rate found, returns (Decimal("1.0"), True) and logs a warning.
+    """
+    functional = company.functional_currency or company.default_currency or "USD"
+    if currency == functional:
+        return Decimal("1.0"), False
+
+    rate = ExchangeRate.get_rate(company, currency, functional, entry_date)
+    if rate:
+        return rate, True
+
+    logger.warning(
+        "No exchange rate found for %s→%s on %s (company %s) — using 1.0",
+        currency, functional, entry_date, company,
+    )
+    return Decimal("1.0"), True
+
+
+def _convert_amount(amount, exchange_rate):
+    """Convert a foreign amount to functional currency."""
+    return (amount * exchange_rate).quantize(Decimal("0.01"))
 
 
 class ShopifyAccountingProjection(BaseProjection):
@@ -222,6 +250,9 @@ class ShopifyAccountingProjection(BaseProjection):
             logger.info("Journal entry already exists for '%s' — skipping", memo)
             return
 
+        # Multi-currency: resolve exchange rate
+        fx_rate, is_foreign = _resolve_exchange_rate(event.company, currency, entry_date)
+
         period = _resolve_period(event.company, entry_date)
         now = timezone.now()
 
@@ -235,7 +266,7 @@ class ShopifyAccountingProjection(BaseProjection):
             status=JournalEntry.Status.POSTED,
             posted_at=now,
             currency=currency,
-            exchange_rate=Decimal("1.0"),
+            exchange_rate=fx_rate,
             source_module="shopify_connector",
             source_document=str(data.get("shopify_order_id", "")),
         )
@@ -249,8 +280,10 @@ class ShopifyAccountingProjection(BaseProjection):
             entry=entry, company=event.company,
             public_id=uuid.uuid4(), line_no=line_no,
             account=ar, description=memo,
-            debit=total_price, credit=Decimal("0"),
-            currency=currency, exchange_rate=Decimal("1.0"),
+            debit=_convert_amount(total_price, fx_rate) if is_foreign else total_price,
+            credit=Decimal("0"),
+            amount_currency=total_price if is_foreign else None,
+            currency=currency, exchange_rate=fx_rate,
         ))
 
         # CR Sales Revenue — subtotal (after discounts)
@@ -260,8 +293,10 @@ class ShopifyAccountingProjection(BaseProjection):
             entry=entry, company=event.company,
             public_id=uuid.uuid4(), line_no=line_no,
             account=revenue, description=memo,
-            debit=Decimal("0"), credit=revenue_amount,
-            currency=currency, exchange_rate=Decimal("1.0"),
+            debit=Decimal("0"),
+            credit=_convert_amount(revenue_amount, fx_rate) if is_foreign else revenue_amount,
+            amount_currency=-revenue_amount if is_foreign else None,
+            currency=currency, exchange_rate=fx_rate,
         ))
 
         # CR Sales Tax Payable — if applicable
@@ -271,8 +306,10 @@ class ShopifyAccountingProjection(BaseProjection):
                 entry=entry, company=event.company,
                 public_id=uuid.uuid4(), line_no=line_no,
                 account=tax_account, description=f"Sales tax: {order_name}",
-                debit=Decimal("0"), credit=total_tax,
-                currency=currency, exchange_rate=Decimal("1.0"),
+                debit=Decimal("0"),
+                credit=_convert_amount(total_tax, fx_rate) if is_foreign else total_tax,
+                amount_currency=-total_tax if is_foreign else None,
+                currency=currency, exchange_rate=fx_rate,
             ))
 
         # CR Shipping Revenue — if applicable
@@ -283,8 +320,10 @@ class ShopifyAccountingProjection(BaseProjection):
                 entry=entry, company=event.company,
                 public_id=uuid.uuid4(), line_no=line_no,
                 account=ship_acct, description=f"Shipping: {order_name}",
-                debit=Decimal("0"), credit=total_shipping,
-                currency=currency, exchange_rate=Decimal("1.0"),
+                debit=Decimal("0"),
+                credit=_convert_amount(total_shipping, fx_rate) if is_foreign else total_shipping,
+                amount_currency=-total_shipping if is_foreign else None,
+                currency=currency, exchange_rate=fx_rate,
             ))
 
         # Balance validation — save as INCOMPLETE if unbalanced
@@ -337,7 +376,7 @@ class ShopifyAccountingProjection(BaseProjection):
                 "debit": str(line.debit),
                 "credit": str(line.credit),
                 "currency": currency,
-                "exchange_rate": "1.0",
+                "exchange_rate": str(fx_rate),
             })
 
         emit_event_no_actor(
@@ -361,7 +400,7 @@ class ShopifyAccountingProjection(BaseProjection):
                 lines=lines_data,
                 period=period,
                 currency=currency,
-                exchange_rate="1.0",
+                exchange_rate=str(fx_rate),
             ),
             caused_by_event=event,
         )
@@ -410,8 +449,13 @@ class ShopifyAccountingProjection(BaseProjection):
         ).exists():
             return
 
+        # Multi-currency: resolve exchange rate
+        fx_rate, is_foreign = _resolve_exchange_rate(event.company, currency, entry_date)
+
         period = _resolve_period(event.company, entry_date)
         now = timezone.now()
+
+        converted_amount = _convert_amount(amount, fx_rate) if is_foreign else amount
 
         entry = JournalEntry.objects.projection().create(
             company=event.company,
@@ -423,7 +467,7 @@ class ShopifyAccountingProjection(BaseProjection):
             status=JournalEntry.Status.POSTED,
             posted_at=now,
             currency=currency,
-            exchange_rate=Decimal("1.0"),
+            exchange_rate=fx_rate,
             source_module="shopify_connector",
             source_document=str(refund_id),
         )
@@ -438,15 +482,17 @@ class ShopifyAccountingProjection(BaseProjection):
             entry=entry, company=event.company,
             public_id=uuid.uuid4(), line_no=1,
             account=revenue, description=memo,
-            debit=amount, credit=Decimal("0"),
-            currency=currency, exchange_rate=Decimal("1.0"),
+            debit=converted_amount, credit=Decimal("0"),
+            amount_currency=amount if is_foreign else None,
+            currency=currency, exchange_rate=fx_rate,
         )
         credit_line = JournalLine(
             entry=entry, company=event.company,
             public_id=uuid.uuid4(), line_no=2,
             account=ar, description=memo,
-            debit=Decimal("0"), credit=amount,
-            currency=currency, exchange_rate=Decimal("1.0"),
+            debit=Decimal("0"), credit=converted_amount,
+            amount_currency=-amount if is_foreign else None,
+            currency=currency, exchange_rate=fx_rate,
         )
         JournalLine.objects.projection().bulk_create([debit_line, credit_line])
         self._attach_dimensions(event.company, [debit_line, credit_line], dimension_context)
@@ -458,10 +504,10 @@ class ShopifyAccountingProjection(BaseProjection):
                 "account_public_id": str(revenue.public_id),
                 "account_code": revenue.code,
                 "description": memo,
-                "debit": str(amount),
+                "debit": str(converted_amount),
                 "credit": "0",
                 "currency": currency,
-                "exchange_rate": "1.0",
+                "exchange_rate": str(fx_rate),
             },
             {
                 "line_public_id": str(credit_line.public_id),
@@ -470,9 +516,9 @@ class ShopifyAccountingProjection(BaseProjection):
                 "account_code": ar.code,
                 "description": memo,
                 "debit": "0",
-                "credit": str(amount),
+                "credit": str(converted_amount),
                 "currency": currency,
-                "exchange_rate": "1.0",
+                "exchange_rate": str(fx_rate),
             },
         ]
 
@@ -492,12 +538,12 @@ class ShopifyAccountingProjection(BaseProjection):
                 posted_at=str(now),
                 posted_by_id=0,
                 posted_by_email="system@shopify",
-                total_debit=str(amount),
-                total_credit=str(amount),
+                total_debit=str(converted_amount),
+                total_credit=str(converted_amount),
                 lines=lines_data,
                 period=period,
                 currency=currency,
-                exchange_rate="1.0",
+                exchange_rate=str(fx_rate),
             ),
             caused_by_event=event,
         )
@@ -561,6 +607,9 @@ class ShopifyAccountingProjection(BaseProjection):
             logger.info("Journal entry already exists for '%s' — skipping", memo)
             return
 
+        # Multi-currency: resolve exchange rate
+        fx_rate, is_foreign = _resolve_exchange_rate(event.company, currency, entry_date)
+
         period = _resolve_period(event.company, entry_date)
         now = timezone.now()
 
@@ -574,7 +623,7 @@ class ShopifyAccountingProjection(BaseProjection):
             status=JournalEntry.Status.POSTED,
             posted_at=now,
             currency=currency,
-            exchange_rate=Decimal("1.0"),
+            exchange_rate=fx_rate,
             source_module="shopify_connector",
             source_document=str(payout_id),
         )
@@ -584,82 +633,68 @@ class ShopifyAccountingProjection(BaseProjection):
         abs_gross = abs(gross_amount)
         abs_net = abs(net_amount)
 
-        if is_negative_payout:
-            # Negative payout: refunds exceeded charges in this period.
-            # DR Shopify Clearing (reverse accumulated credits)
-            # DR Processing Fees (fees still charged)
-            # CR Cash/Bank (money leaves bank account)
-            line_no += 1
-            lines.append(JournalLine(
+        def _make_line(account, description, debit_amt, credit_amt):
+            """Helper to create a JournalLine with FX conversion."""
+            return JournalLine(
                 entry=entry, company=event.company,
-                public_id=uuid.uuid4(), line_no=line_no,
-                account=clearing, description=f"Negative payout reversal: {payout_id}",
-                debit=abs_gross, credit=Decimal("0"),
-                currency=currency, exchange_rate=Decimal("1.0"),
-            ))
+                public_id=uuid.uuid4(), line_no=0,  # set below
+                account=account, description=description,
+                debit=_convert_amount(debit_amt, fx_rate) if is_foreign else debit_amt,
+                credit=_convert_amount(credit_amt, fx_rate) if is_foreign else credit_amt,
+                amount_currency=(debit_amt if debit_amt > 0 else -credit_amt) if is_foreign else None,
+                currency=currency, exchange_rate=fx_rate,
+            )
+
+        if is_negative_payout:
+            line_no += 1
+            ln = _make_line(clearing, f"Negative payout reversal: {payout_id}", abs_gross, Decimal("0"))
+            ln.line_no = line_no
+            lines.append(ln)
 
             if fees > 0 and fees_account:
                 line_no += 1
-                lines.append(JournalLine(
-                    entry=entry, company=event.company,
-                    public_id=uuid.uuid4(), line_no=line_no,
-                    account=fees_account, description=f"Processing fees: Payout {payout_id}",
-                    debit=fees, credit=Decimal("0"),
-                    currency=currency, exchange_rate=Decimal("1.0"),
-                ))
+                ln = _make_line(fees_account, f"Processing fees: Payout {payout_id}", fees, Decimal("0"))
+                ln.line_no = line_no
+                lines.append(ln)
             elif fees > 0 and not fees_account:
                 logger.warning(
                     "No PROCESSING_FEES account mapped — fees of %s absorbed into clearing for payout %s",
                     fees, payout_id,
                 )
-                lines[0].debit = abs_net  # Clearing absorbs fees
+                converted_abs_net = _convert_amount(abs_net, fx_rate) if is_foreign else abs_net
+                lines[0].debit = converted_abs_net
+                if is_foreign:
+                    lines[0].amount_currency = abs_net
 
             line_no += 1
-            lines.append(JournalLine(
-                entry=entry, company=event.company,
-                public_id=uuid.uuid4(), line_no=line_no,
-                account=bank, description=f"Negative payout: {payout_id}",
-                debit=Decimal("0"), credit=abs_net,
-                currency=currency, exchange_rate=Decimal("1.0"),
-            ))
+            ln = _make_line(bank, f"Negative payout: {payout_id}", Decimal("0"), abs_net)
+            ln.line_no = line_no
+            lines.append(ln)
         else:
-            # Normal positive payout:
-            # DR Cash/Bank (net amount deposited)
-            # DR Processing Fees (fees deducted)
-            # CR Shopify Clearing (gross amount released)
             line_no += 1
-            lines.append(JournalLine(
-                entry=entry, company=event.company,
-                public_id=uuid.uuid4(), line_no=line_no,
-                account=bank, description=memo,
-                debit=net_amount, credit=Decimal("0"),
-                currency=currency, exchange_rate=Decimal("1.0"),
-            ))
+            ln = _make_line(bank, memo, net_amount, Decimal("0"))
+            ln.line_no = line_no
+            lines.append(ln)
 
             if fees > 0 and fees_account:
                 line_no += 1
-                lines.append(JournalLine(
-                    entry=entry, company=event.company,
-                    public_id=uuid.uuid4(), line_no=line_no,
-                    account=fees_account, description=f"Processing fees: Payout {payout_id}",
-                    debit=fees, credit=Decimal("0"),
-                    currency=currency, exchange_rate=Decimal("1.0"),
-                ))
+                ln = _make_line(fees_account, f"Processing fees: Payout {payout_id}", fees, Decimal("0"))
+                ln.line_no = line_no
+                lines.append(ln)
             elif fees > 0 and not fees_account:
                 logger.warning(
                     "No PROCESSING_FEES account mapped — fees of %s included in bank deposit for payout %s",
                     fees, payout_id,
                 )
-                lines[0].debit = gross_amount  # DR bank the full gross
+                converted_gross = _convert_amount(gross_amount, fx_rate) if is_foreign else gross_amount
+                lines[0].debit = converted_gross
+                if is_foreign:
+                    lines[0].amount_currency = gross_amount
 
             line_no += 1
-            lines.append(JournalLine(
-                entry=entry, company=event.company,
-                public_id=uuid.uuid4(), line_no=line_no,
-                account=clearing, description=memo,
-                debit=Decimal("0"), credit=gross_amount,
-                currency=currency, exchange_rate=Decimal("1.0"),
-            ))
+            ln = _make_line(clearing, memo, Decimal("0"), gross_amount)
+            ln.line_no = line_no
+            lines.append(ln)
 
         # Balance validation
         total_debit = sum(l.debit for l in lines)
@@ -710,7 +745,7 @@ class ShopifyAccountingProjection(BaseProjection):
                 "debit": str(line.debit),
                 "credit": str(line.credit),
                 "currency": currency,
-                "exchange_rate": "1.0",
+                "exchange_rate": str(fx_rate),
             })
 
         emit_event_no_actor(
@@ -734,7 +769,7 @@ class ShopifyAccountingProjection(BaseProjection):
                 lines=lines_data,
                 period=period,
                 currency=currency,
-                exchange_rate="1.0",
+                exchange_rate=str(fx_rate),
             ),
             caused_by_event=event,
         )
@@ -800,6 +835,9 @@ class ShopifyAccountingProjection(BaseProjection):
         # Resolve accounts for each line
         from accounting.models import Account
 
+        # Multi-currency: resolve exchange rate
+        fx_rate, is_foreign = _resolve_exchange_rate(event.company, currency, entry_date)
+
         period = _resolve_period(event.company, entry_date)
         now = timezone.now()
 
@@ -813,7 +851,7 @@ class ShopifyAccountingProjection(BaseProjection):
             status=JournalEntry.Status.POSTED,
             posted_at=now,
             currency=currency,
-            exchange_rate=Decimal("1.0"),
+            exchange_rate=fx_rate,
             source_module="shopify_connector",
             source_document=str(fulfillment_id),
         )
@@ -846,6 +884,7 @@ class ShopifyAccountingProjection(BaseProjection):
 
             item_code = cl.get("item_code", "")
             qty = cl.get("qty", "0")
+            converted_cogs = _convert_amount(cogs_value, fx_rate) if is_foreign else cogs_value
 
             # DR Cost of Goods Sold
             line_no += 1
@@ -854,8 +893,9 @@ class ShopifyAccountingProjection(BaseProjection):
                 public_id=uuid.uuid4(), line_no=line_no,
                 account=cogs_account,
                 description=f"COGS: {item_code} × {qty}",
-                debit=cogs_value, credit=Decimal("0"),
-                currency=currency, exchange_rate=Decimal("1.0"),
+                debit=converted_cogs, credit=Decimal("0"),
+                amount_currency=cogs_value if is_foreign else None,
+                currency=currency, exchange_rate=fx_rate,
             ))
 
             # CR Inventory
@@ -865,8 +905,9 @@ class ShopifyAccountingProjection(BaseProjection):
                 public_id=uuid.uuid4(), line_no=line_no,
                 account=inventory_account,
                 description=f"Inventory issued: {item_code} × {qty}",
-                debit=Decimal("0"), credit=cogs_value,
-                currency=currency, exchange_rate=Decimal("1.0"),
+                debit=Decimal("0"), credit=converted_cogs,
+                amount_currency=-cogs_value if is_foreign else None,
+                currency=currency, exchange_rate=fx_rate,
             ))
 
             # Build stock entry for INVENTORY_STOCK_ISSUED event
@@ -934,7 +975,7 @@ class ShopifyAccountingProjection(BaseProjection):
                 "debit": str(line.debit),
                 "credit": str(line.credit),
                 "currency": currency,
-                "exchange_rate": "1.0",
+                "exchange_rate": str(fx_rate),
             })
 
         emit_event_no_actor(
@@ -958,7 +999,7 @@ class ShopifyAccountingProjection(BaseProjection):
                 lines=lines_data,
                 period=period,
                 currency=currency,
-                exchange_rate="1.0",
+                exchange_rate=str(fx_rate),
             ),
             caused_by_event=event,
         )
@@ -1045,6 +1086,9 @@ class ShopifyAccountingProjection(BaseProjection):
             logger.info("Journal entry already exists for '%s' — skipping", memo)
             return
 
+        # Multi-currency: resolve exchange rate
+        fx_rate, is_foreign = _resolve_exchange_rate(event.company, currency, entry_date)
+
         period = _resolve_period(event.company, entry_date)
         now = timezone.now()
 
@@ -1058,7 +1102,7 @@ class ShopifyAccountingProjection(BaseProjection):
             status=JournalEntry.Status.POSTED,
             posted_at=now,
             currency=currency,
-            exchange_rate=Decimal("1.0"),
+            exchange_rate=fx_rate,
             source_module="shopify_connector",
             source_document=str(dispute_id),
         )
@@ -1068,29 +1112,34 @@ class ShopifyAccountingProjection(BaseProjection):
 
         # DR Chargeback Expense — disputed amount
         line_no += 1
+        converted_dispute = _convert_amount(dispute_amount, fx_rate) if is_foreign else dispute_amount
         lines.append(JournalLine(
             entry=entry, company=event.company,
             public_id=uuid.uuid4(), line_no=line_no,
             account=chargeback_account,
             description=f"Chargeback: {order_name} (Dispute {dispute_id})",
-            debit=dispute_amount, credit=Decimal("0"),
-            currency=currency, exchange_rate=Decimal("1.0"),
+            debit=converted_dispute, credit=Decimal("0"),
+            amount_currency=dispute_amount if is_foreign else None,
+            currency=currency, exchange_rate=fx_rate,
         ))
 
         # DR Processing Fees — chargeback fee
         if chargeback_fee > 0 and fees_account:
             line_no += 1
+            converted_fee = _convert_amount(chargeback_fee, fx_rate) if is_foreign else chargeback_fee
             lines.append(JournalLine(
                 entry=entry, company=event.company,
                 public_id=uuid.uuid4(), line_no=line_no,
                 account=fees_account,
                 description=f"Chargeback fee: Dispute {dispute_id}",
-                debit=chargeback_fee, credit=Decimal("0"),
-                currency=currency, exchange_rate=Decimal("1.0"),
+                debit=converted_fee, credit=Decimal("0"),
+                amount_currency=chargeback_fee if is_foreign else None,
+                currency=currency, exchange_rate=fx_rate,
             ))
 
         # CR Shopify Clearing — total pulled back
-        total_credit = dispute_amount + chargeback_fee
+        total_credit_foreign = dispute_amount + chargeback_fee
+        total_credit = _convert_amount(total_credit_foreign, fx_rate) if is_foreign else total_credit_foreign
         line_no += 1
         lines.append(JournalLine(
             entry=entry, company=event.company,
@@ -1098,7 +1147,8 @@ class ShopifyAccountingProjection(BaseProjection):
             account=clearing,
             description=f"Chargeback clearing: Dispute {dispute_id}",
             debit=Decimal("0"), credit=total_credit,
-            currency=currency, exchange_rate=Decimal("1.0"),
+            amount_currency=-total_credit_foreign if is_foreign else None,
+            currency=currency, exchange_rate=fx_rate,
         ))
 
         # Balance validation
@@ -1150,7 +1200,7 @@ class ShopifyAccountingProjection(BaseProjection):
                 "debit": str(line.debit),
                 "credit": str(line.credit),
                 "currency": currency,
-                "exchange_rate": "1.0",
+                "exchange_rate": str(fx_rate),
             })
 
         emit_event_no_actor(
@@ -1174,7 +1224,7 @@ class ShopifyAccountingProjection(BaseProjection):
                 lines=lines_data,
                 period=period,
                 currency=currency,
-                exchange_rate="1.0",
+                exchange_rate=str(fx_rate),
             ),
             caused_by_event=event,
         )
