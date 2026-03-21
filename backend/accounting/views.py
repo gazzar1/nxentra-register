@@ -1841,7 +1841,7 @@ class ExchangeRateListCreateView(APIView):
             "from_currency": rate_obj.from_currency,
             "to_currency": rate_obj.to_currency,
             "rate": str(rate_obj.rate),
-            "effective_date": rate_obj.effective_date.isoformat(),
+            "effective_date": str(rate_obj.effective_date),
             "rate_type": rate_obj.rate_type,
             "source": rate_obj.source,
             "created": created,
@@ -1869,7 +1869,7 @@ class ExchangeRateDetailView(APIView):
             "from_currency": rate.from_currency,
             "to_currency": rate.to_currency,
             "rate": str(rate.rate),
-            "effective_date": rate.effective_date.isoformat(),
+            "effective_date": str(rate.effective_date),
             "rate_type": rate.rate_type,
             "source": rate.source,
         })
@@ -1910,7 +1910,7 @@ class ExchangeRateDetailView(APIView):
             "from_currency": rate_obj.from_currency,
             "to_currency": rate_obj.to_currency,
             "rate": str(rate_obj.rate),
-            "effective_date": rate_obj.effective_date.isoformat(),
+            "effective_date": str(rate_obj.effective_date),
             "rate_type": rate_obj.rate_type,
             "source": rate_obj.source,
         })
