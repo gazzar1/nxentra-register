@@ -304,6 +304,7 @@ export interface CurrencyRevaluationPostResponse {
   total_gain_loss?: string;
   adjustments_count?: number;
   posted?: boolean;
+  post_error?: string;
 }
 
 export interface DashboardWidgetsResponse {
