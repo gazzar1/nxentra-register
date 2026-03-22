@@ -3384,9 +3384,12 @@ def record_customer_receipt(
     entry_sequence = _next_company_sequence(actor.company, "journal_entry")
     entry_public_id = uuid.uuid4()
 
+    functional_currency = actor.company.functional_currency or actor.company.default_currency
+
     lines = [
         {
             "account_public_id": str(bank_account.public_id),
+            "account_code": bank_account.code,
             "debit": str(receipt_amount),
             "credit": "0",
             "line_no": 1,
@@ -3394,6 +3397,7 @@ def record_customer_receipt(
         },
         {
             "account_public_id": str(ar_control.public_id),
+            "account_code": ar_control.code,
             "debit": "0",
             "credit": str(receipt_amount),
             "line_no": 2,
@@ -3402,23 +3406,102 @@ def record_customer_receipt(
         },
     ]
 
+    # ── Realized FX Gain/Loss ──────────────────────────────────────
+    # When allocating against foreign-currency invoices, calculate
+    # the FX difference between invoice rate and receipt date rate.
+    realized_fx_total = Decimal("0")
+    if validated_allocations:
+        from accounting.models import ExchangeRate
+        from accounting.mappings import ModuleAccountMapping
+
+        core_mapping = ModuleAccountMapping.get_mapping(actor.company, "core")
+        realized_gain_account = core_mapping.get("REALIZED_FX_GAIN")
+        realized_loss_account = core_mapping.get("REALIZED_FX_LOSS")
+
+        for alloc in validated_allocations:
+            invoice = alloc["invoice"]
+            alloc_amount = alloc["amount"]
+
+            # Get the invoice's posted JE to find its currency and rate
+            if not invoice.posted_journal_entry:
+                continue
+            invoice_je = invoice.posted_journal_entry
+            invoice_currency = invoice_je.currency
+            invoice_rate = invoice_je.exchange_rate or Decimal("1.0")
+
+            # Skip if invoice was in functional currency
+            if invoice_currency == functional_currency:
+                continue
+
+            # Get the receipt-date rate for the invoice currency
+            receipt_rate = ExchangeRate.get_rate(
+                actor.company, invoice_currency, functional_currency, parsed_date
+            )
+            if not receipt_rate:
+                continue  # No rate available, skip FX calculation
+
+            # Calculate realized FX gain/loss on this allocation
+            # alloc_amount is in functional currency (what we're crediting AR)
+            # The invoice was booked at invoice_rate, now settled at receipt_rate
+            # Foreign amount of this allocation = alloc_amount / invoice_rate
+            if invoice_rate == Decimal("0"):
+                continue
+            foreign_alloc = (alloc_amount / invoice_rate).quantize(Decimal("0.01"))
+            # What that foreign amount is worth at today's rate
+            settled_value = (foreign_alloc * receipt_rate).quantize(Decimal("0.01"))
+            # FX difference: positive = gain (received more functional for same foreign)
+            fx_diff = settled_value - alloc_amount
+
+            if fx_diff != Decimal("0"):
+                realized_fx_total += fx_diff
+                alloc["realized_fx"] = fx_diff
+                alloc["invoice_currency"] = invoice_currency
+
+        # Add realized FX lines to the journal entry
+        if realized_fx_total != Decimal("0") and (realized_gain_account or realized_loss_account):
+            line_no = 3
+            # Adjust bank account for the FX difference
+            if realized_fx_total > 0:
+                # FX gain: we receive more than booked → Dr Bank, Cr Realized FX Gain
+                lines[0]["debit"] = str(receipt_amount + realized_fx_total)  # Increase bank debit
+                if realized_gain_account:
+                    lines.append({
+                        "account_public_id": str(realized_gain_account.public_id),
+                        "account_code": realized_gain_account.code,
+                        "debit": "0",
+                        "credit": str(realized_fx_total),
+                        "line_no": line_no,
+                        "memo": "Realized FX gain on receipt",
+                    })
+            else:
+                # FX loss: we receive less than booked → Dr Realized FX Loss, Cr Bank
+                lines[0]["debit"] = str(receipt_amount + realized_fx_total)  # Decrease bank debit
+                if realized_loss_account:
+                    lines.append({
+                        "account_public_id": str(realized_loss_account.public_id),
+                        "account_code": realized_loss_account.code,
+                        "debit": str(abs(realized_fx_total)),
+                        "credit": "0",
+                        "line_no": line_no,
+                        "memo": "Realized FX loss on receipt",
+                    })
+
     # Create the journal entry directly (bypassing save_journal_entry for simplicity)
     # We'll use the existing post_journal_entry flow
     from events.types import JournalEntryPostedData, JournalLineData
 
     entry_number = f"JE-{actor.company.id}-{entry_sequence:06d}"
 
+    # Recalculate totals (may have changed due to FX lines)
+    total_debit = sum(Decimal(l["debit"]) for l in lines)
+    total_credit = sum(Decimal(l["credit"]) for l in lines)
+
     line_data_list = []
     for line in lines:
-        # Resolve account_code for the line
-        if line["line_no"] == 1:
-            line_account_code = bank_account.code
-        else:
-            line_account_code = ar_control.code
         line_data_list.append(JournalLineData(
             line_no=line["line_no"],
             account_public_id=line["account_public_id"],
-            account_code=line_account_code,
+            account_code=line["account_code"],
             description=line.get("memo", ""),
             debit=line.get("debit", "0"),
             credit=line.get("credit", "0"),
@@ -3441,13 +3524,13 @@ def record_customer_receipt(
             date=receipt_date,
             memo=description,
             kind=JournalEntry.Kind.NORMAL,
-            total_debit=str(receipt_amount),
-            total_credit=str(receipt_amount),
+            total_debit=str(total_debit),
+            total_credit=str(total_credit),
             lines=[ld.to_dict() for ld in line_data_list],
             posted_at=posted_at.isoformat(),
             posted_by_id=actor.user.id,
             posted_by_email=actor.user.email,
-            currency=actor.company.default_currency,
+            currency=functional_currency,
             exchange_rate="1.0",
         ).to_dict(),
     )
@@ -3684,9 +3767,12 @@ def record_vendor_payment(
     entry_sequence = _next_company_sequence(actor.company, "journal_entry")
     entry_public_id = uuid.uuid4()
 
+    functional_currency = actor.company.functional_currency or actor.company.default_currency
+
     lines = [
         {
             "account_public_id": str(ap_control.public_id),
+            "account_code": ap_control.code,
             "debit": str(payment_amount),
             "credit": "0",
             "line_no": 1,
@@ -3695,6 +3781,7 @@ def record_vendor_payment(
         },
         {
             "account_public_id": str(bank_account.public_id),
+            "account_code": bank_account.code,
             "debit": "0",
             "credit": str(payment_amount),
             "line_no": 2,
@@ -3702,22 +3789,93 @@ def record_vendor_payment(
         },
     ]
 
+    # ── Realized FX Gain/Loss ──────────────────────────────────────
+    # If the vendor's currency differs from functional currency,
+    # calculate FX difference between the bill booking rate and payment date rate.
+    realized_fx_total = Decimal("0")
+    vendor_currency = getattr(vendor, "currency", None) or functional_currency
+
+    if vendor_currency != functional_currency and validated_allocations:
+        from accounting.models import ExchangeRate
+        from accounting.mappings import ModuleAccountMapping
+
+        core_mapping = ModuleAccountMapping.get_mapping(actor.company, "core")
+        realized_gain_account = core_mapping.get("REALIZED_FX_GAIN")
+        realized_loss_account = core_mapping.get("REALIZED_FX_LOSS")
+
+        # Get the payment-date rate
+        payment_rate = ExchangeRate.get_rate(
+            actor.company, vendor_currency, functional_currency, parsed_date
+        )
+
+        if payment_rate:
+            for alloc in validated_allocations:
+                alloc_amount = alloc["amount"]
+                bill_date = alloc.get("bill_date")
+
+                if not bill_date:
+                    continue
+
+                # Get the bill-date rate
+                bill_rate = ExchangeRate.get_rate(
+                    actor.company, vendor_currency, functional_currency, bill_date
+                )
+                if not bill_rate or bill_rate == Decimal("0"):
+                    continue
+
+                # Calculate FX difference
+                foreign_alloc = (alloc_amount / bill_rate).quantize(Decimal("0.01"))
+                settled_value = (foreign_alloc * payment_rate).quantize(Decimal("0.01"))
+                # For AP: positive diff = loss (paying more functional for same foreign)
+                fx_diff = alloc_amount - settled_value
+
+                if fx_diff != Decimal("0"):
+                    realized_fx_total += fx_diff
+                    alloc["realized_fx"] = fx_diff
+
+        # Add realized FX lines
+        if realized_fx_total != Decimal("0") and (realized_gain_account or realized_loss_account):
+            line_no = 3
+            if realized_fx_total > 0:
+                # FX gain: paying less than booked → Dr AP stays, Cr Bank less, Cr Realized FX Gain
+                lines[1]["credit"] = str(payment_amount - realized_fx_total)  # Decrease bank credit
+                if realized_gain_account:
+                    lines.append({
+                        "account_public_id": str(realized_gain_account.public_id),
+                        "account_code": realized_gain_account.code,
+                        "debit": "0",
+                        "credit": str(realized_fx_total),
+                        "line_no": line_no,
+                        "memo": "Realized FX gain on payment",
+                    })
+            else:
+                # FX loss: paying more than booked → Dr AP stays, Cr Bank more, Dr Realized FX Loss
+                lines[1]["credit"] = str(payment_amount - realized_fx_total)  # Increase bank credit (fx_total is negative)
+                if realized_loss_account:
+                    lines.append({
+                        "account_public_id": str(realized_loss_account.public_id),
+                        "account_code": realized_loss_account.code,
+                        "debit": str(abs(realized_fx_total)),
+                        "credit": "0",
+                        "line_no": line_no,
+                        "memo": "Realized FX loss on payment",
+                    })
+
     # Create the journal entry
     from events.types import JournalEntryPostedData, JournalLineData
 
     entry_number = f"JE-{actor.company.id}-{entry_sequence:06d}"
 
+    # Recalculate totals
+    total_debit = sum(Decimal(l["debit"]) for l in lines)
+    total_credit = sum(Decimal(l["credit"]) for l in lines)
+
     line_data_list = []
     for line in lines:
-        # Resolve account_code for the line
-        if line["line_no"] == 1:
-            line_account_code = ap_control.code
-        else:
-            line_account_code = bank_account.code
         line_data_list.append(JournalLineData(
             line_no=line["line_no"],
             account_public_id=line["account_public_id"],
-            account_code=line_account_code,
+            account_code=line["account_code"],
             description=line.get("memo", ""),
             debit=line.get("debit", "0"),
             credit=line.get("credit", "0"),
@@ -3740,13 +3898,13 @@ def record_vendor_payment(
             date=payment_date,
             memo=description,
             kind=JournalEntry.Kind.NORMAL,
-            total_debit=str(payment_amount),
-            total_credit=str(payment_amount),
+            total_debit=str(total_debit),
+            total_credit=str(total_credit),
             lines=[ld.to_dict() for ld in line_data_list],
             posted_at=posted_at.isoformat(),
             posted_by_id=actor.user.id,
             posted_by_email=actor.user.email,
-            currency=actor.company.default_currency,
+            currency=functional_currency,
             exchange_rate="1.0",
         ).to_dict(),
     )

@@ -27,6 +27,14 @@ const ROLE_LABELS: Record<string, { label: string; description: string }> = {
     label: "FX Rounding Differences",
     description: "Account for penny rounding differences caused by per-line FX conversion",
   },
+  REALIZED_FX_GAIN: {
+    label: "Realized FX Gain",
+    description: "Account for realized foreign exchange gains when receiving payments at a different rate than invoice",
+  },
+  REALIZED_FX_LOSS: {
+    label: "Realized FX Loss",
+    description: "Account for realized foreign exchange losses when receiving payments at a different rate than invoice",
+  },
 };
 
 export default function AccountingSettingsPage() {
