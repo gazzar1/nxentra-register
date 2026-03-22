@@ -295,6 +295,7 @@ export interface CurrencyRevaluationResponse {
   adjustments: CurrencyRevaluationAdjustment[];
   total_gain_loss: string;
   has_adjustments: boolean;
+  skipped?: { account_code: string; currency: string; reason: string }[];
 }
 
 export interface CurrencyRevaluationPostResponse {
