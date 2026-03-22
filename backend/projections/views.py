@@ -5088,6 +5088,7 @@ class CurrencyRevaluationView(APIView):
         )
 
         adjustments = []
+        skipped = []
         total_gain_loss = Decimal("0")
 
         for group in foreign_lines:
@@ -5109,6 +5110,11 @@ class CurrencyRevaluationView(APIView):
                 if avg_rate and avg_rate != Decimal("0"):
                     foreign_amount = (current_functional_balance / avg_rate).quantize(Decimal("0.01"))
                 else:
+                    skipped.append({
+                        "account_code": account_code,
+                        "currency": line_currency,
+                        "reason": "No exchange rate on lines to back-calculate foreign amount",
+                    })
                     continue
 
             # Look up current exchange rate
@@ -5116,6 +5122,11 @@ class CurrencyRevaluationView(APIView):
                 company, line_currency, functional_currency, revaluation_date
             )
             if not current_rate:
+                skipped.append({
+                    "account_code": account_code,
+                    "currency": line_currency,
+                    "reason": f"No {line_currency}→{functional_currency} rate found on or before {revaluation_date}",
+                })
                 continue
 
             # Calculate what the balance should be at current rate
@@ -5141,7 +5152,7 @@ class CurrencyRevaluationView(APIView):
 
             total_gain_loss += unrealized
 
-        return adjustments, total_gain_loss
+        return adjustments, total_gain_loss, skipped
 
     def get(self, request):
         actor = resolve_actor(request)
@@ -5152,7 +5163,7 @@ class CurrencyRevaluationView(APIView):
             revaluation_date = date_type.today()
 
         try:
-            adjustments, total_gain_loss = self._calculate_revaluation(
+            adjustments, total_gain_loss, skipped = self._calculate_revaluation(
                 actor.company, revaluation_date
             )
         except Exception as e:
@@ -5168,6 +5179,7 @@ class CurrencyRevaluationView(APIView):
             "adjustments": adjustments,
             "total_gain_loss": str(total_gain_loss),
             "has_adjustments": len(adjustments) > 0,
+            "skipped": skipped,
         })
 
     def post(self, request):
@@ -5181,7 +5193,7 @@ class CurrencyRevaluationView(APIView):
         else:
             revaluation_date = date_type.today()
 
-        adjustments, total_gain_loss = self._calculate_revaluation(
+        adjustments, total_gain_loss, _skipped = self._calculate_revaluation(
             actor.company, revaluation_date
         )
 

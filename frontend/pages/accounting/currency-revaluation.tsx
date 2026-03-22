@@ -4,7 +4,7 @@ import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import { useRouter } from "next/router";
 import { useQuery } from "@tanstack/react-query";
-import { RefreshCw, ArrowUpDown, TrendingUp, TrendingDown, Send } from "lucide-react";
+import { RefreshCw, ArrowUpDown, TrendingUp, TrendingDown, Send, AlertTriangle } from "lucide-react";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -180,6 +180,29 @@ export default function CurrencyRevaluationPage() {
               </CardContent>
             </Card>
           </div>
+        )}
+
+        {/* Skipped Currencies Warning */}
+        {data?.skipped?.length > 0 && (
+          <Card className="border-yellow-500/50">
+            <CardContent className="pt-4">
+              <div className="flex items-start gap-2 text-sm">
+                <AlertTriangle className="h-4 w-4 text-yellow-500 mt-0.5 shrink-0" />
+                <div>
+                  <p className="font-medium text-yellow-500">
+                    Some accounts were skipped (missing exchange rates)
+                  </p>
+                  <ul className="mt-1 text-muted-foreground space-y-0.5">
+                    {data.skipped.map((s: { account_code: string; currency: string; reason: string }, i: number) => (
+                      <li key={i}>
+                        {s.account_code} ({s.currency}): {s.reason}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
         )}
 
         {/* Adjustments Table */}
