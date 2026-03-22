@@ -193,7 +193,7 @@ export default function CurrencyRevaluationPage() {
                     Some accounts were skipped (missing exchange rates)
                   </p>
                   <ul className="mt-1 text-muted-foreground space-y-0.5">
-                    {data.skipped.map((s: { account_code: string; currency: string; reason: string }, i: number) => (
+                    {data!.skipped!.map((s: { account_code: string; currency: string; reason: string }, i: number) => (
                       <li key={i}>
                         {s.account_code} ({s.currency}): {s.reason}
                       </li>
