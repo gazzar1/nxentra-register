@@ -183,7 +183,7 @@ export default function CurrencyRevaluationPage() {
         )}
 
         {/* Skipped Currencies Warning */}
-        {data?.skipped?.length > 0 && (
+        {(data?.skipped?.length ?? 0) > 0 && (
           <Card className="border-yellow-500/50">
             <CardContent className="pt-4">
               <div className="flex items-start gap-2 text-sm">
