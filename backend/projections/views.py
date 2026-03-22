@@ -5077,6 +5077,7 @@ class CurrencyRevaluationView(APIView):
             )
             .exclude(currency="")
             .exclude(currency=functional_currency)
+            .exclude(account__requires_counterparty=True)  # Skip AR/AP control accounts
             .values("account__id", "account__code", "account__name", "currency")
             .annotate(
                 foreign_debit=Coalesce(Sum("debit"), Decimal("0")),
@@ -5263,6 +5264,16 @@ class CurrencyRevaluationView(APIView):
                 "credit": "0",
             })
 
+        # Resolve period for the revaluation date
+        from projections.models import FiscalPeriod
+        fp = FiscalPeriod.objects.filter(
+            company=actor.company,
+            start_date__lte=revaluation_date,
+            end_date__gte=revaluation_date,
+            period_type=FiscalPeriod.PeriodType.NORMAL,
+        ).first()
+        period = fp.period if fp else revaluation_date.month
+
         # Create the JE
         result = create_journal_entry(
             actor=actor,
@@ -5272,6 +5283,7 @@ class CurrencyRevaluationView(APIView):
             lines=lines,
             kind="ADJUSTMENT",
             currency=functional_currency,
+            period=period,
         )
 
         if not result.success:
