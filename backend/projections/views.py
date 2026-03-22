@@ -5248,6 +5248,8 @@ class CurrencyRevaluationView(APIView):
             is_postable=True,
         ).first()
 
+        fx_rounding_account = core_mapping.get("FX_ROUNDING")
+
         if not fx_gain_account or not fx_loss_account:
             return Response(
                 {"error": "FX Gain and FX Loss accounts must be configured in Accounting Settings."},
@@ -5309,6 +5311,29 @@ class CurrencyRevaluationView(APIView):
                 "credit": "0",
                 "currency": curr,
             })
+
+        # Add rounding line if entry doesn't balance (penny differences from per-line FX conversion)
+        total_debit = sum(Decimal(l["debit"]) for l in lines)
+        total_credit = sum(Decimal(l["credit"]) for l in lines)
+        diff = total_debit - total_credit
+        if diff != 0 and abs(diff) <= Decimal("1.00"):
+            rounding_account = fx_rounding_account or fx_loss_account
+            if diff > 0:
+                # More debits than credits — add credit to rounding
+                lines.append({
+                    "account_id": rounding_account.id,
+                    "description": "FX rounding difference",
+                    "debit": "0",
+                    "credit": str(abs(diff)),
+                })
+            else:
+                # More credits than debits — add debit to rounding
+                lines.append({
+                    "account_id": rounding_account.id,
+                    "description": "FX rounding difference",
+                    "debit": str(abs(diff)),
+                    "credit": "0",
+                })
 
         # Resolve period for the revaluation date
         from projections.models import FiscalPeriod
