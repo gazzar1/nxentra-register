@@ -1227,8 +1227,8 @@ def reverse_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
     if aggregate.status != JournalEntry.Status.POSTED:
         return CommandResult.fail("Only POSTED entries can be reversed.")
 
-    if aggregate.kind != JournalEntry.Kind.NORMAL:
-        return CommandResult.fail("Only NORMAL entries can be reversed.")
+    if aggregate.kind not in (JournalEntry.Kind.NORMAL, JournalEntry.Kind.ADJUSTMENT):
+        return CommandResult.fail("Only NORMAL and ADJUSTMENT entries can be reversed.")
 
     if aggregate.reversed:
         return CommandResult.fail("This entry was already reversed.")

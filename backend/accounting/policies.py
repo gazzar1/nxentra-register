@@ -374,8 +374,8 @@ def can_reverse_entry(actor, entry) -> tuple[bool, str]:
     if entry.status != JournalEntry.Status.POSTED:
         return False, "Only POSTED entries can be reversed."
 
-    if entry.kind != JournalEntry.Kind.NORMAL:
-        return False, "Only NORMAL entries can be reversed."
+    if entry.kind not in (JournalEntry.Kind.NORMAL, JournalEntry.Kind.ADJUSTMENT):
+        return False, "Only NORMAL and ADJUSTMENT entries can be reversed."
 
     # Check if already reversed (event-sourced or read-model link)
     if getattr(entry, "reversed", False):
