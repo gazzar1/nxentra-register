@@ -140,7 +140,7 @@ export function canPostJournalEntry(entry: JournalEntry): boolean {
 
 // Helper to check if entry can be reversed
 export function canReverseJournalEntry(entry: JournalEntry): boolean {
-  return entry.status === 'POSTED' && entry.kind === 'NORMAL';
+  return entry.status === 'POSTED' && ['NORMAL', 'ADJUSTMENT'].includes(entry.kind);
 }
 
 // Helper to check if entry can be deleted
