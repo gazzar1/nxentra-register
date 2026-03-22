@@ -60,11 +60,19 @@ export default function CurrencyRevaluationPage() {
       const { data: result } = await reportsService.postCurrencyRevaluation({
         revaluation_date: revaluationDate,
       });
-      toast({
-        title: t("messages.success"),
-        description: result.message,
-        variant: "success",
-      });
+      if (result.post_error) {
+        toast({
+          title: "Entry created but not posted",
+          description: result.post_error,
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: t("messages.success"),
+          description: result.message,
+          variant: "success",
+        });
+      }
       setShowPostConfirm(false);
       if (result.entry_id) {
         router.push(`/accounting/journal-entries/${result.entry_id}`);

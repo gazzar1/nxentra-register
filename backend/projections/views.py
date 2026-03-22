@@ -5191,6 +5191,20 @@ class CurrencyRevaluationView(APIView):
                 status=status.HTTP_200_OK,
             )
 
+        # Idempotency: check if a revaluation entry already exists for this date
+        from accounting.models import JournalEntry
+        reval_memo = f"Currency revaluation as of {revaluation_date.isoformat()}"
+        existing = JournalEntry.objects.filter(
+            company=actor.company,
+            memo=reval_memo,
+            status__in=[JournalEntry.Status.DRAFT, JournalEntry.Status.POSTED],
+        ).first()
+        if existing:
+            return Response(
+                {"error": f"A revaluation entry for {revaluation_date.isoformat()} already exists (#{existing.id}). Delete it first to re-run."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
         # Find the FX gain and FX loss accounts (prefer core mapping, fallback to role)
         from accounting.models import Account
         from accounting.mappings import ModuleAccountMapping
@@ -5296,11 +5310,25 @@ class CurrencyRevaluationView(APIView):
         entry = result.data
         post_result = post_journal_entry(actor=actor, entry_id=entry.id)
 
+        if not post_result.success:
+            # Entry was created but could not be auto-posted
+            entry.refresh_from_db()
+            return Response({
+                "message": "Revaluation entry created but auto-post failed.",
+                "entry_id": entry.id,
+                "entry_number": entry.entry_number or "",
+                "total_gain_loss": str(total_gain_loss),
+                "adjustments_count": len(adjustments),
+                "posted": False,
+                "post_error": post_result.error,
+            }, status=status.HTTP_201_CREATED)
+
+        entry.refresh_from_db()
         return Response({
             "message": "Currency revaluation journal entry created and posted.",
             "entry_id": entry.id,
             "entry_number": entry.entry_number,
             "total_gain_loss": str(total_gain_loss),
             "adjustments_count": len(adjustments),
-            "posted": post_result.success,
+            "posted": True,
         }, status=status.HTTP_201_CREATED)
