@@ -5065,6 +5065,15 @@ class CurrencyRevaluationView(APIView):
 
         functional_currency = company.functional_currency or company.default_currency
 
+        # Get FX gain/loss/rounding account IDs to exclude from revaluation
+        from accounting.mappings import ModuleAccountMapping
+        core_mapping = ModuleAccountMapping.get_mapping(company, "core")
+        exclude_account_ids = set()
+        for role in ("FX_GAIN", "FX_LOSS", "FX_ROUNDING"):
+            acct = core_mapping.get(role)
+            if acct:
+                exclude_account_ids.add(acct.id)
+
         # Find all posted journal lines with foreign currencies
         from django.db.models import Avg
 
@@ -5078,6 +5087,7 @@ class CurrencyRevaluationView(APIView):
             .exclude(currency="")
             .exclude(currency=functional_currency)
             .exclude(account__requires_counterparty=True)  # Skip AR/AP control accounts
+            .exclude(account_id__in=exclude_account_ids)  # Skip FX gain/loss/rounding accounts
             .values("account__id", "account__code", "account__name", "currency")
             .annotate(
                 foreign_debit=Coalesce(Sum("debit"), Decimal("0")),
