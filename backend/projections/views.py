@@ -5102,6 +5102,7 @@ class CurrencyRevaluationView(APIView):
             avg_rate = group["avg_exchange_rate"]
 
             # Current functional currency balance for this account+currency
+            # (includes prior revaluation lines tagged with the same currency)
             current_functional_balance = functional_debit - functional_credit
 
             # If amount_currency was not stored (legacy lines), back-calculate
@@ -5248,46 +5249,52 @@ class CurrencyRevaluationView(APIView):
         for adj in adjustments:
             unrealized = Decimal(adj["unrealized_gain_loss"])
             account_id = adj["account_id"]
+            adj_currency = adj["currency"]
 
             if unrealized > 0:
                 lines.append({
                     "account_id": account_id,
-                    "description": f"FX revaluation {adj['currency']} @ {adj['current_rate']}",
+                    "description": f"FX revaluation {adj_currency} @ {adj['current_rate']}",
                     "debit": str(unrealized),
                     "credit": "0",
+                    "currency": adj_currency,
                 })
             else:
                 lines.append({
                     "account_id": account_id,
-                    "description": f"FX revaluation {adj['currency']} @ {adj['current_rate']}",
+                    "description": f"FX revaluation {adj_currency} @ {adj['current_rate']}",
                     "debit": "0",
                     "credit": str(abs(unrealized)),
+                    "currency": adj_currency,
                 })
 
-        # Add offsetting FX gain/loss entries
-        total_gains = sum(
-            Decimal(a["unrealized_gain_loss"]) for a in adjustments
-            if Decimal(a["unrealized_gain_loss"]) > 0
-        )
-        total_losses = sum(
-            abs(Decimal(a["unrealized_gain_loss"])) for a in adjustments
-            if Decimal(a["unrealized_gain_loss"]) < 0
-        )
+        # Add offsetting FX gain/loss entries per currency
+        from collections import defaultdict
+        gains_by_currency = defaultdict(Decimal)
+        losses_by_currency = defaultdict(Decimal)
+        for a in adjustments:
+            amt = Decimal(a["unrealized_gain_loss"])
+            if amt > 0:
+                gains_by_currency[a["currency"]] += amt
+            elif amt < 0:
+                losses_by_currency[a["currency"]] += abs(amt)
 
-        if total_gains > 0:
+        for curr, gain in gains_by_currency.items():
             lines.append({
                 "account_id": fx_gain_account.id,
-                "description": "Unrealized FX gain",
+                "description": f"Unrealized FX gain ({curr})",
                 "debit": "0",
-                "credit": str(total_gains),
+                "credit": str(gain),
+                "currency": curr,
             })
 
-        if total_losses > 0:
+        for curr, loss in losses_by_currency.items():
             lines.append({
                 "account_id": fx_loss_account.id,
-                "description": "Unrealized FX loss",
-                "debit": str(total_losses),
+                "description": f"Unrealized FX loss ({curr})",
+                "debit": str(loss),
                 "credit": "0",
+                "currency": curr,
             })
 
         # Resolve period for the revaluation date
