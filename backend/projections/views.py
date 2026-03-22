@@ -5066,6 +5066,8 @@ class CurrencyRevaluationView(APIView):
         functional_currency = company.functional_currency or company.default_currency
 
         # Find all posted journal lines with foreign currencies
+        from django.db.models import Avg
+
         foreign_lines = (
             JournalLine.objects
             .filter(
@@ -5080,6 +5082,7 @@ class CurrencyRevaluationView(APIView):
                 foreign_debit=Coalesce(Sum("debit"), Decimal("0")),
                 foreign_credit=Coalesce(Sum("credit"), Decimal("0")),
                 total_amount_currency=Coalesce(Sum("amount_currency"), Decimal("0")),
+                avg_exchange_rate=Avg("exchange_rate"),
             )
         )
 
@@ -5094,9 +5097,18 @@ class CurrencyRevaluationView(APIView):
             functional_debit = group["foreign_debit"]
             functional_credit = group["foreign_credit"]
             foreign_amount = group["total_amount_currency"]
+            avg_rate = group["avg_exchange_rate"]
 
             # Current functional currency balance for this account+currency
             current_functional_balance = functional_debit - functional_credit
+
+            # If amount_currency was not stored (legacy lines), back-calculate
+            # the foreign balance from functional amounts / original booking rate
+            if foreign_amount == Decimal("0") and current_functional_balance != Decimal("0"):
+                if avg_rate and avg_rate != Decimal("0"):
+                    foreign_amount = (current_functional_balance / avg_rate).quantize(Decimal("0.01"))
+                else:
+                    continue
 
             # Look up current exchange rate
             current_rate = ExchangeRate.get_rate(
