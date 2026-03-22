@@ -5270,9 +5270,9 @@ class CurrencyRevaluationView(APIView):
         from accounting.commands import create_journal_entry, save_journal_entry_complete, post_journal_entry
         functional_currency = actor.company.functional_currency or actor.company.default_currency
 
-        # Revaluation lines are in functional currency (amounts are already converted).
-        # We use functional_currency to prevent post_journal_entry from double-converting.
-        # The foreign currency being adjusted is recorded in the description only.
+        # Revaluation lines: amounts are in functional currency but tagged with the
+        # foreign currency they adjust. post_journal_entry skips conversion for
+        # ADJUSTMENT entries, so there's no double-conversion risk.
         lines = []
         for adj in adjustments:
             unrealized = Decimal(adj["unrealized_gain_loss"])
@@ -5285,7 +5285,7 @@ class CurrencyRevaluationView(APIView):
                     "description": f"FX revaluation {adj_currency} @ {adj['current_rate']}",
                     "debit": str(unrealized),
                     "credit": "0",
-                    "currency": functional_currency,
+                    "currency": adj_currency,
                 })
             else:
                 lines.append({
@@ -5293,7 +5293,7 @@ class CurrencyRevaluationView(APIView):
                     "description": f"FX revaluation {adj_currency} @ {adj['current_rate']}",
                     "debit": "0",
                     "credit": str(abs(unrealized)),
-                    "currency": functional_currency,
+                    "currency": adj_currency,
                 })
 
         # Add offsetting FX gain/loss entries per currency
@@ -5313,7 +5313,7 @@ class CurrencyRevaluationView(APIView):
                 "description": f"Unrealized FX gain ({curr})",
                 "debit": "0",
                 "credit": str(gain),
-                "currency": functional_currency,
+                "currency": curr,
             })
 
         for curr, loss in losses_by_currency.items():
@@ -5322,7 +5322,7 @@ class CurrencyRevaluationView(APIView):
                 "description": f"Unrealized FX loss ({curr})",
                 "debit": str(loss),
                 "credit": "0",
-                "currency": functional_currency,
+                "currency": curr,
             })
 
         # Add rounding line if entry doesn't balance (penny differences from per-line FX conversion)

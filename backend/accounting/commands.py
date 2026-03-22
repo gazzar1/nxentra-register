@@ -1078,14 +1078,17 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
         # If the line's currency differs from the company's functional
         # currency, convert debit/credit to functional currency and
         # preserve the original amounts in amount_currency.
+        # EXCEPTION: ADJUSTMENT entries (e.g. revaluation) have amounts
+        # already expressed in functional currency — skip conversion.
         line_currency = line.get("currency") or aggregate.currency or entry.currency or actor.company.default_currency
         line_exchange_rate = Decimal(str(line.get("exchange_rate") or aggregate.exchange_rate or entry.exchange_rate or "1.0"))
         original_debit = Decimal(str(line.get("debit", "0")))
         original_credit = Decimal(str(line.get("credit", "0")))
 
         functional_currency = actor.company.functional_currency or actor.company.default_currency
+        is_adjustment = aggregate.kind == JournalEntry.Kind.ADJUSTMENT
 
-        if line_currency != functional_currency:
+        if line_currency != functional_currency and not is_adjustment:
             # Auto-lookup rate if not explicitly provided (still default 1.0)
             if line_exchange_rate == Decimal("1.0"):
                 from accounting.models import ExchangeRate
@@ -1102,7 +1105,7 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
             converted_debit = (original_debit * line_exchange_rate).quantize(Decimal("0.01"))
             converted_credit = (original_credit * line_exchange_rate).quantize(Decimal("0.01"))
         else:
-            # Same currency — no conversion needed
+            # Same currency, or ADJUSTMENT entry — no conversion needed
             amount_currency_val = line.get("amount_currency")
             if amount_currency_val is not None:
                 amount_currency_val = Decimal(str(amount_currency_val))
