@@ -5218,6 +5218,19 @@ class CurrencyRevaluationView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
 
+        # Clean up any leftover INCOMPLETE revaluation entries from failed attempts
+        from accounting.commands import delete_journal_entry
+        stale = JournalEntry.objects.filter(
+            company=actor.company,
+            memo=reval_memo,
+            status=JournalEntry.Status.INCOMPLETE,
+        )
+        for s in stale:
+            try:
+                delete_journal_entry(actor, s.id)
+            except Exception:
+                pass
+
         # Find the FX gain and FX loss accounts (prefer core mapping, fallback to role)
         from accounting.models import Account
         from accounting.mappings import ModuleAccountMapping
@@ -5307,12 +5320,15 @@ class CurrencyRevaluationView(APIView):
         ).first()
         period = fp.period if fp else revaluation_date.month
 
-        # Create the JE
+        # Create the JE (include timestamp nonce in memo_ar to avoid event idempotency collision
+        # when re-creating after a failed attempt with the same lines)
+        import uuid as _uuid
+        nonce = str(_uuid.uuid4())[:8]
         result = create_journal_entry(
             actor=actor,
             date=revaluation_date,
-            memo=f"Currency revaluation as of {revaluation_date.isoformat()}",
-            memo_ar=f"إعادة تقييم العملات بتاريخ {revaluation_date.isoformat()}",
+            memo=reval_memo,
+            memo_ar=f"إعادة تقييم العملات بتاريخ {revaluation_date.isoformat()} [{nonce}]",
             lines=lines,
             kind="ADJUSTMENT",
             currency=functional_currency,
