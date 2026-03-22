@@ -5242,7 +5242,7 @@ class CurrencyRevaluationView(APIView):
             )
 
         # Build journal entry lines
-        from accounting.commands import create_journal_entry, post_journal_entry
+        from accounting.commands import create_journal_entry, save_journal_entry_complete, post_journal_entry
         functional_currency = actor.company.functional_currency or actor.company.default_currency
 
         lines = []
@@ -5325,8 +5325,22 @@ class CurrencyRevaluationView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Auto-post the revaluation entry
+        # Transition INCOMPLETE -> DRAFT, then auto-post
         entry = result.data
+        save_result = save_journal_entry_complete(actor=actor, entry_id=entry.id)
+        if not save_result.success:
+            entry.refresh_from_db()
+            return Response({
+                "message": "Revaluation entry created but could not be finalized.",
+                "entry_id": entry.id,
+                "entry_number": entry.entry_number or "",
+                "total_gain_loss": str(total_gain_loss),
+                "adjustments_count": len(adjustments),
+                "posted": False,
+                "post_error": save_result.error,
+            }, status=status.HTTP_201_CREATED)
+
+        entry.refresh_from_db()
         post_result = post_journal_entry(actor=actor, entry_id=entry.id)
 
         if not post_result.success:
