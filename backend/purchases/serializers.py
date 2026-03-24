@@ -51,6 +51,7 @@ class PurchaseBillSerializer(serializers.ModelSerializer):
             "id", "public_id", "bill_number", "bill_date", "due_date",
             "vendor", "vendor_name", "vendor_code",
             "posting_profile", "posting_profile_code",
+            "currency", "exchange_rate",
             "subtotal", "total_discount", "total_tax", "total_amount",
             "status", "posted_at", "posted_by", "posted_by_email",
             "posted_journal_entry", "posted_journal_entry_number",
@@ -61,6 +62,7 @@ class PurchaseBillSerializer(serializers.ModelSerializer):
         read_only_fields = [
             "id", "public_id",
             "vendor_name", "vendor_code", "posting_profile_code",
+            "currency", "exchange_rate",
             "subtotal", "total_discount", "total_tax", "total_amount",
             "status", "posted_at", "posted_by", "posted_by_email",
             "posted_journal_entry", "posted_journal_entry_number",
@@ -91,6 +93,8 @@ class PurchaseBillCreateSerializer(serializers.Serializer):
     due_date = serializers.DateField(required=False, allow_null=True)
     vendor_id = serializers.IntegerField()
     posting_profile_id = serializers.IntegerField()
+    currency = serializers.CharField(max_length=3, required=False, allow_blank=True, default="")
+    exchange_rate = serializers.DecimalField(max_digits=18, decimal_places=6, required=False, default=Decimal("1"))
     reference = serializers.CharField(max_length=100, required=False, allow_blank=True, default="")
     notes = serializers.CharField(required=False, allow_blank=True, default="")
     lines = PurchaseBillLineInputSerializer(many=True)
@@ -111,6 +115,7 @@ class PurchaseBillListSerializer(serializers.ModelSerializer):
         fields = [
             "id", "public_id", "bill_number", "bill_date", "due_date",
             "vendor", "vendor_name", "vendor_code",
+            "currency", "exchange_rate",
             "total_amount", "status",
             "created_at",
         ]

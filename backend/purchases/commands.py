@@ -66,6 +66,8 @@ def create_purchase_bill(
     due_date=None,
     reference: str = "",
     notes: str = "",
+    currency: str = "",
+    exchange_rate=None,
 ) -> CommandResult:
     """
     Create a new purchase bill with lines.
@@ -182,6 +184,10 @@ def create_purchase_bill(
     total_tax = sum(l["tax_amount"] for l in calculated_lines)
     total_amount = sum(l["line_total"] for l in calculated_lines)
 
+    # Resolve currency: explicit > vendor default > company default
+    bill_currency = currency or getattr(vendor, 'currency', '') or actor.company.default_currency
+    bill_exchange_rate = Decimal(str(exchange_rate)) if exchange_rate else Decimal("1")
+
     with command_writes_allowed():
         # Create bill
         bill = PurchaseBill.objects.create(
@@ -191,6 +197,8 @@ def create_purchase_bill(
             due_date=due_date,
             vendor=vendor,
             posting_profile=posting_profile,
+            currency=bill_currency,
+            exchange_rate=bill_exchange_rate,
             subtotal=subtotal,
             total_discount=total_discount,
             total_tax=total_tax,
@@ -422,14 +430,23 @@ def post_purchase_bill(actor: ActorContext, bill_id: int) -> CommandResult:
             "credit": Decimal("0"),
         })
 
-    # Create journal entry
-    je_result = create_journal_entry(
+    # Create journal entry (with currency if foreign)
+    functional_currency = actor.company.functional_currency or actor.company.default_currency
+    bill_currency = bill.currency or functional_currency
+    bill_rate = bill.exchange_rate if bill.exchange_rate and bill.exchange_rate != Decimal("0") else Decimal("1")
+
+    je_kwargs = dict(
         actor=actor,
         date=bill.bill_date,
         memo=f"Purchase Bill {bill.bill_number}",
         lines=je_lines,
         kind=JournalEntry.Kind.NORMAL,
     )
+    if bill_currency != functional_currency:
+        je_kwargs["currency"] = bill_currency
+        je_kwargs["exchange_rate"] = str(bill_rate)
+
+    je_result = create_journal_entry(**je_kwargs)
 
     if not je_result.success:
         return CommandResult.fail(f"Failed to create journal entry: {je_result.error}")

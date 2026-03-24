@@ -4,7 +4,7 @@ import { useTranslation } from "next-i18next";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import { ArrowLeft, Plus, Trash2, Save } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useForm, useFieldArray, Controller } from "react-hook-form";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,8 @@ import { useItems, useTaxCodes, usePostingProfiles } from "@/queries/useSales";
 import { useCreatePurchaseBill } from "@/queries/usePurchases";
 import { useAccounts } from "@/queries/useAccounts";
 import { useToast } from "@/components/ui/toaster";
+import { useCompanySettings } from "@/queries/useCompanySettings";
+import { exchangeRatesService } from "@/services/exchange-rates.service";
 import type { PurchaseBillCreatePayload, PurchaseBillLineInput } from "@/types/purchases";
 import { cn } from "@/lib/cn";
 
@@ -59,6 +61,12 @@ export default function NewPurchaseBillPage() {
   const { data: postingProfiles } = usePostingProfiles({ profile_type: "VENDOR" });
   const { data: accounts } = useAccounts();
   const createBill = useCreatePurchaseBill();
+  const { data: companySettings } = useCompanySettings();
+  const functionalCurrency = companySettings?.functional_currency || companySettings?.default_currency || "USD";
+
+  const [billCurrency, setBillCurrency] = useState<string>("");
+  const [exchangeRate, setExchangeRate] = useState<string>("1");
+  const [availableCurrencies, setAvailableCurrencies] = useState<string[]>([]);
 
   const expenseAccounts = accounts?.filter(
     (a) => (a.account_type === "EXPENSE" || a.account_type === "ASSET") && a.is_postable && !a.is_header
@@ -100,6 +108,48 @@ export default function NewPurchaseBillPage() {
   });
 
   const watchLines = watch("lines");
+  const selectedVendorId = watch("vendor_id");
+  const watchBillDate = watch("bill_date");
+
+  // Fetch available currencies on mount
+  useEffect(() => {
+    if (!functionalCurrency) return;
+    exchangeRatesService.list().then((res) => {
+      const codes = new Set<string>();
+      codes.add(functionalCurrency);
+      res.data.forEach((r: any) => { codes.add(r.from_currency); codes.add(r.to_currency); });
+      setAvailableCurrencies(Array.from(codes).sort());
+    }).catch(() => {});
+  }, [functionalCurrency]);
+
+  // Auto-set currency from vendor
+  useEffect(() => {
+    if (selectedVendorId && vendors) {
+      const vendor = vendors.find((v) => String(v.id) === selectedVendorId);
+      if (vendor?.currency) {
+        setBillCurrency(vendor.currency);
+      } else {
+        setBillCurrency(functionalCurrency);
+      }
+    }
+  }, [selectedVendorId, vendors, functionalCurrency]);
+
+  // Auto-lookup exchange rate when currency or date changes
+  useEffect(() => {
+    if (!billCurrency || billCurrency === functionalCurrency) {
+      setExchangeRate("1");
+      return;
+    }
+    const dateStr = watchBillDate || new Date().toISOString().split("T")[0];
+    exchangeRatesService
+      .lookup({ from_currency: billCurrency, to_currency: functionalCurrency, date: dateStr })
+      .then((res) => {
+        if (res.data.rate) {
+          setExchangeRate(res.data.rate);
+        }
+      })
+      .catch(() => {});
+  }, [billCurrency, watchBillDate, functionalCurrency]);
 
   // Calculate line totals
   const calculateLineTotal = (line: BillLineFormData) => {
@@ -158,6 +208,8 @@ export default function NewPurchaseBillPage() {
         vendor_id: parseInt(data.vendor_id),
         vendor_bill_reference: data.vendor_bill_reference,
         posting_profile_id: parseInt(data.posting_profile_id),
+        currency: billCurrency || functionalCurrency,
+        exchange_rate: exchangeRate,
         notes: data.notes,
         lines: data.lines.map((line) => ({
           item_id: line.item_id ? parseInt(line.item_id) : null,
@@ -297,6 +349,38 @@ export default function NewPurchaseBillPage() {
               />
               {errors.posting_profile_id && (
                 <p className="text-sm text-destructive">{errors.posting_profile_id.message}</p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label>Currency</Label>
+              <Select value={billCurrency} onValueChange={setBillCurrency}>
+                <SelectTrigger>
+                  <SelectValue placeholder={functionalCurrency} />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableCurrencies.map((code) => (
+                    <SelectItem key={code} value={code}>
+                      {code}{code === functionalCurrency ? " (functional)" : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Exchange Rate</Label>
+              <Input
+                type="number"
+                step="0.000001"
+                value={exchangeRate}
+                onChange={(e) => setExchangeRate(e.target.value)}
+                disabled={!billCurrency || billCurrency === functionalCurrency}
+              />
+              {billCurrency && billCurrency !== functionalCurrency && (
+                <p className="text-xs text-muted-foreground">
+                  1 {billCurrency} = {exchangeRate} {functionalCurrency}
+                </p>
               )}
             </div>
 

@@ -63,6 +63,8 @@ export interface PurchaseBill {
   posting_profile: number;
   posting_profile_code?: string;
   posting_profile_name?: string;
+  currency: string;
+  exchange_rate: string;
   subtotal: string;
   total_discount: string;
   total_tax: string;
@@ -92,6 +94,8 @@ export interface PurchaseBillListItem {
   vendor_code?: string;
   vendor_name?: string;
   vendor_bill_reference: string;
+  currency: string;
+  exchange_rate: string;
   total_amount: string;
   status: PurchaseBillStatus;
   posted_at: string | null;
@@ -105,6 +109,8 @@ export interface PurchaseBillCreatePayload {
   vendor_id: number;
   vendor_bill_reference?: string;
   posting_profile_id: number;
+  currency?: string;
+  exchange_rate?: string;
   lines: PurchaseBillLineInput[];
   notes?: string;
   notes_ar?: string;
@@ -117,6 +123,8 @@ export interface PurchaseBillUpdatePayload {
   vendor_id?: number;
   vendor_bill_reference?: string;
   posting_profile_id?: number;
+  currency?: string;
+  exchange_rate?: string;
   lines?: PurchaseBillLineInput[];
   notes?: string;
   notes_ar?: string;
