@@ -1583,7 +1583,7 @@ class CustomerReceiptCreateView(APIView):
                 company=actor.company,
                 event_type="cash.customer_receipt_recorded",
             )
-            .order_by("-created_at")
+            .order_by("-occurred_at")
         )
 
         results = []
@@ -1716,7 +1716,7 @@ class VendorPaymentCreateView(APIView):
                 company=actor.company,
                 event_type="cash.vendor_payment_recorded",
             )
-            .order_by("-created_at")
+            .order_by("-occurred_at")
         )
 
         results = []
