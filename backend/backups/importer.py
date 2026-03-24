@@ -157,63 +157,51 @@ def restore_company(company, zip_file):
 
 def _clear_company_data(company, registry):
     """
-    Delete all existing company data.
+    Delete all existing company data using raw SQL.
 
-    Uses multiple passes to handle FK dependencies: keeps deleting
-    until nothing is left or no progress is made. This handles
-    cross-layer FK references (e.g., PurchaseBill → Vendor) without
-    needing to know the exact dependency graph.
+    Triggers are already disabled by the caller, so FK constraints
+    won't block deletion. Uses raw SQL to bypass any custom model
+    delete() overrides (e.g., BusinessEvent immutability).
     """
-    from events.models import EventPayload, BusinessEvent
+    from django.db import connection
+    from events.models import EventPayload
 
     total_deleted = 0
 
-    # First: delete BusinessEvent (immutable — needs special handling)
-    count = BusinessEvent.objects.filter(company=company).count()
-    if count > 0:
-        BusinessEvent.objects.filter(company=company).delete()
-        total_deleted += count
+    # Delete in reverse registry order (children before parents)
+    models_list = list(registry.items())
+    models_list.reverse()
 
-    # Build list of models to clear (excluding EventPayload and BusinessEvent)
-    models_to_clear = []
-    for label, model_cls in registry.items():
-        if model_cls is EventPayload or model_cls is BusinessEvent:
-            continue
-        models_to_clear.append((label, model_cls))
-
-    # Multi-pass deletion: keep going until everything is deleted
-    # or no progress is made (handles FK dependency ordering)
-    max_passes = 10
-    for pass_num in range(max_passes):
-        pass_deleted = 0
-        remaining = []
-
-        for label, model_cls in models_to_clear:
-            qs = _get_company_qs_for_delete(model_cls, company)
-            if qs is None or qs.count() == 0:
+    with connection.cursor() as cursor:
+        for label, model_cls in models_list:
+            # Skip EventPayload (content-addressed, shared across companies)
+            if model_cls is EventPayload:
                 continue
 
-            try:
-                count, _ = qs.delete()
-                pass_deleted += count
-                total_deleted += count
-            except Exception:
-                # FK constraint — will retry in next pass
-                remaining.append((label, model_cls))
+            # Find the company FK column name
+            company_col = _get_company_column(model_cls)
+            if not company_col:
+                continue
 
-        if not remaining or pass_deleted == 0:
-            break
-        models_to_clear = remaining
+            table = model_cls._meta.db_table
+            cursor.execute(
+                f'DELETE FROM "{table}" WHERE "{company_col}" = %s',
+                [company.id],
+            )
+            count = cursor.rowcount
+            if count > 0:
+                total_deleted += count
+                logger.info("Cleared %d rows from %s", count, table)
 
     return total_deleted
 
 
-def _get_company_qs_for_delete(model_cls, company):
-    """Get a queryset of model instances for a company (for deletion)."""
+def _get_company_column(model_cls):
+    """Get the database column name for the company FK."""
     for field in model_cls._meta.get_fields():
         if isinstance(field, (models.ForeignKey, models.OneToOneField)):
             if field.related_model and field.related_model.__name__ == "Company":
-                return model_cls.objects.filter(**{field.name: company})
+                return field.column
     return None
 
 
@@ -334,13 +322,12 @@ def _import_model_records(model_cls, company, records, pk_map, label, excluded_f
         field_values.pop(pk_field_name, None)
         field_values.pop("id", None)
 
-        try:
-            obj = model_cls(**field_values)
-            obj.save()
-            old_to_new[old_pk] = obj.pk
-            imported += 1
-        except Exception as e:
-            logger.warning("Failed to import %s record (pk=%s): %s", label, old_pk, e)
+        # Use models.Model.save() to bypass any custom save() overrides
+        # (e.g., ProjectionWriteGuard, immutability checks)
+        obj = model_cls(**field_values)
+        models.Model.save(obj)
+        old_to_new[old_pk] = obj.pk
+        imported += 1
 
     pk_map[label] = old_to_new
     return imported
