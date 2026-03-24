@@ -82,13 +82,21 @@ def restore_company(company, zip_file):
         from projections.write_barrier import projection_writes_allowed, bootstrap_writes_allowed
 
         with bootstrap_writes_allowed(), projection_writes_allowed():
-            # Phase 1: Clear existing company data (reverse dependency order)
-            cleared = _clear_company_data(company, registry)
-            stats["cleared"] = cleared
-
-            # Phase 2: Import data in dependency order
+            # Wrap BOTH clear and import in a single transaction so that
+            # if import fails, the clear is rolled back and no data is lost.
             with transaction.atomic():
-                # Build PK mapping: {label: {old_pk: new_pk}}
+                # Defer FK constraint checks to commit time so that
+                # cross-model references resolve regardless of insert order.
+                from django.db import connection
+                if connection.vendor == "postgresql":
+                    with connection.cursor() as cursor:
+                        cursor.execute("SET CONSTRAINTS ALL DEFERRED")
+
+                # Phase 1: Clear existing company data
+                cleared = _clear_company_data(company, registry)
+                stats["cleared"] = cleared
+
+                # Phase 2: Import data in dependency order
                 pk_map = {}
 
                 for label, model_cls in registry.items():
@@ -229,18 +237,26 @@ def _import_model_records(model_cls, company, records, pk_map, label, excluded_f
 
                 # Remap FK to already-imported records
                 if value is not None:
+                    remapped = None
                     related_label = _find_label_for_model(field.related_model, pk_map)
                     if related_label and related_label in pk_map:
                         remapped = pk_map[related_label].get(value)
-                        if remapped is not None:
-                            field_values[field.attname] = remapped
-                            continue
                     # Self-referential FKs (e.g., caused_by_event)
-                    if field.related_model == model_cls and label in pk_map:
+                    if remapped is None and field.related_model == model_cls and label in pk_map:
                         remapped = pk_map[label].get(value)
-                        if remapped is not None:
-                            field_values[field.attname] = remapped
-                            continue
+
+                    if remapped is not None:
+                        field_values[field.attname] = remapped
+                        continue
+                    elif field.null:
+                        # FK target not found — set nullable FK to None
+                        field_values[field.attname] = None
+                        continue
+                    else:
+                        # Non-nullable FK target not found — keep raw value
+                        # and rely on deferred constraints to resolve at commit
+                        field_values[field.attname] = value
+                        continue
 
                 field_values[field.attname] = value
                 continue
