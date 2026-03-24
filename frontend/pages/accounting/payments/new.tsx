@@ -35,6 +35,8 @@ import {
   type VendorPaymentCreatePayload,
   type PaymentAllocation,
 } from "@/services/accounts.service";
+import { purchaseBillsService } from "@/services/purchases.service";
+import type { PurchaseBillListItem } from "@/types/purchases";
 import { periodsService, type FiscalPeriod } from "@/services/periods.service";
 import { exchangeRatesService } from "@/services/exchange-rates.service";
 import { useCompanySettings } from "@/queries/useCompanySettings";
@@ -105,6 +107,7 @@ export default function NewVendorPaymentPage() {
   const watchPaymentDate = watch("payment_date");
   const watchAccountingDate = watch("accounting_date");
 
+  const [vendorBills, setVendorBills] = useState<PurchaseBillListItem[]>([]);
   const [periods, setPeriods] = useState<FiscalPeriod[]>([]);
   const [resolvedPeriod, setResolvedPeriod] = useState<string>("");
   const [paymentCurrency, setPaymentCurrency] = useState<string>("");
@@ -131,7 +134,7 @@ export default function NewVendorPaymentPage() {
     }).catch(() => {});
   }, [functionalCurrency]);
 
-  // Auto-set currency from vendor
+  // Auto-set currency from vendor and fetch open bills
   useEffect(() => {
     if (selectedVendorId && vendors) {
       const vend = vendors.find((v) => String(v.id) === selectedVendorId);
@@ -140,6 +143,12 @@ export default function NewVendorPaymentPage() {
       } else {
         setPaymentCurrency(functionalCurrency);
       }
+      // Fetch posted (open) bills for this vendor
+      purchaseBillsService.list({ vendor_id: parseInt(selectedVendorId), status: "POSTED" })
+        .then((res) => setVendorBills(res.data))
+        .catch(() => setVendorBills([]));
+    } else {
+      setVendorBills([]);
     }
   }, [selectedVendorId, vendors, functionalCurrency]);
 
@@ -520,17 +529,53 @@ export default function NewVendorPaymentPage() {
                       {fields.map((field, index) => (
                         <TableRow key={field.id}>
                           <TableCell>
-                            <Input
-                              {...register(`allocations.${index}.bill_reference` as const, {
-                                required: t("accounting:billReferenceRequired", "Bill reference is required"),
-                              })}
-                              placeholder={t("accounting:billReferencePlaceholder", "INV-001, PO-123, etc.")}
-                            />
+                            {vendorBills.length > 0 ? (
+                              <Controller
+                                name={`allocations.${index}.bill_reference` as const}
+                                control={control}
+                                rules={{ required: t("accounting:billReferenceRequired", "Bill reference is required") }}
+                                render={({ field: f }) => (
+                                  <Select
+                                    onValueChange={(val) => {
+                                      f.onChange(val);
+                                      const bill = vendorBills.find((b) => b.bill_number === val);
+                                      if (bill) {
+                                        setValue(`allocations.${index}.bill_date`, bill.bill_date);
+                                        setValue(`allocations.${index}.bill_amount`, bill.total_amount);
+                                        if (!allocations[index]?.amount) {
+                                          setValue(`allocations.${index}.amount`, bill.total_amount);
+                                        }
+                                      }
+                                    }}
+                                    value={f.value}
+                                  >
+                                    <SelectTrigger>
+                                      <SelectValue placeholder={t("accounting:selectBill", "Select bill")} />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      {vendorBills.map((bill) => (
+                                        <SelectItem key={bill.id} value={bill.bill_number}>
+                                          {bill.bill_number} — {formatCurrency(bill.total_amount)} ({bill.bill_date})
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                )}
+                              />
+                            ) : (
+                              <Input
+                                {...register(`allocations.${index}.bill_reference` as const, {
+                                  required: t("accounting:billReferenceRequired", "Bill reference is required"),
+                                })}
+                                placeholder={t("accounting:billReferencePlaceholder", "INV-001, PO-123, etc.")}
+                              />
+                            )}
                           </TableCell>
                           <TableCell>
                             <Input
                               type="date"
                               {...register(`allocations.${index}.bill_date` as const)}
+                              readOnly={vendorBills.length > 0}
                             />
                           </TableCell>
                           <TableCell>
@@ -541,6 +586,7 @@ export default function NewVendorPaymentPage() {
                               {...register(`allocations.${index}.bill_amount` as const)}
                               placeholder="0.00"
                               className="text-right"
+                              readOnly={vendorBills.length > 0}
                             />
                           </TableCell>
                           <TableCell>
