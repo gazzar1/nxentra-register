@@ -3402,23 +3402,31 @@ def record_customer_receipt(
     if receipt_currency == functional_currency:
         receipt_exchange_rate = Decimal("1")
 
+    # Convert to functional currency if needed
+    if receipt_currency != functional_currency and receipt_exchange_rate != Decimal("1"):
+        functional_amount = (receipt_amount * receipt_exchange_rate).quantize(Decimal("0.01"))
+    else:
+        functional_amount = receipt_amount
+
     lines = [
         {
             "account_public_id": str(bank_account.public_id),
             "account_code": bank_account.code,
-            "debit": str(receipt_amount),
+            "debit": str(functional_amount),
             "credit": "0",
             "line_no": 1,
             "memo": memo or f"Customer receipt from {customer.code}",
+            "amount_currency": str(receipt_amount) if receipt_currency != functional_currency else None,
         },
         {
             "account_public_id": str(ar_control.public_id),
             "account_code": ar_control.code,
             "debit": "0",
-            "credit": str(receipt_amount),
+            "credit": str(functional_amount),
             "line_no": 2,
             "memo": memo or f"Customer receipt from {customer.code}",
             "customer_public_id": str(customer.public_id),
+            "amount_currency": str(-receipt_amount) if receipt_currency != functional_currency else None,
         },
     ]
 
@@ -3521,6 +3529,7 @@ def record_customer_receipt(
             description=line.get("memo", ""),
             debit=line.get("debit", "0"),
             credit=line.get("credit", "0"),
+            amount_currency=line.get("amount_currency"),
             customer_public_id=line.get("customer_public_id"),
             vendor_public_id=None,
         ))
@@ -3823,23 +3832,31 @@ def record_vendor_payment(
     if payment_currency == functional_currency:
         payment_exchange_rate = Decimal("1")
 
+    # Convert to functional currency if needed
+    if payment_currency != functional_currency and payment_exchange_rate != Decimal("1"):
+        functional_amount = (payment_amount * payment_exchange_rate).quantize(Decimal("0.01"))
+    else:
+        functional_amount = payment_amount
+
     lines = [
         {
             "account_public_id": str(ap_control.public_id),
             "account_code": ap_control.code,
-            "debit": str(payment_amount),
+            "debit": str(functional_amount),
             "credit": "0",
             "line_no": 1,
             "memo": memo or f"Vendor payment to {vendor.code}",
             "vendor_public_id": str(vendor.public_id),
+            "amount_currency": str(payment_amount) if payment_currency != functional_currency else None,
         },
         {
             "account_public_id": str(bank_account.public_id),
             "account_code": bank_account.code,
             "debit": "0",
-            "credit": str(payment_amount),
+            "credit": str(functional_amount),
             "line_no": 2,
             "memo": memo or f"Vendor payment to {vendor.code}",
+            "amount_currency": str(-payment_amount) if payment_currency != functional_currency else None,
         },
     ]
 
@@ -3933,6 +3950,7 @@ def record_vendor_payment(
             description=line.get("memo", ""),
             debit=line.get("debit", "0"),
             credit=line.get("credit", "0"),
+            amount_currency=line.get("amount_currency"),
             customer_public_id=None,
             vendor_public_id=line.get("vendor_public_id"),
         ))
