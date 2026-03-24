@@ -84,6 +84,7 @@ INSTALLED_APPS = [
     "shopify_connector.apps.ShopifyConnectorConfig",
     "stripe_connector.apps.StripeConnectorConfig",
     "bank_connector.apps.BankConnectorConfig",
+    "backups.apps.BackupsConfig",
     "channels",
     "django_celery_beat",  # Periodic tasks
     "django_celery_results",  # Task results

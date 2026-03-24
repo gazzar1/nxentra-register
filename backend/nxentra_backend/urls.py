@@ -27,6 +27,7 @@ urlpatterns = [
     path("api/bank/", include("bank_connector.urls")),
     path("api/platforms/", include("platform_connectors.urls")),
     path("api/events/", include("events.urls")),
+    path("api/backups/", include("backups.urls")),
     path("api-auth/", include("rest_framework.urls")),
 ]
 
