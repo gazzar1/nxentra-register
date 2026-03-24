@@ -3398,7 +3398,7 @@ def record_customer_receipt(
 
     # Resolve receipt currency: explicit > customer default > functional
     receipt_currency = currency or getattr(customer, "currency", "") or functional_currency
-    receipt_exchange_rate = Decimal(exchange_rate) if exchange_rate else Decimal("1")
+    receipt_exchange_rate = Decimal(str(exchange_rate)) if exchange_rate else Decimal("1")
     if receipt_currency == functional_currency:
         receipt_exchange_rate = Decimal("1")
 
@@ -3828,7 +3828,7 @@ def record_vendor_payment(
 
     # Resolve payment currency: explicit > vendor default > functional
     payment_currency = currency or getattr(vendor, "currency", "") or functional_currency
-    payment_exchange_rate = Decimal(exchange_rate) if exchange_rate else Decimal("1")
+    payment_exchange_rate = Decimal(str(exchange_rate)) if exchange_rate else Decimal("1")
     if payment_currency == functional_currency:
         payment_exchange_rate = Decimal("1")
 

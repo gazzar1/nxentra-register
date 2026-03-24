@@ -200,6 +200,14 @@ export default function NewSalesInvoicePage() {
     }
   };
 
+  const onValidationError = () => {
+    toast({
+      title: "Validation Error",
+      description: "Please fill in all required fields (marked with *).",
+      variant: "destructive",
+    });
+  };
+
   const onSubmit = async (data: InvoiceFormData) => {
     try {
       const payload: SalesInvoiceCreatePayload = {
@@ -239,7 +247,7 @@ export default function NewSalesInvoicePage() {
 
   return (
     <AppLayout>
-      <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+      <form onSubmit={handleSubmit(onSubmit, onValidationError)} className="space-y-6">
         <PageHeader
           title="New Sales Invoice"
           subtitle="Create a new sales invoice"
@@ -468,8 +476,8 @@ export default function NewSalesInvoicePage() {
                         <td className="py-2 px-2">
                           <Input
                             {...register(`lines.${index}.description`, { required: true })}
-                            className="h-8 text-xs"
-                            placeholder="Description"
+                            className={cn("h-8 text-xs", errors.lines?.[index]?.description && "border-destructive")}
+                            placeholder="Description *"
                           />
                         </td>
                         <td className="py-2 px-2">
@@ -479,8 +487,8 @@ export default function NewSalesInvoicePage() {
                             rules={{ required: "Account required" }}
                             render={({ field: f }) => (
                               <Select onValueChange={f.onChange} value={f.value}>
-                                <SelectTrigger className="h-8 text-xs">
-                                  <SelectValue placeholder="Account" />
+                                <SelectTrigger className={cn("h-8 text-xs", errors.lines?.[index]?.account_id && "border-destructive")}>
+                                  <SelectValue placeholder="Account *" />
                                 </SelectTrigger>
                                 <SelectContent>
                                   {revenueAccounts?.map((acc) => (

@@ -1668,20 +1668,28 @@ class CustomerReceiptCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        result = record_customer_receipt(
-            actor=actor,
-            customer_id=int(customer_id),
-            receipt_date=receipt_date,
-            accounting_date=accounting_date,
-            amount=str(amount),
-            bank_account_id=int(bank_account_id),
-            ar_control_account_id=int(ar_control_account_id),
-            reference=reference,
-            memo=memo,
-            allocations=allocations,
-            currency=receipt_currency,
-            exchange_rate=receipt_exchange_rate,
-        )
+        try:
+            result = record_customer_receipt(
+                actor=actor,
+                customer_id=int(customer_id),
+                receipt_date=receipt_date,
+                accounting_date=accounting_date,
+                amount=str(amount),
+                bank_account_id=int(bank_account_id),
+                ar_control_account_id=int(ar_control_account_id),
+                reference=reference,
+                memo=memo,
+                allocations=allocations,
+                currency=receipt_currency,
+                exchange_rate=str(receipt_exchange_rate) if receipt_exchange_rate else "",
+            )
+        except Exception as e:
+            import traceback
+            logger.error("record_customer_receipt failed: %s\n%s", e, traceback.format_exc())
+            return Response(
+                {"detail": f"Internal error: {e}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         if not result.success:
             return Response(
@@ -1805,20 +1813,28 @@ class VendorPaymentCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        result = record_vendor_payment(
-            actor=actor,
-            vendor_id=int(vendor_id),
-            payment_date=payment_date,
-            accounting_date=accounting_date,
-            amount=str(amount),
-            bank_account_id=int(bank_account_id),
-            ap_control_account_id=int(ap_control_account_id),
-            reference=reference,
-            memo=memo,
-            allocations=allocations,
-            currency=payment_currency,
-            exchange_rate=payment_exchange_rate,
-        )
+        try:
+            result = record_vendor_payment(
+                actor=actor,
+                vendor_id=int(vendor_id),
+                payment_date=payment_date,
+                accounting_date=accounting_date,
+                amount=str(amount),
+                bank_account_id=int(bank_account_id),
+                ap_control_account_id=int(ap_control_account_id),
+                reference=reference,
+                memo=memo,
+                allocations=allocations,
+                currency=str(payment_currency) if payment_currency else "",
+                exchange_rate=str(payment_exchange_rate) if payment_exchange_rate else "",
+            )
+        except Exception as e:
+            import traceback
+            logger.error("record_vendor_payment failed: %s\n%s", e, traceback.format_exc())
+            return Response(
+                {"detail": f"Internal error: {e}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         if not result.success:
             return Response(
