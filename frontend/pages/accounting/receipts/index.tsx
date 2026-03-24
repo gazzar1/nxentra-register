@@ -110,7 +110,7 @@ export default function CustomerReceiptsPage() {
                       <TableHead>{t("accounting:bankAccount", "Bank Account")}</TableHead>
                       <TableHead>{t("accounting:memo", "Memo")}</TableHead>
                       <TableHead className="text-right">{t("accounting:amount", "Amount")}</TableHead>
-                      <TableHead>{t("accounting:journalEntry", "Journal Entry")}</TableHead>
+                      <TableHead>{"Journal Entry"}</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -134,13 +134,17 @@ export default function CustomerReceiptsPage() {
                           })}
                         </TableCell>
                         <TableCell>
-                          {receipt.journal_entry_public_id ? (
+                          {receipt.journal_entry_id ? (
                             <Link
-                              href={`/accounting/journal-entries`}
+                              href={`/accounting/journal-entries/${receipt.journal_entry_id}`}
                               className="text-primary hover:underline text-sm"
                             >
-                              {t("accounting:viewJE", "View JE")}
+                              {receipt.journal_entry_number || "View JE"}
                             </Link>
+                          ) : receipt.journal_entry_public_id ? (
+                            <span className="text-destructive text-sm">
+                              JE missing
+                            </span>
                           ) : (
                             <span className="text-muted-foreground text-sm">—</span>
                           )}

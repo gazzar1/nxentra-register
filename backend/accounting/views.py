@@ -1586,9 +1586,24 @@ class CustomerReceiptCreateView(APIView):
             .order_by("-occurred_at")
         )
 
+        # Pre-fetch JEs for all receipt events
+        je_public_ids = [
+            ev.data.get("journal_entry_public_id", "")
+            for ev in events if ev.data.get("journal_entry_public_id")
+        ]
+        je_map = {}
+        if je_public_ids:
+            for je in JournalEntry.objects.filter(
+                company=actor.company,
+                public_id__in=je_public_ids,
+            ):
+                je_map[str(je.public_id)] = je
+
         results = []
         for ev in events:
             d = ev.data
+            je_pid = d.get("journal_entry_public_id", "")
+            je = je_map.get(je_pid)
             results.append({
                 "receipt_public_id": d.get("receipt_public_id", ""),
                 "customer_code": d.get("customer_code", ""),
@@ -1596,7 +1611,10 @@ class CustomerReceiptCreateView(APIView):
                 "amount": d.get("amount", "0"),
                 "reference": d.get("reference", ""),
                 "memo": d.get("memo", ""),
-                "journal_entry_public_id": d.get("journal_entry_public_id", ""),
+                "journal_entry_public_id": je_pid,
+                "journal_entry_id": je.id if je else None,
+                "journal_entry_number": je.entry_number if je else None,
+                "journal_entry_status": je.status if je else None,
                 "bank_account_code": d.get("bank_account_code", ""),
                 "recorded_at": d.get("recorded_at", ""),
                 "recorded_by_email": d.get("recorded_by_email", ""),
