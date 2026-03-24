@@ -169,6 +169,72 @@ def _next_company_sequence(company, name: str) -> int:
         return value
 
 
+def _fix_fx_rounding_dicts(je_lines, company, currency=None):
+    """
+    Fix penny rounding imbalance in dict-based JE lines caused by FX conversion.
+
+    If total debits and credits differ by a trivial amount (≤ 0.05),
+    adds a rounding line to the FX_ROUNDING account.
+    Falls back to adjusting the largest line if no rounding account is configured.
+    """
+    from accounting.models import Account
+    from accounting.mappings import ModuleAccountMapping
+
+    total_debit = sum(Decimal(str(l.get("debit", 0))) for l in je_lines)
+    total_credit = sum(Decimal(str(l.get("credit", 0))) for l in je_lines)
+    diff = total_debit - total_credit
+
+    if diff == Decimal("0") or abs(diff) > Decimal("0.05"):
+        return
+
+    rounding_account = ModuleAccountMapping.get_account(company, "core", "FX_ROUNDING")
+    if not rounding_account:
+        rounding_account = Account.objects.filter(
+            company=company,
+            role=Account.AccountRole.FX_ROUNDING,
+            is_postable=True,
+        ).first()
+
+    if not rounding_account:
+        # Fallback: adjust the largest line
+        if diff > 0:
+            targets = [l for l in je_lines if Decimal(str(l.get("credit", 0))) > 0]
+            if targets:
+                target = max(targets, key=lambda l: Decimal(str(l["credit"])))
+                target["credit"] = Decimal(str(target["credit"])) + diff
+            else:
+                target = max(je_lines, key=lambda l: Decimal(str(l.get("debit", 0))))
+                target["debit"] = Decimal(str(target["debit"])) - diff
+        else:
+            targets = [l for l in je_lines if Decimal(str(l.get("debit", 0))) > 0]
+            if targets:
+                target = max(targets, key=lambda l: Decimal(str(l["debit"])))
+                target["debit"] = Decimal(str(target["debit"])) - diff
+            else:
+                target = max(je_lines, key=lambda l: Decimal(str(l.get("credit", 0))))
+                target["credit"] = Decimal(str(target["credit"])) + diff
+        logger.debug("FX rounding adjustment (no rounding account): %s", diff)
+        return
+
+    rounding_line = {
+        "account_id": rounding_account.id,
+        "account_public_id": str(rounding_account.public_id),
+        "account_code": rounding_account.code,
+        "description": "FX rounding adjustment",
+        "memo": "FX rounding adjustment",
+        "debit": abs(diff) if diff < 0 else Decimal("0"),
+        "credit": diff if diff > 0 else Decimal("0"),
+    }
+    if currency:
+        rounding_line["currency"] = currency
+    # Assign line_no if lines use that convention
+    if je_lines and "line_no" in je_lines[-1]:
+        rounding_line["line_no"] = max(l.get("line_no", 0) for l in je_lines) + 1
+    je_lines.append(rounding_line)
+    logger.info("FX rounding line added: %s %s to account %s",
+                "CR" if diff > 0 else "DR", abs(diff), rounding_account.code)
+
+
 def _emit_automatic_reversal(actor, entry, posting_event, reason: str):
     """
     Emit a reversal event to undo a posting when tie-out validation fails.
@@ -3398,7 +3464,14 @@ def record_customer_receipt(
 
     # Resolve receipt currency: explicit > customer default > functional
     receipt_currency = currency or getattr(customer, "currency", "") or functional_currency
-    receipt_exchange_rate = Decimal(str(exchange_rate)) if exchange_rate else Decimal("1")
+    if exchange_rate:
+        receipt_exchange_rate = Decimal(str(exchange_rate))
+    elif receipt_currency != functional_currency:
+        from accounting.models import ExchangeRate
+        looked_up = ExchangeRate.get_rate(actor.company, receipt_currency, functional_currency, receipt_date)
+        receipt_exchange_rate = looked_up if looked_up else Decimal("1")
+    else:
+        receipt_exchange_rate = Decimal("1")
     if receipt_currency == functional_currency:
         receipt_exchange_rate = Decimal("1")
 
@@ -3513,13 +3586,17 @@ def record_customer_receipt(
                         "memo": "Realized FX loss on receipt",
                     })
 
+    # Fix any FX rounding imbalance before creating JE
+    if is_foreign:
+        _fix_fx_rounding_dicts(lines, actor.company, currency=receipt_currency)
+
     # Create the journal entry directly (bypassing save_journal_entry for simplicity)
     # We'll use the existing post_journal_entry flow
     from events.types import JournalEntryPostedData, JournalLineData
 
     entry_number = f"JE-{actor.company.id}-{entry_sequence:06d}"
 
-    # Recalculate totals (may have changed due to FX lines)
+    # Recalculate totals (may have changed due to FX/rounding lines)
     total_debit = sum(Decimal(l["debit"]) for l in lines)
     total_credit = sum(Decimal(l["credit"]) for l in lines)
 
@@ -3834,7 +3911,14 @@ def record_vendor_payment(
 
     # Resolve payment currency: explicit > vendor default > functional
     payment_currency = currency or getattr(vendor, "currency", "") or functional_currency
-    payment_exchange_rate = Decimal(str(exchange_rate)) if exchange_rate else Decimal("1")
+    if exchange_rate:
+        payment_exchange_rate = Decimal(str(exchange_rate))
+    elif payment_currency != functional_currency:
+        from accounting.models import ExchangeRate
+        looked_up = ExchangeRate.get_rate(actor.company, payment_currency, functional_currency, payment_date)
+        payment_exchange_rate = looked_up if looked_up else Decimal("1")
+    else:
+        payment_exchange_rate = Decimal("1")
     if payment_currency == functional_currency:
         payment_exchange_rate = Decimal("1")
 
@@ -3941,12 +4025,16 @@ def record_vendor_payment(
                         "memo": "Realized FX loss on payment",
                     })
 
+    # Fix any FX rounding imbalance before creating JE
+    if is_foreign:
+        _fix_fx_rounding_dicts(lines, actor.company, currency=payment_currency)
+
     # Create the journal entry
     from events.types import JournalEntryPostedData, JournalLineData
 
     entry_number = f"JE-{actor.company.id}-{entry_sequence:06d}"
 
-    # Recalculate totals
+    # Recalculate totals (may have changed due to FX/rounding lines)
     total_debit = sum(Decimal(l["debit"]) for l in lines)
     total_credit = sum(Decimal(l["credit"]) for l in lines)
 

@@ -186,7 +186,15 @@ def create_purchase_bill(
 
     # Resolve currency: explicit > vendor default > company default
     bill_currency = currency or getattr(vendor, 'currency', '') or actor.company.default_currency
-    bill_exchange_rate = Decimal(str(exchange_rate)) if exchange_rate else Decimal("1")
+    functional_currency = actor.company.functional_currency or actor.company.default_currency
+    if exchange_rate:
+        bill_exchange_rate = Decimal(str(exchange_rate))
+    elif bill_currency != functional_currency:
+        from accounting.models import ExchangeRate
+        looked_up = ExchangeRate.get_rate(actor.company, bill_currency, functional_currency, bill_date)
+        bill_exchange_rate = looked_up if looked_up else Decimal("1")
+    else:
+        bill_exchange_rate = Decimal("1")
 
     with command_writes_allowed():
         # Create bill
@@ -442,6 +450,11 @@ def post_purchase_bill(actor: ActorContext, bill_id: int) -> CommandResult:
             foreign_amount = jl.get("debit") or jl.get("credit") or Decimal("0")
             jl["amount_currency"] = str(foreign_amount)
             jl["currency"] = bill_currency
+
+    # Fix any FX rounding imbalance before creating JE
+    if is_foreign:
+        from accounting.commands import _fix_fx_rounding_dicts
+        _fix_fx_rounding_dicts(je_lines, actor.company, currency=bill_currency)
 
     je_kwargs = dict(
         actor=actor,

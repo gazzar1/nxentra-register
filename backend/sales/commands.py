@@ -758,7 +758,15 @@ def create_sales_invoice(
         # Create invoice
         # Resolve currency: explicit > customer default > company default
         invoice_currency = currency or customer.currency or actor.company.default_currency
-        invoice_exchange_rate = Decimal(str(exchange_rate)) if exchange_rate else Decimal("1")
+        functional_currency = actor.company.functional_currency or actor.company.default_currency
+        if exchange_rate:
+            invoice_exchange_rate = Decimal(str(exchange_rate))
+        elif invoice_currency != functional_currency:
+            from accounting.models import ExchangeRate
+            looked_up = ExchangeRate.get_rate(actor.company, invoice_currency, functional_currency, invoice_date)
+            invoice_exchange_rate = looked_up if looked_up else Decimal("1")
+        else:
+            invoice_exchange_rate = Decimal("1")
 
         invoice = SalesInvoice.objects.create(
             company=actor.company,
@@ -1286,6 +1294,11 @@ def post_sales_invoice(actor: ActorContext, invoice_id: int) -> CommandResult:
             foreign_amount = jl.get("debit") or jl.get("credit") or Decimal("0")
             jl["amount_currency"] = str(foreign_amount)
             jl["currency"] = inv_currency
+
+    # Fix any FX rounding imbalance before creating JE
+    if is_foreign:
+        from accounting.commands import _fix_fx_rounding_dicts
+        _fix_fx_rounding_dicts(je_lines, actor.company, currency=inv_currency)
 
     je_kwargs = dict(
         actor=actor,
