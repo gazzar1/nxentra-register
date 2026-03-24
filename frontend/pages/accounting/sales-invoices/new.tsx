@@ -110,6 +110,22 @@ export default function NewSalesInvoicePage() {
 
   const functionalCurrency = companySettings?.functional_currency || companySettings?.default_currency || "USD";
 
+  // Build available currencies from exchange rates + functional currency
+  const [availableCurrencies, setAvailableCurrencies] = useState<string[]>([]);
+  useEffect(() => {
+    exchangeRatesService.list().then((res) => {
+      const codes = new Set<string>();
+      codes.add(functionalCurrency);
+      res.data.forEach((r) => {
+        codes.add(r.from_currency);
+        codes.add(r.to_currency);
+      });
+      setAvailableCurrencies(Array.from(codes).sort());
+    }).catch(() => {
+      setAvailableCurrencies([functionalCurrency]);
+    });
+  }, [functionalCurrency]);
+
   // Auto-populate currency from customer when customer changes
   useEffect(() => {
     if (watchCustomerId) {
@@ -329,12 +345,23 @@ export default function NewSalesInvoicePage() {
 
             <div className="space-y-2">
               <Label htmlFor="currency">Currency</Label>
-              <Input
-                id="currency"
-                {...register("currency")}
-                placeholder={functionalCurrency}
-                maxLength={3}
-                className="uppercase"
+              <Controller
+                name="currency"
+                control={control}
+                render={({ field }) => (
+                  <Select onValueChange={field.onChange} value={field.value || functionalCurrency}>
+                    <SelectTrigger>
+                      <SelectValue placeholder={functionalCurrency} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableCurrencies.map((code) => (
+                        <SelectItem key={code} value={code}>
+                          {code}{code === functionalCurrency ? " (base)" : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
               />
               {watchCurrency && watchCurrency !== functionalCurrency && (
                 <p className="text-xs text-muted-foreground">
