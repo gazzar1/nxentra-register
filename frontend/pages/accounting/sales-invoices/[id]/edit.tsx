@@ -4,7 +4,7 @@ import { useTranslation } from "next-i18next";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import { ArrowLeft, Plus, Trash2, Save } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useForm, useFieldArray, Controller } from "react-hook-form";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
@@ -24,6 +24,8 @@ import { useCustomers } from "@/queries/useAccounts";
 import { useItems, useTaxCodes, usePostingProfiles, useSalesInvoice, useUpdateSalesInvoice } from "@/queries/useSales";
 import { useAccounts } from "@/queries/useAccounts";
 import { useToast } from "@/components/ui/toaster";
+import { useCompanySettings } from "@/queries/useCompanySettings";
+import { exchangeRatesService } from "@/services/exchange-rates.service";
 import type { SalesInvoiceUpdatePayload } from "@/types/sales";
 
 interface InvoiceLineFormData {
@@ -58,6 +60,11 @@ export default function EditSalesInvoicePage() {
   const { data: postingProfiles } = usePostingProfiles({ profile_type: "CUSTOMER" });
   const { data: accounts } = useAccounts();
   const updateInvoice = useUpdateSalesInvoice();
+  const { data: companySettings } = useCompanySettings();
+
+  const [invoiceCurrency, setInvoiceCurrency] = useState("");
+  const [exchangeRate, setExchangeRate] = useState("1");
+  const [availableCurrencies, setAvailableCurrencies] = useState<string[]>([]);
 
   const revenueAccounts = accounts?.filter(
     (a) => a.account_type === "REVENUE" && a.is_postable && !a.is_header
@@ -110,6 +117,44 @@ export default function EditSalesInvoicePage() {
       });
     }
   }, [invoice, reset]);
+
+  // Fetch available currencies
+  useEffect(() => {
+    exchangeRatesService.list().then((res) => {
+      const codes = new Set<string>();
+      const functionalCcy = companySettings?.functional_currency || "USD";
+      codes.add(functionalCcy);
+      res.data.forEach((r: any) => {
+        codes.add(r.from_currency);
+        codes.add(r.to_currency);
+      });
+      setAvailableCurrencies(Array.from(codes).sort());
+    }).catch(() => {});
+  }, [companySettings]);
+
+  // Initialize currency from loaded invoice
+  useEffect(() => {
+    if (invoice) {
+      setInvoiceCurrency(invoice.currency || companySettings?.functional_currency || "");
+      setExchangeRate(invoice.exchange_rate || "1");
+    }
+  }, [invoice, companySettings]);
+
+  // Auto-lookup exchange rate when currency or date changes
+  const watchDate = watch("invoice_date");
+  useEffect(() => {
+    const functionalCcy = companySettings?.functional_currency || "USD";
+    if (!invoiceCurrency || invoiceCurrency === functionalCcy || !watchDate) {
+      setExchangeRate("1");
+      return;
+    }
+    exchangeRatesService
+      .lookup({ from_currency: invoiceCurrency, to_currency: functionalCcy, date: watchDate })
+      .then((res) => {
+        if (res.data?.rate) setExchangeRate(res.data.rate);
+      })
+      .catch(() => {});
+  }, [invoiceCurrency, watchDate, companySettings]);
 
   const watchLines = watch("lines");
 
@@ -167,6 +212,8 @@ export default function EditSalesInvoicePage() {
         due_date: data.due_date || null,
         customer_id: parseInt(data.customer_id),
         posting_profile_id: parseInt(data.posting_profile_id),
+        currency: invoiceCurrency,
+        exchange_rate: exchangeRate,
         notes: data.notes,
         lines: data.lines.map((line) => ({
           item_id: line.item_id ? parseInt(line.item_id) : null,
@@ -333,6 +380,38 @@ export default function EditSalesInvoicePage() {
                 <p className="text-sm text-destructive">{errors.posting_profile_id.message}</p>
               )}
             </div>
+
+            <div className="space-y-2">
+              <Label>Currency</Label>
+              <Select onValueChange={setInvoiceCurrency} value={invoiceCurrency}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select currency" />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableCurrencies.map((code) => (
+                    <SelectItem key={code} value={code}>
+                      {code}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {invoiceCurrency && invoiceCurrency !== (companySettings?.functional_currency || "USD") && (
+              <div className="space-y-2">
+                <Label>Exchange Rate</Label>
+                <Input
+                  type="number"
+                  step="0.000001"
+                  min="0"
+                  value={exchangeRate}
+                  onChange={(e) => setExchangeRate(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  1 {invoiceCurrency} = {exchangeRate} {companySettings?.functional_currency || "USD"}
+                </p>
+              </div>
+            )}
 
             <div className="space-y-2 md:col-span-2 lg:col-span-3">
               <Label htmlFor="notes">Notes</Label>

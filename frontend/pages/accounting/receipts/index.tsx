@@ -128,6 +128,7 @@ export default function CustomerReceiptsPage() {
                           {receipt.memo || "—"}
                         </TableCell>
                         <TableCell className="text-right font-mono">
+                          {receipt.currency && <span className="text-muted-foreground text-xs me-1">{receipt.currency}</span>}
                           {Number(receipt.amount).toLocaleString(undefined, {
                             minimumFractionDigits: 2,
                             maximumFractionDigits: 2,

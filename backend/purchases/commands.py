@@ -434,6 +434,14 @@ def post_purchase_bill(actor: ActorContext, bill_id: int) -> CommandResult:
     functional_currency = actor.company.functional_currency or actor.company.default_currency
     bill_currency = bill.currency or functional_currency
     bill_rate = bill.exchange_rate if bill.exchange_rate and bill.exchange_rate != Decimal("0") else Decimal("1")
+    is_foreign = bill_currency != functional_currency
+
+    # Populate amount_currency on each JE line for foreign bills
+    if is_foreign:
+        for jl in je_lines:
+            foreign_amount = jl.get("debit") or jl.get("credit") or Decimal("0")
+            jl["amount_currency"] = str(foreign_amount)
+            jl["currency"] = bill_currency
 
     je_kwargs = dict(
         actor=actor,
@@ -442,7 +450,7 @@ def post_purchase_bill(actor: ActorContext, bill_id: int) -> CommandResult:
         lines=je_lines,
         kind=JournalEntry.Kind.NORMAL,
     )
-    if bill_currency != functional_currency:
+    if is_foreign:
         je_kwargs["currency"] = bill_currency
         je_kwargs["exchange_rate"] = str(bill_rate)
 

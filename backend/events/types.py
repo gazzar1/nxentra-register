@@ -1649,6 +1649,8 @@ class CustomerReceiptRecordedData(BaseEventData):
     ar_control_account_code: str
     reference: str = ""
     memo: str = ""
+    currency: str = ""
+    exchange_rate: str = ""
     journal_entry_public_id: str = ""
     recorded_at: str = ""
     recorded_by_id: Optional[int] = None
@@ -1676,6 +1678,8 @@ class VendorPaymentRecordedData(BaseEventData):
     ap_control_account_code: str
     reference: str = ""
     memo: str = ""
+    currency: str = ""
+    exchange_rate: str = ""
     journal_entry_public_id: str = ""
     recorded_at: str = ""
     recorded_by_id: Optional[int] = None

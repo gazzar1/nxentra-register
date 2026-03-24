@@ -1278,6 +1278,14 @@ def post_sales_invoice(actor: ActorContext, invoice_id: int) -> CommandResult:
     functional_currency = actor.company.functional_currency or actor.company.default_currency
     inv_currency = invoice.currency or functional_currency
     inv_rate = invoice.exchange_rate if invoice.exchange_rate and invoice.exchange_rate != Decimal("0") else Decimal("1")
+    is_foreign = inv_currency != functional_currency
+
+    # Populate amount_currency on each JE line for foreign invoices
+    if is_foreign:
+        for jl in je_lines:
+            foreign_amount = jl.get("debit") or jl.get("credit") or Decimal("0")
+            jl["amount_currency"] = str(foreign_amount)
+            jl["currency"] = inv_currency
 
     je_kwargs = dict(
         actor=actor,
@@ -1286,7 +1294,7 @@ def post_sales_invoice(actor: ActorContext, invoice_id: int) -> CommandResult:
         lines=je_lines,
         kind=JournalEntry.Kind.NORMAL,
     )
-    if inv_currency != functional_currency:
+    if is_foreign:
         je_kwargs["currency"] = inv_currency
         je_kwargs["exchange_rate"] = str(inv_rate)
 

@@ -240,6 +240,8 @@ export interface CustomerReceiptListItem {
   amount: string;
   reference: string;
   memo: string;
+  currency: string;
+  exchange_rate: string;
   journal_entry_public_id: string;
   journal_entry_id: number | null;
   journal_entry_number: string | null;
@@ -302,6 +304,8 @@ export interface VendorPaymentListItem {
   amount: string;
   reference: string;
   memo: string;
+  currency: string;
+  exchange_rate: string;
   journal_entry_public_id: string;
   bank_account_code: string;
   recorded_at: string;

@@ -128,6 +128,7 @@ export default function VendorPaymentsPage() {
                           {payment.memo || "—"}
                         </TableCell>
                         <TableCell className="text-right font-mono">
+                          {payment.currency && <span className="text-muted-foreground text-xs me-1">{payment.currency}</span>}
                           {Number(payment.amount).toLocaleString(undefined, {
                             minimumFractionDigits: 2,
                             maximumFractionDigits: 2,
