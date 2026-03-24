@@ -85,63 +85,44 @@ def restore_company(company, zip_file):
             # Wrap BOTH clear and import in a single transaction so that
             # if import fails, the clear is rolled back and no data is lost.
             with transaction.atomic():
-                from django.db import connection
+                # Phase 1: Clear existing company data (raw SQL, reverse order)
+                cleared = _clear_company_data(company, registry)
+                stats["cleared"] = cleared
 
-                # Collect all table names for models in the registry
-                # so we can disable/re-enable FK triggers during import
-                all_tables = [
-                    m._meta.db_table for m in registry.values()
-                ]
+                # Phase 2: Import data in dependency order
+                pk_map = {}
+                # Track deferred FK updates: list of (model_cls, obj_pk, field_attname, old_fk_value)
+                deferred_fks = []
 
-                try:
-                    # Disable FK constraint triggers on all tables so that
-                    # insert order doesn't matter for cross-model references.
-                    if connection.vendor == "postgresql":
-                        with connection.cursor() as cursor:
-                            for tbl in all_tables:
-                                cursor.execute(
-                                    f'ALTER TABLE "{tbl}" DISABLE TRIGGER ALL'
-                                )
+                for label, model_cls in registry.items():
+                    json_path = f"models/{label}.json"
+                    if json_path not in zf.namelist():
+                        stats["skipped"][label] = "not in backup"
+                        continue
 
-                    # Phase 1: Clear existing company data
-                    cleared = _clear_company_data(company, registry)
-                    stats["cleared"] = cleared
+                    try:
+                        data_bytes = zf.read(json_path)
+                        records = json.loads(data_bytes)
+                    except (json.JSONDecodeError, KeyError) as e:
+                        stats["errors"].append(f"{label}: {e}")
+                        continue
 
-                    # Phase 2: Import data in dependency order
-                    pk_map = {}
+                    if not records:
+                        stats["imported"][label] = 0
+                        continue
 
-                    for label, model_cls in registry.items():
-                        json_path = f"models/{label}.json"
-                        if json_path not in zf.namelist():
-                            stats["skipped"][label] = "not in backup"
-                            continue
+                    excluded = EXCLUDED_FIELDS.get(label, [])
+                    count, model_deferred = _import_model_records(
+                        model_cls, company, records, pk_map, label, excluded
+                    )
+                    deferred_fks.extend(model_deferred)
+                    stats["imported"][label] = count
+                    logger.info("Imported %d records for %s", count, label)
 
-                        try:
-                            data_bytes = zf.read(json_path)
-                            records = json.loads(data_bytes)
-                        except (json.JSONDecodeError, KeyError) as e:
-                            stats["errors"].append(f"{label}: {e}")
-                            continue
-
-                        if not records:
-                            stats["imported"][label] = 0
-                            continue
-
-                        excluded = EXCLUDED_FIELDS.get(label, [])
-                        count = _import_model_records(
-                            model_cls, company, records, pk_map, label, excluded
-                        )
-                        stats["imported"][label] = count
-                        logger.info("Imported %d records for %s", count, label)
-
-                finally:
-                    # Always re-enable triggers, even if import fails
-                    if connection.vendor == "postgresql":
-                        with connection.cursor() as cursor:
-                            for tbl in all_tables:
-                                cursor.execute(
-                                    f'ALTER TABLE "{tbl}" ENABLE TRIGGER ALL'
-                                )
+                # Phase 3: Fix up deferred nullable FKs (self-references, etc.)
+                if deferred_fks:
+                    _apply_deferred_fks(deferred_fks, pk_map)
+                    logger.info("Applied %d deferred FK updates", len(deferred_fks))
 
     zf.close()
 
@@ -214,17 +195,25 @@ def _import_model_records(model_cls, company, records, pk_map, label, excluded_f
     - FK remapping using pk_map
     - Company field assignment
     - Skipping excluded fields
+
+    Returns:
+        tuple: (count, deferred_fks) where deferred_fks is a list of
+        (model_cls, new_pk, field_attname, old_fk_value, label) for FKs
+        that couldn't be resolved yet (set to NULL temporarily).
     """
     from events.models import EventPayload, BusinessEvent, CompanyEventCounter
 
     imported = 0
     old_to_new = {}
+    deferred_fks = []
 
     for record in records:
         old_pk = record.get("id") or record.get("pk")
 
         # Prepare field values
         field_values = {}
+        record_deferred = []  # FKs to fix up later for this record
+
         for field in model_cls._meta.concrete_fields:
             fname = field.name
 
@@ -257,12 +246,12 @@ def _import_model_records(model_cls, company, records, pk_map, label, excluded_f
                         field_values[field.attname] = remapped
                         continue
                     elif field.null:
-                        # FK target not found — set nullable FK to None
+                        # FK target not found yet — set to NULL now, fix later
                         field_values[field.attname] = None
+                        record_deferred.append((field.attname, value, label))
                         continue
                     else:
-                        # Non-nullable FK target not found — keep raw value
-                        # and rely on deferred constraints to resolve at commit
+                        # Non-nullable FK — pass raw value through
                         field_values[field.attname] = value
                         continue
 
@@ -298,9 +287,7 @@ def _import_model_records(model_cls, company, records, pk_map, label, excluded_f
 
         if model_cls is BusinessEvent:
             # Bypass immutability — use raw insert
-            # Don't let save() auto-assign sequences
             obj = BusinessEvent(**field_values)
-            # Use Model.save to bypass BusinessEvent's custom save
             models.Model.save(obj)
             old_to_new[old_pk] = obj.pk
             imported += 1
@@ -317,20 +304,51 @@ def _import_model_records(model_cls, company, records, pk_map, label, excluded_f
             continue
 
         # General model — let Django assign new PK
-        # Remove old PK so Django auto-generates a new one
         pk_field_name = model_cls._meta.pk.name
         field_values.pop(pk_field_name, None)
         field_values.pop("id", None)
 
-        # Use models.Model.save() to bypass any custom save() overrides
-        # (e.g., ProjectionWriteGuard, immutability checks)
+        # Use models.Model.save() to bypass custom save() overrides
         obj = model_cls(**field_values)
         models.Model.save(obj)
         old_to_new[old_pk] = obj.pk
         imported += 1
 
+        # Track deferred FKs with the NEW pk
+        for attname, old_fk_value, fk_label in record_deferred:
+            deferred_fks.append((model_cls, obj.pk, attname, old_fk_value, fk_label))
+
     pk_map[label] = old_to_new
-    return imported
+    return imported, deferred_fks
+
+
+def _apply_deferred_fks(deferred_fks, pk_map):
+    """
+    Fix up nullable FK fields that were set to NULL during import
+    because the target record hadn't been imported yet.
+
+    Uses raw SQL UPDATE to bypass custom save() overrides.
+    """
+    from django.db import connection
+
+    with connection.cursor() as cursor:
+        for model_cls, obj_pk, attname, old_fk_value, fk_label in deferred_fks:
+            # Find the new PK for the old FK value
+            new_fk = None
+            for map_label, mapping in pk_map.items():
+                if old_fk_value in mapping:
+                    new_fk = mapping[old_fk_value]
+                    break
+
+            if new_fk is None:
+                continue
+
+            table = model_cls._meta.db_table
+            pk_col = model_cls._meta.pk.column
+            cursor.execute(
+                f'UPDATE "{table}" SET "{attname}" = %s WHERE "{pk_col}" = %s',
+                [new_fk, obj_pk],
+            )
 
 
 def _find_label_for_model(model_cls, pk_map):
