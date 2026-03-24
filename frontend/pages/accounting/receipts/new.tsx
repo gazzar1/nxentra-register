@@ -37,11 +37,13 @@ import {
   type OpenInvoice,
   type ReceiptAllocation,
 } from "@/services/accounts.service";
+import { periodsService, type FiscalPeriod } from "@/services/periods.service";
 import { cn } from "@/lib/cn";
 
 interface ReceiptFormData {
   customer_id: string;
   receipt_date: string;
+  accounting_date: string;
   amount: string;
   bank_account_id: string;
   ar_control_account_id: string;
@@ -68,6 +70,8 @@ export default function NewCustomerReceiptPage() {
   const [loadingInvoices, setLoadingInvoices] = useState(false);
   const [allocations, setAllocations] = useState<InvoiceAllocationState>({});
   const [totalOutstanding, setTotalOutstanding] = useState("0.00");
+  const [periods, setPeriods] = useState<FiscalPeriod[]>([]);
+  const [resolvedPeriod, setResolvedPeriod] = useState<string>("");
 
   // Filter accounts by role
   const bankAccounts = accounts?.filter(
@@ -88,6 +92,7 @@ export default function NewCustomerReceiptPage() {
     defaultValues: {
       customer_id: "",
       receipt_date: new Date().toISOString().split("T")[0],
+      accounting_date: new Date().toISOString().split("T")[0],
       amount: "",
       bank_account_id: "",
       ar_control_account_id: "",
@@ -98,6 +103,41 @@ export default function NewCustomerReceiptPage() {
 
   const selectedCustomerId = watch("customer_id");
   const receiptAmount = watch("amount");
+  const watchReceiptDate = watch("receipt_date");
+  const watchAccountingDate = watch("accounting_date");
+
+  // Fetch fiscal periods on mount
+  useEffect(() => {
+    periodsService.list().then((res) => {
+      setPeriods(res.data.periods || []);
+    }).catch(() => {});
+  }, []);
+
+  // Sync accounting_date with receipt_date when receipt_date changes
+  useEffect(() => {
+    if (watchReceiptDate) {
+      setValue("accounting_date", watchReceiptDate);
+    }
+  }, [watchReceiptDate, setValue]);
+
+  // Resolve period from accounting_date
+  useEffect(() => {
+    if (!watchAccountingDate || periods.length === 0) {
+      setResolvedPeriod("");
+      return;
+    }
+    const d = new Date(watchAccountingDate);
+    const match = periods.find((p) => {
+      const start = new Date(p.start_date);
+      const end = new Date(p.end_date);
+      return d >= start && d <= end && p.period_type === "NORMAL";
+    });
+    if (match) {
+      setResolvedPeriod(`Period ${match.period} (${match.start_date} — ${match.end_date})${match.status === "OPEN" ? "" : " ⚠ CLOSED"}`);
+    } else {
+      setResolvedPeriod("No matching open period");
+    }
+  }, [watchAccountingDate, periods]);
 
   // Calculate total allocated amount
   const totalAllocated = useMemo(() => {
@@ -227,6 +267,7 @@ export default function NewCustomerReceiptPage() {
       const payload: CustomerReceiptCreatePayload = {
         customer_id: parseInt(data.customer_id),
         receipt_date: data.receipt_date,
+        accounting_date: data.accounting_date,
         amount: data.amount,
         bank_account_id: parseInt(data.bank_account_id),
         ar_control_account_id: parseInt(data.ar_control_account_id),
@@ -322,6 +363,28 @@ export default function NewCustomerReceiptPage() {
               />
               {errors.receipt_date && (
                 <p className="text-sm text-destructive">{errors.receipt_date.message}</p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="accounting_date">{t("accounting:accountingDate", "Accounting Date")} *</Label>
+              <Input
+                id="accounting_date"
+                type="date"
+                {...register("accounting_date", { required: t("accounting:dateRequired", "Date is required") })}
+              />
+              {resolvedPeriod && (
+                <p className={cn(
+                  "text-xs",
+                  resolvedPeriod.includes("CLOSED") || resolvedPeriod.includes("No matching")
+                    ? "text-destructive"
+                    : "text-muted-foreground"
+                )}>
+                  {resolvedPeriod}
+                </p>
+              )}
+              {errors.accounting_date && (
+                <p className="text-sm text-destructive">{errors.accounting_date.message}</p>
               )}
             </div>
 

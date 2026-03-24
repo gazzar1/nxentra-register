@@ -3231,6 +3231,7 @@ def record_customer_receipt(
     reference: str = "",
     memo: str = "",
     allocations: list = None,
+    accounting_date: str = None,
 ) -> CommandResult:
     """
     Record a payment received from a customer.
@@ -3309,8 +3310,15 @@ def record_customer_receipt(
     except (ValueError, TypeError):
         return CommandResult.fail("Invalid date format. Use ISO format (YYYY-MM-DD).")
 
-    # Enforce period policy: receipts are operational documents
-    allowed, reason = can_post_operational_document(actor, parsed_date)
+    # Parse accounting date (defaults to receipt date)
+    acct_date_str = accounting_date or receipt_date
+    try:
+        parsed_acct_date = date_cls.fromisoformat(acct_date_str)
+    except (ValueError, TypeError):
+        parsed_acct_date = parsed_date
+
+    # Enforce period policy using accounting date
+    allowed, reason = can_post_operational_document(actor, parsed_acct_date)
     if not allowed:
         return CommandResult.fail(reason)
 
@@ -3511,6 +3519,16 @@ def record_customer_receipt(
 
     posted_at = timezone.now()
 
+    # Resolve fiscal period from the accounting date
+    from projections.models import FiscalPeriod
+    fp = FiscalPeriod.objects.filter(
+        company=actor.company,
+        start_date__lte=parsed_acct_date,
+        end_date__gte=parsed_acct_date,
+        period_type=FiscalPeriod.PeriodType.NORMAL,
+    ).first()
+    resolved_period = fp.period if fp else parsed_acct_date.month
+
     # Emit journal posted event
     journal_event = emit_event(
         actor=actor,
@@ -3521,9 +3539,10 @@ def record_customer_receipt(
         data=JournalEntryPostedData(
             entry_public_id=str(entry_public_id),
             entry_number=entry_number,
-            date=receipt_date,
+            date=acct_date_str,
             memo=description,
             kind=JournalEntry.Kind.NORMAL,
+            period=resolved_period,
             total_debit=str(total_debit),
             total_credit=str(total_credit),
             lines=[ld.to_dict() for ld in line_data_list],
@@ -3618,6 +3637,7 @@ def record_vendor_payment(
     reference: str = "",
     memo: str = "",
     allocations: list = None,
+    accounting_date: str = None,
 ) -> CommandResult:
     """
     Record a payment made to a vendor.
@@ -3698,8 +3718,15 @@ def record_vendor_payment(
     except (ValueError, TypeError):
         return CommandResult.fail("Invalid date format. Use ISO format (YYYY-MM-DD).")
 
-    # Enforce period policy: payments are operational documents
-    allowed, reason = can_post_operational_document(actor, parsed_date)
+    # Parse accounting date (defaults to payment date)
+    acct_date_str = accounting_date or payment_date
+    try:
+        parsed_acct_date = date_cls.fromisoformat(acct_date_str)
+    except (ValueError, TypeError):
+        parsed_acct_date = parsed_date
+
+    # Enforce period policy using accounting date
+    allowed, reason = can_post_operational_document(actor, parsed_acct_date)
     if not allowed:
         return CommandResult.fail(reason)
 
@@ -3885,6 +3912,16 @@ def record_vendor_payment(
 
     posted_at = timezone.now()
 
+    # Resolve fiscal period from the accounting date
+    from projections.models import FiscalPeriod
+    fp = FiscalPeriod.objects.filter(
+        company=actor.company,
+        start_date__lte=parsed_acct_date,
+        end_date__gte=parsed_acct_date,
+        period_type=FiscalPeriod.PeriodType.NORMAL,
+    ).first()
+    resolved_period = fp.period if fp else parsed_acct_date.month
+
     # Emit journal posted event
     journal_event = emit_event(
         actor=actor,
@@ -3895,9 +3932,10 @@ def record_vendor_payment(
         data=JournalEntryPostedData(
             entry_public_id=str(entry_public_id),
             entry_number=entry_number,
-            date=payment_date,
+            date=acct_date_str,
             memo=description,
             kind=JournalEntry.Kind.NORMAL,
+            period=resolved_period,
             total_debit=str(total_debit),
             total_credit=str(total_credit),
             lines=[ld.to_dict() for ld in line_data_list],

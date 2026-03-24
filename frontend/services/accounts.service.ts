@@ -189,6 +189,7 @@ export interface ReceiptAllocation {
 export interface CustomerReceiptCreatePayload {
   customer_id: number;
   receipt_date: string;
+  accounting_date?: string;
   amount: string;
   bank_account_id: number;
   ar_control_account_id: number;
@@ -253,6 +254,7 @@ export interface PaymentAllocation {
 export interface VendorPaymentCreatePayload {
   vendor_id: number;
   payment_date: string;
+  accounting_date?: string;
   amount: string;
   bank_account_id: number;
   ap_control_account_id: number;

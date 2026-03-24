@@ -1578,6 +1578,7 @@ class CustomerReceiptCreateView(APIView):
         # Parse request body
         customer_id = request.data.get("customer_id")
         receipt_date = request.data.get("receipt_date")
+        accounting_date = request.data.get("accounting_date") or receipt_date
         amount = request.data.get("amount")
         bank_account_id = request.data.get("bank_account_id")
         ar_control_account_id = request.data.get("ar_control_account_id")
@@ -1616,6 +1617,7 @@ class CustomerReceiptCreateView(APIView):
             actor=actor,
             customer_id=int(customer_id),
             receipt_date=receipt_date,
+            accounting_date=accounting_date,
             amount=str(amount),
             bank_account_id=int(bank_account_id),
             ar_control_account_id=int(ar_control_account_id),
@@ -1675,6 +1677,7 @@ class VendorPaymentCreateView(APIView):
         # Parse request body
         vendor_id = request.data.get("vendor_id")
         payment_date = request.data.get("payment_date")
+        accounting_date = request.data.get("accounting_date") or payment_date
         amount = request.data.get("amount")
         bank_account_id = request.data.get("bank_account_id")
         ap_control_account_id = request.data.get("ap_control_account_id")
@@ -1713,6 +1716,7 @@ class VendorPaymentCreateView(APIView):
             actor=actor,
             vendor_id=int(vendor_id),
             payment_date=payment_date,
+            accounting_date=accounting_date,
             amount=str(amount),
             bank_account_id=int(bank_account_id),
             ap_control_account_id=int(ap_control_account_id),
