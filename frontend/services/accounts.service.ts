@@ -196,6 +196,8 @@ export interface CustomerReceiptCreatePayload {
   reference?: string;
   memo?: string;
   allocations?: ReceiptAllocation[];
+  currency?: string;
+  exchange_rate?: string;
 }
 
 export interface CustomerReceiptResponse {
@@ -281,6 +283,8 @@ export interface VendorPaymentCreatePayload {
   reference?: string;
   memo?: string;
   allocations?: PaymentAllocation[];
+  currency?: string;
+  exchange_rate?: string;
 }
 
 export interface VendorPaymentResponse {

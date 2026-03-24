@@ -36,6 +36,8 @@ import {
   type PaymentAllocation,
 } from "@/services/accounts.service";
 import { periodsService, type FiscalPeriod } from "@/services/periods.service";
+import { exchangeRatesService } from "@/services/exchange-rates.service";
+import { useCompanySettings } from "@/queries/useCompanySettings";
 import { cn } from "@/lib/cn";
 
 interface BillAllocationFormData {
@@ -105,13 +107,58 @@ export default function NewVendorPaymentPage() {
 
   const [periods, setPeriods] = useState<FiscalPeriod[]>([]);
   const [resolvedPeriod, setResolvedPeriod] = useState<string>("");
+  const [paymentCurrency, setPaymentCurrency] = useState<string>("");
+  const [exchangeRate, setExchangeRate] = useState<string>("1");
+  const [availableCurrencies, setAvailableCurrencies] = useState<string[]>([]);
+  const { data: companySettings } = useCompanySettings();
+  const functionalCurrency = companySettings?.functional_currency || companySettings?.default_currency || "USD";
+  const selectedVendorId = watch("vendor_id");
 
-  // Fetch fiscal periods on mount
+  // Fetch fiscal periods and available currencies on mount
   useEffect(() => {
     periodsService.list().then((res) => {
       setPeriods(res.data.periods || []);
     }).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!functionalCurrency) return;
+    exchangeRatesService.list().then((res) => {
+      const codes = new Set<string>();
+      codes.add(functionalCurrency);
+      res.data.forEach((r) => { codes.add(r.from_currency); codes.add(r.to_currency); });
+      setAvailableCurrencies(Array.from(codes).sort());
+    }).catch(() => {});
+  }, [functionalCurrency]);
+
+  // Auto-set currency from vendor
+  useEffect(() => {
+    if (selectedVendorId && vendors) {
+      const vend = vendors.find((v) => String(v.id) === selectedVendorId);
+      if (vend?.currency) {
+        setPaymentCurrency(vend.currency);
+      } else {
+        setPaymentCurrency(functionalCurrency);
+      }
+    }
+  }, [selectedVendorId, vendors, functionalCurrency]);
+
+  // Auto-lookup exchange rate when currency or date changes
+  useEffect(() => {
+    if (!paymentCurrency || paymentCurrency === functionalCurrency) {
+      setExchangeRate("1");
+      return;
+    }
+    const dateStr = watchPaymentDate || new Date().toISOString().split("T")[0];
+    exchangeRatesService
+      .lookup({ from_currency: paymentCurrency, to_currency: functionalCurrency, date: dateStr })
+      .then((res) => {
+        if (res.data.rate) {
+          setExchangeRate(res.data.rate);
+        }
+      })
+      .catch(() => {});
+  }, [paymentCurrency, watchPaymentDate, functionalCurrency]);
 
   // Sync accounting_date with payment_date
   useEffect(() => {
@@ -193,6 +240,8 @@ export default function NewVendorPaymentPage() {
         reference: data.reference,
         memo: data.memo,
         allocations: validAllocations.length > 0 ? validAllocations : undefined,
+        currency: paymentCurrency || functionalCurrency,
+        exchange_rate: exchangeRate,
       };
 
       await vendorPaymentsService.create(payload);
@@ -308,6 +357,22 @@ export default function NewVendorPaymentPage() {
             </div>
 
             <div className="space-y-2">
+              <Label>{t("accounting:currency", "Currency")}</Label>
+              <Select value={paymentCurrency} onValueChange={setPaymentCurrency}>
+                <SelectTrigger>
+                  <SelectValue placeholder={functionalCurrency} />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableCurrencies.map((code) => (
+                    <SelectItem key={code} value={code}>
+                      {code}{code === functionalCurrency ? " (functional)" : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
               <Label htmlFor="amount">{t("accounting:amount", "Amount")} *</Label>
               <Input
                 id="amount"
@@ -322,6 +387,22 @@ export default function NewVendorPaymentPage() {
               />
               {errors.amount && (
                 <p className="text-sm text-destructive">{errors.amount.message}</p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label>{t("accounting:exchangeRate", "Exchange Rate")}</Label>
+              <Input
+                type="number"
+                step="0.000001"
+                value={exchangeRate}
+                onChange={(e) => setExchangeRate(e.target.value)}
+                disabled={paymentCurrency === functionalCurrency || !paymentCurrency}
+              />
+              {paymentCurrency && paymentCurrency !== functionalCurrency && (
+                <p className="text-xs text-muted-foreground">
+                  1 {paymentCurrency} = {exchangeRate} {functionalCurrency}
+                </p>
               )}
             </div>
 

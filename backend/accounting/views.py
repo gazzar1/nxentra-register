@@ -1638,6 +1638,8 @@ class CustomerReceiptCreateView(APIView):
         reference = request.data.get("reference", "")
         memo = request.data.get("memo", "")
         allocations = request.data.get("allocations")
+        receipt_currency = request.data.get("currency", "")
+        receipt_exchange_rate = request.data.get("exchange_rate", "")
 
         # Validate required fields
         if not customer_id:
@@ -1677,6 +1679,8 @@ class CustomerReceiptCreateView(APIView):
             reference=reference,
             memo=memo,
             allocations=allocations,
+            currency=receipt_currency,
+            exchange_rate=receipt_exchange_rate,
         )
 
         if not result.success:
@@ -1771,6 +1775,8 @@ class VendorPaymentCreateView(APIView):
         reference = request.data.get("reference", "")
         memo = request.data.get("memo", "")
         allocations = request.data.get("allocations")
+        payment_currency = request.data.get("currency", "")
+        payment_exchange_rate = request.data.get("exchange_rate", "")
 
         # Validate required fields
         if not vendor_id:
@@ -1810,6 +1816,8 @@ class VendorPaymentCreateView(APIView):
             reference=reference,
             memo=memo,
             allocations=allocations,
+            currency=payment_currency,
+            exchange_rate=payment_exchange_rate,
         )
 
         if not result.success:

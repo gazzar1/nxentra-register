@@ -3232,6 +3232,8 @@ def record_customer_receipt(
     memo: str = "",
     allocations: list = None,
     accounting_date: str = None,
+    currency: str = "",
+    exchange_rate: str = "",
 ) -> CommandResult:
     """
     Record a payment received from a customer.
@@ -3394,6 +3396,12 @@ def record_customer_receipt(
 
     functional_currency = actor.company.functional_currency or actor.company.default_currency
 
+    # Resolve receipt currency: explicit > customer default > functional
+    receipt_currency = currency or getattr(customer, "currency", "") or functional_currency
+    receipt_exchange_rate = Decimal(exchange_rate) if exchange_rate else Decimal("1")
+    if receipt_currency == functional_currency:
+        receipt_exchange_rate = Decimal("1")
+
     lines = [
         {
             "account_public_id": str(bank_account.public_id),
@@ -3549,8 +3557,8 @@ def record_customer_receipt(
             posted_at=posted_at.isoformat(),
             posted_by_id=actor.user.id,
             posted_by_email=actor.user.email,
-            currency=functional_currency,
-            exchange_rate="1.0",
+            currency=receipt_currency,
+            exchange_rate=str(receipt_exchange_rate),
         ).to_dict(),
     )
 
@@ -3649,6 +3657,8 @@ def record_vendor_payment(
     memo: str = "",
     allocations: list = None,
     accounting_date: str = None,
+    currency: str = "",
+    exchange_rate: str = "",
 ) -> CommandResult:
     """
     Record a payment made to a vendor.
@@ -3807,6 +3817,12 @@ def record_vendor_payment(
 
     functional_currency = actor.company.functional_currency or actor.company.default_currency
 
+    # Resolve payment currency: explicit > vendor default > functional
+    payment_currency = currency or getattr(vendor, "currency", "") or functional_currency
+    payment_exchange_rate = Decimal(exchange_rate) if exchange_rate else Decimal("1")
+    if payment_currency == functional_currency:
+        payment_exchange_rate = Decimal("1")
+
     lines = [
         {
             "account_public_id": str(ap_control.public_id),
@@ -3953,8 +3969,8 @@ def record_vendor_payment(
             posted_at=posted_at.isoformat(),
             posted_by_id=actor.user.id,
             posted_by_email=actor.user.email,
-            currency=functional_currency,
-            exchange_rate="1.0",
+            currency=payment_currency,
+            exchange_rate=str(payment_exchange_rate),
         ).to_dict(),
     )
 

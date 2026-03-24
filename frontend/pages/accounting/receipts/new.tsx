@@ -38,6 +38,8 @@ import {
   type ReceiptAllocation,
 } from "@/services/accounts.service";
 import { periodsService, type FiscalPeriod } from "@/services/periods.service";
+import { exchangeRatesService } from "@/services/exchange-rates.service";
+import { useCompanySettings } from "@/queries/useCompanySettings";
 import { cn } from "@/lib/cn";
 
 interface ReceiptFormData {
@@ -72,6 +74,11 @@ export default function NewCustomerReceiptPage() {
   const [totalOutstanding, setTotalOutstanding] = useState("0.00");
   const [periods, setPeriods] = useState<FiscalPeriod[]>([]);
   const [resolvedPeriod, setResolvedPeriod] = useState<string>("");
+  const [receiptCurrency, setReceiptCurrency] = useState<string>("");
+  const [exchangeRate, setExchangeRate] = useState<string>("1");
+  const [availableCurrencies, setAvailableCurrencies] = useState<string[]>([]);
+  const { data: companySettings } = useCompanySettings();
+  const functionalCurrency = companySettings?.functional_currency || companySettings?.default_currency || "USD";
 
   // Filter accounts by role
   const bankAccounts = accounts?.filter(
@@ -106,12 +113,51 @@ export default function NewCustomerReceiptPage() {
   const watchReceiptDate = watch("receipt_date");
   const watchAccountingDate = watch("accounting_date");
 
-  // Fetch fiscal periods on mount
+  // Fetch fiscal periods and available currencies on mount
   useEffect(() => {
     periodsService.list().then((res) => {
       setPeriods(res.data.periods || []);
     }).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!functionalCurrency) return;
+    exchangeRatesService.list().then((res) => {
+      const codes = new Set<string>();
+      codes.add(functionalCurrency);
+      res.data.forEach((r) => { codes.add(r.from_currency); codes.add(r.to_currency); });
+      setAvailableCurrencies(Array.from(codes).sort());
+    }).catch(() => {});
+  }, [functionalCurrency]);
+
+  // Auto-set currency from customer
+  useEffect(() => {
+    if (selectedCustomerId && customers) {
+      const cust = customers.find((c) => String(c.id) === selectedCustomerId);
+      if (cust?.currency) {
+        setReceiptCurrency(cust.currency);
+      } else {
+        setReceiptCurrency(functionalCurrency);
+      }
+    }
+  }, [selectedCustomerId, customers, functionalCurrency]);
+
+  // Auto-lookup exchange rate when currency or date changes
+  useEffect(() => {
+    if (!receiptCurrency || receiptCurrency === functionalCurrency) {
+      setExchangeRate("1");
+      return;
+    }
+    const dateStr = watchReceiptDate || new Date().toISOString().split("T")[0];
+    exchangeRatesService
+      .lookup({ from_currency: receiptCurrency, to_currency: functionalCurrency, date: dateStr })
+      .then((res) => {
+        if (res.data.rate) {
+          setExchangeRate(res.data.rate);
+        }
+      })
+      .catch(() => {});
+  }, [receiptCurrency, watchReceiptDate, functionalCurrency]);
 
   // Sync accounting_date with receipt_date when receipt_date changes
   useEffect(() => {
@@ -274,6 +320,8 @@ export default function NewCustomerReceiptPage() {
         reference: data.reference,
         memo: data.memo,
         allocations: selectedAllocations.length > 0 ? selectedAllocations : undefined,
+        currency: receiptCurrency || functionalCurrency,
+        exchange_rate: exchangeRate,
       };
 
       await customerReceiptsService.create(payload);
@@ -389,6 +437,22 @@ export default function NewCustomerReceiptPage() {
             </div>
 
             <div className="space-y-2">
+              <Label>{t("accounting:currency", "Currency")}</Label>
+              <Select value={receiptCurrency} onValueChange={setReceiptCurrency}>
+                <SelectTrigger>
+                  <SelectValue placeholder={functionalCurrency} />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableCurrencies.map((code) => (
+                    <SelectItem key={code} value={code}>
+                      {code}{code === functionalCurrency ? " (functional)" : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
               <Label htmlFor="amount">{t("accounting:amount", "Amount")} *</Label>
               <Input
                 id="amount"
@@ -403,6 +467,22 @@ export default function NewCustomerReceiptPage() {
               />
               {errors.amount && (
                 <p className="text-sm text-destructive">{errors.amount.message}</p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label>{t("accounting:exchangeRate", "Exchange Rate")}</Label>
+              <Input
+                type="number"
+                step="0.000001"
+                value={exchangeRate}
+                onChange={(e) => setExchangeRate(e.target.value)}
+                disabled={receiptCurrency === functionalCurrency || !receiptCurrency}
+              />
+              {receiptCurrency && receiptCurrency !== functionalCurrency && (
+                <p className="text-xs text-muted-foreground">
+                  1 {receiptCurrency} = {exchangeRate} {functionalCurrency}
+                </p>
               )}
             </div>
 
