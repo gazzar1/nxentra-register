@@ -229,6 +229,7 @@ export default function PurchaseBillsPage() {
                       {bill.vendor_bill_reference || "—"}
                     </div>
                     <div className="col-span-2 text-end font-mono ltr-number font-medium">
+                      {bill.currency && <span className="text-muted-foreground text-xs me-1">{bill.currency}</span>}
                       {parseFloat(bill.total_amount).toLocaleString(undefined, {
                         minimumFractionDigits: 2,
                         maximumFractionDigits: 2,

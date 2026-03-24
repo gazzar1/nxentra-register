@@ -250,6 +250,18 @@ export default function SalesInvoiceDetailPage() {
                   <p className="text-sm text-muted-foreground">Posting Profile</p>
                   <p className="font-medium">{invoice.posting_profile_code}</p>
                 </div>
+                {invoice.currency && (
+                  <div>
+                    <p className="text-sm text-muted-foreground">Currency</p>
+                    <p className="font-medium font-mono">{invoice.currency}</p>
+                  </div>
+                )}
+                {invoice.currency && parseFloat(invoice.exchange_rate) !== 1 && (
+                  <div>
+                    <p className="text-sm text-muted-foreground">Exchange Rate</p>
+                    <p className="font-medium font-mono">{parseFloat(invoice.exchange_rate).toFixed(6)}</p>
+                  </div>
+                )}
                 {invoice.posted_at && (
                   <div>
                     <p className="text-sm text-muted-foreground">Posted At</p>
@@ -384,10 +396,11 @@ export default function SalesInvoiceDetailPage() {
 
             {/* Totals */}
             <div className="flex justify-end mt-6">
-              <div className="w-72 space-y-2">
+              <div className="w-80 space-y-2">
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">Subtotal</span>
                   <span className="font-mono">
+                    {invoice.currency && <span className="text-muted-foreground me-1">{invoice.currency}</span>}
                     {parseFloat(invoice.subtotal).toLocaleString(undefined, {
                       minimumFractionDigits: 2,
                       maximumFractionDigits: 2,
@@ -415,6 +428,7 @@ export default function SalesInvoiceDetailPage() {
                 <div className="border-t pt-2 flex justify-between text-lg font-semibold">
                   <span>Total Amount</span>
                   <span className="font-mono">
+                    {invoice.currency && <span className="text-muted-foreground text-sm me-1">{invoice.currency}</span>}
                     {parseFloat(invoice.total_amount).toLocaleString(undefined, {
                       minimumFractionDigits: 2,
                       maximumFractionDigits: 2,

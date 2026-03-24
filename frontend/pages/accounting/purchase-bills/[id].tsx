@@ -182,6 +182,18 @@ export default function PurchaseBillDetailPage() {
                   <p className="text-sm text-muted-foreground">Posting Profile</p>
                   <p className="font-medium">{bill.posting_profile_code}</p>
                 </div>
+                {bill.currency && (
+                  <div>
+                    <p className="text-sm text-muted-foreground">Currency</p>
+                    <p className="font-medium font-mono">{bill.currency}</p>
+                  </div>
+                )}
+                {bill.currency && parseFloat(bill.exchange_rate) !== 1 && (
+                  <div>
+                    <p className="text-sm text-muted-foreground">Exchange Rate</p>
+                    <p className="font-medium font-mono">{parseFloat(bill.exchange_rate).toFixed(6)}</p>
+                  </div>
+                )}
                 {bill.posted_at && (
                   <div>
                     <p className="text-sm text-muted-foreground">Posted At</p>
@@ -316,10 +328,11 @@ export default function PurchaseBillDetailPage() {
 
             {/* Totals */}
             <div className="flex justify-end mt-6">
-              <div className="w-72 space-y-2">
+              <div className="w-80 space-y-2">
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">Subtotal</span>
                   <span className="font-mono">
+                    {bill.currency && <span className="text-muted-foreground me-1">{bill.currency}</span>}
                     {parseFloat(bill.subtotal).toLocaleString(undefined, {
                       minimumFractionDigits: 2,
                       maximumFractionDigits: 2,
@@ -347,6 +360,7 @@ export default function PurchaseBillDetailPage() {
                 <div className="border-t pt-2 flex justify-between text-lg font-semibold">
                   <span>Total Amount</span>
                   <span className="font-mono">
+                    {bill.currency && <span className="text-muted-foreground text-sm me-1">{bill.currency}</span>}
                     {parseFloat(bill.total_amount).toLocaleString(undefined, {
                       minimumFractionDigits: 2,
                       maximumFractionDigits: 2,

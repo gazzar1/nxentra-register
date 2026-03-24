@@ -224,6 +224,7 @@ export default function SalesInvoicesPage() {
                       </p>
                     </div>
                     <div className="col-span-2 text-end font-mono ltr-number font-medium">
+                      {invoice.currency && <span className="text-muted-foreground text-xs me-1">{invoice.currency}</span>}
                       {parseFloat(invoice.total_amount).toLocaleString(undefined, {
                         minimumFractionDigits: 2,
                         maximumFractionDigits: 2,
