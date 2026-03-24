@@ -128,32 +128,54 @@ def restore_company(company, zip_file):
 
 
 def _clear_company_data(company, registry):
-    """Delete all existing company data in reverse dependency order."""
+    """
+    Delete all existing company data.
+
+    Uses multiple passes to handle FK dependencies: keeps deleting
+    until nothing is left or no progress is made. This handles
+    cross-layer FK references (e.g., PurchaseBill → Vendor) without
+    needing to know the exact dependency graph.
+    """
     from events.models import EventPayload, BusinessEvent
 
     total_deleted = 0
-    reversed_labels = list(reversed(registry.keys()))
 
-    for label in reversed_labels:
-        model_cls = registry[label]
+    # First: delete BusinessEvent (immutable — needs special handling)
+    count = BusinessEvent.objects.filter(company=company).count()
+    if count > 0:
+        BusinessEvent.objects.filter(company=company).delete()
+        total_deleted += count
 
-        # EventPayload — skip deletion (content-addressed, may be shared)
-        if model_cls is EventPayload:
+    # Build list of models to clear (excluding EventPayload and BusinessEvent)
+    models_to_clear = []
+    for label, model_cls in registry.items():
+        if model_cls is EventPayload or model_cls is BusinessEvent:
             continue
+        models_to_clear.append((label, model_cls))
 
-        # Special handling for immutable models
-        if model_cls is BusinessEvent:
-            # Must use raw delete to bypass immutability guard
-            count = BusinessEvent.objects.filter(company=company).count()
-            if count > 0:
-                BusinessEvent.objects.filter(company=company).delete()
+    # Multi-pass deletion: keep going until everything is deleted
+    # or no progress is made (handles FK dependency ordering)
+    max_passes = 10
+    for pass_num in range(max_passes):
+        pass_deleted = 0
+        remaining = []
+
+        for label, model_cls in models_to_clear:
+            qs = _get_company_qs_for_delete(model_cls, company)
+            if qs is None or qs.count() == 0:
+                continue
+
+            try:
+                count, _ = qs.delete()
+                pass_deleted += count
                 total_deleted += count
-            continue
+            except Exception:
+                # FK constraint — will retry in next pass
+                remaining.append((label, model_cls))
 
-        qs = _get_company_qs_for_delete(model_cls, company)
-        if qs is not None:
-            count, _ = qs.delete()
-            total_deleted += count
+        if not remaining or pass_deleted == 0:
+            break
+        models_to_clear = remaining
 
     return total_deleted
 
