@@ -23,14 +23,20 @@ from decimal import Decimal
 from datetime import date
 from uuid import uuid4
 
+from django.conf import settings
 from django.utils import timezone
 
-from accounting.models import Account
+from accounting.models import Account, JournalEntry, JournalLine
 from events.emitter import emit_event
 from events.models import BusinessEvent
 from events.types import EventTypes
 from projections.account_balance import AccountBalanceProjection
 from projections.models import AccountBalance
+from projections.write_barrier import (
+    projection_writes_allowed,
+    command_writes_allowed,
+    write_context_allowed,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -574,3 +580,263 @@ class TestTrialBalanceAlwaysBalanced:
             f"debit={tb['total_debit']}, credit={tb['total_credit']}"
         )
         assert Decimal(tb["total_debit"]) == Decimal(tb["total_credit"])
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# INVARIANT 8: Every posted JE traces to a business event
+# ═════════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.django_db
+class TestPostedJETracesToEvent:
+    """
+    Every POSTED JournalEntry should have a corresponding
+    JOURNAL_ENTRY_POSTED event in the event store.
+
+    If this fails, a JE was created outside the event-first path.
+    """
+
+    def test_event_emitted_je_has_matching_event(
+        self, company, user, cash_account, revenue_account
+    ):
+        """JE created via event emission must have a matching event."""
+        entry_id = uuid4()
+        _emit_posted_event(company, user, [
+            _make_line(cash_account, debit="500.00", line_no=1),
+            _make_line(revenue_account, credit="500.00", line_no=2),
+        ], entry_id=entry_id)
+
+        projection = AccountBalanceProjection()
+        projection.process_pending(company)
+
+        # The event must exist
+        events = BusinessEvent.objects.filter(
+            company=company,
+            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+            aggregate_id=str(entry_id),
+        )
+        assert events.count() == 1, (
+            f"Expected 1 JOURNAL_ENTRY_POSTED event for entry {entry_id}, "
+            f"found {events.count()}"
+        )
+
+    def test_no_orphan_posted_events(
+        self, company, user, cash_account, revenue_account
+    ):
+        """Every JOURNAL_ENTRY_POSTED event should reference a valid entry_public_id."""
+        _emit_posted_event(company, user, [
+            _make_line(cash_account, debit="100.00", line_no=1),
+            _make_line(revenue_account, credit="100.00", line_no=2),
+        ])
+        _emit_posted_event(company, user, [
+            _make_line(cash_account, debit="200.00", line_no=1),
+            _make_line(revenue_account, credit="200.00", line_no=2),
+        ])
+
+        # All JOURNAL_ENTRY_POSTED events must have valid aggregate_ids
+        posted_events = BusinessEvent.objects.filter(
+            company=company,
+            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+        )
+        for event in posted_events:
+            data = event.get_data()
+            assert "entry_public_id" in data, (
+                f"Event {event.id} missing entry_public_id in payload"
+            )
+            assert data["entry_public_id"] == str(event.aggregate_id), (
+                f"Event {event.id}: entry_public_id={data['entry_public_id']} "
+                f"doesn't match aggregate_id={event.aggregate_id}"
+            )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# INVARIANT 9: No finance writes outside write barriers
+# ═════════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.django_db
+class TestWriteBarrierEnforcement:
+    """
+    Direct writes to JournalEntry/JournalLine outside of
+    projection_writes_allowed() or command_writes_allowed()
+    must be blocked (unless TESTING=True allows it).
+
+    These tests temporarily disable TESTING to verify real enforcement.
+    """
+
+    def test_journal_entry_blocked_without_write_context(self, company, user):
+        """Creating a JournalEntry without write context must raise RuntimeError."""
+        original_testing = getattr(settings, "TESTING", False)
+        settings.TESTING = False
+        try:
+            with pytest.raises(RuntimeError, match="write"):
+                JournalEntry.objects.create(
+                    company=company,
+                    public_id=uuid4(),
+                    date=date.today(),
+                    memo="Should be blocked",
+                    status=JournalEntry.Status.DRAFT,
+                    created_by=user,
+                )
+        finally:
+            settings.TESTING = original_testing
+
+    def test_journal_entry_allowed_with_projection_context(self, company, user):
+        """Creating a JournalEntry within projection_writes_allowed() must succeed."""
+        original_testing = getattr(settings, "TESTING", False)
+        settings.TESTING = False
+        try:
+            with projection_writes_allowed():
+                entry = JournalEntry.objects.create(
+                    company=company,
+                    public_id=uuid4(),
+                    date=date.today(),
+                    memo="Projection-created",
+                    status=JournalEntry.Status.DRAFT,
+                    created_by=user,
+                )
+            assert entry.pk is not None
+        finally:
+            settings.TESTING = original_testing
+
+    def test_journal_entry_blocked_with_command_context(self, company, user):
+        """JournalEntry is a projection-owned read model — command context alone cannot write it.
+
+        In Nxentra, the command layer creates JEs via emit_event() → projection,
+        NOT via direct JournalEntry.objects.create(). This test confirms that
+        even command_writes_allowed() cannot bypass the projection-only guard.
+        """
+        original_testing = getattr(settings, "TESTING", False)
+        settings.TESTING = False
+        try:
+            with pytest.raises(RuntimeError, match="read model"):
+                with command_writes_allowed():
+                    JournalEntry.objects.create(
+                        company=company,
+                        public_id=uuid4(),
+                        date=date.today(),
+                        memo="Should be blocked",
+                        status=JournalEntry.Status.DRAFT,
+                        created_by=user,
+                    )
+        finally:
+            settings.TESTING = original_testing
+
+    def test_account_balance_blocked_without_projection_context(self, company, cash_account):
+        """AccountBalance writes require projection context specifically."""
+        original_testing = getattr(settings, "TESTING", False)
+        settings.TESTING = False
+        try:
+            with pytest.raises(RuntimeError):
+                AccountBalance.objects.create(
+                    company=company,
+                    account=cash_account,
+                    balance=Decimal("0"),
+                    debit_total=Decimal("0"),
+                    credit_total=Decimal("0"),
+                    entry_count=0,
+                )
+        finally:
+            settings.TESTING = original_testing
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# INVARIANT 10: Event causation chain integrity
+# ═════════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.django_db
+class TestCausationChainIntegrity:
+    """
+    When events declare a caused_by_event, that parent event must exist
+    and belong to the same company.
+
+    If this fails, the causation chain has dangling references.
+    """
+
+    def test_caused_by_event_exists(self, company, user, cash_account, revenue_account):
+        """Events with caused_by_event must reference valid parent events."""
+        # Emit parent event
+        parent_event = _emit_posted_event(company, user, [
+            _make_line(cash_account, debit="500.00", line_no=1),
+            _make_line(revenue_account, credit="500.00", line_no=2),
+        ], memo="Parent entry")
+
+        # Emit child event with causation link
+        child_entry_id = uuid4()
+        child_event = emit_event(
+            company=company,
+            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(child_entry_id),
+            data={
+                "entry_public_id": str(child_entry_id),
+                "entry_number": "JE-CHILD",
+                "date": date.today().isoformat(),
+                "memo": "Child entry",
+                "kind": "NORMAL",
+                "posted_at": timezone.now().isoformat(),
+                "posted_by_id": user.id,
+                "posted_by_email": user.email,
+                "total_debit": "500.00",
+                "total_credit": "500.00",
+                "lines": [
+                    _make_line(cash_account, credit="500.00", line_no=1),
+                    _make_line(revenue_account, debit="500.00", line_no=2),
+                ],
+            },
+            caused_by_user=user,
+            caused_by_event=parent_event,
+            idempotency_key=f"truth:child:{child_entry_id}",
+        )
+
+        # Verify chain
+        assert child_event.caused_by_event_id == parent_event.id
+        assert child_event.caused_by_event.company_id == company.id
+
+    def test_all_causation_links_valid(self, company, user, cash_account, revenue_account):
+        """No event in the system should have a dangling caused_by_event."""
+        # Emit a few linked events
+        e1 = _emit_posted_event(company, user, [
+            _make_line(cash_account, debit="100.00", line_no=1),
+            _make_line(revenue_account, credit="100.00", line_no=2),
+        ])
+        e2 = emit_event(
+            company=company,
+            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(uuid4()),
+            data={
+                "entry_public_id": str(uuid4()),
+                "entry_number": "JE-LINKED",
+                "date": date.today().isoformat(),
+                "memo": "Linked",
+                "kind": "REVERSAL",
+                "posted_at": timezone.now().isoformat(),
+                "posted_by_id": user.id,
+                "posted_by_email": user.email,
+                "total_debit": "100.00",
+                "total_credit": "100.00",
+                "lines": [
+                    _make_line(cash_account, credit="100.00", line_no=1),
+                    _make_line(revenue_account, debit="100.00", line_no=2),
+                ],
+            },
+            caused_by_user=user,
+            caused_by_event=e1,
+            idempotency_key=f"truth:linked:{uuid4()}",
+        )
+
+        # Check ALL events with caused_by_event are valid
+        linked_events = BusinessEvent.objects.filter(
+            company=company,
+            caused_by_event__isnull=False,
+        ).select_related("caused_by_event")
+
+        for event in linked_events:
+            parent = event.caused_by_event
+            assert parent is not None, (
+                f"Event {event.id} has caused_by_event_id={event.caused_by_event_id} "
+                f"but parent is None (dangling reference)"
+            )
+            assert parent.company_id == event.company_id, (
+                f"Event {event.id} (company={event.company_id}) links to parent "
+                f"event {parent.id} (company={parent.company_id}) — cross-company link"
+            )

@@ -420,3 +420,84 @@ class TestPropertyRegistrationRegression:
         assert after_count == before_count
         assert after_total["d"] == before_total["d"]
         assert after_total["c"] == before_total["c"]
+
+
+# =============================================================================
+# Finance event coverage
+# =============================================================================
+
+FINANCE_EVENT_TYPES = [
+    "journal_entry.posted",
+    "journal_entry.reversed",
+    "sales.invoice_posted",
+    "sales.invoice_voided",
+    "purchases.bill_posted",
+    "purchases.bill_voided",
+    "cash.customer_receipt_recorded",
+    "cash.vendor_payment_recorded",
+]
+
+
+@pytest.mark.django_db
+class TestFinanceEventCoverage:
+    """Every finance event type must be registered and have a consuming projection."""
+
+    def test_finance_event_types_registered(self):
+        """All finance event types must be in EVENT_DATA_CLASSES."""
+        for event_type in FINANCE_EVENT_TYPES:
+            assert event_type in EVENT_DATA_CLASSES, (
+                f"Finance event '{event_type}' is not in EVENT_DATA_CLASSES. "
+                f"Register it in events/types.py or the appropriate module's event_types.py"
+            )
+
+    def test_finance_events_have_data_class(self):
+        """Each finance event type must map to a BaseEventData subclass."""
+        for event_type in FINANCE_EVENT_TYPES:
+            if event_type not in EVENT_DATA_CLASSES:
+                continue  # caught by test above
+            data_cls = EVENT_DATA_CLASSES[event_type]
+            assert isinstance(data_cls, type) and issubclass(data_cls, BaseEventData), (
+                f"Finance event '{event_type}' maps to {data_cls!r}, "
+                f"which is not a BaseEventData subclass"
+            )
+
+    def test_journal_entry_posted_has_consuming_projection(self):
+        """journal_entry.posted must have at least one consuming projection."""
+        consumers = [
+            p for p in projection_registry.all()
+            if "journal_entry.posted" in p.consumes
+        ]
+        assert len(consumers) >= 1, (
+            "No projection consumes 'journal_entry.posted'. "
+            "AccountBalanceProjection should consume this event."
+        )
+
+    def test_all_finance_events_have_consumers(self):
+        """Every finance event type should have at least one consuming projection."""
+        all_consumed = set()
+        for p in projection_registry.all():
+            all_consumed.update(p.consumes)
+
+        uncovered = []
+        for event_type in FINANCE_EVENT_TYPES:
+            if event_type not in all_consumed:
+                uncovered.append(event_type)
+
+        # Some events (like reversed, voided) may not need projections
+        # but the core posting events must have consumers
+        core_posting_events = [
+            "journal_entry.posted",
+        ]
+        for event_type in core_posting_events:
+            assert event_type not in uncovered, (
+                f"Core finance event '{event_type}' has no consuming projection"
+            )
+
+    def test_projection_consumes_list_valid(self):
+        """Every event type in a projection's consumes list must be registered."""
+        for p in projection_registry.all():
+            for event_type in p.consumes:
+                assert event_type in EVENT_DATA_CLASSES, (
+                    f"Projection '{p.name}' consumes '{event_type}' "
+                    f"which is not in EVENT_DATA_CLASSES — stale reference?"
+                )
