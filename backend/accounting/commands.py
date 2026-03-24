@@ -3533,6 +3533,7 @@ def record_customer_receipt(
             debit=line.get("debit", "0"),
             credit=line.get("credit", "0"),
             amount_currency=line.get("amount_currency"),
+            currency=line.get("currency"),
             customer_public_id=line.get("customer_public_id"),
             vendor_public_id=None,
         ))
@@ -3957,6 +3958,7 @@ def record_vendor_payment(
             debit=line.get("debit", "0"),
             credit=line.get("credit", "0"),
             amount_currency=line.get("amount_currency"),
+            currency=line.get("currency"),
             customer_public_id=None,
             vendor_public_id=line.get("vendor_public_id"),
         ))
