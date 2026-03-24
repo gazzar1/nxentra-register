@@ -55,22 +55,22 @@ function extractFilename(contentDisposition: string | null, defaultName: string)
 
 export const backupService = {
   async listBackups(): Promise<BackupListResponse> {
-    const { data } = await apiClient.get('/api/backups/');
+    const { data } = await apiClient.get('/backups/');
     return data;
   },
 
   async createBackup(): Promise<BackupRecord> {
-    const { data } = await apiClient.post('/api/backups/export/');
+    const { data } = await apiClient.post('/backups/export/');
     return data;
   },
 
   async getBackup(publicId: string): Promise<BackupRecord> {
-    const { data } = await apiClient.get(`/api/backups/${publicId}/`);
+    const { data } = await apiClient.get(`/backups/${publicId}/`);
     return data;
   },
 
   async downloadBackup(publicId: string): Promise<void> {
-    const response = await apiClient.get(`/api/backups/${publicId}/download/`, {
+    const response = await apiClient.get(`/backups/${publicId}/download/`, {
       responseType: 'blob',
     });
     const contentDisposition = response.headers['content-disposition'];
@@ -81,7 +81,7 @@ export const backupService = {
   async restoreBackup(file: File): Promise<RestoreResult> {
     const formData = new FormData();
     formData.append('file', file);
-    const { data } = await apiClient.post('/api/backups/restore/', formData, {
+    const { data } = await apiClient.post('/backups/restore/', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
       timeout: 300000, // 5 min timeout for large restores
     });
@@ -89,6 +89,6 @@ export const backupService = {
   },
 
   async deleteBackup(publicId: string): Promise<void> {
-    await apiClient.delete(`/api/backups/${publicId}/`);
+    await apiClient.delete(`/backups/${publicId}/`);
   },
 };
