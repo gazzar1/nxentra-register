@@ -173,8 +173,8 @@ def get_export_registry():
     registry["clinic.Doctor"] = Doctor
     registry["clinic.Patient"] = Patient
     registry["clinic.Visit"] = Visit
-    registry["clinic.Payment"] = ClinicPayment
     registry["clinic.Invoice"] = ClinicInvoice
+    registry["clinic.Payment"] = ClinicPayment
 
     return registry
 

@@ -85,43 +85,63 @@ def restore_company(company, zip_file):
             # Wrap BOTH clear and import in a single transaction so that
             # if import fails, the clear is rolled back and no data is lost.
             with transaction.atomic():
-                # Defer FK constraint checks to commit time so that
-                # cross-model references resolve regardless of insert order.
                 from django.db import connection
-                if connection.vendor == "postgresql":
-                    with connection.cursor() as cursor:
-                        cursor.execute("SET CONSTRAINTS ALL DEFERRED")
 
-                # Phase 1: Clear existing company data
-                cleared = _clear_company_data(company, registry)
-                stats["cleared"] = cleared
+                # Collect all table names for models in the registry
+                # so we can disable/re-enable FK triggers during import
+                all_tables = [
+                    m._meta.db_table for m in registry.values()
+                ]
 
-                # Phase 2: Import data in dependency order
-                pk_map = {}
+                try:
+                    # Disable FK constraint triggers on all tables so that
+                    # insert order doesn't matter for cross-model references.
+                    if connection.vendor == "postgresql":
+                        with connection.cursor() as cursor:
+                            for tbl in all_tables:
+                                cursor.execute(
+                                    f'ALTER TABLE "{tbl}" DISABLE TRIGGER ALL'
+                                )
 
-                for label, model_cls in registry.items():
-                    json_path = f"models/{label}.json"
-                    if json_path not in zf.namelist():
-                        stats["skipped"][label] = "not in backup"
-                        continue
+                    # Phase 1: Clear existing company data
+                    cleared = _clear_company_data(company, registry)
+                    stats["cleared"] = cleared
 
-                    try:
-                        data_bytes = zf.read(json_path)
-                        records = json.loads(data_bytes)
-                    except (json.JSONDecodeError, KeyError) as e:
-                        stats["errors"].append(f"{label}: {e}")
-                        continue
+                    # Phase 2: Import data in dependency order
+                    pk_map = {}
 
-                    if not records:
-                        stats["imported"][label] = 0
-                        continue
+                    for label, model_cls in registry.items():
+                        json_path = f"models/{label}.json"
+                        if json_path not in zf.namelist():
+                            stats["skipped"][label] = "not in backup"
+                            continue
 
-                    excluded = EXCLUDED_FIELDS.get(label, [])
-                    count = _import_model_records(
-                        model_cls, company, records, pk_map, label, excluded
-                    )
-                    stats["imported"][label] = count
-                    logger.info("Imported %d records for %s", count, label)
+                        try:
+                            data_bytes = zf.read(json_path)
+                            records = json.loads(data_bytes)
+                        except (json.JSONDecodeError, KeyError) as e:
+                            stats["errors"].append(f"{label}: {e}")
+                            continue
+
+                        if not records:
+                            stats["imported"][label] = 0
+                            continue
+
+                        excluded = EXCLUDED_FIELDS.get(label, [])
+                        count = _import_model_records(
+                            model_cls, company, records, pk_map, label, excluded
+                        )
+                        stats["imported"][label] = count
+                        logger.info("Imported %d records for %s", count, label)
+
+                finally:
+                    # Always re-enable triggers, even if import fails
+                    if connection.vendor == "postgresql":
+                        with connection.cursor() as cursor:
+                            for tbl in all_tables:
+                                cursor.execute(
+                                    f'ALTER TABLE "{tbl}" ENABLE TRIGGER ALL'
+                                )
 
     zf.close()
 
