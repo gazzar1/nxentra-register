@@ -79,38 +79,41 @@ def restore_company(company, zip_file):
     stats = {"imported": {}, "skipped": {}, "cleared": 0, "errors": []}
 
     with rls_bypass():
-        # Phase 1: Clear existing company data (reverse dependency order)
-        cleared = _clear_company_data(company, registry)
-        stats["cleared"] = cleared
+        from projections.write_barrier import projection_writes_allowed, bootstrap_writes_allowed
 
-        # Phase 2: Import data in dependency order
-        with transaction.atomic():
-            # Build PK mapping: {label: {old_pk: new_pk}}
-            pk_map = {}
+        with projection_writes_allowed(), bootstrap_writes_allowed():
+            # Phase 1: Clear existing company data (reverse dependency order)
+            cleared = _clear_company_data(company, registry)
+            stats["cleared"] = cleared
 
-            for label, model_cls in registry.items():
-                json_path = f"models/{label}.json"
-                if json_path not in zf.namelist():
-                    stats["skipped"][label] = "not in backup"
-                    continue
+            # Phase 2: Import data in dependency order
+            with transaction.atomic():
+                # Build PK mapping: {label: {old_pk: new_pk}}
+                pk_map = {}
 
-                try:
-                    data_bytes = zf.read(json_path)
-                    records = json.loads(data_bytes)
-                except (json.JSONDecodeError, KeyError) as e:
-                    stats["errors"].append(f"{label}: {e}")
-                    continue
+                for label, model_cls in registry.items():
+                    json_path = f"models/{label}.json"
+                    if json_path not in zf.namelist():
+                        stats["skipped"][label] = "not in backup"
+                        continue
 
-                if not records:
-                    stats["imported"][label] = 0
-                    continue
+                    try:
+                        data_bytes = zf.read(json_path)
+                        records = json.loads(data_bytes)
+                    except (json.JSONDecodeError, KeyError) as e:
+                        stats["errors"].append(f"{label}: {e}")
+                        continue
 
-                excluded = EXCLUDED_FIELDS.get(label, [])
-                count = _import_model_records(
-                    model_cls, company, records, pk_map, label, excluded
-                )
-                stats["imported"][label] = count
-                logger.info("Imported %d records for %s", count, label)
+                    if not records:
+                        stats["imported"][label] = 0
+                        continue
+
+                    excluded = EXCLUDED_FIELDS.get(label, [])
+                    count = _import_model_records(
+                        model_cls, company, records, pk_map, label, excluded
+                    )
+                    stats["imported"][label] = count
+                    logger.info("Imported %d records for %s", count, label)
 
     zf.close()
 
