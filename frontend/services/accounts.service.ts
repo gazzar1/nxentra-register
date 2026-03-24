@@ -231,7 +231,24 @@ export interface OpenInvoicesResponse {
   total_outstanding: string;
 }
 
+export interface CustomerReceiptListItem {
+  receipt_public_id: string;
+  customer_code: string;
+  receipt_date: string;
+  amount: string;
+  reference: string;
+  memo: string;
+  journal_entry_public_id: string;
+  bank_account_code: string;
+  recorded_at: string;
+  recorded_by_email: string;
+  allocations: Array<{ invoice_public_id?: string; amount: string }>;
+}
+
 export const customerReceiptsService = {
+  list: () =>
+    apiClient.get<CustomerReceiptListItem[]>('/accounting/customer-receipts/'),
+
   create: (data: CustomerReceiptCreatePayload) =>
     apiClient.post<CustomerReceiptResponse>('/accounting/customer-receipts/', data),
 
@@ -271,7 +288,24 @@ export interface VendorPaymentResponse {
   allocations?: PaymentAllocation[];
 }
 
+export interface VendorPaymentListItem {
+  payment_public_id: string;
+  vendor_code: string;
+  payment_date: string;
+  amount: string;
+  reference: string;
+  memo: string;
+  journal_entry_public_id: string;
+  bank_account_code: string;
+  recorded_at: string;
+  recorded_by_email: string;
+  allocations: PaymentAllocation[];
+}
+
 export const vendorPaymentsService = {
+  list: () =>
+    apiClient.get<VendorPaymentListItem[]>('/accounting/vendor-payments/'),
+
   create: (data: VendorPaymentCreatePayload) =>
     apiClient.post<VendorPaymentResponse>('/accounting/vendor-payments/', data),
 };

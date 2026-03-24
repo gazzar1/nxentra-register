@@ -1,15 +1,49 @@
 import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
+import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
-import { Plus, FileText, ExternalLink } from "lucide-react";
+import { useState, useMemo } from "react";
+import { Plus, Search, FileText } from "lucide-react";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { PageHeader } from "@/components/common";
+import { Input } from "@/components/ui/input";
+import { Card, CardContent } from "@/components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { PageHeader, LoadingSpinner, EmptyState } from "@/components/common";
+import { customerReceiptsService, type CustomerReceiptListItem } from "@/services/accounts.service";
 
 export default function CustomerReceiptsPage() {
   const { t } = useTranslation(["common", "accounting"]);
+  const [search, setSearch] = useState("");
+
+  const { data: receipts, isLoading } = useQuery({
+    queryKey: ["customer-receipts"],
+    queryFn: async () => {
+      const { data } = await customerReceiptsService.list();
+      return data;
+    },
+  });
+
+  const filtered = useMemo(() => {
+    if (!receipts) return [];
+    if (!search.trim()) return receipts;
+    const q = search.toLowerCase();
+    return receipts.filter(
+      (r) =>
+        r.customer_code.toLowerCase().includes(q) ||
+        r.reference.toLowerCase().includes(q) ||
+        r.memo.toLowerCase().includes(q) ||
+        r.amount.includes(q)
+    );
+  }, [receipts, search]);
 
   return (
     <AppLayout>
@@ -27,67 +61,96 @@ export default function CustomerReceiptsPage() {
           }
         />
 
-        <div className="grid gap-6 md:grid-cols-2">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Plus className="h-5 w-5 text-emerald-500" />
-                {t("accounting:recordReceipt", "Record a Receipt")}
-              </CardTitle>
-              <CardDescription>
-                {t("accounting:recordReceiptDescription", "Record a payment received from a customer. This will create a journal entry that debits your bank account and credits accounts receivable.")}
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Link href="/accounting/receipts/new">
-                <Button className="w-full">
-                  <Plus className="h-4 w-4 me-2" />
-                  {t("accounting:newReceipt", "New Receipt")}
-                </Button>
-              </Link>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <FileText className="h-5 w-5 text-blue-500" />
-                {t("accounting:viewJournalEntries", "View Journal Entries")}
-              </CardTitle>
-              <CardDescription>
-                {t("accounting:viewReceiptsInJournal", "Customer receipts are recorded as journal entries. View the journal to see all posted receipts and their GL impact.")}
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Link href="/accounting/journal-entries">
-                <Button variant="outline" className="w-full">
-                  <ExternalLink className="h-4 w-4 me-2" />
-                  {t("accounting:goToJournalEntries", "Go to Journal Entries")}
-                </Button>
-              </Link>
-            </CardContent>
-          </Card>
-        </div>
-
         <Card>
-          <CardHeader>
-            <CardTitle>{t("accounting:howReceiptsWork", "How Receipts Work")}</CardTitle>
-          </CardHeader>
-          <CardContent className="prose prose-sm dark:prose-invert max-w-none">
-            <p>
-              {t("accounting:receiptsExplanation", "When you record a customer receipt, the system automatically creates a journal entry with the following postings:")}
-            </p>
-            <ul>
-              <li>
-                <strong>{t("accounting:debit", "Debit")}:</strong> {t("accounting:bankAccountDebited", "Bank Account (increases cash on hand)")}
-              </li>
-              <li>
-                <strong>{t("accounting:credit", "Credit")}:</strong> {t("accounting:arCredited", "AR Control Account (reduces the amount owed by the customer)")}
-              </li>
-            </ul>
-            <p>
-              {t("accounting:receiptPosting", "The journal entry is automatically posted, updating your account balances and reducing the customer's outstanding balance.")}
-            </p>
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-4 mb-4">
+              <div className="relative flex-1 max-w-sm">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder={t("common:search", "Search...")}
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="pl-9"
+                />
+              </div>
+            </div>
+
+            {isLoading ? (
+              <div className="flex justify-center py-12">
+                <LoadingSpinner />
+              </div>
+            ) : !filtered.length ? (
+              <EmptyState
+                icon={<FileText className="h-12 w-12" />}
+                title={t("accounting:noReceipts", "No receipts found")}
+                description={
+                  receipts?.length
+                    ? t("accounting:noReceiptsSearch", "No receipts match your search criteria.")
+                    : t("accounting:noReceiptsYet", "No customer receipts have been recorded yet.")
+                }
+                action={
+                  !receipts?.length ? (
+                    <Link href="/accounting/receipts/new">
+                      <Button>
+                        <Plus className="h-4 w-4 me-2" />
+                        {t("accounting:newReceipt", "New Receipt")}
+                      </Button>
+                    </Link>
+                  ) : undefined
+                }
+              />
+            ) : (
+              <div className="rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>{t("accounting:date", "Date")}</TableHead>
+                      <TableHead>{t("accounting:customer", "Customer")}</TableHead>
+                      <TableHead>{t("accounting:reference", "Reference")}</TableHead>
+                      <TableHead>{t("accounting:bankAccount", "Bank Account")}</TableHead>
+                      <TableHead>{t("accounting:memo", "Memo")}</TableHead>
+                      <TableHead className="text-right">{t("accounting:amount", "Amount")}</TableHead>
+                      <TableHead>{t("accounting:journalEntry", "Journal Entry")}</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filtered.map((receipt) => (
+                      <TableRow key={receipt.receipt_public_id}>
+                        <TableCell className="whitespace-nowrap">
+                          {receipt.receipt_date}
+                        </TableCell>
+                        <TableCell className="font-medium">
+                          {receipt.customer_code}
+                        </TableCell>
+                        <TableCell>{receipt.reference || "—"}</TableCell>
+                        <TableCell>{receipt.bank_account_code}</TableCell>
+                        <TableCell className="max-w-[200px] truncate">
+                          {receipt.memo || "—"}
+                        </TableCell>
+                        <TableCell className="text-right font-mono">
+                          {Number(receipt.amount).toLocaleString(undefined, {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })}
+                        </TableCell>
+                        <TableCell>
+                          {receipt.journal_entry_public_id ? (
+                            <Link
+                              href={`/accounting/journal-entries`}
+                              className="text-primary hover:underline text-sm"
+                            >
+                              {t("accounting:viewJE", "View JE")}
+                            </Link>
+                          ) : (
+                            <span className="text-muted-foreground text-sm">—</span>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>

@@ -3615,7 +3615,18 @@ def record_customer_receipt(
     _process_projections(actor.company)
 
     # Get the created journal entry
-    entry = JournalEntry.objects.get(company=actor.company, public_id=entry_public_id)
+    try:
+        entry = JournalEntry.objects.get(company=actor.company, public_id=entry_public_id)
+    except JournalEntry.DoesNotExist:
+        # Projection may have failed; check bookmark for errors
+        from projections.base import projection_registry
+        with rls_bypass():
+            je_proj = projection_registry.get("journal_entry_read_model")
+            if je_proj:
+                bookmark = je_proj.get_bookmark(actor.company)
+                if bookmark and bookmark.last_error:
+                    return CommandResult.fail(f"Projection error: {bookmark.last_error}")
+        return CommandResult.fail("Journal entry could not be created. Projection may have failed.")
 
     return CommandResult.ok({
         "receipt_public_id": str(receipt_public_id),
@@ -4004,7 +4015,18 @@ def record_vendor_payment(
     _process_projections(actor.company)
 
     # Get the created journal entry
-    entry = JournalEntry.objects.get(company=actor.company, public_id=entry_public_id)
+    try:
+        entry = JournalEntry.objects.get(company=actor.company, public_id=entry_public_id)
+    except JournalEntry.DoesNotExist:
+        # Projection may have failed; check bookmark for errors
+        from projections.base import projection_registry
+        with rls_bypass():
+            je_proj = projection_registry.get("journal_entry_read_model")
+            if je_proj:
+                bookmark = je_proj.get_bookmark(actor.company)
+                if bookmark and bookmark.last_error:
+                    return CommandResult.fail(f"Projection error: {bookmark.last_error}")
+        return CommandResult.fail("Journal entry could not be created. Projection may have failed.")
 
     return CommandResult.ok({
         "payment_public_id": str(payment_public_id),

@@ -1546,12 +1546,13 @@ class SeedAccountsView(APIView):
 
 class CustomerReceiptCreateView(APIView):
     """
+    GET  /api/accounting/customer-receipts/ -> list recorded receipts
     POST /api/accounting/customer-receipts/ -> record customer receipt
 
     Records a payment received from a customer.
     Creates a journal entry: Dr Bank, Cr AR Control.
 
-    Request body:
+    Request body (POST):
     {
         "customer_id": int,
         "receipt_date": str (ISO date),
@@ -1569,6 +1570,40 @@ class CustomerReceiptCreateView(APIView):
     }
     """
     permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from events.models import BusinessEvent
+
+        actor = resolve_actor(request)
+        require(actor, "journal.view")
+
+        events = (
+            BusinessEvent.objects
+            .filter(
+                company=actor.company,
+                event_type="cash.customer_receipt_recorded",
+            )
+            .order_by("-created_at")
+        )
+
+        results = []
+        for ev in events:
+            d = ev.data
+            results.append({
+                "receipt_public_id": d.get("receipt_public_id", ""),
+                "customer_code": d.get("customer_code", ""),
+                "receipt_date": d.get("receipt_date", ""),
+                "amount": d.get("amount", "0"),
+                "reference": d.get("reference", ""),
+                "memo": d.get("memo", ""),
+                "journal_entry_public_id": d.get("journal_entry_public_id", ""),
+                "bank_account_code": d.get("bank_account_code", ""),
+                "recorded_at": d.get("recorded_at", ""),
+                "recorded_by_email": d.get("recorded_by_email", ""),
+                "allocations": d.get("allocations") or [],
+            })
+
+        return Response(results)
 
     def post(self, request):
         from .commands import record_customer_receipt
@@ -1668,6 +1703,40 @@ class VendorPaymentCreateView(APIView):
     }
     """
     permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from events.models import BusinessEvent
+
+        actor = resolve_actor(request)
+        require(actor, "journal.view")
+
+        events = (
+            BusinessEvent.objects
+            .filter(
+                company=actor.company,
+                event_type="cash.vendor_payment_recorded",
+            )
+            .order_by("-created_at")
+        )
+
+        results = []
+        for ev in events:
+            d = ev.data
+            results.append({
+                "payment_public_id": d.get("payment_public_id", ""),
+                "vendor_code": d.get("vendor_code", ""),
+                "payment_date": d.get("payment_date", ""),
+                "amount": d.get("amount", "0"),
+                "reference": d.get("reference", ""),
+                "memo": d.get("memo", ""),
+                "journal_entry_public_id": d.get("journal_entry_public_id", ""),
+                "bank_account_code": d.get("bank_account_code", ""),
+                "recorded_at": d.get("recorded_at", ""),
+                "recorded_by_email": d.get("recorded_by_email", ""),
+                "allocations": d.get("allocations") or [],
+            })
+
+        return Response(results)
 
     def post(self, request):
         from .commands import record_vendor_payment
