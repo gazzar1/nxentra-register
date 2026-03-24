@@ -3389,7 +3389,7 @@ def record_customer_receipt(
         description += f" - Ref: {reference}"
 
     # Build journal entry
-    entry_sequence = _next_company_sequence(actor.company, "journal_entry")
+    entry_sequence = _next_company_sequence(actor.company, "journal_entry_number")
     entry_public_id = uuid.uuid4()
 
     functional_currency = actor.company.functional_currency or actor.company.default_currency
@@ -3802,7 +3802,7 @@ def record_vendor_payment(
         description += f" - Ref: {reference}"
 
     # Build journal entry
-    entry_sequence = _next_company_sequence(actor.company, "journal_entry")
+    entry_sequence = _next_company_sequence(actor.company, "journal_entry_number")
     entry_public_id = uuid.uuid4()
 
     functional_currency = actor.company.functional_currency or actor.company.default_currency
