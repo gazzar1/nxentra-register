@@ -638,6 +638,8 @@ def create_sales_invoice(
     due_date=None,
     reference: str = "",
     notes: str = "",
+    currency: str = "",
+    exchange_rate=None,
 ) -> CommandResult:
     """
     Create a new sales invoice with lines.
@@ -754,6 +756,10 @@ def create_sales_invoice(
 
     with command_writes_allowed():
         # Create invoice
+        # Resolve currency: explicit > customer default > company default
+        invoice_currency = currency or customer.currency or actor.company.default_currency
+        invoice_exchange_rate = Decimal(str(exchange_rate)) if exchange_rate else Decimal("1")
+
         invoice = SalesInvoice.objects.create(
             company=actor.company,
             invoice_number=invoice_number,
@@ -761,6 +767,8 @@ def create_sales_invoice(
             due_date=due_date,
             customer=customer,
             posting_profile=posting_profile,
+            currency=invoice_currency,
+            exchange_rate=invoice_exchange_rate,
             subtotal=subtotal,
             total_discount=total_discount,
             total_tax=total_tax,
@@ -1266,14 +1274,23 @@ def post_sales_invoice(actor: ActorContext, invoice_id: int) -> CommandResult:
         })
         line_no += 1
 
-    # Create journal entry
-    je_result = create_journal_entry(
+    # Create journal entry (with currency if foreign)
+    functional_currency = actor.company.functional_currency or actor.company.default_currency
+    inv_currency = invoice.currency or functional_currency
+    inv_rate = invoice.exchange_rate if invoice.exchange_rate and invoice.exchange_rate != Decimal("0") else Decimal("1")
+
+    je_kwargs = dict(
         actor=actor,
         date=invoice.invoice_date,
         memo=f"Sales Invoice {invoice.invoice_number}",
         lines=je_lines,
         kind=JournalEntry.Kind.NORMAL,
     )
+    if inv_currency != functional_currency:
+        je_kwargs["currency"] = inv_currency
+        je_kwargs["exchange_rate"] = str(inv_rate)
+
+    je_result = create_journal_entry(**je_kwargs)
 
     if not je_result.success:
         return CommandResult.fail(f"Failed to create journal entry: {je_result.error}")

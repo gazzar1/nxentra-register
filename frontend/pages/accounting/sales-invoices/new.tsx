@@ -4,7 +4,7 @@ import { useTranslation } from "next-i18next";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import { ArrowLeft, Plus, Trash2, Save } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useForm, useFieldArray, Controller } from "react-hook-form";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
@@ -23,8 +23,10 @@ import {
 import { useCustomers } from "@/queries/useAccounts";
 import { useItems, useTaxCodes, usePostingProfiles, useCreateSalesInvoice } from "@/queries/useSales";
 import { useAccounts } from "@/queries/useAccounts";
+import { useCompanySettings } from "@/queries/useCompanySettings";
 import { useToast } from "@/components/ui/toaster";
 import type { SalesInvoiceCreatePayload, SalesInvoiceLineInput } from "@/types/sales";
+import { exchangeRatesService } from "@/services/exchange-rates.service";
 import { cn } from "@/lib/cn";
 
 interface InvoiceLineFormData {
@@ -43,6 +45,8 @@ interface InvoiceFormData {
   due_date: string;
   customer_id: string;
   posting_profile_id: string;
+  currency: string;
+  exchange_rate: string;
   notes: string;
   lines: InvoiceLineFormData[];
 }
@@ -56,6 +60,7 @@ export default function NewSalesInvoicePage() {
   const { data: taxCodes } = useTaxCodes({ direction: "OUTPUT" });
   const { data: postingProfiles } = usePostingProfiles({ profile_type: "CUSTOMER" });
   const { data: accounts } = useAccounts();
+  const { data: companySettings } = useCompanySettings();
   const createInvoice = useCreateSalesInvoice();
 
   const revenueAccounts = accounts?.filter(
@@ -76,6 +81,8 @@ export default function NewSalesInvoicePage() {
       due_date: "",
       customer_id: "",
       posting_profile_id: "",
+      currency: "",
+      exchange_rate: "1",
       notes: "",
       lines: [
         {
@@ -97,6 +104,41 @@ export default function NewSalesInvoicePage() {
   });
 
   const watchLines = watch("lines");
+  const watchCustomerId = watch("customer_id");
+  const watchCurrency = watch("currency");
+  const watchInvoiceDate = watch("invoice_date");
+
+  const functionalCurrency = companySettings?.functional_currency || companySettings?.default_currency || "USD";
+
+  // Auto-populate currency from customer when customer changes
+  useEffect(() => {
+    if (watchCustomerId) {
+      const customer = customers?.find((c) => c.id.toString() === watchCustomerId);
+      if (customer?.currency) {
+        setValue("currency", customer.currency);
+      }
+    }
+  }, [watchCustomerId, customers, setValue]);
+
+  // Auto-lookup exchange rate when currency or date changes
+  useEffect(() => {
+    if (!watchCurrency || !watchInvoiceDate || watchCurrency === functionalCurrency) {
+      setValue("exchange_rate", "1");
+      return;
+    }
+    exchangeRatesService
+      .lookup({
+        from_currency: watchCurrency,
+        to_currency: functionalCurrency,
+        date: watchInvoiceDate,
+      })
+      .then((res) => {
+        if (res.data.rate) {
+          setValue("exchange_rate", res.data.rate);
+        }
+      })
+      .catch(() => {});
+  }, [watchCurrency, watchInvoiceDate, functionalCurrency, setValue]);
 
   // Calculate line totals
   const calculateLineTotal = (line: InvoiceLineFormData) => {
@@ -150,6 +192,8 @@ export default function NewSalesInvoicePage() {
         due_date: data.due_date || null,
         customer_id: parseInt(data.customer_id),
         posting_profile_id: parseInt(data.posting_profile_id),
+        currency: data.currency || undefined,
+        exchange_rate: data.currency && data.currency !== functionalCurrency ? data.exchange_rate : undefined,
         notes: data.notes,
         lines: data.lines.map((line) => ({
           item_id: line.item_id ? parseInt(line.item_id) : null,
@@ -283,7 +327,40 @@ export default function NewSalesInvoicePage() {
               )}
             </div>
 
-            <div className="space-y-2 md:col-span-2 lg:col-span-3">
+            <div className="space-y-2">
+              <Label htmlFor="currency">Currency</Label>
+              <Input
+                id="currency"
+                {...register("currency")}
+                placeholder={functionalCurrency}
+                maxLength={3}
+                className="uppercase"
+              />
+              {watchCurrency && watchCurrency !== functionalCurrency && (
+                <p className="text-xs text-muted-foreground">
+                  Foreign currency — rate will apply on posting
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="exchange_rate">Exchange Rate</Label>
+              <Input
+                id="exchange_rate"
+                type="number"
+                step="0.000001"
+                min="0.000001"
+                {...register("exchange_rate")}
+                disabled={!watchCurrency || watchCurrency === functionalCurrency}
+              />
+              {watchCurrency && watchCurrency !== functionalCurrency && (
+                <p className="text-xs text-muted-foreground">
+                  1 {watchCurrency} = {watch("exchange_rate")} {functionalCurrency}
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-2 md:col-span-2 lg:col-span-4">
               <Label htmlFor="notes">Notes</Label>
               <Textarea id="notes" {...register("notes")} placeholder="Internal notes..." rows={2} />
             </div>

@@ -241,6 +241,7 @@ class SalesInvoiceSerializer(serializers.ModelSerializer):
             "id", "public_id", "invoice_number", "invoice_date", "due_date",
             "customer", "customer_name", "customer_code", "customer_email",
             "posting_profile", "posting_profile_code",
+            "currency", "exchange_rate",
             "subtotal", "total_discount", "total_tax", "total_amount",
             "status", "posted_at", "posted_by", "posted_by_email",
             "posted_journal_entry", "posted_journal_entry_number",
@@ -281,6 +282,8 @@ class SalesInvoiceCreateSerializer(serializers.Serializer):
     due_date = serializers.DateField(required=False, allow_null=True)
     customer_id = serializers.IntegerField()
     posting_profile_id = serializers.IntegerField()
+    currency = serializers.CharField(max_length=3, required=False, allow_blank=True, default="")
+    exchange_rate = serializers.DecimalField(max_digits=18, decimal_places=6, required=False, default=None)
     reference = serializers.CharField(max_length=100, required=False, allow_blank=True, default="")
     notes = serializers.CharField(required=False, allow_blank=True, default="")
     lines = SalesInvoiceLineInputSerializer(many=True)
@@ -298,6 +301,8 @@ class SalesInvoiceUpdateSerializer(serializers.Serializer):
     due_date = serializers.DateField(required=False, allow_null=True)
     customer_id = serializers.IntegerField(required=False)
     posting_profile_id = serializers.IntegerField(required=False)
+    currency = serializers.CharField(max_length=3, required=False, allow_blank=True)
+    exchange_rate = serializers.DecimalField(max_digits=18, decimal_places=6, required=False, allow_null=True)
     reference = serializers.CharField(max_length=100, required=False, allow_blank=True)
     notes = serializers.CharField(required=False, allow_blank=True)
     lines = SalesInvoiceLineInputSerializer(many=True, required=False)
@@ -318,6 +323,7 @@ class SalesInvoiceListSerializer(serializers.ModelSerializer):
         fields = [
             "id", "public_id", "invoice_number", "invoice_date", "due_date",
             "customer", "customer_name", "customer_code",
+            "currency", "exchange_rate",
             "total_amount", "status",
             "created_at",
         ]

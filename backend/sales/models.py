@@ -475,6 +475,20 @@ class SalesInvoice(ProjectionWriteGuard):
         help_text="Posting profile (determines AR control account)",
     )
 
+    # Multi-currency support
+    currency = models.CharField(
+        max_length=3,
+        blank=True,
+        default="",
+        help_text="Invoice currency (ISO 4217). Empty = company default currency.",
+    )
+    exchange_rate = models.DecimalField(
+        max_digits=18,
+        decimal_places=6,
+        default=Decimal("1"),
+        help_text="Exchange rate to functional currency at invoice date",
+    )
+
     # Calculated totals (updated when lines change)
     subtotal = models.DecimalField(
         max_digits=18,

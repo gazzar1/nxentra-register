@@ -216,6 +216,8 @@ export interface SalesInvoice {
   posting_profile: number;
   posting_profile_code?: string;
   posting_profile_name?: string;
+  currency: string;
+  exchange_rate: string;
   subtotal: string;
   total_discount: string;
   total_tax: string;
@@ -244,6 +246,8 @@ export interface SalesInvoiceListItem {
   customer: number;
   customer_code?: string;
   customer_name?: string;
+  currency: string;
+  exchange_rate: string;
   total_amount: string;
   status: SalesInvoiceStatus;
   posted_at: string | null;
@@ -256,6 +260,8 @@ export interface SalesInvoiceCreatePayload {
   due_date?: string | null;
   customer_id: number;
   posting_profile_id: number;
+  currency?: string;
+  exchange_rate?: string;
   lines: SalesInvoiceLineInput[];
   notes?: string;
   notes_ar?: string;
@@ -267,6 +273,8 @@ export interface SalesInvoiceUpdatePayload {
   due_date?: string | null;
   customer_id?: number;
   posting_profile_id?: number;
+  currency?: string;
+  exchange_rate?: string;
   lines?: SalesInvoiceLineInput[];
   notes?: string;
   notes_ar?: string;
