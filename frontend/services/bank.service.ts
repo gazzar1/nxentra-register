@@ -217,6 +217,71 @@ export interface UnmatchedPayout {
   journal_entry_id: string | null;
 }
 
+// Exception queue types
+
+export type ExceptionType =
+  | "UNMATCHED_BANK_TX"
+  | "UNMATCHED_PAYOUT"
+  | "PAYOUT_DISCREPANCY"
+  | "CLEARING_BALANCE"
+  | "MISSING_JE"
+  | "FEE_VARIANCE"
+  | "DUPLICATE_MATCH";
+
+export type ExceptionSeverity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+
+export type ExceptionStatus =
+  | "OPEN"
+  | "IN_PROGRESS"
+  | "RESOLVED"
+  | "ESCALATED"
+  | "DISMISSED";
+
+export interface ReconciliationException {
+  id: number;
+  public_id: string;
+  exception_type: ExceptionType;
+  severity: ExceptionSeverity;
+  status: ExceptionStatus;
+  platform: string;
+  title: string;
+  description: string;
+  amount: string | null;
+  currency: string;
+  exception_date: string;
+  reference_type: string;
+  reference_id: number | null;
+  reference_label: string;
+  assigned_to: number | null;
+  resolved_at: string | null;
+  resolved_by: number | null;
+  resolution_note: string;
+  details: Record<string, any>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExceptionListResponse {
+  results: ReconciliationException[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface ExceptionSummary {
+  total_open: number;
+  by_severity: Record<ExceptionSeverity, number>;
+  by_type: Record<string, number>;
+  total_resolved: number;
+  total_dismissed: number;
+}
+
+export interface ExceptionScanResult {
+  created: number;
+  resolved: number;
+  open: number;
+}
+
 // =============================================================================
 // Service
 // =============================================================================
@@ -309,4 +374,52 @@ export const bankService = {
     apiClient.get<{ payouts: UnmatchedPayout[] }>(
       "/bank/reconciliation/unmatched-payouts/"
     ),
+
+  // Exception queue
+  getExceptions: (params?: {
+    status?: ExceptionStatus;
+    severity?: ExceptionSeverity;
+    type?: ExceptionType;
+    platform?: string;
+    search?: string;
+    limit?: number;
+    offset?: number;
+  }) => apiClient.get<ExceptionListResponse>("/bank/exceptions/", { params }),
+
+  getException: (id: number) =>
+    apiClient.get<ReconciliationException>(`/bank/exceptions/${id}/`),
+
+  getExceptionSummary: () =>
+    apiClient.get<ExceptionSummary>("/bank/exceptions/summary/"),
+
+  scanExceptions: () =>
+    apiClient.post<ExceptionScanResult>("/bank/exceptions/scan/"),
+
+  assignException: (id: number, assignedTo: number | null) =>
+    apiClient.patch<ReconciliationException>(`/bank/exceptions/${id}/`, {
+      action: "assign",
+      assigned_to: assignedTo,
+    }),
+
+  resolveException: (id: number, resolutionNote?: string) =>
+    apiClient.patch<ReconciliationException>(`/bank/exceptions/${id}/`, {
+      action: "resolve",
+      resolution_note: resolutionNote,
+    }),
+
+  escalateException: (id: number) =>
+    apiClient.patch<ReconciliationException>(`/bank/exceptions/${id}/`, {
+      action: "escalate",
+    }),
+
+  dismissException: (id: number, resolutionNote?: string) =>
+    apiClient.patch<ReconciliationException>(`/bank/exceptions/${id}/`, {
+      action: "dismiss",
+      resolution_note: resolutionNote,
+    }),
+
+  reopenException: (id: number) =>
+    apiClient.patch<ReconciliationException>(`/bank/exceptions/${id}/`, {
+      action: "reopen",
+    }),
 };

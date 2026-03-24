@@ -28,4 +28,10 @@ urlpatterns = [
     path("reconciliation/match/", views.ManualMatchView.as_view(), name="recon-manual-match"),
     path("reconciliation/explain/<str:platform>/<int:pk>/", views.PayoutExplainerView.as_view(), name="recon-explain"),
     path("reconciliation/unmatched-payouts/", views.UnmatchedPayoutsView.as_view(), name="recon-unmatched-payouts"),
+
+    # Exception queue
+    path("exceptions/", views.ExceptionListView.as_view(), name="exceptions-list"),
+    path("exceptions/scan/", views.ExceptionScanView.as_view(), name="exceptions-scan"),
+    path("exceptions/summary/", views.ExceptionSummaryView.as_view(), name="exceptions-summary"),
+    path("exceptions/<int:pk>/", views.ExceptionDetailView.as_view(), name="exceptions-detail"),
 ]

@@ -20,7 +20,7 @@ from rest_framework.views import APIView
 
 from accounts.authz import resolve_actor
 
-from .models import BankAccount, BankStatement, BankTransaction
+from .models import BankAccount, BankStatement, BankTransaction, ReconciliationException
 from .parsers import parse_csv_file, preview_csv, apply_column_mapping
 from .matching import (
     auto_match_transactions,
@@ -30,6 +30,7 @@ from .matching import (
     get_reconciliation_overview,
     get_unmatched_payouts,
 )
+from .exceptions import scan_all
 
 
 # ─── Bank Accounts ──────────────────────────────────────────────
@@ -641,3 +642,215 @@ class UnmatchedPayoutsView(APIView):
 
         payouts = get_unmatched_payouts(actor.company)
         return Response({"payouts": payouts})
+
+
+# ─── Exception Queue ───────────────────────────────────────────
+
+
+def _serialize_exception(exc):
+    """Serialize a ReconciliationException to a dict."""
+    return {
+        "id": exc.id,
+        "public_id": str(exc.public_id),
+        "exception_type": exc.exception_type,
+        "severity": exc.severity,
+        "status": exc.status,
+        "platform": exc.platform,
+        "title": exc.title,
+        "description": exc.description,
+        "amount": str(exc.amount) if exc.amount is not None else None,
+        "currency": exc.currency,
+        "exception_date": str(exc.exception_date),
+        "reference_type": exc.reference_type,
+        "reference_id": exc.reference_id,
+        "reference_label": exc.reference_label,
+        "assigned_to": exc.assigned_to_id,
+        "resolved_at": exc.resolved_at.isoformat() if exc.resolved_at else None,
+        "resolved_by": exc.resolved_by_id,
+        "resolution_note": exc.resolution_note,
+        "details": exc.details,
+        "created_at": exc.created_at.isoformat(),
+        "updated_at": exc.updated_at.isoformat(),
+    }
+
+
+class ExceptionListView(APIView):
+    """List reconciliation exceptions with filtering, or trigger a scan."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        qs = ReconciliationException.objects.filter(company=actor.company)
+
+        # Filters
+        status_filter = request.query_params.get("status")
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+
+        severity = request.query_params.get("severity")
+        if severity:
+            qs = qs.filter(severity=severity)
+
+        exc_type = request.query_params.get("type")
+        if exc_type:
+            qs = qs.filter(exception_type=exc_type)
+
+        platform = request.query_params.get("platform")
+        if platform:
+            qs = qs.filter(platform=platform)
+
+        search = request.query_params.get("search")
+        if search:
+            qs = qs.filter(
+                Q(title__icontains=search)
+                | Q(description__icontains=search)
+                | Q(reference_label__icontains=search)
+            )
+
+        # Pagination
+        limit = min(int(request.query_params.get("limit", 50)), 200)
+        offset = int(request.query_params.get("offset", 0))
+        total = qs.count()
+        exceptions = qs[offset: offset + limit]
+
+        return Response({
+            "results": [_serialize_exception(e) for e in exceptions],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        })
+
+
+class ExceptionScanView(APIView):
+    """Run exception detection scan for the company."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        result = scan_all(actor.company)
+        return Response(result)
+
+
+class ExceptionDetailView(APIView):
+    """Get, update, or action a specific exception."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        try:
+            exc = ReconciliationException.objects.get(pk=pk, company=actor.company)
+        except ReconciliationException.DoesNotExist:
+            return Response({"detail": "Not found."}, status=404)
+
+        return Response(_serialize_exception(exc))
+
+    def patch(self, request, pk):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        try:
+            exc = ReconciliationException.objects.get(pk=pk, company=actor.company)
+        except ReconciliationException.DoesNotExist:
+            return Response({"detail": "Not found."}, status=404)
+
+        action = request.data.get("action")
+
+        if action == "assign":
+            user_id = request.data.get("assigned_to")
+            exc.assigned_to_id = user_id
+            if exc.status == ReconciliationException.Status.OPEN:
+                exc.status = ReconciliationException.Status.IN_PROGRESS
+            exc.save(update_fields=["assigned_to", "status", "updated_at"])
+            return Response(_serialize_exception(exc))
+
+        if action == "resolve":
+            exc.status = ReconciliationException.Status.RESOLVED
+            exc.resolved_at = timezone.now()
+            exc.resolved_by_id = request.user.id
+            exc.resolution_note = request.data.get("resolution_note", "")
+            exc.save(update_fields=[
+                "status", "resolved_at", "resolved_by", "resolution_note", "updated_at",
+            ])
+            return Response(_serialize_exception(exc))
+
+        if action == "escalate":
+            exc.status = ReconciliationException.Status.ESCALATED
+            exc.save(update_fields=["status", "updated_at"])
+            return Response(_serialize_exception(exc))
+
+        if action == "dismiss":
+            exc.status = ReconciliationException.Status.DISMISSED
+            exc.resolved_at = timezone.now()
+            exc.resolved_by_id = request.user.id
+            exc.resolution_note = request.data.get("resolution_note", "")
+            exc.save(update_fields=[
+                "status", "resolved_at", "resolved_by", "resolution_note", "updated_at",
+            ])
+            return Response(_serialize_exception(exc))
+
+        if action == "reopen":
+            exc.status = ReconciliationException.Status.OPEN
+            exc.resolved_at = None
+            exc.resolved_by = None
+            exc.resolution_note = ""
+            exc.save(update_fields=[
+                "status", "resolved_at", "resolved_by", "resolution_note", "updated_at",
+            ])
+            return Response(_serialize_exception(exc))
+
+        return Response({"detail": "Unknown action."}, status=400)
+
+
+class ExceptionSummaryView(APIView):
+    """Summary stats for the exception queue."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        qs = ReconciliationException.objects.filter(company=actor.company)
+
+        open_statuses = [
+            ReconciliationException.Status.OPEN,
+            ReconciliationException.Status.IN_PROGRESS,
+            ReconciliationException.Status.ESCALATED,
+        ]
+        open_qs = qs.filter(status__in=open_statuses)
+
+        by_severity = {}
+        for sev in ReconciliationException.Severity.values:
+            by_severity[sev] = open_qs.filter(severity=sev).count()
+
+        by_type = {}
+        for et in ReconciliationException.ExceptionType.values:
+            c = open_qs.filter(exception_type=et).count()
+            if c > 0:
+                by_type[et] = c
+
+        return Response({
+            "total_open": open_qs.count(),
+            "by_severity": by_severity,
+            "by_type": by_type,
+            "total_resolved": qs.filter(
+                status=ReconciliationException.Status.RESOLVED
+            ).count(),
+            "total_dismissed": qs.filter(
+                status=ReconciliationException.Status.DISMISSED
+            ).count(),
+        })

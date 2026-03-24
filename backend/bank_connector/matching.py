@@ -499,6 +499,14 @@ def auto_match_transactions(company, bank_account_id=None):
         matched_count, len(unmatched), company.id,
     )
 
+    # Auto-resolve any exceptions for newly matched items
+    if matched_count > 0:
+        try:
+            from .exceptions import auto_resolve_matched
+            auto_resolve_matched(company)
+        except Exception:
+            logger.exception("Failed to auto-resolve exceptions after matching")
+
     return {
         "matched": matched_count,
         "total": len(unmatched),
@@ -532,6 +540,13 @@ def manual_match(company, bank_transaction_id, platform, payout_id):
 
     # Reconcile the payout's journal entry
     je_result = _reconcile_payout_je(company, platform, payout_obj, tx)
+
+    # Auto-resolve any exceptions for this match
+    try:
+        from .exceptions import auto_resolve_matched
+        auto_resolve_matched(company)
+    except Exception:
+        logger.exception("Failed to auto-resolve exceptions after manual match")
 
     return {
         "status": "matched",
