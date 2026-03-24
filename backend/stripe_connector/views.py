@@ -251,10 +251,8 @@ class StripePayoutReconciliationView(APIView):
         except StripePayout.DoesNotExist:
             return Response(status=status.HTTP_404_NOT_FOUND)
 
-        txns = StripePayoutTransaction.objects.filter(payout=payout).select_related("local_charge")
-
-        total = txns.count()
-        matched = txns.filter(verified=True).count()
+        from .reconciliation import reconcile_payout
+        recon = reconcile_payout(actor.company, payout)
 
         return Response({
             "stripe_payout_id": payout.stripe_payout_id,
@@ -263,26 +261,26 @@ class StripePayoutReconciliationView(APIView):
             "fees": str(payout.fees),
             "net_amount": str(payout.net_amount),
             "currency": payout.currency,
-            "status": "verified" if matched == total and total > 0 else "partial" if matched > 0 else "unverified",
-            "total_transactions": total,
-            "matched_transactions": matched,
-            "unmatched_transactions": total - matched,
-            "gross_variance": "0.00",
-            "fee_variance": "0.00",
-            "net_variance": "0.00",
-            "discrepancies": [],
+            "status": recon.status,
+            "total_transactions": recon.total_transactions,
+            "matched_transactions": recon.matched_transactions,
+            "unmatched_transactions": recon.unmatched_transactions,
+            "gross_variance": str(recon.gross_variance),
+            "fee_variance": str(recon.fee_variance),
+            "net_variance": str(recon.net_variance),
+            "discrepancies": recon.discrepancies,
             "transactions": [
                 {
-                    "stripe_balance_txn_id": t.stripe_balance_txn_id,
-                    "transaction_type": t.transaction_type,
-                    "amount": str(t.amount),
-                    "fee": str(t.fee),
-                    "net": str(t.net),
-                    "matched": t.verified,
-                    "matched_to": t.local_charge.stripe_charge_id if t.local_charge else "",
-                    "variance": "0.00",
+                    "stripe_balance_txn_id": m.stripe_balance_txn_id,
+                    "transaction_type": m.transaction_type,
+                    "amount": str(m.amount),
+                    "fee": str(m.fee),
+                    "net": str(m.net),
+                    "matched": m.matched,
+                    "matched_to": m.matched_to,
+                    "variance": str(m.variance),
                 }
-                for t in txns
+                for m in recon.transaction_matches
             ],
         })
 

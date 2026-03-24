@@ -340,6 +340,14 @@ export interface DashboardWidgetsResponse {
     amount: string;
     created_at: string;
   }>;
+  recon_health: {
+    match_rate: number;
+    total_transactions: number;
+    matched: number;
+    unmatched: number;
+    open_exceptions: number;
+    critical_exceptions: number;
+  } | null;
 }
 
 export interface TrialBalanceByCurrencyRow {

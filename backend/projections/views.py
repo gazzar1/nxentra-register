@@ -3417,6 +3417,36 @@ class DashboardWidgetsView(APIView):
                     "created_at": event.recorded_at.isoformat() if event.recorded_at else "",
                 })
 
+            # ═══════════════════════════════════════════════════════════════
+            # 4. Reconciliation Health — exception + match summary
+            # ═══════════════════════════════════════════════════════════════
+            try:
+                from bank_connector.models import BankTransaction as BankTx, ReconciliationException
+                bank_qs = BankTx.objects.filter(company=actor.company)
+                total_bank = bank_qs.count()
+                matched_bank = bank_qs.filter(status="MATCHED").count()
+
+                open_statuses = [
+                    ReconciliationException.Status.OPEN,
+                    ReconciliationException.Status.IN_PROGRESS,
+                    ReconciliationException.Status.ESCALATED,
+                ]
+                open_exc = ReconciliationException.objects.filter(
+                    company=actor.company, status__in=open_statuses,
+                )
+                recon_health = {
+                    "match_rate": round(matched_bank / total_bank * 100, 1) if total_bank else 0,
+                    "total_transactions": total_bank,
+                    "matched": matched_bank,
+                    "unmatched": bank_qs.filter(status="UNMATCHED").count(),
+                    "open_exceptions": open_exc.count(),
+                    "critical_exceptions": open_exc.filter(
+                        severity=ReconciliationException.Severity.CRITICAL
+                    ).count(),
+                }
+            except Exception:
+                recon_health = None
+
             return Response({
                 "cash_position": {
                     "accounts": cash_accounts,
@@ -3424,6 +3454,7 @@ class DashboardWidgetsView(APIView):
                 },
                 "ar_overdue": ar_overdue,
                 "recent_activity": recent_activity,
+                "recon_health": recon_health,
             })
         except Exception as e:
             logger.exception("DashboardWidgetsView error")

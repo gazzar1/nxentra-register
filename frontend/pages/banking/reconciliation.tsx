@@ -464,7 +464,7 @@ export default function ReconciliationPage() {
         />
 
         {/* Overview Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           <Card>
             <CardContent className="pt-6">
               <StatCard
@@ -504,6 +504,22 @@ export default function ReconciliationPage() {
                 label="Platform Payouts"
                 value={o.payouts.total}
                 sub={`Stripe: ${o.payouts.stripe_count} · Shopify: ${o.payouts.shopify_count}`}
+              />
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="pt-6">
+              <StatCard
+                label="Exceptions"
+                value={o.exceptions?.open || 0}
+                sub={o.exceptions?.critical ? `${o.exceptions.critical} critical` : "none critical"}
+                color={
+                  (o.exceptions?.critical || 0) > 0
+                    ? "text-red-600"
+                    : (o.exceptions?.open || 0) > 0
+                    ? "text-orange-600"
+                    : "text-green-600"
+                }
               />
             </CardContent>
           </Card>

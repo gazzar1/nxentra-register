@@ -812,6 +812,21 @@ def get_reconciliation_overview(company):
     unmatched_payouts = total_payouts - matched_payouts
     match_rate = round(matched_payouts / total_payouts * 100, 1) if total_payouts else 0
 
+    # Exception queue summary
+    from .models import ReconciliationException
+    open_statuses = [
+        ReconciliationException.Status.OPEN,
+        ReconciliationException.Status.IN_PROGRESS,
+        ReconciliationException.Status.ESCALATED,
+    ]
+    open_exceptions = ReconciliationException.objects.filter(
+        company=company, status__in=open_statuses,
+    )
+    open_count = open_exceptions.count()
+    critical_count = open_exceptions.filter(
+        severity=ReconciliationException.Severity.CRITICAL
+    ).count()
+
     return {
         "bank": {
             "total": total_bank_txns,
@@ -828,6 +843,10 @@ def get_reconciliation_overview(company):
             "unmatched_amount": str(unmatched_payout_amount),
             "stripe_count": len(stripe_payouts),
             "shopify_count": len(shopify_payouts),
+        },
+        "exceptions": {
+            "open": open_count,
+            "critical": critical_count,
         },
         "match_rate": match_rate,
     }

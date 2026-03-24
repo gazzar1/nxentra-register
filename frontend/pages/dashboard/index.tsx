@@ -14,6 +14,8 @@ import {
   Landmark,
   AlertTriangle,
   Activity,
+  Zap,
+  CheckCircle2,
 } from "lucide-react";
 import { AppLayout } from "@/components/layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -186,7 +188,7 @@ export default function DashboardPage() {
 
         {/* Cash Position & AR Overdue */}
         {widgets && (
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
             {/* Cash Position */}
             <Card>
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -252,6 +254,65 @@ export default function DashboardPage() {
                 </div>
               </CardContent>
             </Card>
+
+            {/* Reconciliation Health */}
+            {widgets.recon_health && (
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">Reconciliation</CardTitle>
+                  <Zap className="h-4 w-4 text-muted-foreground" />
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold ltr-number">
+                    <span className={
+                      widgets.recon_health.match_rate >= 80
+                        ? "text-green-500"
+                        : widgets.recon_health.match_rate >= 50
+                        ? "text-yellow-500"
+                        : "text-red-500"
+                    }>
+                      {widgets.recon_health.match_rate}%
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted-foreground mb-3">match rate</p>
+                  <div className="space-y-1.5 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Matched</span>
+                      <span className="font-mono ltr-number text-green-500">
+                        {widgets.recon_health.matched}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Unmatched</span>
+                      <span className="font-mono ltr-number text-orange-500">
+                        {widgets.recon_health.unmatched}
+                      </span>
+                    </div>
+                    <div className="flex justify-between pt-1.5 border-t">
+                      <span className="text-muted-foreground">Open Exceptions</span>
+                      <span className={`font-mono ltr-number ${
+                        widgets.recon_health.open_exceptions > 0 ? "text-orange-500" : "text-green-500"
+                      }`}>
+                        {widgets.recon_health.open_exceptions}
+                      </span>
+                    </div>
+                    {widgets.recon_health.critical_exceptions > 0 && (
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Critical</span>
+                        <span className="font-mono ltr-number text-red-500 font-medium">
+                          {widgets.recon_health.critical_exceptions}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                  <Link href="/banking/exceptions">
+                    <Button variant="ghost" size="sm" className="w-full mt-3 text-xs">
+                      View Exceptions
+                    </Button>
+                  </Link>
+                </CardContent>
+              </Card>
+            )}
 
             {/* Recent Activity */}
             <Card>

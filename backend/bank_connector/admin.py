@@ -1,6 +1,6 @@
 # bank_connector/admin.py
 from django.contrib import admin
-from .models import BankAccount, BankStatement, BankTransaction
+from .models import BankAccount, BankStatement, BankTransaction, ReconciliationException
 
 
 @admin.register(BankAccount)
@@ -27,3 +27,15 @@ class BankTransactionAdmin(admin.ModelAdmin):
     )
     list_filter = ("status", "transaction_type")
     search_fields = ("description", "reference")
+
+
+@admin.register(ReconciliationException)
+class ReconciliationExceptionAdmin(admin.ModelAdmin):
+    list_display = (
+        "title", "exception_type", "severity", "status",
+        "platform", "amount", "exception_date", "company",
+    )
+    list_filter = ("status", "severity", "exception_type", "platform")
+    search_fields = ("title", "description", "reference_label")
+    readonly_fields = ("public_id", "created_at", "updated_at")
+    raw_id_fields = ("company", "assigned_to", "resolved_by")

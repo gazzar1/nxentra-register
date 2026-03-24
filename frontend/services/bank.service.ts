@@ -128,6 +128,10 @@ export interface ReconciliationOverview {
     stripe_count: number;
     shopify_count: number;
   };
+  exceptions: {
+    open: number;
+    critical: number;
+  };
   match_rate: number;
 }
 
