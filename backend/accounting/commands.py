@@ -3408,6 +3408,7 @@ def record_customer_receipt(
     else:
         functional_amount = receipt_amount
 
+    is_foreign = receipt_currency != functional_currency
     lines = [
         {
             "account_public_id": str(bank_account.public_id),
@@ -3416,7 +3417,8 @@ def record_customer_receipt(
             "credit": "0",
             "line_no": 1,
             "memo": memo or f"Customer receipt from {customer.code}",
-            "amount_currency": str(receipt_amount) if receipt_currency != functional_currency else None,
+            "amount_currency": str(receipt_amount) if is_foreign else None,
+            "currency": receipt_currency if is_foreign else None,
         },
         {
             "account_public_id": str(ar_control.public_id),
@@ -3426,7 +3428,8 @@ def record_customer_receipt(
             "line_no": 2,
             "memo": memo or f"Customer receipt from {customer.code}",
             "customer_public_id": str(customer.public_id),
-            "amount_currency": str(-receipt_amount) if receipt_currency != functional_currency else None,
+            "amount_currency": str(-receipt_amount) if is_foreign else None,
+            "currency": receipt_currency if is_foreign else None,
         },
     ]
 
@@ -3838,6 +3841,7 @@ def record_vendor_payment(
     else:
         functional_amount = payment_amount
 
+    is_foreign = payment_currency != functional_currency
     lines = [
         {
             "account_public_id": str(ap_control.public_id),
@@ -3847,7 +3851,8 @@ def record_vendor_payment(
             "line_no": 1,
             "memo": memo or f"Vendor payment to {vendor.code}",
             "vendor_public_id": str(vendor.public_id),
-            "amount_currency": str(payment_amount) if payment_currency != functional_currency else None,
+            "amount_currency": str(payment_amount) if is_foreign else None,
+            "currency": payment_currency if is_foreign else None,
         },
         {
             "account_public_id": str(bank_account.public_id),
@@ -3856,7 +3861,8 @@ def record_vendor_payment(
             "credit": str(functional_amount),
             "line_no": 2,
             "memo": memo or f"Vendor payment to {vendor.code}",
-            "amount_currency": str(-payment_amount) if payment_currency != functional_currency else None,
+            "amount_currency": str(-payment_amount) if is_foreign else None,
+            "currency": payment_currency if is_foreign else None,
         },
     ]
 
