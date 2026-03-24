@@ -86,15 +86,39 @@ def get_export_registry():
     registry["events.EventBookmark"] = EventBookmark
     registry["events.ExternalAPIKey"] = ExternalAPIKey
 
-    # ── Layer 2: Base Config (no inter-model FKs) ─────────────────
+    # ── Layer 2: Accounting Read Models ─────────────────────────
+    # These must come before write models because TaxCode, SalesInvoice,
+    # PurchaseBill, etc. have FKs to Account, Customer, Vendor.
     registry["accounting.CompanySequence"] = CompanySequence
+    registry["accounting.AnalysisDimension"] = AnalysisDimension
+    registry["accounting.AnalysisDimensionValue"] = AnalysisDimensionValue
+    registry["accounting.Account"] = Account
+    registry["accounting.AccountDimensionRule"] = AccountDimensionRule
+    registry["accounting.Customer"] = Customer
+    registry["accounting.Vendor"] = Vendor
+    registry["accounting.ExchangeRate"] = ExchangeRate
+    registry["accounting.JournalEntry"] = JournalEntry
+    registry["accounting.JournalLine"] = JournalLine
+    registry["accounting.BankStatement"] = AcctBankStatement
+    registry["accounting.BankStatementLine"] = BankStatementLine
+    registry["accounting.BankReconciliation"] = BankReconciliation
+    registry["accounting.ModuleAccountMapping"] = ModuleAccountMapping
+
+    # ── Layer 3: Projection Read Models ─────────────────────────
+    registry["projections.FiscalYear"] = FiscalYear
+    registry["projections.FiscalPeriod"] = FiscalPeriod
+    registry["projections.AccountBalance"] = AccountBalance
+    registry["projections.CustomerBalance"] = CustomerBalance
+    registry["projections.VendorBalance"] = VendorBalance
+
+    # ── Layer 4: Base Config (depend on Account, Customer, Vendor) ──
     registry["sales.TaxCode"] = TaxCode
     registry["sales.PostingProfile"] = PostingProfile
     registry["sales.Item"] = SalesItem
     registry["inventory.Warehouse"] = Warehouse
     registry["inventory.StockLedgerSequenceCounter"] = StockLedgerSequenceCounter
 
-    # ── Layer 3: Documents (depend on Layer 2) ────────────────────
+    # ── Layer 5: Documents (depend on Layer 4) ────────────────────
     registry["sales.SalesInvoice"] = SalesInvoice
     registry["sales.SalesInvoiceLine"] = SalesInvoiceLine
     registry["sales.ReceiptAllocation"] = ReceiptAllocation
@@ -106,14 +130,14 @@ def get_export_registry():
     registry["scratchpad.ScratchpadRowDimension"] = ScratchpadRowDimension
     registry["scratchpad.VoiceUsageEvent"] = VoiceUsageEvent
 
-    # ── Layer 4: EDIM ─────────────────────────────────────────────
+    # ── Layer 6: EDIM ─────────────────────────────────────────────
     registry["edim.SourceSystem"] = SourceSystem
     registry["edim.MappingProfile"] = MappingProfile
     registry["edim.IdentityCrosswalk"] = IdentityCrosswalk
     registry["edim.IngestionBatch"] = IngestionBatch
     registry["edim.StagedRecord"] = StagedRecord
 
-    # ── Layer 5: Platform Connectors ──────────────────────────────
+    # ── Layer 7: Platform Connectors ──────────────────────────────
     registry["shopify_connector.ShopifyStore"] = ShopifyStore
     registry["shopify_connector.ShopifyOrder"] = ShopifyOrder
     registry["shopify_connector.ShopifyRefund"] = ShopifyRefund
@@ -134,7 +158,7 @@ def get_export_registry():
     registry["bank_connector.BankTransaction"] = BankTransaction
     registry["bank_connector.ReconciliationException"] = ReconciliationException
 
-    # ── Layer 6: Verticals ────────────────────────────────────────
+    # ── Layer 8: Verticals ────────────────────────────────────────
     registry["properties.Property"] = Property
     registry["properties.Unit"] = Unit
     registry["properties.Lessee"] = Lessee
@@ -151,28 +175,6 @@ def get_export_registry():
     registry["clinic.Visit"] = Visit
     registry["clinic.Payment"] = ClinicPayment
     registry["clinic.Invoice"] = ClinicInvoice
-
-    # ── Layer 7: Accounting Read Models (snapshot) ────────────────
-    registry["accounting.AnalysisDimension"] = AnalysisDimension
-    registry["accounting.AnalysisDimensionValue"] = AnalysisDimensionValue
-    registry["accounting.Account"] = Account
-    registry["accounting.AccountDimensionRule"] = AccountDimensionRule
-    registry["accounting.Customer"] = Customer
-    registry["accounting.Vendor"] = Vendor
-    registry["accounting.ExchangeRate"] = ExchangeRate
-    registry["accounting.JournalEntry"] = JournalEntry
-    registry["accounting.JournalLine"] = JournalLine
-    registry["accounting.BankStatement"] = AcctBankStatement
-    registry["accounting.BankStatementLine"] = BankStatementLine
-    registry["accounting.BankReconciliation"] = BankReconciliation
-    registry["accounting.ModuleAccountMapping"] = ModuleAccountMapping
-
-    # ── Layer 8: Projection Read Models (snapshot) ────────────────
-    registry["projections.FiscalYear"] = FiscalYear
-    registry["projections.FiscalPeriod"] = FiscalPeriod
-    registry["projections.AccountBalance"] = AccountBalance
-    registry["projections.CustomerBalance"] = CustomerBalance
-    registry["projections.VendorBalance"] = VendorBalance
 
     return registry
 
