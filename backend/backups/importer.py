@@ -81,7 +81,7 @@ def restore_company(company, zip_file):
     with rls_bypass():
         from projections.write_barrier import projection_writes_allowed, bootstrap_writes_allowed
 
-        with projection_writes_allowed(), bootstrap_writes_allowed():
+        with bootstrap_writes_allowed(), projection_writes_allowed():
             # Phase 1: Clear existing company data (reverse dependency order)
             cleared = _clear_company_data(company, registry)
             stats["cleared"] = cleared
