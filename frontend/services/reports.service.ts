@@ -119,8 +119,11 @@ export const reportsService = {
   currencyRevaluation: (params?: { revaluation_date?: string }) =>
     apiClient.get<CurrencyRevaluationResponse>('/reports/currency-revaluation/', { params }),
 
-  postCurrencyRevaluation: (data: { revaluation_date: string }) =>
+  postCurrencyRevaluation: (data: { revaluation_date: string; auto_reverse?: boolean }) =>
     apiClient.post<CurrencyRevaluationPostResponse>('/reports/currency-revaluation/', data),
+
+  trialBalanceByCurrency: (params?: { as_of_date?: string }) =>
+    apiClient.get<TrialBalanceByCurrencyResponse>('/reports/trial-balance-by-currency/', { params }),
 };
 
 // Statement response types
@@ -306,6 +309,9 @@ export interface CurrencyRevaluationPostResponse {
   adjustments_count?: number;
   posted?: boolean;
   post_error?: string;
+  reversal_entry_id?: number;
+  reversal_entry_number?: string;
+  reversal_date?: string;
 }
 
 export interface DashboardWidgetsResponse {
@@ -334,4 +340,31 @@ export interface DashboardWidgetsResponse {
     amount: string;
     created_at: string;
   }>;
+}
+
+export interface TrialBalanceByCurrencyRow {
+  account_code: string;
+  account_name: string;
+  account_type: string;
+  normal_balance: string;
+  currency: string;
+  is_foreign: boolean;
+  foreign_debit: string;
+  foreign_credit: string;
+  foreign_balance: string | null;
+  functional_debit: string;
+  functional_credit: string;
+  functional_balance: string;
+  current_rate: string | null;
+  revalued_balance: string | null;
+  unrealized_gain_loss: string | null;
+}
+
+export interface TrialBalanceByCurrencyResponse {
+  as_of_date: string;
+  functional_currency: string;
+  rows: TrialBalanceByCurrencyRow[];
+  total_functional_debit: string;
+  total_functional_credit: string;
+  is_balanced: boolean;
 }

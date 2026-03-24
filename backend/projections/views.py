@@ -12,7 +12,10 @@ This is the key difference from traditional ERPs:
 The projection has already done the computation. Views just read.
 """
 
+import logging
 from decimal import Decimal
+
+logger = logging.getLogger("nxentra.projections.views")
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -5411,6 +5414,66 @@ class CurrencyRevaluationView(APIView):
             }, status=status.HTTP_201_CREATED)
 
         entry.refresh_from_db()
+
+        # Auto-reverse: create a separate reversal JE dated first day of next period
+        # (does NOT mark the original as REVERSED — both entries stay POSTED)
+        reversal_info = {}
+        auto_reverse = request.data.get("auto_reverse", False)
+        if auto_reverse and fp:
+            next_period = FiscalPeriod.objects.filter(
+                company=actor.company,
+                fiscal_year=fp.fiscal_year,
+                period=fp.period + 1,
+                period_type=FiscalPeriod.PeriodType.NORMAL,
+            ).first()
+            if not next_period:
+                next_period = FiscalPeriod.objects.filter(
+                    company=actor.company,
+                    fiscal_year=fp.fiscal_year + 1,
+                    period=1,
+                    period_type=FiscalPeriod.PeriodType.NORMAL,
+                ).first()
+
+            if next_period:
+                reversal_date = next_period.start_date
+                try:
+                    # Build reversed lines (swap debit/credit)
+                    reversal_lines = []
+                    for line in lines:
+                        reversal_lines.append({
+                            "account_id": line["account_id"],
+                            "description": f"Reversal: {line['description']}",
+                            "debit": line["credit"],
+                            "credit": line["debit"],
+                            "currency": line.get("currency"),
+                        })
+
+                    rev_result = create_journal_entry(
+                        actor=actor,
+                        date=reversal_date,
+                        memo=f"Reversal of revaluation {revaluation_date.isoformat()}",
+                        memo_ar=f"عكس إعادة تقييم {revaluation_date.isoformat()}",
+                        lines=reversal_lines,
+                        kind="ADJUSTMENT",
+                        currency=functional_currency,
+                        period=next_period.period,
+                    )
+                    if rev_result.success:
+                        rev_entry = rev_result.data
+                        rev_save = save_journal_entry_complete(actor=actor, entry_id=rev_entry.id)
+                        if rev_save.success:
+                            rev_entry.refresh_from_db()
+                            rev_post = post_journal_entry(actor=actor, entry_id=rev_entry.id)
+                            if rev_post.success:
+                                rev_entry.refresh_from_db()
+                                reversal_info = {
+                                    "reversal_entry_id": rev_entry.id,
+                                    "reversal_entry_number": rev_entry.entry_number,
+                                    "reversal_date": reversal_date.isoformat(),
+                                }
+                except Exception as e:
+                    logger.warning("Auto-reverse failed for revaluation entry %s: %s", entry.id, e)
+
         return Response({
             "message": "Currency revaluation journal entry created and posted.",
             "entry_id": entry.id,
@@ -5418,4 +5481,123 @@ class CurrencyRevaluationView(APIView):
             "total_gain_loss": str(total_gain_loss),
             "adjustments_count": len(adjustments),
             "posted": True,
+            **reversal_info,
         }, status=status.HTTP_201_CREATED)
+
+
+class TrialBalanceByCurrencyView(APIView):
+    """
+    GET /api/reports/trial-balance-by-currency/
+
+    Returns the trial balance broken down by currency, showing for each
+    account+currency combination:
+    - foreign_debit / foreign_credit (in the foreign currency)
+    - functional_debit / functional_credit (in functional currency)
+    - current_rate (latest exchange rate)
+    - revalued_balance (foreign_balance * current_rate)
+
+    Query params:
+    - as_of_date: Optional date cutoff (default: today)
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from django.db.models import Sum
+        from django.db.models.functions import Coalesce
+        from accounting.models import JournalLine, Account, ExchangeRate
+
+        actor = resolve_actor(request)
+        require(actor, "reports.view")
+
+        as_of_date_str = request.query_params.get("as_of_date")
+        if as_of_date_str:
+            as_of_date = date_type.fromisoformat(as_of_date_str)
+        else:
+            as_of_date = date_type.today()
+
+        functional_currency = actor.company.functional_currency or actor.company.default_currency
+
+        # Query all posted journal lines grouped by account + currency
+        lines_qs = (
+            JournalLine.objects
+            .filter(
+                company=actor.company,
+                entry__status="POSTED",
+                entry__date__lte=as_of_date,
+            )
+            .exclude(account__ledger_domain__in=["STATISTICAL", "OFF_BALANCE"])
+            .values(
+                "account__id", "account__code", "account__name",
+                "account__account_type", "account__normal_balance",
+                "currency",
+            )
+            .annotate(
+                total_debit=Coalesce(Sum("debit"), Decimal("0")),
+                total_credit=Coalesce(Sum("credit"), Decimal("0")),
+                total_amount_currency=Coalesce(Sum("amount_currency"), Decimal("0")),
+            )
+            .order_by("account__code", "currency")
+        )
+
+        rows = []
+        total_functional_debit = Decimal("0")
+        total_functional_credit = Decimal("0")
+
+        for group in lines_qs:
+            account_code = group["account__code"]
+            account_name = group["account__name"]
+            account_type = group["account__account_type"]
+            normal_balance = group["account__normal_balance"]
+            line_currency = group["currency"] or functional_currency
+            func_debit = group["total_debit"]
+            func_credit = group["total_credit"]
+            foreign_amount = group["total_amount_currency"]
+
+            # Skip zero-balance rows
+            if func_debit == 0 and func_credit == 0:
+                continue
+
+            # Determine if this is a foreign currency row
+            is_foreign = line_currency != functional_currency
+
+            # Get current exchange rate for foreign currencies
+            current_rate = None
+            revalued_balance = None
+            if is_foreign:
+                current_rate = ExchangeRate.get_rate(
+                    actor.company, line_currency, functional_currency, as_of_date
+                )
+                if current_rate and foreign_amount != Decimal("0"):
+                    revalued_balance = (foreign_amount * current_rate).quantize(Decimal("0.01"))
+
+            functional_balance = func_debit - func_credit
+
+            total_functional_debit += func_debit
+            total_functional_credit += func_credit
+
+            rows.append({
+                "account_code": account_code,
+                "account_name": account_name,
+                "account_type": account_type,
+                "normal_balance": normal_balance,
+                "currency": line_currency,
+                "is_foreign": is_foreign,
+                "foreign_debit": str(foreign_amount) if is_foreign and foreign_amount > 0 else "0",
+                "foreign_credit": str(abs(foreign_amount)) if is_foreign and foreign_amount < 0 else "0",
+                "foreign_balance": str(foreign_amount) if is_foreign else None,
+                "functional_debit": str(func_debit),
+                "functional_credit": str(func_credit),
+                "functional_balance": str(functional_balance),
+                "current_rate": str(current_rate) if current_rate else None,
+                "revalued_balance": str(revalued_balance) if revalued_balance is not None else None,
+                "unrealized_gain_loss": str(revalued_balance - functional_balance) if revalued_balance is not None else None,
+            })
+
+        return Response({
+            "as_of_date": as_of_date.isoformat(),
+            "functional_currency": functional_currency,
+            "rows": rows,
+            "total_functional_debit": str(total_functional_debit),
+            "total_functional_credit": str(total_functional_credit),
+            "is_balanced": total_functional_debit == total_functional_credit,
+        })

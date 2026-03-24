@@ -2,7 +2,7 @@ import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import Link from "next/link";
-import { BarChart3, FileSpreadsheet, PieChart, Layers, Grid3X3, GitCompareArrows, Clock, Users, Receipt } from "lucide-react";
+import { BarChart3, FileSpreadsheet, PieChart, Layers, Grid3X3, GitCompareArrows, Clock, Users, Receipt, Coins } from "lucide-react";
 import { AppLayout } from "@/components/layout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/common";
@@ -64,6 +64,12 @@ export default function ReportsIndexPage() {
       description: "Side-by-side income statement for two dimension values",
       href: "/reports/dimension-pl-comparison",
       icon: <GitCompareArrows className="h-8 w-8" />,
+    },
+    {
+      title: "Trial Balance by Currency",
+      description: "Account balances broken down by currency with FX conversion",
+      href: "/reports/trial-balance-by-currency",
+      icon: <Coins className="h-8 w-8" />,
     },
   ];
 

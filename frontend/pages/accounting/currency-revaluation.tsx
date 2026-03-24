@@ -4,7 +4,7 @@ import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import { useRouter } from "next/router";
 import { useQuery } from "@tanstack/react-query";
-import { RefreshCw, ArrowUpDown, TrendingUp, TrendingDown, Send, AlertTriangle } from "lucide-react";
+import { RefreshCw, ArrowUpDown, TrendingUp, TrendingDown, Send, AlertTriangle, RotateCcw } from "lucide-react";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -36,6 +36,7 @@ export default function CurrencyRevaluationPage() {
   );
   const [showPostConfirm, setShowPostConfirm] = useState(false);
   const [isPosting, setIsPosting] = useState(false);
+  const [autoReverse, setAutoReverse] = useState(true);
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ["currency-revaluation", revaluationDate],
@@ -59,6 +60,7 @@ export default function CurrencyRevaluationPage() {
     try {
       const { data: result } = await reportsService.postCurrencyRevaluation({
         revaluation_date: revaluationDate,
+        auto_reverse: autoReverse,
       });
       if (result.post_error) {
         toast({
@@ -67,9 +69,12 @@ export default function CurrencyRevaluationPage() {
           variant: "destructive",
         });
       } else {
+        const desc = result.reversal_date
+          ? `${result.message} Auto-reversal scheduled for ${result.reversal_date}.`
+          : result.message;
         toast({
           title: t("messages.success"),
-          description: result.message,
+          description: desc,
           variant: "success",
         });
       }
@@ -124,6 +129,19 @@ export default function CurrencyRevaluationPage() {
                 <RefreshCw className="me-2 h-4 w-4" />
                 Recalculate
               </Button>
+              <div className="flex items-center gap-2 ms-4">
+                <input
+                  type="checkbox"
+                  id="auto-reverse"
+                  checked={autoReverse}
+                  onChange={(e) => setAutoReverse(e.target.checked)}
+                  className="h-4 w-4 rounded border-gray-300"
+                />
+                <Label htmlFor="auto-reverse" className="flex items-center gap-1 text-sm cursor-pointer">
+                  <RotateCcw className="h-3.5 w-3.5 text-muted-foreground" />
+                  Auto-reverse on 1st of next period
+                </Label>
+              </div>
             </div>
           </CardContent>
         </Card>

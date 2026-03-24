@@ -79,6 +79,8 @@ from .views import (
     ReconciliationCheckView,
     # Currency revaluation
     CurrencyRevaluationView,
+    # Trial balance by currency
+    TrialBalanceByCurrencyView,
     # Admin projection management
     AdminProjectionListView,
     AdminProjectionDetailView,
@@ -283,6 +285,13 @@ urlpatterns = [
         "currency-revaluation/",
         CurrencyRevaluationView.as_view(),
         name="currency-revaluation",
+    ),
+
+    # Trial Balance by Currency
+    path(
+        "trial-balance-by-currency/",
+        TrialBalanceByCurrencyView.as_view(),
+        name="trial-balance-by-currency",
     ),
 
     # System Status
