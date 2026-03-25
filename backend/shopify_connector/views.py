@@ -519,8 +519,12 @@ class ShopifyPayoutTransactionsView(APIView):
             )
 
         transactions = payout.transactions.all().order_by("-processed_at")
-        data = [
-            {
+        # Compute variance for each transaction
+        from .reconciliation import _match_transaction
+        data = []
+        for t in transactions:
+            match = _match_transaction(actor.company, t)
+            data.append({
                 "id": t.id,
                 "shopify_transaction_id": t.shopify_transaction_id,
                 "transaction_type": t.transaction_type,
@@ -534,10 +538,11 @@ class ShopifyPayoutTransactionsView(APIView):
                 "local_order_name": (
                     t.local_order.shopify_order_name if t.local_order else None
                 ),
+                "matched": match.matched,
+                "matched_to": match.matched_to,
+                "variance": str(match.variance),
                 "processed_at": t.processed_at.isoformat() if t.processed_at else None,
-            }
-            for t in transactions
-        ]
+            })
         return Response({
             "payout_id": payout.shopify_payout_id,
             "payout_net": str(payout.net_amount),

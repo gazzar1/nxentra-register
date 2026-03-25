@@ -221,15 +221,18 @@ def _match_transaction(company, txn: ShopifyPayoutTransaction) -> TransactionMat
         return match
 
     if txn.transaction_type == ShopifyPayoutTransaction.TransactionType.REFUND:
-        # Try to match to a refund record
-        refund = ShopifyRefund.objects.filter(
+        # Try to match to a refund record — pick the one closest in amount
+        refunds = list(ShopifyRefund.objects.filter(
             company=company,
             order__shopify_order_id=txn.source_order_id,
-        ).first()
-        if refund:
+        ).order_by("shopify_created_at"))
+        txn_abs = abs(txn.amount)
+        if refunds:
+            # Best match: smallest variance by amount
+            best = min(refunds, key=lambda r: abs(r.amount - txn_abs))
             match.matched = True
-            match.matched_to = f"Refund on Order {refund.order.shopify_order_name}"
-            match.variance = abs(txn.amount) - refund.amount
+            match.matched_to = f"Refund {best.shopify_refund_id} on Order {best.order.shopify_order_name}"
+            match.variance = txn_abs - best.amount
         else:
             # Fall back to order match
             order = ShopifyOrder.objects.filter(
