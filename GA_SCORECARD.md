@@ -73,9 +73,9 @@ Run against real company data for one full month (e.g., March 2026):
 - [ ] Close period 3 via Periods page
 
 ### Backup/Restore Drill
-- [ ] Run `python manage.py tenant_export --company <slug> -o pre_close_backup.json`
-- [ ] Verify backup file is valid JSON with expected record counts
-- [ ] (Optional) Restore to test environment and verify data integrity
+- [ ] Run `python manage.py company_backup --company <slug> --out pre_close_backup.zip`
+- [ ] Verify backup file is valid ZIP with expected record counts
+- [ ] (Optional) Restore to test environment: `python manage.py company_restore --file pre_close_backup.zip`
 
 ### Post-Close
 - [ ] Save pilot_readiness JSON output as evidence

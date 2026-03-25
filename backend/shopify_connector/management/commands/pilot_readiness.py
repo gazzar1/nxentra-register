@@ -305,26 +305,20 @@ class Command(BaseCommand):
     def _check_subledger_tieout(self, company):
         """Check 6: AR/AP subledger tie-out."""
         try:
-            from accounting.commands import validate_subledger_tieout
-            result = validate_subledger_tieout(company)
+            from accounting.policies import validate_subledger_tieout
+            is_valid, errors = validate_subledger_tieout(company)
 
-            if result is None:
-                return self._result(
-                    "subledger_tieout", "WARN",
-                    "Subledger tie-out not available (no AR/AP control accounts).",
-                )
-
-            if not result.get("balanced", False):
+            if not is_valid:
                 return self._result(
                     "subledger_tieout", "FAIL",
-                    f"Subledger imbalance detected.",
-                    detail=result,
+                    f"Subledger imbalance: {'; '.join(errors)}",
+                    detail={"balanced": False, "errors": errors},
                 )
 
             return self._result(
                 "subledger_tieout", "PASS",
                 "AR/AP subledgers tie out to GL.",
-                detail=result,
+                detail={"balanced": True, "errors": []},
             )
         except Exception as exc:
             return self._result(
