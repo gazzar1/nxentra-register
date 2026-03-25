@@ -80,13 +80,18 @@ def _resolve_store_domain(company, store_public_id):
         return None
 
 
+class MissingExchangeRate(Exception):
+    """Raised when a required exchange rate is not configured."""
+    pass
+
+
 def _resolve_exchange_rate(company, currency, entry_date):
     """
     Resolve exchange rate for converting currency to functional currency.
 
     Returns (exchange_rate, is_foreign) tuple.
     If currency == functional currency, returns (Decimal("1.0"), False).
-    If no rate found, returns (Decimal("1.0"), True) and logs a warning.
+    Raises MissingExchangeRate if no rate is found for a foreign currency.
     """
     functional = company.functional_currency or company.default_currency or "USD"
     if currency == functional:
@@ -96,11 +101,10 @@ def _resolve_exchange_rate(company, currency, entry_date):
     if rate:
         return rate, True
 
-    logger.warning(
-        "No exchange rate found for %s→%s on %s (company %s) — using 1.0",
-        currency, functional, entry_date, company,
+    raise MissingExchangeRate(
+        f"No exchange rate found for {currency}→{functional} on {entry_date}. "
+        f"Add the rate via Settings → Exchange Rates before processing."
     )
-    return Decimal("1.0"), True
 
 
 def _convert_amount(amount, exchange_rate):
@@ -227,6 +231,7 @@ class ShopifyAccountingProjection(BaseProjection):
             EventTypes.SHOPIFY_PAYOUT_SETTLED,
             EventTypes.SHOPIFY_ORDER_FULFILLED,
             EventTypes.SHOPIFY_DISPUTE_CREATED,
+            EventTypes.SHOPIFY_DISPUTE_WON,
         ]
 
     def handle(self, event: BusinessEvent) -> None:
@@ -255,10 +260,25 @@ class ShopifyAccountingProjection(BaseProjection):
             EventTypes.SHOPIFY_PAYOUT_SETTLED: self._handle_payout_settled,
             EventTypes.SHOPIFY_ORDER_FULFILLED: self._handle_order_fulfilled,
             EventTypes.SHOPIFY_DISPUTE_CREATED: self._handle_dispute_created,
+            EventTypes.SHOPIFY_DISPUTE_WON: self._handle_dispute_won,
         }.get(event.event_type)
 
         if handler:
-            handler(event, data, mapping, dimension_context)
+            try:
+                handler(event, data, mapping, dimension_context)
+            except MissingExchangeRate as exc:
+                logger.error(
+                    "Missing exchange rate for %s event %s: %s",
+                    event.event_type, event.id, exc,
+                )
+                from accounts.models import Notification
+                Notification.notify_company_admins(
+                    company=company,
+                    title=f"Missing exchange rate — Shopify entry skipped",
+                    message=str(exc),
+                    level=Notification.Level.ERROR,
+                    source_module="shopify_connector",
+                )
 
     def _resolve_dimensions(self, company, data):
         """
@@ -1340,6 +1360,180 @@ class ShopifyAccountingProjection(BaseProjection):
 
         logger.info(
             "Created chargeback journal entry %s for dispute %s (%s %s)",
+            entry.public_id, dispute_id, currency, dispute_amount,
+        )
+
+    def _handle_dispute_won(self, event, data, mapping, dimension_context=None):
+        """
+        Reverse the chargeback journal entry when a dispute is won.
+
+        Journal entry (mirrors the original chargeback entry):
+        DR Shopify Clearing     (amount + fee)
+        CR Chargeback Expense   (amount)
+        CR Processing Fees      (chargeback fee)
+        """
+        clearing = mapping.get(ROLE_SHOPIFY_CLEARING)
+        chargeback_account = mapping.get(ROLE_CHARGEBACK_EXPENSE)
+        fees_account = mapping.get(ROLE_PROCESSING_FEES)
+
+        if not clearing or not chargeback_account:
+            logger.warning(
+                "Shopify account mapping missing for dispute won reversal, "
+                "company %s — skipping dispute %s",
+                event.company, data.get("shopify_dispute_id"),
+            )
+            return
+
+        dispute_amount = Decimal(str(data.get("dispute_amount", "0")))
+        chargeback_fee = Decimal(str(data.get("chargeback_fee", "0")))
+        dispute_id = data.get("shopify_dispute_id", "")
+        order_name = data.get("order_name", "")
+        currency = data.get("currency") or getattr(event.company, "default_currency", "USD")
+        entry_date = _parse_date(data.get("transaction_date")) or event.created_at.date()
+        memo = f"Shopify chargeback reversal (won): Dispute {dispute_id} ({order_name})"
+
+        if dispute_amount <= 0:
+            return
+
+        # Idempotency
+        if JournalEntry.objects.filter(
+            company=event.company, memo=memo,
+            status=JournalEntry.Status.POSTED,
+        ).exists():
+            logger.info("Reversal JE already exists for '%s' — skipping", memo)
+            return
+
+        fx_rate, is_foreign = _resolve_exchange_rate(event.company, currency, entry_date)
+        period = _resolve_period(event.company, entry_date)
+        now = timezone.now()
+
+        entry = JournalEntry.objects.projection().create(
+            company=event.company,
+            public_id=uuid.uuid4(),
+            date=entry_date,
+            period=period,
+            memo=memo,
+            kind=JournalEntry.Kind.NORMAL,
+            status=JournalEntry.Status.POSTED,
+            posted_at=now,
+            currency=currency,
+            exchange_rate=fx_rate,
+            source_module="shopify_connector",
+            source_document=str(dispute_id),
+        )
+
+        lines = []
+        line_no = 0
+
+        # DR Shopify Clearing — funds returned
+        total_debit_foreign = dispute_amount + chargeback_fee
+        total_debit_converted = _convert_amount(total_debit_foreign, fx_rate) if is_foreign else total_debit_foreign
+        line_no += 1
+        lines.append(JournalLine(
+            entry=entry, company=event.company,
+            public_id=uuid.uuid4(), line_no=line_no,
+            account=clearing,
+            description=f"Chargeback reversal (won): Dispute {dispute_id}",
+            debit=total_debit_converted, credit=Decimal("0"),
+            amount_currency=total_debit_foreign if is_foreign else None,
+            currency=currency, exchange_rate=fx_rate,
+        ))
+
+        # CR Chargeback Expense — recover disputed amount
+        converted_dispute = _convert_amount(dispute_amount, fx_rate) if is_foreign else dispute_amount
+        line_no += 1
+        lines.append(JournalLine(
+            entry=entry, company=event.company,
+            public_id=uuid.uuid4(), line_no=line_no,
+            account=chargeback_account,
+            description=f"Chargeback recovered (won): {order_name} (Dispute {dispute_id})",
+            debit=Decimal("0"), credit=converted_dispute,
+            amount_currency=-dispute_amount if is_foreign else None,
+            currency=currency, exchange_rate=fx_rate,
+        ))
+
+        # CR Processing Fees — recover chargeback fee
+        if chargeback_fee > 0 and fees_account:
+            converted_fee = _convert_amount(chargeback_fee, fx_rate) if is_foreign else chargeback_fee
+            line_no += 1
+            lines.append(JournalLine(
+                entry=entry, company=event.company,
+                public_id=uuid.uuid4(), line_no=line_no,
+                account=fees_account,
+                description=f"Chargeback fee recovered: Dispute {dispute_id}",
+                debit=Decimal("0"), credit=converted_fee,
+                amount_currency=-chargeback_fee if is_foreign else None,
+                currency=currency, exchange_rate=fx_rate,
+            ))
+
+        # Fix FX rounding
+        if is_foreign:
+            _fix_fx_rounding(lines, entry, event.company, currency, fx_rate)
+
+        total_debit_check = sum(l.debit for l in lines)
+        total_credit_check = sum(l.credit for l in lines)
+
+        JournalLine.objects.projection().bulk_create(lines)
+        self._attach_dimensions(event.company, lines, dimension_context)
+
+        if total_debit_check != total_credit_check:
+            logger.error(
+                "Unbalanced dispute-won reversal JE %s: debit=%s credit=%s",
+                dispute_id, total_debit_check, total_credit_check,
+            )
+            entry.status = JournalEntry.Status.INCOMPLETE
+            entry.posted_at = None
+            entry.save(update_fields=["status", "posted_at"])
+            return
+
+        seq = _next_company_sequence(event.company, "journal_entry_number")
+        entry_number = f"JE-{event.company_id}-{seq:06d}"
+        entry.entry_number = entry_number
+        entry.save(update_fields=["entry_number"])
+
+        # Emit JOURNAL_ENTRY_POSTED
+        lines_data = []
+        for line in lines:
+            lines_data.append({
+                "line_public_id": str(line.public_id),
+                "line_no": line.line_no,
+                "account_public_id": str(line.account.public_id),
+                "account_code": line.account.code,
+                "description": line.description,
+                "debit": str(line.debit),
+                "credit": str(line.credit),
+                "currency": currency,
+                "exchange_rate": str(fx_rate),
+            })
+
+        emit_event_no_actor(
+            company=event.company,
+            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(entry.public_id),
+            idempotency_key=f"shopify.dispute.won.je.posted:{entry.public_id}",
+            metadata={"source_projection": PROJECTION_NAME},
+            data=JournalEntryPostedData(
+                entry_public_id=str(entry.public_id),
+                entry_number=entry_number,
+                date=str(entry_date),
+                memo=memo,
+                kind="NORMAL",
+                posted_at=str(now),
+                posted_by_id=0,
+                posted_by_email="system@shopify",
+                total_debit=str(total_debit_check),
+                total_credit=str(total_credit_check),
+                lines=lines_data,
+                period=period,
+                currency=currency,
+                exchange_rate=str(fx_rate),
+            ),
+            caused_by_event=event,
+        )
+
+        logger.info(
+            "Created dispute-won reversal JE %s for dispute %s (%s %s)",
             entry.public_id, dispute_id, currency, dispute_amount,
         )
 

@@ -2027,6 +2027,7 @@ class EventTypes:
     SHOPIFY_PAYOUT_SETTLED = "shopify.payout_settled"
     SHOPIFY_ORDER_FULFILLED = "shopify.order_fulfilled"
     SHOPIFY_DISPUTE_CREATED = "shopify.dispute_created"
+    SHOPIFY_DISPUTE_WON = "shopify.dispute_won"
 
     # Platform-agnostic commerce events (used by new platform connectors)
     PLATFORM_ORDER_PAID = "platform.order_paid"

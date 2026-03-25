@@ -34,6 +34,7 @@ from .event_types import (
     ShopifyPayoutSettledData,
     ShopifyOrderFulfilledData,
     ShopifyDisputeCreatedData,
+    ShopifyDisputeWonData,
 )
 
 
@@ -1096,16 +1097,43 @@ def process_dispute(store: ShopifyStore, payload: dict) -> CommandResult:
                     existing.status = ShopifyDispute.Status.WON
                 elif new_status == "lost":
                     existing.status = ShopifyDispute.Status.LOST
-                    finalized_str = payload.get("finalized_on", "")
-                    if finalized_str:
-                        try:
-                            existing.finalized_on = datetime.fromisoformat(
-                                finalized_str.replace("Z", "+00:00")
-                            ).date()
-                        except (ValueError, AttributeError):
-                            pass
+                finalized_str = payload.get("finalized_on", "")
+                if finalized_str:
+                    try:
+                        existing.finalized_on = datetime.fromisoformat(
+                            finalized_str.replace("Z", "+00:00")
+                        ).date()
+                    except (ValueError, AttributeError):
+                        pass
                 existing.save()
             logger.info("Dispute %s status updated to %s", shopify_dispute_id, new_status)
+
+            # Emit reversal event when dispute is won
+            if new_status == "won":
+                order = existing.order
+                order_name = order.shopify_order_name if order else f"Order {existing.shopify_order_id or '?'}"
+                from events.emitter import emit_event_no_actor
+                emit_event_no_actor(
+                    company=store.company,
+                    event_type=EventTypes.SHOPIFY_DISPUTE_WON,
+                    aggregate_type="ShopifyDispute",
+                    aggregate_id=str(existing.public_id),
+                    idempotency_key=f"shopify.dispute.won:{shopify_dispute_id}",
+                    metadata={"source": "shopify_webhook", "shop_domain": store.shop_domain},
+                    data=ShopifyDisputeWonData(
+                        amount=str(existing.amount),
+                        currency=existing.currency,
+                        transaction_date=str(datetime.now().date()),
+                        document_ref=f"Dispute Won {shopify_dispute_id}",
+                        store_public_id=str(store.public_id),
+                        shopify_dispute_id=str(shopify_dispute_id),
+                        shopify_order_id=str(existing.shopify_order_id or ""),
+                        order_name=order_name,
+                        dispute_amount=str(existing.amount),
+                        chargeback_fee=str(existing.fee),
+                    ),
+                )
+
         return CommandResult.ok(data={"updated": True, "dispute_id": shopify_dispute_id})
 
     # Parse dispute data

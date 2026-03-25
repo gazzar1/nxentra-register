@@ -128,6 +128,22 @@ class ShopifyDisputeCreatedData(FinancialEventData):
     dispute_status: str = ""
 
 
+@dataclass
+class ShopifyDisputeWonData(FinancialEventData):
+    """
+    Reverses the original chargeback journal entry when dispute is won:
+    DR Shopify Clearing              (amount + fee)
+    CR Chargeback Expense            (amount)
+    CR Processing Fees               (chargeback fee)
+    """
+    store_public_id: str = ""
+    shopify_dispute_id: str = ""
+    shopify_order_id: str = ""
+    order_name: str = ""
+    dispute_amount: str = "0"
+    chargeback_fee: str = "0"
+
+
 # =============================================================================
 # REGISTERED_EVENTS — discovered by ProjectionsConfig.ready()
 # =============================================================================
@@ -140,4 +156,5 @@ REGISTERED_EVENTS: dict[str, type[BaseEventData]] = {
     EventTypes.SHOPIFY_PAYOUT_SETTLED: ShopifyPayoutSettledData,
     EventTypes.SHOPIFY_ORDER_FULFILLED: ShopifyOrderFulfilledData,
     EventTypes.SHOPIFY_DISPUTE_CREATED: ShopifyDisputeCreatedData,
+    EventTypes.SHOPIFY_DISPUTE_WON: ShopifyDisputeWonData,
 }
