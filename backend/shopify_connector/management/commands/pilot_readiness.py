@@ -267,10 +267,17 @@ class Command(BaseCommand):
         )
 
     def _check_clearing_balance(self, company):
-        """Check 5: Shopify Clearing account balance health."""
+        """Check 5: Shopify Clearing account balance health.
+
+        A non-zero clearing balance is expected when orders have been
+        recorded but their payouts haven't settled yet.  Only FAIL if the
+        balance is non-zero AND there are no unsettled orders or pending
+        payouts that would explain it.
+        """
         from shopify_connector.management.commands.check_clearing_balance import (
             compute_clearing_balance,
         )
+        from shopify_connector.models import ShopifyOrder, ShopifyPayout
 
         data = compute_clearing_balance(company)
         if data is None:
@@ -282,36 +289,60 @@ class Command(BaseCommand):
         balance = Decimal(data["balance"])
         pending = data["pending_payouts"]
 
-        if balance != Decimal("0") and pending == 0:
+        # Count orders that haven't appeared in a settled payout yet
+        unsettled_orders = ShopifyOrder.objects.filter(
+            company=company,
+            status=ShopifyOrder.Status.PROCESSED,
+        ).exclude(
+            shopify_order_id__in=ShopifyPayout.objects.filter(
+                company=company,
+                shopify_status="paid",
+            ).values_list(
+                "transactions__source_order_id", flat=True,
+            ),
+        ).count()
+
+        data["unsettled_orders"] = unsettled_orders
+
+        if balance == Decimal("0"):
             return self._result(
-                "clearing_balance", "FAIL",
-                f"Non-zero balance {balance} with no pending payouts.",
+                "clearing_balance", "PASS",
+                "Clearing balance is zero.",
                 detail=data,
             )
 
-        if balance != Decimal("0"):
+        # Non-zero but explainable by pending payouts or unsettled orders
+        if pending > 0 or unsettled_orders > 0:
             return self._result(
                 "clearing_balance", "WARN",
-                f"Balance {balance} ({pending} payouts still pending).",
+                f"Balance {balance} ({pending} pending payouts, "
+                f"{unsettled_orders} unsettled orders).",
                 detail=data,
             )
 
+        # Non-zero with nothing to explain it
         return self._result(
-            "clearing_balance", "PASS",
-            f"Clearing balance is zero.",
+            "clearing_balance", "FAIL",
+            f"Unexplained non-zero balance {balance}.",
             detail=data,
         )
 
     def _check_subledger_tieout(self, company):
-        """Check 6: AR/AP subledger tie-out."""
+        """Check 6: AR/AP subledger tie-out.
+
+        Subledger imbalances are important but may predate the Shopify
+        integration.  For the Shopify pilot, this is a WARN (not FAIL)
+        so it doesn't block the close.  A full close_fiscal_year will
+        enforce this as a hard gate via check_close_readiness.
+        """
         try:
             from accounting.policies import validate_subledger_tieout
             is_valid, errors = validate_subledger_tieout(company)
 
             if not is_valid:
                 return self._result(
-                    "subledger_tieout", "FAIL",
-                    f"Subledger imbalance: {'; '.join(errors)}",
+                    "subledger_tieout", "WARN",
+                    f"Subledger imbalance (review before year-end): {'; '.join(errors)}",
                     detail={"balanced": False, "errors": errors},
                 )
 
