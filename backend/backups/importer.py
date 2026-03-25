@@ -76,6 +76,8 @@ def restore_company(company, zip_file):
         )
 
     registry = get_export_registry()
+    # Build set of model classes in registry for FK target detection
+    registry_models = set(registry.values())
     stats = {"imported": {}, "skipped": {}, "cleared": 0, "errors": []}
 
     with rls_bypass():
@@ -113,7 +115,8 @@ def restore_company(company, zip_file):
 
                     excluded = EXCLUDED_FIELDS.get(label, [])
                     count, model_deferred = _import_model_records(
-                        model_cls, company, records, pk_map, label, excluded
+                        model_cls, company, records, pk_map, label, excluded,
+                        registry_models,
                     )
                     deferred_fks.extend(model_deferred)
                     stats["imported"][label] = count
@@ -186,7 +189,8 @@ def _get_company_column(model_cls):
     return None
 
 
-def _import_model_records(model_cls, company, records, pk_map, label, excluded_fields):
+def _import_model_records(model_cls, company, records, pk_map, label, excluded_fields,
+                          registry_models):
     """
     Import a list of serialized records into the database.
 
@@ -195,6 +199,8 @@ def _import_model_records(model_cls, company, records, pk_map, label, excluded_f
     - FK remapping using pk_map
     - Company field assignment
     - Skipping excluded fields
+    - FKs to models outside the registry (e.g., User) are kept as-is
+      if the target row exists, or set to NULL if nullable
 
     Returns:
         tuple: (count, deferred_fks) where deferred_fks is a list of
@@ -230,6 +236,17 @@ def _import_model_records(model_cls, company, records, pk_map, label, excluded_f
             if isinstance(field, (models.ForeignKey, models.OneToOneField)):
                 if field.related_model and field.related_model.__name__ == "Company":
                     field_values[field.attname] = company.id
+                    continue
+
+                # FK to a model outside the registry (e.g., User)?
+                if value is not None and field.related_model not in registry_models:
+                    # Keep raw value if target row exists, else NULL
+                    if _row_exists(field.related_model, value):
+                        field_values[field.attname] = value
+                    elif field.null:
+                        field_values[field.attname] = None
+                    else:
+                        field_values[field.attname] = value
                     continue
 
                 # Remap FK to already-imported records
@@ -349,6 +366,14 @@ def _apply_deferred_fks(deferred_fks, pk_map):
                 f'UPDATE "{table}" SET "{attname}" = %s WHERE "{pk_col}" = %s',
                 [new_fk, obj_pk],
             )
+
+
+def _row_exists(model_cls, pk_value):
+    """Check if a row with the given PK exists in the database."""
+    try:
+        return model_cls.objects.filter(pk=pk_value).exists()
+    except Exception:
+        return False
 
 
 def _find_label_for_model(model_cls, pk_map):
