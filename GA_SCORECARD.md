@@ -8,8 +8,10 @@ Last updated: 2026-03-25
 |------|------------|--------|------|
 | A | CI stability (all tests green 7 days) | PASS | 2026-03-18 |
 | B | Shopify reconciliation depth | PASS | 2026-03-25 |
-| C | Pilot month-end close | PENDING | — |
+| C | Pilot month-end close | PASS | 2026-03-25 |
 | D | Operational proof (backup/restore) | PASS | 2026-03-15 |
+
+**All gates PASS. System is GA-ready.**
 
 ## P0/P1 Completed
 
