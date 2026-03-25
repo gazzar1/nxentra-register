@@ -9,9 +9,110 @@ Last updated: 2026-03-25
 | A | CI stability (all tests green 7 days) | PASS | 2026-03-18 |
 | B | Shopify reconciliation depth | PASS | 2026-03-25 |
 | C | Pilot month-end close | PASS | 2026-03-25 |
-| D | Operational proof (backup/restore) | PASS | 2026-03-15 |
+| D | Operational proof (backup/restore) | PASS | 2026-03-25 |
 
-**All gates PASS. System is GA-ready.**
+**All gates PASS. System is pilot-GA ready.**
+
+## Pilot Results — March 2026 (Sony-Egypt)
+
+| Check | Status | Detail |
+|-------|--------|--------|
+| Shopify store | PASS | 1 store, webhooks OK |
+| Account mapping | PASS | All roles mapped |
+| Projection lag | PASS | 21 projections caught up |
+| Reconciliation | PASS | 1/1 payouts, 100% match rate |
+| Clearing balance | WARN | -2,362.36 (5 unsettled orders — expected) |
+| Subledger tie-out | PASS | AR/AP balanced after reclassification JEs |
+| Trial balance | PASS | DR=CR=2,484,941.78 |
+| Draft entries | PASS | 64/64 posted |
+
+Evidence artifacts: `/var/www/nxentra_app/backups/pilot_readiness_final_2026-03-25.json`, `pilot_backup_post_fix_2026-03-25.zip` (414 events, 1,325 records)
+
+### Corrections Applied During Pilot
+
+1. **FX rounding** — 3 currency revaluation JEs had 0.01 rounding errors; added adjustment lines
+2. **Incomplete Shopify entry** — JE for order #1007 had FX shipping discrepancy; corrected and posted
+3. **AR/AP reclassification** — Rent receipts (52K), Shopify order #1001 (232), security deposit (40K) were on AR/AP control accounts without subledger; posted 3 reclassification JEs to dedicated accounts (1210, 1150, 2110)
+4. **Projection drift** — Reclassification JEs created via `projection_writes_allowed()` without events; emitted events and patched AccountBalance projection (464.00 drift on 1200)
+
+**Lesson learned**: Never modify GL lines directly. All changes must go through the command layer (which emits events) to keep projections in sync.
+
+## Broad GA Readiness — NOT YET
+
+Pilot-GA is confirmed. Broad GA requires:
+
+### April Close — Concrete Checklist
+
+**PASS/FAIL rule**: If any step requires `manage.py shell` or direct DB access, April is a FAIL — even if the numbers come out right.
+
+#### During April (daily/weekly ops)
+
+- [ ] Shopify payout sync runs automatically (webhooks) — no manual `sync-payouts`
+- [ ] Monitor clearing balance weekly: track whether unsettled orders from March are settling
+- [ ] Any new Shopify orders/payouts create JEs automatically (no engineering)
+- [ ] Log every exception/error that appears in admin notifications — this is the "incident diary"
+- [ ] Zero `manage.py shell` commands on production for data fixes
+
+#### Pre-Close (April 28-30)
+
+- [ ] Run projections: `python manage.py run_projections --company sony-egypt`
+- [ ] Run readiness: `python manage.py pilot_readiness --company sony-egypt --year 2026 --month 4 --json`
+- [ ] **Hard gate**: 0 FAIL. Target: 0 WARN.
+- [ ] If clearing balance is still non-zero: document why (pending payouts? new unsettled orders?) — WARN is acceptable only if explainable
+- [ ] Review trial balance in UI: DR == CR
+- [ ] Review Shopify reconciliation in UI: match rate >= 95%
+
+#### Close
+
+- [ ] Close period 004/2026 via Periods page
+- [ ] Save evidence: `pilot_readiness ... --json > /var/www/nxentra_app/backups/pilot_readiness_2026-04-30.json`
+- [ ] Backup: `company_backup --company sony-egypt --out /var/www/nxentra_app/backups/pilot_backup_2026-04-30.zip`
+
+#### Post-Close Evaluation
+
+Score each dimension PASS/FAIL:
+
+| Dimension | PASS criteria | Result |
+|-----------|--------------|--------|
+| **Zero shell interventions** | No `manage.py shell` or direct DB edits during April | |
+| **Readiness clean** | `pilot_readiness --strict` exits 0 | |
+| **Projection integrity** | No projection/GL drift detected | |
+| **Clearing settled** | March unsettled orders resolved OR new balance explainable | |
+| **Incident diary clean** | All exceptions were handled via UI, not engineering | |
+| **Close time** | Period closed within 1 business day of month-end | |
+
+**If all 6 PASS**: Broad GA is approved. Proceed to operator independence test.
+**If any FAIL**: Document what broke, build the missing UI/automation, repeat for May.
+
+### Finance Change Control (effective immediately)
+
+- **Rule**: No direct GL edits in production. `projection_writes_allowed()` is banned for data fixes.
+- **If emergency edit happens**: mandatory projection rebuild + full tie-out + readiness rerun + incident documented
+- **All corrections must flow through UI or management commands** that emit events
+- **Audit trail**: Every correction must have a JE with a clear memo explaining why
+
+### Operator Independence Test (after April PASS)
+
+- [ ] Write month-end close runbook (step-by-step, no code knowledge required)
+- [ ] Non-engineer executes May close following runbook only
+- [ ] Non-engineer triages at least one reconciliation exception without engineering help
+- [ ] Non-engineer explains clearing balance warning to stakeholder
+- [ ] Document every point where the operator got stuck — these are product gaps
+
+**If operator completes close unassisted**: Nxentra is a product.
+**If operator needs engineering help**: Nxentra is still a tool. Fix the gaps, repeat.
+
+### Broad GA Gate Criteria
+
+| Criteria | Threshold |
+|----------|-----------|
+| Consecutive clean closes (no shell interventions) | >= 2 months |
+| Engineering interventions during close | 0 |
+| pilot_readiness --strict | Exit 0 |
+| Clearing balance at close | Explainable or zero |
+| Flaky test resolved | test_journal_entry_full_lifecycle stable |
+| P2 items | Resolved or explicitly waived with evidence |
+| Operator close without engineering | At least 1 month |
 
 ## P0/P1 Completed
 
@@ -56,33 +157,30 @@ All three P2 items produce **visible exceptions** (reconciliation warnings, ERRO
 
 P2 items will be completed before broader GA scale-out, triggered only if pilot data shows they actively hurt close accuracy or operator time.
 
-## Pilot Execution Checklist
-
-Run against real company data for one full month (e.g., March 2026):
+## Pilot Execution Checklist — March 2026 (COMPLETED)
 
 ### Pre-flight
-- [ ] Shopify store connected and webhooks registered
-- [ ] All 8 account roles mapped (Settings > Shopify > Account Mapping)
-- [ ] Exchange rates configured for any non-functional currencies
-- [ ] At least one full month of order/payout data synced
+- [x] Shopify store connected and webhooks registered
+- [x] All 8 account roles mapped (Settings > Shopify > Account Mapping)
+- [x] Exchange rates configured for any non-functional currencies
+- [x] At least one full month of order/payout data synced
 
 ### Pilot Close
-- [ ] Run `python manage.py run_projections --company <slug>` (clear any lag)
-- [ ] Run `python manage.py pilot_readiness --company <slug> --year 2026 --month 3 --json`
-- [ ] All 8 checks PASS (warnings acceptable, failures must be resolved)
-- [ ] Review trial balance in UI: debits == credits
-- [ ] Review Shopify reconciliation in UI: match rate >= 95%
-- [ ] Close period 3 via Periods page
+- [x] Run `python manage.py run_projections --company sony-egypt` (clear any lag)
+- [x] Run `python manage.py pilot_readiness --company sony-egypt --year 2026 --month 3 --json`
+- [x] 7/8 PASS, 1 WARN (clearing balance — expected), 0 FAIL
+- [x] Trial balance balanced: DR=CR=2,484,941.78
+- [x] Shopify reconciliation: 100% match rate
+- [x] Close period 3 via Periods page (closed 2026-03-25)
 
 ### Backup/Restore Drill
-- [ ] Run `python manage.py company_backup --company <slug> --out pre_close_backup.zip`
-- [ ] Verify backup file is valid ZIP with expected record counts
-- [ ] (Optional) Restore to test environment: `python manage.py company_restore --file pre_close_backup.zip`
+- [x] Backup saved: `pilot_backup_post_fix_2026-03-25.zip` (414 events, 1,325 records, 173KB)
+- [x] Verified valid ZIP with expected record counts
 
 ### Post-Close
-- [ ] Save pilot_readiness JSON output as evidence
-- [ ] Note any P2 items that caused manual intervention
-- [ ] Update Gate C status to PASS with date
+- [x] pilot_readiness JSON saved: `pilot_readiness_final_2026-03-25.json`
+- [x] Corrections documented (FX rounding, reclassification JEs, projection drift)
+- [x] Gate C status updated to PASS
 
 ## Known Test Waiver
 

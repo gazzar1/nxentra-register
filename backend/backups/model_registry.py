@@ -75,6 +75,7 @@ def get_export_registry():
     from projections.models import (
         FiscalYear, FiscalPeriod,
         AccountBalance, CustomerBalance, VendorBalance,
+        InventoryBalance,
     )
 
     registry = OrderedDict()
@@ -110,6 +111,7 @@ def get_export_registry():
     registry["projections.AccountBalance"] = AccountBalance
     registry["projections.CustomerBalance"] = CustomerBalance
     registry["projections.VendorBalance"] = VendorBalance
+    registry["projections.InventoryBalance"] = InventoryBalance
 
     # ── Layer 4: Base Config (depend on Account, Customer, Vendor) ──
     registry["sales.TaxCode"] = TaxCode
