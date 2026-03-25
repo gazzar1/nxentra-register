@@ -428,6 +428,6 @@ def _update_company_settings(company, company_data):
             update_fields.append(attr)
 
     if update_fields:
-        from projections.write_guards import bootstrap_writes_allowed
+        from projections.write_barrier import bootstrap_writes_allowed
         with bootstrap_writes_allowed():
             company.save(update_fields=update_fields)
