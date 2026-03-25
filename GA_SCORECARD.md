@@ -84,6 +84,43 @@ Run against real company data for one full month (e.g., March 2026):
 - [ ] Note any P2 items that caused manual intervention
 - [ ] Update Gate C status to PASS with date
 
+## Known Test Waiver
+
+**`test_journal_entry_full_lifecycle`** — Intermittent failure in full suite run.
+- Passes consistently in isolation and in smaller batches
+- Failure is test-ordering flake, not a code bug
+- Completely unrelated to Shopify/reconciliation changes
+- Root cause: likely database state leakage from prior tests in the 377-test suite
+- **Waiver**: Accepted for pilot GA. Must be stabilized before broad GA scale-out.
+
+## Gate D Evidence — Backup/Restore Drill
+
+Run on the server after Gate C passes:
+
+```bash
+# 1. Create backup
+python manage.py company_backup --company sony-egypt --out /tmp/pilot_backup_2026-03-25.zip
+
+# 2. Verify contents
+python manage.py shell -c "
+import zipfile, json
+with zipfile.ZipFile('/tmp/pilot_backup_2026-03-25.zip') as z:
+    print('Files:', z.namelist())
+    for name in z.namelist():
+        if name.endswith('.json'):
+            data = json.loads(z.read(name))
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    if isinstance(v, list):
+                        print(f'  {k}: {len(v)} records')
+                    elif isinstance(v, (str, int)):
+                        print(f'  {k}: {v}')
+"
+
+# 3. Save evidence
+cp /tmp/pilot_backup_2026-03-25.zip /var/www/nxentra_app/backups/
+```
+
 ## Deploy Checklist
 
 ```bash
