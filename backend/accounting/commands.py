@@ -622,6 +622,21 @@ def create_journal_entry(
     """
     require(actor, "journal.create")
 
+    # Auto-resolve fiscal period from date when not explicitly provided
+    if period is None and date is not None:
+        from projections.models import FiscalPeriod
+        parsed = date
+        if isinstance(date, str):
+            from datetime import datetime as _dt
+            parsed = _dt.fromisoformat(date).date()
+        fp = FiscalPeriod.objects.filter(
+            company=actor.company,
+            start_date__lte=parsed,
+            end_date__gte=parsed,
+            period_type=FiscalPeriod.PeriodType.NORMAL,
+        ).first()
+        period = fp.period if fp else (parsed.month if hasattr(parsed, "month") else None)
+
     entry_public_id = uuid.uuid4()
     entry_currency = currency or actor.company.default_currency
     entry_exchange_rate = exchange_rate or "1.0"
@@ -722,7 +737,10 @@ def create_journal_entry(
 
     _process_projections(actor.company)
     try:
-        entry = JournalEntry.objects.get(company=actor.company, public_id=entry_public_id)
+        # Use rls_bypass to ensure the freshly-projected JE is visible
+        # regardless of RLS session state after projection context exit.
+        with rls_bypass():
+            entry = JournalEntry.objects.get(company=actor.company, public_id=entry_public_id)
     except JournalEntry.DoesNotExist:
         # Projection may have failed; check bookmark for errors
         from projections.base import projection_registry
@@ -879,7 +897,8 @@ def update_journal_entry(
 
     if event:
         _process_projections(actor.company)
-        entry = JournalEntry.objects.get(company=actor.company, public_id=entry.public_id)
+        with rls_bypass():
+            entry = JournalEntry.objects.get(company=actor.company, public_id=entry.public_id)
     return CommandResult.ok(entry, event=event)
 
 
@@ -1038,7 +1057,8 @@ def save_journal_entry_complete(
     )
 
     _process_projections(actor.company)
-    entry = JournalEntry.objects.get(company=actor.company, public_id=entry.public_id)
+    with rls_bypass():
+        entry = JournalEntry.objects.get(company=actor.company, public_id=entry.public_id)
     return CommandResult.ok(entry, event=event)
 
 
@@ -1257,7 +1277,8 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
                 for error in tieout_errors:
                     logger.warning(f"Subledger tie-out warning after posting {entry.public_id}: {error}")
 
-    posted_entry = JournalEntry.objects.get(company=actor.company, public_id=entry.public_id)
+    with rls_bypass():
+        posted_entry = JournalEntry.objects.get(company=actor.company, public_id=entry.public_id)
     return CommandResult.ok(posted_entry, event=event)
 
 
@@ -1394,9 +1415,10 @@ def reverse_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
     )
 
     _process_projections(actor.company)
-    original = JournalEntry.objects.get(company=actor.company, public_id=original.public_id)
-    reversal_public_id = event_posted.data.get("entry_public_id", reversal_public_id)
-    reversal = JournalEntry.objects.get(company=actor.company, public_id=reversal_public_id)
+    with rls_bypass():
+        original = JournalEntry.objects.get(company=actor.company, public_id=original.public_id)
+        reversal_public_id = event_posted.data.get("entry_public_id", reversal_public_id)
+        reversal = JournalEntry.objects.get(company=actor.company, public_id=reversal_public_id)
     return CommandResult.ok({
         "original": original,
         "reversal": reversal,
