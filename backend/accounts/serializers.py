@@ -162,6 +162,37 @@ class RegisterInputSerializer(serializers.Serializer):
         return attrs
 
 
+class OnboardingSetupInputSerializer(serializers.Serializer):
+    """Input for the onboarding setup wizard."""
+    # Step 1: Company profile
+    company_name = serializers.CharField(max_length=255, required=False, default="")
+    company_name_ar = serializers.CharField(max_length=255, required=False, default="")
+    fiscal_year_start_month = serializers.IntegerField(required=False, default=0)
+    thousand_separator = serializers.CharField(max_length=5, required=False, default="")
+    decimal_separator = serializers.CharField(max_length=5, required=False, default="")
+    decimal_places = serializers.IntegerField(required=False, default=-1)
+    date_format = serializers.CharField(max_length=20, required=False, default="")
+
+    # Step 2: Fiscal year
+    fiscal_year = serializers.IntegerField(required=False, default=0)
+    num_periods = serializers.IntegerField(required=False, default=12, min_value=1, max_value=13)
+    current_period = serializers.IntegerField(required=False, default=1, min_value=1, max_value=13)
+
+    # Step 3: Chart of accounts template
+    coa_template = serializers.ChoiceField(
+        choices=["empty", "minimal", "retail", "services"],
+        required=False,
+        default="minimal",
+    )
+
+    # Step 4: Modules
+    modules = serializers.ListField(
+        child=serializers.DictField(),
+        required=False,
+        default=None,
+    )
+
+
 class LoginInputSerializer(serializers.Serializer):
     """Input for login (extends simplejwt)."""
     email = serializers.EmailField(required=True)
@@ -269,6 +300,12 @@ class CompanyOutputSerializer(serializers.Serializer):
     functional_currency = serializers.CharField(read_only=True)
     fiscal_year_start_month = serializers.IntegerField(read_only=True)
     is_active = serializers.BooleanField(read_only=True)
+    onboarding_completed = serializers.BooleanField(read_only=True)
+    coa_template = serializers.CharField(read_only=True)
+    thousand_separator = serializers.CharField(read_only=True)
+    decimal_separator = serializers.CharField(read_only=True)
+    decimal_places = serializers.IntegerField(read_only=True)
+    date_format = serializers.CharField(read_only=True)
 
 
 class CompanyBriefOutputSerializer(serializers.Serializer):
@@ -373,13 +410,15 @@ class UserModelSerializer(serializers.ModelSerializer):
 
 class CompanyModelSerializer(serializers.ModelSerializer):
     """Model serializer for Company (read-only)."""
-    
+
     class Meta:
         model = Company
         fields = [
             "id", "public_id", "name", "name_ar", "slug",
             "default_currency", "functional_currency", "fiscal_year_start_month",
             "is_active", "created_at", "updated_at",
+            "onboarding_completed", "coa_template",
+            "thousand_separator", "decimal_separator", "decimal_places", "date_format",
         ]
         read_only_fields = fields
 

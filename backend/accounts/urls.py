@@ -68,6 +68,8 @@ from .views import (
     # Module & Sidebar
     SidebarView,
     CompanyModulesView,
+    # Onboarding
+    OnboardingSetupView,
     # Notifications
     NotificationListView,
     NotificationMarkReadView,
@@ -165,6 +167,11 @@ urlpatterns = [
     # ==========================================================================
     path("sidebar/", SidebarView.as_view(), name="sidebar"),
     path("modules/", CompanyModulesView.as_view(), name="modules"),
+
+    # ==========================================================================
+    # Onboarding
+    # ==========================================================================
+    path("onboarding/setup/", OnboardingSetupView.as_view(), name="onboarding-setup"),
 
     # ==========================================================================
     # Notifications

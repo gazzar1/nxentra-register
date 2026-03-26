@@ -1453,7 +1453,10 @@ def update_company_settings(
     company = actor.company
     
     # 2. Build changes
-    allowed_settings = {"name", "name_ar", "default_currency", "fiscal_year_start_month"}
+    allowed_settings = {
+        "name", "name_ar", "default_currency", "fiscal_year_start_month",
+        "thousand_separator", "decimal_separator", "decimal_places", "date_format",
+    }
     changes = {}
     
     for setting, new_value in settings.items():
@@ -3057,3 +3060,198 @@ def list_users_voice_status(actor: ActorContext, all_companies: bool = False) ->
         })
 
     return CommandResult.ok({"users": users})
+
+
+# =============================================================================
+# Onboarding Setup
+# =============================================================================
+
+@transaction.atomic
+def complete_onboarding(
+    actor: ActorContext,
+    *,
+    # Step 1: Company profile
+    company_name: str = "",
+    company_name_ar: str = "",
+    fiscal_year_start_month: int = 0,
+    thousand_separator: str = "",
+    decimal_separator: str = "",
+    decimal_places: int = -1,
+    date_format: str = "",
+    # Step 2: Fiscal year
+    fiscal_year: int = 0,
+    num_periods: int = 12,
+    current_period: int = 1,
+    # Step 3: Chart of accounts template
+    coa_template: str = "minimal",
+    # Step 4: Modules
+    modules: list = None,
+) -> CommandResult:
+    """
+    Complete the onboarding setup wizard.
+
+    Atomically applies all onboarding configuration:
+    1. Updates company profile & formatting preferences
+    2. Creates fiscal year & periods (if not already configured)
+    3. Seeds chart of accounts from chosen template
+    4. Enables selected modules
+    5. Marks onboarding as complete
+
+    All steps are optional / idempotent — skipped values are left unchanged.
+    """
+    require(actor, "company.settings.update")
+
+    company = actor.company
+
+    # ---- Step 1: Company profile ----
+    profile_fields = {}
+    if company_name:
+        profile_fields["name"] = company_name
+    if company_name_ar:
+        profile_fields["name_ar"] = company_name_ar
+    if 1 <= fiscal_year_start_month <= 12:
+        profile_fields["fiscal_year_start_month"] = fiscal_year_start_month
+    if thousand_separator:
+        profile_fields["thousand_separator"] = thousand_separator
+    if decimal_separator:
+        profile_fields["decimal_separator"] = decimal_separator
+    if decimal_places >= 0:
+        profile_fields["decimal_places"] = decimal_places
+    if date_format:
+        profile_fields["date_format"] = date_format
+
+    if profile_fields:
+        with command_writes_allowed():
+            for field, value in profile_fields.items():
+                setattr(company, field, value)
+            company.save(update_fields=list(profile_fields.keys()))
+
+    # ---- Step 2: Fiscal year & periods ----
+    if fiscal_year > 0:
+        from projections.models import FiscalYear, FiscalPeriod
+        from projections.write_barrier import projection_writes_allowed
+
+        with projection_writes_allowed():
+            fy, fy_created = FiscalYear.objects.get_or_create(
+                company=company,
+                year_number=fiscal_year,
+                defaults={
+                    "start_date": _fiscal_start_date(fiscal_year, company.fiscal_year_start_month),
+                    "end_date": _fiscal_end_date(fiscal_year, company.fiscal_year_start_month),
+                    "status": "OPEN",
+                },
+            )
+
+            if fy_created or not FiscalPeriod.objects.filter(company=company, fiscal_year=fy).exists():
+                _create_periods(company, fy, num_periods, current_period)
+
+    # ---- Step 3: Chart of accounts template ----
+    if coa_template and coa_template != "empty":
+        from accounting.seeds import seed_template_accounts
+        seed_template_accounts(company, coa_template)
+
+    # ---- Step 4: Modules ----
+    if modules is not None:
+        from accounts.models import CompanyModule
+        for mod in modules:
+            key = mod.get("key", "")
+            enabled = mod.get("is_enabled", False)
+            if not key:
+                continue
+            CompanyModule.objects.update_or_create(
+                company=company,
+                module_key=key,
+                defaults={"is_enabled": enabled},
+            )
+
+    # ---- Step 5: Mark onboarding complete ----
+    with command_writes_allowed():
+        company.onboarding_completed = True
+        company.coa_template = coa_template or ""
+        company.save(update_fields=["onboarding_completed", "coa_template"])
+
+    # Emit event
+    emit_event(
+        company=company,
+        event_type=EventTypes.COMPANY_SETTINGS_CHANGED,
+        aggregate_type="Company",
+        aggregate_id=str(company.public_id),
+        data={
+            "company_public_id": str(company.public_id),
+            "changes": {"onboarding_completed": {"old": False, "new": True}},
+        },
+        caused_by_user=actor.user,
+        idempotency_key=_idempotency_hash("company.onboarding_completed", {
+            "company_public_id": str(company.public_id),
+        }),
+    )
+    _process_projections(company)
+
+    company.refresh_from_db()
+    return CommandResult.ok({"company": company})
+
+
+def _fiscal_start_date(year: int, start_month: int):
+    """Calculate fiscal year start date."""
+    import datetime
+    return datetime.date(year if start_month <= 6 else year - 1, start_month, 1)
+
+
+def _fiscal_end_date(year: int, start_month: int):
+    """Calculate fiscal year end date."""
+    import datetime
+    if start_month == 1:
+        return datetime.date(year, 12, 31)
+    # End date is the day before start_month in the next calendar year
+    end_year = year if start_month > 6 else year + 1
+    end_month = start_month - 1 if start_month > 1 else 12
+    import calendar
+    last_day = calendar.monthrange(end_year, end_month)[1]
+    return datetime.date(end_year, end_month, last_day)
+
+
+def _create_periods(company, fiscal_year, num_periods: int, current_period: int):
+    """Create fiscal periods for a fiscal year."""
+    import datetime
+    import calendar
+    from projections.models import FiscalPeriod
+
+    start = fiscal_year.start_date
+    normal_periods = min(num_periods, 12)
+
+    for i in range(1, normal_periods + 1):
+        # Calculate month boundaries
+        month = ((start.month - 1 + (i - 1)) % 12) + 1
+        year = start.year + ((start.month - 1 + (i - 1)) // 12)
+        last_day = calendar.monthrange(year, month)[1]
+
+        period_start = datetime.date(year, month, 1)
+        period_end = datetime.date(year, month, last_day)
+
+        status = "OPEN" if i == current_period else "OPEN"
+
+        FiscalPeriod.objects.get_or_create(
+            company=company,
+            fiscal_year=fiscal_year,
+            period_number=i,
+            defaults={
+                "period_name": period_start.strftime("%b %Y"),
+                "start_date": period_start,
+                "end_date": period_end,
+                "status": status,
+            },
+        )
+
+    # Period 13 (adjustment period) if requested
+    if num_periods == 13:
+        FiscalPeriod.objects.get_or_create(
+            company=company,
+            fiscal_year=fiscal_year,
+            period_number=13,
+            defaults={
+                "period_name": "Adjustment",
+                "start_date": fiscal_year.end_date,
+                "end_date": fiscal_year.end_date,
+                "status": "OPEN",
+            },
+        )

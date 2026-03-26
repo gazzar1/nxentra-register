@@ -146,6 +146,39 @@ class Company(ProjectionWriteGuard):
         ),
     )
 
+    # Onboarding
+    onboarding_completed = models.BooleanField(
+        default=False,
+        help_text="Whether the company owner has completed the setup wizard.",
+    )
+    coa_template = models.CharField(
+        max_length=30,
+        blank=True,
+        default="",
+        help_text="Chart of accounts template used during onboarding (empty, minimal, retail, services).",
+    )
+
+    # Number/Date Formatting Preferences
+    thousand_separator = models.CharField(
+        max_length=5,
+        default=",",
+        help_text="Thousands separator for number formatting.",
+    )
+    decimal_separator = models.CharField(
+        max_length=5,
+        default=".",
+        help_text="Decimal separator for number formatting.",
+    )
+    decimal_places = models.PositiveSmallIntegerField(
+        default=2,
+        help_text="Number of decimal places for amounts.",
+    )
+    date_format = models.CharField(
+        max_length=20,
+        default="YYYY-MM-DD",
+        help_text="Preferred date display format.",
+    )
+
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

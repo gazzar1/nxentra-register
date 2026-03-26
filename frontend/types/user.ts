@@ -25,6 +25,7 @@ export interface Company {
   is_active: boolean;
   created_at: string;
   updated_at: string;
+  onboarding_completed?: boolean;
 }
 
 export interface CompanySettings {

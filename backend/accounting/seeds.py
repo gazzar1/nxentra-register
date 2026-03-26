@@ -164,6 +164,91 @@ SEED_ACCOUNTS: List[SeedAccountTemplate] = [
 
 
 # =============================================================================
+# ONBOARDING CoA TEMPLATES
+# =============================================================================
+# Additional accounts seeded based on the template chosen during onboarding.
+# These are NOT system_protected so users can freely edit/delete them.
+
+RETAIL_TEMPLATE: List[SeedAccountTemplate] = [
+    # -- Assets --
+    SeedAccountTemplate("1300", "Inventory", "المخزون", "ASSET", "INVENTORY_VALUE", "FINANCIAL"),
+    SeedAccountTemplate("1400", "Prepaid Expenses", "مصاريف مدفوعة مقدماً", "ASSET", "PREPAID", "FINANCIAL"),
+    # -- Liabilities --
+    SeedAccountTemplate("2200", "VAT Payable", "ضريبة القيمة المضافة المستحقة", "LIABILITY", "TAX_PAYABLE", "FINANCIAL"),
+    SeedAccountTemplate("2300", "Accrued Expenses", "مصاريف مستحقة", "LIABILITY", "ACCRUED_EXPENSE", "FINANCIAL"),
+    # -- Equity --
+    SeedAccountTemplate("3100", "Owner's Capital", "رأس مال المالك", "EQUITY", "CAPITAL", "FINANCIAL"),
+    # -- Revenue --
+    SeedAccountTemplate("4100", "Sales Revenue", "إيرادات المبيعات", "REVENUE", "SALES", "FINANCIAL"),
+    SeedAccountTemplate("4200", "Shipping Revenue", "إيرادات الشحن", "REVENUE", "OTHER_INCOME", "FINANCIAL"),
+    # -- Expenses --
+    SeedAccountTemplate("5100", "Cost of Goods Sold", "تكلفة البضاعة المباعة", "EXPENSE", "COGS", "FINANCIAL"),
+    SeedAccountTemplate("5200", "Shipping Expense", "مصاريف الشحن", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
+    SeedAccountTemplate("5300", "Payment Processing Fees", "رسوم معالجة الدفع", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
+    SeedAccountTemplate("5400", "Advertising & Marketing", "الإعلان والتسويق", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
+    SeedAccountTemplate("5500", "Rent Expense", "مصاريف الإيجار", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
+    SeedAccountTemplate("5600", "Salaries & Wages", "الرواتب والأجور", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
+    SeedAccountTemplate("5700", "Office & General", "مصاريف مكتبية وعمومية", "EXPENSE", "ADMIN_EXPENSE", "FINANCIAL"),
+    SeedAccountTemplate("5800", "Discounts Given", "خصومات ممنوحة", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
+]
+
+SERVICES_TEMPLATE: List[SeedAccountTemplate] = [
+    # -- Assets --
+    SeedAccountTemplate("1400", "Prepaid Expenses", "مصاريف مدفوعة مقدماً", "ASSET", "PREPAID", "FINANCIAL"),
+    # -- Liabilities --
+    SeedAccountTemplate("2200", "VAT Payable", "ضريبة القيمة المضافة المستحقة", "LIABILITY", "TAX_PAYABLE", "FINANCIAL"),
+    SeedAccountTemplate("2300", "Deferred Revenue", "إيرادات مؤجلة", "LIABILITY", "DEFERRED_REVENUE", "FINANCIAL"),
+    SeedAccountTemplate("2400", "Accrued Expenses", "مصاريف مستحقة", "LIABILITY", "ACCRUED_EXPENSE", "FINANCIAL"),
+    # -- Equity --
+    SeedAccountTemplate("3100", "Owner's Capital", "رأس مال المالك", "EQUITY", "CAPITAL", "FINANCIAL"),
+    # -- Revenue --
+    SeedAccountTemplate("4100", "Service Revenue", "إيرادات الخدمات", "REVENUE", "SERVICE", "FINANCIAL"),
+    SeedAccountTemplate("4200", "Consulting Revenue", "إيرادات الاستشارات", "REVENUE", "SERVICE", "FINANCIAL"),
+    # -- Expenses --
+    SeedAccountTemplate("5100", "Subcontractor Costs", "تكاليف المقاولين من الباطن", "EXPENSE", "COGS", "FINANCIAL"),
+    SeedAccountTemplate("5200", "Professional Fees", "أتعاب مهنية", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
+    SeedAccountTemplate("5300", "Software & Tools", "البرمجيات والأدوات", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
+    SeedAccountTemplate("5400", "Travel & Entertainment", "السفر والترفيه", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
+    SeedAccountTemplate("5500", "Rent Expense", "مصاريف الإيجار", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
+    SeedAccountTemplate("5600", "Salaries & Wages", "الرواتب والأجور", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
+    SeedAccountTemplate("5700", "Office & General", "مصاريف مكتبية وعمومية", "EXPENSE", "ADMIN_EXPENSE", "FINANCIAL"),
+    SeedAccountTemplate("5800", "Insurance", "التأمين", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
+]
+
+# Template registry: name -> (description, extra accounts list)
+COA_TEMPLATES = {
+    "empty": {
+        "label": "Empty",
+        "label_ar": "فارغ",
+        "description": "No accounts created. You build your chart of accounts from scratch.",
+        "description_ar": "لا يتم إنشاء أي حسابات. تبني دليل حساباتك من الصفر.",
+        "accounts": [],
+    },
+    "minimal": {
+        "label": "Minimal (System Accounts Only)",
+        "label_ar": "الحد الأدنى (حسابات النظام فقط)",
+        "description": "Core system accounts only: AR, AP, Cash, Retained Earnings, FX.",
+        "description_ar": "حسابات النظام الأساسية فقط: الذمم المدينة، الذمم الدائنة، النقدية، الأرباح المحتجزة، العملات.",
+        "accounts": [],  # SEED_ACCOUNTS are always created by register_signup
+    },
+    "retail": {
+        "label": "Retail / E-Commerce",
+        "label_ar": "تجزئة / تجارة إلكترونية",
+        "description": "Includes inventory, COGS, shipping, payment fees, and common retail expenses.",
+        "description_ar": "يشمل المخزون، تكلفة المبيعات، الشحن، رسوم الدفع، ومصاريف التجزئة الشائعة.",
+        "accounts": RETAIL_TEMPLATE,
+    },
+    "services": {
+        "label": "Professional Services",
+        "label_ar": "خدمات مهنية",
+        "description": "Includes service revenue, consulting, subcontractors, and common service expenses.",
+        "description_ar": "يشمل إيرادات الخدمات، الاستشارات، المقاولين، ومصاريف الخدمات الشائعة.",
+        "accounts": SERVICES_TEMPLATE,
+    },
+}
+
+
+# =============================================================================
 # SEEDING FUNCTION
 # =============================================================================
 
@@ -178,6 +263,7 @@ class SeedResult:
 def seed_chart_of_accounts(
     company: Company,
     templates: Optional[List[SeedAccountTemplate]] = None,
+    system_protected: bool = True,
 ) -> SeedResult:
     """
     Seed required accounts for a company.
@@ -243,7 +329,7 @@ def seed_chart_of_accounts(
                         is_header=template.is_header,
                         description=template.description,
                         description_ar=template.description_ar,
-                        is_system_protected=True,  # Seeded accounts are protected
+                        is_system_protected=system_protected,
                         status=Account.Status.ACTIVE,
                     )
                     account.save()
@@ -330,3 +416,33 @@ def get_seed_status(company: Company) -> dict:
         "missing": missing,
         "is_complete": len(missing) == 0,
     }
+
+
+# =============================================================================
+# ONBOARDING TEMPLATE SEEDING
+# =============================================================================
+
+def seed_template_accounts(company: Company, template_key: str) -> SeedResult:
+    """
+    Seed additional accounts from an onboarding template.
+
+    The core SEED_ACCOUNTS are already created during registration.
+    This adds the template-specific accounts on top.
+
+    Args:
+        company: The company to seed for
+        template_key: One of 'empty', 'minimal', 'retail', 'services'
+
+    Returns:
+        SeedResult
+    """
+    template = COA_TEMPLATES.get(template_key)
+    if not template:
+        return SeedResult(created=[], skipped=[], errors=[f"Unknown template: {template_key}"])
+
+    extra_accounts = template["accounts"]
+    if not extra_accounts:
+        return SeedResult(created=[], skipped=[], errors=[])
+
+    # Seed with is_system_protected=False so users can edit/delete
+    return seed_chart_of_accounts(company, templates=extra_accounts, system_protected=False)

@@ -40,23 +40,19 @@ export default function DashboardPage() {
   const router = useRouter();
   const { data: modules } = useModules();
 
-  // Redirect new OWNER users to module onboarding if no optional modules enabled
+  // Redirect new OWNER users to onboarding setup if not completed
   useEffect(() => {
-    if (!modules || !membership) return;
+    if (!company || !membership) return;
     // Only redirect OWNER (the person who registered the company)
     if (membership.role !== "OWNER") return;
-    // Check if onboarding was already completed/dismissed
+    // Check server-side flag first
+    if (company.onboarding_completed) return;
+    // Fallback: check session storage (dismissed via old flow)
     try {
       if (sessionStorage.getItem(ONBOARDING_DONE_KEY)) return;
     } catch {}
-    // If any optional module is enabled, skip onboarding
-    const hasOptional = modules.some((m) => !m.is_core && m.is_enabled);
-    if (hasOptional) {
-      try { sessionStorage.setItem(ONBOARDING_DONE_KEY, "1"); } catch {}
-      return;
-    }
-    router.replace("/onboarding/modules");
-  }, [modules, membership, router]);
+    router.replace("/onboarding/setup");
+  }, [company, membership, router]);
   const { data: trialBalance } = useTrialBalance();
   const { data: recentEntries } = useJournalEntries({ status: "POSTED" });
   const { data: chartData, isLoading: chartsLoading } = useDashboardCharts();

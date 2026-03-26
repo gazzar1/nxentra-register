@@ -1028,6 +1028,11 @@ class CompanySettingsView(APIView):
             "default_currency": company.default_currency,
             "fiscal_year_start_month": company.fiscal_year_start_month,
             "logo_url": self._get_logo_url(company),
+            "onboarding_completed": company.onboarding_completed,
+            "thousand_separator": company.thousand_separator,
+            "decimal_separator": company.decimal_separator,
+            "decimal_places": company.decimal_places,
+            "date_format": company.date_format,
         })
 
     def patch(self, request):
@@ -1049,6 +1054,86 @@ class CompanySettingsView(APIView):
             "fiscal_year_start_month": company.fiscal_year_start_month,
             "logo_url": self._get_logo_url(company),
         })
+
+
+class OnboardingSetupView(APIView):
+    """
+    POST /api/onboarding/setup/ - Complete the onboarding wizard
+    GET  /api/onboarding/setup/ - Get onboarding status + available templates
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        actor = resolve_actor(request)
+        company = actor.company
+
+        from accounting.seeds import COA_TEMPLATES
+
+        templates = []
+        for key, tmpl in COA_TEMPLATES.items():
+            templates.append({
+                "key": key,
+                "label": tmpl["label"],
+                "label_ar": tmpl["label_ar"],
+                "description": tmpl["description"],
+                "description_ar": tmpl["description_ar"],
+                "account_count": len(tmpl["accounts"]),
+            })
+
+        return Response({
+            "onboarding_completed": company.onboarding_completed,
+            "coa_template": company.coa_template,
+            "company": {
+                "name": company.name,
+                "name_ar": company.name_ar,
+                "default_currency": company.default_currency,
+                "fiscal_year_start_month": company.fiscal_year_start_month,
+                "thousand_separator": company.thousand_separator,
+                "decimal_separator": company.decimal_separator,
+                "decimal_places": company.decimal_places,
+                "date_format": company.date_format,
+            },
+            "templates": templates,
+        })
+
+    def post(self, request):
+        from accounts.serializers import OnboardingSetupInputSerializer
+        from accounts.commands import complete_onboarding
+
+        actor = resolve_actor(request)
+
+        serializer = OnboardingSetupInputSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        result = complete_onboarding(
+            actor,
+            company_name=data.get("company_name", ""),
+            company_name_ar=data.get("company_name_ar", ""),
+            fiscal_year_start_month=data.get("fiscal_year_start_month", 0),
+            thousand_separator=data.get("thousand_separator", ""),
+            decimal_separator=data.get("decimal_separator", ""),
+            decimal_places=data.get("decimal_places", -1),
+            date_format=data.get("date_format", ""),
+            fiscal_year=data.get("fiscal_year", 0),
+            num_periods=data.get("num_periods", 12),
+            current_period=data.get("current_period", 1),
+            coa_template=data.get("coa_template", "minimal"),
+            modules=data.get("modules"),
+        )
+
+        if not result.success:
+            return Response(
+                {"detail": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        company = result.data["company"]
+        return Response({
+            "status": "ok",
+            "onboarding_completed": company.onboarding_completed,
+            "coa_template": company.coa_template,
+        }, status=status.HTTP_200_OK)
 
 
 class CompanyLogoUploadView(APIView):

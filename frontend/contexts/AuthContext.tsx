@@ -95,8 +95,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = async (email: string, password: string) => {
     const { data } = await authService.login({ email, password });
     storeTokens(data.access, data.refresh);
-    await fetchProfile();
-    router.push('/dashboard');
+    const profile = await fetchProfile();
+    // Redirect new owners to onboarding setup if not completed
+    if (
+      profile?.company &&
+      !profile.company.onboarding_completed &&
+      profile.membership?.role === 'OWNER'
+    ) {
+      router.push('/onboarding/setup');
+    } else {
+      router.push('/dashboard');
+    }
   };
 
   const logout = async () => {
