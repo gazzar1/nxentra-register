@@ -41,7 +41,6 @@ interface BillLineFormData {
 }
 
 interface BillFormData {
-  bill_number: string;
   bill_date: string;
   due_date: string;
   vendor_id: string;
@@ -81,7 +80,6 @@ export default function NewPurchaseBillPage() {
     formState: { errors, isSubmitting },
   } = useForm<BillFormData>({
     defaultValues: {
-      bill_number: "",
       bill_date: new Date().toISOString().split("T")[0],
       due_date: "",
       vendor_id: "",
@@ -202,7 +200,6 @@ export default function NewPurchaseBillPage() {
   const onSubmit = async (data: BillFormData) => {
     try {
       const payload: PurchaseBillCreatePayload = {
-        bill_number: data.bill_number,
         bill_date: data.bill_date,
         due_date: data.due_date || null,
         vendor_id: parseInt(data.vendor_id),
@@ -225,7 +222,7 @@ export default function NewPurchaseBillPage() {
       await createBill.mutateAsync(payload);
       toast({
         title: "Bill created",
-        description: `Bill ${data.bill_number} has been created as a draft.`,
+        description: "Bill has been created as a draft.",
       });
       router.push("/accounting/purchase-bills");
     } catch (error: any) {
@@ -266,15 +263,13 @@ export default function NewPurchaseBillPage() {
           </CardHeader>
           <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="space-y-2">
-              <Label htmlFor="bill_number">Bill Number *</Label>
+              <Label htmlFor="bill_number">Bill Number</Label>
               <Input
                 id="bill_number"
-                {...register("bill_number", { required: "Bill number is required" })}
-                placeholder="BILL-0001"
+                value="Auto-generated on save"
+                disabled
+                className="bg-muted"
               />
-              {errors.bill_number && (
-                <p className="text-sm text-destructive">{errors.bill_number.message}</p>
-              )}
             </div>
 
             <div className="space-y-2">

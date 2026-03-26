@@ -88,7 +88,7 @@ class PurchaseBillLineInputSerializer(serializers.Serializer):
 
 class PurchaseBillCreateSerializer(serializers.Serializer):
     """Serializer for creating purchase bills via command."""
-    bill_number = serializers.CharField(max_length=50)
+    bill_number = serializers.CharField(max_length=50, required=False, default="")
     bill_date = serializers.DateField()
     due_date = serializers.DateField(required=False, allow_null=True)
     vendor_id = serializers.IntegerField()

@@ -40,7 +40,6 @@ interface InvoiceLineFormData {
 }
 
 interface InvoiceFormData {
-  invoice_number: string;
   invoice_date: string;
   due_date: string;
   customer_id: string;
@@ -76,7 +75,6 @@ export default function NewSalesInvoicePage() {
     formState: { errors, isSubmitting },
   } = useForm<InvoiceFormData>({
     defaultValues: {
-      invoice_number: "",
       invoice_date: new Date().toISOString().split("T")[0],
       due_date: "",
       customer_id: "",
@@ -211,7 +209,6 @@ export default function NewSalesInvoicePage() {
   const onSubmit = async (data: InvoiceFormData) => {
     try {
       const payload: SalesInvoiceCreatePayload = {
-        invoice_number: data.invoice_number,
         invoice_date: data.invoice_date,
         due_date: data.due_date || null,
         customer_id: parseInt(data.customer_id),
@@ -233,7 +230,7 @@ export default function NewSalesInvoicePage() {
       await createInvoice.mutateAsync(payload);
       toast({
         title: "Invoice created",
-        description: `Invoice ${data.invoice_number} has been created as a draft.`,
+        description: "Invoice has been created as a draft.",
       });
       router.push("/accounting/sales-invoices");
     } catch (error: any) {
@@ -274,15 +271,13 @@ export default function NewSalesInvoicePage() {
           </CardHeader>
           <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="space-y-2">
-              <Label htmlFor="invoice_number">Invoice Number *</Label>
+              <Label htmlFor="invoice_number">Invoice Number</Label>
               <Input
                 id="invoice_number"
-                {...register("invoice_number", { required: "Invoice number is required" })}
-                placeholder="INV-0001"
+                value="Auto-generated on save"
+                disabled
+                className="bg-muted"
               />
-              {errors.invoice_number && (
-                <p className="text-sm text-destructive">{errors.invoice_number.message}</p>
-              )}
             </div>
 
             <div className="space-y-2">

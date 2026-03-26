@@ -23,6 +23,8 @@ class InventoryConfig(AppConfig):
             category=ModuleCategory.HORIZONTAL,
             order=50,
             nav_items=[
+                {"label": "Warehouses", "href": "/inventory/warehouses", "icon": "Warehouse", "translation_key": "nav.warehouses"},
+                {"label": "Items", "href": "/accounting/items", "icon": "Package", "translation_key": "nav.items"},
                 {"label": "Stock Balances", "href": "/inventory/balances", "icon": "PackageOpen", "translation_key": "nav.inventoryBalances"},
                 {"label": "Stock Ledger", "href": "/inventory/ledger", "icon": "ScrollText", "translation_key": "nav.stockLedger"},
                 {"label": "Adjustment", "href": "/inventory/adjustments/new", "icon": "Scale", "translation_key": "nav.inventoryAdjustment"},

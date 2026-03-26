@@ -40,31 +40,18 @@ class AccountsConfig(AppConfig):
             ],
         )
         module_registry.register(
-            "setup",
-            label="Setup",
-            icon="Wrench",
-            category=ModuleCategory.CORE,
-            order=10,
-            nav_items=[
-                {"label": "Periods", "href": "/settings/periods", "icon": "Calendar", "translation_key": "nav.periods"},
-                {"label": "Chart of Accounts", "href": "/accounting/chart-of-accounts", "icon": "FileText", "translation_key": "nav.chartOfAccounts"},
-                {"label": "Dimensions", "href": "/settings/dimensions", "icon": "Layers", "translation_key": "nav.dimensions"},
-                {"label": "Vendors (AP)", "href": "/accounting/vendors", "icon": "Truck", "translation_key": "nav.vendors"},
-                {"label": "Customers (AR)", "href": "/accounting/customers", "icon": "UserCircle", "translation_key": "nav.customers"},
-                {"label": "Warehouses", "href": "/inventory/warehouses", "icon": "Warehouse", "translation_key": "nav.warehouses"},
-                {"label": "Items", "href": "/accounting/items", "icon": "Package", "translation_key": "nav.items"},
-                {"label": "Tax Codes", "href": "/accounting/tax-codes", "icon": "Percent", "translation_key": "nav.taxCodes"},
-                {"label": "Posting Profiles", "href": "/accounting/posting-profiles", "icon": "CreditCard", "translation_key": "nav.postingProfiles"},
-                {"label": "Integrations", "href": "/settings/integrations", "icon": "Plug", "translation_key": "nav.integrations"},
-            ],
-        )
-        module_registry.register(
             "accounting",
             label="Accounting",
             icon="BookOpen",
             category=ModuleCategory.CORE,
             order=20,
             nav_items=[
+                {"label": "Periods", "href": "/settings/periods", "icon": "Calendar", "translation_key": "nav.periods"},
+                {"label": "Chart of Accounts", "href": "/accounting/chart-of-accounts", "icon": "FileText", "translation_key": "nav.chartOfAccounts"},
+                {"label": "Dimensions", "href": "/settings/dimensions", "icon": "Layers", "translation_key": "nav.dimensions"},
+                {"label": "Vendors (AP)", "href": "/accounting/vendors", "icon": "Truck", "translation_key": "nav.vendors"},
+                {"label": "Customers (AR)", "href": "/accounting/customers", "icon": "UserCircle", "translation_key": "nav.customers"},
+                {"label": "Integrations", "href": "/settings/integrations", "icon": "Plug", "translation_key": "nav.integrations"},
                 {"label": "Journal Entries", "href": "/accounting/journal-entries", "icon": "FileText", "translation_key": "nav.journalEntries"},
                 {"label": "Bank Reconciliation", "href": "/accounting/bank-reconciliation", "icon": "Building2"},
                 {"label": "Currency Revaluation", "href": "/accounting/currency-revaluation", "icon": "ArrowLeftRight"},

@@ -17,6 +17,8 @@ class SalesConfig(AppConfig):
             category=ModuleCategory.HORIZONTAL,
             order=30,
             nav_items=[
+                {"label": "Tax Codes", "href": "/accounting/tax-codes", "icon": "Percent", "translation_key": "nav.taxCodes"},
+                {"label": "Posting Profiles", "href": "/accounting/posting-profiles", "icon": "CreditCard", "translation_key": "nav.postingProfiles"},
                 {"label": "Invoices", "href": "/accounting/sales-invoices", "icon": "Receipt", "translation_key": "nav.salesInvoices"},
                 {"label": "Receipts", "href": "/accounting/receipts", "icon": "CreditCard", "translation_key": "nav.customerReceipts"},
             ],

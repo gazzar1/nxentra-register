@@ -255,7 +255,7 @@ export interface SalesInvoiceListItem {
 }
 
 export interface SalesInvoiceCreatePayload {
-  invoice_number: string;
+  invoice_number?: string;
   invoice_date: string;
   due_date?: string | null;
   customer_id: number;

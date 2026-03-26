@@ -18,6 +18,7 @@ from accounting.commands import (
     create_journal_entry,
     save_journal_entry_complete,
     post_journal_entry,
+    _next_company_sequence,
 )
 from events.emitter import emit_event
 from events.types import (
@@ -58,8 +59,8 @@ def _calculate_line(line_data: dict) -> dict:
 @transaction.atomic
 def create_purchase_bill(
     actor: ActorContext,
-    bill_number: str,
-    bill_date,
+    bill_number: str = "",
+    bill_date=None,
     vendor_id: int,
     posting_profile_id: int,
     lines: list,
@@ -83,11 +84,9 @@ def create_purchase_bill(
     """
     require(actor, "purchases.bill.create")
 
-    # Validate unique bill number per vendor
-    if PurchaseBill.objects.filter(
-        company=actor.company, vendor_id=vendor_id, bill_number=bill_number
-    ).exists():
-        return CommandResult.fail(f"Bill number '{bill_number}' already exists for this vendor.")
+    # Always auto-generate bill number (not user-editable)
+    seq = _next_company_sequence(actor.company, "purchase_bill_number")
+    bill_number = f"BILL-{seq:06d}"
 
     # Validate vendor
     try:

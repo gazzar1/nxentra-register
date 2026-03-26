@@ -103,7 +103,7 @@ export interface PurchaseBillListItem {
 }
 
 export interface PurchaseBillCreatePayload {
-  bill_number: string;
+  bill_number?: string;
   bill_date: string;
   due_date?: string | null;
   vendor_id: number;

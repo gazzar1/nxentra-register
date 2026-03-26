@@ -109,7 +109,6 @@ const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
 // Color map per section key for visual distinction
 const SECTION_ICON_COLORS: Record<string, string> = {
   dashboard: "text-blue-500",
-  setup: "text-cyan-500",
   accounting: "text-emerald-500",
   sales: "text-orange-500",
   purchases: "text-violet-500",

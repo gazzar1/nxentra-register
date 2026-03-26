@@ -277,7 +277,7 @@ class SalesInvoiceLineInputSerializer(serializers.Serializer):
 
 class SalesInvoiceCreateSerializer(serializers.Serializer):
     """Serializer for creating sales invoices via command."""
-    invoice_number = serializers.CharField(max_length=50)
+    invoice_number = serializers.CharField(max_length=50, required=False, default="")
     invoice_date = serializers.DateField()
     due_date = serializers.DateField(required=False, allow_null=True)
     customer_id = serializers.IntegerField()

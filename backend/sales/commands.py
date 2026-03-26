@@ -630,8 +630,8 @@ def _calculate_line(line_data: dict) -> dict:
 @transaction.atomic
 def create_sales_invoice(
     actor: ActorContext,
-    invoice_number: str,
-    invoice_date,
+    invoice_number: str = "",
+    invoice_date=None,
     customer_id: int,
     posting_profile_id: int,
     lines: list,
@@ -655,9 +655,9 @@ def create_sales_invoice(
     """
     require(actor, "sales.invoice.create")
 
-    # Validate unique invoice number
-    if SalesInvoice.objects.filter(company=actor.company, invoice_number=invoice_number).exists():
-        return CommandResult.fail(f"Invoice number '{invoice_number}' already exists.")
+    # Always auto-generate invoice number (not user-editable)
+    seq = _next_company_sequence(actor.company, "sales_invoice_number")
+    invoice_number = f"INV-{seq:06d}"
 
     # Validate customer
     try:
