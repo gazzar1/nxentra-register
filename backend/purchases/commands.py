@@ -59,11 +59,11 @@ def _calculate_line(line_data: dict) -> dict:
 @transaction.atomic
 def create_purchase_bill(
     actor: ActorContext,
+    vendor_id: int = 0,
+    posting_profile_id: int = 0,
+    lines: list = None,
     bill_number: str = "",
     bill_date=None,
-    vendor_id: int,
-    posting_profile_id: int,
-    lines: list,
     due_date=None,
     reference: str = "",
     notes: str = "",
