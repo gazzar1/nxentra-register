@@ -103,6 +103,7 @@ class RegisterView(APIView):
             password=data["password"],
             company_name=data["company_name"],
             name=data.get("name", ""),
+            phone=data.get("phone", ""),
             default_currency=data.get("default_currency", "USD"),
         )
 

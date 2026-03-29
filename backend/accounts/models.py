@@ -243,6 +243,7 @@ class User(ProjectionWriteGuard, AbstractUser):
     # Profile
     name = models.CharField(max_length=255, blank=True, default="")
     name_ar = models.CharField(max_length=255, blank=True, default="")
+    phone = models.CharField(max_length=20, blank=True, default="")
 
     # Email verification
     email_verified = models.BooleanField(default=False)

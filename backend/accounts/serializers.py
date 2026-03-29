@@ -144,6 +144,7 @@ class RegisterInputSerializer(serializers.Serializer):
         style={"input_type": "password"},
     )
     name = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
+    phone = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
     company_name = serializers.CharField(max_length=255, required=True)
     default_currency = serializers.CharField(max_length=3, required=False, default="")
     currency = serializers.CharField(max_length=3, required=False, default="")

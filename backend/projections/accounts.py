@@ -138,6 +138,7 @@ class UserProjection(BaseProjection):
                 defaults={
                     "email": data["email"],
                     "name": data.get("name", ""),
+                    "phone": data.get("phone", ""),
                     "is_active": True,
                 },
             )

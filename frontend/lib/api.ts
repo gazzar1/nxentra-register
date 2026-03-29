@@ -28,16 +28,11 @@ export interface RegistrationResponse {
 export interface RegistrationPayload {
   email: string;
   name: string;
+  phone?: string;
   password: string;
   company_name: string;
   currency: string;
   language: string;
-  periods: number;
-  current_period: number;
-  thousand_separator: string;
-  decimal_places: number;
-  decimal_separator: string;
-  date_format: string;
 }
 
 // ==========================

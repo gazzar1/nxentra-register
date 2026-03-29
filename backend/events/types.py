@@ -951,6 +951,7 @@ class UserCreatedData(BaseEventData):
     user_public_id: str
     email: str
     name: str
+    phone: str = ""
     created_by_user_public_id: Optional[str] = None
     
 

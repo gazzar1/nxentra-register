@@ -4,29 +4,19 @@ import { FormEvent, useState } from "react";
 import { AuthLayout } from "@/components/AuthLayout";
 import { InputField, SelectField } from "@/components/FormField";
 import {
-  accountingPeriods,
   currencyOptions,
-  dateFormats,
-  decimalPlaces,
-  decimalSeparators,
   languageOptions,
-  thousandSeparators
 } from "@/lib/constants";
 import { register } from "@/lib/api";
 
 const initialState = {
   email: "",
   name: "",
+  phone: "",
   password: "",
   company_name: "",
   currency: "USD",
   language: "en",
-  periods: "12",
-  current_period: "1",
-  thousand_separator: ",",
-  decimal_places: "2",
-  decimal_separator: ".",
-  date_format: "dd/mm/yyyy"
 };
 
 type Errors = Partial<Record<keyof typeof initialState, string>>;
@@ -38,16 +28,7 @@ export default function RegisterPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleChange = (field: keyof typeof form) => (value: string) => {
-    setForm((previous) => {
-      const nextForm = { ...previous, [field]: value };
-      if (field === "periods") {
-        const total = Number(value);
-        if (Number(nextForm.current_period) > total) {
-          nextForm.current_period = String(total);
-        }
-      }
-      return nextForm;
-    });
+    setForm((previous) => ({ ...previous, [field]: value }));
   };
 
   const validate = () => {
@@ -64,12 +45,6 @@ export default function RegisterPage() {
     if (form.company_name.length > 10)
       validationErrors.company_name = "Maximum 10 characters";
 
-    const currentPeriodNumber = Number(form.current_period);
-    const totalPeriodsNumber = Number(form.periods);
-    if (currentPeriodNumber > totalPeriodsNumber) {
-      validationErrors.current_period = "Cannot exceed total periods";
-    }
-
     setErrors(validationErrors);
     return Object.keys(validationErrors).length === 0;
   };
@@ -83,16 +58,11 @@ export default function RegisterPage() {
       await register({
         email: form.email,
         name: form.name,
+        phone: form.phone,
         password: form.password,
         company_name: form.company_name,
         currency: form.currency,
         language: form.language,
-        periods: Number(form.periods),
-        current_period: Number(form.current_period),
-        thousand_separator: form.thousand_separator === "none" ? "" : form.thousand_separator,
-        decimal_places: Number(form.decimal_places),
-        decimal_separator: form.decimal_separator,
-        date_format: form.date_format
       });
 
       // Redirect to verify-email page
@@ -115,11 +85,20 @@ export default function RegisterPage() {
           <div className="md:col-span-2">
             <h2 className="text-2xl font-semibold text-foreground">Create your company workspace</h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              Enter basic account credentials and configure the accounting experience for your ERP tenant.
+              Enter your details to get started. You can configure accounting settings after login.
             </p>
           </div>
           <InputField id="email" label="Email" type="email" value={form.email} onChange={handleChange("email")} error={errors.email} />
           <InputField id="name" label="Full name" value={form.name} onChange={handleChange("name")} error={errors.name} />
+          <InputField
+            id="phone"
+            label="Phone number"
+            type="tel"
+            value={form.phone}
+            onChange={handleChange("phone")}
+            placeholder="+20 xxx xxx xxxx"
+            error={errors.phone}
+          />
           <InputField
             id="password"
             label="Password"
@@ -153,84 +132,9 @@ export default function RegisterPage() {
             ))}
           </SelectField>
 
-          <SelectField
-            id="periods"
-            label="Number of accounting periods"
-            value={form.periods}
-            onChange={handleChange("periods")}
-          >
-            {accountingPeriods.map((period) => (
-              <option key={period.value} value={period.value}>
-                {period.label}
-              </option>
-            ))}
-          </SelectField>
-
-          <SelectField
-            id="current_period"
-            label="Current accounting period"
-            value={form.current_period}
-            onChange={handleChange("current_period")}
-            error={errors.current_period}
-          >
-            {Array.from({ length: Math.max(1, Number(form.periods) || 1) }, (_, index) => index + 1).map((period) => (
-              <option key={period} value={period}>
-                {period}
-              </option>
-            ))}
-          </SelectField>
-
-          <SelectField
-            id="thousand_separator"
-            label="Thousands separator"
-            value={form.thousand_separator}
-            onChange={handleChange("thousand_separator")}
-          >
-            {thousandSeparators.map((separator) => (
-              <option key={separator} value={separator}>
-                {separator === "none" ? "None" : separator}
-              </option>
-            ))}
-          </SelectField>
-
-          <SelectField
-            id="decimal_places"
-            label="Number of decimal places"
-            value={form.decimal_places}
-            onChange={handleChange("decimal_places")}
-          >
-            {decimalPlaces.map((places) => (
-              <option key={places} value={places}>
-                {places}
-              </option>
-            ))}
-          </SelectField>
-
-          <SelectField
-            id="decimal_separator"
-            label="Decimal separator"
-            value={form.decimal_separator}
-            onChange={handleChange("decimal_separator")}
-          >
-            {decimalSeparators.map((separator) => (
-              <option key={separator} value={separator}>
-                {separator}
-              </option>
-            ))}
-          </SelectField>
-
-          <SelectField
-            id="date_format"
-            label="Preferred date format"
-            value={form.date_format}
-            onChange={handleChange("date_format")}
-          >
-            {dateFormats.map((format) => (
-              <option key={format} value={format}>
-                {format}
-              </option>
-            ))}
-          </SelectField>
+          <div className="hidden">
+            {/* Language fills the row; this balances the grid */}
+          </div>
 
           <div className="md:col-span-2 flex flex-col gap-3">
             <button

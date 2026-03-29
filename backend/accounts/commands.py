@@ -117,6 +117,7 @@ def register_signup(
     password: str,
     company_name: str,
     name: str = "",
+    phone: str = "",
     default_currency: str = "USD",
 ) -> CommandResult:
     """
@@ -224,6 +225,7 @@ def register_signup(
                 user_public_id=str(user_public_id),
                 email=email,
                 name=name.strip() if name else "",
+                phone=phone.strip() if phone else "",
                 created_by_user_public_id=None,
             ).to_dict(),
         )
