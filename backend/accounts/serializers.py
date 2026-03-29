@@ -166,13 +166,13 @@ class RegisterInputSerializer(serializers.Serializer):
 class OnboardingSetupInputSerializer(serializers.Serializer):
     """Input for the onboarding setup wizard."""
     # Step 1: Company profile
-    company_name = serializers.CharField(max_length=255, required=False, default="")
-    company_name_ar = serializers.CharField(max_length=255, required=False, default="")
+    company_name = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
+    company_name_ar = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
     fiscal_year_start_month = serializers.IntegerField(required=False, default=0)
-    thousand_separator = serializers.CharField(max_length=5, required=False, default="")
-    decimal_separator = serializers.CharField(max_length=5, required=False, default="")
+    thousand_separator = serializers.CharField(max_length=5, required=False, allow_blank=True, default="")
+    decimal_separator = serializers.CharField(max_length=5, required=False, allow_blank=True, default="")
     decimal_places = serializers.IntegerField(required=False, default=-1)
-    date_format = serializers.CharField(max_length=20, required=False, default="")
+    date_format = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
 
     # Step 2: Fiscal year
     fiscal_year = serializers.IntegerField(required=False, default=0)
