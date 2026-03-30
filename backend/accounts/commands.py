@@ -3145,6 +3145,19 @@ def complete_onboarding(
             if fy_created or not FiscalPeriod.objects.filter(company=company, fiscal_year=fiscal_year).exists():
                 _create_periods(company, fiscal_year, num_periods, current_period, company.fiscal_year_start_month)
 
+            # Set current period config
+            from projections.models import FiscalPeriodConfig
+            FiscalPeriodConfig.objects.update_or_create(
+                company=company,
+                fiscal_year=fiscal_year,
+                defaults={
+                    "period_count": num_periods,
+                    "current_period": current_period,
+                    "open_from_period": 1,
+                    "open_to_period": num_periods,
+                },
+            )
+
     # ---- Step 3: Chart of accounts template ----
     if coa_template and coa_template != "empty":
         from accounting.seeds import seed_template_accounts

@@ -185,7 +185,8 @@ export default function OnboardingSetupPage() {
     try {
       sessionStorage.setItem("nxentra-onboarding-modules-done", "1");
     } catch {}
-    router.push("/dashboard");
+    // Full reload to refresh sidebar modules and company settings
+    window.location.href = "/dashboard";
   };
 
   const handleSkip = () => {
