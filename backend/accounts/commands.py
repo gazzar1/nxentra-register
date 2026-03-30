@@ -3136,16 +3136,14 @@ def complete_onboarding(
         with projection_writes_allowed():
             fy, fy_created = FiscalYear.objects.get_or_create(
                 company=company,
-                year_number=fiscal_year,
+                fiscal_year=fiscal_year,
                 defaults={
-                    "start_date": _fiscal_start_date(fiscal_year, company.fiscal_year_start_month),
-                    "end_date": _fiscal_end_date(fiscal_year, company.fiscal_year_start_month),
                     "status": "OPEN",
                 },
             )
 
-            if fy_created or not FiscalPeriod.objects.filter(company=company, fiscal_year=fy).exists():
-                _create_periods(company, fy, num_periods, current_period)
+            if fy_created or not FiscalPeriod.objects.filter(company=company, fiscal_year=fiscal_year).exists():
+                _create_periods(company, fiscal_year, num_periods, current_period, company.fiscal_year_start_month)
 
     # ---- Step 3: Chart of accounts template ----
     if coa_template and coa_template != "empty":
@@ -3212,13 +3210,13 @@ def _fiscal_end_date(year: int, start_month: int):
     return datetime.date(end_year, end_month, last_day)
 
 
-def _create_periods(company, fiscal_year, num_periods: int, current_period: int):
+def _create_periods(company, fiscal_year_num: int, num_periods: int, current_period: int, start_month: int = 1):
     """Create fiscal periods for a fiscal year."""
     import datetime
     import calendar
     from projections.models import FiscalPeriod
 
-    start = fiscal_year.start_date
+    start = _fiscal_start_date(fiscal_year_num, start_month)
     normal_periods = min(num_periods, 12)
 
     for i in range(1, normal_periods + 1):
@@ -3230,30 +3228,28 @@ def _create_periods(company, fiscal_year, num_periods: int, current_period: int)
         period_start = datetime.date(year, month, 1)
         period_end = datetime.date(year, month, last_day)
 
-        status = "OPEN" if i == current_period else "OPEN"
-
         FiscalPeriod.objects.get_or_create(
             company=company,
-            fiscal_year=fiscal_year,
-            period_number=i,
+            fiscal_year=fiscal_year_num,
+            period=i,
             defaults={
-                "period_name": period_start.strftime("%b %Y"),
                 "start_date": period_start,
                 "end_date": period_end,
-                "status": status,
+                "status": "OPEN",
             },
         )
 
     # Period 13 (adjustment period) if requested
     if num_periods == 13:
+        end = _fiscal_end_date(fiscal_year_num, start_month)
         FiscalPeriod.objects.get_or_create(
             company=company,
-            fiscal_year=fiscal_year,
-            period_number=13,
+            fiscal_year=fiscal_year_num,
+            period=13,
             defaults={
-                "period_name": "Adjustment",
-                "start_date": fiscal_year.end_date,
-                "end_date": fiscal_year.end_date,
+                "start_date": end,
+                "end_date": end,
                 "status": "OPEN",
+                "period_type": "ADJUSTMENT",
             },
         )
