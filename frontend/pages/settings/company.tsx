@@ -32,6 +32,10 @@ interface CompanySettingsForm {
   name_ar: string;
   default_currency: string;
   fiscal_year_start_month: number;
+  date_format: string;
+  thousand_separator: string;
+  decimal_separator: string;
+  decimal_places: number;
 }
 
 export default function CompanySettingsPage() {
@@ -51,6 +55,10 @@ export default function CompanySettingsPage() {
       name_ar: settings?.name_ar || "",
       default_currency: settings?.default_currency || "USD",
       fiscal_year_start_month: settings?.fiscal_year_start_month || 1,
+      date_format: settings?.date_format || "YYYY-MM-DD",
+      thousand_separator: settings?.thousand_separator || ",",
+      decimal_separator: settings?.decimal_separator || ".",
+      decimal_places: settings?.decimal_places ?? 2,
     },
   });
 
@@ -62,6 +70,10 @@ export default function CompanySettingsPage() {
         name_ar: settings.name_ar || "",
         default_currency: settings.default_currency,
         fiscal_year_start_month: settings.fiscal_year_start_month,
+        date_format: settings.date_format || "YYYY-MM-DD",
+        thousand_separator: settings.thousand_separator || ",",
+        decimal_separator: settings.decimal_separator || ".",
+        decimal_places: settings.decimal_places ?? 2,
       });
     }
   }, [settings]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -349,6 +361,88 @@ export default function CompanySettingsPage() {
                         ))}
                       </SelectContent>
                     </Select>
+                  </div>
+
+                  {/* Date Format */}
+                  <div className="space-y-2">
+                    <Label htmlFor="date_format">
+                      {t("settings:company.dateFormat", "Date Format")}
+                    </Label>
+                    <Select
+                      value={form.watch("date_format")}
+                      onValueChange={(value) => form.setValue("date_format", value)}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="YYYY-MM-DD">YYYY-MM-DD</SelectItem>
+                        <SelectItem value="DD/MM/YYYY">DD/MM/YYYY</SelectItem>
+                        <SelectItem value="MM/DD/YYYY">MM/DD/YYYY</SelectItem>
+                        <SelectItem value="DD-MM-YYYY">DD-MM-YYYY</SelectItem>
+                        <SelectItem value="DD.MM.YYYY">DD.MM.YYYY</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {/* Number Formatting */}
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="thousand_separator">
+                        {t("settings:company.thousandSeparator", "Thousand Separator")}
+                      </Label>
+                      <Select
+                        value={form.watch("thousand_separator")}
+                        onValueChange={(value) => form.setValue("thousand_separator", value)}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value=",">{t("settings:company.comma", "Comma")} (,)</SelectItem>
+                          <SelectItem value=".">{t("settings:company.dot", "Dot")} (.)</SelectItem>
+                          <SelectItem value=" ">{t("settings:company.space", "Space")} ( )</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="decimal_separator">
+                        {t("settings:company.decimalSeparator", "Decimal Separator")}
+                      </Label>
+                      <Select
+                        value={form.watch("decimal_separator")}
+                        onValueChange={(value) => form.setValue("decimal_separator", value)}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value=".">{t("settings:company.dot", "Dot")} (.)</SelectItem>
+                          <SelectItem value=",">{t("settings:company.comma", "Comma")} (,)</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="decimal_places">
+                        {t("settings:company.decimalPlaces", "Decimal Places")}
+                      </Label>
+                      <Select
+                        value={form.watch("decimal_places")?.toString()}
+                        onValueChange={(value) => form.setValue("decimal_places", parseInt(value))}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="0">0</SelectItem>
+                          <SelectItem value="2">2</SelectItem>
+                          <SelectItem value="3">3</SelectItem>
+                          <SelectItem value="4">4</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
                   </div>
 
                   <Button type="submit" disabled={updateSettings.isPending}>
