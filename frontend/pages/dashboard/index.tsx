@@ -22,6 +22,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { PageHeader, LoadingSpinner } from "@/components/common";
 import { useAuth } from "@/contexts/AuthContext";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 import { useModules } from "@/queries/useModules";
 import { useTrialBalance, useDashboardCharts, useDashboardWidgets } from "@/queries/useReports";
 import { useJournalEntries } from "@/queries/useJournalEntries";
@@ -37,6 +38,7 @@ const ONBOARDING_DONE_KEY = "nxentra-onboarding-modules-done";
 export default function DashboardPage() {
   const { t } = useTranslation(["common", "reports"]);
   const { company, membership } = useAuth();
+  const { formatCurrency, formatDate } = useCompanyFormat();
   const router = useRouter();
   const { data: modules } = useModules();
 
@@ -75,13 +77,7 @@ export default function DashboardPage() {
     .filter((a) => a.account_type === "EXPENSE")
     .reduce((sum, a) => sum + parseFloat(a.debit || "0"), 0) || 0;
 
-  const formatCurrency = (amount: number) => {
-    return new Intl.NumberFormat(undefined, {
-      style: "currency",
-      currency: company?.default_currency || "USD",
-      minimumFractionDigits: 2,
-    }).format(amount);
-  };
+  // formatCurrency comes from useCompanyFormat hook above
 
   const quickActions = [
     {
@@ -333,7 +329,7 @@ export default function DashboardPage() {
                           {formatCurrency(parseFloat(item.amount))}
                         </p>
                         <p className="text-xs text-muted-foreground">
-                          {new Date(item.date).toLocaleDateString()}
+                          {formatDate(item.date)}
                         </p>
                       </div>
                     </div>
@@ -408,7 +404,7 @@ export default function DashboardPage() {
                           {formatCurrency(parseFloat(entry.total_debit))}
                         </p>
                         <p className="text-xs text-muted-foreground">
-                          {new Date(entry.date).toLocaleDateString()}
+                          {formatDate(entry.date)}
                         </p>
                       </div>
                     </Link>

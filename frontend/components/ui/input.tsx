@@ -5,7 +5,19 @@ export interface InputProps
   extends React.InputHTMLAttributes<HTMLInputElement> {}
 
 const Input = React.forwardRef<HTMLInputElement, InputProps>(
-  ({ className, type, ...props }, ref) => {
+  ({ className, type, onFocus, ...props }, ref) => {
+    const handleFocus = React.useCallback(
+      (e: React.FocusEvent<HTMLInputElement>) => {
+        // Select all text on focus for number inputs so the initial "0" is
+        // overwritten when the user starts typing.
+        if (type === "number") {
+          e.target.select();
+        }
+        onFocus?.(e);
+      },
+      [type, onFocus]
+    );
+
     return (
       <input
         type={type}
@@ -14,6 +26,7 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(
           className
         )}
         ref={ref}
+        onFocus={handleFocus}
         {...props}
       />
     );

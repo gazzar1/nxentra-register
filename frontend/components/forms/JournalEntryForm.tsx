@@ -23,6 +23,7 @@ import type { JournalEntryCreatePayload, AnalysisTagInput } from "@/types/journa
 import type { AccountAnalysisDefault, AnalysisDimension } from "@/types/account";
 import { periodsService, FiscalPeriod } from "@/services/periods.service";
 import { currencyOptions } from "@/lib/constants";
+import { formatAmount as fmtAmount } from "@/lib/currency";
 import { cn } from "@/lib/cn";
 import { useFormKeyboardShortcuts } from "@/lib/useFormKeyboardShortcuts";
 
@@ -278,7 +279,15 @@ export function JournalEntryForm({
 
   const selectedCurrency = form.watch("currency") || company?.default_currency || "USD";
   const watchedExchangeRate = form.watch("exchange_rate");
+  const companyFmt = company ? {
+    thousand_separator: company.thousand_separator,
+    decimal_separator: company.decimal_separator,
+    decimal_places: company.decimal_places,
+  } : undefined;
   const formatCurrency = (amount: number, currency?: string) => {
+    if (companyFmt) {
+      return `${currency || selectedCurrency} ${fmtAmount(amount, companyFmt)}`;
+    }
     return new Intl.NumberFormat(undefined, {
       style: "currency",
       currency: currency || selectedCurrency,
