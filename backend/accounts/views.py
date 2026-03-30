@@ -466,6 +466,7 @@ class MeView(APIView):
                 "default_currency": active_company.default_currency if active_company else "USD",
                 "fiscal_year_start_month": active_company.fiscal_year_start_month if active_company else 1,
                 "is_active": active_company.is_active if active_company else False,
+                "onboarding_completed": active_company.onboarding_completed if active_company else False,
                 "created_at": active_company.created_at.isoformat() if active_company else None,
                 "updated_at": active_company.updated_at.isoformat() if active_company else None,
             } if active_company else None,
