@@ -7,6 +7,8 @@ import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { CompanyDateInput } from "@/components/ui/CompanyDateInput";
+import { FormattedAmountInput } from "@/components/ui/FormattedAmountInput";
 import {
   Select,
   SelectContent,
@@ -350,10 +352,11 @@ export function JournalEntryForm({
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="space-y-2">
           <Label htmlFor="date">{t("accounting:journalEntry.date")} *</Label>
-          <Input
+          <CompanyDateInput
             id="date"
-            type="date"
-            {...form.register("date")}
+            value={form.watch("date")}
+            onChange={(iso) => form.setValue("date", iso, { shouldValidate: true })}
+            dateFormat={(company?.date_format as "DD/MM/YYYY" | "MM/DD/YYYY" | "DD-MM-YYYY" | "DD.MM.YYYY" | "YYYY-MM-DD") || "YYYY-MM-DD"}
           />
           {form.formState.errors.date && (
             <p className="text-sm text-destructive">
@@ -522,21 +525,19 @@ export function JournalEntryForm({
                     />
                   </div>
                   <div className="col-span-2">
-                    <Input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      {...form.register(`lines.${index}.debit`, { valueAsNumber: true })}
+                    <FormattedAmountInput
+                      value={watchedLines[index]?.debit || 0}
+                      onChange={(v) => form.setValue(`lines.${index}.debit`, v)}
+                      settings={companyFmt}
                       className="text-end ltr-number"
                       disabled={watchedLines[index]?.credit > 0}
                     />
                   </div>
                   <div className="col-span-2 flex items-center gap-2">
-                    <Input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      {...form.register(`lines.${index}.credit`, { valueAsNumber: true })}
+                    <FormattedAmountInput
+                      value={watchedLines[index]?.credit || 0}
+                      onChange={(v) => form.setValue(`lines.${index}.credit`, v)}
+                      settings={companyFmt}
                       className="text-end ltr-number"
                       disabled={watchedLines[index]?.debit > 0}
                     />

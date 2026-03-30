@@ -12,6 +12,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { CompanyDateInput } from "@/components/ui/CompanyDateInput";
+import { FormattedAmountInput } from "@/components/ui/FormattedAmountInput";
 import { PageHeader, LoadingSpinner } from "@/components/common";
 import {
   Select,
@@ -26,6 +28,7 @@ import { usePurchaseBill, useUpdatePurchaseBill } from "@/queries/usePurchases";
 import { useAccounts } from "@/queries/useAccounts";
 import { useToast } from "@/components/ui/toaster";
 import { useCompanySettings } from "@/queries/useCompanySettings";
+import { useAuth } from "@/contexts/AuthContext";
 import { exchangeRatesService } from "@/services/exchange-rates.service";
 import type { PurchaseBillUpdatePayload } from "@/types/purchases";
 
@@ -63,6 +66,12 @@ export default function EditPurchaseBillPage() {
   const { data: accounts } = useAccounts();
   const updateBill = useUpdatePurchaseBill();
   const { data: companySettings } = useCompanySettings();
+  const { company } = useAuth();
+  const companyFmt = company ? {
+    thousand_separator: company.thousand_separator,
+    decimal_separator: company.decimal_separator,
+    decimal_places: company.decimal_places,
+  } : undefined;
   const functionalCurrency = companySettings?.functional_currency || companySettings?.default_currency || "USD";
 
   const [billCurrency, setBillCurrency] = useState("");
@@ -325,16 +334,22 @@ export default function EditPurchaseBillPage() {
 
             <div className="space-y-2">
               <Label htmlFor="bill_date">Bill Date *</Label>
-              <Input
+              <CompanyDateInput
                 id="bill_date"
-                type="date"
-                {...register("bill_date", { required: "Bill date is required" })}
+                value={watch("bill_date")}
+                onChange={(iso) => setValue("bill_date", iso, { shouldValidate: true })}
+                dateFormat={(company?.date_format as any) || "YYYY-MM-DD"}
               />
             </div>
 
             <div className="space-y-2">
               <Label htmlFor="due_date">Due Date</Label>
-              <Input id="due_date" type="date" {...register("due_date")} />
+              <CompanyDateInput
+                id="due_date"
+                value={watch("due_date") || ""}
+                onChange={(iso) => setValue("due_date", iso)}
+                dateFormat={(company?.date_format as any) || "YYYY-MM-DD"}
+              />
             </div>
 
             <div className="space-y-2">
@@ -552,20 +567,18 @@ export default function EditPurchaseBillPage() {
                           />
                         </td>
                         <td className="py-2 px-2">
-                          <Input
-                            {...register(`lines.${index}.unit_price`)}
-                            type="number"
-                            step="0.01"
-                            min="0"
+                          <FormattedAmountInput
+                            value={parseFloat(watchLines[index]?.unit_price) || 0}
+                            onChange={(v) => setValue(`lines.${index}.unit_price`, String(v))}
+                            settings={companyFmt}
                             className="h-8 text-xs text-end"
                           />
                         </td>
                         <td className="py-2 px-2">
-                          <Input
-                            {...register(`lines.${index}.discount_amount`)}
-                            type="number"
-                            step="0.01"
-                            min="0"
+                          <FormattedAmountInput
+                            value={parseFloat(watchLines[index]?.discount_amount) || 0}
+                            onChange={(v) => setValue(`lines.${index}.discount_amount`, String(v))}
+                            settings={companyFmt}
                             className="h-8 text-xs text-end"
                           />
                         </td>

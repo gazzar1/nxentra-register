@@ -13,6 +13,9 @@ import { useFormKeyboardShortcuts } from "@/lib/useFormKeyboardShortcuts";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { CompanyDateInput } from "@/components/ui/CompanyDateInput";
+import { FormattedAmountInput } from "@/components/ui/FormattedAmountInput";
+import { useAuth } from "@/contexts/AuthContext";
 import {
   Select,
   SelectContent,
@@ -52,6 +55,12 @@ export function InventoryAdjustmentForm({
   isSubmitting = false,
 }: InventoryAdjustmentFormProps) {
   const { t } = useTranslation(["common", "inventory"]);
+  const { company } = useAuth();
+  const companyFmt = company ? {
+    thousand_separator: company.thousand_separator,
+    decimal_separator: company.decimal_separator,
+    decimal_places: company.decimal_places,
+  } : undefined;
   const formRef = useRef<HTMLFormElement>(null);
 
   const { data: items } = useItems({ item_type: "INVENTORY", is_active: true });
@@ -112,10 +121,11 @@ export function InventoryAdjustmentForm({
         {/* Date */}
         <div className="space-y-2">
           <Label htmlFor="adjustment_date">{t("inventory:adjustment.date")} *</Label>
-          <Input
+          <CompanyDateInput
             id="adjustment_date"
-            type="date"
-            {...register("adjustment_date")}
+            value={watch("adjustment_date")}
+            onChange={(iso) => setValue("adjustment_date", iso, { shouldValidate: true })}
+            dateFormat={(company?.date_format as any) || "YYYY-MM-DD"}
           />
           {errors.adjustment_date && (
             <p className="text-sm text-destructive">{errors.adjustment_date.message}</p>
@@ -270,12 +280,10 @@ export function InventoryAdjustmentForm({
                         </Button>
                       )}
                     </div>
-                    <Input
-                      type="number"
-                      step="0.01"
-                      {...register(`lines.${index}.unit_cost`, {
-                        setValueAs: (v) => (v === "" ? null : parseFloat(v)),
-                      })}
+                    <FormattedAmountInput
+                      value={watch(`lines.${index}.unit_cost`) || 0}
+                      onChange={(v) => setValue(`lines.${index}.unit_cost`, v || null)}
+                      settings={companyFmt}
                       placeholder={t("inventory:adjustment.autoCalc")}
                     />
                   </div>

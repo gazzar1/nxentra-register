@@ -12,6 +12,9 @@ import { Button } from "@/components/ui/button";
 import { useFormKeyboardShortcuts } from "@/lib/useFormKeyboardShortcuts";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { CompanyDateInput } from "@/components/ui/CompanyDateInput";
+import { FormattedAmountInput } from "@/components/ui/FormattedAmountInput";
+import { useAuth } from "@/contexts/AuthContext";
 import {
   Select,
   SelectContent,
@@ -50,6 +53,12 @@ export function OpeningBalanceForm({
   isSubmitting = false,
 }: OpeningBalanceFormProps) {
   const { t } = useTranslation(["common", "inventory"]);
+  const { company } = useAuth();
+  const companyFmt = company ? {
+    thousand_separator: company.thousand_separator,
+    decimal_separator: company.decimal_separator,
+    decimal_places: company.decimal_places,
+  } : undefined;
 
   const { data: items } = useItems({ item_type: "INVENTORY", is_active: true });
   const { data: accounts } = useAccounts({ type: "EQUITY" });
@@ -114,10 +123,11 @@ export function OpeningBalanceForm({
         {/* As Of Date */}
         <div className="space-y-2">
           <Label htmlFor="as_of_date">{t("inventory:openingBalance.asOfDate")} *</Label>
-          <Input
+          <CompanyDateInput
             id="as_of_date"
-            type="date"
-            {...register("as_of_date")}
+            value={watch("as_of_date")}
+            onChange={(iso) => setValue("as_of_date", iso, { shouldValidate: true })}
+            dateFormat={(company?.date_format as any) || "YYYY-MM-DD"}
           />
           {errors.as_of_date && (
             <p className="text-sm text-destructive">{errors.as_of_date.message}</p>
@@ -261,11 +271,10 @@ export function OpeningBalanceForm({
                         </Button>
                       )}
                     </div>
-                    <Input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      {...register(`lines.${index}.unit_cost`, { valueAsNumber: true })}
+                    <FormattedAmountInput
+                      value={watch(`lines.${index}.unit_cost`) || 0}
+                      onChange={(v) => setValue(`lines.${index}.unit_cost`, v)}
+                      settings={companyFmt}
                       placeholder="0.00"
                     />
                     {errors.lines?.[index]?.unit_cost && (

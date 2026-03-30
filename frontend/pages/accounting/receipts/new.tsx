@@ -13,6 +13,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
+import { CompanyDateInput } from "@/components/ui/CompanyDateInput";
+import { FormattedAmountInput } from "@/components/ui/FormattedAmountInput";
 import { PageHeader, LoadingSpinner } from "@/components/common";
 import {
   Select,
@@ -40,6 +42,7 @@ import {
 import { periodsService, type FiscalPeriod } from "@/services/periods.service";
 import { exchangeRatesService } from "@/services/exchange-rates.service";
 import { useCompanySettings } from "@/queries/useCompanySettings";
+import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/cn";
 import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 
@@ -80,6 +83,12 @@ export default function NewCustomerReceiptPage() {
   const [exchangeRate, setExchangeRate] = useState<string>("1");
   const [availableCurrencies, setAvailableCurrencies] = useState<string[]>([]);
   const { data: companySettings } = useCompanySettings();
+  const { company } = useAuth();
+  const companyFmt = company ? {
+    thousand_separator: company.thousand_separator,
+    decimal_separator: company.decimal_separator,
+    decimal_places: company.decimal_places,
+  } : undefined;
   const functionalCurrency = companySettings?.functional_currency || companySettings?.default_currency || "USD";
 
   // Filter accounts by role
@@ -398,10 +407,11 @@ export default function NewCustomerReceiptPage() {
 
             <div className="space-y-2">
               <Label htmlFor="receipt_date">{t("accounting:receiptDate", "Receipt Date")} *</Label>
-              <Input
+              <CompanyDateInput
                 id="receipt_date"
-                type="date"
-                {...register("receipt_date", { required: t("accounting:dateRequired", "Date is required") })}
+                value={watch("receipt_date")}
+                onChange={(iso) => setValue("receipt_date", iso, { shouldValidate: true })}
+                dateFormat={(company?.date_format as any) || "YYYY-MM-DD"}
               />
               {errors.receipt_date && (
                 <p className="text-sm text-destructive">{errors.receipt_date.message}</p>
@@ -410,10 +420,11 @@ export default function NewCustomerReceiptPage() {
 
             <div className="space-y-2">
               <Label htmlFor="accounting_date">{t("accounting:accountingDate", "Accounting Date")} *</Label>
-              <Input
+              <CompanyDateInput
                 id="accounting_date"
-                type="date"
-                {...register("accounting_date", { required: t("accounting:dateRequired", "Date is required") })}
+                value={watch("accounting_date")}
+                onChange={(iso) => setValue("accounting_date", iso, { shouldValidate: true })}
+                dateFormat={(company?.date_format as any) || "YYYY-MM-DD"}
               />
               {resolvedPeriod && (
                 <p className={cn(
@@ -448,15 +459,10 @@ export default function NewCustomerReceiptPage() {
 
             <div className="space-y-2">
               <Label htmlFor="amount">{t("accounting:amount", "Amount")} *</Label>
-              <Input
-                id="amount"
-                type="number"
-                step="0.01"
-                min="0.01"
-                {...register("amount", {
-                  required: t("accounting:amountRequired", "Amount is required"),
-                  validate: (v) => parseFloat(v) > 0 || t("accounting:amountPositive", "Amount must be positive"),
-                })}
+              <FormattedAmountInput
+                value={parseFloat(watch("amount")) || 0}
+                onChange={(v) => setValue("amount", String(v), { shouldValidate: true })}
+                settings={companyFmt}
                 placeholder="0.00"
               />
               {errors.amount && (
@@ -624,15 +630,12 @@ export default function NewCustomerReceiptPage() {
                                 {formatCurrency(invoice.amount_due)}
                               </TableCell>
                               <TableCell>
-                                <Input
-                                  type="number"
-                                  step="0.01"
-                                  min="0"
-                                  max={invoice.amount_due}
-                                  value={allocation?.amount || ""}
-                                  onChange={(e) =>
-                                    handleAllocationAmountChange(invoice.public_id, e.target.value)
+                                <FormattedAmountInput
+                                  value={parseFloat(allocation?.amount) || 0}
+                                  onChange={(v) =>
+                                    handleAllocationAmountChange(invoice.public_id, String(v))
                                   }
+                                  settings={companyFmt}
                                   className="text-right w-28"
                                   disabled={!allocation?.selected}
                                 />

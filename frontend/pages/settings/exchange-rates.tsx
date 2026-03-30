@@ -8,6 +8,7 @@ import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { CompanyDateInput } from "@/components/ui/CompanyDateInput";
 import {
   Select,
   SelectContent,
@@ -291,12 +292,10 @@ export default function ExchangeRatesPage() {
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
                   <label className="text-sm font-medium">Effective Date</label>
-                  <Input
-                    type="date"
+                  <CompanyDateInput
                     value={form.effective_date}
-                    onChange={(e) =>
-                      setForm({ ...form, effective_date: e.target.value })
-                    }
+                    onChange={(iso) => setForm({ ...form, effective_date: iso })}
+                    dateFormat={(company?.date_format as any) || "YYYY-MM-DD"}
                   />
                 </div>
                 <div className="space-y-1.5">

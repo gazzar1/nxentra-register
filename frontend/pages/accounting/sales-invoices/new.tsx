@@ -12,6 +12,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { CompanyDateInput } from "@/components/ui/CompanyDateInput";
+import { FormattedAmountInput } from "@/components/ui/FormattedAmountInput";
 import { PageHeader } from "@/components/common";
 import {
   Select,
@@ -24,6 +26,7 @@ import { useCustomers } from "@/queries/useAccounts";
 import { useItems, useTaxCodes, usePostingProfiles, useCreateSalesInvoice } from "@/queries/useSales";
 import { useAccounts } from "@/queries/useAccounts";
 import { useCompanySettings } from "@/queries/useCompanySettings";
+import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/components/ui/toaster";
 import type { SalesInvoiceCreatePayload, SalesInvoiceLineInput } from "@/types/sales";
 import { exchangeRatesService } from "@/services/exchange-rates.service";
@@ -60,6 +63,12 @@ export default function NewSalesInvoicePage() {
   const { data: postingProfiles } = usePostingProfiles({ profile_type: "CUSTOMER" });
   const { data: accounts } = useAccounts();
   const { data: companySettings } = useCompanySettings();
+  const { company } = useAuth();
+  const companyFmt = company ? {
+    thousand_separator: company.thousand_separator,
+    decimal_separator: company.decimal_separator,
+    decimal_places: company.decimal_places,
+  } : undefined;
   const createInvoice = useCreateSalesInvoice();
 
   const revenueAccounts = accounts?.filter(
@@ -282,16 +291,22 @@ export default function NewSalesInvoicePage() {
 
             <div className="space-y-2">
               <Label htmlFor="invoice_date">Invoice Date *</Label>
-              <Input
+              <CompanyDateInput
                 id="invoice_date"
-                type="date"
-                {...register("invoice_date", { required: "Invoice date is required" })}
+                value={watch("invoice_date")}
+                onChange={(iso) => setValue("invoice_date", iso, { shouldValidate: true })}
+                dateFormat={(company?.date_format as any) || "YYYY-MM-DD"}
               />
             </div>
 
             <div className="space-y-2">
               <Label htmlFor="due_date">Due Date</Label>
-              <Input id="due_date" type="date" {...register("due_date")} />
+              <CompanyDateInput
+                id="due_date"
+                value={watch("due_date") || ""}
+                onChange={(iso) => setValue("due_date", iso)}
+                dateFormat={(company?.date_format as any) || "YYYY-MM-DD"}
+              />
             </div>
 
             <div className="space-y-2">
@@ -506,20 +521,18 @@ export default function NewSalesInvoicePage() {
                           />
                         </td>
                         <td className="py-2 px-2">
-                          <Input
-                            {...register(`lines.${index}.unit_price`)}
-                            type="number"
-                            step="0.01"
-                            min="0"
+                          <FormattedAmountInput
+                            value={parseFloat(watchLines[index]?.unit_price) || 0}
+                            onChange={(v) => setValue(`lines.${index}.unit_price`, String(v))}
+                            settings={companyFmt}
                             className="h-8 text-xs text-end"
                           />
                         </td>
                         <td className="py-2 px-2">
-                          <Input
-                            {...register(`lines.${index}.discount_amount`)}
-                            type="number"
-                            step="0.01"
-                            min="0"
+                          <FormattedAmountInput
+                            value={parseFloat(watchLines[index]?.discount_amount) || 0}
+                            onChange={(v) => setValue(`lines.${index}.discount_amount`, String(v))}
+                            settings={companyFmt}
                             className="h-8 text-xs text-end"
                           />
                         </td>

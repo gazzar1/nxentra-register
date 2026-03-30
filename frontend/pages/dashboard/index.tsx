@@ -33,8 +33,6 @@ import {
   TopAccountsChart,
 } from "@/components/charts";
 
-const ONBOARDING_DONE_KEY = "nxentra-onboarding-modules-done";
-
 export default function DashboardPage() {
   const { t } = useTranslation(["common", "reports"]);
   const { company, membership } = useAuth();
@@ -47,12 +45,7 @@ export default function DashboardPage() {
     if (!company || !membership) return;
     // Only redirect OWNER (the person who registered the company)
     if (membership.role !== "OWNER") return;
-    // Check server-side flag first
     if (company.onboarding_completed) return;
-    // Fallback: check session storage (dismissed via old flow)
-    try {
-      if (sessionStorage.getItem(ONBOARDING_DONE_KEY)) return;
-    } catch {}
     router.replace("/onboarding/setup");
   }, [company, membership, router]);
   const { data: trialBalance } = useTrialBalance();

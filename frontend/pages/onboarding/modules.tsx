@@ -69,7 +69,7 @@ export default function OnboardingModulesPage() {
   };
 
   const markOnboardingDone = () => {
-    try { sessionStorage.setItem("nxentra-onboarding-modules-done", "1"); } catch {}
+    // Server-side onboarding_completed flag is the authoritative source
   };
 
   const handleContinue = async () => {
