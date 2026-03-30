@@ -32,12 +32,14 @@ import { useJournalEntries } from "@/queries/useJournalEntries";
 import { useAuth } from "@/contexts/AuthContext";
 import { exportService, ExportFormat } from "@/services/export.service";
 import { useToast } from "@/components/ui/toaster";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 
 export default function JournalEntriesPage() {
   const { t } = useTranslation(["common", "accounting"]);
   const router = useRouter();
   const { toast } = useToast();
   const { company } = useAuth();
+  const { formatCurrency, formatAmount, formatDate } = useCompanyFormat();
   const [search, setSearch] = useState("");
   const [isExporting, setIsExporting] = useState(false);
   const [activeTab, setActiveTab] = useState("posted");
@@ -89,18 +91,6 @@ export default function JournalEntriesPage() {
     } finally {
       setIsExporting(false);
     }
-  };
-
-  const formatCurrency = (amount: string, entryCurrency?: string) => {
-    return new Intl.NumberFormat(undefined, {
-      style: "currency",
-      currency: entryCurrency || company?.default_currency || "USD",
-      minimumFractionDigits: 2,
-    }).format(parseFloat(amount));
-  };
-
-  const formatDate = (date: string) => {
-    return new Date(date).toLocaleDateString(router.locale === "ar" ? "ar-SA" : "en-US");
   };
 
   const renderTable = (items: typeof filteredEntries, showStatus: boolean) => {

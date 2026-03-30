@@ -30,11 +30,13 @@ import { periodsService } from "@/services/periods.service";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/cn";
 import type { DimensionCrossTabFilters } from "@/types/report";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 
 export default function DimensionCrossTabPage() {
   const { t } = useTranslation(["common", "reports"]);
   const getText = useBilingualText();
   const { company } = useAuth();
+  const { formatCurrency, formatAmount, formatDate } = useCompanyFormat();
 
   const currentYear = new Date().getFullYear();
   const [rowDimension, setRowDimension] = useState<string>("");
@@ -99,14 +101,6 @@ export default function DimensionCrossTabPage() {
   }, [rowDimension, colDimension, metric, fiscalYear, periodFrom, periodTo]);
 
   const { data: report, isLoading, isError } = useDimensionCrossTab(filters);
-
-  const formatAmount = (val: string) => {
-    const num = parseFloat(val);
-    return new Intl.NumberFormat(undefined, {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(num);
-  };
 
   const metricLabel = metric === "revenue" ? "Revenue" : metric === "expenses" ? "Expenses" : "Net Income";
 

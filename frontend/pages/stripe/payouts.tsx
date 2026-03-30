@@ -26,15 +26,7 @@ import {
 } from "@/components/ui/table";
 import { PageHeader, EmptyState } from "@/components/common";
 import { stripeService, StripePayoutListItem } from "@/services/stripe.service";
-
-function fmt(amount: string | number, currency = "USD") {
-  const n = typeof amount === "string" ? parseFloat(amount) : amount;
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency,
-    minimumFractionDigits: 2,
-  }).format(n);
-}
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 
 function reconBadge(status: StripePayoutListItem["reconciliation_status"]) {
   switch (status) {
@@ -50,6 +42,7 @@ function reconBadge(status: StripePayoutListItem["reconciliation_status"]) {
 }
 
 export default function StripePayoutsPage() {
+  const { formatCurrency, formatAmount, formatDate } = useCompanyFormat();
   const [payouts, setPayouts] = useState<StripePayoutListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
@@ -127,15 +120,11 @@ export default function StripePayoutsPage() {
                         <TableRow key={p.stripe_payout_id}>
                           <TableCell className="font-mono text-xs">{p.stripe_payout_id}</TableCell>
                           <TableCell>
-                            {new Date(p.payout_date).toLocaleDateString(undefined, {
-                              year: "numeric",
-                              month: "short",
-                              day: "numeric",
-                            })}
+                            {formatDate(p.payout_date)}
                           </TableCell>
-                          <TableCell className="text-right font-mono">{fmt(p.gross_amount, p.currency)}</TableCell>
-                          <TableCell className="text-right font-mono text-muted-foreground">{fmt(p.fees, p.currency)}</TableCell>
-                          <TableCell className="text-right font-mono font-medium">{fmt(p.net_amount, p.currency)}</TableCell>
+                          <TableCell className="text-right font-mono">{formatCurrency(p.gross_amount, p.currency)}</TableCell>
+                          <TableCell className="text-right font-mono text-muted-foreground">{formatCurrency(p.fees, p.currency)}</TableCell>
+                          <TableCell className="text-right font-mono font-medium">{formatCurrency(p.net_amount, p.currency)}</TableCell>
                           <TableCell>
                             <Badge variant="outline" className="capitalize">{p.stripe_status}</Badge>
                           </TableCell>

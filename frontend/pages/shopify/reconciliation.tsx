@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import Link from "next/link";
@@ -32,15 +33,6 @@ import {
 } from "@/services/shopify.service";
 
 // ── Helpers ──────────────────────────────────────────────────────
-
-function fmt(amount: string | number, currency = "USD") {
-  const n = typeof amount === "string" ? parseFloat(amount) : amount;
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency,
-    minimumFractionDigits: 2,
-  }).format(n);
-}
 
 function getStatusConfig(status: string) {
   switch (status) {
@@ -92,6 +84,7 @@ function getDefaultDateRange() {
 // ── Main Page ────────────────────────────────────────────────────
 
 export default function ReconciliationPage() {
+  const { formatCurrency, formatAmount, formatDate } = useCompanyFormat();
   const defaultRange = useMemo(getDefaultDateRange, []);
 
   const [dateFrom, setDateFrom] = useState(defaultRange.from);
@@ -282,9 +275,9 @@ export default function ReconciliationPage() {
                   <Banknote className="h-4 w-4 text-muted-foreground" />
                 </CardHeader>
                 <CardContent>
-                  <div className="text-2xl font-bold">{fmt(summary.total_net)}</div>
+                  <div className="text-2xl font-bold">{formatCurrency(summary.total_net)}</div>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Gross {fmt(summary.total_gross)} &minus; Fees {fmt(summary.total_fees)}
+                    Gross {formatCurrency(summary.total_gross)} &minus; Fees {formatCurrency(summary.total_fees)}
                   </p>
                 </CardContent>
               </Card>
@@ -296,7 +289,7 @@ export default function ReconciliationPage() {
                   <Clock className="h-4 w-4 text-muted-foreground" />
                 </CardHeader>
                 <CardContent>
-                  <div className="text-2xl font-bold">{fmt(summary.unmatched_order_total)}</div>
+                  <div className="text-2xl font-bold">{formatCurrency(summary.unmatched_order_total)}</div>
                   <p className="mt-1 text-xs text-muted-foreground">
                     Awaiting payout settlement
                   </p>
@@ -335,11 +328,7 @@ export default function ReconciliationPage() {
                                 <Badge variant={cfg.badge}>{cfg.label}</Badge>
                               </div>
                               <p className="text-xs text-muted-foreground mt-0.5">
-                                {new Date(payout.payout_date).toLocaleDateString(undefined, {
-                                  year: "numeric",
-                                  month: "short",
-                                  day: "numeric",
-                                })}
+                                {formatDate(payout.payout_date)}
                                 {" · "}
                                 {payout.store_domain}
                                 {payout.transactions_total > 0 && (
@@ -355,10 +344,10 @@ export default function ReconciliationPage() {
                           <div className="flex items-center gap-4 shrink-0">
                             <div className="text-end">
                               <p className="text-sm font-bold font-mono">
-                                {fmt(payout.net_amount, payout.currency)}
+                                {formatCurrency(payout.net_amount, payout.currency)}
                               </p>
                               <p className="text-xs text-muted-foreground">
-                                Fees: {fmt(payout.fees, payout.currency)}
+                                Fees: {formatCurrency(payout.fees, payout.currency)}
                               </p>
                             </div>
                             {isExpanded ? (
@@ -407,6 +396,7 @@ function PayoutDetailPanel({
   currency: string;
   onVerify: () => void;
 }) {
+  const { formatCurrency, formatDate } = useCompanyFormat();
   if (loading) {
     return (
       <div className="flex items-center justify-center py-8 bg-muted/30">
@@ -439,18 +429,18 @@ function PayoutDetailPanel({
         <div className="grid gap-4 sm:grid-cols-3">
           <div className="rounded-lg border bg-background p-4">
             <p className="text-xs font-medium text-muted-foreground mb-1">Orders Total (Gross)</p>
-            <p className="text-lg font-bold font-mono">{fmt(detail.gross_amount, currency)}</p>
+            <p className="text-lg font-bold font-mono">{formatCurrency(detail.gross_amount, currency)}</p>
           </div>
           <div className="rounded-lg border bg-background p-4">
             <p className="text-xs font-medium text-muted-foreground mb-1">Processing Fees</p>
             <p className="text-lg font-bold font-mono text-red-400">
-              &minus;{fmt(detail.fees, currency)}
+              &minus;{formatCurrency(detail.fees, currency)}
             </p>
           </div>
           <div className="rounded-lg border bg-background p-4">
             <p className="text-xs font-medium text-muted-foreground mb-1">Bank Deposit (Net)</p>
             <p className="text-lg font-bold font-mono text-green-400">
-              {fmt(detail.net_amount, currency)}
+              {formatCurrency(detail.net_amount, currency)}
             </p>
           </div>
         </div>
@@ -500,6 +490,7 @@ function PayoutDetailPanel({
 // ── Transaction Row ──────────────────────────────────────────────
 
 function TransactionRow({ txn, currency }: { txn: TransactionMatch; currency: string }) {
+  const { formatCurrency, formatDate } = useCompanyFormat();
   const typeColors: Record<string, string> = {
     charge: "text-green-400",
     refund: "text-red-400",
@@ -524,18 +515,18 @@ function TransactionRow({ txn, currency }: { txn: TransactionMatch; currency: st
         )}
         {variance !== 0 && (
           <span className="ms-2 text-xs text-yellow-400">
-            (variance: {fmt(variance, currency)})
+            (variance: {formatCurrency(variance, currency)})
           </span>
         )}
       </td>
       <td className="px-3 py-2 text-end font-mono">
-        {fmt(txn.amount, currency)}
+        {formatCurrency(txn.amount, currency)}
       </td>
       <td className="px-3 py-2 text-end font-mono text-muted-foreground">
-        {parseFloat(txn.fee) !== 0 ? fmt(txn.fee, currency) : "—"}
+        {parseFloat(txn.fee) !== 0 ? formatCurrency(txn.fee, currency) : "—"}
       </td>
       <td className="px-3 py-2 text-end font-mono">
-        {fmt(txn.net, currency)}
+        {formatCurrency(txn.net, currency)}
       </td>
       <td className="px-3 py-2 text-center">
         {txn.matched ? (

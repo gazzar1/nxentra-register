@@ -37,12 +37,14 @@ import {
 } from "@/services/periods.service";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/cn";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 
 export default function AccountInquiryPage() {
   const { t } = useTranslation(["common", "reports"]);
   const router = useRouter();
   const getText = useBilingualText();
   const { company } = useAuth();
+  const { formatCurrency, formatAmount, formatDate } = useCompanyFormat();
 
   // Filter state
   const currentYear = new Date().getFullYear();
@@ -103,21 +105,6 @@ export default function AccountInquiryPage() {
     },
     enabled: true,
   });
-
-  const formatCurrency = (amount: string | number) => {
-    const num = typeof amount === "string" ? parseFloat(amount) : amount;
-    return new Intl.NumberFormat(undefined, {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(num);
-  };
-
-  const formatDate = (date: string) => {
-    return new Date(date).toLocaleDateString(
-      router.locale === "ar" ? "ar-SA" : "en-US",
-      { year: "numeric", month: "short", day: "numeric" }
-    );
-  };
 
   const handleApplyFilters = () => {
     setAppliedFilters({ ...filters, page: 1 });

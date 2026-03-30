@@ -25,17 +25,10 @@ import {
 } from "@/components/ui/table";
 import { PageHeader, EmptyState } from "@/components/common";
 import { stripeService, StripeChargeItem } from "@/services/stripe.service";
-
-function fmt(amount: string | number, currency = "USD") {
-  const n = typeof amount === "string" ? parseFloat(amount) : amount;
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency,
-    minimumFractionDigits: 2,
-  }).format(n);
-}
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 
 export default function StripeChargesPage() {
+  const { formatCurrency, formatAmount, formatDate } = useCompanyFormat();
   const [charges, setCharges] = useState<StripeChargeItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -129,14 +122,14 @@ export default function StripeChargesPage() {
                     {filtered.map((c) => (
                       <TableRow key={c.id}>
                         <TableCell className="font-mono text-xs">{c.stripe_charge_id}</TableCell>
-                        <TableCell>{new Date(c.charge_date).toLocaleDateString()}</TableCell>
+                        <TableCell>{formatDate(c.charge_date)}</TableCell>
                         <TableCell className="max-w-[200px] truncate">{c.description || "\u2014"}</TableCell>
                         <TableCell className="text-sm">
                           {c.customer_name || c.customer_email || "\u2014"}
                         </TableCell>
-                        <TableCell className="text-right font-mono">{fmt(c.amount, c.currency)}</TableCell>
-                        <TableCell className="text-right font-mono text-muted-foreground">{fmt(c.fee, c.currency)}</TableCell>
-                        <TableCell className="text-right font-mono">{fmt(c.net, c.currency)}</TableCell>
+                        <TableCell className="text-right font-mono">{formatCurrency(c.amount, c.currency)}</TableCell>
+                        <TableCell className="text-right font-mono text-muted-foreground">{formatCurrency(c.fee, c.currency)}</TableCell>
+                        <TableCell className="text-right font-mono">{formatCurrency(c.net, c.currency)}</TableCell>
                         <TableCell>
                           {c.status === "PROCESSED" ? (
                             <Badge variant="success"><CheckCircle2 className="me-1 h-3 w-3" />Processed</Badge>

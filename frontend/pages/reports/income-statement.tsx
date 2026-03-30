@@ -25,6 +25,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/cn";
 import { exportIncomeStatementCSV } from "@/lib/export";
 import type { IncomeStatementSection, DimensionFilter } from "@/types/report";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 
 interface DimensionFilterState {
   dimension_code: string;
@@ -37,6 +38,7 @@ export default function IncomeStatementPage() {
   const router = useRouter();
   const getText = useBilingualText();
   const { company } = useAuth();
+  const { formatCurrency, formatAmount, formatDate } = useCompanyFormat();
 
   // Period filter state
   const currentYear = new Date().getFullYear();
@@ -110,21 +112,6 @@ export default function IncomeStatementPage() {
 
   const isLoading = periodFiltersForQuery ? periodLoading : defaultLoading;
   const data = periodFiltersForQuery && periodData ? periodData : defaultData;
-
-  const formatCurrency = (amount: string | number) => {
-    const num = typeof amount === "string" ? parseFloat(amount) : amount;
-    return new Intl.NumberFormat(undefined, {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(num);
-  };
-
-  const formatDate = (date: string) => {
-    return new Date(date).toLocaleDateString(
-      router.locale === "ar" ? "ar-SA" : "en-US",
-      { year: "numeric", month: "long", day: "numeric" }
-    );
-  };
 
   const handlePrint = () => {
     window.print();

@@ -22,6 +22,7 @@ import { periodsService } from "@/services/periods.service";
 import { reportsService } from "@/services/reports.service";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/cn";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 
 interface CashFlowItem {
   code: string;
@@ -60,6 +61,7 @@ export default function CashFlowStatementPage() {
   const router = useRouter();
   const getText = useBilingualText();
   const { company } = useAuth();
+  const { formatCurrency, formatAmount, formatDate } = useCompanyFormat();
 
   // Period filter state
   const currentYear = new Date().getFullYear();
@@ -114,21 +116,6 @@ export default function CashFlowStatementPage() {
       return data;
     },
   });
-
-  const formatCurrency = (amount: string | number) => {
-    const num = typeof amount === "string" ? parseFloat(amount) : amount;
-    return new Intl.NumberFormat(undefined, {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(num);
-  };
-
-  const formatDate = (date: string) => {
-    return new Date(date).toLocaleDateString(
-      router.locale === "ar" ? "ar-SA" : "en-US",
-      { year: "numeric", month: "long", day: "numeric" }
-    );
-  };
 
   const handlePrint = () => {
     window.print();

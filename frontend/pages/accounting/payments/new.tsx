@@ -41,6 +41,7 @@ import { periodsService, type FiscalPeriod } from "@/services/periods.service";
 import { exchangeRatesService } from "@/services/exchange-rates.service";
 import { useCompanySettings } from "@/queries/useCompanySettings";
 import { cn } from "@/lib/cn";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 
 interface BillAllocationFormData {
   bill_reference: string;
@@ -63,6 +64,7 @@ interface PaymentFormData {
 
 export default function NewVendorPaymentPage() {
   const { t } = useTranslation(["common", "accounting"]);
+  const { formatCurrency, formatAmount, formatDate } = useCompanyFormat();
   const router = useRouter();
   const { toast } = useToast();
   const { data: vendors } = useVendors();
@@ -268,14 +270,6 @@ export default function NewVendorPaymentPage() {
         variant: "destructive",
       });
     }
-  };
-
-  const formatCurrency = (amount: string | number) => {
-    const num = typeof amount === "string" ? parseFloat(amount) : amount;
-    return new Intl.NumberFormat(undefined, {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(num);
   };
 
   return (

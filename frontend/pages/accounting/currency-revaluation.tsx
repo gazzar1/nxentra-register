@@ -23,11 +23,13 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/components/ui/toaster";
 import { reportsService } from "@/services/reports.service";
 import { getErrorMessage } from "@/lib/api-client";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 
 export default function CurrencyRevaluationPage() {
   const { t } = useTranslation(["common", "accounting"]);
   const router = useRouter();
   const { company } = useAuth();
+  const { formatCurrency, formatAmount, formatDate } = useCompanyFormat();
   const { toast } = useToast();
   const functionalCurrency = company?.functional_currency || company?.default_currency || "USD";
 
@@ -47,13 +49,7 @@ export default function CurrencyRevaluationPage() {
     enabled: !!revaluationDate,
   });
 
-  const formatCurrency = (amount: string, currency?: string) => {
-    return new Intl.NumberFormat(undefined, {
-      style: "currency",
-      currency: currency || functionalCurrency,
-      minimumFractionDigits: 2,
-    }).format(parseFloat(amount));
-  };
+  // formatCurrency provided by useCompanyFormat hook
 
   const handlePost = async () => {
     setIsPosting(true);

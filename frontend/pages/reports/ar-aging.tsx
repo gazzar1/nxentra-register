@@ -22,6 +22,7 @@ import { useARAging } from "@/queries/useReports";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/cn";
 import type { AgingBucketEntry } from "@/services/reports.service";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 
 interface FlatAgingRow {
   code: string;
@@ -68,6 +69,7 @@ function flattenBuckets(buckets: Record<string, AgingBucketEntry[]>): FlatAgingR
 export default function ARAgingPage() {
   const router = useRouter();
   const { company } = useAuth();
+  const { formatCurrency, formatAmount, formatDate } = useCompanyFormat();
   const [search, setSearch] = useState("");
 
   const { data, isLoading } = useARAging();
@@ -91,19 +93,7 @@ export default function ARAgingPage() {
     { current: 0, days_31_60: 0, days_61_90: 0, over_90: 0, total: 0 }
   );
 
-  const formatCurrency = (amount: number) =>
-    new Intl.NumberFormat(undefined, {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(amount);
-
-  const formatDate = (date: string | null) => {
-    if (!date) return "-";
-    return new Date(date).toLocaleDateString(
-      router.locale === "ar" ? "ar-SA" : "en-US",
-      { year: "numeric", month: "short", day: "numeric" }
-    );
-  };
+  // formatCurrency and formatDate provided by useCompanyFormat hook
 
   return (
     <AppLayout>
@@ -248,7 +238,7 @@ export default function ARAgingPage() {
                             {formatCurrency(row.total)}
                           </TableCell>
                           <TableCell className="text-sm">
-                            {formatDate(row.oldest_open_date)}
+                            {row.oldest_open_date ? formatDate(row.oldest_open_date) : "-"}
                           </TableCell>
                         </TableRow>
                       ))}

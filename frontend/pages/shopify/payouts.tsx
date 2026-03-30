@@ -26,15 +26,7 @@ import {
 } from "@/components/ui/table";
 import { PageHeader, EmptyState } from "@/components/common";
 import { shopifyService, PayoutListItem } from "@/services/shopify.service";
-
-function fmt(amount: string | number, currency = "USD") {
-  const n = typeof amount === "string" ? parseFloat(amount) : amount;
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency,
-    minimumFractionDigits: 2,
-  }).format(n);
-}
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 
 function reconBadge(status: PayoutListItem["reconciliation_status"]) {
   switch (status) {
@@ -70,6 +62,7 @@ function reconBadge(status: PayoutListItem["reconciliation_status"]) {
 }
 
 export default function ShopifyPayoutsPage() {
+  const { formatCurrency, formatAmount, formatDate } = useCompanyFormat();
   const [payouts, setPayouts] = useState<PayoutListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
@@ -150,23 +143,19 @@ export default function ShopifyPayoutsPage() {
                             #{p.shopify_payout_id}
                           </TableCell>
                           <TableCell>
-                            {new Date(p.payout_date).toLocaleDateString(undefined, {
-                              year: "numeric",
-                              month: "short",
-                              day: "numeric",
-                            })}
+                            {formatDate(p.payout_date)}
                           </TableCell>
                           <TableCell className="text-muted-foreground text-sm">
                             {p.store_domain}
                           </TableCell>
                           <TableCell className="text-right font-mono">
-                            {fmt(p.gross_amount, p.currency)}
+                            {formatCurrency(p.gross_amount, p.currency)}
                           </TableCell>
                           <TableCell className="text-right font-mono text-muted-foreground">
-                            {fmt(p.fees, p.currency)}
+                            {formatCurrency(p.fees, p.currency)}
                           </TableCell>
                           <TableCell className="text-right font-mono font-medium">
-                            {fmt(p.net_amount, p.currency)}
+                            {formatCurrency(p.net_amount, p.currency)}
                           </TableCell>
                           <TableCell>
                             <Badge variant="outline" className="capitalize">

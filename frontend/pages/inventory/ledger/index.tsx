@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/select";
 import { useStockLedger, useWarehouses } from "@/queries/useInventory";
 import { StockLedgerFilters, StockLedgerSourceType } from "@/types/inventory";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 
 const sourceTypes: StockLedgerSourceType[] = [
   "PURCHASE_BILL",
@@ -56,6 +57,7 @@ const sourceTypeColors: Record<StockLedgerSourceType, string> = {
 
 export default function StockLedgerPage() {
   const { t } = useTranslation(["common", "inventory"]);
+  const { formatCurrency, formatAmount, formatDate } = useCompanyFormat();
   const [filters, setFilters] = useState<StockLedgerFilters>({});
 
   const { data: entries, isLoading } = useStockLedger(filters);
@@ -66,13 +68,6 @@ export default function StockLedgerPage() {
       ...prev,
       [key]: value || undefined,
     }));
-  };
-
-  const formatNumber = (value: string) => {
-    return new Intl.NumberFormat("en-US", {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(parseFloat(value));
   };
 
   const formatQty = (value: string) => {
@@ -215,7 +210,7 @@ export default function StockLedgerPage() {
                         </span>
                       </TableCell>
                       <TableCell className="text-right">
-                        {formatNumber(entry.unit_cost)}
+                        {formatAmount(entry.unit_cost)}
                       </TableCell>
                       <TableCell className="text-right">
                         <span
@@ -225,7 +220,7 @@ export default function StockLedgerPage() {
                               : "text-red-600"
                           }
                         >
-                          {formatNumber(entry.value_delta)}
+                          {formatAmount(entry.value_delta)}
                         </span>
                       </TableCell>
                       <TableCell className="text-right font-medium">

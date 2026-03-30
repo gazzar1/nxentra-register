@@ -20,6 +20,7 @@ import { PageHeader, LoadingSpinner, EmptyState } from "@/components/common";
 import { useTaxSummary } from "@/queries/useReports";
 import { cn } from "@/lib/cn";
 import { downloadCSV } from "@/lib/export";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 
 const formatNumber = (value: string | number) => {
   return parseFloat(String(value)).toLocaleString(undefined, {
@@ -34,6 +35,7 @@ const formatRate = (rate: string) => {
 };
 
 export default function TaxSummaryPage() {
+  const { formatCurrency, formatAmount, formatDate } = useCompanyFormat();
   const today = new Date().toISOString().slice(0, 10);
   const firstOfMonth = today.slice(0, 8) + "01";
 

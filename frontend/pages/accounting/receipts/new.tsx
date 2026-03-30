@@ -41,6 +41,7 @@ import { periodsService, type FiscalPeriod } from "@/services/periods.service";
 import { exchangeRatesService } from "@/services/exchange-rates.service";
 import { useCompanySettings } from "@/queries/useCompanySettings";
 import { cn } from "@/lib/cn";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 
 interface ReceiptFormData {
   customer_id: string;
@@ -62,6 +63,7 @@ interface InvoiceAllocationState {
 
 export default function NewCustomerReceiptPage() {
   const { t } = useTranslation(["common", "accounting"]);
+  const { formatCurrency, formatAmount, formatDate } = useCompanyFormat();
   const router = useRouter();
   const { toast } = useToast();
   const { data: customers } = useCustomers();
@@ -339,14 +341,6 @@ export default function NewCustomerReceiptPage() {
         variant: "destructive",
       });
     }
-  };
-
-  const formatCurrency = (amount: string | number) => {
-    const num = typeof amount === "string" ? parseFloat(amount) : amount;
-    return new Intl.NumberFormat(undefined, {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(num);
   };
 
   return (

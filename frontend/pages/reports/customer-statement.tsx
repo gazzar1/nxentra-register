@@ -33,12 +33,14 @@ import { reportsService } from "@/services/reports.service";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/cn";
 import { exportTransactionsCSV } from "@/lib/export";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 
 export default function CustomerStatementPage() {
   const { t } = useTranslation(["common", "reports"]);
   const router = useRouter();
   const getText = useBilingualText();
   const { company } = useAuth();
+  const { formatCurrency, formatAmount, formatDate } = useCompanyFormat();
 
   const [selectedCustomerCode, setSelectedCustomerCode] = useState<string>("");
   const [dateFrom, setDateFrom] = useState<string>("");
@@ -58,21 +60,6 @@ export default function CustomerStatementPage() {
     },
     enabled: !!selectedCustomerCode,
   });
-
-  const formatCurrency = (amount: string | number) => {
-    const num = typeof amount === "string" ? parseFloat(amount) : amount;
-    return new Intl.NumberFormat(undefined, {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(num);
-  };
-
-  const formatDate = (date: string) => {
-    return new Date(date).toLocaleDateString(
-      router.locale === "ar" ? "ar-SA" : "en-US",
-      { year: "numeric", month: "short", day: "numeric" }
-    );
-  };
 
   const handlePrint = () => {
     window.print();

@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import Link from "next/link";
@@ -21,16 +22,8 @@ import {
   StripeChargeItem,
 } from "@/services/stripe.service";
 
-function fmt(amount: string | number, currency = "USD") {
-  const n = typeof amount === "string" ? parseFloat(amount) : amount;
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency,
-    minimumFractionDigits: 2,
-  }).format(n);
-}
-
 export default function StripeDashboardPage() {
+  const { formatCurrency, formatAmount, formatDate } = useCompanyFormat();
   const [account, setAccount] = useState<StripeAccount | null>(null);
   const [charges, setCharges] = useState<StripeChargeItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -161,7 +154,7 @@ export default function StripeDashboardPage() {
                   <CreditCard className="h-4 w-4 text-muted-foreground" />
                 </CardHeader>
                 <CardContent>
-                  <div className="text-2xl font-bold">{fmt(stats.revenue, stats.currency)}</div>
+                  <div className="text-2xl font-bold">{formatCurrency(stats.revenue, stats.currency)}</div>
                 </CardContent>
               </Card>
 
@@ -171,7 +164,7 @@ export default function StripeDashboardPage() {
                   <AlertCircle className="h-4 w-4 text-muted-foreground" />
                 </CardHeader>
                 <CardContent>
-                  <div className="text-2xl font-bold text-red-400">{fmt(stats.fees, stats.currency)}</div>
+                  <div className="text-2xl font-bold text-red-400">{formatCurrency(stats.fees, stats.currency)}</div>
                 </CardContent>
               </Card>
             </div>
@@ -205,13 +198,13 @@ export default function StripeDashboardPage() {
                           <div>
                             <p className="text-sm font-medium">{charge.description || charge.stripe_charge_id}</p>
                             <p className="text-xs text-muted-foreground">
-                              {new Date(charge.charge_date).toLocaleDateString()}
+                              {formatDate(charge.charge_date)}
                               {charge.customer_name ? ` · ${charge.customer_name}` : ""}
                             </p>
                           </div>
                         </div>
                         <span className="text-sm font-mono font-medium">
-                          {fmt(charge.amount, charge.currency)}
+                          {formatCurrency(charge.amount, charge.currency)}
                         </span>
                       </div>
                     ))}

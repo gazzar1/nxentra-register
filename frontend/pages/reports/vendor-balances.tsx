@@ -23,12 +23,14 @@ import { useBilingualText } from "@/components/common/BilingualText";
 import { useVendorBalances } from "@/queries/useAccounts";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/cn";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 
 export default function VendorBalancesPage() {
   const { t } = useTranslation(["common", "reports"]);
   const router = useRouter();
   const getText = useBilingualText();
   const { company } = useAuth();
+  const { formatCurrency, formatAmount, formatDate } = useCompanyFormat();
   const [search, setSearch] = useState("");
 
   const { data, isLoading } = useVendorBalances();
@@ -42,22 +44,6 @@ export default function VendorBalancesPage() {
       b.vendor_name_ar?.toLowerCase().includes(searchLower)
     );
   });
-
-  const formatCurrency = (amount: string | number) => {
-    const num = typeof amount === "string" ? parseFloat(amount) : amount;
-    return new Intl.NumberFormat(undefined, {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(num);
-  };
-
-  const formatDate = (date: string | null) => {
-    if (!date) return "-";
-    return new Date(date).toLocaleDateString(
-      router.locale === "ar" ? "ar-SA" : "en-US",
-      { year: "numeric", month: "short", day: "numeric" }
-    );
-  };
 
   const handlePrint = () => {
     window.print();
@@ -188,10 +174,10 @@ export default function VendorBalancesPage() {
                               {balance.transaction_count}
                             </TableCell>
                             <TableCell className="text-sm">
-                              {formatDate(balance.last_bill_date)}
+                              {balance.last_bill_date ? formatDate(balance.last_bill_date) : "-"}
                             </TableCell>
                             <TableCell className="text-sm">
-                              {formatDate(balance.last_payment_date)}
+                              {balance.last_payment_date ? formatDate(balance.last_payment_date) : "-"}
                             </TableCell>
                           </TableRow>
                         );

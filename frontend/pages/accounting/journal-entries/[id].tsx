@@ -1,4 +1,5 @@
 import { GetServerSideProps } from "next";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import { useRouter } from "next/router";
@@ -37,6 +38,7 @@ export default function JournalEntryDetailPage() {
   const { t } = useTranslation(["common", "accounting"]);
   const router = useRouter();
   const { company } = useAuth();
+  const { formatCurrency, formatAmount, formatDate } = useCompanyFormat();
   const { toast } = useToast();
   const id = Number(router.query.id);
 
@@ -51,18 +53,6 @@ export default function JournalEntryDetailPage() {
 
   const functionalCurrency = company?.functional_currency || company?.default_currency || "USD";
   const isForeignCurrency = entry?.currency && entry.currency !== functionalCurrency;
-
-  const formatCurrency = (amount: string, currency?: string) => {
-    return new Intl.NumberFormat(undefined, {
-      style: "currency",
-      currency: currency || entry?.currency || company?.default_currency || "USD",
-      minimumFractionDigits: 2,
-    }).format(parseFloat(amount));
-  };
-
-  const formatDate = (date: string) => {
-    return new Date(date).toLocaleDateString(router.locale === "ar" ? "ar-SA" : "en-US");
-  };
 
   const handlePost = async () => {
     try {

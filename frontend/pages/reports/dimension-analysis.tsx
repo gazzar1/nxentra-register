@@ -37,11 +37,13 @@ import { periodsService } from "@/services/periods.service";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/cn";
 import type { DimensionAnalysisFilters, DimensionDrilldownFilters } from "@/types/report";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 
 export default function DimensionAnalysisPage() {
   const { t } = useTranslation(["common", "reports"]);
   const getText = useBilingualText();
   const { company } = useAuth();
+  const { formatCurrency, formatAmount, formatDate } = useCompanyFormat();
 
   const currentYear = new Date().getFullYear();
   const [dimensionCode, setDimensionCode] = useState<string>("");
@@ -120,14 +122,6 @@ export default function DimensionAnalysisPage() {
   }, [dimensionCode, drilldownValueCode, fiscalYear, periodFrom, periodTo]);
 
   const { data: drilldown, isLoading: drilldownLoading } = useDimensionDrilldown(drilldownFilters);
-
-  const formatAmount = (val: string) => {
-    const num = parseFloat(val);
-    return new Intl.NumberFormat(undefined, {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(num);
-  };
 
   return (
     <AppLayout>

@@ -22,6 +22,7 @@ import { dimensionsService } from "@/services/accounts.service";
 import { periodsService } from "@/services/periods.service";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/cn";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 import type {
   DimensionPLComparisonFilters,
   DimensionPLComparisonSection,
@@ -32,6 +33,7 @@ export default function DimensionPLComparisonPage() {
   const { t } = useTranslation(["common", "reports"]);
   const getText = useBilingualText();
   const { company } = useAuth();
+  const { formatCurrency, formatAmount, formatDate } = useCompanyFormat();
 
   const currentYear = new Date().getFullYear();
   const [dimensionCode, setDimensionCode] = useState<string>("");
@@ -114,14 +116,6 @@ export default function DimensionPLComparisonPage() {
   }, [dimensionCode, valueA, valueB, fiscalYear, periodFrom, periodTo]);
 
   const { data: report, isLoading, isError } = useDimensionPLComparison(filters);
-
-  const formatAmount = (val: string) => {
-    const num = parseFloat(val);
-    return new Intl.NumberFormat(undefined, {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(num);
-  };
 
   const handleDimensionChange = (code: string) => {
     setDimensionCode(code);

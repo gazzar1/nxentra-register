@@ -30,9 +30,11 @@ import {
 } from "@/components/ui/select";
 import { useInventoryBalances, useWarehouses, useInventorySummary } from "@/queries/useInventory";
 import { InventoryBalanceFilters } from "@/types/inventory";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 
 export default function InventoryBalancesPage() {
   const { t } = useTranslation(["common", "inventory"]);
+  const { formatCurrency, formatAmount, formatDate } = useCompanyFormat();
   const [filters, setFilters] = useState<InventoryBalanceFilters>({});
 
   const { data: balances, isLoading } = useInventoryBalances(filters);
@@ -44,13 +46,6 @@ export default function InventoryBalancesPage() {
       ...prev,
       [key]: value || undefined,
     }));
-  };
-
-  const formatNumber = (value: string) => {
-    return new Intl.NumberFormat("en-US", {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(parseFloat(value));
   };
 
   const formatQty = (value: string) => {
@@ -88,7 +83,7 @@ export default function InventoryBalancesPage() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{formatNumber(summary.total_value)}</div>
+              <div className="text-2xl font-bold">{formatAmount(summary.total_value)}</div>
             </CardContent>
           </Card>
           <Card>
@@ -199,9 +194,9 @@ export default function InventoryBalancesPage() {
                         {formatQty(balance.qty_on_hand)}
                       </span>
                     </TableCell>
-                    <TableCell className="text-right">{formatNumber(balance.avg_cost)}</TableCell>
+                    <TableCell className="text-right">{formatAmount(balance.avg_cost)}</TableCell>
                     <TableCell className="text-right font-medium">
-                      {formatNumber(balance.stock_value)}
+                      {formatAmount(balance.stock_value)}
                     </TableCell>
                   </TableRow>
                 ))}
