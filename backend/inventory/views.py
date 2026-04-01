@@ -3,34 +3,35 @@
 API views for inventory module.
 """
 
-from rest_framework import viewsets, status
-from rest_framework.decorators import action
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
 from decimal import Decimal
+
+from rest_framework import status, viewsets
+from rest_framework.decorators import action
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
 
 from accounts.authz import resolve_actor
 from accounts.module_permissions import ModuleEnabled
-from .models import Warehouse, StockLedgerEntry
-from .serializers import (
-    WarehouseSerializer,
-    WarehouseCreateSerializer,
-    WarehouseUpdateSerializer,
-    InventoryBalanceSerializer,
-    StockLedgerEntrySerializer,
-    StockAvailabilitySerializer,
-    InventoryAdjustmentSerializer,
-    InventoryOpeningBalanceSerializer,
-)
-from .commands import (
-    create_warehouse,
-    update_warehouse,
-    adjust_inventory,
-    record_opening_balance,
-    check_stock_availability,
-)
 from projections.models import InventoryBalance
 from sales.models import Item
+
+from .commands import (
+    adjust_inventory,
+    check_stock_availability,
+    create_warehouse,
+    record_opening_balance,
+    update_warehouse,
+)
+from .models import StockLedgerEntry, Warehouse
+from .serializers import (
+    InventoryAdjustmentSerializer,
+    InventoryBalanceSerializer,
+    InventoryOpeningBalanceSerializer,
+    StockLedgerEntrySerializer,
+    WarehouseCreateSerializer,
+    WarehouseSerializer,
+    WarehouseUpdateSerializer,
+)
 
 
 class WarehouseViewSet(viewsets.ModelViewSet):

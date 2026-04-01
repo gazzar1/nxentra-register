@@ -16,29 +16,27 @@ The commit command converts scratchpad rows into journal entries
 through the accounting command layer.
 """
 
-from django.db import transaction
-from django.conf import settings
-from django.utils import timezone
 import uuid
 from decimal import Decimal
-from typing import List
 from uuid import UUID
 
-from accounts.authz import ActorContext, require
-from accounts.rls import rls_bypass
-
-from .models import ScratchpadRow, ScratchpadRowDimension
-from .validation import validate_row, validate_group_balance
+from django.conf import settings
+from django.db import transaction
+from django.utils import timezone
 
 from accounting.commands import (
-    create_journal_entry,
-    save_journal_entry_complete,
-    post_journal_entry,
     CommandResult,
+    create_journal_entry,
+    post_journal_entry,
+    save_journal_entry_complete,
 )
 from accounting.models import JournalEntry
+from accounts.authz import ActorContext, require
 from events.emitter import emit_event
 from events.types import EventTypes
+
+from .models import ScratchpadRow
+from .validation import validate_group_balance, validate_row
 
 
 def _process_projections(company, exclude: set = None) -> None:
@@ -58,7 +56,7 @@ def _process_projections(company, exclude: set = None) -> None:
 @transaction.atomic
 def commit_scratchpad_groups(
     actor: ActorContext,
-    group_ids: List[UUID],
+    group_ids: list[UUID],
     post_immediately: bool = False,
 ) -> CommandResult:
     """
@@ -173,7 +171,7 @@ def commit_scratchpad_groups(
         })
 
     # Emit audit event for the batch commit
-    from events.types import EventTypes, ScratchpadBatchCommittedData
+    from events.types import ScratchpadBatchCommittedData
 
     emit_event(
         actor=actor,
@@ -199,7 +197,7 @@ def commit_scratchpad_groups(
     })
 
 
-def _build_journal_entry_from_rows(rows: List[ScratchpadRow]) -> dict:
+def _build_journal_entry_from_rows(rows: list[ScratchpadRow]) -> dict:
     """
     Convert scratchpad rows to journal entry format.
 

@@ -6,42 +6,75 @@ Views handle HTTP requests and delegate business logic to commands.
 """
 
 from rest_framework import status
-from rest_framework.views import APIView
-from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from accounts.authz import resolve_actor
 from accounts.module_permissions import ModuleEnabled
+
+from .commands import (
+    activate_lease,
+    allocate_rent_payment,
+    create_lease,
+    create_lessee,
+    create_property,
+    create_unit,
+    record_deposit_transaction,
+    record_property_expense,
+    record_rent_payment,
+    renew_lease,
+    terminate_lease,
+    update_lease,
+    update_lessee,
+    update_property,
+    update_property_account_mapping,
+    update_unit,
+    void_payment,
+    waive_schedule_line,
+)
 from .models import (
-    Property, Unit, Lessee, Lease, RentScheduleLine,
-    PaymentReceipt, PaymentAllocation, SecurityDepositTransaction,
-    PropertyExpense, PropertyAccountMapping,
+    Lease,
+    Lessee,
+    PaymentAllocation,
+    PaymentReceipt,
+    Property,
+    PropertyAccountMapping,
+    PropertyExpense,
+    RentScheduleLine,
+    SecurityDepositTransaction,
+    Unit,
 )
 from .serializers import (
-    PropertySerializer, PropertyCreateSerializer, PropertyUpdateSerializer,
-    UnitSerializer, UnitCreateSerializer, UnitUpdateSerializer,
-    LesseeSerializer, LesseeCreateSerializer, LesseeUpdateSerializer,
-    LeaseSerializer, LeaseListSerializer, LeaseCreateSerializer,
-    LeaseUpdateSerializer, LeaseTerminateSerializer, LeaseRenewSerializer,
+    AllocatePaymentSerializer,
+    DepositCreateSerializer,
+    ExpenseCreateSerializer,
+    LeaseCreateSerializer,
+    LeaseListSerializer,
+    LeaseRenewSerializer,
+    LeaseSerializer,
+    LeaseTerminateSerializer,
+    LeaseUpdateSerializer,
+    LesseeCreateSerializer,
+    LesseeSerializer,
+    LesseeUpdateSerializer,
+    PaymentAllocationSerializer,
+    PaymentCreateSerializer,
+    PaymentReceiptSerializer,
+    PropertyAccountMappingSerializer,
+    PropertyAccountMappingUpdateSerializer,
+    PropertyCreateSerializer,
+    PropertyExpenseSerializer,
+    PropertySerializer,
+    PropertyUpdateSerializer,
     RentScheduleLineSerializer,
-    PaymentReceiptSerializer, PaymentCreateSerializer,
-    PaymentAllocationSerializer, AllocatePaymentSerializer,
-    VoidPaymentSerializer, WaiveScheduleLineSerializer,
-    SecurityDepositTransactionSerializer, DepositCreateSerializer,
-    PropertyExpenseSerializer, ExpenseCreateSerializer,
-    PropertyAccountMappingSerializer, PropertyAccountMappingUpdateSerializer,
+    SecurityDepositTransactionSerializer,
+    UnitCreateSerializer,
+    UnitSerializer,
+    UnitUpdateSerializer,
+    VoidPaymentSerializer,
+    WaiveScheduleLineSerializer,
 )
-from .commands import (
-    create_property, update_property,
-    create_unit, update_unit,
-    create_lessee, update_lessee,
-    create_lease, update_lease, activate_lease, terminate_lease, renew_lease,
-    record_rent_payment, allocate_rent_payment, void_payment,
-    record_deposit_transaction, waive_schedule_line,
-    record_property_expense,
-    update_property_account_mapping,
-)
-
 
 # =============================================================================
 # Property Views

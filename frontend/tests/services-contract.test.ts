@@ -42,8 +42,8 @@ describe('authService contracts', () => {
 
   it('logout → POST /auth/logout/', async () => {
     const { authService } = await import('@/services/auth.service');
-    await authService.logout('refresh-token');
-    expect(client.post).toHaveBeenCalledWith('/auth/logout/', { refresh: 'refresh-token' });
+    await authService.logout();
+    expect(client.post).toHaveBeenCalledWith('/auth/logout/', {});
   });
 
   it('switchCompany → POST /auth/switch-company/', async () => {

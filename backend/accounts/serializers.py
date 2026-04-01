@@ -9,11 +9,11 @@ All mutations go through commands.
 Output serializers are for consistent response formatting.
 """
 
+from django.contrib.auth import get_user_model
 from rest_framework import serializers
+from rest_framework_simplejwt.exceptions import InvalidToken
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer, TokenRefreshSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework_simplejwt.exceptions import InvalidToken
-from django.contrib.auth import get_user_model
 
 from accounts.models import Company, CompanyMembership, NxPermission
 
@@ -402,7 +402,7 @@ class PermissionsUpdateOutputSerializer(serializers.Serializer):
 
 class UserModelSerializer(serializers.ModelSerializer):
     """Model serializer for User (read-only)."""
-    
+
     class Meta:
         model = User
         fields = ["id", "public_id", "email", "name", "name_ar", "preferred_language"]
@@ -426,7 +426,7 @@ class CompanyModelSerializer(serializers.ModelSerializer):
 
 class NxPermissionModelSerializer(serializers.ModelSerializer):
     """Model serializer for Permission (read-only)."""
-    
+
     class Meta:
         model = NxPermission
         fields = ["code", "public_id", "name", "name_ar", "module", "description"]
@@ -437,7 +437,7 @@ class CompanyMembershipModelSerializer(serializers.ModelSerializer):
     """Model serializer for Membership with nested user."""
     user = UserModelSerializer(read_only=True)
     permissions = NxPermissionModelSerializer(many=True, read_only=True)
-    
+
     class Meta:
         model = CompanyMembership
         fields = [

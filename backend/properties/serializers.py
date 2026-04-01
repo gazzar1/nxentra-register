@@ -7,12 +7,19 @@ Business logic happens in commands.py.
 """
 
 from rest_framework import serializers
-from .models import (
-    Property, Unit, Lessee, Lease, RentScheduleLine,
-    PaymentReceipt, PaymentAllocation, SecurityDepositTransaction,
-    PropertyExpense, PropertyAccountMapping,
-)
 
+from .models import (
+    Lease,
+    Lessee,
+    PaymentAllocation,
+    PaymentReceipt,
+    Property,
+    PropertyAccountMapping,
+    PropertyExpense,
+    RentScheduleLine,
+    SecurityDepositTransaction,
+    Unit,
+)
 
 # =============================================================================
 # Property Serializers

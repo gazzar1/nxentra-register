@@ -9,11 +9,9 @@ Note: These serializers are used for:
 The actual business logic happens in commands.py.
 """
 
-from decimal import Decimal
 from rest_framework import serializers
-from .models import ScratchpadRow, ScratchpadRowDimension, AccountDimensionRule
-from accounting.models import Account, AnalysisDimension, AnalysisDimensionValue
 
+from .models import AccountDimensionRule, ScratchpadRow, ScratchpadRowDimension
 
 # =============================================================================
 # Dimension Serializers

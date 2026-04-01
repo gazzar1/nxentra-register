@@ -13,6 +13,7 @@ tables. Concrete models live in each platform's own app.
 import uuid
 
 from django.db import models
+
 from accounts.models import Company
 
 

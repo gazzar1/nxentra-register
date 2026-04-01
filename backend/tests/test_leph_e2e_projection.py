@@ -11,18 +11,17 @@ This test proves the full pipeline works when LEPH external storage is used:
 This is the test that proves LEPH doesn't break the accounting pipeline.
 """
 
-import pytest
 from decimal import Decimal
 from uuid import uuid4
 
+import pytest
 from django.utils import timezone
 
 from accounting.models import Account
 from events.emitter import emit_event_no_actor
-from events.models import BusinessEvent
-from events.types import EventTypes
 from events.payload_policy import INLINE_MAX_SIZE
 from events.serialization import estimate_json_size
+from events.types import EventTypes
 from projections.account_balance import AccountBalanceProjection
 from projections.models import AccountBalance
 

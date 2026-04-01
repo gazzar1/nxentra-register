@@ -11,76 +11,72 @@ to ensure events are emitted. Views should never directly call .save() on models
 
 import logging
 
+from django.db.models import Exists, OuterRef, Q
+from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework.exceptions import ValidationError as DRFValidationError
-
-from django.db.models import Exists, OuterRef
-from django.shortcuts import get_object_or_404
 
 logger = logging.getLogger(__name__)
 
-from accounts.authz import resolve_actor, require
-from .models import (
-    Account,
-    JournalEntry,
-    AnalysisDimension,
-    AnalysisDimensionValue,
-    AccountAnalysisDefault,
-    Customer,
-    Vendor,
-    StatisticalEntry,
-)
-from .serializers import (
-    AccountSerializer,
-    AccountCreateSerializer,
-    AccountUpdateSerializer,
-    JournalEntrySerializer,
-    JournalEntryAutoSaveSerializer,
-    JournalEntrySaveCompleteSerializer,
-    AnalysisDimensionSerializer,
-    AnalysisDimensionCreateSerializer,
-    AnalysisDimensionValueSerializer,
-    DimensionValueCreateSerializer,
-    AccountAnalysisDefaultSerializer,
-    CustomerSerializer,
-    CustomerCreateSerializer,
-    CustomerUpdateSerializer,
-    VendorSerializer,
-    VendorCreateSerializer,
-    VendorUpdateSerializer,
-    StatisticalEntrySerializer,
-    StatisticalEntryCreateSerializer,
-    StatisticalEntryUpdateSerializer,
-)
+from accounts.authz import require, resolve_actor
+
 from .commands import (
     # Account commands
     create_account,
-    update_account,
-    delete_account,
-    # Journal entry commands
-    create_journal_entry,
-    update_journal_entry,
-    save_journal_entry_complete,
-    post_journal_entry,
-    reverse_journal_entry,
-    delete_journal_entry,
     # Analysis dimension commands
     create_analysis_dimension,
-    update_analysis_dimension,
-    delete_analysis_dimension,
     create_dimension_value,
-    update_dimension_value,
+    # Journal entry commands
+    create_journal_entry,
+    delete_account,
+    delete_analysis_dimension,
     delete_dimension_value,
+    delete_journal_entry,
+    post_journal_entry,
+    remove_account_analysis_default,
+    reverse_journal_entry,
+    save_journal_entry_complete,
     # Account analysis default commands
     set_account_analysis_default,
-    remove_account_analysis_default,
     # Journal line analysis commands
-    set_journal_line_analysis,
+    update_account,
+    update_analysis_dimension,
+    update_dimension_value,
+    update_journal_entry,
 )
-
+from .models import (
+    Account,
+    AnalysisDimension,
+    AnalysisDimensionValue,
+    Customer,
+    JournalEntry,
+    StatisticalEntry,
+    Vendor,
+)
+from .serializers import (
+    AccountAnalysisDefaultSerializer,
+    AccountCreateSerializer,
+    AccountSerializer,
+    AccountUpdateSerializer,
+    AnalysisDimensionCreateSerializer,
+    AnalysisDimensionSerializer,
+    AnalysisDimensionValueSerializer,
+    CustomerCreateSerializer,
+    CustomerSerializer,
+    CustomerUpdateSerializer,
+    DimensionValueCreateSerializer,
+    JournalEntryAutoSaveSerializer,
+    JournalEntrySaveCompleteSerializer,
+    JournalEntrySerializer,
+    StatisticalEntryCreateSerializer,
+    StatisticalEntrySerializer,
+    StatisticalEntryUpdateSerializer,
+    VendorCreateSerializer,
+    VendorSerializer,
+    VendorUpdateSerializer,
+)
 
 # =============================================================================
 # Account Views
@@ -99,34 +95,50 @@ class AccountListCreateView(APIView):
         actor = resolve_actor(request)
         require(actor, "accounts.view")
 
+        from nxentra_backend.pagination import paginate_queryset
+
         from .models import JournalLine
+
         accounts = Account.objects.filter(
             company=actor.company,
         ).annotate(
             _has_transactions=Exists(
                 JournalLine.objects.filter(account=OuterRef("pk"))
             ),
-        ).select_related("parent").order_by("code")
-        serializer = AccountSerializer(accounts, many=True)
-        return Response(serializer.data)
+        ).select_related("parent")
+
+        # Client-side search (optional server-side filtering)
+        search = request.query_params.get("search", "")
+        if search:
+            accounts = accounts.filter(
+                Q(code__icontains=search)
+                | Q(name__icontains=search)
+                | Q(name_ar__icontains=search)
+            )
+
+        return paginate_queryset(
+            request, accounts, AccountSerializer,
+            default_ordering="code",
+            allowed_sort_fields=["code", "name", "name_ar", "account_type"],
+        )
 
     def post(self, request):
         actor = resolve_actor(request)
         # Permission check happens in command
-        
+
         # Validate input
         input_serializer = AccountCreateSerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
-        
+
         # Execute command (this emits the event)
         result = create_account(actor, **input_serializer.validated_data)
-        
+
         if not result.success:
             return Response(
                 {"detail": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         # Return created account
         output_serializer = AccountSerializer(result.data)
         return Response(output_serializer.data, status=status.HTTP_201_CREATED)
@@ -168,22 +180,22 @@ class AccountDetailView(APIView):
     def patch(self, request, code):
         actor = resolve_actor(request)
         # Permission check happens in command
-        
+
         account = self.get_object(actor, code)
-        
+
         # Validate input
         input_serializer = AccountUpdateSerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
-        
+
         # Execute command (this emits the event)
         result = update_account(actor, account.id, **input_serializer.validated_data)
-        
+
         if not result.success:
             return Response(
                 {"detail": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         # Return updated account
         output_serializer = AccountSerializer(result.data)
         return Response(output_serializer.data)
@@ -191,18 +203,18 @@ class AccountDetailView(APIView):
     def delete(self, request, code):
         actor = resolve_actor(request)
         # Permission check happens in command
-        
+
         account = self.get_object(actor, code)
-        
+
         # Execute command (this emits the event)
         result = delete_account(actor, account.id)
-        
+
         if not result.success:
             return Response(
                 {"detail": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -222,29 +234,46 @@ class JournalEntryListCreateView(APIView):
     def get(self, request):
         actor = resolve_actor(request)
         require(actor, "journal.view")
-        
+
+        from nxentra_backend.pagination import paginate_queryset
+
         entries = JournalEntry.objects.filter(
             company=actor.company
-        ).order_by("-entry_number", "-date", "-id").prefetch_related("lines", "lines__account")
-        
-        serializer = JournalEntrySerializer(entries, many=True)
-        return Response(serializer.data)
+        ).prefetch_related("lines", "lines__account")
+
+        # Optional filters
+        status_filter = request.query_params.get("status")
+        if status_filter:
+            entries = entries.filter(status=status_filter)
+
+        search = request.query_params.get("search", "")
+        if search:
+            entries = entries.filter(
+                Q(entry_number__icontains=search)
+                | Q(memo__icontains=search)
+            )
+
+        return paginate_queryset(
+            request, entries, JournalEntrySerializer,
+            default_ordering="-entry_number",
+            allowed_sort_fields=["entry_number", "date", "status", "memo", "currency"],
+        )
 
     def post(self, request):
         actor = resolve_actor(request)
         # Permission check happens in command
-        
+
         # Validate input using the autosave serializer
         input_serializer = JournalEntryAutoSaveSerializer(
             data=request.data,
             context={"request": request},
         )
         input_serializer.is_valid(raise_exception=True)
-        
+
         # Extract data for command
         data = input_serializer.validated_data
         lines = data.pop("lines", [])
-        
+
         # Convert lines to command format (already has account_id)
         command_lines = []
         for line in lines:
@@ -252,7 +281,7 @@ class JournalEntryListCreateView(APIView):
             credit = line.get("credit", 0)
             if debit == 0 and credit == 0:
                 continue  # Skip placeholders
-            
+
             command_lines.append({
                 "account_id": line.get("account_id"),
                 "description": line.get("description", ""),
@@ -276,13 +305,13 @@ class JournalEntryListCreateView(APIView):
             lines=command_lines,
             period=data.get("period"),
         )
-        
+
         if not result.success:
             return Response(
                 {"detail": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         # Return created entry
         output_serializer = JournalEntrySerializer(result.data)
         return Response(output_serializer.data, status=status.HTTP_201_CREATED)
@@ -304,7 +333,7 @@ class JournalEntryDetailView(APIView):
     def get(self, request, pk):
         actor = resolve_actor(request)
         require(actor, "journal.view")
-        
+
         # Prefetch lines and related data for performance
         entry = get_object_or_404(
             JournalEntry.objects.prefetch_related(
@@ -323,15 +352,15 @@ class JournalEntryDetailView(APIView):
     def patch(self, request, pk):
         actor = resolve_actor(request)
         # Permission check happens in command
-        
+
         entry = self.get_object(actor, pk)
-        
+
         if entry.status not in [JournalEntry.Status.INCOMPLETE, JournalEntry.Status.DRAFT]:
             return Response(
                 {"detail": "Cannot edit a posted or reversed entry."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         # Validate input
         input_serializer = JournalEntryAutoSaveSerializer(
             entry,
@@ -340,10 +369,10 @@ class JournalEntryDetailView(APIView):
             context={"request": request},
         )
         input_serializer.is_valid(raise_exception=True)
-        
+
         # Extract data for command
         data = input_serializer.validated_data
-        
+
         # Build command kwargs
         kwargs = {}
         if "date" in data:
@@ -367,7 +396,7 @@ class JournalEntryDetailView(APIView):
                 credit = line.get("credit", 0)
                 if debit == 0 and credit == 0:
                     continue
-                
+
                 command_lines.append({
                     "account_id": line.get("account_id"),
                     "description": line.get("description", ""),
@@ -383,13 +412,13 @@ class JournalEntryDetailView(APIView):
 
         # Execute command (this emits the event)
         result = update_journal_entry(actor, entry.id, **kwargs)
-        
+
         if not result.success:
             return Response(
                 {"detail": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         # Return updated entry
         output_serializer = JournalEntrySerializer(result.data)
         return Response(output_serializer.data)
@@ -397,18 +426,18 @@ class JournalEntryDetailView(APIView):
     def delete(self, request, pk):
         actor = resolve_actor(request)
         # Permission check happens in command
-        
+
         entry = self.get_object(actor, pk)
-        
+
         # Execute command (this emits the event)
         result = delete_journal_entry(actor, entry.id)
-        
+
         if not result.success:
             return Response(
                 {"detail": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -423,15 +452,15 @@ class JournalSaveCompleteView(APIView):
     def put(self, request, pk):
         actor = resolve_actor(request)
         # Permission check happens in command
-        
+
         entry = get_object_or_404(JournalEntry, company=actor.company, pk=pk)
-        
+
         if entry.status in [JournalEntry.Status.POSTED, JournalEntry.Status.REVERSED]:
             return Response(
                 {"detail": "Cannot save a posted/reversed entry."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         # Validate input if provided
         input_serializer = JournalEntrySaveCompleteSerializer(
             entry,
@@ -439,10 +468,10 @@ class JournalSaveCompleteView(APIView):
             context={"request": request},
         )
         input_serializer.is_valid(raise_exception=True)
-        
+
         # Extract data for command
         data = input_serializer.validated_data
-        
+
         kwargs = {}
         if "date" in data:
             kwargs["date"] = data["date"]
@@ -454,7 +483,7 @@ class JournalSaveCompleteView(APIView):
             kwargs["currency"] = data["currency"]
         if "exchange_rate" in data:
             kwargs["exchange_rate"] = data["exchange_rate"]
-        
+
         if "period" in data:
             kwargs["period"] = data["period"]
 
@@ -485,13 +514,13 @@ class JournalSaveCompleteView(APIView):
 
         # Execute command (this emits the event)
         result = save_journal_entry_complete(actor, entry.id, **kwargs)
-        
+
         if not result.success:
             return Response(
                 {"detail": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         return Response({
             "id": result.data.id,
             "status": result.data.status,
@@ -509,15 +538,15 @@ class JournalPostView(APIView):
     def post(self, request, pk):
         actor = resolve_actor(request)
         # Permission check happens in command
-        
+
         result = post_journal_entry(actor, pk)
-        
+
         if not result.success:
             return Response(
                 {"detail": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         entry = result.data
         return Response({
             "id": entry.id,
@@ -540,18 +569,18 @@ class JournalReverseView(APIView):
     def post(self, request, pk):
         actor = resolve_actor(request)
         # Permission check happens in command
-        
+
         result = reverse_journal_entry(actor, pk)
-        
+
         if not result.success:
             return Response(
                 {"detail": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         reversal = result.data["reversal"]
         original = result.data["original"]
-        
+
         return Response(
             {
                 "id": reversal.id,
@@ -581,29 +610,29 @@ class AnalysisDimensionListCreateView(APIView):
     def get(self, request):
         actor = resolve_actor(request)
         require(actor, "accounts.view")
-        
+
         dimensions = AnalysisDimension.objects.filter(
             company=actor.company
         ).order_by("display_order", "code").prefetch_related("values")
-        
+
         serializer = AnalysisDimensionSerializer(dimensions, many=True)
         return Response(serializer.data)
 
     def post(self, request):
         actor = resolve_actor(request)
         # Permission check happens in command
-        
+
         input_serializer = AnalysisDimensionCreateSerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
-        
+
         result = create_analysis_dimension(actor, **input_serializer.validated_data)
-        
+
         if not result.success:
             return Response(
                 {"detail": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         output_serializer = AnalysisDimensionSerializer(result.data)
         return Response(output_serializer.data, status=status.HTTP_201_CREATED)
 
@@ -624,16 +653,16 @@ class AnalysisDimensionDetailView(APIView):
     def get(self, request, pk):
         actor = resolve_actor(request)
         require(actor, "accounts.view")
-        
+
         dimension = self.get_object(actor, pk)
         serializer = AnalysisDimensionSerializer(dimension)
         return Response(serializer.data)
 
     def patch(self, request, pk):
         actor = resolve_actor(request)
-        
+
         dimension = self.get_object(actor, pk)
-        
+
         # Only allow specific fields to be updated
         allowed_fields = {
             "name", "name_ar", "description", "description_ar",
@@ -641,31 +670,31 @@ class AnalysisDimensionDetailView(APIView):
             "display_order", "is_active",
         }
         updates = {k: v for k, v in request.data.items() if k in allowed_fields}
-        
+
         result = update_analysis_dimension(actor, dimension.id, **updates)
-        
+
         if not result.success:
             return Response(
                 {"detail": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         output_serializer = AnalysisDimensionSerializer(result.data)
         return Response(output_serializer.data)
 
     def delete(self, request, pk):
         actor = resolve_actor(request)
-        
+
         dimension = self.get_object(actor, pk)
-        
+
         result = delete_analysis_dimension(actor, dimension.id)
-        
+
         if not result.success:
             return Response(
                 {"detail": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -684,33 +713,33 @@ class DimensionValueListCreateView(APIView):
     def get(self, request, dim_pk):
         actor = resolve_actor(request)
         require(actor, "accounts.view")
-        
+
         dimension = self.get_dimension(actor, dim_pk)
         values = dimension.values.filter(is_active=True).order_by("code")
-        
+
         serializer = AnalysisDimensionValueSerializer(values, many=True)
         return Response(serializer.data)
 
     def post(self, request, dim_pk):
         actor = resolve_actor(request)
-        
+
         dimension = self.get_dimension(actor, dim_pk)
-        
+
         # Add dimension_id to request data
         data = dict(request.data)
         data["dimension_id"] = dimension.id
-        
+
         input_serializer = DimensionValueCreateSerializer(data=data)
         input_serializer.is_valid(raise_exception=True)
-        
+
         result = create_dimension_value(actor, **input_serializer.validated_data)
-        
+
         if not result.success:
             return Response(
                 {"detail": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         output_serializer = AnalysisDimensionValueSerializer(result.data)
         return Response(output_serializer.data, status=status.HTTP_201_CREATED)
 
@@ -732,43 +761,43 @@ class DimensionValueDetailView(APIView):
     def get(self, request, dim_pk, pk):
         actor = resolve_actor(request)
         require(actor, "accounts.view")
-        
+
         value = self.get_object(actor, dim_pk, pk)
         serializer = AnalysisDimensionValueSerializer(value)
         return Response(serializer.data)
 
     def patch(self, request, dim_pk, pk):
         actor = resolve_actor(request)
-        
+
         value = self.get_object(actor, dim_pk, pk)
-        
+
         allowed_fields = {"name", "name_ar", "description", "description_ar", "is_active"}
         updates = {k: v for k, v in request.data.items() if k in allowed_fields}
-        
+
         result = update_dimension_value(actor, value.id, **updates)
-        
+
         if not result.success:
             return Response(
                 {"detail": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         output_serializer = AnalysisDimensionValueSerializer(result.data)
         return Response(output_serializer.data)
 
     def delete(self, request, dim_pk, pk):
         actor = resolve_actor(request)
-        
+
         value = self.get_object(actor, dim_pk, pk)
-        
+
         result = delete_dimension_value(actor, value.id)
-        
+
         if not result.success:
             return Response(
                 {"detail": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -792,40 +821,40 @@ class AccountAnalysisDefaultView(APIView):
     def get(self, request, code):
         actor = resolve_actor(request)
         require(actor, "accounts.view")
-        
+
         account = self.get_account(actor, code)
         defaults = account.analysis_defaults.select_related("dimension", "default_value")
-        
+
         serializer = AccountAnalysisDefaultSerializer(defaults, many=True)
         return Response(serializer.data)
 
     def post(self, request, code):
         actor = resolve_actor(request)
-        
+
         account = self.get_account(actor, code)
-        
+
         dimension_id = request.data.get("dimension_id")
         value_id = request.data.get("value_id")
-        
+
         if not dimension_id or not value_id:
             return Response(
                 {"detail": "dimension_id and value_id are required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         result = set_account_analysis_default(
             actor,
             account_id=account.id,
             dimension_id=dimension_id,
             value_id=value_id,
         )
-        
+
         if not result.success:
             return Response(
                 {"detail": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         output_serializer = AccountAnalysisDefaultSerializer(result.data)
         return Response(output_serializer.data, status=status.HTTP_201_CREATED)
 
@@ -875,11 +904,11 @@ class AccountExportView(APIView):
 
     def get(self, request):
         from .exports import (
-            create_export_response,
-            prepare_account_export_data,
             ACCOUNT_EXPORT_COLUMNS,
             ACCOUNT_EXPORT_COLUMNS_SIMPLE,
             ExportFormat,
+            create_export_response,
+            prepare_account_export_data,
         )
 
         actor = resolve_actor(request)
@@ -939,15 +968,16 @@ class JournalEntryExportView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        from datetime import datetime
+
         from .exports import (
-            create_export_response,
-            prepare_journal_entry_export_data,
-            prepare_journal_lines_export_data,
             JOURNAL_ENTRY_EXPORT_COLUMNS,
             JOURNAL_LINE_EXPORT_COLUMNS,
             ExportFormat,
+            create_export_response,
+            prepare_journal_entry_export_data,
+            prepare_journal_lines_export_data,
         )
-        from datetime import datetime
 
         actor = resolve_actor(request)
         require(actor, "journal.view")
@@ -1046,12 +1076,26 @@ class CustomerListCreateView(APIView):
         actor = resolve_actor(request)
         require(actor, "accounts.view")
 
+        from nxentra_backend.pagination import paginate_queryset
+
         customers = Customer.objects.filter(
             company=actor.company
-        ).select_related("default_ar_account").order_by("code")
+        ).select_related("default_ar_account")
 
-        serializer = CustomerSerializer(customers, many=True)
-        return Response(serializer.data)
+        search = request.query_params.get("search", "")
+        if search:
+            customers = customers.filter(
+                Q(code__icontains=search)
+                | Q(name__icontains=search)
+                | Q(name_ar__icontains=search)
+                | Q(email__icontains=search)
+            )
+
+        return paginate_queryset(
+            request, customers, CustomerSerializer,
+            default_ordering="code",
+            allowed_sort_fields=["code", "name", "name_ar", "email"],
+        )
 
     def post(self, request):
         actor = resolve_actor(request)
@@ -1165,12 +1209,26 @@ class VendorListCreateView(APIView):
         actor = resolve_actor(request)
         require(actor, "accounts.view")
 
+        from nxentra_backend.pagination import paginate_queryset
+
         vendors = Vendor.objects.filter(
             company=actor.company
-        ).select_related("default_ap_account").order_by("code")
+        ).select_related("default_ap_account")
 
-        serializer = VendorSerializer(vendors, many=True)
-        return Response(serializer.data)
+        search = request.query_params.get("search", "")
+        if search:
+            vendors = vendors.filter(
+                Q(code__icontains=search)
+                | Q(name__icontains=search)
+                | Q(name_ar__icontains=search)
+                | Q(email__icontains=search)
+            )
+
+        return paginate_queryset(
+            request, vendors, VendorSerializer,
+            default_ordering="code",
+            allowed_sort_fields=["code", "name", "name_ar", "email"],
+        )
 
     def post(self, request):
         actor = resolve_actor(request)
@@ -1517,7 +1575,7 @@ class SeedAccountsView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        from .seeds import seed_chart_of_accounts, get_seed_status
+        from .seeds import get_seed_status, seed_chart_of_accounts
 
         # Get status before seeding
         before_status = get_seed_status(actor.company)
@@ -1911,9 +1969,9 @@ class ExchangeRateListCreateView(APIView):
         ])
 
     def post(self, request):
-        from accounting.models import ExchangeRate
         from decimal import Decimal, InvalidOperation
-        from datetime import date
+
+        from accounting.models import ExchangeRate
 
         actor = resolve_actor(request)
         require(actor, "settings.edit")
@@ -1998,8 +2056,9 @@ class ExchangeRateDetailView(APIView):
         })
 
     def put(self, request, pk):
-        from accounting.models import ExchangeRate
         from decimal import Decimal, InvalidOperation
+
+        from accounting.models import ExchangeRate
 
         actor = resolve_actor(request)
         require(actor, "settings.edit")
@@ -2177,8 +2236,9 @@ class CoreAccountMappingView(APIView):
         if not isinstance(mappings, list):
             return Response({"detail": "Expected a list of role mappings."}, status=400)
 
-        from .mappings import ModuleAccountMapping
         from projections.write_barrier import command_writes_allowed
+
+        from .mappings import ModuleAccountMapping
 
         with command_writes_allowed():
             for item in mappings:
@@ -2211,8 +2271,9 @@ class CoreAccountMappingView(APIView):
 
     def _auto_initialize(self, company):
         """Auto-create mappings from seeded accounts by matching role."""
-        from .mappings import ModuleAccountMapping
         from projections.write_barrier import command_writes_allowed
+
+        from .mappings import ModuleAccountMapping
 
         with command_writes_allowed():
             for core_role, account_role in CORE_ROLE_DEFAULTS.items():

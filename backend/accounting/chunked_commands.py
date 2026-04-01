@@ -19,23 +19,20 @@ JOURNAL_CREATED event.
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
-import uuid
-
-from django.db import transaction
+from typing import Any
 
 from events.emitter import emit_event
 from events.models import BusinessEvent
+from events.payload_policy import (
+    MAX_LINES_PER_CHUNK,
+    PayloadOrigin,
+    chunk_lines,
+)
 from events.types import (
     EventTypes,
     JournalCreatedData,
-    JournalLinesChunkData,
     JournalFinalizedData,
-)
-from events.payload_policy import (
-    PayloadOrigin,
-    MAX_LINES_PER_CHUNK,
-    chunk_lines,
+    JournalLinesChunkData,
 )
 
 
@@ -43,11 +40,11 @@ def emit_chunked_journal(
     actor,
     company,
     journal_entry,
-    lines: List[Dict[str, Any]],
+    lines: list[dict[str, Any]],
     *,
     origin: PayloadOrigin = PayloadOrigin.SYSTEM_BATCH,
-    batch_id: Optional[str] = None,
-) -> List[BusinessEvent]:
+    batch_id: str | None = None,
+) -> list[BusinessEvent]:
     """
     Emit a large journal entry as multiple chunked events.
 
@@ -164,13 +161,13 @@ def emit_chunked_journal_posted(
     actor,
     company,
     journal_entry,
-    lines: List[Dict[str, Any]],
+    lines: list[dict[str, Any]],
     *,
     entry_number: str,
     posted_at: str,
     origin: PayloadOrigin = PayloadOrigin.SYSTEM_BATCH,
-    batch_id: Optional[str] = None,
-) -> List[BusinessEvent]:
+    batch_id: str | None = None,
+) -> list[BusinessEvent]:
     """
     Emit a large journal entry posting as chunked events.
 
@@ -267,7 +264,7 @@ def emit_chunked_journal_posted(
     return events
 
 
-def should_use_chunked_emission(lines: List[Dict[str, Any]]) -> bool:
+def should_use_chunked_emission(lines: list[dict[str, Any]]) -> bool:
     """
     Check if a journal entry should use chunked emission.
 
@@ -280,7 +277,7 @@ def should_use_chunked_emission(lines: List[Dict[str, Any]]) -> bool:
     return len(lines) > MAX_LINES_PER_CHUNK
 
 
-def get_chunk_stats(lines: List[Dict[str, Any]]) -> Dict[str, int]:
+def get_chunk_stats(lines: list[dict[str, Any]]) -> dict[str, int]:
     """
     Get statistics about how a journal would be chunked.
 

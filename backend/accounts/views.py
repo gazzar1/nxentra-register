@@ -10,58 +10,91 @@ NO direct model writes in views - all mutations go through commands.
 Serializers are PURE PARSING + VALIDATION - they never call .save()
 """
 
+from django.contrib.auth import get_user_model
+from django.db import models
 from rest_framework import status
 from rest_framework.exceptions import PermissionDenied
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
-from rest_framework_simplejwt.tokens import RefreshToken
-from django.contrib.auth import get_user_model
-from django.db import models
 
-from accounts.models import Company, CompanyMembership, NxPermission
-from accounts.authz import resolve_actor, require, resolve_actor_optional
+from accounts.authz import require, resolve_actor
 from accounts.commands import (
-    register_signup,
-    create_company,
-    switch_active_company,
-    create_user_with_membership,
-    update_user,
-    update_company_settings,
-    upload_company_logo,
-    delete_company_logo,
-    set_user_password,
-    add_user_to_company,
-    update_membership_role,
-    deactivate_membership,
-    grant_permission,
-    revoke_permission,
+    accept_invitation,
     bulk_set_permissions,
+    cancel_invitation,
+    create_company,
     # Invitation commands
     create_invitation,
-    accept_invitation,
-    cancel_invitation,
-    resend_invitation,
+    create_user_with_membership,
+    deactivate_membership,
+    delete_company_logo,
+    grant_permission,
     list_pending_invitations,
+    register_signup,
+    resend_invitation,
+    revoke_permission,
+    set_user_password,
+    switch_active_company,
+    update_company_settings,
+    update_membership_role,
+    update_user,
+    upload_company_logo,
 )
+from accounts.models import Company, CompanyMembership, NxPermission
 from accounts.serializers import (
-    # Input serializers
-    RegisterInputSerializer,
-    SwitchCompanyInputSerializer,
-    CreateUserInputSerializer,
-    UpdateUserInputSerializer,
-    SetPasswordInputSerializer,
-    UpdateRoleInputSerializer,
-    GrantPermissionInputSerializer,
     BulkSetPermissionsInputSerializer,
+    CreateUserInputSerializer,
+    GrantPermissionInputSerializer,
     # JWT Token serializers
     NxentraTokenObtainPairSerializer,
     NxentraTokenRefreshSerializer,
+    # Input serializers
+    RegisterInputSerializer,
+    SetPasswordInputSerializer,
+    SwitchCompanyInputSerializer,
+    UpdateRoleInputSerializer,
+    UpdateUserInputSerializer,
     mint_token_pair,
 )
 
 User = get_user_model()
+
+
+# =============================================================================
+# Auth Cookie Helpers
+# =============================================================================
+
+def set_auth_cookies(response, access_token, refresh_token=None):
+    """Set HttpOnly JWT cookies on a response."""
+    from django.conf import settings as s
+    response.set_cookie(
+        s.AUTH_COOKIE_ACCESS_NAME,
+        access_token,
+        httponly=s.AUTH_COOKIE_HTTPONLY,
+        secure=s.AUTH_COOKIE_SECURE,
+        samesite=s.AUTH_COOKIE_SAMESITE,
+        max_age=int(s.SIMPLE_JWT["ACCESS_TOKEN_LIFETIME"].total_seconds()),
+        path="/",
+    )
+    if refresh_token:
+        response.set_cookie(
+            s.AUTH_COOKIE_REFRESH_NAME,
+            refresh_token,
+            httponly=s.AUTH_COOKIE_HTTPONLY,
+            secure=s.AUTH_COOKIE_SECURE,
+            samesite=s.AUTH_COOKIE_SAMESITE,
+            max_age=int(s.SIMPLE_JWT["REFRESH_TOKEN_LIFETIME"].total_seconds()),
+            path=s.AUTH_COOKIE_REFRESH_PATH,
+        )
+
+
+def clear_auth_cookies(response):
+    """Delete JWT cookies from a response."""
+    from django.conf import settings as s
+    response.delete_cookie(s.AUTH_COOKIE_ACCESS_NAME, path="/")
+    response.delete_cookie(s.AUTH_COOKIE_REFRESH_NAME, path=s.AUTH_COOKIE_REFRESH_PATH)
 
 
 # =============================================================================
@@ -200,8 +233,9 @@ class LoginView(TokenObtainPairView):
     serializer_class = NxentraTokenObtainPairSerializer
 
     def post(self, request, *args, **kwargs):
-        from accounts.throttles import LoginThrottle
         from django.conf import settings as django_settings
+
+        from accounts.throttles import LoginThrottle
 
         # Check rate limit
         throttle = LoginThrottle()
@@ -320,9 +354,10 @@ class LoginView(TokenObtainPairView):
                     except Company.DoesNotExist:
                         pass
                 if active_company:
+                    from django.utils import timezone
+
                     from events.emitter import emit_event_no_actor
                     from events.types import EventTypes, UserLoggedInData
-                    from django.utils import timezone
 
                     emit_event_no_actor(
                         company=active_company,
@@ -341,6 +376,14 @@ class LoginView(TokenObtainPairView):
             except User.DoesNotExist:
                 pass
 
+        # Set HttpOnly cookies alongside the JSON response (backward compatible)
+        if response.status_code == 200 and "access" in response.data:
+            set_auth_cookies(
+                response,
+                response.data["access"],
+                response.data.get("refresh"),
+            )
+
         return response
 
 
@@ -350,6 +393,10 @@ class NxentraTokenRefreshView(TokenRefreshView):
 
     Refresh JWT tokens with tenant membership validation.
 
+    Accepts refresh token from either:
+    - Request body: { "refresh": "token" } (legacy/API clients)
+    - HttpOnly cookie: nxentra_refresh (browser clients)
+
     On every refresh, we re-validate:
     - Token has company_id claim
     - User still has active membership in that company
@@ -358,6 +405,59 @@ class NxentraTokenRefreshView(TokenRefreshView):
     This prevents revoked users from quietly continuing to refresh tokens.
     """
     serializer_class = NxentraTokenRefreshSerializer
+
+    def post(self, request, *args, **kwargs):
+        # If refresh not in body, try cookie
+        if "refresh" not in request.data:
+            from django.conf import settings as s
+            refresh_cookie = request.COOKIES.get(s.AUTH_COOKIE_REFRESH_NAME)
+            if refresh_cookie:
+                request._full_data = {**request.data, "refresh": refresh_cookie}
+
+        response = super().post(request, *args, **kwargs)
+
+        # Set updated cookies on success
+        if response.status_code == 200 and "access" in response.data:
+            set_auth_cookies(
+                response,
+                response.data["access"],
+                response.data.get("refresh"),
+            )
+
+        return response
+
+
+class LogoutView(APIView):
+    """
+    POST /api/auth/logout/
+
+    Blacklists the refresh token and clears auth cookies.
+
+    Accepts refresh token from either:
+    - Request body: { "refresh": "token" } (legacy/API clients)
+    - HttpOnly cookie: nxentra_refresh (browser clients)
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        from rest_framework_simplejwt.tokens import RefreshToken as JWTRefreshToken
+
+        # Read refresh from body or cookie
+        from django.conf import settings as s
+        refresh = request.data.get("refresh") or request.COOKIES.get(
+            s.AUTH_COOKIE_REFRESH_NAME
+        )
+
+        if refresh:
+            try:
+                token = JWTRefreshToken(refresh)
+                token.blacklist()
+            except Exception:
+                pass  # Token already blacklisted or invalid — that's fine
+
+        response = Response(status=status.HTTP_204_NO_CONTENT)
+        clear_auth_cookies(response)
+        return response
 
 
 class MeView(APIView):
@@ -524,7 +624,12 @@ class SwitchCompanyView(APIView):
         response_data = result.data.copy() if isinstance(result.data, dict) else {}
         response_data["tokens"] = tokens
 
-        return Response(response_data)
+        response = Response(response_data)
+
+        # Set HttpOnly cookies with new tenant-bound tokens
+        set_auth_cookies(response, tokens["access"], tokens["refresh"])
+
+        return response
 
 
 # =============================================================================
@@ -541,11 +646,11 @@ class UserListCreateView(APIView):
     def get(self, request):
         actor = resolve_actor(request)
         require(actor, "company.manage_users")
-        
+
         memberships = CompanyMembership.objects.filter(
             company=actor.company, is_active=True
         ).select_related("user")
-        
+
         users = [
             {
                 "id": m.user.id,
@@ -560,17 +665,17 @@ class UserListCreateView(APIView):
             }
             for m in memberships
         ]
-        
+
         return Response(users)
 
     def post(self, request):
         actor = resolve_actor(request)
-        
+
         # Validate input
         serializer = CreateUserInputSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        
+
         # Execute command (this emits event and enforces permission)
         result = create_user_with_membership(
             actor=actor,
@@ -579,7 +684,7 @@ class UserListCreateView(APIView):
             password=data["password"],
             role=data.get("role", CompanyMembership.Role.USER),
         )
-        
+
         if not result.success:
             return Response(
                 {"detail": result.error},
@@ -596,10 +701,10 @@ class UserListCreateView(APIView):
                 },
                 status=status.HTTP_202_ACCEPTED,
             )
-        
+
         user = result.data["user"]
         membership = result.data["membership"]
-        
+
         return Response({
             "id": user.id,
             "public_id": str(user.public_id),
@@ -621,11 +726,11 @@ class UserDetailView(APIView):
 
     def get(self, request, pk):
         actor = resolve_actor(request)
-        
+
         # Can view self without permission
         if actor.user.id != pk:
             require(actor, "company.manage_users")
-        
+
         # Get user's membership in this company
         try:
             membership = CompanyMembership.objects.select_related("user").get(
@@ -636,10 +741,10 @@ class UserDetailView(APIView):
                 {"detail": "User not found in this company."},
                 status=status.HTTP_404_NOT_FOUND,
             )
-        
+
         user = membership.user
         permissions = list(membership.permissions.values_list("code", flat=True))
-        
+
         return Response({
             "id": user.id,
             "public_id": str(user.public_id),
@@ -654,29 +759,29 @@ class UserDetailView(APIView):
 
     def patch(self, request, pk):
         actor = resolve_actor(request)
-        
+
         # Validate input
         serializer = UpdateUserInputSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        
+
         # Filter to only provided fields
         updates = {k: v for k, v in data.items() if v is not None}
-        
+
         if not updates:
             return Response(
                 {"detail": "No valid fields to update."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         result = update_user(actor, pk, **updates)
-        
+
         if not result.success:
             return Response(
                 {"detail": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         user = result.data["user"]
         # Return all updatable fields for consistency
         return Response({
@@ -689,7 +794,7 @@ class UserDetailView(APIView):
 
     def delete(self, request, pk):
         actor = resolve_actor(request)
-        
+
         # Find membership
         try:
             membership = CompanyMembership.objects.get(
@@ -700,15 +805,15 @@ class UserDetailView(APIView):
                 {"detail": "User not found in this company."},
                 status=status.HTTP_404_NOT_FOUND,
             )
-        
+
         result = deactivate_membership(actor, membership.id)
-        
+
         if not result.success:
             return Response(
                 {"detail": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -722,21 +827,21 @@ class UserSetPasswordView(APIView):
 
     def post(self, request, pk):
         actor = resolve_actor(request)
-        
+
         # Validate input
         serializer = SetPasswordInputSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        
+
         new_password = serializer.validated_data["password"]
-        
+
         result = set_user_password(actor, pk, new_password)
-        
+
         if not result.success:
             return Response(
                 {"detail": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         return Response({"success": True})
 
 
@@ -754,21 +859,21 @@ class MembershipRoleView(APIView):
 
     def patch(self, request, pk):
         actor = resolve_actor(request)
-        
+
         # Validate input
         serializer = UpdateRoleInputSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        
+
         new_role = serializer.validated_data["role"]
-        
+
         result = update_membership_role(actor, pk, new_role)
-        
+
         if not result.success:
             return Response(
                 {"detail": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         membership = result.data
         return Response({
             "membership_id": membership.id,
@@ -794,7 +899,7 @@ class MembershipPermissionsView(APIView):
     def get(self, request, pk):
         actor = resolve_actor(request)
         require(actor, "company.manage_permissions")
-        
+
         try:
             membership = CompanyMembership.objects.get(
                 pk=pk, company=actor.company
@@ -804,9 +909,9 @@ class MembershipPermissionsView(APIView):
                 {"detail": "Membership not found."},
                 status=status.HTTP_404_NOT_FOUND,
             )
-        
+
         permissions = list(membership.permissions.values("code", "name", "module"))
-        
+
         return Response({
             "membership_id": membership.id,
             "membership_public_id": str(membership.public_id),
@@ -817,41 +922,41 @@ class MembershipPermissionsView(APIView):
     def put(self, request, pk):
         """Replace all permissions with the given list."""
         actor = resolve_actor(request)
-        
+
         # Validate input
         serializer = BulkSetPermissionsInputSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        
+
         permission_codes = serializer.validated_data["permissions"]
-        
+
         result = bulk_set_permissions(actor, pk, permission_codes)
-        
+
         if not result.success:
             return Response(
                 {"detail": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         return Response(result.data)
 
     def post(self, request, pk):
         """Grant a single permission."""
         actor = resolve_actor(request)
-        
+
         # Validate input
         serializer = GrantPermissionInputSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        
+
         permission_code = serializer.validated_data["permission"]
-        
+
         result = grant_permission(actor, pk, permission_code)
-        
+
         if not result.success:
             return Response(
                 {"detail": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         return Response(result.data, status=status.HTTP_201_CREATED)
 
 
@@ -865,15 +970,15 @@ class MembershipPermissionDeleteView(APIView):
 
     def delete(self, request, pk, code):
         actor = resolve_actor(request)
-        
+
         result = revoke_permission(actor, pk, code)
-        
+
         if not result.success:
             return Response(
                 {"detail": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -972,15 +1077,15 @@ class CompanyDetailView(APIView):
 
     def get(self, request, pk):
         actor = resolve_actor(request)
-        
+
         if actor.company.id != pk:
             return Response(
                 {"detail": "Company not found."},
                 status=status.HTTP_404_NOT_FOUND,
             )
-        
+
         company = actor.company
-        
+
         return Response({
             "id": company.id,
             "public_id": str(company.public_id),
@@ -990,27 +1095,27 @@ class CompanyDetailView(APIView):
             "fiscal_year_start_month": company.fiscal_year_start_month,
             "is_active": company.is_active,
         })
-        
+
     def patch(self, request, pk):
         actor = resolve_actor(request)
-            
+
         # Only allow updating own company
         if actor.company_id != pk:
             return Response(
                 {"detail": "Cannot update another company."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-            
-        result = update_company(actor, pk, **request.data)
-            
+
+        result = update_company(actor, pk, **request.data)  # noqa: F821
+
         if not result.success:
             return Response(
                 {"detail": result.error},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            
-        return Response(CompanyOutputSerializer(result.data["company"]).data)
-            
+
+        return Response(CompanyOutputSerializer(result.data["company"]).data)  # noqa: F821
+
 class CompanySettingsView(APIView):
     """
     GET /api/companies/settings/ - Get current company settings
@@ -1103,8 +1208,8 @@ class OnboardingSetupView(APIView):
         })
 
     def post(self, request):
-        from accounts.serializers import OnboardingSetupInputSerializer
         from accounts.commands import complete_onboarding
+        from accounts.serializers import OnboardingSetupInputSerializer
 
         actor = resolve_actor(request)
 
@@ -1585,8 +1690,6 @@ class AdminStatsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from django.db.models import Count
-        from events.models import BusinessEvent
 
         # Check if user is superuser
         if not request.user.is_superuser:
@@ -1615,8 +1718,9 @@ class AdminStatsView(APIView):
             pass
 
         # Recent activity (last 7 days)
-        from django.utils import timezone
         from datetime import timedelta
+
+        from django.utils import timezone
         week_ago = timezone.now() - timedelta(days=7)
 
         new_users_week = User.objects.using('default').filter(date_joined__gte=week_ago).count()
@@ -2136,8 +2240,10 @@ class InvitationInfoView(APIView):
 
     def get(self, request):
         import hashlib
-        from accounts.models import Invitation
+
         from django.utils import timezone
+
+        from accounts.models import Invitation
 
         token = request.query_params.get("token", "")
 
@@ -2366,8 +2472,8 @@ class SidebarView(APIView):
 
     def get(self, request):
         from accounts.authz import resolve_actor
-        from accounts.module_registry import module_registry, ModuleCategory
         from accounts.models import CompanyModule
+        from accounts.module_registry import ModuleCategory, module_registry
 
         actor = resolve_actor(request)
         if not actor.company:
@@ -2401,8 +2507,8 @@ class CompanyModulesView(APIView):
 
     def get(self, request):
         from accounts.authz import resolve_actor
-        from accounts.module_registry import module_registry, ModuleCategory
         from accounts.models import CompanyModule
+        from accounts.module_registry import ModuleCategory, module_registry
 
         actor = resolve_actor(request)
         if not actor.company:
@@ -2431,8 +2537,8 @@ class CompanyModulesView(APIView):
 
     def put(self, request):
         from accounts.authz import resolve_actor
-        from accounts.module_registry import module_registry, ModuleCategory
         from accounts.models import CompanyModule
+        from accounts.module_registry import module_registry
         from projections.write_barrier import command_writes_allowed
 
         actor = resolve_actor(request)

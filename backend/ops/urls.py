@@ -7,7 +7,7 @@ These endpoints are for infrastructure monitoring and should be:
 """
 from django.urls import path
 
-from ops.health import LivenessView, ReadinessView, FullHealthView
+from ops.health import FullHealthView, LivenessView, ReadinessView
 from ops.metrics import MetricsView
 
 urlpatterns = [

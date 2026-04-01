@@ -18,26 +18,24 @@ Invariants:
 6. verify_all_balances agrees with projection state after mixed operations
 """
 
-import pytest
-from decimal import Decimal
 from datetime import date
+from decimal import Decimal
 from uuid import uuid4
 
+import pytest
 from django.conf import settings
 from django.utils import timezone
 
-from accounting.models import Account, JournalEntry, JournalLine
+from accounting.models import Account, JournalEntry
 from events.emitter import emit_event
 from events.models import BusinessEvent
 from events.types import EventTypes
 from projections.account_balance import AccountBalanceProjection
 from projections.models import AccountBalance
 from projections.write_barrier import (
-    projection_writes_allowed,
     command_writes_allowed,
-    write_context_allowed,
+    projection_writes_allowed,
 )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -707,16 +705,15 @@ class TestWriteBarrierEnforcement:
         original_testing = getattr(settings, "TESTING", False)
         settings.TESTING = False
         try:
-            with pytest.raises(RuntimeError, match="read model"):
-                with command_writes_allowed():
-                    JournalEntry.objects.create(
-                        company=company,
-                        public_id=uuid4(),
-                        date=date.today(),
-                        memo="Should be blocked",
-                        status=JournalEntry.Status.DRAFT,
-                        created_by=user,
-                    )
+            with pytest.raises(RuntimeError, match="read model"), command_writes_allowed():
+                JournalEntry.objects.create(
+                    company=company,
+                    public_id=uuid4(),
+                    date=date.today(),
+                    memo="Should be blocked",
+                    status=JournalEntry.Status.DRAFT,
+                    created_by=user,
+                )
         finally:
             settings.TESTING = original_testing
 

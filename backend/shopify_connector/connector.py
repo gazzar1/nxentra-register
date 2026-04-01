@@ -16,21 +16,18 @@ events would be the primary path.
 
 import logging
 from decimal import Decimal
-from typing import Optional
 
-from django.conf import settings
 from django.http import HttpRequest
 
 from platform_connectors.base import BasePlatformConnector
 from platform_connectors.canonical import (
-    ParsedOrder,
-    ParsedOrderLine,
-    ParsedRefund,
-    ParsedPayout,
     ParsedDispute,
     ParsedFulfillment,
+    ParsedOrder,
+    ParsedOrderLine,
+    ParsedPayout,
+    ParsedRefund,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +92,7 @@ class ShopifyConnector(BasePlatformConnector):
     def parse_webhook_topic(self, request: HttpRequest) -> str:
         return request.META.get("HTTP_X_SHOPIFY_TOPIC", "")
 
-    def map_topic_to_canonical(self, topic: str) -> Optional[str]:
+    def map_topic_to_canonical(self, topic: str) -> str | None:
         """Map a Shopify webhook topic to a canonical topic category."""
         return SHOPIFY_TOPIC_MAP.get(topic)
 
@@ -191,7 +188,7 @@ class ShopifyConnector(BasePlatformConnector):
             payout_date=payload.get("date", ""),
         )
 
-    def parse_dispute(self, payload: dict) -> Optional[ParsedDispute]:
+    def parse_dispute(self, payload: dict) -> ParsedDispute | None:
         return ParsedDispute(
             platform_dispute_id=str(payload.get("id", "")),
             platform_order_id=str(payload.get("order_id", "")),
@@ -204,7 +201,7 @@ class ShopifyConnector(BasePlatformConnector):
             evidence_due_by=payload.get("evidence_due_by"),
         )
 
-    def parse_fulfillment(self, payload: dict) -> Optional[ParsedFulfillment]:
+    def parse_fulfillment(self, payload: dict) -> ParsedFulfillment | None:
         return ParsedFulfillment(
             platform_fulfillment_id=str(payload.get("id", "")),
             platform_order_id=str(payload.get("order_id", "")),

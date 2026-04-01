@@ -14,16 +14,14 @@ in production but are not covered by deterministic truth/control tests:
 If any of these fail, the system is not safe under real-world conditions.
 """
 
-import pytest
-import threading
-from decimal import Decimal
-from datetime import date
-from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date
+from decimal import Decimal
+from uuid import uuid4
 
-from django.db import connection, connections
+import pytest
+from django.db import connection
 from django.utils import timezone
-from django.test.utils import CaptureQueriesContext
 
 from accounting.models import Account
 from events.emitter import emit_event
@@ -31,7 +29,6 @@ from events.models import BusinessEvent, EventBookmark
 from events.types import EventTypes
 from projections.account_balance import AccountBalanceProjection
 from projections.models import AccountBalance, ProjectionAppliedEvent
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers

@@ -13,35 +13,35 @@ Key commands:
 - record_opening_balance: Record opening inventory balances
 """
 
+import uuid
+from decimal import Decimal
+
 from django.db import transaction
 from django.utils import timezone
-from decimal import Decimal
-import uuid
 
-from accounts.authz import ActorContext, require
-from accounting.models import Account, JournalEntry
 from accounting.commands import (
     CommandResult,
     create_journal_entry,
-    save_journal_entry_complete,
     post_journal_entry,
+    save_journal_entry_complete,
 )
+from accounting.models import Account, JournalEntry
+from accounts.authz import ActorContext, require
 from events.emitter import emit_event
 from events.types import (
     EventTypes,
-    WarehouseCreatedData,
-    WarehouseUpdatedData,
-    StockReceivedData,
-    StockIssuedData,
     InventoryAdjustedData,
     InventoryOpeningBalanceData,
+    StockIssuedData,
     StockLedgerEntryData,
+    StockReceivedData,
+    WarehouseCreatedData,
+    WarehouseUpdatedData,
 )
-from projections.write_barrier import command_writes_allowed
 from projections.models import InventoryBalance
+from projections.write_barrier import command_writes_allowed
 
-from sales.models import Item
-from .models import Warehouse, StockLedgerEntry, StockLedgerSequenceCounter
+from .models import StockLedgerEntry, StockLedgerSequenceCounter, Warehouse
 
 
 def _get_next_sequence(company) -> int:

@@ -23,9 +23,9 @@ from events.types import EventTypes
 from projections.write_barrier import command_writes_allowed
 
 from .event_types import (
+    LeaseExpiryAlertData,
     RentDuePostedData,
     RentOverdueDetectedData,
-    LeaseExpiryAlertData,
 )
 from .models import Lease, RentScheduleLine
 

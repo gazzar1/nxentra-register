@@ -5,17 +5,17 @@ Mapping engine for EDIM.
 Applies MappingProfile rules to transform raw payloads into canonical form.
 """
 
-from datetime import datetime, date
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
-from typing import Tuple, List, Dict, Any
+from typing import Any
 
 from edim.models import MappingProfile
 
 
 def apply_mapping(
-    raw_payload: Dict[str, Any],
+    raw_payload: dict[str, Any],
     profile: MappingProfile,
-) -> Tuple[Dict[str, Any], List[str]]:
+) -> tuple[dict[str, Any], list[str]]:
     """
     Apply a mapping profile to a raw payload.
 
@@ -55,7 +55,7 @@ def apply_mapping(
             transformed = apply_transform(source_value, transform, format_str)
             mapped[target_field] = transformed
         except Exception as e:
-            errors.append(f"Field '{source_field}' -> '{target_field}': {str(e)}")
+            errors.append(f"Field '{source_field}' -> '{target_field}': {e!s}")
 
     # Apply defaults for unmapped fields
     for field, value in profile.defaults.items():
@@ -67,7 +67,7 @@ def apply_mapping(
         try:
             mapped = apply_transform_rule(mapped, rule)
         except Exception as e:
-            errors.append(f"Transform rule error: {str(e)}")
+            errors.append(f"Transform rule error: {e!s}")
 
     return mapped, errors
 
@@ -102,7 +102,7 @@ def apply_transform(
             if clean_value == "" or clean_value == "-":
                 return "0"
             return str(Decimal(clean_value))
-        except (InvalidOperation, ValueError) as e:
+        except (InvalidOperation, ValueError):
             raise ValueError(f"Invalid decimal value: {value}")
 
     elif transform == "date_parse":
@@ -180,9 +180,9 @@ def parse_date(value: Any, format_str: str = "") -> str:
 
 
 def apply_transform_rule(
-    payload: Dict[str, Any],
-    rule: Dict[str, Any],
-) -> Dict[str, Any]:
+    payload: dict[str, Any],
+    rule: dict[str, Any],
+) -> dict[str, Any]:
     """
     Apply a post-mapping transform rule.
 

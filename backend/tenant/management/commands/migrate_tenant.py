@@ -34,7 +34,7 @@ from django.utils import timezone
 
 from accounts.models import Company
 from accounts.rls import rls_bypass
-from tenant.models import TenantDirectory, MigrationLog
+from tenant.models import MigrationLog, TenantDirectory
 
 
 class Command(BaseCommand):
@@ -327,6 +327,7 @@ class Command(BaseCommand):
             tuple: (is_ok: bool, details: dict)
         """
         from decimal import Decimal
+
         from projections.models import AccountBalance
         from tenant.context import tenant_context
 
@@ -346,17 +347,16 @@ class Command(BaseCommand):
                 )
 
             # Get target trial balance (from tenant database)
-            with tenant_context(company.id, target_alias, is_shared=False):
-                with rls_bypass():
-                    target_balances = AccountBalance.objects.using(target_alias).filter(
-                        company=company
-                    )
-                    target_debit = sum(
-                        (b.debit_total or Decimal("0")) for b in target_balances
-                    )
-                    target_credit = sum(
-                        (b.credit_total or Decimal("0")) for b in target_balances
-                    )
+            with tenant_context(company.id, target_alias, is_shared=False), rls_bypass():
+                target_balances = AccountBalance.objects.using(target_alias).filter(
+                    company=company
+                )
+                target_debit = sum(
+                    (b.debit_total or Decimal("0")) for b in target_balances
+                )
+                target_credit = sum(
+                    (b.credit_total or Decimal("0")) for b in target_balances
+                )
 
             details = {
                 "source_debit": str(source_debit),
@@ -385,12 +385,12 @@ class Command(BaseCommand):
         tenant_entry = TenantDirectory.objects.filter(company=company).first()
         current_mode = tenant_entry.mode if tenant_entry else "SHARED (no entry)"
 
-        self.stdout.write(f"\nCurrent state:")
+        self.stdout.write("\nCurrent state:")
         self.stdout.write(f"  Tenant: {company.name} (ID: {company.id})")
         self.stdout.write(f"  Current mode: {current_mode}")
         self.stdout.write(f"  Events to migrate: {event_count}")
 
-        self.stdout.write(f"\nSteps that would be executed:")
+        self.stdout.write("\nSteps that would be executed:")
         self.stdout.write("  [1] Set tenant status to MIGRATING")
         if not options["skip_export"]:
             self.stdout.write(f"  [2] Export {event_count} events")
@@ -408,6 +408,6 @@ class Command(BaseCommand):
         self.stdout.write("  [6] Verify migration integrity (hash, count, trial balance)")
         self.stdout.write(f"  [7] Update TenantDirectory: mode=DEDICATED_DB, db_alias={target_alias}")
 
-        self.stdout.write(f"\nFinal state:")
-        self.stdout.write(f"  Mode: DEDICATED_DB")
+        self.stdout.write("\nFinal state:")
+        self.stdout.write("  Mode: DEDICATED_DB")
         self.stdout.write(f"  Database: {target_alias}")

@@ -18,7 +18,6 @@ from events.models import BusinessEvent
 from events.types import EventTypes
 from projections.base import BaseProjection, projection_registry
 
-
 logger = logging.getLogger(__name__)
 User = get_user_model()
 
@@ -65,7 +64,7 @@ class CompanyProjection(BaseProjection):
             if not company:
                 logger.warning("Company not found for update: %s", data["company_public_id"])
                 return
-            
+
             for field, change in data.get("changes", {}).items():
                 if hasattr(company, field):
                     setattr(company, field, change.get("new"))

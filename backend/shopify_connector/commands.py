@@ -16,27 +16,31 @@ import requests
 from django.conf import settings
 from django.db import transaction
 
-from accounts.authz import ActorContext, require
 from accounting.commands import CommandResult
+from accounts.authz import ActorContext, require
 from events.emitter import emit_event
 from events.types import EventTypes
 from projections.write_barrier import command_writes_allowed
 
-from .models import (
-    ShopifyStore, ShopifyOrder, ShopifyRefund, ShopifyPayout,
-    ShopifyFulfillment, ShopifyPayoutTransaction, ShopifyDispute,
-)
 from .event_types import (
-    ShopifyStoreConnectedData,
-    ShopifyStoreDisconnectedData,
-    ShopifyOrderPaidData,
-    ShopifyRefundCreatedData,
-    ShopifyPayoutSettledData,
-    ShopifyOrderFulfilledData,
     ShopifyDisputeCreatedData,
     ShopifyDisputeWonData,
+    ShopifyOrderFulfilledData,
+    ShopifyOrderPaidData,
+    ShopifyPayoutSettledData,
+    ShopifyRefundCreatedData,
+    ShopifyStoreConnectedData,
+    ShopifyStoreDisconnectedData,
 )
-
+from .models import (
+    ShopifyDispute,
+    ShopifyFulfillment,
+    ShopifyOrder,
+    ShopifyPayout,
+    ShopifyPayoutTransaction,
+    ShopifyRefund,
+    ShopifyStore,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -438,9 +442,9 @@ def process_refund(store: ShopifyStore, payload: dict) -> CommandResult:
 
     # Calculate refund amount from transactions
     refund_amount = Decimal("0")
-    for transaction in payload.get("transactions", []):
-        if transaction.get("kind") == "refund" and transaction.get("status") == "success":
-            refund_amount += Decimal(str(transaction.get("amount", "0")))
+    for txn in payload.get("transactions", []):
+        if txn.get("kind") == "refund" and txn.get("status") == "success":
+            refund_amount += Decimal(str(txn.get("amount", "0")))
 
     # Fallback: sum refund line items
     if refund_amount == 0:
@@ -904,9 +908,9 @@ def process_fulfillment(store: ShopifyStore, payload: dict) -> CommandResult:
         fulfillment_date = datetime.now().date()
 
     # Match SKUs to inventory Items and look up costs
-    from sales.models import Item
-    from projections.models import InventoryBalance
     from inventory.models import Warehouse
+    from projections.models import InventoryBalance
+    from sales.models import Item
 
     line_items = payload.get("line_items", [])
     cogs_lines = []
@@ -1246,8 +1250,9 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
 
     Returns CommandResult with counts: created, linked, updated, skipped.
     """
-    from .models import ShopifyProduct
     from sales.models import Item
+
+    from .models import ShopifyProduct
 
     if store.status != ShopifyStore.Status.ACTIVE:
         return CommandResult.fail("Store is not active.")
@@ -1375,8 +1380,9 @@ def process_product_webhook(store: ShopifyStore, payload: dict) -> CommandResult
     Updates ShopifyProduct mapping and linked Item if auto_created.
     If product_sync_enabled and no mapping exists, creates one.
     """
-    from .models import ShopifyProduct
     from sales.models import Item
+
+    from .models import ShopifyProduct
 
     company = store.company
     product_id = payload.get("id")

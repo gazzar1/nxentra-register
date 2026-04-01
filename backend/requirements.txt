@@ -38,3 +38,9 @@ weasyprint>=60.0
 # Testing
 pytest>=8.0.0
 pytest-django>=4.7.0
+
+# Code quality
+ruff>=0.9.0
+mypy>=1.13.0
+django-stubs>=5.1.0
+djangorestframework-stubs>=3.15.0

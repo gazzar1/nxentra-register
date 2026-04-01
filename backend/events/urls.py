@@ -11,18 +11,17 @@ Implements PRD Section 10: Audit Chain Views
 
 from django.urls import path
 
+from events.ingest import EventIngestView
 from events.views import (
-    EventListView,
-    EventDetailView,
-    EventCausationChainView,
     AggregateEventHistoryView,
-    JournalEventMappingView,
+    EventBookmarkListView,
+    EventCausationChainView,
+    EventDetailView,
+    EventListView,
     IntegrityCheckView,
     IntegritySummaryView,
-    EventBookmarkListView,
+    JournalEventMappingView,
 )
-from events.ingest import EventIngestView
-
 
 app_name = "events"
 

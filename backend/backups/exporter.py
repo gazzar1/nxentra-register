@@ -78,7 +78,7 @@ def export_company(company):
     Returns:
         tuple: (zip_bytes: bytes, metadata: dict)
     """
-    from backups.model_registry import get_export_registry, EXCLUDED_FIELDS
+    from backups.model_registry import EXCLUDED_FIELDS, get_export_registry
 
     started_at = timezone.now()
     registry = get_export_registry()
@@ -104,56 +104,55 @@ def export_company(company):
     buf = io.BytesIO()
     hasher = hashlib.sha256()
 
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        with rls_bypass():
-            total_records = 0
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf, rls_bypass():
+        total_records = 0
 
-            for label, model_cls in registry.items():
-                excluded = EXCLUDED_FIELDS.get(label, [])
+        for label, model_cls in registry.items():
+            excluded = EXCLUDED_FIELDS.get(label, [])
 
-                # Build queryset filtered to company
-                qs = _get_company_queryset(model_cls, company)
-                if qs is None:
-                    continue
+            # Build queryset filtered to company
+            qs = _get_company_queryset(model_cls, company)
+            if qs is None:
+                continue
 
-                # Order by PK for deterministic export
-                qs = qs.order_by("pk")
+            # Order by PK for deterministic export
+            qs = qs.order_by("pk")
 
-                records = []
-                for instance in qs.iterator(chunk_size=1000):
-                    record = _serialize_instance(instance, excluded)
-                    records.append(record)
+            records = []
+            for instance in qs.iterator(chunk_size=1000):
+                record = _serialize_instance(instance, excluded)
+                records.append(record)
 
-                if not records:
-                    manifest["model_counts"][label] = 0
-                    continue
+            if not records:
+                manifest["model_counts"][label] = 0
+                continue
 
-                # Write to ZIP as models/<label>.json
-                json_bytes = json.dumps(
-                    records, cls=BackupEncoder, ensure_ascii=False
-                ).encode("utf-8")
-                zf.writestr(f"models/{label}.json", json_bytes)
-
-                # Update hash
-                hasher.update(json_bytes)
-
-                count = len(records)
-                manifest["model_counts"][label] = count
-                total_records += count
-
-                if label == "events.BusinessEvent":
-                    manifest["event_count"] = count
-
-                logger.info("Exported %d records for %s", count, label)
-
-            manifest["total_records"] = total_records
-            manifest["export_hash"] = hasher.hexdigest()
-
-            # Write manifest
-            manifest_bytes = json.dumps(
-                manifest, cls=BackupEncoder, indent=2, ensure_ascii=False
+            # Write to ZIP as models/<label>.json
+            json_bytes = json.dumps(
+                records, cls=BackupEncoder, ensure_ascii=False
             ).encode("utf-8")
-            zf.writestr("manifest.json", manifest_bytes)
+            zf.writestr(f"models/{label}.json", json_bytes)
+
+            # Update hash
+            hasher.update(json_bytes)
+
+            count = len(records)
+            manifest["model_counts"][label] = count
+            total_records += count
+
+            if label == "events.BusinessEvent":
+                manifest["event_count"] = count
+
+            logger.info("Exported %d records for %s", count, label)
+
+        manifest["total_records"] = total_records
+        manifest["export_hash"] = hasher.hexdigest()
+
+        # Write manifest
+        manifest_bytes = json.dumps(
+            manifest, cls=BackupEncoder, indent=2, ensure_ascii=False
+        ).encode("utf-8")
+        zf.writestr("manifest.json", manifest_bytes)
 
     zip_bytes = buf.getvalue()
     elapsed = (timezone.now() - started_at).total_seconds()

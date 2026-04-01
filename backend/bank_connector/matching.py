@@ -13,10 +13,10 @@ import logging
 from datetime import timedelta
 from decimal import Decimal
 
-from django.db.models import Q, Sum
+from django.db.models import Sum
 from django.utils import timezone
 
-from .models import BankAccount, BankTransaction
+from .models import BankTransaction
 
 # Lazy imports for accounting models (avoid circular imports)
 # These are imported inside functions that need them.
@@ -217,7 +217,7 @@ def _reconcile_payout_je(company, platform, payout_obj, bank_tx):
 
     Returns dict with je_status info.
     """
-    from accounting.models import JournalEntry, JournalLine
+    from accounting.models import JournalEntry
     from projections.write_barrier import projection_writes_allowed
 
     je_public_id = payout_obj.journal_entry_id
@@ -317,8 +317,8 @@ def _create_payout_je(company, platform, payout_obj):
       DR Processing Fees  (fees)
         CR Platform Clearing  (gross_amount)
     """
-    from platform_connectors.je_builder import build_journal_entry, JERequest, JELine
     from accounting.mappings import ModuleAccountMapping
+    from platform_connectors.je_builder import JELine, JERequest, build_journal_entry
 
     # Module keys in DB: "shopify_connector", "stripe_connector"
     module_key = f"{platform}_connector"

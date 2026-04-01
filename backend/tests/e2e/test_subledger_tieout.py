@@ -8,20 +8,20 @@ These tests verify that:
 3. validate_subledger_tieout policy function works correctly
 """
 
-import pytest
-from decimal import Decimal
 from datetime import date
+from decimal import Decimal
 from uuid import uuid4
 
-from accounts.models import Company
-from accounting.models import Account, Customer, Vendor, JournalEntry
+import pytest
+
 from accounting.commands import (
     create_journal_entry,
-    save_journal_entry_complete,
     post_journal_entry,
+    save_journal_entry_complete,
 )
+from accounting.models import Account, Customer, Vendor
 from accounting.policies import validate_subledger_tieout
-from projections.models import AccountBalance, CustomerBalance, VendorBalance
+from projections.models import AccountBalance, CustomerBalance
 
 
 @pytest.mark.django_db(transaction=True)

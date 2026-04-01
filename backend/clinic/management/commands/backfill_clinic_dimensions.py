@@ -13,18 +13,22 @@ Usage:
 """
 
 import logging
+
 from django.core.management.base import BaseCommand
 
+from accounting.models import (
+    AnalysisDimension,
+    AnalysisDimensionValue,
+    JournalEntry,
+    JournalLine,
+    JournalLineAnalysis,
+)
 from accounts.models import Company
 from accounts.rls import rls_bypass
-from accounting.models import (
-    AnalysisDimension, AnalysisDimensionValue,
-    JournalEntry, JournalLine, JournalLineAnalysis,
-)
+from clinic.models import Invoice, Patient, Visit
 from events.models import BusinessEvent
 from events.types import EventTypes
 from projections.write_barrier import projection_writes_allowed
-from clinic.models import Doctor, Patient, Visit, Invoice
 
 logger = logging.getLogger(__name__)
 

@@ -4,7 +4,6 @@ import logging
 from django.apps import AppConfig
 from django.utils.module_loading import import_string
 
-
 logger = logging.getLogger(__name__)
 
 # Core projection modules (always loaded, not vertical-specific).
@@ -28,6 +27,7 @@ class ProjectionsConfig(AppConfig):
 
     def ready(self):
         from django.apps import apps as django_apps
+
         from projections.base import projection_registry
 
         # -----------------------------------------------------------------

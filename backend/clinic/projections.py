@@ -13,23 +13,25 @@ Account roles used by this module:
 
 import logging
 import uuid
+from datetime import date, datetime
 from decimal import Decimal
-from datetime import datetime, date
 
 from django.utils import timezone
 
-from events.types import EventTypes, JournalEntryPostedData
-from events.models import BusinessEvent
-from events.emitter import emit_event_no_actor
-from projections.base import BaseProjection
-from projections.models import FiscalPeriod
 from accounting.mappings import ModuleAccountMapping
 from accounting.models import (
-    AnalysisDimension, AnalysisDimensionValue,
-    JournalEntry, JournalLine, JournalLineAnalysis,
+    AnalysisDimension,
+    AnalysisDimensionValue,
+    JournalEntry,
+    JournalLine,
+    JournalLineAnalysis,
 )
-from clinic.models import Doctor, Patient
-
+from clinic.models import Patient
+from events.emitter import emit_event_no_actor
+from events.models import BusinessEvent
+from events.types import EventTypes, JournalEntryPostedData
+from projections.base import BaseProjection
+from projections.models import FiscalPeriod
 
 logger = logging.getLogger(__name__)
 

@@ -16,13 +16,11 @@ export const authService = {
       payload
     ),
 
-  refresh: (refreshToken: string) =>
-    apiClient.post<{ access: string; refresh?: string }>('/auth/refresh/', {
-      refresh: refreshToken,
-    }),
+  refresh: () =>
+    apiClient.post<{ access: string; refresh?: string }>('/auth/refresh/', {}),
 
-  logout: (refreshToken: string) =>
-    apiClient.post('/auth/logout/', { refresh: refreshToken }),
+  logout: () =>
+    apiClient.post('/auth/logout/', {}),
 
   getProfile: () =>
     apiClient.get<ProfileResponse>('/auth/me/'),

@@ -108,7 +108,7 @@ def detect_unmatched_payouts(company, age_days=5):
     """
     Detect platform payouts that have no matching bank transaction.
     """
-    from .matching import get_all_payouts, _is_payout_already_matched
+    from .matching import _is_payout_already_matched, get_all_payouts
 
     cutoff = date.today() - timedelta(days=age_days)
     payouts = get_all_payouts(company)
@@ -242,8 +242,8 @@ def detect_payout_discrepancies(company, date_from=None, date_to=None):
 
     # Shopify payouts
     try:
-        from shopify_connector.reconciliation import reconcile_payout as shopify_reconcile
         from shopify_connector.models import ShopifyPayout
+        from shopify_connector.reconciliation import reconcile_payout as shopify_reconcile
 
         shopify_payouts = ShopifyPayout.objects.filter(
             company=company,
@@ -259,8 +259,8 @@ def detect_payout_discrepancies(company, date_from=None, date_to=None):
 
     # Stripe payouts
     try:
-        from stripe_connector.reconciliation import reconcile_payout as stripe_reconcile
         from stripe_connector.models import StripePayout
+        from stripe_connector.reconciliation import reconcile_payout as stripe_reconcile
 
         stripe_payouts = StripePayout.objects.filter(
             company=company,

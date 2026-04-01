@@ -17,12 +17,12 @@ from decimal import Decimal
 
 from django.utils import timezone
 
-from events.types import EventTypes, JournalEntryPostedData
-from events.models import BusinessEvent
-from events.emitter import emit_event_no_actor
-from projections.models import FiscalPeriod
-from accounting.models import JournalEntry, JournalLine, ExchangeRate
 from accounting.commands import _next_company_sequence
+from accounting.models import ExchangeRate, JournalEntry, JournalLine
+from events.emitter import emit_event_no_actor
+from events.models import BusinessEvent
+from events.types import EventTypes, JournalEntryPostedData
+from projections.models import FiscalPeriod
 
 logger = logging.getLogger(__name__)
 
@@ -85,8 +85,8 @@ def _fix_fx_rounding(lines, entry, company, currency, fx_rate):
     largest line if no rounding account is configured.
     Only applies for trivial imbalances (≤ 0.05).
     """
-    from accounting.models import Account
     from accounting.mappings import ModuleAccountMapping
+    from accounting.models import Account
 
     total_debit = sum(l.debit for l in lines)
     total_credit = sum(l.credit for l in lines)

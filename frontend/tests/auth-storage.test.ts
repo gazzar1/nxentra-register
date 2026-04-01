@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
+  isAuthenticated,
+  setAuthenticated,
+  cleanupLegacyTokens,
   getAccessToken,
   getRefreshToken,
   storeTokens,
@@ -7,28 +10,40 @@ import {
 } from '@/lib/auth-storage';
 
 describe('auth-storage', () => {
-  it('returns null when no token stored', () => {
+  it('returns false when not authenticated', () => {
+    expect(isAuthenticated()).toBe(false);
     expect(getAccessToken()).toBeNull();
     expect(getRefreshToken()).toBeNull();
   });
 
-  it('stores and retrieves tokens', () => {
-    storeTokens('access-123', 'refresh-456');
-    expect(getAccessToken()).toBe('access-123');
-    expect(getRefreshToken()).toBe('refresh-456');
+  it('sets and checks authenticated flag', () => {
+    setAuthenticated(true);
+    expect(isAuthenticated()).toBe(true);
+    // Legacy compat: getAccessToken returns a truthy placeholder
+    expect(getAccessToken()).toBe('__cookie__');
+    expect(getRefreshToken()).toBe('__cookie__');
   });
 
-  it('removes tokens', () => {
-    storeTokens('access-123', 'refresh-456');
+  it('clears authenticated flag', () => {
+    setAuthenticated(true);
+    setAuthenticated(false);
+    expect(isAuthenticated()).toBe(false);
+    expect(getAccessToken()).toBeNull();
+  });
+
+  it('storeTokens sets authenticated flag (backward compat)', () => {
+    storeTokens('any', 'any');
+    expect(isAuthenticated()).toBe(true);
     removeTokens();
-    expect(getAccessToken()).toBeNull();
-    expect(getRefreshToken()).toBeNull();
+    expect(isAuthenticated()).toBe(false);
   });
 
-  it('overwrites existing tokens', () => {
-    storeTokens('old-access', 'old-refresh');
-    storeTokens('new-access', 'new-refresh');
-    expect(getAccessToken()).toBe('new-access');
-    expect(getRefreshToken()).toBe('new-refresh');
+  it('cleans up legacy localStorage tokens', () => {
+    // Simulate legacy tokens
+    localStorage.setItem('nxentra_access', 'old-jwt');
+    localStorage.setItem('nxentra_refresh', 'old-refresh');
+    cleanupLegacyTokens();
+    expect(localStorage.getItem('nxentra_access')).toBeNull();
+    expect(localStorage.getItem('nxentra_refresh')).toBeNull();
   });
 });

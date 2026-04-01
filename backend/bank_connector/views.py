@@ -10,28 +10,26 @@ Provides endpoints for:
 
 from decimal import Decimal
 
-from django.db.models import Sum, Count, Q
+from django.db.models import Q
 from django.utils import timezone
-from rest_framework import status
-from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.authz import resolve_actor
 
-from .models import BankAccount, BankStatement, BankTransaction, ReconciliationException
-from .parsers import parse_csv_file, preview_csv, apply_column_mapping
+from .exceptions import scan_all
 from .matching import (
     auto_match_transactions,
-    get_match_suggestions,
-    manual_match,
     explain_payout,
+    get_match_suggestions,
     get_reconciliation_overview,
     get_unmatched_payouts,
+    manual_match,
 )
-from .exceptions import scan_all
-
+from .models import BankAccount, BankStatement, BankTransaction, ReconciliationException
+from .parsers import apply_column_mapping, parse_csv_file, preview_csv
 
 # ─── Bank Accounts ──────────────────────────────────────────────
 
@@ -169,7 +167,7 @@ class BankStatementPreviewView(APIView):
         try:
             result = preview_csv(uploaded_file, max_rows=5)
         except Exception as e:
-            return Response({"detail": f"Error reading CSV: {str(e)}"}, status=400)
+            return Response({"detail": f"Error reading CSV: {e!s}"}, status=400)
 
         return Response({
             "filename": uploaded_file.name,
@@ -228,7 +226,7 @@ class BankStatementImportView(APIView):
         try:
             raw_rows = parse_csv_file(uploaded_file)
         except Exception as e:
-            return Response({"detail": f"Error parsing CSV: {str(e)}"}, status=400)
+            return Response({"detail": f"Error parsing CSV: {e!s}"}, status=400)
 
         if not raw_rows:
             return Response({"detail": "CSV file is empty or has no data rows."}, status=400)

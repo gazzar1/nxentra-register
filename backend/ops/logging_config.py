@@ -14,7 +14,6 @@ Environment variables:
 """
 import logging
 import os
-import sys
 
 
 def get_logging_config(debug: bool = False) -> dict:

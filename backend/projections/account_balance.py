@@ -14,19 +14,18 @@ The projection maintains:
 This projection is the single source of truth for "what is the balance?"
 """
 
-from decimal import Decimal
-from typing import List, Dict, Any
 import logging
+from decimal import Decimal
+from typing import Any
 
 from django.db import transaction
 
-from accounts.models import Company
 from accounting.models import Account
+from accounts.models import Company
 from events.models import BusinessEvent
 from events.types import EventTypes
 from projections.base import BaseProjection, projection_registry
 from projections.models import AccountBalance
-
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +44,13 @@ class AccountBalanceProjection(BaseProjection):
     will not double-count amounts (guaranteed by ProjectionAppliedEvent
     in BaseProjection.process_pending).
     """
-    
+
     @property
     def name(self) -> str:
         return "account_balance"
-    
+
     @property
-    def consumes(self) -> List[str]:
+    def consumes(self) -> list[str]:
         return [
             EventTypes.JOURNAL_ENTRY_POSTED,
             # Note: REVERSED entries emit a new POSTED event for the reversal
@@ -78,25 +77,25 @@ class AccountBalanceProjection(BaseProjection):
             self._handle_chunk(event)
         else:
             logger.warning(f"Unknown event type: {event.event_type}")
-    
+
     def _handle_posted(self, event: BusinessEvent) -> None:
         """Handle journal_entry.posted event."""
         # Use get_data() for LEPH compatibility (handles inline, external, and chunked payloads)
         data = event.get_data()
         entry_date_str = data.get("date")
         lines = data.get("lines", [])
-        
+
         if not lines:
             logger.warning(f"Posted entry {data.get('entry_public_id')} has no lines")
             return
-        
+
         # Parse entry date
         from datetime import datetime
         if entry_date_str:
             entry_date = datetime.fromisoformat(entry_date_str).date()
         else:
             entry_date = None
-        
+
         # Process each line
         for line_data in lines:
             self._apply_line(
@@ -146,7 +145,7 @@ class AccountBalanceProjection(BaseProjection):
     def _apply_line(
     self,
     company: Company,
-    line_data: Dict[str, Any],
+    line_data: dict[str, Any],
     entry_date,
     event: BusinessEvent,
     ) -> None:
@@ -166,20 +165,20 @@ class AccountBalanceProjection(BaseProjection):
         debit = Decimal(line_data.get("debit", "0"))
         credit = Decimal(line_data.get("credit", "0"))
         is_memo = line_data.get("is_memo_line", False)
-        
+
         # Validation: must have account
         if not account_public_id:
             logger.warning(f"Line missing account_public_id in event {event.id}")
             return
-        
+
         # Skip memo lines for financial balances
         if is_memo:
             return
-        
+
         # Skip if no actual amount
         if debit == 0 and credit == 0:
             return
-        
+
         # Get the account
         try:
             account = Account.objects.get(public_id=account_public_id, company=company)
@@ -194,7 +193,7 @@ class AccountBalanceProjection(BaseProjection):
                 f"Account/company mismatch for account {account_public_id}: "
                 f"account.company_id={account.company_id} company.id={company.id}"
             )
-        
+
         # ═══════════════════════════════════════════════════════════════════════
         # CRITICAL: Use transaction + select_for_update to prevent race conditions
         # ═══════════════════════════════════════════════════════════════════════
@@ -217,7 +216,7 @@ class AccountBalanceProjection(BaseProjection):
                     entry_count=0,
                 )
                 created = True
-            
+
             # Note: Event-level idempotency is handled by ProjectionAppliedEvent
             # in BaseProjection.process_pending(). We do NOT guard per-account
             # here because a single event can legitimately have multiple lines
@@ -228,25 +227,25 @@ class AccountBalanceProjection(BaseProjection):
                 balance.apply_debit(debit)
             if credit > 0:
                 balance.apply_credit(credit)
-            
+
             # Update statistics
             balance.entry_count += 1
-            
+
             if entry_date:
                 if not balance.last_entry_date or entry_date > balance.last_entry_date:
                     balance.last_entry_date = entry_date
-            
+
             # Track which event last updated this balance
             balance.last_event = event
-            
+
             # Save (still inside transaction, lock released on commit)
             balance.save()
-            
+
             logger.debug(
                 f"Updated balance for {account.code}: "
                 f"debit={debit}, credit={credit}, new_balance={balance.balance}"
             )
-        
+
     def _clear_projected_data(self, company: Company) -> None:
         """Clear all AccountBalance records for rebuild."""
         cleared = AccountBalance.objects.filter(company=company).update(
@@ -258,7 +257,7 @@ class AccountBalanceProjection(BaseProjection):
             last_event=None,
         )
         logger.info(f"Reset {cleared} AccountBalance records for {company.name}")
-    
+
     def get_balance(self, company: Company, account: Account) -> Decimal:
         """
         Get the current balance for an account.
@@ -271,8 +270,8 @@ class AccountBalanceProjection(BaseProjection):
             return balance.balance
         except AccountBalance.DoesNotExist:
             return Decimal("0.00")
-    
-    def get_trial_balance(self, company: Company) -> Dict[str, Any]:
+
+    def get_trial_balance(self, company: Company) -> dict[str, Any]:
         """
         Generate trial balance from projected balances.
 
@@ -342,8 +341,8 @@ class AccountBalanceProjection(BaseProjection):
             "total_credit": str(total_credit),
             "is_balanced": total_debit == total_credit,
         }
-    
-    def verify_all_balances(self, company: Company) -> Dict[str, Any]:
+
+    def verify_all_balances(self, company: Company) -> dict[str, Any]:
         """
         Verify all projected balances by replaying events.
 
@@ -363,7 +362,7 @@ class AccountBalanceProjection(BaseProjection):
         from events.types import EventTypes
 
         # Build expected totals by replaying events
-        expected_totals: Dict[str, Dict[str, Decimal]] = {}
+        expected_totals: dict[str, dict[str, Decimal]] = {}
         events_processed = 0
 
         events = BusinessEvent.objects.filter(

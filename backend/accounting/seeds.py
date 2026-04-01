@@ -22,7 +22,6 @@ The seed creates essential accounts that most businesses need:
 
 import logging
 from dataclasses import dataclass
-from typing import List, Tuple, Optional
 
 from django.db import transaction
 
@@ -64,7 +63,7 @@ class SeedAccountTemplate:
 # These are the minimum required accounts for a functioning accounting system.
 # Detection is by (role, ledger_domain) - codes are just defaults.
 
-SEED_ACCOUNTS: List[SeedAccountTemplate] = [
+SEED_ACCOUNTS: list[SeedAccountTemplate] = [
     # -------------------------------------------------------------------------
     # AR/AP Control Accounts (Required for subledger tracking)
     # -------------------------------------------------------------------------
@@ -169,7 +168,7 @@ SEED_ACCOUNTS: List[SeedAccountTemplate] = [
 # Additional accounts seeded based on the template chosen during onboarding.
 # These are NOT system_protected so users can freely edit/delete them.
 
-RETAIL_TEMPLATE: List[SeedAccountTemplate] = [
+RETAIL_TEMPLATE: list[SeedAccountTemplate] = [
     # -- Assets --
     SeedAccountTemplate("1300", "Inventory", "المخزون", "ASSET", "INVENTORY_VALUE", "FINANCIAL"),
     SeedAccountTemplate("1400", "Prepaid Expenses", "مصاريف مدفوعة مقدماً", "ASSET", "PREPAID", "FINANCIAL"),
@@ -192,7 +191,7 @@ RETAIL_TEMPLATE: List[SeedAccountTemplate] = [
     SeedAccountTemplate("5800", "Discounts Given", "خصومات ممنوحة", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
 ]
 
-SERVICES_TEMPLATE: List[SeedAccountTemplate] = [
+SERVICES_TEMPLATE: list[SeedAccountTemplate] = [
     # -- Assets --
     SeedAccountTemplate("1400", "Prepaid Expenses", "مصاريف مدفوعة مقدماً", "ASSET", "PREPAID", "FINANCIAL"),
     # -- Liabilities --
@@ -255,14 +254,14 @@ COA_TEMPLATES = {
 @dataclass
 class SeedResult:
     """Result of seeding operation."""
-    created: List[str]  # List of account codes created
-    skipped: List[str]  # List of roles that already exist
-    errors: List[str]   # List of error messages
+    created: list[str]  # List of account codes created
+    skipped: list[str]  # List of roles that already exist
+    errors: list[str]   # List of error messages
 
 
 def seed_chart_of_accounts(
     company: Company,
-    templates: Optional[List[SeedAccountTemplate]] = None,
+    templates: list[SeedAccountTemplate] | None = None,
     system_protected: bool = True,
 ) -> SeedResult:
     """
@@ -291,59 +290,58 @@ def seed_chart_of_accounts(
 
     result = SeedResult(created=[], skipped=[], errors=[])
 
-    with transaction.atomic():
-        with projection_writes_allowed():
-            for template in templates:
-                try:
-                    # Detection key: (role, ledger_domain)
-                    # NOT by code - allows tenant code customization
-                    existing = Account.objects.filter(
-                        company=company,
-                        role=template.role,
-                        ledger_domain=template.ledger_domain,
-                    ).first()
+    with transaction.atomic(), projection_writes_allowed():
+        for template in templates:
+            try:
+                # Detection key: (role, ledger_domain)
+                # NOT by code - allows tenant code customization
+                existing = Account.objects.filter(
+                    company=company,
+                    role=template.role,
+                    ledger_domain=template.ledger_domain,
+                ).first()
 
-                    if existing:
-                        result.skipped.append(
-                            f"{template.role} ({existing.code})"
-                        )
-                        logger.debug(
-                            f"Skipped {template.role}: already exists as {existing.code}"
-                        )
-                        continue
-
-                    # Generate unique code if default is taken
-                    code = _generate_unique_code(
-                        company, template.default_code, template.role
+                if existing:
+                    result.skipped.append(
+                        f"{template.role} ({existing.code})"
                     )
-
-                    # Create the account
-                    account = Account(
-                        company=company,
-                        code=code,
-                        name=template.name,
-                        name_ar=template.name_ar,
-                        account_type=template.account_type,
-                        role=template.role,
-                        ledger_domain=template.ledger_domain,
-                        is_header=template.is_header,
-                        description=template.description,
-                        description_ar=template.description_ar,
-                        is_system_protected=system_protected,
-                        status=Account.Status.ACTIVE,
+                    logger.debug(
+                        f"Skipped {template.role}: already exists as {existing.code}"
                     )
-                    account.save()
+                    continue
 
-                    result.created.append(f"{code} ({template.role})")
-                    logger.info(
-                        f"Created seeded account {code} ({template.role}) "
-                        f"for company {company.name}"
-                    )
+                # Generate unique code if default is taken
+                code = _generate_unique_code(
+                    company, template.default_code, template.role
+                )
 
-                except Exception as e:
-                    error_msg = f"Error creating {template.role}: {str(e)}"
-                    result.errors.append(error_msg)
-                    logger.error(error_msg)
+                # Create the account
+                account = Account(
+                    company=company,
+                    code=code,
+                    name=template.name,
+                    name_ar=template.name_ar,
+                    account_type=template.account_type,
+                    role=template.role,
+                    ledger_domain=template.ledger_domain,
+                    is_header=template.is_header,
+                    description=template.description,
+                    description_ar=template.description_ar,
+                    is_system_protected=system_protected,
+                    status=Account.Status.ACTIVE,
+                )
+                account.save()
+
+                result.created.append(f"{code} ({template.role})")
+                logger.info(
+                    f"Created seeded account {code} ({template.role}) "
+                    f"for company {company.name}"
+                )
+
+            except Exception as e:
+                error_msg = f"Error creating {template.role}: {e!s}"
+                result.errors.append(error_msg)
+                logger.error(error_msg)
 
     return result
 

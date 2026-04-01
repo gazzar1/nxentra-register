@@ -1,6 +1,7 @@
 # shopify_connector/serializers.py
 from rest_framework import serializers
-from .models import ShopifyStore, ShopifyOrder, ShopifyRefund
+
+from .models import ShopifyOrder, ShopifyRefund, ShopifyStore
 
 
 class ShopifyStoreSerializer(serializers.ModelSerializer):

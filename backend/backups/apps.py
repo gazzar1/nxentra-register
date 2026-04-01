@@ -8,7 +8,7 @@ class BackupsConfig(AppConfig):
     verbose_name = "Company Backup & Restore"
 
     def ready(self):
-        from accounts.module_registry import module_registry, ModuleCategory
+        from accounts.module_registry import ModuleCategory, module_registry
 
         module_registry.register(
             "backups",

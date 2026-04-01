@@ -16,7 +16,6 @@ Options:
 """
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
-from django.db import connections
 
 from accounts.models import Company
 from accounts.rls import rls_bypass
@@ -100,61 +99,60 @@ class Command(BaseCommand):
         self.stdout.write(f"Projections to process: {[p.name for p in projections_to_run]}")
 
         # Set up tenant context
-        with tenant_context(company_id, db_alias, is_shared=False):
-            with rls_bypass():
-                total_processed = 0
+        with tenant_context(company_id, db_alias, is_shared=False), rls_bypass():
+            total_processed = 0
 
-                for projection in projections_to_run:
-                    self.stdout.write(f"\nProcessing: {projection.name}")
-                    self.stdout.write(f"  Consumes: {projection.consumes}")
+            for projection in projections_to_run:
+                self.stdout.write(f"\nProcessing: {projection.name}")
+                self.stdout.write(f"  Consumes: {projection.consumes}")
 
-                    if options["dry_run"]:
-                        # Count events that would be processed
-                        from events.models import BusinessEvent, EventBookmark
+                if options["dry_run"]:
+                    # Count events that would be processed
+                    from events.models import BusinessEvent, EventBookmark
 
-                        bookmark = EventBookmark.objects.using(db_alias).filter(
-                            consumer_name=projection.name,
+                    bookmark = EventBookmark.objects.using(db_alias).filter(
+                        consumer_name=projection.name,
+                        company_id=company_id,
+                    ).first()
+
+                    if options["rebuild"] or not bookmark:
+                        # Would process all events
+                        count = BusinessEvent.objects.using(db_alias).filter(
                             company_id=company_id,
-                        ).first()
+                            event_type__in=projection.consumes,
+                        ).count()
+                    else:
+                        # Would process events after bookmark
+                        count = BusinessEvent.objects.using(db_alias).filter(
+                            company_id=company_id,
+                            event_type__in=projection.consumes,
+                            company_sequence__gt=bookmark.last_event.company_sequence if bookmark.last_event else 0,
+                        ).count()
 
-                        if options["rebuild"] or not bookmark:
-                            # Would process all events
-                            count = BusinessEvent.objects.using(db_alias).filter(
-                                company_id=company_id,
-                                event_type__in=projection.consumes,
-                            ).count()
-                        else:
-                            # Would process events after bookmark
-                            count = BusinessEvent.objects.using(db_alias).filter(
-                                company_id=company_id,
-                                event_type__in=projection.consumes,
-                                company_sequence__gt=bookmark.last_event.company_sequence if bookmark.last_event else 0,
-                            ).count()
+                    self.stdout.write(f"  Would process: {count} events")
+                    total_processed += count
+                    continue
 
-                        self.stdout.write(f"  Would process: {count} events")
-                        total_processed += count
-                        continue
-
-                    # Actually run the projection
-                    try:
-                        if options["rebuild"]:
-                            processed = projection.rebuild(company, using=db_alias)
-                            self.stdout.write(
-                                self.style.SUCCESS(f"  Rebuilt: {processed} events")
-                            )
-                        else:
-                            processed = projection.process_pending(company, using=db_alias)
-                            self.stdout.write(f"  Processed: {processed} events")
-
-                        total_processed += processed
-
-                    except Exception as e:
+                # Actually run the projection
+                try:
+                    if options["rebuild"]:
+                        processed = projection.rebuild(company, using=db_alias)
                         self.stdout.write(
-                            self.style.ERROR(f"  ERROR: {e}")
+                            self.style.SUCCESS(f"  Rebuilt: {processed} events")
                         )
-                        raise CommandError(f"Projection {projection.name} failed: {e}")
+                    else:
+                        processed = projection.process_pending(company, using=db_alias)
+                        self.stdout.write(f"  Processed: {processed} events")
 
-                self.stdout.write("")
-                self.stdout.write(
-                    self.style.SUCCESS(f"Total events processed: {total_processed}")
-                )
+                    total_processed += processed
+
+                except Exception as e:
+                    self.stdout.write(
+                        self.style.ERROR(f"  ERROR: {e}")
+                    )
+                    raise CommandError(f"Projection {projection.name} failed: {e}")
+
+            self.stdout.write("")
+            self.stdout.write(
+                self.style.SUCCESS(f"Total events processed: {total_processed}")
+            )

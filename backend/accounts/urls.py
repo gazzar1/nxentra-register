@@ -11,69 +11,70 @@ Endpoints:
 """
 
 from django.urls import path
-from rest_framework_simplejwt.views import TokenBlacklistView
+# TokenBlacklistView replaced by custom LogoutView (supports cookies)
 
 from .views import (
-    # Auth
-    RegisterView,
-    LoginView,
-    NxentraTokenRefreshView,
-    MeView,
-    SwitchCompanyView,
-    # Email Verification
-    VerifyEmailView,
-    ResendVerificationView,
-    # Admin Approval
-    PendingApprovalsView,
-    ApproveUserView,
-    RejectUserView,
-    UnverifiedUsersView,
-    AdminResendVerificationView,
-    DeleteUnverifiedUserView,
+    AcceptInvitationView,
+    AdminAuditLogView,
+    AdminCompaniesListView,
+    AdminEventTypesView,
     AdminManualVerifyUserView,
+    AdminResendVerificationView,
+    AdminResetPasswordView,
     # Admin Panel
     AdminStatsView,
-    AdminCompaniesListView,
     AdminUsersListView,
-    AdminAuditLogView,
-    AdminEventTypesView,
-    AdminResetPasswordView,
-    # Users
-    UserListCreateView,
-    UserDetailView,
-    UserSetPasswordView,
-    # Memberships
-    MembershipRoleView,
-    MembershipPermissionsView,
-    MembershipPermissionDeleteView,
+    ApproveUserView,
+    CompanyDetailView,
     # Companies
     CompanyListView,
-    CompanyDetailView,
-    CompanySettingsView,
     CompanyLogoUploadView,
-    # Permissions
-    PermissionListView,
+    CompanyModulesView,
+    CompanySettingsView,
+    DeleteUnverifiedUserView,
+    InvitationDetailView,
+    InvitationInfoView,
     # Invitations
     InvitationListCreateView,
-    InvitationDetailView,
     InvitationResendView,
-    AcceptInvitationView,
-    InvitationInfoView,
+    LoginView,
+    LogoutView,
+    MembershipPermissionDeleteView,
+    MembershipPermissionsView,
+    # Memberships
+    MembershipRoleView,
+    MeView,
+    # Notifications
+    NotificationListView,
+    NotificationMarkAllReadView,
+    NotificationMarkReadView,
+    NxentraTokenRefreshView,
+    # Onboarding
+    OnboardingSetupView,
+    # Admin Approval
+    PendingApprovalsView,
+    # Permissions
+    PermissionListView,
+    # Auth
+    RegisterView,
+    RejectUserView,
+    ResendVerificationView,
+    # Module & Sidebar
+    SidebarView,
+    SwitchCompanyView,
+    UnverifiedUsersView,
+    UserDetailView,
+    # Users
+    UserListCreateView,
+    UserSetPasswordView,
+    # Email Verification
+    VerifyEmailView,
+    VoiceGrantAccessView,
+    VoiceRefillQuotaView,
+    VoiceRevokeAccessView,
     # Voice Feature Management
     VoiceUsersListView,
     VoiceUserStatusView,
-    VoiceGrantAccessView,
-    VoiceRevokeAccessView,
-    VoiceRefillQuotaView,
-    # Module & Sidebar
-    SidebarView,
-    CompanyModulesView,
-    # Onboarding
-    OnboardingSetupView,
-    # Notifications
-    NotificationListView,
-    NotificationMarkReadView,
-    NotificationMarkAllReadView,
 )
 
 app_name = "accounts"
@@ -84,7 +85,7 @@ urlpatterns = [
     # ==========================================================================
     path("auth/register/", RegisterView.as_view(), name="register"),
     path("auth/login/", LoginView.as_view(), name="login"),
-    path("auth/logout/", TokenBlacklistView.as_view(), name="logout"),
+    path("auth/logout/", LogoutView.as_view(), name="logout"),
     path("auth/refresh/", NxentraTokenRefreshView.as_view(), name="token-refresh"),
     path("auth/me/", MeView.as_view(), name="me"),
     path("auth/switch-company/", SwitchCompanyView.as_view(), name="switch-company"),

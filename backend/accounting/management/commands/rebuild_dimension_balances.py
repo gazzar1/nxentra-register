@@ -12,13 +12,14 @@ Usage:
 """
 
 from decimal import Decimal
+
 from django.core.management.base import BaseCommand
-from django.db.models import Sum, Count
+from django.db.models import Count, Sum
 from django.db.models.functions import Coalesce
 
+from accounting.models import JournalEntry, JournalLineAnalysis
 from accounts.models import Company
 from accounts.rls import rls_bypass
-from accounting.models import JournalEntry, JournalLineAnalysis
 from projections.models import DimensionBalance
 from projections.write_barrier import projection_writes_allowed
 

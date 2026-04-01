@@ -16,7 +16,7 @@ from rest_framework.permissions import BasePermission
 
 from accounts.authz import resolve_actor
 from accounts.models import CompanyModule
-from accounts.module_registry import module_registry, ModuleCategory
+from accounts.module_registry import ModuleCategory, module_registry
 
 
 class ModuleEnabled(BasePermission):

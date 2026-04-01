@@ -31,19 +31,18 @@ Usage:
     python manage.py rebuild_projection --status --tenant acme
 """
 
-import time
 import logging
-from decimal import Decimal
+import time
+
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
-from django.utils import timezone
 
 from accounts.models import Company
+from accounts.rls import rls_bypass
 from events.models import BusinessEvent
 from projections.base import projection_registry
-from projections.models import ProjectionStatus, ProjectionAppliedEvent
+from projections.models import ProjectionAppliedEvent, ProjectionStatus
 from projections.write_barrier import projection_writes_allowed
-from accounts.rls import rls_bypass
 
 logger = logging.getLogger(__name__)
 
@@ -288,11 +287,11 @@ class Command(BaseCommand):
         self.stdout.write("PROJECTION REBUILD PLAN")
         self.stdout.write("=" * 60)
 
-        self.stdout.write(f"\nProjections to rebuild:")
+        self.stdout.write("\nProjections to rebuild:")
         for p in projections:
             self.stdout.write(f"  - {p.name}")
 
-        self.stdout.write(f"\nCompanies to process:")
+        self.stdout.write("\nCompanies to process:")
         for c in companies:
             self.stdout.write(f"  - {c.name} ({c.slug})")
 
@@ -386,7 +385,7 @@ class Command(BaseCommand):
         if status.is_rebuilding and not force:
             self.stdout.write(
                 self.style.WARNING(
-                    f"    Already rebuilding (use --force to override)"
+                    "    Already rebuilding (use --force to override)"
                 )
             )
             return 0
@@ -449,9 +448,8 @@ class Command(BaseCommand):
                 last_sequence = None
 
                 for event in events.iterator(chunk_size=batch_size):
-                    with transaction.atomic():
-                        with projection_writes_allowed():
-                            projection.handle(event)
+                    with transaction.atomic(), projection_writes_allowed():
+                        projection.handle(event)
 
                     processed += 1
                     last_sequence = event.company_sequence

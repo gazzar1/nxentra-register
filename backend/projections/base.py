@@ -10,18 +10,15 @@ Projections:
 - Can be rebuilt from scratch by replaying all events
 """
 
-from abc import ABC, abstractmethod
-from typing import List, Optional
 import logging
+from abc import ABC, abstractmethod
 
 from django.db import transaction
-from django.utils import timezone
 
 from accounts.models import Company
 from events.models import BusinessEvent, EventBookmark
 from projections.models import ProjectionAppliedEvent
 from projections.write_barrier import projection_writes_allowed
-
 
 logger = logging.getLogger(__name__)
 
@@ -39,19 +36,19 @@ class BaseProjection(ABC):
     - rebuild(): Custom rebuild logic
     - on_error(event, error): Custom error handling
     """
-    
+
     @property
     @abstractmethod
     def name(self) -> str:
         """Unique name for this projection (used in bookmarks)."""
         pass
-    
+
     @property
     @abstractmethod
-    def consumes(self) -> List[str]:
+    def consumes(self) -> list[str]:
         """List of event types this projection consumes."""
         pass
-    
+
     @abstractmethod
     def handle(self, event: BusinessEvent) -> None:
         """
@@ -67,7 +64,7 @@ class BaseProjection(ABC):
             Exception: Any error will be recorded and processing will stop
         """
         pass
-    
+
     def rebuild(self, company: Company) -> int:
         """
         Rebuild this projection from scratch for a company.
@@ -90,7 +87,7 @@ class BaseProjection(ABC):
         bookmark.error_count = 0
         bookmark.last_error = ""
         bookmark.save()
-        
+
         # Clear projected data (subclasses should override if needed)
         with projection_writes_allowed():
             self._clear_projected_data(company)
@@ -100,17 +97,17 @@ class BaseProjection(ABC):
             company=company,
             projection_name=self.name,
         ).delete()
-        
+
         # Process all events
         return self.process_pending(company)
-    
+
     def _clear_projected_data(self, company: Company) -> None:
         """
         Clear all projected data for rebuild.
         Subclasses should override this.
         """
         pass
-    
+
     def process_pending(
         self,
         company: Company,
@@ -128,7 +125,8 @@ class BaseProjection(ABC):
         Returns:
             Number of events successfully processed
         """
-        from accounts.rls import rls_bypass as _rls_bypass, set_current_company_id
+        from accounts.rls import rls_bypass as _rls_bypass
+        from accounts.rls import set_current_company_id
 
         # Projections are system-level operations that build read models.
         # They bypass RLS because they explicitly receive the company parameter
@@ -157,22 +155,21 @@ class BaseProjection(ABC):
 
             for event in events:
                 try:
-                    with transaction.atomic():
-                        with projection_writes_allowed():
-                            applied, created = ProjectionAppliedEvent.objects.get_or_create(
-                                company=company,
-                                projection_name=self.name,
-                                event=event,
-                            )
+                    with transaction.atomic(), projection_writes_allowed():
+                        applied, created = ProjectionAppliedEvent.objects.get_or_create(
+                            company=company,
+                            projection_name=self.name,
+                            event=event,
+                        )
 
-                            if not created:
-                                bookmark.mark_processed(event)
-                                processed += 1
-                                continue
-
-                            self.handle(event)
+                        if not created:
                             bookmark.mark_processed(event)
                             processed += 1
+                            continue
+
+                        self.handle(event)
+                        bookmark.mark_processed(event)
+                        processed += 1
 
                 except Exception as e:
                     logger.exception(
@@ -190,7 +187,7 @@ class BaseProjection(ABC):
                 )
 
             return processed
-    
+
     def on_error(self, event: BusinessEvent, error: Exception) -> None:
         """
         Called when an error occurs during event processing.
@@ -199,8 +196,8 @@ class BaseProjection(ABC):
         (e.g., dead letter queue, alerting).
         """
         pass
-    
-    def get_bookmark(self, company: Company) -> Optional[EventBookmark]:
+
+    def get_bookmark(self, company: Company) -> EventBookmark | None:
         """Get the bookmark for this projection and company."""
         try:
             return EventBookmark.objects.get(
@@ -209,7 +206,7 @@ class BaseProjection(ABC):
             )
         except EventBookmark.DoesNotExist:
             return None
-    
+
     def get_lag(self, company: Company) -> int:
         """
         Get number of unprocessed events for this projection.
@@ -223,7 +220,7 @@ class BaseProjection(ABC):
                 company=company,
                 event_type__in=self.consumes,
             ).count()
-        
+
         return bookmark.get_unprocessed_events(
             event_types=self.consumes,
             limit=10000,
@@ -242,15 +239,15 @@ class ProjectionRegistry:
         for projection in registry.all():
             projection.process_pending(company)
     """
-    
+
     _instance = None
-    
+
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._projections = {}
         return cls._instance
-    
+
     def register(self, projection: BaseProjection, *, allow_override: bool = False) -> None:
         """
         Register a projection.
@@ -266,16 +263,16 @@ class ProjectionRegistry:
                 f"already-registered {existing.__qualname__}"
             )
         self._projections[projection.name] = projection
-    
-    def get(self, name: str) -> Optional[BaseProjection]:
+
+    def get(self, name: str) -> BaseProjection | None:
         """Get a projection by name."""
         return self._projections.get(name)
-    
-    def all(self) -> List[BaseProjection]:
+
+    def all(self) -> list[BaseProjection]:
         """Get all registered projections."""
         return list(self._projections.values())
-    
-    def names(self) -> List[str]:
+
+    def names(self) -> list[str]:
         """Get all projection names."""
         return list(self._projections.keys())
 

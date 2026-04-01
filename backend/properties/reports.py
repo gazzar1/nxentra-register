@@ -9,21 +9,23 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.db.models import (
-    Sum, Count, Q, F, Value, CharField,
-    Case, When, DecimalField as DjDecimalField,
-    Subquery, OuterRef,
+    F,
+    Sum,
 )
 from django.db.models.functions import Coalesce
-from rest_framework.views import APIView
-from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from accounts.authz import resolve_actor
 
 from .models import (
-    Property, Unit, Lessee, Lease, RentScheduleLine,
-    PaymentReceipt, PaymentAllocation, SecurityDepositTransaction,
+    Lease,
+    Property,
     PropertyExpense,
+    RentScheduleLine,
+    SecurityDepositTransaction,
+    Unit,
 )
 
 

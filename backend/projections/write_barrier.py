@@ -1,10 +1,9 @@
 # projections/write_barrier.py
 
-from contextlib import contextmanager
 import threading
+from contextlib import contextmanager
 
 from django.conf import settings
-
 
 _state = threading.local()
 

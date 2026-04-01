@@ -1,9 +1,10 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import {
   itemsService,
   taxCodesService,
   postingProfilesService,
   salesInvoicesService,
+  creditNotesService,
 } from '@/services/sales.service';
 import type {
   Item,
@@ -52,7 +53,7 @@ export const postingProfileKeys = {
 export const salesInvoiceKeys = {
   all: ['sales-invoices'] as const,
   lists: () => [...salesInvoiceKeys.all, 'list'] as const,
-  list: (filters: Record<string, unknown>) => [...salesInvoiceKeys.lists(), filters] as const,
+  list: (filters: object) => [...salesInvoiceKeys.lists(), filters] as const,
   details: () => [...salesInvoiceKeys.all, 'detail'] as const,
   detail: (id: number) => [...salesInvoiceKeys.details(), id] as const,
 };
@@ -241,6 +242,7 @@ export function useDeletePostingProfile() {
 // Sales Invoice Queries
 // =============================================================================
 
+// Returns SalesInvoiceListItem[] for backward compatibility
 export function useSalesInvoices(filters?: {
   status?: string;
   customer_id?: number;
@@ -250,9 +252,30 @@ export function useSalesInvoices(filters?: {
   return useQuery({
     queryKey: salesInvoiceKeys.list(filters || {}),
     queryFn: async () => {
+      const { data } = await salesInvoicesService.list({ ...filters, page_size: 200 });
+      return data.results;
+    },
+  });
+}
+
+// Paginated sales invoices query
+export function usePaginatedSalesInvoices(filters?: {
+  status?: string;
+  customer_id?: number;
+  from_date?: string;
+  to_date?: string;
+  page?: number;
+  page_size?: number;
+  ordering?: string;
+  search?: string;
+}) {
+  return useQuery({
+    queryKey: salesInvoiceKeys.list({ ...filters, _paginated: true }),
+    queryFn: async () => {
       const { data } = await salesInvoicesService.list(filters);
       return data;
     },
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -323,6 +346,87 @@ export function useVoidSalesInvoice() {
     onSuccess: (_, { id }) => {
       queryClient.invalidateQueries({ queryKey: salesInvoiceKeys.lists() });
       queryClient.invalidateQueries({ queryKey: salesInvoiceKeys.detail(id) });
+    },
+  });
+}
+
+// =============================================================================
+// Credit Note Queries
+// =============================================================================
+
+export const creditNoteKeys = {
+  all: ['credit-notes'] as const,
+  lists: () => [...creditNoteKeys.all, 'list'] as const,
+  list: (filters: object) => [...creditNoteKeys.lists(), filters] as const,
+  details: () => [...creditNoteKeys.all, 'detail'] as const,
+  detail: (id: number) => [...creditNoteKeys.details(), id] as const,
+};
+
+export function usePaginatedCreditNotes(filters?: {
+  status?: string;
+  invoice_id?: number;
+  page?: number;
+  page_size?: number;
+  ordering?: string;
+  search?: string;
+}) {
+  return useQuery({
+    queryKey: creditNoteKeys.list(filters || {}),
+    queryFn: async () => {
+      const { data } = await creditNotesService.list(filters);
+      return data;
+    },
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function useCreditNote(id: number) {
+  return useQuery({
+    queryKey: creditNoteKeys.detail(id),
+    queryFn: async () => {
+      const { data } = await creditNotesService.get(id);
+      return data;
+    },
+    enabled: !!id,
+  });
+}
+
+export function useCreateCreditNote() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (payload: import('@/types/sales').CreditNoteCreatePayload) =>
+      creditNotesService.create(payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: creditNoteKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: salesInvoiceKeys.lists() });
+    },
+  });
+}
+
+export function usePostCreditNote() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (id: number) => creditNotesService.post(id),
+    onSuccess: (_, id) => {
+      queryClient.invalidateQueries({ queryKey: creditNoteKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: creditNoteKeys.detail(id) });
+      queryClient.invalidateQueries({ queryKey: salesInvoiceKeys.lists() });
+    },
+  });
+}
+
+export function useVoidCreditNote() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ id, reason }: { id: number; reason?: string }) =>
+      creditNotesService.void(id, reason),
+    onSuccess: (_, { id }) => {
+      queryClient.invalidateQueries({ queryKey: creditNoteKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: creditNoteKeys.detail(id) });
+      queryClient.invalidateQueries({ queryKey: salesInvoiceKeys.lists() });
     },
   });
 }

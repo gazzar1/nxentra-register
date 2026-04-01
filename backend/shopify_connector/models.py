@@ -9,6 +9,7 @@ ShopifyOrder/ShopifyRefund: local copies of Shopify data for reconciliation.
 import uuid
 
 from django.db import models
+
 from accounts.models import Company
 
 
@@ -563,6 +564,9 @@ class ShopifyDispute(models.Model):
         unique_together = [("company", "shopify_dispute_id")]
         ordering = ["-created_at"]
 
+    def __str__(self):
+        return f"Dispute {self.shopify_dispute_id} ({self.currency} {self.amount})"
+
 
 class ShopifyProduct(models.Model):
     """
@@ -621,6 +625,3 @@ class ShopifyProduct(models.Model):
         if self.sku:
             label += f" ({self.sku})"
         return label
-
-    def __str__(self):
-        return f"Dispute {self.shopify_dispute_id} ({self.currency} {self.amount})"

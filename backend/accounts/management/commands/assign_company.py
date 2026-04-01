@@ -8,8 +8,8 @@ Usage:
 """
 
 from django.core.management.base import BaseCommand
-from django.utils import timezone
-from accounts.models import User, Company, CompanyMembership
+
+from accounts.models import Company, CompanyMembership, User
 
 
 class Command(BaseCommand):
@@ -81,8 +81,8 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING("  No companies found"))
 
     def assign_to_company(self, user, company_id):
-        from accounts.commands import add_user_to_company
         from accounts.authz import Actor
+        from accounts.commands import add_user_to_company
 
         try:
             company = Company.objects.get(id=company_id)

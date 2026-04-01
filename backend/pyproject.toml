@@ -1,0 +1,136 @@
+[project]
+name = "nxentra-backend"
+requires-python = ">=3.11"
+
+# =============================================================================
+# Ruff — fast linter + formatter (replaces flake8, isort, black)
+# =============================================================================
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+# Check all backend code, skip venv and migrations
+exclude = [
+    "venv",
+    ".venv",
+    "*/migrations/*",
+    "__pycache__",
+    "nxentra_backend/test_settings.py",
+]
+
+[tool.ruff.lint]
+# Start with a focused set that catches real bugs + keeps imports clean.
+# Expand over time.
+select = [
+    "F",      # Pyflakes — unused imports, undefined names, etc.
+    "E4",     # Import errors
+    "E7",     # Statement errors
+    "E9",     # Runtime errors
+    "W",      # Warnings (whitespace, etc.)
+    "I",      # isort — import ordering
+    "UP",     # pyupgrade — modernize syntax
+    "B",      # flake8-bugbear — likely bugs
+    "SIM",    # flake8-simplify — simplify code
+    "RUF",    # Ruff-specific rules
+]
+ignore = [
+    "E741",   # ambiguous variable name (l, I, O) — too many existing uses
+    "B008",   # function call in default argument — DRF uses this pattern
+    "B905",   # zip without strict — not needed for our Python version
+    "SIM108", # ternary instead of if-else — readability preference
+    "SIM102", # collapsible if — readability preference
+    "SIM105", # suppressible exception — contextlib.suppress not always clearer
+    "RUF001", # ambiguous unicode — Arabic strings are intentional
+    "RUF002", # ambiguous unicode in docstring — Arabic is intentional
+    "RUF003", # ambiguous unicode in comment — Arabic is intentional
+    "RUF012", # mutable class variable — Django models use this pattern
+    "UP006",  # Use list[] instead of List[] — breaks runtime get_origin() checks
+    "UP035",  # Deprecated typing imports (Dict, List, Type) — used at runtime in validation
+    "UP007",  # Use X | Y for union types — keep Optional[X] for readability
+    "UP045",  # Optional[X] → X | None — breaks runtime get_origin()/get_args() checks
+    "UP031",  # printf-style formatting — existing code uses both styles
+    "UP032",  # f-string over .format() — existing code uses both
+    "W293",   # blank line with whitespace — cosmetic, fix incrementally
+    "E402",   # import not at top — Django settings and lazy imports are intentional
+    "RUF013", # implicit-optional — existing code uses Optional[X] = None pattern
+    "RUF059", # unused unpacked variable — existing patterns use _ prefix
+    "B904",   # raise-without-from — fix incrementally
+    "F841",   # unused variable — fix incrementally
+    "B027",   # empty method without abstract — intentional template methods
+    "B017",   # assert blind exception — test helper pattern
+    "SIM117", # multiple with statements — readability preference
+    "SIM118", # key in dict.keys() — explicit .keys() is clearer in some contexts
+    "RUF005", # collection concatenation — tuple + tuple is clearer than unpacking
+]
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    "accounts",
+    "accounting",
+    "backups",
+    "bank_connector",
+    "clinic",
+    "edim",
+    "events",
+    "inventory",
+    "nxentra_backend",
+    "ops",
+    "platform_connectors",
+    "projections",
+    "properties",
+    "purchases",
+    "sales",
+    "scratchpad",
+    "shopify_connector",
+    "stripe_connector",
+    "tenant",
+]
+
+[tool.ruff.format]
+quote-style = "double"
+
+# =============================================================================
+# mypy — gradual type checking
+# =============================================================================
+[tool.mypy]
+python_version = "3.12"
+plugins = [
+    "mypy_django_plugin.main",
+    "mypy_drf_plugin.main",
+]
+# Gradual adoption: don't fail on untyped code, but catch real errors
+ignore_missing_imports = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+check_untyped_defs = false           # Enable later when type coverage improves
+disallow_untyped_defs = false         # Enable later
+no_implicit_optional = true
+strict_equality = true
+
+# Exclude migrations and venv from checking
+exclude = [
+    "migrations/",
+    "venv/",
+    "\\.venv/",
+    "test_settings\\.py",
+]
+
+# Per-module overrides for well-typed modules (stricter checking)
+[[tool.mypy.overrides]]
+module = [
+    "events.emitter",
+    "events.types",
+    "events.models",
+    "projections.base",
+    "projections.write_barrier",
+    "tenant.context",
+    "tenant.router",
+    "accounts.authz",
+    "accounts.middleware",
+    "nxentra_backend.pagination",
+]
+check_untyped_defs = true
+warn_return_any = true
+
+[tool.django-stubs]
+django_settings_module = "nxentra_backend.settings"

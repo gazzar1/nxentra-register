@@ -10,7 +10,6 @@ Validates AccountDimensionRule (REQUIRED/OPTIONAL/FORBIDDEN) and
 global AnalysisDimension.is_required_on_posting rules.
 """
 
-from typing import Dict, List, Optional
 
 from accounting.models import (
     Account,
@@ -26,7 +25,7 @@ def check_account_dimension_rules(
     dimension_entries: list,
     side: str,
     company,
-) -> List[Dict[str, str]]:
+) -> list[dict[str, str]]:
     """
     Validate dimension rules for a single account.
 
@@ -123,7 +122,7 @@ class _ResolvedTag:
     """Simple wrapper to give analysis_tags the same interface as ScratchpadRowDimension."""
     __slots__ = ("dimension_id", "dimension_value_id")
 
-    def __init__(self, dimension_id: Optional[int], dimension_value_id: Optional[int]):
+    def __init__(self, dimension_id: int | None, dimension_value_id: int | None):
         self.dimension_id = dimension_id
         self.dimension_value_id = dimension_value_id
 
@@ -132,7 +131,7 @@ def validate_line_dimensions(
     account: Account,
     analysis_tags: list,
     company,
-) -> List[Dict[str, str]]:
+) -> list[dict[str, str]]:
     """
     Validate dimensions for a journal line in post_journal_entry().
 

@@ -7,8 +7,8 @@ Business logic happens in commands.py.
 """
 
 from rest_framework import serializers
-from .models import Patient, PatientDocument, Doctor, Visit, Invoice, Payment
 
+from .models import Doctor, Invoice, Patient, PatientDocument, Payment, Visit
 
 # =============================================================================
 # Patient Serializers

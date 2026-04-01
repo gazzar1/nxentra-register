@@ -1,7 +1,9 @@
 # clinic/models/patient.py
 import uuid
+
 from django.conf import settings
 from django.db import models
+
 from accounts.models import Company, ProjectionWriteGuard
 
 

@@ -11,19 +11,18 @@ This enables:
 - Opening balance carry-forward to the next fiscal year
 """
 
-from decimal import Decimal
-from typing import Dict, Any
 import logging
+from decimal import Decimal
+from typing import Any
 
 from django.db import transaction
 
-from accounts.models import Company
 from accounting.models import Account
+from accounts.models import Company
 from events.models import BusinessEvent
 from events.types import EventTypes
 from projections.base import BaseProjection, projection_registry
 from projections.models import FiscalPeriod, PeriodAccountBalance
-
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +142,7 @@ class PeriodAccountBalanceProjection(BaseProjection):
     def _apply_line(
         self,
         company: Company,
-        line_data: Dict[str, Any],
+        line_data: dict[str, Any],
         fiscal_year: int,
         period: int,
         event: BusinessEvent,

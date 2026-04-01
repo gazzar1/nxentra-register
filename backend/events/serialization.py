@@ -11,10 +11,10 @@ hashing for event payloads. These utilities ensure:
 
 import hashlib
 import json
-from typing import Any, Dict
+from typing import Any
 
 
-def canonical_json(data: Dict[str, Any]) -> str:
+def canonical_json(data: dict[str, Any]) -> str:
     """
     Convert a dictionary to a canonical JSON string.
 
@@ -44,7 +44,7 @@ def canonical_json(data: Dict[str, Any]) -> str:
     )
 
 
-def compute_payload_hash(data: Dict[str, Any]) -> str:
+def compute_payload_hash(data: dict[str, Any]) -> str:
     """
     Compute the SHA-256 hash of a dictionary's canonical JSON representation.
 
@@ -82,7 +82,7 @@ def compute_bytes_hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def estimate_json_size(data: Dict[str, Any]) -> int:
+def estimate_json_size(data: dict[str, Any]) -> int:
     """
     Estimate the size of a payload when serialized to JSON.
 

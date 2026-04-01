@@ -10,10 +10,9 @@ for automatic event-type registration.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any
+from typing import Any
 
 from events.types import BaseEventData, EventTypes
-
 
 # =============================================================================
 # Property Events
@@ -40,7 +39,7 @@ class PropertyUpdatedData(BaseEventData):
     """Data for property.updated event."""
     property_public_id: str
     company_public_id: str
-    changes: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    changes: dict[str, dict[str, Any]] = field(default_factory=dict)
     updated_by_email: str = ""
 
 
@@ -95,7 +94,7 @@ class LesseeUpdatedData(BaseEventData):
     """Data for lessee.updated event."""
     lessee_public_id: str
     company_public_id: str
-    changes: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    changes: dict[str, dict[str, Any]] = field(default_factory=dict)
     updated_by_email: str = ""
 
 
@@ -125,7 +124,7 @@ class LeaseCreatedData(BaseEventData):
 class LeaseUpdatedData(BaseEventData):
     """Data for lease.updated event."""
     lease_public_id: str
-    changes: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    changes: dict[str, dict[str, Any]] = field(default_factory=dict)
     updated_by_email: str = ""
 
 
@@ -361,7 +360,7 @@ class LeaseExpiryAlertData(BaseEventData):
 class PropertyAccountMappingUpdatedData(BaseEventData):
     """Data for property.account_mapping_updated event."""
     company_public_id: str
-    changes: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    changes: dict[str, dict[str, Any]] = field(default_factory=dict)
     updated_by_email: str = ""
 
 

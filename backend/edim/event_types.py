@@ -7,10 +7,9 @@ They follow the BaseEventData pattern from events/types.py.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any
+from typing import Any
 
 from events.types import BaseEventData, EventTypes
-
 
 # =============================================================================
 # Source System Events
@@ -31,7 +30,7 @@ class EdimSourceSystemCreatedData(BaseEventData):
 class EdimSourceSystemUpdatedData(BaseEventData):
     """Data for edim_source_system.updated event."""
     source_system_public_id: str
-    changes: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    changes: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -78,7 +77,7 @@ class EdimBatchValidatedData(BaseEventData):
     total_records: int
     validated_records: int
     error_count: int
-    validation_summary: Dict[str, Any] = field(default_factory=dict)
+    validation_summary: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -87,7 +86,7 @@ class EdimBatchPreviewedData(BaseEventData):
     batch_public_id: str
     previewed_by_id: int
     previewed_by_email: str
-    preview_summary: Dict[str, Any] = field(default_factory=dict)
+    preview_summary: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -96,7 +95,7 @@ class EdimBatchCommittedData(BaseEventData):
     batch_public_id: str
     committed_by_id: int
     committed_by_email: str
-    journal_entry_public_ids: List[str] = field(default_factory=list)
+    journal_entry_public_ids: list[str] = field(default_factory=list)
     total_entries_created: int = 0
     total_debit: str = "0"
     total_credit: str = "0"
@@ -125,14 +124,14 @@ class EdimMappingProfileCreatedData(BaseEventData):
     document_type: str
     version: int
     posting_policy: str
-    field_mappings: List[Dict[str, Any]] = field(default_factory=list)
+    field_mappings: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
 class EdimMappingProfileUpdatedData(BaseEventData):
     """Data for edim_mapping_profile.updated event."""
     profile_public_id: str
-    changes: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    changes: dict[str, dict[str, Any]] = field(default_factory=dict)
     new_version: int = 0
 
 
@@ -141,7 +140,7 @@ class EdimMappingProfileActivatedData(BaseEventData):
     """Data for edim_mapping_profile.activated event."""
     profile_public_id: str
     version: int
-    previous_active_version: Optional[int] = None
+    previous_active_version: int | None = None
 
 
 @dataclass
@@ -189,7 +188,7 @@ class EdimCrosswalkRejectedData(BaseEventData):
 class EdimCrosswalkUpdatedData(BaseEventData):
     """Data for edim_crosswalk.updated event."""
     crosswalk_public_id: str
-    changes: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    changes: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 # =============================================================================

@@ -10,23 +10,25 @@ Journal entry mapping follows PRD Section 10.2.
 
 import logging
 import uuid
+from datetime import date, datetime
 from decimal import Decimal
-from datetime import datetime, date
 
 from django.utils import timezone
 
-from events.types import EventTypes, JournalEntryPostedData
-from events.models import BusinessEvent
+from accounting.commands import _next_company_sequence
+from accounting.models import (
+    AnalysisDimension,
+    AnalysisDimensionValue,
+    JournalEntry,
+    JournalLine,
+    JournalLineAnalysis,
+)
 from events.emitter import emit_event_no_actor
+from events.models import BusinessEvent
+from events.types import EventTypes, JournalEntryPostedData
 from projections.base import BaseProjection
 from projections.models import FiscalPeriod
-from properties.models import PropertyAccountMapping, Lease, Property, Unit
-from accounting.models import (
-    Account, AnalysisDimension, AnalysisDimensionValue,
-    JournalEntry, JournalLine, JournalLineAnalysis,
-)
-from accounting.commands import _next_company_sequence
-
+from properties.models import Lease, Property, PropertyAccountMapping, Unit
 
 logger = logging.getLogger(__name__)
 

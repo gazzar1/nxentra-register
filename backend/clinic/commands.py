@@ -10,24 +10,23 @@ from decimal import Decimal
 
 from django.db import transaction
 
-from accounts.authz import ActorContext, require
 from accounting.commands import CommandResult
+from accounts.authz import ActorContext, require
 from events.emitter import emit_event
 from events.types import EventTypes
 from projections.write_barrier import command_writes_allowed
 
-from .models import Patient, PatientDocument, Doctor, Visit, Invoice, Payment
 from .event_types import (
     DoctorCreatedData,
+    InvoiceIssuedData,
     PatientCreatedData,
     PatientUpdatedData,
-    VisitCreatedData,
-    VisitCompletedData,
-    InvoiceIssuedData,
     PaymentReceivedData,
     PaymentVoidedData,
+    VisitCompletedData,
+    VisitCreatedData,
 )
-
+from .models import Doctor, Invoice, Patient, PatientDocument, Payment, Visit
 
 # =============================================================================
 # Patient Commands

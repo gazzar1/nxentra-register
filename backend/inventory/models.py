@@ -10,10 +10,11 @@ The stock ledger is append-only. Corrections are made via reversing entries,
 not by modifying existing records. This ensures full audit trail.
 """
 
-from decimal import Decimal
-from django.db import models
-from django.conf import settings
 import uuid
+from decimal import Decimal
+
+from django.conf import settings
+from django.db import models
 
 from accounts.models import Company, ProjectionWriteGuard
 
@@ -124,6 +125,7 @@ class StockLedgerEntry(ProjectionWriteGuard):
         TRANSFER_OUT = "TRANSFER_OUT", "Warehouse Transfer Out"
         SALES_RETURN = "SALES_RETURN", "Sales Return"
         PURCHASE_RETURN = "PURCHASE_RETURN", "Purchase Return"
+        GOODS_RECEIPT = "GOODS_RECEIPT", "Goods Receipt"
 
     allowed_write_contexts = {"command", "projection", "bootstrap", "migration"}
 

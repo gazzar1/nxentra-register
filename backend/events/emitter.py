@@ -19,25 +19,24 @@ data being passed, don't disable validation.
 
 from __future__ import annotations
 
-from typing import Optional, Any, Dict, Union
+import logging
 from datetime import datetime
+from typing import Any, Union
 
+from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.utils import timezone
-from django.conf import settings
-
-import logging
 
 _emitter_logger = logging.getLogger(__name__)
 
 from events.models import BusinessEvent
-from events.types import validate_event_payload, InvalidEventPayload, BaseEventData
 from events.payload_policy import (
     PayloadOrigin,
     PayloadStrategy,
     determine_storage_strategy,
 )
-from events.serialization import compute_payload_hash, estimate_json_size
+from events.serialization import compute_payload_hash
+from events.types import BaseEventData, validate_event_payload
 
 
 def _schedule_projection_processing(company_id: int) -> None:
@@ -77,11 +76,11 @@ def _emit_event_core(
     event_type: str,
     aggregate_type: str,
     aggregate_id: Any,
-    data: Union[Dict[str, Any], BaseEventData],
-    occurred_at: Optional[datetime],
+    data: Union[dict[str, Any], BaseEventData],
+    occurred_at: datetime | None,
     idempotency_key: str,
-    metadata: Optional[Dict[str, Any]],
-    caused_by_event: Optional[BusinessEvent],
+    metadata: dict[str, Any] | None,
+    caused_by_event: BusinessEvent | None,
     external_source: str,
     external_id: str,
     payload_origin: PayloadOrigin = PayloadOrigin.HUMAN,
@@ -360,13 +359,13 @@ def emit_event_no_actor(
     event_type: str,
     aggregate_type: str,
     aggregate_id: Any,
-    data: Union[Dict[str, Any], BaseEventData],
+    data: Union[dict[str, Any], BaseEventData],
     *,
     user=None,
-    occurred_at: Optional[datetime] = None,
+    occurred_at: datetime | None = None,
     idempotency_key: str,
-    metadata: Optional[Dict[str, Any]] = None,
-    caused_by_event: Optional[BusinessEvent] = None,
+    metadata: dict[str, Any] | None = None,
+    caused_by_event: BusinessEvent | None = None,
     external_source: str = "",
     external_id: str = "",
     payload_origin: PayloadOrigin = PayloadOrigin.HUMAN,
@@ -401,9 +400,9 @@ def emit_event_no_actor(
         InvalidEventPayload: If data doesn't match the event type schema
     """
     # Import tenant modules here to avoid circular imports
-    from tenant.context import tenant_context, system_db_context
-    from tenant.models import TenantDirectory
     from accounts import rls
+    from tenant.context import system_db_context, tenant_context
+    from tenant.models import TenantDirectory
 
     # Look up tenant configuration to determine database routing
     # TenantDirectory is in system DB, so use system_db_context for lookup
@@ -462,7 +461,7 @@ def get_aggregate_events(company, aggregate_type: str, aggregate_id: Any) -> lis
 def get_company_events_by_type(
     company,
     event_types: list[str],
-    since_event: Optional[BusinessEvent] = None,
+    since_event: BusinessEvent | None = None,
     limit: int = 1000,
 ) -> list[BusinessEvent]:
     """
@@ -479,7 +478,7 @@ def get_company_events_by_type(
 def get_events_by_type(
     company,
     event_types: list[str],
-    since_event: Optional[BusinessEvent] = None,
+    since_event: BusinessEvent | None = None,
     limit: int = 1000,
 ) -> list[BusinessEvent]:
     """Backward-compatible alias for company-wide stream ordering."""

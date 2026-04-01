@@ -3,24 +3,27 @@ import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import { Plus, Search, Receipt, Pencil, Trash2, Send, XCircle, Eye } from "lucide-react";
+import { Plus, Search, Receipt, Pencil, Trash2, Send, XCircle, Eye, MoreHorizontal } from "lucide-react";
 import { useState } from "react";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { PageHeader, EmptyState, LoadingSpinner } from "@/components/common";
+import { PageHeader, EmptyState } from "@/components/common";
+import { PaginatedTable } from "@/components/common/PaginatedTable";
+import type { ColumnDef } from "@/components/common/PaginatedTable";
 import {
-  useSalesInvoices,
+  usePaginatedSalesInvoices,
   useDeleteSalesInvoice,
   usePostSalesInvoice,
   useVoidSalesInvoice,
 } from "@/queries/useSales";
 import { useToast } from "@/components/ui/toaster";
-import type { SalesInvoiceListItem, SalesInvoiceStatus } from "@/types/sales";
+import type { SalesInvoiceListItem } from "@/types/sales";
 import { INVOICE_STATUS_COLORS, INVOICE_STATUS_LABELS } from "@/types/sales";
 import { cn } from "@/lib/cn";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -38,55 +41,44 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { MoreHorizontal } from "lucide-react";
 
 export default function SalesInvoicesPage() {
   const { t } = useTranslation(["common", "accounting"]);
   const router = useRouter();
   const { toast } = useToast();
-  const { data: invoices, isLoading } = useSalesInvoices();
+  const { formatDate } = useCompanyFormat();
   const deleteInvoice = useDeleteSalesInvoice();
   const postInvoice = usePostSalesInvoice();
   const voidInvoice = useVoidSalesInvoice();
+
   const [search, setSearch] = useState("");
-  const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; invoice: SalesInvoiceListItem | null }>({
-    open: false,
-    invoice: null,
-  });
-  const [postDialog, setPostDialog] = useState<{ open: boolean; invoice: SalesInvoiceListItem | null }>({
-    open: false,
-    invoice: null,
-  });
-  const [voidDialog, setVoidDialog] = useState<{ open: boolean; invoice: SalesInvoiceListItem | null }>({
-    open: false,
-    invoice: null,
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  const [ordering, setOrdering] = useState("-invoice_date");
+  const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; invoice: SalesInvoiceListItem | null }>({ open: false, invoice: null });
+  const [postDialog, setPostDialog] = useState<{ open: boolean; invoice: SalesInvoiceListItem | null }>({ open: false, invoice: null });
+  const [voidDialog, setVoidDialog] = useState<{ open: boolean; invoice: SalesInvoiceListItem | null }>({ open: false, invoice: null });
+
+  const { data: response, isLoading } = usePaginatedSalesInvoices({
+    search: search || undefined,
+    page,
+    page_size: pageSize,
+    ordering,
   });
 
-  const filteredInvoices = invoices?.filter((inv) => {
-    if (!search) return true;
-    const searchLower = search.toLowerCase();
-    return (
-      inv.invoice_number.toLowerCase().includes(searchLower) ||
-      inv.customer_name?.toLowerCase().includes(searchLower) ||
-      inv.customer_code?.toLowerCase().includes(searchLower)
-    );
-  });
+  const invoices = response?.results || [];
+  const totalCount = response?.count || 0;
+  const totalPages = response?.total_pages || 1;
+
+  const handleSearchChange = (value: string) => { setSearch(value); setPage(1); };
 
   const handleDelete = async () => {
     if (!deleteDialog.invoice) return;
-
     try {
       await deleteInvoice.mutateAsync(deleteDialog.invoice.id);
-      toast({
-        title: "Invoice deleted",
-        description: `Invoice ${deleteDialog.invoice.invoice_number} has been deleted.`,
-      });
+      toast({ title: "Invoice deleted", description: `Invoice ${deleteDialog.invoice.invoice_number} has been deleted.` });
     } catch (error) {
-      toast({
-        title: "Error",
-        description: "Failed to delete invoice.",
-        variant: "destructive",
-      });
+      toast({ title: "Error", description: "Failed to delete invoice.", variant: "destructive" });
     } finally {
       setDeleteDialog({ open: false, invoice: null });
     }
@@ -94,19 +86,11 @@ export default function SalesInvoicesPage() {
 
   const handlePost = async () => {
     if (!postDialog.invoice) return;
-
     try {
       await postInvoice.mutateAsync(postDialog.invoice.id);
-      toast({
-        title: "Invoice posted",
-        description: `Invoice ${postDialog.invoice.invoice_number} has been posted to the general ledger.`,
-      });
+      toast({ title: "Invoice posted", description: `Invoice ${postDialog.invoice.invoice_number} has been posted to the general ledger.` });
     } catch (error: any) {
-      toast({
-        title: "Error",
-        description: error?.response?.data?.error || "Failed to post invoice.",
-        variant: "destructive",
-      });
+      toast({ title: "Error", description: error?.response?.data?.error || "Failed to post invoice.", variant: "destructive" });
     } finally {
       setPostDialog({ open: false, invoice: null });
     }
@@ -114,31 +98,107 @@ export default function SalesInvoicesPage() {
 
   const handleVoid = async () => {
     if (!voidDialog.invoice) return;
-
     try {
       await voidInvoice.mutateAsync({ id: voidDialog.invoice.id });
-      toast({
-        title: "Invoice voided",
-        description: `Invoice ${voidDialog.invoice.invoice_number} has been voided with a reversing entry.`,
-      });
+      toast({ title: "Invoice voided", description: `Invoice ${voidDialog.invoice.invoice_number} has been voided with a reversing entry.` });
     } catch (error: any) {
-      toast({
-        title: "Error",
-        description: error?.response?.data?.error || "Failed to void invoice.",
-        variant: "destructive",
-      });
+      toast({ title: "Error", description: error?.response?.data?.error || "Failed to void invoice.", variant: "destructive" });
     } finally {
       setVoidDialog({ open: false, invoice: null });
     }
   };
 
-  const formatDate = (dateStr: string) => {
-    return new Date(dateStr).toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
-  };
+  const columns: ColumnDef<SalesInvoiceListItem>[] = [
+    {
+      key: "invoice_number",
+      label: "Invoice #",
+      sortable: true,
+      render: (inv) => (
+        <Link href={`/accounting/sales-invoices/${inv.id}`} className="font-mono text-sm font-medium hover:text-primary hover:underline ltr-code">
+          {inv.invoice_number}
+        </Link>
+      ),
+    },
+    {
+      key: "invoice_date",
+      label: "Date",
+      sortable: true,
+      render: (inv) => <span className="text-sm text-muted-foreground">{formatDate(inv.invoice_date)}</span>,
+    },
+    {
+      key: "customer_name",
+      label: "Customer",
+      render: (inv) => (
+        <div>
+          <span className="font-medium">{inv.customer_name}</span>
+          <p className="text-sm text-muted-foreground font-mono ltr-code">{inv.customer_code}</p>
+        </div>
+      ),
+    },
+    {
+      key: "total_amount",
+      label: "Amount",
+      sortable: true,
+      className: "text-end",
+      render: (inv) => (
+        <span className="font-mono ltr-number font-medium">
+          {inv.currency && <span className="text-muted-foreground text-xs me-1">{inv.currency}</span>}
+          {parseFloat(inv.total_amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+        </span>
+      ),
+    },
+    {
+      key: "status",
+      label: "Status",
+      sortable: true,
+      render: (inv) => (
+        <Badge className={cn("text-xs", INVOICE_STATUS_COLORS[inv.status])}>
+          {INVOICE_STATUS_LABELS[inv.status]}
+        </Badge>
+      ),
+    },
+    {
+      key: "actions",
+      label: "",
+      render: (inv) => (
+        <div className="flex items-center justify-end" onClick={(e) => e.stopPropagation()}>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="sm"><MoreHorizontal className="h-4 w-4" /></Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => router.push(`/accounting/sales-invoices/${inv.id}`)}>
+                <Eye className="h-4 w-4 me-2" />View
+              </DropdownMenuItem>
+              {inv.status === "DRAFT" && (
+                <>
+                  <DropdownMenuItem onClick={() => router.push(`/accounting/sales-invoices/${inv.id}/edit`)}>
+                    <Pencil className="h-4 w-4 me-2" />Edit
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => setPostDialog({ open: true, invoice: inv })}>
+                    <Send className="h-4 w-4 me-2" />Post Invoice
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => setDeleteDialog({ open: true, invoice: inv })} className="text-destructive">
+                    <Trash2 className="h-4 w-4 me-2" />Delete
+                  </DropdownMenuItem>
+                </>
+              )}
+              {inv.status === "POSTED" && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => setVoidDialog({ open: true, invoice: inv })} className="text-destructive">
+                    <XCircle className="h-4 w-4 me-2" />Void Invoice
+                  </DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      ),
+    },
+  ];
 
   return (
     <AppLayout>
@@ -148,201 +208,80 @@ export default function SalesInvoicesPage() {
           subtitle="Manage your sales invoices and track accounts receivable"
           actions={
             <Link href="/accounting/sales-invoices/new">
-              <Button>
-                <Plus className="h-4 w-4 me-2" />
-                New Invoice
-              </Button>
+              <Button><Plus className="h-4 w-4 me-2" />New Invoice</Button>
             </Link>
           }
         />
-
         <Card>
           <CardContent className="p-6">
-            {/* Search */}
             <div className="flex items-center gap-4 mb-6">
               <div className="relative flex-1 max-w-md">
                 <Search className="absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  placeholder="Search invoices..."
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="ps-10"
-                />
+                <Input placeholder="Search invoices..." value={search} onChange={(e) => handleSearchChange(e.target.value)} className="ps-10" />
               </div>
             </div>
-
-            {/* Content */}
-            {isLoading ? (
-              <LoadingSpinner />
-            ) : !filteredInvoices?.length ? (
-              <EmptyState
-                icon={<Receipt className="h-12 w-12" />}
-                title="No invoices yet"
-                description="Create your first sales invoice to start tracking revenue."
-                action={
-                  <Link href="/accounting/sales-invoices/new">
-                    <Button>
-                      <Plus className="h-4 w-4 me-2" />
-                      New Invoice
-                    </Button>
-                  </Link>
-                }
-              />
-            ) : (
-              <div className="space-y-2">
-                {/* Header */}
-                <div className="grid grid-cols-12 gap-4 px-4 py-2 text-sm font-medium text-muted-foreground border-b">
-                  <div className="col-span-2">Invoice #</div>
-                  <div className="col-span-2">Date</div>
-                  <div className="col-span-3">Customer</div>
-                  <div className="col-span-2 text-end">Amount</div>
-                  <div className="col-span-2">Status</div>
-                  <div className="col-span-1"></div>
-                </div>
-
-                {/* Rows */}
-                {filteredInvoices.map((invoice) => (
-                  <div
-                    key={invoice.id}
-                    className="grid grid-cols-12 gap-4 px-4 py-3 rounded-lg border hover:bg-muted/50 transition-colors items-center"
-                  >
-                    <div className="col-span-2">
-                      <Link
-                        href={`/accounting/sales-invoices/${invoice.id}`}
-                        className="font-mono text-sm font-medium hover:text-primary hover:underline ltr-code"
-                      >
-                        {invoice.invoice_number}
-                      </Link>
-                    </div>
-                    <div className="col-span-2 text-sm text-muted-foreground">
-                      {formatDate(invoice.invoice_date)}
-                    </div>
-                    <div className="col-span-3">
-                      <span className="font-medium">{invoice.customer_name}</span>
-                      <p className="text-sm text-muted-foreground font-mono ltr-code">
-                        {invoice.customer_code}
-                      </p>
-                    </div>
-                    <div className="col-span-2 text-end font-mono ltr-number font-medium">
-                      {invoice.currency && <span className="text-muted-foreground text-xs me-1">{invoice.currency}</span>}
-                      {parseFloat(invoice.total_amount).toLocaleString(undefined, {
-                        minimumFractionDigits: 2,
-                        maximumFractionDigits: 2,
-                      })}
-                    </div>
-                    <div className="col-span-2">
-                      <Badge className={cn("text-xs", INVOICE_STATUS_COLORS[invoice.status])}>
-                        {INVOICE_STATUS_LABELS[invoice.status]}
-                      </Badge>
-                    </div>
-                    <div className="col-span-1 flex items-center justify-end">
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="sm">
-                            <MoreHorizontal className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem onClick={() => router.push(`/accounting/sales-invoices/${invoice.id}`)}>
-                            <Eye className="h-4 w-4 me-2" />
-                            View
-                          </DropdownMenuItem>
-                          {invoice.status === "DRAFT" && (
-                            <>
-                              <DropdownMenuItem onClick={() => router.push(`/accounting/sales-invoices/${invoice.id}/edit`)}>
-                                <Pencil className="h-4 w-4 me-2" />
-                                Edit
-                              </DropdownMenuItem>
-                              <DropdownMenuSeparator />
-                              <DropdownMenuItem onClick={() => setPostDialog({ open: true, invoice })}>
-                                <Send className="h-4 w-4 me-2" />
-                                Post Invoice
-                              </DropdownMenuItem>
-                              <DropdownMenuSeparator />
-                              <DropdownMenuItem
-                                onClick={() => setDeleteDialog({ open: true, invoice })}
-                                className="text-destructive"
-                              >
-                                <Trash2 className="h-4 w-4 me-2" />
-                                Delete
-                              </DropdownMenuItem>
-                            </>
-                          )}
-                          {invoice.status === "POSTED" && (
-                            <>
-                              <DropdownMenuSeparator />
-                              <DropdownMenuItem
-                                onClick={() => setVoidDialog({ open: true, invoice })}
-                                className="text-destructive"
-                              >
-                                <XCircle className="h-4 w-4 me-2" />
-                                Void Invoice
-                              </DropdownMenuItem>
-                            </>
-                          )}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
+            <PaginatedTable
+              data={invoices}
+              columns={columns}
+              keyExtractor={(inv) => inv.id}
+              page={page}
+              pageSize={pageSize}
+              totalCount={totalCount}
+              totalPages={totalPages}
+              onPageChange={setPage}
+              onPageSizeChange={setPageSize}
+              ordering={ordering}
+              onOrderingChange={setOrdering}
+              onRowClick={(inv) => router.push(`/accounting/sales-invoices/${inv.id}`)}
+              isLoading={isLoading}
+              emptyState={
+                <EmptyState
+                  icon={<Receipt className="h-12 w-12" />}
+                  title="No invoices yet"
+                  description="Create your first sales invoice to start tracking revenue."
+                  action={<Link href="/accounting/sales-invoices/new"><Button><Plus className="h-4 w-4 me-2" />New Invoice</Button></Link>}
+                />
+              }
+            />
           </CardContent>
         </Card>
       </div>
 
-      {/* Delete confirmation dialog */}
       <AlertDialog open={deleteDialog.open} onOpenChange={(open: boolean) => setDeleteDialog({ open, invoice: null })}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Invoice</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete invoice &quot;{deleteDialog.invoice?.invoice_number}&quot;? This action cannot be undone.
-            </AlertDialogDescription>
+            <AlertDialogDescription>Are you sure you want to delete invoice &quot;{deleteDialog.invoice?.invoice_number}&quot;? This action cannot be undone.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground">
-              Delete
-            </AlertDialogAction>
+            <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground">Delete</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Post confirmation dialog */}
       <AlertDialog open={postDialog.open} onOpenChange={(open: boolean) => setPostDialog({ open, invoice: null })}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Post Invoice</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to post invoice &quot;{postDialog.invoice?.invoice_number}&quot;? This will create a journal entry
-              and the invoice cannot be edited afterwards.
-            </AlertDialogDescription>
+            <AlertDialogDescription>Are you sure you want to post invoice &quot;{postDialog.invoice?.invoice_number}&quot;? This will create a journal entry and the invoice cannot be edited afterwards.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handlePost}>
-              Post Invoice
-            </AlertDialogAction>
+            <AlertDialogAction onClick={handlePost}>Post Invoice</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Void confirmation dialog */}
       <AlertDialog open={voidDialog.open} onOpenChange={(open: boolean) => setVoidDialog({ open, invoice: null })}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Void Invoice</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to void invoice &quot;{voidDialog.invoice?.invoice_number}&quot;? This will create a reversing
-              journal entry to cancel the original posting.
-            </AlertDialogDescription>
+            <AlertDialogDescription>Are you sure you want to void invoice &quot;{voidDialog.invoice?.invoice_number}&quot;? This will create a reversing journal entry to cancel the original posting.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleVoid} className="bg-destructive text-destructive-foreground">
-              Void Invoice
-            </AlertDialogAction>
+            <AlertDialogAction onClick={handleVoid} className="bg-destructive text-destructive-foreground">Void Invoice</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -351,9 +290,5 @@ export default function SalesInvoicesPage() {
 }
 
 export const getServerSideProps: GetServerSideProps = async ({ locale }) => {
-  return {
-    props: {
-      ...(await serverSideTranslations(locale ?? "en", ["common", "accounting"])),
-    },
-  };
+  return { props: { ...(await serverSideTranslations(locale ?? "en", ["common", "accounting"])) } };
 };

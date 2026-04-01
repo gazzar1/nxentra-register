@@ -15,9 +15,9 @@ Usage:
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
+from accounting.models import CompanySequence, JournalEntry
 from accounts.models import Company
 from accounts.rls import rls_bypass
-from accounting.models import CompanySequence, JournalEntry
 from projections.write_barrier import command_writes_allowed, projection_writes_allowed
 
 

@@ -3,13 +3,12 @@
 Serializers for inventory API endpoints.
 """
 
-from rest_framework import serializers
-from decimal import Decimal
 
-from .models import Warehouse, StockLedgerEntry
+from rest_framework import serializers
+
 from projections.models import InventoryBalance
-from sales.models import Item
-from accounting.models import Account
+
+from .models import StockLedgerEntry, Warehouse
 
 
 class WarehouseSerializer(serializers.ModelSerializer):

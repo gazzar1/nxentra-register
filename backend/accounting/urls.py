@@ -18,59 +18,58 @@ Admin Endpoints (super-admin only):
 
 from django.urls import path
 
-from .views import (
-    # Account views
-    AccountListCreateView,
-    AccountDetailView,
-    AccountAnalysisDefaultView,
-    AccountAnalysisDefaultDeleteView,
-    AccountExportView,
-    # Journal entry views
-    JournalEntryListCreateView,
-    JournalEntryDetailView,
-    JournalSaveCompleteView,
-    JournalPostView,
-    JournalReverseView,
-    JournalEntryExportView,
-    # Analysis dimension views
-    AnalysisDimensionListCreateView,
-    AnalysisDimensionDetailView,
-    DimensionValueListCreateView,
-    DimensionValueDetailView,
-    # Customer/Vendor views
-    CustomerListCreateView,
-    CustomerDetailView,
-    VendorListCreateView,
-    VendorDetailView,
-    # Cash application views
-    CustomerReceiptCreateView,
-    VendorPaymentCreateView,
-    # Statistical entry views
-    StatisticalEntryListCreateView,
-    StatisticalEntryDetailView,
-    StatisticalEntryPostView,
-    # Admin views
-    SeedStatusView,
-    SeedAccountsView,
-    # Exchange rate views
-    ExchangeRateListCreateView,
-    ExchangeRateDetailView,
-    ExchangeRateLookupView,
-    # Core account mapping
-    CoreAccountMappingView,
-)
-
 from .bank_views import (
-    BankStatementListCreateView,
+    BankAutoMatchView,
+    BankExcludeLineView,
+    BankManualMatchView,
+    BankReconcileView,
     BankStatementCSVImportView,
     BankStatementDetailView,
-    BankAutoMatchView,
-    BankManualMatchView,
+    BankStatementListCreateView,
     BankUnmatchView,
-    BankExcludeLineView,
-    BankReconcileView,
     BankUnreconciledLinesView,
     CommerceReconciliationView,
+)
+from .views import (
+    AccountAnalysisDefaultDeleteView,
+    AccountAnalysisDefaultView,
+    AccountDetailView,
+    AccountExportView,
+    # Account views
+    AccountListCreateView,
+    AnalysisDimensionDetailView,
+    # Analysis dimension views
+    AnalysisDimensionListCreateView,
+    # Core account mapping
+    CoreAccountMappingView,
+    CustomerDetailView,
+    # Customer/Vendor views
+    CustomerListCreateView,
+    # Cash application views
+    CustomerReceiptCreateView,
+    DimensionValueDetailView,
+    DimensionValueListCreateView,
+    ExchangeRateDetailView,
+    # Exchange rate views
+    ExchangeRateListCreateView,
+    ExchangeRateLookupView,
+    JournalEntryDetailView,
+    JournalEntryExportView,
+    # Journal entry views
+    JournalEntryListCreateView,
+    JournalPostView,
+    JournalReverseView,
+    JournalSaveCompleteView,
+    SeedAccountsView,
+    # Admin views
+    SeedStatusView,
+    StatisticalEntryDetailView,
+    # Statistical entry views
+    StatisticalEntryListCreateView,
+    StatisticalEntryPostView,
+    VendorDetailView,
+    VendorListCreateView,
+    VendorPaymentCreateView,
 )
 
 app_name = "accounting"
@@ -94,7 +93,7 @@ urlpatterns = [
         AccountDetailView.as_view(),
         name="account-detail",
     ),
-    
+
     # Account Analysis Defaults
     path(
         "accounts/<str:code>/analysis-defaults/",
@@ -125,7 +124,7 @@ urlpatterns = [
         JournalEntryDetailView.as_view(),
         name="journal-entry-detail",
     ),
-    
+
     # Journal Entry Workflow Actions
     path(
         "journal-entries/<int:pk>/complete/",
@@ -156,7 +155,7 @@ urlpatterns = [
         AnalysisDimensionDetailView.as_view(),
         name="dimension-detail",
     ),
-    
+
     # Dimension Values
     path(
         "dimensions/<int:dim_pk>/values/",

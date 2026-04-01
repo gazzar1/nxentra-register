@@ -10,26 +10,25 @@ All writes use _projection_write=True to bypass the read-model guard.
 """
 
 import logging
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
-from datetime import datetime, date
 
 from django.utils import timezone
 
-from events.types import EventTypes
-from events.models import BusinessEvent
-from projections.base import BaseProjection, projection_registry
 from accounting.models import (
     Account,
-    JournalEntry,
-    JournalLine,
+    AccountAnalysisDefault,
     AnalysisDimension,
     AnalysisDimensionValue,
-    JournalLineAnalysis,
-    AccountAnalysisDefault,
     Customer,
+    JournalEntry,
+    JournalLine,
+    JournalLineAnalysis,
     Vendor,
 )
-
+from events.models import BusinessEvent
+from events.types import EventTypes
+from projections.base import BaseProjection, projection_registry
 
 logger = logging.getLogger(__name__)
 

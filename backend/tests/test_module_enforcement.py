@@ -10,14 +10,13 @@ Covers:
 - Re-enabling restores access
 """
 
-import pytest
 from uuid import uuid4
 
+import pytest
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 
 from accounts.models import Company, CompanyMembership, CompanyModule
-
 
 User = get_user_model()
 

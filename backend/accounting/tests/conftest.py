@@ -6,6 +6,7 @@ This file ensures Django settings are configured before any test imports.
 """
 
 import os
+
 import django
 from django.conf import settings
 
@@ -25,8 +26,9 @@ settings.PROJECTIONS_SYNC = True
 @pytest.fixture(autouse=True)
 def _rls_bypass(db):
     """Keep RLS bypass enabled for tests using the default connection."""
-    from accounts import rls
     from django.db import connection
+
+    from accounts import rls
     rls.set_rls_bypass(True, conn=connection)
     yield
     # Ensure bypass is still enabled after test

@@ -1,21 +1,21 @@
 # properties/models/__init__.py
-from .property import Property, Unit
-from .lessee import Lessee
-from .lease import Lease, RentScheduleLine
-from .payment import PaymentReceipt, PaymentAllocation
+from .config import PropertyAccountMapping
 from .deposit import SecurityDepositTransaction
 from .expense import PropertyExpense
-from .config import PropertyAccountMapping
+from .lease import Lease, RentScheduleLine
+from .lessee import Lessee
+from .payment import PaymentAllocation, PaymentReceipt
+from .property import Property, Unit
 
 __all__ = [
-    "Property",
-    "Unit",
-    "Lessee",
     "Lease",
-    "RentScheduleLine",
-    "PaymentReceipt",
+    "Lessee",
     "PaymentAllocation",
-    "SecurityDepositTransaction",
-    "PropertyExpense",
+    "PaymentReceipt",
+    "Property",
     "PropertyAccountMapping",
+    "PropertyExpense",
+    "RentScheduleLine",
+    "SecurityDepositTransaction",
+    "Unit",
 ]

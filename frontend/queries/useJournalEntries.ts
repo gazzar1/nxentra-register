@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { journalService } from '@/services/journal.service';
 import { reportKeys } from './useReports';
 import type {
@@ -8,24 +8,37 @@ import type {
   JournalEntrySaveCompletePayload,
   JournalEntryFilters,
 } from '@/types/journal';
+import type { PaginationParams } from '@/types/common';
 
 // Query keys factory
 export const journalKeys = {
   all: ['journal-entries'] as const,
   lists: () => [...journalKeys.all, 'list'] as const,
-  list: (filters: JournalEntryFilters) => [...journalKeys.lists(), filters] as const,
+  list: (filters: object) => [...journalKeys.lists(), filters] as const,
   details: () => [...journalKeys.all, 'detail'] as const,
   detail: (id: number) => [...journalKeys.details(), id] as const,
 };
 
-// Journal entries queries
+// Returns JournalEntry[] for backward compatibility (dashboard, detail pages)
 export function useJournalEntries(filters?: JournalEntryFilters) {
   return useQuery({
     queryKey: journalKeys.list(filters || {}),
     queryFn: async () => {
+      const { data } = await journalService.list({ ...filters, page_size: 200 });
+      return data.results;
+    },
+  });
+}
+
+// Paginated journal entries query — returns full PaginatedResponse
+export function usePaginatedJournalEntries(filters?: JournalEntryFilters & PaginationParams) {
+  return useQuery({
+    queryKey: journalKeys.list({ ...filters, _paginated: true }),
+    queryFn: async () => {
       const { data } = await journalService.list(filters);
       return data;
     },
+    placeholderData: keepPreviousData,
   });
 }
 

@@ -29,13 +29,14 @@ Models:
 - AccountAnalysisDefault: Default analysis values for accounts (read model)
 """
 
-from django.db import models, transaction
-from django.db.models import Sum, Q
-from django.core.exceptions import ValidationError
-from django.utils import timezone
-from decimal import Decimal
 import uuid
+from decimal import Decimal
+
 from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.db import models, transaction
+from django.db.models import Q, Sum
+
 from projections.write_barrier import write_context_allowed
 
 
@@ -438,13 +439,13 @@ class Account(AccountingReadModel):
         editable=False,
         unique=True,
     )
-    
+
     code = models.CharField(max_length=20)
-    
+
     # Multilingual names
     name = models.CharField(max_length=255)
     name_ar = models.CharField(max_length=255, blank=True, default="")
-    
+
     account_type = models.CharField(
         max_length=20,
         choices=AccountType.choices,
@@ -508,7 +509,7 @@ class Account(AccountingReadModel):
         on_delete=models.PROTECT,
         related_name="children",
     )
-    
+
     is_header = models.BooleanField(
         default=False,
         help_text="Header accounts group other accounts and cannot receive postings",
@@ -517,7 +518,7 @@ class Account(AccountingReadModel):
     # Metadata - Multilingual
     description = models.TextField(blank=True, default="")
     description_ar = models.TextField(blank=True, default="")
-    
+
     # For statistical/off-balance accounts (required for STATISTICAL and OFF_BALANCE domains)
     unit_of_measure = models.CharField(
         max_length=20,
@@ -633,26 +634,7 @@ class Account(AccountingReadModel):
             allowed = False
 
             # Same type is always allowed
-            if parent_type == child_type:
-                allowed = True
-            # ASSET family relationships
-            elif parent_type == self.AccountType.ASSET and child_type in self.ASSET_FAMILY:
-                allowed = True
-            elif parent_type in self.ASSET_FAMILY and child_type == self.AccountType.CONTRA_ASSET:
-                allowed = True
-            # LIABILITY family relationships
-            elif parent_type == self.AccountType.LIABILITY and child_type in self.LIABILITY_FAMILY:
-                allowed = True
-            elif parent_type in self.LIABILITY_FAMILY and child_type == self.AccountType.CONTRA_LIABILITY:
-                allowed = True
-            # EQUITY relationships
-            elif parent_type == self.AccountType.EQUITY and child_type == self.AccountType.CONTRA_EQUITY:
-                allowed = True
-            # REVENUE relationships
-            elif parent_type == self.AccountType.REVENUE and child_type == self.AccountType.CONTRA_REVENUE:
-                allowed = True
-            # EXPENSE relationships
-            elif parent_type == self.AccountType.EXPENSE and child_type == self.AccountType.CONTRA_EXPENSE:
+            if parent_type == child_type or (parent_type == self.AccountType.ASSET and child_type in self.ASSET_FAMILY) or (parent_type in self.ASSET_FAMILY and child_type == self.AccountType.CONTRA_ASSET) or (parent_type == self.AccountType.LIABILITY and child_type in self.LIABILITY_FAMILY) or (parent_type in self.LIABILITY_FAMILY and child_type == self.AccountType.CONTRA_LIABILITY) or (parent_type == self.AccountType.EQUITY and child_type == self.AccountType.CONTRA_EQUITY) or (parent_type == self.AccountType.REVENUE and child_type == self.AccountType.CONTRA_REVENUE) or (parent_type == self.AccountType.EXPENSE and child_type == self.AccountType.CONTRA_EXPENSE):
                 allowed = True
 
             if not allowed:
@@ -1217,15 +1199,15 @@ class JournalEntry(AccountingReadModel):
         default="",
         help_text="Auto-generated or manual entry number",
     )
-    
+
     date = models.DateField()
-    
+
     period = models.PositiveSmallIntegerField(
         null=True,
         blank=True,
         help_text="Fiscal period (1-12 or custom)",
     )
-    
+
     # Multilingual memo
     memo = models.CharField(max_length=255, blank=True, default="")
     memo_ar = models.CharField(max_length=255, blank=True, default="")
@@ -1249,7 +1231,7 @@ class JournalEntry(AccountingReadModel):
         choices=Kind.choices,
         default=Kind.NORMAL,
     )
-    
+
     status = models.CharField(
         max_length=12,
         choices=Status.choices,
@@ -1263,7 +1245,7 @@ class JournalEntry(AccountingReadModel):
         default="",
         help_text="Module that created this entry (e.g., 'inventory', 'payroll')",
     )
-    
+
     source_document = models.CharField(
         max_length=100,
         blank=True,
@@ -1494,19 +1476,19 @@ class JournalLine(AccountingReadModel):
         editable=False,
         unique=True,
     )
-    
+
     line_no = models.PositiveIntegerField()
-    
+
     account = models.ForeignKey(
         Account,
         on_delete=models.PROTECT,
         related_name="journal_lines",
     )
-    
+
     # Multilingual description
     description = models.CharField(max_length=255, blank=True, default="")
     description_ar = models.CharField(max_length=255, blank=True, default="")
-    
+
     debit = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     credit = models.DecimalField(max_digits=18, decimal_places=2, default=0)
 
@@ -1720,19 +1702,19 @@ class AnalysisDimension(AccountingReadModel):
         editable=False,
         unique=True,
     )
-    
+
     code = models.CharField(
         max_length=20,
         help_text="Short code: COST_CENTER, PROJECT, DEPT",
     )
-    
+
     # Multilingual names
     name = models.CharField(max_length=100)
     name_ar = models.CharField(max_length=100, blank=True, default="")
-    
+
     description = models.TextField(blank=True, default="")
     description_ar = models.TextField(blank=True, default="")
-    
+
     # Semantic classification
     class DimensionKind(models.TextChoices):
         CONTEXT = "CONTEXT", "Context"      # Business meaning (property, doctor, project)
@@ -1752,7 +1734,7 @@ class AnalysisDimension(AccountingReadModel):
     )
 
     is_active = models.BooleanField(default=True)
-    
+
     # Which account types require this dimension?
     # Empty list = applies to all account types
     applies_to_account_types = models.JSONField(
@@ -1760,10 +1742,10 @@ class AnalysisDimension(AccountingReadModel):
         blank=True,
         help_text='e.g., ["EXPENSE", "REVENUE"] or [] for all',
     )
-    
+
     # Ordering for UI display
     display_order = models.PositiveSmallIntegerField(default=0)
-    
+
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -1839,16 +1821,16 @@ class AnalysisDimensionValue(AccountingReadModel):
         editable=False,
         unique=True,
     )
-    
+
     code = models.CharField(max_length=20)
-    
+
     # Multilingual names
     name = models.CharField(max_length=100)
     name_ar = models.CharField(max_length=100, blank=True, default="")
-    
+
     description = models.TextField(blank=True, default="")
     description_ar = models.TextField(blank=True, default="")
-    
+
     # Hierarchical structure
     parent = models.ForeignKey(
         "self",
@@ -1857,9 +1839,9 @@ class AnalysisDimensionValue(AccountingReadModel):
         on_delete=models.CASCADE,
         related_name="children",
     )
-    
+
     is_active = models.BooleanField(default=True)
-    
+
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -1953,12 +1935,12 @@ class JournalLineAnalysis(AccountingReadModel):
         on_delete=models.CASCADE,
         related_name="journal_line_analysis",
     )
-    
+
     dimension = models.ForeignKey(
         AnalysisDimension,
         on_delete=models.PROTECT,
     )
-    
+
     dimension_value = models.ForeignKey(
         AnalysisDimensionValue,
         on_delete=models.PROTECT,
@@ -2034,12 +2016,12 @@ class AccountAnalysisDefault(AccountingReadModel):
         on_delete=models.CASCADE,
         related_name="account_analysis_defaults",
     )
-    
+
     dimension = models.ForeignKey(
         AnalysisDimension,
         on_delete=models.CASCADE,
     )
-    
+
     default_value = models.ForeignKey(
         AnalysisDimensionValue,
         on_delete=models.CASCADE,
@@ -2753,4 +2735,4 @@ class BankReconciliation(models.Model):
 
 
 # Import ModuleAccountMapping so Django discovers it for migrations.
-from accounting.mappings import ModuleAccountMapping  # noqa: E402, F401
+from accounting.mappings import ModuleAccountMapping  # noqa: F401

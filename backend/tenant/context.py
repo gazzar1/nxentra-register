@@ -21,9 +21,9 @@ Why contextvars instead of threading.local()?
 - Automatic cleanup: Token-based reset prevents context leakage
 - No explicit thread management needed
 """
-from contextvars import ContextVar
 from contextlib import contextmanager
-from typing import Optional, NamedTuple
+from contextvars import ContextVar
+from typing import NamedTuple
 
 
 class TenantContext(NamedTuple):
@@ -35,13 +35,13 @@ class TenantContext(NamedTuple):
 
 
 # ContextVar for current tenant - None means no tenant context (system operations)
-_current_tenant: ContextVar[Optional[TenantContext]] = ContextVar(
+_current_tenant: ContextVar[TenantContext | None] = ContextVar(
     "current_tenant",
     default=None,
 )
 
 
-def get_current_tenant() -> Optional[TenantContext]:
+def get_current_tenant() -> TenantContext | None:
     """
     Get the current tenant context.
 
@@ -63,7 +63,7 @@ def get_current_db_alias() -> str:
     return ctx.db_alias if ctx else "default"
 
 
-def get_current_company_id() -> Optional[int]:
+def get_current_company_id() -> int | None:
     """
     Get the current company ID.
 

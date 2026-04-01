@@ -9,29 +9,30 @@ Updated to match actual Nxentra API signatures:
 """
 
 import os
+
 import django
 
 # Configure Django settings before any other imports
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "nxentra_backend.test_settings")
 django.setup()
 
-import pytest
-from django.conf import settings
+from datetime import date
 from decimal import Decimal
-from datetime import date, datetime
 from uuid import uuid4
 
+import pytest
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 
-# Import your models
-from accounts.models import Company, CompanyMembership, NxPermission, CompanyMembershipPermission
+from accounting.models import Account, AnalysisDimension, JournalEntry, JournalLine
 from accounts.authz import ActorContext
-from accounting.models import Account, JournalEntry, JournalLine, AnalysisDimension
-from events.models import BusinessEvent, EventBookmark
+
+# Import your models
+from accounts.models import Company, CompanyMembership, CompanyMembershipPermission, NxPermission
+from events.models import EventBookmark
 from events.types import EventTypes
 from projections.models import AccountBalance, FiscalPeriod, FiscalPeriodConfig
-
 
 User = get_user_model()
 
@@ -43,8 +44,9 @@ def _testing_settings(django_db_setup, django_db_blocker):
     settings.DISABLE_EVENT_VALIDATION = True
     settings.RLS_BYPASS = True
     with django_db_blocker.unblock():
-        from accounts import rls
         from django.db import connection
+
+        from accounts import rls
 
         rls.set_rls_bypass(True, conn=connection)
 
@@ -52,8 +54,9 @@ def _testing_settings(django_db_setup, django_db_blocker):
 @pytest.fixture(autouse=True)
 def _rls_bypass(db):
     """Keep RLS bypass enabled for tests using the default connection."""
-    from accounts import rls
     from django.db import connection
+
+    from accounts import rls
 
     rls.set_rls_bypass(True, conn=connection)
 
@@ -201,7 +204,7 @@ def actor_context(user, company, owner_membership):
     perms = frozenset(
         owner_membership.permissions.values_list("code", flat=True)
     )
-    
+
     return ActorContext(
         user=user,
         company=company,
@@ -216,7 +219,7 @@ def admin_actor_context(admin_user, company, admin_membership):
     perms = frozenset(
         admin_membership.permissions.values_list("code", flat=True)
     )
-    
+
     return ActorContext(
         user=admin_user,
         company=company,
@@ -231,7 +234,7 @@ def user_actor_context(regular_user, company, user_membership):
     perms = frozenset(
         user_membership.permissions.values_list("code", flat=True)
     )
-    
+
     return ActorContext(
         user=regular_user,
         company=company,
@@ -263,7 +266,7 @@ def permissions(db):
         "users.create",
         "users.update",
     ]
-    
+
     permissions = []
     for code in permission_codes:
         perm, _ = NxPermission.objects.get_or_create(
@@ -274,7 +277,7 @@ def permissions(db):
             }
         )
         permissions.append(perm)
-    
+
     return permissions
 
 
@@ -424,7 +427,7 @@ def draft_journal_entry(db, company, user, cash_account, revenue_account):
         status=JournalEntry.Status.DRAFT,
         created_by=user,
     )
-    
+
     JournalLine.objects.create(
         entry=entry,
         company=company,
@@ -434,7 +437,7 @@ def draft_journal_entry(db, company, user, cash_account, revenue_account):
         debit=Decimal("1000.00"),
         credit=Decimal("0.00"),
     )
-    
+
     JournalLine.objects.create(
         entry=entry,
         company=company,
@@ -444,7 +447,7 @@ def draft_journal_entry(db, company, user, cash_account, revenue_account):
         debit=Decimal("0.00"),
         credit=Decimal("1000.00"),
     )
-    
+
     return entry
 
 
@@ -462,7 +465,7 @@ def posted_journal_entry(db, company, user, cash_account, revenue_account):
         posted_by=user,
         created_by=user,
     )
-    
+
     JournalLine.objects.create(
         entry=entry,
         company=company,
@@ -472,7 +475,7 @@ def posted_journal_entry(db, company, user, cash_account, revenue_account):
         debit=Decimal("500.00"),
         credit=Decimal("0.00"),
     )
-    
+
     JournalLine.objects.create(
         entry=entry,
         company=company,
@@ -482,7 +485,7 @@ def posted_journal_entry(db, company, user, cash_account, revenue_account):
         debit=Decimal("0.00"),
         credit=Decimal("500.00"),
     )
-    
+
     return entry
 
 
@@ -503,7 +506,7 @@ def unbalanced_lines_data():
 def account_created_event(db, company, user, cash_account, actor_context):
     """Create an account.created event using emit_event_no_actor."""
     from events.emitter import emit_event_no_actor
-    
+
     return emit_event_no_actor(
         company=company,
         user=user,
@@ -526,7 +529,7 @@ def account_created_event(db, company, user, cash_account, actor_context):
 def journal_entry_posted_event(db, company, user, posted_journal_entry, cash_account, revenue_account):
     """Create a journal_entry.posted event."""
     from events.emitter import emit_event_no_actor
-    
+
     return emit_event_no_actor(
         company=company,
         user=user,
@@ -619,8 +622,8 @@ def cost_center_dimension(db, company):
 @pytest.fixture
 def fiscal_periods(db, company):
     """Create fiscal periods for the current year."""
-    from datetime import date
     from calendar import monthrange
+    from datetime import date
 
     current_year = date.today().year
 
@@ -657,8 +660,8 @@ def fiscal_periods(db, company):
 @pytest.fixture(autouse=True)
 def auto_fiscal_periods(db, company):
     """Automatically create fiscal periods for all tests that use company fixture."""
-    from datetime import date
     from calendar import monthrange
+    from datetime import date
 
     current_year = date.today().year
 

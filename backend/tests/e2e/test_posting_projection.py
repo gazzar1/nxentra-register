@@ -9,21 +9,18 @@ These tests verify the full flow:
 4. Verify tie-out invariants
 """
 
-import pytest
-from decimal import Decimal
 from datetime import date
+from decimal import Decimal
 from uuid import uuid4
 
-from django.utils import timezone
+import pytest
 
-from accounts.models import Company, CompanyMembership
-from accounts.authz import ActorContext
-from accounting.models import Account, Customer, Vendor, JournalEntry
 from accounting.commands import (
     create_journal_entry,
-    save_journal_entry_complete,
     post_journal_entry,
+    save_journal_entry_complete,
 )
+from accounting.models import Account, Customer, Vendor
 from projections.models import AccountBalance, CustomerBalance, VendorBalance
 
 

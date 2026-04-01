@@ -1,19 +1,16 @@
 #accounts/tests/test_permissions_defaults.py
 
-from django.test import TestCase
-from django.contrib.auth import get_user_model
 from django.apps import apps
+from django.contrib.auth import get_user_model
+from django.test import TestCase
 
-
-from accounts.models import Company, CompanyMembership
 from accounts.authz import ActorContext
-from accounts.permissions import grant_role_defaults
 from accounts.commands import add_user_to_company
-from accounts.models import CompanyMembershipPermission, NxPermission
+from accounts.models import Company, CompanyMembership, CompanyMembershipPermission, NxPermission
+from accounts.permissions import grant_role_defaults
+
 #from events.models import BusinessEvent
 from events.types import EventTypes
-
-
 
 EventModel = apps.get_model("events", "BusinessEvent")  # <-- replace BusinessEvent with your real model class name
 
@@ -56,7 +53,7 @@ class TestPermissionDefaults(TestCase):
         perms = frozenset(self.admin_m.permissions.values_list("code", flat=True))
         actor = ActorContext(user=self.admin, company=self.company, membership=self.admin_m, perms=perms)
         self.assertTrue(actor.has("company.manage_users"))
-        
+
     def test_admin_revocation_actually_blocks(self):
     # Remove a permission explicitly
         perm = NxPermission.objects.get(code="company.manage_users")

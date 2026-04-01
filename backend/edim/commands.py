@@ -15,44 +15,44 @@ Pattern:
 ALL state changes MUST go through commands to ensure events are emitted.
 """
 
-from django.db import transaction
-from django.conf import settings
-from django.utils import timezone
 import hashlib
 import json
 import uuid
 
-from accounts.authz import ActorContext, require
-from events.emitter import emit_event
-from projections.write_barrier import command_writes_allowed
-from events.types import EventTypes
+from django.conf import settings
+from django.db import transaction
+from django.utils import timezone
 
-from edim.models import (
-    SourceSystem,
-    MappingProfile,
-    IdentityCrosswalk,
-    IngestionBatch,
-    StagedRecord,
-)
+from accounts.authz import ActorContext, require
 from edim.event_types import (
-    EdimSourceSystemCreatedData,
-    EdimSourceSystemUpdatedData,
-    EdimSourceSystemDeactivatedData,
-    EdimMappingProfileCreatedData,
-    EdimMappingProfileUpdatedData,
-    EdimMappingProfileActivatedData,
-    EdimMappingProfileDeprecatedData,
+    EdimBatchCommittedData,
+    EdimBatchMappedData,
+    EdimBatchPreviewedData,
+    EdimBatchRejectedData,
+    EdimBatchStagedData,
+    EdimBatchValidatedData,
     EdimCrosswalkCreatedData,
-    EdimCrosswalkVerifiedData,
     EdimCrosswalkRejectedData,
     EdimCrosswalkUpdatedData,
-    EdimBatchStagedData,
-    EdimBatchMappedData,
-    EdimBatchValidatedData,
-    EdimBatchPreviewedData,
-    EdimBatchCommittedData,
-    EdimBatchRejectedData,
+    EdimCrosswalkVerifiedData,
+    EdimMappingProfileActivatedData,
+    EdimMappingProfileCreatedData,
+    EdimMappingProfileDeprecatedData,
+    EdimMappingProfileUpdatedData,
+    EdimSourceSystemCreatedData,
+    EdimSourceSystemDeactivatedData,
+    EdimSourceSystemUpdatedData,
 )
+from edim.models import (
+    IdentityCrosswalk,
+    IngestionBatch,
+    MappingProfile,
+    SourceSystem,
+    StagedRecord,
+)
+from events.emitter import emit_event
+from events.types import EventTypes
+from projections.write_barrier import command_writes_allowed
 
 
 class CommandResult:
@@ -975,7 +975,7 @@ def stage_batch(
         file.seek(0)
         _, records = detect_and_parse(file, filename)
     except Exception as e:
-        return CommandResult.fail(f"Failed to parse file: {str(e)}")
+        return CommandResult.fail(f"Failed to parse file: {e!s}")
 
     batch_public_id = uuid.uuid4()
 
@@ -1260,8 +1260,8 @@ def preview_batch(
     }
 
     # Group records into proposed journal entries (simplified - group by date)
-    from decimal import Decimal
     from collections import defaultdict
+    from decimal import Decimal
 
     entries_by_date = defaultdict(list)
     records = batch.records.filter(is_valid=True)
@@ -1357,12 +1357,13 @@ def commit_batch(
         return CommandResult.fail(f"Batch must be in VALIDATED or PREVIEWED status to commit. Current: {batch.status}")
 
     # Import accounting commands
-    from accounting.commands import create_journal_entry, save_journal_entry_complete, post_journal_entry
+    from collections import defaultdict
+    from datetime import date as date_cls
 
     # Build and create journal entries
     from decimal import Decimal
-    from collections import defaultdict
-    from datetime import date as date_cls
+
+    from accounting.commands import create_journal_entry, post_journal_entry, save_journal_entry_complete
 
     entries_by_date = defaultdict(list)
     records = batch.records.filter(is_valid=True)

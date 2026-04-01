@@ -13,10 +13,10 @@ Covers:
 - API key lifecycle (create, authenticate, deactivate)
 """
 
-import pytest
-from uuid import uuid4
 from decimal import Decimal
+from uuid import uuid4
 
+import pytest
 from rest_framework.test import APIClient
 
 from events.api_keys import ExternalAPIKey, hash_api_key
@@ -319,8 +319,8 @@ class TestExternalEventDownstreamProjection:
         self, client, company, api_key,
     ):
         from accounting.models import Account, JournalEntry, JournalLine
-        from properties.models import PropertyAccountMapping
         from projections.base import projection_registry
+        from properties.models import PropertyAccountMapping
 
         _, raw_key = api_key
 

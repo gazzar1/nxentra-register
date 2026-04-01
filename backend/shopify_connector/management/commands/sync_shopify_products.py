@@ -16,8 +16,8 @@ Usage:
 from django.core.management.base import BaseCommand
 
 from accounts.models import Company
-from shopify_connector.models import ShopifyStore
 from shopify_connector.commands import sync_products
+from shopify_connector.models import ShopifyStore
 
 
 class Command(BaseCommand):

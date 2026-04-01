@@ -13,24 +13,29 @@ Endpoints:
 from django.urls import path
 
 from .views import (
-    # Item views
-    ItemListCreateView,
-    ItemDetailView,
-    # Tax Code views
-    TaxCodeListCreateView,
-    TaxCodeDetailView,
-    # Posting Profile views
-    PostingProfileListCreateView,
-    PostingProfileDetailView,
-    # Sales Invoice views
-    SalesInvoiceListCreateView,
-    SalesInvoiceDetailView,
-    SalesInvoicePostView,
-    SalesInvoiceVoidView,
-    SalesInvoicePDFView,
-    SalesInvoiceEmailView,
+    # Credit Note views
+    CreditNoteDetailView,
+    CreditNoteListCreateView,
+    CreditNotePostView,
+    CreditNoteVoidView,
     # Open invoices for allocation
     CustomerOpenInvoicesView,
+    ItemDetailView,
+    # Item views
+    ItemListCreateView,
+    PostingProfileDetailView,
+    # Posting Profile views
+    PostingProfileListCreateView,
+    SalesInvoiceDetailView,
+    SalesInvoiceEmailView,
+    # Sales Invoice views
+    SalesInvoiceListCreateView,
+    SalesInvoicePDFView,
+    SalesInvoicePostView,
+    SalesInvoiceVoidView,
+    TaxCodeDetailView,
+    # Tax Code views
+    TaxCodeListCreateView,
 )
 
 app_name = "sales"
@@ -110,6 +115,30 @@ urlpatterns = [
         "invoices/<int:pk>/email/",
         SalesInvoiceEmailView.as_view(),
         name="invoice-email",
+    ),
+
+    # ==========================================================================
+    # Credit Notes
+    # ==========================================================================
+    path(
+        "credit-notes/",
+        CreditNoteListCreateView.as_view(),
+        name="creditnote-list-create",
+    ),
+    path(
+        "credit-notes/<int:pk>/",
+        CreditNoteDetailView.as_view(),
+        name="creditnote-detail",
+    ),
+    path(
+        "credit-notes/<int:pk>/post/",
+        CreditNotePostView.as_view(),
+        name="creditnote-post",
+    ),
+    path(
+        "credit-notes/<int:pk>/void/",
+        CreditNoteVoidView.as_view(),
+        name="creditnote-void",
     ),
 
     # ==========================================================================

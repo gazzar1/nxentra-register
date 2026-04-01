@@ -3,18 +3,17 @@
 URL routing for inventory API endpoints.
 """
 
-from django.urls import path, include
+from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
 from .views import (
-    WarehouseViewSet,
-    InventoryBalanceViewSet,
-    StockLedgerViewSet,
     InventoryAdjustmentViewSet,
+    InventoryBalanceViewSet,
     InventoryOpeningBalanceViewSet,
     StockAvailabilityViewSet,
+    StockLedgerViewSet,
+    WarehouseViewSet,
 )
-
 
 router = DefaultRouter()
 router.register(r"warehouses", WarehouseViewSet, basename="warehouse")

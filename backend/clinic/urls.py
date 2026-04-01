@@ -2,21 +2,21 @@
 from django.urls import path
 
 from .views import (
-    PatientListCreateView,
-    PatientDetailView,
-    PatientDocumentListCreateView,
-    PatientDocumentDetailView,
-    DoctorListCreateView,
+    ClinicAccountMappingView,
     DoctorDetailView,
-    VisitListCreateView,
-    VisitDetailView,
-    VisitCompleteView,
-    InvoiceListCreateView,
+    DoctorListCreateView,
     InvoiceDetailView,
     InvoiceIssueView,
+    InvoiceListCreateView,
+    PatientDetailView,
+    PatientDocumentDetailView,
+    PatientDocumentListCreateView,
+    PatientListCreateView,
     PaymentListCreateView,
     PaymentVoidView,
-    ClinicAccountMappingView,
+    VisitCompleteView,
+    VisitDetailView,
+    VisitListCreateView,
 )
 
 app_name = "clinic"

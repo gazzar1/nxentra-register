@@ -12,13 +12,12 @@ The actual business logic happens in commands.py.
 from rest_framework import serializers
 
 from edim.models import (
-    SourceSystem,
-    MappingProfile,
     IdentityCrosswalk,
     IngestionBatch,
+    MappingProfile,
+    SourceSystem,
     StagedRecord,
 )
-
 
 # =============================================================================
 # Source System Serializers
@@ -295,7 +294,7 @@ class IngestionBatchDetailSerializer(IngestionBatchSerializer):
     records = StagedRecordSerializer(many=True, read_only=True)
 
     class Meta(IngestionBatchSerializer.Meta):
-        fields = IngestionBatchSerializer.Meta.fields + ["records"]
+        fields = [*IngestionBatchSerializer.Meta.fields, "records"]
 
 
 class BatchUploadSerializer(serializers.Serializer):

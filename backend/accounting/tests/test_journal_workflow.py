@@ -9,18 +9,18 @@ Tests verify the API responses rather than direct database queries
 to avoid transaction isolation issues between the API client and
 test database connections.
 """
-from decimal import Decimal
 import uuid
+from datetime import date
+from decimal import Decimal
 
 import pytest
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 
+from accounting.models import Account, JournalEntry
 from accounts.models import Company, CompanyMembership
 from accounts.permissions import grant_role_defaults
-from accounting.models import Account, JournalEntry
 from projections.models import FiscalPeriod
-from datetime import date
 
 
 @pytest.fixture

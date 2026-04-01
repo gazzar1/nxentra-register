@@ -15,7 +15,7 @@ import logging
 from django.http import FileResponse
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -192,7 +192,7 @@ class BackupRestoreView(APIView):
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
-        from backups.importer import restore_company, RestoreError
+        from backups.importer import RestoreError, restore_company
 
         actor = resolve_actor(request)
         if not actor.company:

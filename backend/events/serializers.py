@@ -11,7 +11,7 @@ Implements PRD Section 10: Audit Chain Views
 
 from rest_framework import serializers
 
-from events.models import BusinessEvent, EventPayload, EventBookmark
+from events.models import BusinessEvent, EventBookmark, EventPayload
 
 
 class EventPayloadSerializer(serializers.ModelSerializer):

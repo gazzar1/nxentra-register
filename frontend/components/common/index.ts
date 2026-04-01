@@ -9,3 +9,5 @@ export { ErrorBoundary, ErrorFallback, withErrorBoundary } from './ErrorBoundary
 export { TableSkeleton, CardSkeleton, FormSkeleton, PageSkeleton } from './TableSkeleton';
 export { ResponsiveTable, MobileCardView, DataCard } from './ResponsiveTable';
 export type { ColumnDef } from './ResponsiveTable';
+export { PaginatedTable } from './PaginatedTable';
+export type { ColumnDef as PaginatedColumnDef } from './PaginatedTable';

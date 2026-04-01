@@ -22,12 +22,10 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 
-from django.db.models import Sum, Count, Q
-
 from .models import (
+    ShopifyOrder,
     ShopifyPayout,
     ShopifyPayoutTransaction,
-    ShopifyOrder,
     ShopifyRefund,
 )
 

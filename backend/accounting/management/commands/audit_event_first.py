@@ -27,7 +27,6 @@ import sys
 from decimal import Decimal
 
 from django.core.management.base import BaseCommand
-from django.db.models import Q
 
 logger = logging.getLogger("nxentra.accounting.audit")
 

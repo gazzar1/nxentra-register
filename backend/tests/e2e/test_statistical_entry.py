@@ -10,20 +10,20 @@ These tests verify the full event-sourced lifecycle:
 5. Delete statistical entry -> STATISTICAL_ENTRY_DELETED event
 """
 
-import pytest
-from decimal import Decimal
 from datetime import date
+from decimal import Decimal
 from uuid import uuid4
 
-from accounts.models import Company
-from accounting.models import Account, StatisticalEntry
+import pytest
+
 from accounting.commands import (
     create_statistical_entry,
-    update_statistical_entry,
+    delete_statistical_entry,
     post_statistical_entry,
     reverse_statistical_entry,
-    delete_statistical_entry,
+    update_statistical_entry,
 )
+from accounting.models import Account, StatisticalEntry
 from events.models import BusinessEvent
 from events.types import EventTypes
 

@@ -5,16 +5,16 @@ Validation engine for EDIM.
 Validates mapped records before they can be committed as journal entries.
 """
 
-from decimal import Decimal, InvalidOperation
 from datetime import date as date_cls
-from typing import Tuple, List, Dict, Any
+from decimal import Decimal, InvalidOperation
+from typing import Any
 
 
 def validate_record(
-    mapped_payload: Dict[str, Any],
+    mapped_payload: dict[str, Any],
     company,
     crosswalks,
-) -> Tuple[bool, List[str], Dict[str, str]]:
+) -> tuple[bool, list[str], dict[str, str]]:
     """
     Validate a mapped record.
 
@@ -131,7 +131,7 @@ def validate_date(value: Any) -> bool:
     return False
 
 
-def validate_amount(value: Any) -> Tuple[bool, Decimal]:
+def validate_amount(value: Any) -> tuple[bool, Decimal]:
     """
     Validate and parse an amount value.
 
@@ -211,7 +211,7 @@ def resolve_account(
     return None
 
 
-def validate_batch_balance(records) -> Tuple[bool, str]:
+def validate_batch_balance(records) -> tuple[bool, str]:
     """
     Validate that a batch of records is balanced (total debits == total credits).
 

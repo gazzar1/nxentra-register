@@ -12,17 +12,14 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts.authz import resolve_actor, require
+from accounts.authz import require, resolve_actor
 
 from . import bank_reconciliation as recon
 from .models import (
     Account,
-    BankReconciliation,
     BankStatement,
     BankStatementLine,
-    JournalLine,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -479,7 +476,9 @@ class CommerceReconciliationView(APIView):
 
         try:
             from shopify_connector.models import (
-                ShopifyOrder, ShopifyRefund, ShopifyPayout,
+                ShopifyOrder,
+                ShopifyPayout,
+                ShopifyRefund,
             )
         except ImportError:
             return Response(

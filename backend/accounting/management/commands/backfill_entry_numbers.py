@@ -11,10 +11,10 @@ Usage:
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from accounts.models import Company
-from accounts.rls import rls_bypass
 from accounting.commands import _next_company_sequence
 from accounting.models import JournalEntry
+from accounts.models import Company
+from accounts.rls import rls_bypass
 from projections.write_barrier import projection_writes_allowed
 
 

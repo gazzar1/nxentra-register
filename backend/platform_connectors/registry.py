@@ -35,7 +35,7 @@ class ConnectorRegistry:
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            cls._instance._connectors: dict[str, "BasePlatformConnector"] = {}
+            cls._instance._connectors: dict[str, BasePlatformConnector] = {}
         return cls._instance
 
     def register(self, connector: "BasePlatformConnector") -> None:

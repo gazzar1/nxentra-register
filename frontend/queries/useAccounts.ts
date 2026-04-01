@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import {
   accountsService,
   dimensionsService,
@@ -22,12 +22,13 @@ import type {
   StatisticalEntryCreatePayload,
   StatisticalEntryUpdatePayload,
 } from '@/types/account';
+import type { PaginationParams } from '@/types/common';
 
 // Query keys factory
 export const accountKeys = {
   all: ['accounts'] as const,
   lists: () => [...accountKeys.all, 'list'] as const,
-  list: (filters: Record<string, unknown>) => [...accountKeys.lists(), filters] as const,
+  list: (filters: object) => [...accountKeys.lists(), filters] as const,
   details: () => [...accountKeys.all, 'detail'] as const,
   detail: (code: string) => [...accountKeys.details(), code] as const,
 };
@@ -42,7 +43,7 @@ export const dimensionKeys = {
 export const customerKeys = {
   all: ['customers'] as const,
   lists: () => [...customerKeys.all, 'list'] as const,
-  list: (filters: Record<string, unknown>) => [...customerKeys.lists(), filters] as const,
+  list: (filters: object) => [...customerKeys.lists(), filters] as const,
   details: () => [...customerKeys.all, 'detail'] as const,
   detail: (code: string) => [...customerKeys.details(), code] as const,
   balance: (code: string) => [...customerKeys.all, 'balance', code] as const,
@@ -51,7 +52,7 @@ export const customerKeys = {
 export const vendorKeys = {
   all: ['vendors'] as const,
   lists: () => [...vendorKeys.all, 'list'] as const,
-  list: (filters: Record<string, unknown>) => [...vendorKeys.lists(), filters] as const,
+  list: (filters: object) => [...vendorKeys.lists(), filters] as const,
   details: () => [...vendorKeys.all, 'detail'] as const,
   detail: (code: string) => [...vendorKeys.details(), code] as const,
   balance: (code: string) => [...vendorKeys.all, 'balance', code] as const,
@@ -65,14 +66,26 @@ export const statisticalEntryKeys = {
   detail: (id: number) => [...statisticalEntryKeys.details(), id] as const,
 };
 
-// Accounts queries
+// Accounts queries — returns Account[] for backward compatibility
 export function useAccounts(filters?: { status?: string; type?: string }) {
   return useQuery({
     queryKey: accountKeys.list(filters || {}),
     queryFn: async () => {
+      const { data } = await accountsService.list({ ...filters, page_size: 200 });
+      return data.results;
+    },
+  });
+}
+
+// Paginated accounts query — returns full PaginatedResponse
+export function usePaginatedAccounts(filters?: { status?: string; type?: string } & PaginationParams) {
+  return useQuery({
+    queryKey: accountKeys.list({ ...filters, _paginated: true }),
+    queryFn: async () => {
       const { data } = await accountsService.list(filters);
       return data;
     },
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -189,13 +202,26 @@ export function buildAccountTree(accounts: Account[]): Account[] {
 // Customer Queries (AR Subledger)
 // =============================================================================
 
+// Returns Customer[] for backward compatibility
 export function useCustomers(filters?: { status?: string }) {
   return useQuery({
     queryKey: customerKeys.list(filters || {}),
     queryFn: async () => {
+      const { data } = await customersService.list({ ...filters, page_size: 200 });
+      return data.results;
+    },
+  });
+}
+
+// Paginated customers query
+export function usePaginatedCustomers(filters?: { status?: string } & PaginationParams) {
+  return useQuery({
+    queryKey: customerKeys.list({ ...filters, _paginated: true }),
+    queryFn: async () => {
       const { data } = await customersService.list(filters);
       return data;
     },
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -270,13 +296,26 @@ export function useCustomerBalances() {
 // Vendor Queries (AP Subledger)
 // =============================================================================
 
+// Returns Vendor[] for backward compatibility
 export function useVendors(filters?: { status?: string }) {
   return useQuery({
     queryKey: vendorKeys.list(filters || {}),
     queryFn: async () => {
+      const { data } = await vendorsService.list({ ...filters, page_size: 200 });
+      return data.results;
+    },
+  });
+}
+
+// Paginated vendors query
+export function usePaginatedVendors(filters?: { status?: string } & PaginationParams) {
+  return useQuery({
+    queryKey: vendorKeys.list({ ...filters, _paginated: true }),
+    queryFn: async () => {
       const { data } = await vendorsService.list(filters);
       return data;
     },
+    placeholderData: keepPreviousData,
   });
 }
 

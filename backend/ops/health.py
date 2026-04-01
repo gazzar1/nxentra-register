@@ -14,7 +14,7 @@ Endpoints:
 """
 import logging
 import time
-from typing import Dict, Any, List
+from typing import Any
 
 from django.conf import settings
 from django.db import connections
@@ -28,7 +28,7 @@ class HealthCheck:
     """Health check implementation."""
 
     @staticmethod
-    def check_database(alias: str = "default") -> Dict[str, Any]:
+    def check_database(alias: str = "default") -> dict[str, Any]:
         """Check database connectivity."""
         start = time.time()
         try:
@@ -53,12 +53,12 @@ class HealthCheck:
             }
 
     @staticmethod
-    def check_all_databases() -> Dict[str, Any]:
+    def check_all_databases() -> dict[str, Any]:
         """Check all configured databases."""
         results = {}
         all_healthy = True
 
-        for alias in settings.DATABASES.keys():
+        for alias in settings.DATABASES:
             result = HealthCheck.check_database(alias)
             results[alias] = result
             if result["status"] != "healthy":
@@ -70,7 +70,7 @@ class HealthCheck:
         }
 
     @staticmethod
-    def check_redis() -> Dict[str, Any]:
+    def check_redis() -> dict[str, Any]:
         """Check Redis connectivity (if configured)."""
         redis_url = getattr(settings, "CELERY_BROKER_URL", None)
         if not redis_url:
@@ -97,7 +97,7 @@ class HealthCheck:
             }
 
     @staticmethod
-    def check_tenant_directory() -> Dict[str, Any]:
+    def check_tenant_directory() -> dict[str, Any]:
         """Check TenantDirectory consistency."""
         try:
             from accounts.models import Company
@@ -129,11 +129,11 @@ class HealthCheck:
             }
 
     @staticmethod
-    def check_projection_lag() -> Dict[str, Any]:
+    def check_projection_lag() -> dict[str, Any]:
         """Check projection consumer lag."""
         try:
-            from events.models import EventBookmark, BusinessEvent
             from accounts.rls import rls_bypass
+            from events.models import BusinessEvent, EventBookmark
 
             with rls_bypass():
                 bookmarks = EventBookmark.objects.select_related("company", "last_event").all()
@@ -183,7 +183,7 @@ class HealthCheck:
             }
 
     @staticmethod
-    def check_reconciliation() -> Dict[str, Any]:
+    def check_reconciliation() -> dict[str, Any]:
         """
         Check AR/AP reconciliation status across all active companies.
 
@@ -231,7 +231,7 @@ class HealthCheck:
             return {"status": "error", "error": str(e)}
 
     @staticmethod
-    def get_full_health() -> Dict[str, Any]:
+    def get_full_health() -> dict[str, Any]:
         """Get comprehensive health report."""
         checks = {
             "databases": HealthCheck.check_all_databases(),

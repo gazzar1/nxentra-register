@@ -9,37 +9,49 @@ import mimetypes
 
 from django.db import models as db_models
 from django.http import FileResponse, Http404
-
 from rest_framework import status
-from rest_framework.views import APIView
-from rest_framework.response import Response
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
-from accounts.authz import resolve_actor
-from accounts.module_permissions import ModuleEnabled
 from accounting.mappings import ModuleAccountMapping
 from accounting.models import Account
+from accounts.authz import resolve_actor
+from accounts.module_permissions import ModuleEnabled
 from projections.write_barrier import command_writes_allowed
 
-from .models import Patient, PatientDocument, Doctor, Visit, Invoice, Payment
-from .serializers import (
-    PatientSerializer, PatientCreateSerializer, PatientUpdateSerializer,
-    PatientDocumentSerializer, DocumentUploadSerializer,
-    DoctorSerializer, DoctorCreateSerializer,
-    VisitSerializer, VisitCreateSerializer, VisitCompleteSerializer,
-    InvoiceSerializer, InvoiceCreateSerializer,
-    PaymentSerializer, PaymentCreateSerializer, PaymentVoidSerializer,
-)
 from .commands import (
-    create_patient, update_patient, upload_document,
+    complete_visit,
     create_doctor,
-    create_visit, complete_visit,
-    create_invoice, issue_invoice,
-    receive_payment, void_payment,
+    create_invoice,
+    create_patient,
+    create_visit,
+    issue_invoice,
+    receive_payment,
+    update_patient,
+    upload_document,
+    void_payment,
 )
-from .projections import REQUIRED_ROLES, MODULE_NAME
-
+from .models import Doctor, Invoice, Patient, PatientDocument, Payment, Visit
+from .projections import MODULE_NAME, REQUIRED_ROLES
+from .serializers import (
+    DoctorCreateSerializer,
+    DoctorSerializer,
+    DocumentUploadSerializer,
+    InvoiceCreateSerializer,
+    InvoiceSerializer,
+    PatientCreateSerializer,
+    PatientDocumentSerializer,
+    PatientSerializer,
+    PatientUpdateSerializer,
+    PaymentCreateSerializer,
+    PaymentSerializer,
+    PaymentVoidSerializer,
+    VisitCompleteSerializer,
+    VisitCreateSerializer,
+    VisitSerializer,
+)
 
 # =============================================================================
 # Patient Views

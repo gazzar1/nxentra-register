@@ -156,7 +156,7 @@ export default function NewVendorPaymentPage() {
       }
       // Fetch posted (open) bills for this vendor
       purchaseBillsService.list({ vendor_id: parseInt(selectedVendorId), status: "POSTED" })
-        .then((res) => setVendorBills(res.data))
+        .then((res) => setVendorBills(res.data.results))
         .catch(() => setVendorBills([]));
     } else {
       setVendorBills([]);

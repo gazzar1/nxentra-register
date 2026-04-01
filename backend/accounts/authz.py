@@ -15,11 +15,11 @@ This ensures role-based defaults work correctly.
 """
 
 from dataclasses import dataclass
-from typing import FrozenSet
-from django.core.exceptions import PermissionDenied
-from rest_framework.exceptions import AuthenticationFailed, NotAuthenticated
 
-from accounts.models import CompanyMembership, Company
+from django.core.exceptions import PermissionDenied
+from rest_framework.exceptions import NotAuthenticated
+
+from accounts.models import Company, CompanyMembership
 
 
 @dataclass(frozen=True)
@@ -39,7 +39,7 @@ class ActorContext:
     user: object  # User model
     company: Company
     membership: CompanyMembership
-    perms: FrozenSet[str]  # Explicit permission codes
+    perms: frozenset[str]  # Explicit permission codes
 
     def has(self, code: str) -> bool:
         """
@@ -193,7 +193,7 @@ def require_any(actor: ActorContext, *codes: str) -> None:
     for code in codes:
         if actor.has(code):
             return
-    
+
     raise PermissionDenied(f"Permission denied: requires one of {', '.join(codes)}")
 
 

@@ -3,7 +3,7 @@ Django Admin registration for Tenant models.
 """
 from django.contrib import admin
 
-from tenant.models import TenantDirectory, MigrationLog
+from tenant.models import MigrationLog, TenantDirectory
 
 
 @admin.register(TenantDirectory)

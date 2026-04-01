@@ -8,15 +8,15 @@ from django.db.backends.signals import connection_created
 
 class AccountsConfig(AppConfig):
     """Configuration for the accounts app."""
-    
+
     default_auto_field = "django.db.models.BigAutoField"
     name = "accounts"
     verbose_name = "Accounts & Multi-tenancy"
-    
+
     def ready(self):
         """Initialize app when Django starts."""
         from accounts import rls
-        from accounts.module_registry import module_registry, ModuleCategory
+        from accounts.module_registry import ModuleCategory, module_registry
 
         def _on_connection_created(sender, connection, **kwargs):
             if settings.RLS_BYPASS:

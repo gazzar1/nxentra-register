@@ -34,60 +34,60 @@ Admin Projection Management (staff/superuser only):
 from django.urls import path
 
 from .views import (
-    TrialBalanceView,
-    AccountBalanceListView,
     AccountBalanceDetailView,
-    ProjectionStatusView,
-    BalanceSheetView,
-    IncomeStatementView,
-    DimensionAnalysisView,
-    DimensionDrilldownView,
-    DimensionCrossTabView,
-    DimensionPLComparisonView,
-    CashFlowStatementView,
-    FiscalPeriodListView,
-    FiscalPeriodCloseView,
-    FiscalPeriodOpenView,
-    FiscalPeriodsConfigureView,
-    FiscalPeriodRangeView,
-    FiscalPeriodCurrentView,
-    FiscalPeriodDatesView,
-    DashboardChartsView,
-    DashboardWidgetsView,
-    SubledgerTieOutView,
-    # Customer/Vendor balance views
-    CustomerBalanceListView,
-    CustomerBalanceDetailView,
-    VendorBalanceListView,
-    VendorBalanceDetailView,
-    # Customer/Vendor statement views
-    CustomerStatementView,
-    VendorStatementView,
-    # Aging reports
-    ARAgingReportView,
-    APAgingReportView,
-    # Tax summary
-    TaxSummaryReportView,
+    AccountBalanceListView,
     # Account inquiry
     AccountInquiryView,
+    AdminProjectionClearErrorView,
+    AdminProjectionDetailView,
+    # Admin projection management
+    AdminProjectionListView,
+    AdminProjectionPauseView,
+    AdminProjectionProcessView,
+    AdminProjectionRebuildView,
+    APAgingReportView,
+    # Aging reports
+    ARAgingReportView,
+    BalanceSheetView,
+    CashFlowStatementView,
+    # Currency revaluation
+    CurrencyRevaluationView,
+    CustomerBalanceDetailView,
+    # Customer/Vendor balance views
+    CustomerBalanceListView,
+    # Customer/Vendor statement views
+    CustomerStatementView,
+    DashboardChartsView,
+    DashboardWidgetsView,
+    DimensionAnalysisView,
+    DimensionCrossTabView,
+    DimensionDrilldownView,
+    DimensionPLComparisonView,
+    FiscalPeriodCloseView,
+    FiscalPeriodCurrentView,
+    FiscalPeriodDatesView,
+    FiscalPeriodListView,
+    FiscalPeriodOpenView,
+    FiscalPeriodRangeView,
+    FiscalPeriodsConfigureView,
     # Fiscal year management
     FiscalYearCloseReadinessView,
     FiscalYearCloseView,
-    FiscalYearReopenView,
     FiscalYearClosingEntriesView,
+    FiscalYearReopenView,
+    IncomeStatementView,
+    ProjectionStatusView,
     # Reconciliation
     ReconciliationCheckView,
-    # Currency revaluation
-    CurrencyRevaluationView,
+    SubledgerTieOutView,
+    # Tax summary
+    TaxSummaryReportView,
     # Trial balance by currency
     TrialBalanceByCurrencyView,
-    # Admin projection management
-    AdminProjectionListView,
-    AdminProjectionDetailView,
-    AdminProjectionRebuildView,
-    AdminProjectionPauseView,
-    AdminProjectionClearErrorView,
-    AdminProjectionProcessView,
+    TrialBalanceView,
+    VendorBalanceDetailView,
+    VendorBalanceListView,
+    VendorStatementView,
 )
 
 app_name = "projections"

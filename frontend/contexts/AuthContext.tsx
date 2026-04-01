@@ -8,10 +8,9 @@ import {
 } from 'react';
 import { useRouter } from 'next/router';
 import {
-  getAccessToken,
-  getRefreshToken,
-  storeTokens,
-  removeTokens,
+  isAuthenticated as checkAuthFlag,
+  setAuthenticated,
+  cleanupLegacyTokens,
 } from '@/lib/auth-storage';
 import { authService } from '@/services/auth.service';
 import type { User, Company, CompanySettings, UserRole } from '@/types/user';
@@ -50,6 +49,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const fetchProfile = useCallback(async () => {
     try {
       const { data } = await authService.getProfile();
+      setAuthenticated(true);
       setState({
         user: data.user,
         company: data.company,
@@ -67,7 +67,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       return data;
     } catch {
-      removeTokens();
+      setAuthenticated(false);
       setState({
         user: null,
         company: null,
@@ -80,9 +80,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [router]);
 
   useEffect(() => {
+    // Clean up legacy localStorage tokens from pre-cookie auth
+    cleanupLegacyTokens();
+
     const initAuth = async () => {
-      const token = getAccessToken();
-      if (token) {
+      if (checkAuthFlag()) {
         await fetchProfile();
       } else {
         setState((prev) => ({ ...prev, isLoading: false }));
@@ -93,8 +95,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [fetchProfile]);
 
   const login = async (email: string, password: string) => {
+    // Backend sets HttpOnly cookies on successful login
     const { data } = await authService.login({ email, password });
-    storeTokens(data.access, data.refresh);
+    setAuthenticated(true);
     const profile = await fetchProfile();
     // Redirect new owners to onboarding setup if not completed
     if (
@@ -110,14 +113,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = async () => {
     try {
-      const refreshToken = getRefreshToken();
-      if (refreshToken) {
-        await authService.logout(refreshToken);
-      }
+      // Backend reads refresh from cookie, blacklists it, and clears cookies
+      await authService.logout();
     } catch {
       // Ignore logout errors
     }
-    removeTokens();
+    setAuthenticated(false);
     setState({
       user: null,
       company: null,
@@ -130,9 +131,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const switchCompany = async (companyId: number) => {
-    const { data } = await authService.switchCompany(companyId);
-    // Store the new tenant-bound tokens
-    storeTokens(data.tokens.access, data.tokens.refresh);
+    // Backend sets new tenant-bound cookies in the response
+    await authService.switchCompany(companyId);
+    setAuthenticated(true);
     // Refresh profile to update the state
     await fetchProfile();
   };

@@ -16,14 +16,14 @@ from django.http import HttpResponse
 from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
 
-from events.types import EventTypes
 from events.emitter import emit_event_no_actor
 from events.types import (
-    PlatformOrderPaidData,
-    PlatformRefundCreatedData,
-    PlatformPayoutSettledData,
+    EventTypes,
     PlatformDisputeCreatedData,
     PlatformFulfillmentCreatedData,
+    PlatformOrderPaidData,
+    PlatformPayoutSettledData,
+    PlatformRefundCreatedData,
 )
 
 from .registry import connector_registry
@@ -141,7 +141,7 @@ class PlatformWebhookView(APIView):
             )
             aggregate_id = _extract_aggregate_id(parsed)
 
-            emit_event_no_actor(
+            business_event = emit_event_no_actor(
                 company=company,
                 event_type=event_type,
                 aggregate_type=f"Platform{canonical_topic.split('_')[0].title()}",
@@ -160,12 +160,30 @@ class PlatformWebhookView(APIView):
             )
             return HttpResponse(status=500)
 
+        # Step 8: Store platform-specific local record for reconciliation
+        event_id = getattr(business_event, "public_id", None)
+        try:
+            connector.store_webhook_record(
+                canonical_topic=canonical_topic,
+                parsed=parsed,
+                payload=payload,
+                company=company,
+                event_id=event_id,
+            )
+        except Exception:
+            logger.exception(
+                "Error storing local record for %s webhook %s (event emitted OK)",
+                platform_slug, topic,
+            )
+            # Don't fail the webhook — event was already emitted successfully
+
         return HttpResponse(status=200)
 
 
 def _canonical_to_event_data(parsed, data_class, platform_slug):
     """Convert a canonical parsed object to the matching event data class."""
-    from dataclasses import fields as dc_fields, asdict
+    from dataclasses import asdict
+    from dataclasses import fields as dc_fields
 
     # Build kwargs from the parsed object's fields
     parsed_dict = asdict(parsed) if hasattr(parsed, "__dataclass_fields__") else {}
@@ -184,7 +202,7 @@ def _canonical_to_event_data(parsed, data_class, platform_slug):
         elif f.name == "transaction_date":
             # Try common date fields
             for date_field in ("order_date", "refund_date", "payout_date", "fulfillment_date"):
-                if date_field in parsed_dict and parsed_dict[date_field]:
+                if parsed_dict.get(date_field):
                     kwargs["transaction_date"] = str(parsed_dict[date_field])
                     break
         elif f.name == "currency" and "currency" in parsed_dict:
@@ -196,7 +214,7 @@ def _canonical_to_event_data(parsed, data_class, platform_slug):
                 "platform_payout_id", "platform_dispute_id",
                 "platform_fulfillment_id",
             ):
-                if ref_field in parsed_dict and parsed_dict[ref_field]:
+                if parsed_dict.get(ref_field):
                     kwargs["document_ref"] = str(parsed_dict[ref_field])
                     break
 

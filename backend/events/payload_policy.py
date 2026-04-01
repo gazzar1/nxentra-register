@@ -14,10 +14,9 @@ Storage strategies:
 """
 
 from enum import Enum
-from typing import Any, Dict, Tuple
+from typing import Any
 
 from events.serialization import estimate_json_size
-
 
 # =============================================================================
 # Configuration Thresholds
@@ -71,9 +70,9 @@ class PayloadStrategy(Enum):
 # =============================================================================
 
 def determine_storage_strategy(
-    payload: Dict[str, Any],
+    payload: dict[str, Any],
     origin: PayloadOrigin = PayloadOrigin.HUMAN,
-) -> Tuple[PayloadStrategy, Dict[str, Any]]:
+) -> tuple[PayloadStrategy, dict[str, Any]]:
     """
     Determine the storage strategy for a payload.
 
@@ -141,7 +140,7 @@ def determine_storage_strategy(
 
 
 def should_use_chunking(
-    payload: Dict[str, Any],
+    payload: dict[str, Any],
     origin: PayloadOrigin = PayloadOrigin.HUMAN,
 ) -> bool:
     """
@@ -183,7 +182,7 @@ def chunk_lines(lines: list, chunk_size: int = MAX_LINES_PER_CHUNK) -> list:
     ]
 
 
-def get_storage_thresholds() -> Dict[str, int]:
+def get_storage_thresholds() -> dict[str, int]:
     """
     Get the current storage thresholds for monitoring/debugging.
 

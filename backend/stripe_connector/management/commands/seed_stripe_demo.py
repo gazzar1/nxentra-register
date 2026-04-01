@@ -12,22 +12,22 @@ Usage:
 """
 
 import random
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from accounts.models import Company
-from accounting.models import Account
 from accounting.mappings import ModuleAccountMapping
+from accounting.models import Account
+from accounts.models import Company
 from projections.write_barrier import projection_writes_allowed
 from stripe_connector.models import (
     StripeAccount,
     StripeCharge,
-    StripeRefund,
     StripePayout,
     StripePayoutTransaction,
+    StripeRefund,
 )
 
 # Realistic charge descriptions
@@ -169,7 +169,7 @@ class Command(BaseCommand):
             },
         )
         if created:
-            self.stdout.write(f"  Created Stripe account: acct_demo_nxentra")
+            self.stdout.write("  Created Stripe account: acct_demo_nxentra")
         return account
 
     def _create_charges(self, company, account):
@@ -201,7 +201,7 @@ class Command(BaseCommand):
                     "customer_name": customer,
                     "charge_date": charge_date,
                     "stripe_created_at": datetime.combine(
-                        charge_date, datetime.min.time(), tzinfo=timezone.utc
+                        charge_date, datetime.min.time(), tzinfo=UTC
                     ),
                     "status": "PROCESSED",
                 },
@@ -227,7 +227,7 @@ class Command(BaseCommand):
                 "reason": "requested_by_customer",
                 "stripe_created_at": datetime.combine(
                     charge.charge_date + timedelta(days=3),
-                    datetime.min.time(), tzinfo=timezone.utc,
+                    datetime.min.time(), tzinfo=UTC,
                 ),
                 "status": "PROCESSED",
             },

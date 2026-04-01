@@ -7,14 +7,13 @@ and automatically creates matching AnalysisDimensionValue records so that
 the sync management commands only need to be run once for the initial backfill.
 """
 
-import uuid
 import logging
+import uuid
 
-from events.types import EventTypes
-from events.models import BusinessEvent
-from projections.base import BaseProjection, projection_registry
 from accounting.models import AnalysisDimension, AnalysisDimensionValue
-
+from events.models import BusinessEvent
+from events.types import EventTypes
+from projections.base import BaseProjection, projection_registry
 
 logger = logging.getLogger(__name__)
 

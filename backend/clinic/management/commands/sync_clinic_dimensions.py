@@ -13,14 +13,14 @@ Usage:
 """
 
 import uuid
+
 from django.core.management.base import BaseCommand
 
+from accounting.models import AnalysisDimension, AnalysisDimensionValue
 from accounts.models import Company
 from accounts.rls import rls_bypass
-from accounting.models import AnalysisDimension, AnalysisDimensionValue
-from projections.write_barrier import projection_writes_allowed
 from clinic.models import Doctor, Patient
-
+from projections.write_barrier import projection_writes_allowed
 
 # Dimension definitions: (code, name, name_ar)
 DIMENSION_DEFS = [

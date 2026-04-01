@@ -13,24 +13,22 @@ Key metrics:
 - replay_duration: Time for replay operations
 """
 
-from typing import Dict, Any, List, Optional
-from datetime import datetime, timedelta
-from decimal import Decimal
 import logging
 import time
+from datetime import timedelta
+from typing import Any
 
-from django.db.models import Count, Sum, Avg, Max, Min, F
-from django.db.models.functions import TruncDate, TruncHour
+from django.db.models import Avg, Count, Max, Min, Sum
+from django.db.models.functions import TruncHour
 from django.utils import timezone
 
-from events.models import BusinessEvent, EventPayload, EventBookmark
 from accounts.models import Company
-
+from events.models import BusinessEvent, EventBookmark, EventPayload
 
 logger = logging.getLogger(__name__)
 
 
-def get_event_storage_metrics(company: Optional[Company] = None) -> Dict[str, Any]:
+def get_event_storage_metrics(company: Company | None = None) -> dict[str, Any]:
     """
     Get metrics about event storage distribution.
 
@@ -68,7 +66,7 @@ def get_event_storage_metrics(company: Optional[Company] = None) -> Dict[str, An
     }
 
 
-def get_payload_size_metrics(company: Optional[Company] = None) -> Dict[str, Any]:
+def get_payload_size_metrics(company: Company | None = None) -> dict[str, Any]:
     """
     Get metrics about payload sizes.
 
@@ -95,7 +93,7 @@ def get_payload_size_metrics(company: Optional[Company] = None) -> Dict[str, Any
     }
 
 
-def get_event_origin_metrics(company: Optional[Company] = None) -> Dict[str, Any]:
+def get_event_origin_metrics(company: Company | None = None) -> dict[str, Any]:
     """
     Get metrics about event origins.
 
@@ -123,13 +121,12 @@ def get_event_origin_metrics(company: Optional[Company] = None) -> Dict[str, Any
     }
 
 
-def get_projection_lag_metrics() -> List[Dict[str, Any]]:
+def get_projection_lag_metrics() -> list[dict[str, Any]]:
     """
     Get lag metrics for all projection consumers.
 
     Returns list of consumer bookmarks with their lag (pending event count).
     """
-    from projections.base import projection_registry
 
     results = []
 
@@ -164,9 +161,9 @@ def get_projection_lag_metrics() -> List[Dict[str, Any]]:
 
 
 def get_event_throughput_metrics(
-    company: Optional[Company] = None,
+    company: Company | None = None,
     hours: int = 24,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get event throughput metrics over time.
 
@@ -202,7 +199,7 @@ def get_event_throughput_metrics(
     }
 
 
-def get_event_type_metrics(company: Optional[Company] = None) -> Dict[str, Any]:
+def get_event_type_metrics(company: Company | None = None) -> dict[str, Any]:
     """
     Get metrics by event type.
 
@@ -225,7 +222,7 @@ def get_event_type_metrics(company: Optional[Company] = None) -> Dict[str, Any]:
     }
 
 
-def get_aggregate_metrics(company: Optional[Company] = None) -> Dict[str, Any]:
+def get_aggregate_metrics(company: Company | None = None) -> dict[str, Any]:
     """
     Get metrics by aggregate type.
 
@@ -290,7 +287,7 @@ def measure_replay_duration(func):
     return wrapper
 
 
-def get_full_metrics_report(company: Optional[Company] = None) -> Dict[str, Any]:
+def get_full_metrics_report(company: Company | None = None) -> dict[str, Any]:
     """
     Get a comprehensive metrics report.
 

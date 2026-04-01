@@ -19,63 +19,100 @@ def get_export_registry():
 
     Import these lazily to avoid circular imports.
     """
-    from events.models import EventPayload, CompanyEventCounter, BusinessEvent, EventBookmark
-    from events.api_keys import ExternalAPIKey
-
-    from accounting.models import CompanySequence
-    from sales.models import TaxCode, PostingProfile, Item as SalesItem
-    from sales.models import SalesInvoice, SalesInvoiceLine, ReceiptAllocation, PaymentAllocation as SalesPaymentAllocation
-    from purchases.models import PurchaseBill, PurchaseBillLine
-    from inventory.models import Warehouse, StockLedgerEntry, StockLedgerSequenceCounter
-    from scratchpad.models import ScratchpadRow, ScratchpadRowDimension, VoiceUsageEvent
-
-    from edim.models import (
-        SourceSystem, MappingProfile, IdentityCrosswalk,
-        IngestionBatch, StagedRecord,
-    )
-
-    from shopify_connector.models import (
-        ShopifyStore, ShopifyOrder,
-        ShopifyRefund,
-        ShopifyPayout, ShopifyPayoutTransaction,
-        ShopifyFulfillment, ShopifyDispute, ShopifyProduct,
-    )
-    from stripe_connector.models import (
-        StripeAccount, StripeCharge, StripeRefund as StripeRefundModel,
-        StripePayout, StripePayoutTransaction,
-    )
-    from bank_connector.models import (
-        BankAccount, BankStatement as BankConnStatement,
-        BankTransaction, ReconciliationException,
-    )
-
-    from properties.models import (
-        Property, Unit, Lessee, Lease, RentScheduleLine,
-        PropertyAccountMapping, PaymentReceipt,
-        PaymentAllocation as PropertiesPaymentAllocation,
-        SecurityDepositTransaction, PropertyExpense,
-    )
-    from clinic.models import (
-        Doctor, Patient, Visit,
-        Payment as ClinicPayment, Invoice as ClinicInvoice,
-    )
+    from accounting.mappings import ModuleAccountMapping
 
     # Accounting read models (optional snapshot — speeds up restore)
     from accounting.models import (
-        Account, Customer, Vendor,
-        JournalEntry, JournalLine,
-        AnalysisDimension, AnalysisDimensionValue,
+        Account,
         AccountDimensionRule,
+        AnalysisDimension,
+        AnalysisDimensionValue,
+        BankReconciliation,
+        BankStatementLine,
+        CompanySequence,
+        Customer,
         ExchangeRate,
-        BankStatement as AcctBankStatement,
-        BankStatementLine, BankReconciliation,
+        JournalEntry,
+        JournalLine,
+        Vendor,
     )
-    from accounting.mappings import ModuleAccountMapping
-
+    from accounting.models import (
+        BankStatement as AcctBankStatement,
+    )
+    from bank_connector.models import (
+        BankAccount,
+        BankTransaction,
+        ReconciliationException,
+    )
+    from bank_connector.models import (
+        BankStatement as BankConnStatement,
+    )
+    from clinic.models import (
+        Doctor,
+        Patient,
+        Visit,
+    )
+    from clinic.models import (
+        Invoice as ClinicInvoice,
+    )
+    from clinic.models import (
+        Payment as ClinicPayment,
+    )
+    from edim.models import (
+        IdentityCrosswalk,
+        IngestionBatch,
+        MappingProfile,
+        SourceSystem,
+        StagedRecord,
+    )
+    from events.api_keys import ExternalAPIKey
+    from events.models import BusinessEvent, CompanyEventCounter, EventBookmark, EventPayload
+    from inventory.models import StockLedgerEntry, StockLedgerSequenceCounter, Warehouse
     from projections.models import (
-        FiscalYear, FiscalPeriod,
-        AccountBalance, CustomerBalance, VendorBalance,
+        AccountBalance,
+        CustomerBalance,
+        FiscalPeriod,
+        FiscalYear,
         InventoryBalance,
+        VendorBalance,
+    )
+    from properties.models import (
+        Lease,
+        Lessee,
+        PaymentReceipt,
+        Property,
+        PropertyAccountMapping,
+        PropertyExpense,
+        RentScheduleLine,
+        SecurityDepositTransaction,
+        Unit,
+    )
+    from properties.models import (
+        PaymentAllocation as PropertiesPaymentAllocation,
+    )
+    from purchases.models import PurchaseBill, PurchaseBillLine
+    from sales.models import Item as SalesItem
+    from sales.models import PaymentAllocation as SalesPaymentAllocation
+    from sales.models import PostingProfile, ReceiptAllocation, SalesInvoice, SalesInvoiceLine, TaxCode
+    from scratchpad.models import ScratchpadRow, ScratchpadRowDimension, VoiceUsageEvent
+    from shopify_connector.models import (
+        ShopifyDispute,
+        ShopifyFulfillment,
+        ShopifyOrder,
+        ShopifyPayout,
+        ShopifyPayoutTransaction,
+        ShopifyProduct,
+        ShopifyRefund,
+        ShopifyStore,
+    )
+    from stripe_connector.models import (
+        StripeAccount,
+        StripeCharge,
+        StripePayout,
+        StripePayoutTransaction,
+    )
+    from stripe_connector.models import (
+        StripeRefund as StripeRefundModel,
     )
 
     registry = OrderedDict()

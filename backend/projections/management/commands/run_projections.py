@@ -33,6 +33,7 @@ Usage:
 
 import json
 import time
+
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
@@ -42,7 +43,7 @@ from projections.base import projection_registry
 
 class Command(BaseCommand):
     """Run projections to process pending events."""
-    
+
     help = "Process pending events through projections"
 
     def add_arguments(self, parser):
@@ -109,10 +110,10 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         # Get projections to run
         projections = self._get_projections(options.get("projection"))
-        
+
         # Get companies to process
         companies = self._get_companies(options.get("company"))
-        
+
         if not companies:
             self.stdout.write(self.style.WARNING("No active companies found."))
             return
@@ -131,7 +132,7 @@ class Command(BaseCommand):
         if options.get("rebuild"):
             self._rebuild_projections(projections, companies)
             return
-        
+
         if options.get("daemon"):
             self._run_daemon(
                 projections,
@@ -141,7 +142,7 @@ class Command(BaseCommand):
             )
         else:
             self._run_once(projections, companies, options.get("limit"))
-    
+
     def _get_projections(self, name=None):
         """Get projections to run."""
         if name:
@@ -152,13 +153,13 @@ class Command(BaseCommand):
                     f"Unknown projection: {name}. Available: {available}"
                 )
             return [projection]
-        
+
         projections = projection_registry.all()
         if not projections:
             raise CommandError("No projections registered.")
-        
+
         return projections
-    
+
     def _get_companies(self, slug=None):
         """Get companies to process."""
         if slug:
@@ -166,47 +167,47 @@ class Command(BaseCommand):
                 return [Company.objects.get(slug=slug, is_active=True)]
             except Company.DoesNotExist:
                 raise CommandError(f"Company not found or inactive: {slug}")
-        
+
         return list(Company.objects.filter(is_active=True))
-    
+
     def _run_once(self, projections, companies, limit):
         """Run projections once."""
         total_processed = 0
-        
+
         for company in companies:
             self.stdout.write(f"\nProcessing company: {company.name}")
-            
+
             for projection in projections:
                 self.stdout.write(f"  Running projection: {projection.name}")
-                
+
                 processed = projection.process_pending(
                     company=company,
                     limit=limit,
                 )
-                
+
                 total_processed += processed
-                
+
                 if processed > 0:
                     self.stdout.write(
                         self.style.SUCCESS(f"    Processed {processed} events")
                     )
                 else:
-                    self.stdout.write(f"    No pending events")
-        
+                    self.stdout.write("    No pending events")
+
         self.stdout.write(
             self.style.SUCCESS(f"\nTotal events processed: {total_processed}")
         )
-    
+
     def _run_daemon(self, projections, companies, limit, interval):
         """Run projections continuously."""
         self.stdout.write(
             f"Starting daemon mode (interval: {interval}s, Ctrl+C to stop)"
         )
-        
+
         try:
             while True:
                 total_processed = 0
-                
+
                 for company in companies:
                     for projection in projections:
                         processed = projection.process_pending(
@@ -214,46 +215,46 @@ class Command(BaseCommand):
                             limit=limit,
                         )
                         total_processed += processed
-                
+
                 if total_processed > 0:
                     self.stdout.write(f"Processed {total_processed} events")
-                
+
                 time.sleep(interval)
-                
+
         except KeyboardInterrupt:
             self.stdout.write(self.style.WARNING("\nDaemon stopped."))
-    
+
     def _rebuild_projections(self, projections, companies):
         """Rebuild projections from scratch."""
         self.stdout.write(self.style.WARNING("REBUILDING PROJECTIONS"))
         self.stdout.write("This will clear all projected data and replay events.\n")
-        
+
         for company in companies:
             self.stdout.write(f"\nRebuilding for company: {company.name}")
-            
+
             for projection in projections:
                 self.stdout.write(f"  Rebuilding projection: {projection.name}")
-                
+
                 processed = projection.rebuild(company)
-                
+
                 self.stdout.write(
                     self.style.SUCCESS(f"    Replayed {processed} events")
                 )
-        
+
         self.stdout.write(self.style.SUCCESS("\nRebuild complete."))
-    
+
     def _verify_projections(self, projections, companies):
         """Verify projection integrity."""
         self.stdout.write("VERIFYING PROJECTION INTEGRITY\n")
-        
+
         all_ok = True
-        
+
         for company in companies:
             self.stdout.write(f"\nVerifying company: {company.name}")
-            
+
             for projection in projections:
                 self.stdout.write(f"  Projection: {projection.name}")
-                
+
                 # Check lag
                 lag = projection.get_lag(company)
                 if lag > 0:
@@ -262,12 +263,12 @@ class Command(BaseCommand):
                     )
                     all_ok = False
                 else:
-                    self.stdout.write(f"    Lag: 0 (caught up)")
-                
+                    self.stdout.write("    Lag: 0 (caught up)")
+
                 # Run verification if available
                 if hasattr(projection, "verify_all_balances"):
                     result = projection.verify_all_balances(company)
-                    
+
                     if result["mismatches"]:
                         self.stdout.write(
                             self.style.ERROR(
@@ -285,7 +286,7 @@ class Command(BaseCommand):
                                 f"    Verified: {result['verified']}/{result['total_accounts']} accounts"
                             )
                         )
-        
+
         if all_ok:
             self.stdout.write(self.style.SUCCESS("\nAll projections verified OK."))
         else:
@@ -301,7 +302,6 @@ class Command(BaseCommand):
         - Hard-fail on any inconsistency
         """
         from events.verification import full_integrity_check
-        from events.integrity import IntegrityViolationError
 
         self.stdout.write(self.style.WARNING("VERIFYING EVENT INTEGRITY"))
         self.stdout.write("Checking payload hashes and sequence continuity...\n")
@@ -366,7 +366,7 @@ class Command(BaseCommand):
 
             if result['is_valid']:
                 self.stdout.write(
-                    self.style.SUCCESS(f"  PASSED: All events verified")
+                    self.style.SUCCESS("  PASSED: All events verified")
                 )
 
         # Write diagnostics file

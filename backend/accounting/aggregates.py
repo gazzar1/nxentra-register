@@ -25,7 +25,7 @@ Example:
 """
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Optional, List, Dict, Any
+from typing import Any
 
 from events.emitter import get_aggregate_events
 from events.types import EventTypes
@@ -35,14 +35,14 @@ from events.types import EventTypes
 class JournalEntryAggregate:
     public_id: str
     company: Any
-    date: Optional[str] = None
+    date: str | None = None
     memo: str = ""
     memo_ar: str = ""
     kind: str = "NORMAL"
-    currency: Optional[str] = None
-    exchange_rate: Optional[str] = None
+    currency: str | None = None
+    exchange_rate: str | None = None
     status: str = "INCOMPLETE"
-    lines: List[dict] = field(default_factory=list)
+    lines: list[dict] = field(default_factory=list)
     deleted: bool = False
     reversed: bool = False
 
@@ -129,7 +129,7 @@ class JournalEntryAggregate:
         return total
 
 
-def load_journal_entry_aggregate(company, public_id: str) -> Optional[JournalEntryAggregate]:
+def load_journal_entry_aggregate(company, public_id: str) -> JournalEntryAggregate | None:
     """
     Load a JournalEntry aggregate by replaying its event stream.
 
@@ -160,7 +160,7 @@ class AccountAggregate:
     description: str = ""
     description_ar: str = ""
     unit_of_measure: str = ""
-    parent_public_id: Optional[str] = None
+    parent_public_id: str | None = None
     is_header: bool = False
     deleted: bool = False
 
@@ -190,7 +190,7 @@ class AccountAggregate:
             self.deleted = True
 
 
-def load_account_aggregate(company, public_id: str) -> Optional[AccountAggregate]:
+def load_account_aggregate(company, public_id: str) -> AccountAggregate | None:
     events = get_aggregate_events(company, "Account", public_id)
     if not events:
         return None

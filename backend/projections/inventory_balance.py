@@ -21,20 +21,19 @@ This projection's handle() method is primarily used for:
 2. Rebuilding projections from event history
 """
 
-from decimal import Decimal
-from typing import List, Dict, Any
 import logging
+from decimal import Decimal
+from typing import Any
 
 from django.db import transaction
 
 from accounts.models import Company
 from events.models import BusinessEvent
 from events.types import EventTypes
+from inventory.models import Warehouse
 from projections.base import BaseProjection
 from projections.models import InventoryBalance
 from sales.models import Item
-from inventory.models import Warehouse
-
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +58,7 @@ class InventoryBalanceProjection(BaseProjection):
         return "inventory_balance"
 
     @property
-    def consumes(self) -> List[str]:
+    def consumes(self) -> list[str]:
         return [
             EventTypes.INVENTORY_STOCK_RECEIVED,
             EventTypes.INVENTORY_STOCK_ISSUED,
@@ -149,7 +148,7 @@ class InventoryBalanceProjection(BaseProjection):
     def _apply_receipt(
         self,
         company: Company,
-        entry_data: Dict[str, Any],
+        entry_data: dict[str, Any],
         event: BusinessEvent,
     ) -> None:
         """
@@ -231,7 +230,7 @@ class InventoryBalanceProjection(BaseProjection):
     def _apply_issue(
         self,
         company: Company,
-        entry_data: Dict[str, Any],
+        entry_data: dict[str, Any],
         event: BusinessEvent,
     ) -> None:
         """
@@ -311,7 +310,7 @@ class InventoryBalanceProjection(BaseProjection):
         company: Company,
         item: Item,
         warehouse: Warehouse,
-    ) -> Dict[str, Decimal]:
+    ) -> dict[str, Decimal]:
         """
         Get the current inventory balance for an item in a warehouse.
 
@@ -336,7 +335,7 @@ class InventoryBalanceProjection(BaseProjection):
                 "stock_value": Decimal("0"),
             }
 
-    def get_inventory_summary(self, company: Company) -> Dict[str, Any]:
+    def get_inventory_summary(self, company: Company) -> dict[str, Any]:
         """
         Generate inventory summary for a company.
 
@@ -354,7 +353,6 @@ class InventoryBalanceProjection(BaseProjection):
                 ],
             }
         """
-        from django.db.models import Sum, Count
 
         balances = InventoryBalance.objects.filter(
             company=company,
@@ -399,7 +397,7 @@ class InventoryBalanceProjection(BaseProjection):
             "items": items,
         }
 
-    def verify_all_balances(self, company: Company) -> Dict[str, Any]:
+    def verify_all_balances(self, company: Company) -> dict[str, Any]:
         """
         Verify all projected inventory balances by replaying events.
 
@@ -416,7 +414,7 @@ class InventoryBalanceProjection(BaseProjection):
             }
         """
         # Build expected balances by replaying events
-        expected: Dict[str, Dict[str, Decimal]] = {}  # {item_id:warehouse_id: {qty, value}}
+        expected: dict[str, dict[str, Decimal]] = {}  # {item_id:warehouse_id: {qty, value}}
         events_processed = 0
 
         events = BusinessEvent.objects.filter(

@@ -6,7 +6,6 @@ These projections consume EDIM events and build read models.
 Currently a placeholder - can be extended for batch audit trails, etc.
 """
 
-from typing import List
 import logging
 
 from events.models import BusinessEvent
@@ -30,7 +29,7 @@ class EdimBatchAuditProjection(BaseProjection):
         return "edim_batch_audit"
 
     @property
-    def consumes(self) -> List[str]:
+    def consumes(self) -> list[str]:
         return [
             EventTypes.EDIM_BATCH_STAGED,
             EventTypes.EDIM_BATCH_MAPPED,
@@ -77,7 +76,7 @@ class EdimConfigAuditProjection(BaseProjection):
         return "edim_config_audit"
 
     @property
-    def consumes(self) -> List[str]:
+    def consumes(self) -> list[str]:
         return [
             EventTypes.EDIM_SOURCE_SYSTEM_CREATED,
             EventTypes.EDIM_SOURCE_SYSTEM_UPDATED,

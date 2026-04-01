@@ -13,10 +13,18 @@ export interface ApiResponse<T> {
 }
 
 export interface PaginatedResponse<T> {
-  count: number;
-  next: string | null;
-  previous: string | null;
   results: T[];
+  count: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export interface PaginationParams {
+  page?: number;
+  page_size?: number;
+  ordering?: string;
+  search?: string;
 }
 
 export interface CommandResult<T = unknown> {

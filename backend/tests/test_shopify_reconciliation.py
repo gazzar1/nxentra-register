@@ -9,24 +9,22 @@ Covers:
 - API endpoints
 """
 
-import pytest
+from datetime import UTC, date, datetime
 from decimal import Decimal
-from datetime import date, datetime, timezone as tz
-from uuid import uuid4
+
+import pytest
 
 from shopify_connector.models import (
-    ShopifyStore,
     ShopifyOrder,
-    ShopifyRefund,
     ShopifyPayout,
     ShopifyPayoutTransaction,
+    ShopifyRefund,
+    ShopifyStore,
 )
 from shopify_connector.reconciliation import (
     reconcile_payout,
     reconciliation_summary,
-    _match_transaction,
 )
-
 
 # ── Fixtures ──────────────────────────────────────────────────────
 
@@ -52,7 +50,7 @@ def order_1001(db, company, store):
         total_tax=Decimal("5.00"),
         currency="USD",
         financial_status="paid",
-        shopify_created_at=datetime(2026, 3, 1, tzinfo=tz.utc),
+        shopify_created_at=datetime(2026, 3, 1, tzinfo=UTC),
         order_date=date(2026, 3, 1),
         status=ShopifyOrder.Status.PROCESSED,
     )
@@ -70,7 +68,7 @@ def order_1002(db, company, store):
         subtotal_price=Decimal("50.00"),
         currency="USD",
         financial_status="paid",
-        shopify_created_at=datetime(2026, 3, 2, tzinfo=tz.utc),
+        shopify_created_at=datetime(2026, 3, 2, tzinfo=UTC),
         order_date=date(2026, 3, 2),
         status=ShopifyOrder.Status.PROCESSED,
     )
@@ -85,7 +83,7 @@ def refund_1001(db, company, order_1001):
         amount=Decimal("25.00"),
         currency="USD",
         reason="Customer request",
-        shopify_created_at=datetime(2026, 3, 3, tzinfo=tz.utc),
+        shopify_created_at=datetime(2026, 3, 3, tzinfo=UTC),
         status=ShopifyRefund.Status.PROCESSED,
     )
 
@@ -119,7 +117,7 @@ def payout_with_transactions(db, company, payout, order_1001, order_1002, refund
         currency="USD",
         source_order_id=9001,
         source_type="order",
-        processed_at=datetime(2026, 3, 1, tzinfo=tz.utc),
+        processed_at=datetime(2026, 3, 1, tzinfo=UTC),
     )
     ShopifyPayoutTransaction.objects.create(
         company=company,
@@ -132,7 +130,7 @@ def payout_with_transactions(db, company, payout, order_1001, order_1002, refund
         currency="USD",
         source_order_id=9002,
         source_type="order",
-        processed_at=datetime(2026, 3, 2, tzinfo=tz.utc),
+        processed_at=datetime(2026, 3, 2, tzinfo=UTC),
     )
     ShopifyPayoutTransaction.objects.create(
         company=company,
@@ -145,7 +143,7 @@ def payout_with_transactions(db, company, payout, order_1001, order_1002, refund
         currency="USD",
         source_order_id=9001,
         source_type="refund",
-        processed_at=datetime(2026, 3, 3, tzinfo=tz.utc),
+        processed_at=datetime(2026, 3, 3, tzinfo=UTC),
     )
     return payout
 
@@ -211,7 +209,7 @@ class TestReconcilePayout:
             fee=Decimal("-3.00"),
             net=Decimal("95.00"),  # Wrong!
             currency="USD",
-            processed_at=datetime(2026, 3, 10, tzinfo=tz.utc),
+            processed_at=datetime(2026, 3, 10, tzinfo=UTC),
         )
 
         result = reconcile_payout(company, payout)
@@ -243,7 +241,7 @@ class TestReconcilePayout:
             currency="USD",
             source_order_id=99999,  # No matching local order
             source_type="order",
-            processed_at=datetime(2026, 3, 11, tzinfo=tz.utc),
+            processed_at=datetime(2026, 3, 11, tzinfo=UTC),
         )
 
         result = reconcile_payout(company, payout)
@@ -360,7 +358,7 @@ class TestNegativePayout:
             currency="USD",
             source_order_id=9001,
             source_type="refund",
-            processed_at=datetime(2026, 3, 15, tzinfo=tz.utc),
+            processed_at=datetime(2026, 3, 15, tzinfo=UTC),
         )
 
         result = reconcile_payout(company, payout)
@@ -380,12 +378,12 @@ class TestMultipleRefunds:
         ShopifyRefund.objects.create(
             company=company, order=order_1001,
             shopify_refund_id=5010, amount=Decimal("10.00"),
-            currency="USD", shopify_created_at=datetime(2026, 3, 3, tzinfo=tz.utc),
+            currency="USD", shopify_created_at=datetime(2026, 3, 3, tzinfo=UTC),
         )
         ShopifyRefund.objects.create(
             company=company, order=order_1001,
             shopify_refund_id=5011, amount=Decimal("15.00"),
-            currency="USD", shopify_created_at=datetime(2026, 3, 4, tzinfo=tz.utc),
+            currency="USD", shopify_created_at=datetime(2026, 3, 4, tzinfo=UTC),
         )
 
         payout = ShopifyPayout.objects.create(
@@ -402,7 +400,7 @@ class TestMultipleRefunds:
             transaction_type=ShopifyPayoutTransaction.TransactionType.REFUND,
             amount=Decimal("-15.00"), fee=Decimal("0"), net=Decimal("-15.00"),
             currency="USD", source_order_id=9001, source_type="refund",
-            processed_at=datetime(2026, 3, 10, tzinfo=tz.utc),
+            processed_at=datetime(2026, 3, 10, tzinfo=UTC),
         )
 
         result = reconcile_payout(company, payout)

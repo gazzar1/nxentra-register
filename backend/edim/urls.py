@@ -2,30 +2,31 @@
 """URL configuration for EDIM (External Data Ingestion & Mapping) API."""
 
 from django.urls import path
+
 from edim.views import (
-    # Source System views
-    SourceSystemListCreateView,
-    SourceSystemDetailView,
-    # Mapping Profile views
-    MappingProfileListCreateView,
-    MappingProfileDetailView,
-    MappingProfileActivateView,
-    MappingProfileDeprecateView,
-    # Crosswalk views
-    CrosswalkListCreateView,
-    CrosswalkDetailView,
-    CrosswalkVerifyView,
-    CrosswalkRejectView,
+    BatchCommitView,
+    BatchDetailView,
     # Batch views
     BatchListView,
-    BatchUploadView,
-    BatchDetailView,
-    BatchRecordsView,
     BatchMapView,
-    BatchValidateView,
     BatchPreviewView,
-    BatchCommitView,
+    BatchRecordsView,
     BatchRejectView,
+    BatchUploadView,
+    BatchValidateView,
+    CrosswalkDetailView,
+    # Crosswalk views
+    CrosswalkListCreateView,
+    CrosswalkRejectView,
+    CrosswalkVerifyView,
+    MappingProfileActivateView,
+    MappingProfileDeprecateView,
+    MappingProfileDetailView,
+    # Mapping Profile views
+    MappingProfileListCreateView,
+    SourceSystemDetailView,
+    # Source System views
+    SourceSystemListCreateView,
 )
 
 app_name = "edim"

@@ -325,3 +325,107 @@ export const INVOICE_STATUS_LABELS: Record<SalesInvoiceStatus, string> = {
   POSTED: 'Posted',
   VOIDED: 'Voided',
 };
+
+// =============================================================================
+// Credit Notes
+// =============================================================================
+
+export type CreditNoteStatus = 'DRAFT' | 'POSTED' | 'VOIDED';
+export type CreditNoteReason = 'RETURN' | 'PRICE_ADJUSTMENT' | 'TAX_CORRECTION' | 'DAMAGED' | 'OTHER';
+
+export interface CreditNoteListItem {
+  id: number;
+  public_id: string;
+  credit_note_number: string;
+  credit_note_date: string;
+  invoice: number;
+  invoice_number: string;
+  customer: number;
+  customer_name: string;
+  customer_code: string;
+  reason: CreditNoteReason;
+  currency: string;
+  total_amount: string;
+  status: CreditNoteStatus;
+  created_at: string;
+}
+
+export interface CreditNote extends CreditNoteListItem {
+  posting_profile: number;
+  reason_notes: string;
+  exchange_rate: string;
+  subtotal: string;
+  total_discount: string;
+  total_tax: string;
+  posted_at: string | null;
+  posted_by: number | null;
+  posted_journal_entry_id: number | null;
+  notes: string;
+  reference: string;
+  created_by: number | null;
+  updated_at: string;
+  lines: CreditNoteLine[];
+}
+
+export interface CreditNoteLine {
+  id: number;
+  public_id: string;
+  line_number: number;
+  invoice_line: number | null;
+  item: number | null;
+  description: string;
+  description_ar: string;
+  quantity: string;
+  unit_price: string;
+  discount_amount: string;
+  tax_code: number | null;
+  tax_code_name: string | null;
+  tax_rate: string;
+  gross_amount: string;
+  net_amount: string;
+  tax_amount: string;
+  line_total: string;
+  account: number;
+  account_code: string;
+  account_name: string;
+}
+
+export interface CreditNoteCreatePayload {
+  invoice_id: number;
+  credit_note_date?: string;
+  reason?: CreditNoteReason;
+  reason_notes?: string;
+  reference?: string;
+  notes?: string;
+  lines: {
+    account_id: number;
+    description: string;
+    description_ar?: string;
+    quantity?: number;
+    unit_price: number;
+    discount_amount?: number;
+    tax_code_id?: number;
+    item_id?: number;
+    invoice_line_id?: number;
+  }[];
+}
+
+export const CREDIT_NOTE_STATUS_COLORS: Record<CreditNoteStatus, string> = {
+  DRAFT: 'bg-yellow-100 text-yellow-800',
+  POSTED: 'bg-green-100 text-green-800',
+  VOIDED: 'bg-red-100 text-red-800',
+};
+
+export const CREDIT_NOTE_STATUS_LABELS: Record<CreditNoteStatus, string> = {
+  DRAFT: 'Draft',
+  POSTED: 'Posted',
+  VOIDED: 'Voided',
+};
+
+export const CREDIT_NOTE_REASON_LABELS: Record<CreditNoteReason, string> = {
+  RETURN: 'Goods Returned',
+  PRICE_ADJUSTMENT: 'Price Adjustment',
+  TAX_CORRECTION: 'Tax Correction',
+  DAMAGED: 'Damaged Goods',
+  OTHER: 'Other',
+};

@@ -13,19 +13,18 @@ on every request.
 """
 
 import logging
-from decimal import Decimal
-from typing import List
 
 from django.db.models import F
 
-from events.types import EventTypes
-from events.models import BusinessEvent
 from accounting.models import (
-    Account, JournalEntry, JournalLine, JournalLineAnalysis,
+    JournalEntry,
+    JournalLine,
+    JournalLineAnalysis,
 )
+from events.models import BusinessEvent
+from events.types import EventTypes
 from projections.base import BaseProjection, projection_registry
 from projections.models import DimensionBalance
-
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +46,7 @@ class DimensionBalanceProjection(BaseProjection):
         return PROJECTION_NAME
 
     @property
-    def consumes(self) -> List[str]:
+    def consumes(self) -> list[str]:
         return [EventTypes.JOURNAL_ENTRY_POSTED]
 
     def handle(self, event: BusinessEvent) -> None:

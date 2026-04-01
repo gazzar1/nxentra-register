@@ -14,26 +14,26 @@ from decimal import Decimal, InvalidOperation
 
 from rest_framework import serializers
 
-from accounts.models import CompanyMembership
 from accounts.authz import resolve_actor
-from .models import (
-    Account,
-    JournalEntry,
-    JournalLine,
-    AnalysisDimension,
-    AnalysisDimensionValue,
-    JournalLineAnalysis,
-    AccountAnalysisDefault,
-    Customer,
-    Vendor,
-    StatisticalEntry,
-)
+from accounts.models import CompanyMembership
+
 from .commands import (
     create_journal_entry,
-    update_journal_entry,
     save_journal_entry_complete,
+    update_journal_entry,
 )
-
+from .models import (
+    Account,
+    AccountAnalysisDefault,
+    AnalysisDimension,
+    AnalysisDimensionValue,
+    Customer,
+    JournalEntry,
+    JournalLine,
+    JournalLineAnalysis,
+    StatisticalEntry,
+    Vendor,
+)
 
 MONEY_Q = Decimal("0.01")
 
@@ -289,7 +289,7 @@ class JournalEntrySerializer(serializers.ModelSerializer):
     total_debit = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
     total_credit = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
     is_balanced = serializers.BooleanField(read_only=True)
-    
+
     class Meta:
         model = JournalEntry
         fields = [
@@ -363,17 +363,17 @@ class JournalEntryAutoSaveSerializer(serializers.ModelSerializer):
         company = self._get_company()
         lines = attrs.get("lines") or []
         account_ids = set()
-        
+
         for i, line in enumerate(lines, start=1):
             debit = _to_decimal(line.get("debit"))
             credit = _to_decimal(line.get("credit"))
-            
+
             if debit < 0 or credit < 0:
                 raise serializers.ValidationError(f"Line {i}: negative debit/credit is not allowed.")
-            
+
             if debit > 0 and credit > 0:
                 raise serializers.ValidationError(f"Line {i}: cannot have both debit and credit > 0.")
-            
+
             # Validate account_id
             acc_id = line.get("account_id")
             if acc_id:
@@ -385,7 +385,7 @@ class JournalEntryAutoSaveSerializer(serializers.ModelSerializer):
             valid_count = Account.objects.filter(company=company, id__in=account_ids).count()
             if valid_count != len(account_ids):
                 raise serializers.ValidationError("One or more accounts do not belong to your company.")
-        
+
         return attrs
 
     def _clean_lines_drop_placeholders(self, lines_data, company):
@@ -496,7 +496,7 @@ class JournalEntrySaveCompleteSerializer(JournalEntryAutoSaveSerializer):
     def validate(self, attrs):
         attrs = super().validate(attrs)
         company = self._get_company()
-        
+
         # If client didn't send lines, validate against DB lines
         if "lines" not in attrs and getattr(self, "instance", None):
             inst = self.instance
@@ -513,16 +513,16 @@ class JournalEntrySaveCompleteSerializer(JournalEntryAutoSaveSerializer):
         for i, line in enumerate(lines, start=1):
             debit = _to_decimal(line.get("debit"))
             credit = _to_decimal(line.get("credit"))
-            
+
             if debit == 0 and credit == 0:
                 continue  # Ignore placeholders
-            
+
             # Enforce exactly one side > 0
             if (debit > 0) == (credit > 0):
                 raise serializers.ValidationError(
                     f"Line {i}: must have either debit or credit (not both)."
                 )
-            
+
             effective += 1
             total_debit += debit
             total_credit += credit
@@ -585,7 +585,7 @@ class JournalEntrySaveCompleteSerializer(JournalEntryAutoSaveSerializer):
 class AnalysisDimensionValueSerializer(serializers.ModelSerializer):
     """Serializer for dimension values."""
     full_path = serializers.CharField(read_only=True)
-    
+
     class Meta:
         model = AnalysisDimensionValue
         fields = [
@@ -599,7 +599,7 @@ class AnalysisDimensionValueSerializer(serializers.ModelSerializer):
 class AnalysisDimensionSerializer(serializers.ModelSerializer):
     """Serializer for analysis dimensions."""
     values = AnalysisDimensionValueSerializer(many=True, read_only=True)
-    
+
     class Meta:
         model = AnalysisDimension
         fields = [
@@ -650,7 +650,7 @@ class JournalLineAnalysisSerializer(serializers.ModelSerializer):
     dimension_name = serializers.CharField(source="dimension.name", read_only=True)
     value_code = serializers.CharField(source="dimension_value.code", read_only=True)
     value_name = serializers.CharField(source="dimension_value.name", read_only=True)
-    
+
     class Meta:
         model = JournalLineAnalysis
         fields = [

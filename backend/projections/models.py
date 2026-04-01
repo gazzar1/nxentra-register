@@ -10,11 +10,12 @@ NEVER modify these tables directly. They are owned by their projections.
 """
 
 from decimal import Decimal
-from django.db import models
-from django.conf import settings
 
-from accounts.models import Company
+from django.conf import settings
+from django.db import models
+
 from accounting.models import Account
+from accounts.models import Company
 from events.models import BusinessEvent
 from projections.write_barrier import write_context_allowed
 
@@ -53,19 +54,19 @@ class AccountBalance(ProjectionOwnedModel):
         last_entry_date: Date of most recent entry (for reporting)
         last_event: Last event that updated this balance (for consistency checks)
     """
-    
+
     company = models.ForeignKey(
         Company,
         on_delete=models.CASCADE,
         related_name="account_balances",
     )
-    
+
     account = models.OneToOneField(
         Account,
         on_delete=models.CASCADE,
         related_name="projected_balance",
     )
-    
+
     # Current balance (computed based on normal_balance)
     balance = models.DecimalField(
         max_digits=18,
@@ -73,7 +74,7 @@ class AccountBalance(ProjectionOwnedModel):
         default=Decimal("0.00"),
         help_text="Current balance (positive = normal direction)",
     )
-    
+
     # Running totals for audit/verification
     debit_total = models.DecimalField(
         max_digits=18,
@@ -81,26 +82,26 @@ class AccountBalance(ProjectionOwnedModel):
         default=Decimal("0.00"),
         help_text="Sum of all debits ever posted to this account",
     )
-    
+
     credit_total = models.DecimalField(
         max_digits=18,
         decimal_places=2,
         default=Decimal("0.00"),
         help_text="Sum of all credits ever posted to this account",
     )
-    
+
     # Statistics
     entry_count = models.PositiveIntegerField(
         default=0,
         help_text="Number of journal entries affecting this account",
     )
-    
+
     last_entry_date = models.DateField(
         null=True,
         blank=True,
         help_text="Date of most recent journal entry",
     )
-    
+
     # Event tracking for consistency
     last_event = models.ForeignKey(
         BusinessEvent,
@@ -110,7 +111,7 @@ class AccountBalance(ProjectionOwnedModel):
         related_name="+",
         help_text="Last event that updated this balance",
     )
-    
+
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

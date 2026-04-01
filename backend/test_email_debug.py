@@ -8,7 +8,7 @@ Run this on the server to diagnose email issues:
     python test_email_debug.py
 """
 import os
-import sys
+
 import django
 
 # Setup Django

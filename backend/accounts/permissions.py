@@ -1,13 +1,12 @@
 # accounts/permissions.py
 from __future__ import annotations
 
-from typing import Iterable, Optional
-from django.db import transaction
-from django.contrib.auth import get_user_model
 from django.conf import settings
+from django.contrib.auth import get_user_model
+from django.db import transaction
 
-from accounts.models import NxPermission, CompanyMembership, CompanyMembershipPermission
-from accounts.permission_defaults import ROLE_DEFAULTS, all_permission_codes
+from accounts.models import CompanyMembership, CompanyMembershipPermission, NxPermission
+from accounts.permission_defaults import ROLE_DEFAULTS
 from projections.write_barrier import write_context_allowed
 
 User = get_user_model()
@@ -34,7 +33,7 @@ def _require_write_context() -> None:
 @transaction.atomic
 def grant_role_defaults(
     membership: CompanyMembership,
-    granted_by: Optional[User] = None,
+    granted_by: User | None = None,
     overwrite: bool = False,
 ) -> int:
     """
@@ -62,13 +61,13 @@ def grant_role_defaults(
         NxPermission.objects.bulk_create(
             [
                 NxPermission(
-                    code=c, 
+                    code=c,
                     name=c,  # placeholder
                     name_ar="",
                     module=c.split(".")[0],
                     description="",
                     default_for_roles=[],
-                ) 
+                )
                 for c in missing
             ],
             ignore_conflicts=True,
@@ -106,7 +105,7 @@ def grant_role_defaults(
 
 @transaction.atomic
 def grant_defaults_to_all_memberships(
-    granted_by: Optional[User] = None,
+    granted_by: User | None = None,
     only_if_empty: bool = True,
 ) -> dict[str, int]:
     """

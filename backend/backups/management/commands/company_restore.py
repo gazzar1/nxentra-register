@@ -35,7 +35,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         from accounts.models import Company
         from accounts.rls import rls_bypass
-        from backups.importer import restore_company, RestoreError
+        from backups.importer import RestoreError, restore_company
 
         slug = options["company"]
         file_path = options["file"]

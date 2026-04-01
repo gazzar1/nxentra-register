@@ -19,13 +19,11 @@ Design Principles:
 - Migrations run on all applicable databases
 - Backward compatible: no context = default database
 """
-from typing import Optional, Type
 
 from django.conf import settings
 from django.db.models import Model
 
 from tenant.context import get_current_db_alias, is_shared_tenant
-
 
 # =============================================================================
 # Model Classification
@@ -78,11 +76,11 @@ class TenantDatabaseRouter:
     Thread-safe via contextvars (see tenant.context module).
     """
 
-    def _get_model_label(self, model: Type[Model]) -> str:
+    def _get_model_label(self, model: type[Model]) -> str:
         """Get the app_label.ModelName for a model."""
         return f"{model._meta.app_label}.{model._meta.object_name}"
 
-    def _is_system_model(self, model: Type[Model]) -> bool:
+    def _is_system_model(self, model: type[Model]) -> bool:
         """
         Check if model is a system model (always routes to default).
 
@@ -99,7 +97,7 @@ class TenantDatabaseRouter:
         model_label = self._get_model_label(model)
         return app_label in SYSTEM_APPS or model_label in SYSTEM_MODELS
 
-    def _is_tenant_model(self, model: Type[Model]) -> bool:
+    def _is_tenant_model(self, model: type[Model]) -> bool:
         """
         Check if model is a tenant model (routes based on context).
 
@@ -115,7 +113,7 @@ class TenantDatabaseRouter:
         model_label = self._get_model_label(model)
         return app_label in TENANT_APPS and model_label not in SYSTEM_MODELS
 
-    def db_for_read(self, model: Type[Model], **hints) -> Optional[str]:
+    def db_for_read(self, model: type[Model], **hints) -> str | None:
         """
         Route reads to appropriate database.
 
@@ -132,7 +130,7 @@ class TenantDatabaseRouter:
         # Default fallback for any unclassified models
         return "default"
 
-    def db_for_write(self, model: Type[Model], **hints) -> Optional[str]:
+    def db_for_write(self, model: type[Model], **hints) -> str | None:
         """
         Route writes to appropriate database.
 
@@ -163,7 +161,7 @@ class TenantDatabaseRouter:
 
         return "default"
 
-    def allow_relation(self, obj1: Model, obj2: Model, **hints) -> Optional[bool]:
+    def allow_relation(self, obj1: Model, obj2: Model, **hints) -> bool | None:
         """
         Allow relations between models.
 
@@ -190,9 +188,9 @@ class TenantDatabaseRouter:
         self,
         db: str,
         app_label: str,
-        model_name: Optional[str] = None,
+        model_name: str | None = None,
         **hints,
-    ) -> Optional[bool]:
+    ) -> bool | None:
         """
         Control which migrations run on which database.
 
@@ -234,7 +232,7 @@ def get_tenant_databases() -> list[str]:
     """
     return [
         alias
-        for alias in settings.DATABASES.keys()
+        for alias in settings.DATABASES
         if alias.startswith("tenant_")
     ]
 

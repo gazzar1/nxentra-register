@@ -6,10 +6,11 @@ import type {
   JournalEntrySaveCompletePayload,
   JournalEntryFilters,
 } from '@/types/journal';
+import type { PaginatedResponse, PaginationParams } from '@/types/common';
 
 export const journalService = {
-  list: (params?: JournalEntryFilters) =>
-    apiClient.get<JournalEntry[]>('/accounting/journal-entries/', { params }),
+  list: (params?: JournalEntryFilters & PaginationParams) =>
+    apiClient.get<PaginatedResponse<JournalEntry>>('/accounting/journal-entries/', { params }),
 
   get: (id: number) =>
     apiClient.get<JournalEntry>(`/accounting/journal-entries/${id}/`),

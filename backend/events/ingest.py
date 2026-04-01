@@ -23,7 +23,6 @@ from events.api_keys import ExternalAPIKey
 from events.external import emit_external_event
 from events.types import EVENT_DATA_CLASSES, InvalidEventPayload
 
-
 logger = logging.getLogger(__name__)
 
 

@@ -13,15 +13,265 @@ Note: Item, TaxCode, and PostingProfile are defined in sales.models
 and are shared between sales and purchases.
 """
 
-from django.db import models
-from django.conf import settings
-from decimal import Decimal
 import uuid
+from decimal import Decimal
 
-from accounts.models import Company, User, ProjectionWriteGuard
-from accounting.models import Account, Vendor, AnalysisDimensionValue
-from sales.models import Item, TaxCode, PostingProfile
+from django.db import models
 
+from accounting.models import Account, AnalysisDimensionValue, Vendor
+from accounts.models import Company, ProjectionWriteGuard, User
+from sales.models import Item, PostingProfile, TaxCode
+
+# =============================================================================
+# Purchase Order
+# =============================================================================
+
+class PurchaseOrder(ProjectionWriteGuard):
+    """
+    Purchase Order header.
+
+    Workflow: DRAFT -> APPROVED -> PARTIALLY_RECEIVED / FULLY_RECEIVED -> CLOSED
+    - DRAFT: PO being edited, can be modified
+    - APPROVED: PO confirmed, ready for goods receipt
+    - PARTIALLY_RECEIVED: Some goods received via GR
+    - FULLY_RECEIVED: All goods received
+    - CLOSED: Manually closed (all billing done or remaining qty abandoned)
+    - CANCELLED: PO cancelled before any receipt
+
+    POs are commitment/planning documents — they create NO journal entries.
+    """
+
+    class Status(models.TextChoices):
+        DRAFT = "DRAFT", "Draft"
+        APPROVED = "APPROVED", "Approved"
+        PARTIALLY_RECEIVED = "PARTIALLY_RECEIVED", "Partially Received"
+        FULLY_RECEIVED = "FULLY_RECEIVED", "Fully Received"
+        CLOSED = "CLOSED", "Closed"
+        CANCELLED = "CANCELLED", "Cancelled"
+
+    allowed_write_contexts = {"command", "projection", "bootstrap", "migration"}
+
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="purchase_orders")
+    public_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+
+    order_number = models.CharField(max_length=50, help_text="Auto-generated as PO-XXXXXX")
+    order_date = models.DateField()
+    expected_delivery_date = models.DateField(null=True, blank=True)
+
+    vendor = models.ForeignKey(Vendor, on_delete=models.PROTECT, related_name="purchase_orders")
+    posting_profile = models.ForeignKey(PostingProfile, on_delete=models.PROTECT, related_name="+")
+
+    currency = models.CharField(max_length=3, blank=True, default="")
+    exchange_rate = models.DecimalField(max_digits=18, decimal_places=6, default=Decimal("1"))
+
+    subtotal = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    total_discount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    total_tax = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    total_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
+    approved_at = models.DateTimeField(null=True, blank=True)
+    approved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+
+    notes = models.TextField(blank=True, default="")
+    reference = models.CharField(max_length=100, blank=True, default="")
+    shipping_address = models.TextField(blank=True, default="")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-order_date", "-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "order_number"],
+                name="uniq_po_number_per_company",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["company", "status"]),
+            models.Index(fields=["company", "vendor"]),
+            models.Index(fields=["company", "order_date"]),
+        ]
+
+    def __str__(self):
+        return f"PO-{self.order_number}"
+
+    def recalculate_totals(self):
+        from django.db.models import Sum
+        totals = self.lines.aggregate(
+            subtotal=Sum("gross_amount"),
+            total_discount=Sum("discount_amount"),
+            total_tax=Sum("tax_amount"),
+            total_amount=Sum("line_total"),
+        )
+        self.subtotal = totals["subtotal"] or Decimal("0")
+        self.total_discount = totals["total_discount"] or Decimal("0")
+        self.total_tax = totals["total_tax"] or Decimal("0")
+        self.total_amount = totals["total_amount"] or Decimal("0")
+
+    def update_receipt_status(self):
+        """Update status based on received quantities across all lines."""
+        lines = self.lines.all()
+        if not lines.exists():
+            return
+        all_received = all(line.qty_received >= line.quantity for line in lines)
+        any_received = any(line.qty_received > 0 for line in lines)
+        if all_received:
+            self.status = self.Status.FULLY_RECEIVED
+        elif any_received:
+            self.status = self.Status.PARTIALLY_RECEIVED
+
+
+class PurchaseOrderLine(ProjectionWriteGuard):
+    """Purchase order line item with receipt tracking."""
+
+    allowed_write_contexts = {"command", "projection", "bootstrap", "migration"}
+
+    order = models.ForeignKey(PurchaseOrder, on_delete=models.CASCADE, related_name="lines")
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="+")
+    public_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    line_number = models.PositiveIntegerField()
+
+    item = models.ForeignKey(Item, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    description = models.CharField(max_length=500)
+    description_ar = models.CharField(max_length=500, blank=True, default="")
+
+    quantity = models.DecimalField(max_digits=18, decimal_places=4, default=Decimal("1"))
+    unit_price = models.DecimalField(max_digits=18, decimal_places=2)
+    discount_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+
+    tax_code = models.ForeignKey(TaxCode, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    tax_rate = models.DecimalField(max_digits=5, decimal_places=4, default=Decimal("0"))
+
+    gross_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    net_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    tax_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    line_total = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+
+    account = models.ForeignKey(Account, on_delete=models.PROTECT, related_name="+")
+    dimension_values = models.ManyToManyField(AnalysisDimensionValue, blank=True, related_name="+")
+
+    # 3-way matching counters
+    qty_received = models.DecimalField(max_digits=18, decimal_places=4, default=Decimal("0"))
+    qty_billed = models.DecimalField(max_digits=18, decimal_places=4, default=Decimal("0"))
+
+    class Meta:
+        ordering = ["line_number"]
+        constraints = [
+            models.UniqueConstraint(fields=["order", "line_number"], name="uniq_po_line_number"),
+        ]
+
+    def __str__(self):
+        return f"{self.order.order_number}:{self.line_number}"
+
+    def calculate(self):
+        self.gross_amount = self.quantity * self.unit_price
+        self.net_amount = self.gross_amount - self.discount_amount
+        self.tax_amount = self.net_amount * self.tax_rate
+        self.line_total = self.net_amount + self.tax_amount
+
+    @property
+    def qty_outstanding(self):
+        return self.quantity - self.qty_received
+
+    @property
+    def qty_unbilled(self):
+        return self.quantity - self.qty_billed
+
+
+# =============================================================================
+# Goods Receipt
+# =============================================================================
+
+class GoodsReceipt(ProjectionWriteGuard):
+    """
+    Goods Receipt Note (GRN) — records physical receipt of goods against a PO.
+
+    Workflow: DRAFT -> POSTED -> VOIDED
+    - DRAFT: Receipt being prepared
+    - POSTED: Goods received, stock updated, PO qty_received incremented
+    - VOIDED: Receipt reversed, stock reversed, PO qty_received decremented
+
+    GRs create NO journal entries — accounting happens at bill posting.
+    GRs DO create stock receipts for inventory items.
+    """
+
+    class Status(models.TextChoices):
+        DRAFT = "DRAFT", "Draft"
+        POSTED = "POSTED", "Posted"
+        VOIDED = "VOIDED", "Voided"
+
+    allowed_write_contexts = {"command", "projection", "bootstrap", "migration"}
+
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="goods_receipts")
+    public_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+
+    receipt_number = models.CharField(max_length=50, help_text="Auto-generated as GRN-XXXXXX")
+    receipt_date = models.DateField()
+
+    purchase_order = models.ForeignKey(PurchaseOrder, on_delete=models.PROTECT, related_name="goods_receipts")
+    vendor = models.ForeignKey(Vendor, on_delete=models.PROTECT, related_name="goods_receipts")
+    warehouse = models.ForeignKey("inventory.Warehouse", on_delete=models.PROTECT, related_name="+")
+
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.DRAFT)
+    posted_at = models.DateTimeField(null=True, blank=True)
+    posted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+
+    notes = models.TextField(blank=True, default="")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-receipt_date", "-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "receipt_number"],
+                name="uniq_grn_number_per_company",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["company", "status"]),
+            models.Index(fields=["company", "purchase_order"]),
+        ]
+
+    def __str__(self):
+        return f"GRN-{self.receipt_number}"
+
+
+class GoodsReceiptLine(ProjectionWriteGuard):
+    """Goods receipt line — qty received against a specific PO line."""
+
+    allowed_write_contexts = {"command", "projection", "bootstrap", "migration"}
+
+    receipt = models.ForeignKey(GoodsReceipt, on_delete=models.CASCADE, related_name="lines")
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="+")
+    public_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    line_number = models.PositiveIntegerField()
+
+    po_line = models.ForeignKey(PurchaseOrderLine, on_delete=models.PROTECT, related_name="receipt_lines")
+    item = models.ForeignKey(Item, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    description = models.CharField(max_length=500)
+
+    qty_received = models.DecimalField(max_digits=18, decimal_places=4)
+    unit_cost = models.DecimalField(max_digits=18, decimal_places=2, help_text="Copied from PO line unit_price")
+
+    class Meta:
+        ordering = ["line_number"]
+        constraints = [
+            models.UniqueConstraint(fields=["receipt", "line_number"], name="uniq_gr_line_number"),
+        ]
+
+    def __str__(self):
+        return f"{self.receipt.receipt_number}:{self.line_number}"
+
+
+# =============================================================================
+# Purchase Bill (existing)
+# =============================================================================
 
 class PurchaseBill(ProjectionWriteGuard):
     """
@@ -156,6 +406,16 @@ class PurchaseBill(ProjectionWriteGuard):
         help_text="Journal entry created when posted",
     )
 
+    # Optional link to Purchase Order (for 3-way matching)
+    purchase_order = models.ForeignKey(
+        PurchaseOrder,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="bills",
+        help_text="Purchase order this bill is matched against",
+    )
+
     # Metadata
     notes = models.TextField(blank=True, default="")
     reference = models.CharField(
@@ -253,6 +513,16 @@ class PurchaseBillLine(ProjectionWriteGuard):
 
     line_number = models.PositiveIntegerField(
         help_text="Line ordering within the bill",
+    )
+
+    # Optional link to PO line (for 3-way matching)
+    po_line = models.ForeignKey(
+        PurchaseOrderLine,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="bill_lines",
+        help_text="PO line this bill line is matched against",
     )
 
     # Item (optional - can be ad-hoc line)

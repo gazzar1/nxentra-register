@@ -8,6 +8,7 @@ import uuid
 from django.db import models
 
 from accounts.models import Company, ProjectionWriteGuard
+
 from .lease import Lease
 
 

@@ -3,14 +3,14 @@
 Tests for write barrier enforcement.
 """
 
-import pytest
 from uuid import uuid4
 
+import pytest
 from rest_framework import serializers
 
-from accounts.models import Company
 from accounting.models import CompanySequence
-from projections.write_barrier import command_writes_allowed, bootstrap_writes_allowed
+from accounts.models import Company
+from projections.write_barrier import bootstrap_writes_allowed, command_writes_allowed
 
 
 class CompanySerializer(serializers.ModelSerializer):

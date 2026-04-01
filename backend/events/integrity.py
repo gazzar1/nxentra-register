@@ -15,7 +15,7 @@ PRD Reference: Section 12 - Failure Scenarios & Handling
 No silent recovery allowed.
 """
 
-from typing import Optional, Dict, Any
+from typing import Any
 
 
 class IntegrityViolationError(Exception):
@@ -32,14 +32,14 @@ class IntegrityViolationError(Exception):
     def __init__(
         self,
         message: str,
-        event_id: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None,
+        event_id: str | None = None,
+        details: dict[str, Any] | None = None,
     ):
         self.event_id = event_id
         self.details = details or {}
         super().__init__(message)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to a dictionary for logging/diagnostics."""
         return {
             'error_type': self.__class__.__name__,
@@ -116,14 +116,14 @@ class ReplayAbortedError(IntegrityViolationError):
     def __init__(
         self,
         message: str,
-        cause: Optional[IntegrityViolationError] = None,
-        event_id: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None,
+        cause: IntegrityViolationError | None = None,
+        event_id: str | None = None,
+        details: dict[str, Any] | None = None,
     ):
         super().__init__(message, event_id, details)
         self.cause = cause
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         result = super().to_dict()
         if self.cause:
             result['cause'] = self.cause.to_dict()

@@ -9,7 +9,6 @@ types, which the generic webhook handler converts into BusinessEvents.
 
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Optional
 
 
 @dataclass
@@ -95,7 +94,7 @@ class ParsedDispute:
     currency: str = "USD"
     reason: str = ""
     status: str = ""
-    evidence_due_by: Optional[str] = None
+    evidence_due_by: str | None = None
 
 
 @dataclass

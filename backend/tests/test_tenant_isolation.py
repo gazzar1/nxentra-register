@@ -9,26 +9,25 @@ Verifies that tenant data is properly isolated:
 4. TenantDirectory controls routing
 5. Write freeze during migration status
 """
-import pytest
 from uuid import uuid4
 
-from tenant.context import (
-    set_tenant_context,
-    clear_tenant_context,
-    get_current_db_alias,
-    get_current_company_id,
-    is_shared_tenant,
-    is_dedicated_tenant,
-    tenant_context,
-    system_db_context,
-)
-from tenant.router import TenantDatabaseRouter, SYSTEM_APPS, TENANT_APPS, SYSTEM_MODELS
-from tenant.models import TenantDirectory
+import pytest
 
-from accounts.models import Company, CompanyMembership, User
 from accounting.models import Account, JournalEntry
+from accounts.models import Company, CompanyMembership, User
 from events.models import BusinessEvent
-
+from tenant.context import (
+    clear_tenant_context,
+    get_current_company_id,
+    get_current_db_alias,
+    is_dedicated_tenant,
+    is_shared_tenant,
+    set_tenant_context,
+    system_db_context,
+    tenant_context,
+)
+from tenant.models import TenantDirectory
+from tenant.router import SYSTEM_APPS, TENANT_APPS, TenantDatabaseRouter
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TENANT CONTEXT TESTS
@@ -183,7 +182,6 @@ class TestCrossTenantIsolation:
 
     def test_accounts_filtered_by_company(self, company, second_company, user):
         """Accounts created for company A must not appear in company B queries."""
-        from accounts.authz import ActorContext
 
         # Create account for company A
         Account.objects.create(

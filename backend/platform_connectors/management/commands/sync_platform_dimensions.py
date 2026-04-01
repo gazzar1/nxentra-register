@@ -16,8 +16,8 @@ from django.core.management.base import BaseCommand
 from accounts.models import Company
 from accounts.rls import rls_bypass
 from platform_connectors.dimensions import (
-    sync_platform_dimensions,
     ensure_store_dimension_value,
+    sync_platform_dimensions,
 )
 
 

@@ -10,7 +10,6 @@ Usage:
     from backups.importer import restore_company
     result = restore_company(company, zip_file)
 """
-import hashlib
 import io
 import json
 import logging
@@ -48,7 +47,7 @@ def restore_company(company, zip_file):
     Raises:
         RestoreError: If the archive is invalid or restore fails
     """
-    from backups.model_registry import get_export_registry, EXCLUDED_FIELDS
+    from backups.model_registry import EXCLUDED_FIELDS, get_export_registry
 
     started_at = timezone.now()
 
@@ -81,7 +80,7 @@ def restore_company(company, zip_file):
     stats = {"imported": {}, "skipped": {}, "cleared": 0, "errors": []}
 
     with rls_bypass():
-        from projections.write_barrier import projection_writes_allowed, bootstrap_writes_allowed
+        from projections.write_barrier import bootstrap_writes_allowed, projection_writes_allowed
 
         with bootstrap_writes_allowed(), projection_writes_allowed():
             # Wrap BOTH clear and import in a single transaction so that
@@ -148,6 +147,7 @@ def _clear_company_data(company, registry):
     delete() overrides (e.g., BusinessEvent immutability).
     """
     from django.db import connection
+
     from events.models import EventPayload
 
     total_deleted = 0
@@ -157,7 +157,7 @@ def _clear_company_data(company, registry):
     models_list.reverse()
 
     with connection.cursor() as cursor:
-        for label, model_cls in models_list:
+        for _label, model_cls in models_list:
             # Skip EventPayload (content-addressed, shared across companies)
             if model_cls is EventPayload:
                 continue
@@ -207,7 +207,7 @@ def _import_model_records(model_cls, company, records, pk_map, label, excluded_f
         (model_cls, new_pk, field_attname, old_fk_value, label) for FKs
         that couldn't be resolved yet (set to NULL temporarily).
     """
-    from events.models import EventPayload, BusinessEvent, CompanyEventCounter
+    from events.models import BusinessEvent, CompanyEventCounter, EventPayload
 
     imported = 0
     old_to_new = {}
@@ -349,10 +349,10 @@ def _apply_deferred_fks(deferred_fks, pk_map):
     from django.db import connection
 
     with connection.cursor() as cursor:
-        for model_cls, obj_pk, attname, old_fk_value, fk_label in deferred_fks:
+        for model_cls, obj_pk, attname, old_fk_value, _fk_label in deferred_fks:
             # Find the new PK for the old FK value
             new_fk = None
-            for map_label, mapping in pk_map.items():
+            for _map_label, mapping in pk_map.items():
                 if old_fk_value in mapping:
                     new_fk = mapping[old_fk_value]
                     break
@@ -423,7 +423,7 @@ def _update_company_settings(company, company_data):
     update_fields = []
     for attr in ("name", "name_ar", "default_currency", "functional_currency",
                  "fiscal_year_start_month"):
-        if attr in company_data and company_data[attr]:
+        if company_data.get(attr):
             setattr(company, attr, company_data[attr])
             update_fields.append(attr)
 

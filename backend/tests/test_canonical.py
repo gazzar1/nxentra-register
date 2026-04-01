@@ -6,27 +6,24 @@ These tests validate the core invariants of the system.
 If any of these fail, the system is not contract-compliant.
 """
 
-from decimal import Decimal
 from datetime import date
+from decimal import Decimal
 
-from django.test import TestCase
 from django.contrib.auth import get_user_model
+from django.test import TestCase
 
-from accounts.commands import register_signup
-from accounts.authz import ActorContext
-from accounts.models import CompanyMembership
 from accounting.commands import (
     create_account,
     create_journal_entry,
-    save_journal_entry_complete,
     post_journal_entry,
     reverse_journal_entry,
+    save_journal_entry_complete,
 )
 from accounting.models import Account, JournalEntry
-from projections.account_balance import AccountBalanceProjection
-from projections.models import AccountBalance
+from accounts.authz import ActorContext
+from accounts.commands import register_signup
 from events.models import BusinessEvent
-
+from projections.account_balance import AccountBalanceProjection
 
 User = get_user_model()
 
@@ -36,7 +33,7 @@ class CanonicalCoreLoopTest(TestCase):
     Test: Create company → COA → post JE → TB correct
     Validates: Core loop works end-to-end
     """
-    
+
     def setUp(self):
         """Create a test company with owner."""
         result = register_signup(
@@ -46,11 +43,11 @@ class CanonicalCoreLoopTest(TestCase):
             name="Test Owner",
         )
         self.assertTrue(result.success, result.error)
-        
+
         self.user = result.data["user"]
         self.company = result.data["company"]
         self.membership = result.data["membership"]
-        
+
         # Build actor context
         perms = frozenset(self.membership.permissions.values_list("code", flat=True))
         self.actor = ActorContext(
@@ -59,7 +56,7 @@ class CanonicalCoreLoopTest(TestCase):
             membership=self.membership,
             perms=perms,
         )
-        
+
         # Create basic COA
         create_account(self.actor, code="1000", name="Cash", account_type="ASSET")
         create_account(self.actor, code="1100", name="Accounts Receivable", account_type="RECEIVABLE")
@@ -67,7 +64,7 @@ class CanonicalCoreLoopTest(TestCase):
         create_account(self.actor, code="3000", name="Owner Equity", account_type="EQUITY")
         create_account(self.actor, code="4000", name="Revenue", account_type="REVENUE")
         create_account(self.actor, code="5000", name="Expenses", account_type="EXPENSE")
-        
+
         self.projection = AccountBalanceProjection()
 
     def test_core_loop_post_and_trial_balance(self):
@@ -76,7 +73,7 @@ class CanonicalCoreLoopTest(TestCase):
         """
         cash = Account.objects.get(company=self.company, code="1000")
         equity = Account.objects.get(company=self.company, code="3000")
-        
+
         # Create journal entry
         result = create_journal_entry(
             self.actor,
@@ -89,17 +86,17 @@ class CanonicalCoreLoopTest(TestCase):
         )
         self.assertTrue(result.success, result.error)
         entry = result.data
-        
+
         # Save as complete (DRAFT)
         result = save_journal_entry_complete(self.actor, entry.id)
         self.assertTrue(result.success, result.error)
-        
+
         # Post
         result = post_journal_entry(self.actor, entry.id)
         self.assertTrue(result.success, result.error)
         self.assertEqual(result.data.status, JournalEntry.Status.POSTED)
         self.assertIsNotNone(result.data.entry_number)
-        
+
         # Process projections (may return 0 if PROJECTIONS_SYNC=True already processed them)
         self.projection.process_pending(self.company)
 
@@ -114,7 +111,7 @@ class CanonicalReversalTest(TestCase):
     """
     Test: Reverse JE → TB restored
     """
-    
+
     def setUp(self):
         result = register_signup(
             email="reversal@canonical.test",
@@ -124,7 +121,7 @@ class CanonicalReversalTest(TestCase):
         self.user = result.data["user"]
         self.company = result.data["company"]
         self.membership = result.data["membership"]
-        
+
         perms = frozenset(self.membership.permissions.values_list("code", flat=True))
         self.actor = ActorContext(
             user=self.user,
@@ -132,17 +129,17 @@ class CanonicalReversalTest(TestCase):
             membership=self.membership,
             perms=perms,
         )
-        
+
         create_account(self.actor, code="1000", name="Cash", account_type="ASSET")
         create_account(self.actor, code="4000", name="Revenue", account_type="REVENUE")
-        
+
         self.projection = AccountBalanceProjection()
 
     def test_reversal_restores_balances(self):
         """Reversing an entry should restore balances to zero"""
         cash = Account.objects.get(company=self.company, code="1000")
         revenue = Account.objects.get(company=self.company, code="4000")
-        
+
         # Post initial entry
         result = create_journal_entry(
             self.actor,
@@ -156,10 +153,10 @@ class CanonicalReversalTest(TestCase):
         entry = result.data
         save_journal_entry_complete(self.actor, entry.id)
         post_journal_entry(self.actor, entry.id)
-        
+
         # Process projections
         self.projection.process_pending(self.company)
-        
+
         # Verify balance after posting
         tb_before = self.projection.get_trial_balance(self.company)
         self.assertEqual(tb_before["total_debit"], "500.00")
@@ -186,7 +183,7 @@ class CanonicalRebuildTest(TestCase):
     """
     Test: Drop projections → rebuild → identical
     """
-    
+
     def setUp(self):
         result = register_signup(
             email="rebuild@canonical.test",
@@ -196,7 +193,7 @@ class CanonicalRebuildTest(TestCase):
         self.user = result.data["user"]
         self.company = result.data["company"]
         self.membership = result.data["membership"]
-        
+
         perms = frozenset(self.membership.permissions.values_list("code", flat=True))
         self.actor = ActorContext(
             user=self.user,
@@ -204,17 +201,17 @@ class CanonicalRebuildTest(TestCase):
             membership=self.membership,
             perms=perms,
         )
-        
+
         create_account(self.actor, code="1000", name="Cash", account_type="ASSET")
         create_account(self.actor, code="3000", name="Equity", account_type="EQUITY")
-        
+
         self.projection = AccountBalanceProjection()
 
     def test_rebuild_produces_identical_state(self):
         """Rebuilding projections should produce identical balances"""
         cash = Account.objects.get(company=self.company, code="1000")
         equity = Account.objects.get(company=self.company, code="3000")
-        
+
         # Create and post multiple entries
         for i in range(3):
             result = create_journal_entry(
@@ -229,19 +226,19 @@ class CanonicalRebuildTest(TestCase):
             entry = result.data
             save_journal_entry_complete(self.actor, entry.id)
             post_journal_entry(self.actor, entry.id)
-        
+
         # Process projections
         self.projection.process_pending(self.company)
-        
+
         # Capture current state
         tb_original = self.projection.get_trial_balance(self.company)
-        
+
         # Rebuild projection from scratch
         self.projection.rebuild(self.company)
-        
+
         # Verify identical state
         tb_rebuilt = self.projection.get_trial_balance(self.company)
-        
+
         self.assertEqual(tb_original["total_debit"], tb_rebuilt["total_debit"])
         self.assertEqual(tb_original["total_credit"], tb_rebuilt["total_credit"])
         self.assertEqual(
@@ -254,7 +251,7 @@ class CanonicalImmutabilityTest(TestCase):
     """
     Test: Events cannot be modified or deleted
     """
-    
+
     def setUp(self):
         result = register_signup(
             email="immutable@canonical.test",
@@ -267,7 +264,7 @@ class CanonicalImmutabilityTest(TestCase):
         """Events are immutable - save should raise"""
         event = BusinessEvent.objects.filter(company=self.company).first()
         self.assertIsNotNone(event, "Should have at least one event from registration")
-        
+
         event.event_type = "hacked.event"
         with self.assertRaises(ValueError) as ctx:
             event.save()
@@ -277,7 +274,7 @@ class CanonicalImmutabilityTest(TestCase):
         """Events are immutable - delete should raise"""
         event = BusinessEvent.objects.filter(company=self.company).first()
         self.assertIsNotNone(event)
-        
+
         with self.assertRaises(ValueError) as ctx:
             event.delete()
         self.assertIn("immutable", str(ctx.exception).lower())
@@ -287,7 +284,7 @@ class CanonicalDoubleEntryTest(TestCase):
     """
     Test: Unbalanced entries cannot be posted
     """
-    
+
     def setUp(self):
         result = register_signup(
             email="doubleentry@canonical.test",
@@ -297,7 +294,7 @@ class CanonicalDoubleEntryTest(TestCase):
         self.user = result.data["user"]
         self.company = result.data["company"]
         self.membership = result.data["membership"]
-        
+
         perms = frozenset(self.membership.permissions.values_list("code", flat=True))
         self.actor = ActorContext(
             user=self.user,
@@ -305,13 +302,13 @@ class CanonicalDoubleEntryTest(TestCase):
             membership=self.membership,
             perms=perms,
         )
-        
+
         create_account(self.actor, code="1000", name="Cash", account_type="ASSET")
 
     def test_unbalanced_entry_rejected(self):
         """Unbalanced entries cannot be saved as complete"""
         cash = Account.objects.get(company=self.company, code="1000")
-        
+
         # Create unbalanced entry (only debit, no credit)
         result = create_journal_entry(
             self.actor,
@@ -322,7 +319,7 @@ class CanonicalDoubleEntryTest(TestCase):
             ],
         )
         entry = result.data
-        
+
         # Try to save as complete - should fail (needs at least 2 lines)
         result = save_journal_entry_complete(self.actor, entry.id)
         self.assertFalse(result.success)
@@ -337,7 +334,7 @@ class CanonicalIdempotencyTest(TestCase):
     """
     Test: Same idempotency_key produces same event
     """
-    
+
     def setUp(self):
         result = register_signup(
             email="idempotent@canonical.test",
@@ -347,7 +344,7 @@ class CanonicalIdempotencyTest(TestCase):
         self.user = result.data["user"]
         self.company = result.data["company"]
         self.membership = result.data["membership"]
-        
+
         perms = frozenset(self.membership.permissions.values_list("code", flat=True))
         self.actor = ActorContext(
             user=self.user,
@@ -365,9 +362,9 @@ class CanonicalIdempotencyTest(TestCase):
             account_type="ASSET",
         )
         self.assertTrue(result1.success)
-        
+
         initial_event_count = BusinessEvent.objects.filter(company=self.company).count()
-        
+
         # Try to create same account again
         result2 = create_account(
             self.actor,
@@ -376,7 +373,7 @@ class CanonicalIdempotencyTest(TestCase):
             account_type="ASSET",
         )
         self.assertFalse(result2.success)  # Should fail - duplicate code
-        
+
         # Event count should not increase
         final_event_count = BusinessEvent.objects.filter(company=self.company).count()
         self.assertEqual(initial_event_count, final_event_count)

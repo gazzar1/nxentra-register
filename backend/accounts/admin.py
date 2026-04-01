@@ -3,13 +3,16 @@
 
 from django.contrib import admin, messages
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
-from django.utils import timezone
 
-from .models import (
-    Company, User, CompanyMembership, NxPermission,
-    CompanyMembershipPermission, EmailVerificationToken,
-)
 from .commands import approve_user, reject_user
+from .models import (
+    Company,
+    CompanyMembership,
+    CompanyMembershipPermission,
+    EmailVerificationToken,
+    NxPermission,
+    User,
+)
 
 
 class CompanyMembershipPermissionInline(admin.TabularInline):
@@ -31,13 +34,13 @@ class CompanyMembershipInline(admin.TabularInline):
 @admin.register(Company)
 class CompanyAdmin(admin.ModelAdmin):
     """Admin interface for Companies."""
-    
+
     list_display = ["name", "slug", "default_currency", "is_active", "created_at"]
     list_filter = ["is_active", "default_currency"]
     search_fields = ["name", "name_ar", "slug"]
     prepopulated_fields = {"slug": ("name",)}
     ordering = ["name"]
-    
+
     fieldsets = (
         (None, {
             "fields": ("name", "name_ar", "slug"),
@@ -53,7 +56,7 @@ class CompanyAdmin(admin.ModelAdmin):
             "classes": ("collapse",),
         }),
     )
-    
+
     readonly_fields = ["created_at", "updated_at"]
     inlines = [CompanyMembershipInline]
 
@@ -162,13 +165,13 @@ class UserAdmin(BaseUserAdmin):
 @admin.register(CompanyMembership)
 class CompanyMembershipAdmin(admin.ModelAdmin):
     """Admin interface for Memberships."""
-    
+
     list_display = ["user", "company", "role", "is_active", "joined_at"]
     list_filter = ["company", "role", "is_active"]
     search_fields = ["user__email", "company__name"]
     list_select_related = ["user", "company"]
     ordering = ["company", "user"]
-    
+
     fieldsets = (
         (None, {
             "fields": ("user", "company", "role"),
@@ -182,7 +185,7 @@ class CompanyMembershipAdmin(admin.ModelAdmin):
             "classes": ("collapse",),
         }),
     )
-    
+
     readonly_fields = ["joined_at", "updated_at"]
     autocomplete_fields = ["user", "company"]
     inlines = [CompanyMembershipPermissionInline]
@@ -191,12 +194,12 @@ class CompanyMembershipAdmin(admin.ModelAdmin):
 @admin.register(NxPermission)
 class NxPermissionAdmin(admin.ModelAdmin):
     """Admin interface for Permissions."""
-    
+
     list_display = ["code", "name", "module", "default_roles_display"]
     list_filter = ["module"]
     search_fields = ["code", "name", "name_ar"]
     ordering = ["module", "code"]
-    
+
     fieldsets = (
         (None, {
             "fields": ("code", "name", "name_ar"),
@@ -208,9 +211,9 @@ class NxPermissionAdmin(admin.ModelAdmin):
             "fields": ("description",),
         }),
     )
-    
+
     readonly_fields = ["created_at"]
-    
+
     def default_roles_display(self, obj):
         """Display default roles as comma-separated list."""
         if obj.default_for_roles:

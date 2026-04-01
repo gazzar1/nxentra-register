@@ -10,18 +10,18 @@ Usage:
     python manage.py seed_test_payout --company-id 1
 """
 
-from decimal import Decimal
 from datetime import date
+from decimal import Decimal
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
 from accounts.models import Company
 from shopify_connector.models import (
-    ShopifyStore,
     ShopifyOrder,
     ShopifyPayout,
     ShopifyPayoutTransaction,
+    ShopifyStore,
 )
 
 
@@ -121,9 +121,9 @@ class Command(BaseCommand):
 
         self.stdout.write("")
         self.stdout.write(self.style.SUCCESS("Done! Now:"))
-        self.stdout.write(f"  1. Import this CSV row into your CIB bank account:")
-        self.stdout.write(f"     Date: 2026-03-20")
-        self.stdout.write(f"     Description: SHOPIFY *1122334455 PAYOUT")
+        self.stdout.write("  1. Import this CSV row into your CIB bank account:")
+        self.stdout.write("     Date: 2026-03-20")
+        self.stdout.write("     Description: SHOPIFY *1122334455 PAYOUT")
         self.stdout.write(f"     Amount: {net} (credit/deposit)")
-        self.stdout.write(f"  2. Go to Banking > Reconciliation")
-        self.stdout.write(f"  3. Click Auto-Match or Find Match on the bank deposit")
+        self.stdout.write("  2. Go to Banking > Reconciliation")
+        self.stdout.write("  3. Click Auto-Match or Find Match on the bank deposit")

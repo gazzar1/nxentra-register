@@ -16,20 +16,19 @@ Account roles used by this module:
 
 import logging
 import uuid
+from datetime import date, datetime
 from decimal import Decimal
-from datetime import datetime, date
 
 from django.utils import timezone
 
-from events.types import EventTypes, JournalEntryPostedData
-from events.models import BusinessEvent
+from accounting.commands import _next_company_sequence
+from accounting.mappings import ModuleAccountMapping
+from accounting.models import ExchangeRate, JournalEntry, JournalLine
 from events.emitter import emit_event_no_actor
+from events.models import BusinessEvent
+from events.types import EventTypes, JournalEntryPostedData
 from projections.base import BaseProjection
 from projections.models import FiscalPeriod
-from accounting.mappings import ModuleAccountMapping
-from accounting.models import JournalEntry, JournalLine, ExchangeRate
-from accounting.commands import _next_company_sequence
-
 
 logger = logging.getLogger(__name__)
 
@@ -124,8 +123,8 @@ def _fix_fx_rounding(lines, entry, company, currency, fx_rate):
     to a dedicated FX Rounding account rather than silently adjusting
     existing lines. Only applies for trivial imbalances (≤ 0.05).
     """
-    from accounting.models import Account
     from accounting.mappings import ModuleAccountMapping
+    from accounting.models import Account
 
     total_debit = sum(l.debit for l in lines)
     total_credit = sum(l.credit for l in lines)
@@ -274,7 +273,7 @@ class ShopifyAccountingProjection(BaseProjection):
                 from accounts.models import Notification
                 Notification.notify_company_admins(
                     company=company,
-                    title=f"Missing exchange rate — Shopify entry skipped",
+                    title="Missing exchange rate — Shopify entry skipped",
                     message=str(exc),
                     level=Notification.Level.ERROR,
                     source_module="shopify_connector",

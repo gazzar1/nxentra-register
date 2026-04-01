@@ -6,26 +6,41 @@ Views handle HTTP requests and delegate business logic to commands.
 """
 
 from rest_framework import status
-from rest_framework.views import APIView
-from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from accounts.authz import resolve_actor
 from accounts.module_permissions import ModuleEnabled
-from .models import Item, TaxCode, PostingProfile, SalesInvoice
-from .serializers import (
-    ItemSerializer, ItemCreateSerializer, ItemUpdateSerializer,
-    TaxCodeSerializer, TaxCodeCreateSerializer, TaxCodeUpdateSerializer,
-    PostingProfileSerializer, PostingProfileCreateSerializer, PostingProfileUpdateSerializer,
-    SalesInvoiceSerializer, SalesInvoiceCreateSerializer, SalesInvoiceUpdateSerializer, SalesInvoiceListSerializer,
-)
-from .commands import (
-    create_item, update_item,
-    create_tax_code, update_tax_code,
-    create_posting_profile, update_posting_profile,
-    create_sales_invoice, update_sales_invoice, post_sales_invoice, void_sales_invoice,
-)
 
+from .commands import (
+    create_item,
+    create_posting_profile,
+    create_sales_invoice,
+    create_tax_code,
+    post_sales_invoice,
+    update_item,
+    update_posting_profile,
+    update_sales_invoice,
+    update_tax_code,
+    void_sales_invoice,
+)
+from .models import Item, PostingProfile, SalesInvoice, TaxCode
+from .serializers import (
+    ItemCreateSerializer,
+    ItemSerializer,
+    ItemUpdateSerializer,
+    PostingProfileCreateSerializer,
+    PostingProfileSerializer,
+    PostingProfileUpdateSerializer,
+    SalesInvoiceCreateSerializer,
+    SalesInvoiceListSerializer,
+    SalesInvoiceSerializer,
+    SalesInvoiceUpdateSerializer,
+    TaxCodeCreateSerializer,
+    TaxCodeSerializer,
+    TaxCodeUpdateSerializer,
+)
 
 # =============================================================================
 # Item Views
@@ -275,9 +290,13 @@ class SalesInvoiceListCreateView(APIView):
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
 
+        from django.db.models import Q
+
+        from nxentra_backend.pagination import paginate_queryset
+
         invoices = SalesInvoice.objects.filter(company=actor.company).select_related(
             "customer"
-        ).order_by("-invoice_date", "-created_at")
+        )
 
         # Optional filters
         if "status" in request.query_params:
@@ -285,8 +304,19 @@ class SalesInvoiceListCreateView(APIView):
         if "customer_id" in request.query_params:
             invoices = invoices.filter(customer_id=request.query_params["customer_id"])
 
-        serializer = SalesInvoiceListSerializer(invoices, many=True)
-        return Response(serializer.data)
+        search = request.query_params.get("search", "")
+        if search:
+            invoices = invoices.filter(
+                Q(invoice_number__icontains=search)
+                | Q(customer__name__icontains=search)
+                | Q(customer__code__icontains=search)
+            )
+
+        return paginate_queryset(
+            request, invoices, SalesInvoiceListSerializer,
+            default_ordering="-invoice_date",
+            allowed_sort_fields=["invoice_number", "invoice_date", "due_date", "total_amount", "status"],
+        )
 
     def post(self, request):
         actor = resolve_actor(request)
@@ -412,6 +442,7 @@ class SalesInvoicePDFView(APIView):
     def get(self, request, pk):
         import base64
         from pathlib import Path
+
         from django.http import HttpResponse
         from django.template.loader import render_to_string
 
@@ -485,10 +516,11 @@ class SalesInvoiceEmailView(APIView):
         import base64
         import logging
         from pathlib import Path
+
+        from django.conf import settings
         from django.core.mail import EmailMultiAlternatives
         from django.template.loader import render_to_string
         from django.utils.html import strip_tags
-        from django.conf import settings
 
         logger = logging.getLogger(__name__)
         actor = resolve_actor(request)
@@ -611,7 +643,7 @@ class SalesInvoiceEmailView(APIView):
                 invoice.invoice_number, recipient_email, e,
             )
             return Response(
-                {"detail": f"Failed to send email: {str(e)}"},
+                {"detail": f"Failed to send email: {e!s}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
@@ -631,8 +663,9 @@ class CustomerOpenInvoicesView(APIView):
     permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request, customer_id):
-        from accounting.models import Customer
         from decimal import Decimal
+
+        from accounting.models import Customer
 
         actor = resolve_actor(request)
         if not actor.company:
@@ -678,3 +711,124 @@ class CustomerOpenInvoicesView(APIView):
                 if (inv.total_amount - inv.amount_paid) > Decimal("0")
             )),
         })
+
+
+# =============================================================================
+# Credit Note Views
+# =============================================================================
+
+class CreditNoteListCreateView(APIView):
+    """List credit notes or create a new one."""
+    module_key = "sales"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
+
+    def get(self, request):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        from nxentra_backend.pagination import paginate_queryset
+
+        from .models import SalesCreditNote
+        from .serializers import CreditNoteListSerializer
+
+        credit_notes = SalesCreditNote.objects.filter(
+            company=actor.company
+        ).select_related("customer", "invoice")
+
+        if "status" in request.query_params:
+            credit_notes = credit_notes.filter(status=request.query_params["status"])
+        if "invoice_id" in request.query_params:
+            credit_notes = credit_notes.filter(invoice_id=request.query_params["invoice_id"])
+
+        return paginate_queryset(
+            request, credit_notes, CreditNoteListSerializer,
+            default_ordering="-credit_note_date",
+            allowed_sort_fields=["credit_note_number", "credit_note_date", "total_amount", "status"],
+        )
+
+    def post(self, request):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        from .commands import create_credit_note
+        from .serializers import CreditNoteCreateSerializer, CreditNoteSerializer
+
+        serializer = CreditNoteCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        result = create_credit_note(actor, **serializer.validated_data)
+        if not result.success:
+            return Response({"detail": result.error}, status=400)
+
+        return Response(
+            CreditNoteSerializer(result.data["credit_note"]).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class CreditNoteDetailView(APIView):
+    """Retrieve a credit note."""
+    module_key = "sales"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
+
+    def get(self, request, pk):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        from .models import SalesCreditNote
+        from .serializers import CreditNoteSerializer
+
+        try:
+            cn = SalesCreditNote.objects.select_related(
+                "customer", "invoice", "posting_profile"
+            ).prefetch_related("lines", "lines__account", "lines__tax_code").get(
+                company=actor.company, pk=pk
+            )
+        except SalesCreditNote.DoesNotExist:
+            return Response({"detail": "Credit note not found."}, status=404)
+
+        return Response(CreditNoteSerializer(cn).data)
+
+
+class CreditNotePostView(APIView):
+    """Post a credit note."""
+    module_key = "sales"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
+
+    def post(self, request, pk):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        from .commands import post_credit_note
+        from .serializers import CreditNoteSerializer
+
+        result = post_credit_note(actor, pk)
+        if not result.success:
+            return Response({"detail": result.error}, status=400)
+
+        return Response(CreditNoteSerializer(result.data["credit_note"]).data)
+
+
+class CreditNoteVoidView(APIView):
+    """Void a posted credit note."""
+    module_key = "sales"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
+
+    def post(self, request, pk):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        from .commands import void_credit_note
+        from .serializers import CreditNoteSerializer
+
+        reason = request.data.get("reason", "")
+        result = void_credit_note(actor, pk, reason=reason)
+        if not result.success:
+            return Response({"detail": result.error}, status=400)
+
+        return Response(CreditNoteSerializer(result.data["credit_note"]).data)

@@ -18,28 +18,26 @@ Verification checks:
 All verification failures raise IntegrityViolationError subclasses.
 """
 
-from typing import Generator, Tuple, Optional, Dict, Any, List
-from decimal import Decimal
 import logging
+from collections.abc import Generator
+from typing import Any
 
 from django.db.models import Count
 
+from events.integrity import (
+    ChunkMissingError,
+    IntegrityViolationError,
+    PayloadHashMismatchError,
+    PayloadMissingError,
+)
 from events.models import BusinessEvent, EventPayload
 from events.serialization import compute_payload_hash
-from events.integrity import (
-    IntegrityViolationError,
-    PayloadMissingError,
-    PayloadHashMismatchError,
-    ChunkMissingError,
-    SequenceGapError,
-)
 from events.types import EventTypes
-
 
 logger = logging.getLogger(__name__)
 
 
-def verify_event_payload(event: BusinessEvent) -> Dict[str, Any]:
+def verify_event_payload(event: BusinessEvent) -> dict[str, Any]:
     """
     Verify the integrity of a single event's payload.
 
@@ -161,8 +159,8 @@ def verify_event_payload(event: BusinessEvent) -> Dict[str, Any]:
 def verify_sequence_continuity(
     company,
     start_sequence: int = 0,
-    end_sequence: Optional[int] = None,
-) -> Generator[Tuple[int, int], None, None]:
+    end_sequence: int | None = None,
+) -> Generator[tuple[int, int], None, None]:
     """
     Check for gaps in company_sequence.
 
@@ -194,7 +192,7 @@ def verify_sequence_continuity(
         expected = seq + 1
 
 
-def full_integrity_check(company, verbose: bool = False) -> Dict[str, Any]:
+def full_integrity_check(company, verbose: bool = False) -> dict[str, Any]:
     """
     Perform full integrity check for a company's event stream.
 
@@ -283,7 +281,7 @@ def full_integrity_check(company, verbose: bool = False) -> Dict[str, Any]:
     return result
 
 
-def verify_event_by_id(event_id: str) -> Dict[str, Any]:
+def verify_event_by_id(event_id: str) -> dict[str, Any]:
     """
     Verify a single event by its ID.
 
@@ -301,7 +299,7 @@ def verify_event_by_id(event_id: str) -> Dict[str, Any]:
     return verify_event_payload(event)
 
 
-def get_integrity_summary(company) -> Dict[str, Any]:
+def get_integrity_summary(company) -> dict[str, Any]:
     """
     Get a quick summary of event integrity status.
 

@@ -1,8 +1,9 @@
 # scratchpad/admin.py
 from django.contrib import admin
-from django.db.models import Sum, Count
+from django.db.models import Count, Sum
 from django.utils.html import format_html
-from .models import ScratchpadRow, ScratchpadRowDimension, AccountDimensionRule, VoiceUsageEvent
+
+from .models import AccountDimensionRule, ScratchpadRow, ScratchpadRowDimension, VoiceUsageEvent
 
 
 class ScratchpadRowDimensionInline(admin.TabularInline):

@@ -13,13 +13,13 @@ These are WRITE MODELS that are mutable until posted.
 Posting creates immutable events that project to JournalEntries.
 """
 
-from django.db import models
-from django.conf import settings
-from decimal import Decimal
 import uuid
+from decimal import Decimal
 
-from accounts.models import Company, User, ProjectionWriteGuard
-from accounting.models import Account, Customer, AnalysisDimensionValue
+from django.db import models
+
+from accounting.models import Account, AnalysisDimensionValue, Customer
+from accounts.models import Company, ProjectionWriteGuard, User
 
 
 class Item(ProjectionWriteGuard):
@@ -848,6 +848,227 @@ class ReceiptAllocation(ProjectionWriteGuard):
 
     def __str__(self):
         return f"Receipt {self.receipt_public_id} -> {self.invoice.invoice_number}: {self.amount}"
+
+
+# =============================================================================
+# Sales Credit Note
+# =============================================================================
+
+class SalesCreditNote(ProjectionWriteGuard):
+    """
+    Sales Credit Note — partial or full reversal of a posted invoice.
+
+    Workflow: DRAFT -> POSTED -> VOIDED
+    - DRAFT: Credit note being edited
+    - POSTED: Finalized, reversing journal entry created, invoice.amount_paid adjusted
+    - VOIDED: Credit note cancelled (re-reversing entry created)
+
+    When posted, creates a journal entry that reverses the original invoice posting:
+    - Credit: AR Control (reduces customer balance)
+    - Debit: Revenue accounts (reverses original revenue)
+    - Debit: VAT Payable (reverses original tax)
+    """
+
+    class Status(models.TextChoices):
+        DRAFT = "DRAFT", "Draft"
+        POSTED = "POSTED", "Posted"
+        VOIDED = "VOIDED", "Voided"
+
+    class Reason(models.TextChoices):
+        RETURN = "RETURN", "Goods returned"
+        PRICE_ADJUSTMENT = "PRICE_ADJUSTMENT", "Price adjustment"
+        TAX_CORRECTION = "TAX_CORRECTION", "Tax correction"
+        DAMAGED = "DAMAGED", "Damaged goods"
+        OTHER = "OTHER", "Other"
+
+    allowed_write_contexts = {"command", "projection", "bootstrap", "migration"}
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="sales_credit_notes",
+    )
+
+    public_id = models.UUIDField(
+        default=uuid.uuid4,
+        editable=False,
+        unique=True,
+    )
+
+    # Document info
+    credit_note_number = models.CharField(
+        max_length=50,
+        help_text="Credit note number (auto-generated as CN-XXXXXX)",
+    )
+
+    credit_note_date = models.DateField()
+
+    # Link to original invoice (required)
+    invoice = models.ForeignKey(
+        SalesInvoice,
+        on_delete=models.PROTECT,
+        related_name="credit_notes",
+        help_text="The original invoice being credited",
+    )
+
+    # Counterparty (denormalized from invoice for querying)
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.PROTECT,
+        related_name="credit_notes",
+    )
+
+    posting_profile = models.ForeignKey(
+        PostingProfile,
+        on_delete=models.PROTECT,
+        related_name="+",
+    )
+
+    # Reason
+    reason = models.CharField(
+        max_length=20,
+        choices=Reason.choices,
+        default=Reason.OTHER,
+    )
+    reason_notes = models.TextField(blank=True, default="")
+
+    # Multi-currency (inherited from invoice)
+    currency = models.CharField(max_length=3, blank=True, default="")
+    exchange_rate = models.DecimalField(
+        max_digits=18,
+        decimal_places=6,
+        default=Decimal("1"),
+    )
+
+    # Calculated totals
+    subtotal = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    total_discount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    total_tax = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    total_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+
+    # Status and posting
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.DRAFT)
+    posted_at = models.DateTimeField(null=True, blank=True)
+    posted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    posted_journal_entry = models.ForeignKey(
+        "accounting.JournalEntry",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sales_credit_notes",
+    )
+
+    # Metadata
+    notes = models.TextField(blank=True, default="")
+    reference = models.CharField(max_length=100, blank=True, default="")
+
+    # Audit
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-credit_note_date", "-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "credit_note_number"],
+                name="uniq_credit_note_number_per_company",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["company", "status"]),
+            models.Index(fields=["company", "customer"]),
+            models.Index(fields=["company", "invoice"]),
+        ]
+
+    def __str__(self):
+        return f"CN-{self.credit_note_number}"
+
+    def recalculate_totals(self):
+        from django.db.models import Sum
+        totals = self.lines.aggregate(
+            subtotal=Sum("gross_amount"),
+            total_discount=Sum("discount_amount"),
+            total_tax=Sum("tax_amount"),
+            total_amount=Sum("line_total"),
+        )
+        self.subtotal = totals["subtotal"] or Decimal("0")
+        self.total_discount = totals["total_discount"] or Decimal("0")
+        self.total_tax = totals["total_tax"] or Decimal("0")
+        self.total_amount = totals["total_amount"] or Decimal("0")
+
+
+class SalesCreditNoteLine(ProjectionWriteGuard):
+    """
+    Credit note line item.
+
+    Same calculation pipeline as SalesInvoiceLine but amounts represent
+    the credited (reversed) values.
+    """
+
+    allowed_write_contexts = {"command", "projection", "bootstrap", "migration"}
+
+    credit_note = models.ForeignKey(
+        SalesCreditNote,
+        on_delete=models.CASCADE,
+        related_name="lines",
+    )
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="+")
+    public_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    line_number = models.PositiveIntegerField()
+
+    # Optional reference to original invoice line
+    invoice_line = models.ForeignKey(
+        SalesInvoiceLine,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="credit_note_lines",
+        help_text="Original invoice line being credited (optional)",
+    )
+
+    item = models.ForeignKey(Item, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    description = models.CharField(max_length=500)
+    description_ar = models.CharField(max_length=500, blank=True, default="")
+
+    # Pricing
+    quantity = models.DecimalField(max_digits=18, decimal_places=4, default=Decimal("1"))
+    unit_price = models.DecimalField(max_digits=18, decimal_places=2)
+    discount_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+
+    # Tax
+    tax_code = models.ForeignKey(TaxCode, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    tax_rate = models.DecimalField(max_digits=5, decimal_places=4, default=Decimal("0"))
+
+    # Calculated amounts
+    gross_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    net_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    tax_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    line_total = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+
+    # GL Account
+    account = models.ForeignKey(Account, on_delete=models.PROTECT, related_name="+")
+
+    # Dimensions
+    dimension_values = models.ManyToManyField(AnalysisDimensionValue, blank=True, related_name="+")
+
+    class Meta:
+        ordering = ["line_number"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["credit_note", "line_number"],
+                name="uniq_credit_note_line_number",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.credit_note.credit_note_number}:{self.line_number}"
+
+    def calculate(self):
+        self.gross_amount = self.quantity * self.unit_price
+        self.net_amount = self.gross_amount - self.discount_amount
+        self.tax_amount = self.net_amount * self.tax_rate
+        self.line_total = self.net_amount + self.tax_amount
 
 
 class PaymentAllocation(ProjectionWriteGuard):

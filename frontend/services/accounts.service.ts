@@ -18,11 +18,12 @@ import type {
   StatisticalEntryCreatePayload,
   StatisticalEntryUpdatePayload,
 } from '@/types/account';
+import type { PaginatedResponse, PaginationParams } from '@/types/common';
 
 export const accountsService = {
   // Chart of Accounts
-  list: (params?: { status?: string; type?: string }) =>
-    apiClient.get<Account[]>('/accounting/accounts/', { params }),
+  list: (params?: { status?: string; type?: string } & PaginationParams) =>
+    apiClient.get<PaginatedResponse<Account>>('/accounting/accounts/', { params }),
 
   get: (code: string) =>
     apiClient.get<Account>(`/accounting/accounts/${code}/`),
@@ -104,8 +105,8 @@ export interface CustomerBalance {
 }
 
 export const customersService = {
-  list: (params?: { status?: string }) =>
-    apiClient.get<Customer[]>('/accounting/customers/', { params }),
+  list: (params?: { status?: string } & PaginationParams) =>
+    apiClient.get<PaginatedResponse<Customer>>('/accounting/customers/', { params }),
 
   get: (code: string) =>
     apiClient.get<Customer>(`/accounting/customers/${code}/`),
@@ -148,8 +149,8 @@ export interface VendorBalance {
 }
 
 export const vendorsService = {
-  list: (params?: { status?: string }) =>
-    apiClient.get<Vendor[]>('/accounting/vendors/', { params }),
+  list: (params?: { status?: string } & PaginationParams) =>
+    apiClient.get<PaginatedResponse<Vendor>>('/accounting/vendors/', { params }),
 
   get: (code: string) =>
     apiClient.get<Vendor>(`/accounting/vendors/${code}/`),

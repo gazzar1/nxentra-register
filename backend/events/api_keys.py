@@ -15,13 +15,11 @@ from __future__ import annotations
 import hashlib
 import logging
 import secrets
-from typing import Optional
 
 from django.db import models
 from django.utils import timezone
 
 from accounts.models import Company
-
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +119,7 @@ class ExternalAPIKey(models.Model):
     # ------------------------------------------------------------------
 
     @classmethod
-    def authenticate(cls, raw_key: str) -> Optional[ExternalAPIKey]:
+    def authenticate(cls, raw_key: str) -> ExternalAPIKey | None:
         """
         Look up an active API key by its raw value.
         Returns the key instance or None.

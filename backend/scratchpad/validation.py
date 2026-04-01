@@ -13,14 +13,15 @@ Validation is run explicitly when requested, not on every save.
 """
 
 from decimal import Decimal
-from typing import Dict, List, Any, Optional
+from typing import Any
 
-from accounts.models import Company
 from accounting.dimension_validation import check_account_dimension_rules
-from .models import ScratchpadRow, ScratchpadRowDimension
+from accounts.models import Company
+
+from .models import ScratchpadRow
 
 
-def validate_row(row: ScratchpadRow, company: Company) -> Dict[str, Any]:
+def validate_row(row: ScratchpadRow, company: Company) -> dict[str, Any]:
     """
     Validate a single scratchpad row.
 
@@ -52,7 +53,7 @@ def validate_row(row: ScratchpadRow, company: Company) -> Dict[str, Any]:
     }
 
 
-def _check_required_fields(row: ScratchpadRow) -> List[Dict[str, str]]:
+def _check_required_fields(row: ScratchpadRow) -> list[dict[str, str]]:
     """Check that all required fields are present."""
     errors = []
 
@@ -93,7 +94,7 @@ def _check_required_fields(row: ScratchpadRow) -> List[Dict[str, str]]:
     return errors
 
 
-def _check_account_postability(row: ScratchpadRow) -> List[Dict[str, str]]:
+def _check_account_postability(row: ScratchpadRow) -> list[dict[str, str]]:
     """Check that accounts can receive postings."""
     errors = []
 
@@ -116,7 +117,7 @@ def _check_account_postability(row: ScratchpadRow) -> List[Dict[str, str]]:
     return errors
 
 
-def _check_dimension_rules(row: ScratchpadRow, company: Company) -> List[Dict[str, str]]:
+def _check_dimension_rules(row: ScratchpadRow, company: Company) -> list[dict[str, str]]:
     """
     Check dimension rules for both debit and credit accounts.
 
@@ -147,7 +148,7 @@ def _check_dimension_rules(row: ScratchpadRow, company: Company) -> List[Dict[st
     return errors
 
 
-def validate_group_balance(rows: List[ScratchpadRow]) -> Dict[str, Any]:
+def validate_group_balance(rows: list[ScratchpadRow]) -> dict[str, Any]:
     """
     Validate that a group of rows is balanced.
 

@@ -13,39 +13,48 @@ Pattern:
 5. Return CommandResult
 """
 
+from decimal import Decimal
+
 from django.db import transaction
 from django.utils import timezone
-from decimal import Decimal
-import uuid
 
-from accounts.authz import ActorContext, require
-from accounting.models import Account, Customer, JournalEntry
 from accounting.commands import (
     CommandResult,
-    create_journal_entry,
-    save_journal_entry_complete,
-    post_journal_entry,
     _next_company_sequence,
+    create_journal_entry,
+    post_journal_entry,
+    save_journal_entry_complete,
 )
+from accounting.models import Account, Customer, JournalEntry
+from accounts.authz import ActorContext, require
 from events.emitter import emit_event
 from events.types import (
     EventTypes,
     ItemCreatedData,
     ItemUpdatedData,
+    PostingProfileCreatedData,
+    SalesCreditNoteCreatedData,
+    SalesCreditNotePostedData,
+    SalesCreditNoteVoidedData,
+    SalesInvoiceCreatedData,
+    SalesInvoiceLineData,
+    SalesInvoicePostedData,
+    SalesInvoiceUpdatedData,
+    SalesInvoiceVoidedData,
     TaxCodeCreatedData,
     TaxCodeUpdatedData,
-    PostingProfileCreatedData,
-    PostingProfileUpdatedData,
-    SalesInvoiceCreatedData,
-    SalesInvoiceUpdatedData,
-    SalesInvoicePostedData,
-    SalesInvoiceVoidedData,
-    SalesInvoiceLineData,
 )
 from projections.write_barrier import command_writes_allowed
 
-from .models import Item, TaxCode, PostingProfile, SalesInvoice, SalesInvoiceLine
-
+from .models import (
+    Item,
+    PostingProfile,
+    SalesCreditNote,
+    SalesCreditNoteLine,
+    SalesInvoice,
+    SalesInvoiceLine,
+    TaxCode,
+)
 
 # =============================================================================
 # Item Commands
@@ -1145,7 +1154,7 @@ def post_sales_invoice(actor: ActorContext, invoice_id: int) -> CommandResult:
                 )
 
     # Check stock availability and calculate COGS for inventory items
-    from inventory.commands import check_stock_availability, get_current_avg_cost
+    from inventory.commands import check_stock_availability
     from inventory.models import Warehouse
     from projections.models import InventoryBalance
 
@@ -1505,4 +1514,369 @@ def void_sales_invoice(
     return CommandResult.ok(
         data={"invoice": invoice, "reversing_entry": reversal_je},
         event=event
+    )
+
+
+# =============================================================================
+# Credit Note Commands
+# =============================================================================
+
+@transaction.atomic
+def create_credit_note(
+    actor: ActorContext,
+    invoice_id: int,
+    lines: list = None,
+    credit_note_date=None,
+    reason: str = "OTHER",
+    reason_notes: str = "",
+    reference: str = "",
+    notes: str = "",
+) -> CommandResult:
+    """
+    Create a DRAFT credit note against a posted invoice.
+
+    Lines specify which amounts to credit. Each line has:
+    - account_id, description, quantity, unit_price, discount_amount,
+      tax_code_id (optional), item_id (optional), invoice_line_id (optional)
+    """
+    require(actor, "sales.invoice.create")
+
+    try:
+        invoice = SalesInvoice.objects.get(company=actor.company, pk=invoice_id)
+    except SalesInvoice.DoesNotExist:
+        return CommandResult.fail("Invoice not found.")
+
+    if invoice.status != SalesInvoice.Status.POSTED:
+        return CommandResult.fail("Credit notes can only be created against POSTED invoices.")
+
+    if not lines:
+        return CommandResult.fail("Credit note must have at least one line.")
+
+    from datetime import date as date_type
+    cn_date = credit_note_date or date_type.today()
+    if isinstance(cn_date, str):
+        cn_date = date_type.fromisoformat(cn_date)
+
+    # Generate credit note number
+    seq = _next_company_sequence(actor.company, "credit_note")
+    cn_number = f"CN-{seq:06d}"
+
+    with command_writes_allowed():
+        credit_note = SalesCreditNote(
+            company=actor.company,
+            credit_note_number=cn_number,
+            credit_note_date=cn_date,
+            invoice=invoice,
+            customer=invoice.customer,
+            posting_profile=invoice.posting_profile,
+            reason=reason,
+            reason_notes=reason_notes,
+            currency=invoice.currency,
+            exchange_rate=invoice.exchange_rate,
+            reference=reference,
+            notes=notes,
+            created_by=actor.user,
+        )
+        credit_note.save()
+
+        for i, line_data in enumerate(lines, start=1):
+            account_id = line_data.get("account_id")
+            if not account_id:
+                return CommandResult.fail(f"Line {i}: account_id is required.")
+
+            try:
+                account = Account.objects.get(company=actor.company, pk=account_id)
+            except Account.DoesNotExist:
+                return CommandResult.fail(f"Line {i}: Account not found.")
+
+            tax_code = None
+            tax_rate = Decimal("0")
+            if line_data.get("tax_code_id"):
+                try:
+                    tax_code = TaxCode.objects.get(company=actor.company, pk=line_data["tax_code_id"])
+                    tax_rate = tax_code.rate
+                except TaxCode.DoesNotExist:
+                    return CommandResult.fail(f"Line {i}: Tax code not found.")
+
+            item = None
+            if line_data.get("item_id"):
+                try:
+                    item = Item.objects.get(company=actor.company, pk=line_data["item_id"])
+                except Item.DoesNotExist:
+                    pass
+
+            invoice_line = None
+            if line_data.get("invoice_line_id"):
+                try:
+                    invoice_line = SalesInvoiceLine.objects.get(
+                        invoice=invoice, pk=line_data["invoice_line_id"]
+                    )
+                except SalesInvoiceLine.DoesNotExist:
+                    pass
+
+            cn_line = SalesCreditNoteLine(
+                credit_note=credit_note,
+                company=actor.company,
+                line_number=i,
+                invoice_line=invoice_line,
+                item=item,
+                description=line_data.get("description", ""),
+                description_ar=line_data.get("description_ar", ""),
+                quantity=Decimal(str(line_data.get("quantity", "1"))),
+                unit_price=Decimal(str(line_data.get("unit_price", "0"))),
+                discount_amount=Decimal(str(line_data.get("discount_amount", "0"))),
+                tax_code=tax_code,
+                tax_rate=tax_rate,
+                account=account,
+            )
+            cn_line.calculate()
+            cn_line.save()
+
+        credit_note.recalculate_totals()
+        credit_note.save()
+
+    # Validate total doesn't exceed invoice amount
+    if credit_note.total_amount > invoice.total_amount:
+        return CommandResult.fail(
+            f"Credit note total ({credit_note.total_amount}) exceeds "
+            f"invoice total ({invoice.total_amount})."
+        )
+
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.SALES_CREDIT_NOTE_CREATED,
+        aggregate_type="SalesCreditNote",
+        aggregate_id=str(credit_note.public_id),
+        idempotency_key=f"salescreditnote.created:{credit_note.public_id}",
+        data=SalesCreditNoteCreatedData(
+            credit_note_public_id=str(credit_note.public_id),
+            company_public_id=str(actor.company.public_id),
+            credit_note_number=credit_note.credit_note_number,
+            credit_note_date=cn_date.isoformat(),
+            invoice_public_id=str(invoice.public_id),
+            invoice_number=invoice.invoice_number,
+            customer_public_id=str(invoice.customer.public_id),
+            customer_code=invoice.customer.code,
+            reason=reason,
+            total_amount=str(credit_note.total_amount),
+        ).to_dict(),
+    )
+
+    return CommandResult.ok(data={"credit_note": credit_note}, event=event)
+
+
+@transaction.atomic
+def post_credit_note(actor: ActorContext, credit_note_id: int) -> CommandResult:
+    """
+    Post a credit note, creating a reversing journal entry.
+
+    Journal Entry (reverses the original invoice posting):
+    - Credit: AR Control (reduces customer balance)
+    - Debit: Revenue accounts (reverses revenue)
+    - Debit: VAT Payable (reverses tax)
+    """
+    require(actor, "sales.invoice.post")
+
+    try:
+        cn = SalesCreditNote.objects.select_for_update().get(
+            company=actor.company, pk=credit_note_id
+        )
+    except SalesCreditNote.DoesNotExist:
+        return CommandResult.fail("Credit note not found.")
+
+    if cn.status != SalesCreditNote.Status.DRAFT:
+        return CommandResult.fail("Only DRAFT credit notes can be posted.")
+
+    if not cn.lines.exists():
+        return CommandResult.fail("Credit note must have at least one line.")
+
+    # Build journal entry lines (REVERSED from invoice posting)
+    je_lines = []
+
+    # Credit AR Control (reduces customer receivable)
+    je_lines.append({
+        "account_id": cn.posting_profile.control_account_id,
+        "description": f"Credit Note {cn.credit_note_number} - {cn.customer.name}",
+        "debit": Decimal("0"),
+        "credit": cn.total_amount,
+        "customer_public_id": str(cn.customer.public_id),
+    })
+
+    # Debit Revenue accounts (reverses revenue recognition)
+    for line in cn.lines.all():
+        je_lines.append({
+            "account_id": line.account_id,
+            "description": line.description,
+            "debit": line.net_amount,
+            "credit": Decimal("0"),
+        })
+
+    # Debit VAT Payable (reverses tax)
+    tax_by_account = {}
+    for line in cn.lines.filter(tax_amount__gt=0):
+        tax_account_id = line.tax_code.tax_account_id
+        if tax_account_id not in tax_by_account:
+            tax_by_account[tax_account_id] = Decimal("0")
+        tax_by_account[tax_account_id] += line.tax_amount
+
+    for tax_account_id, tax_amount in tax_by_account.items():
+        je_lines.append({
+            "account_id": tax_account_id,
+            "description": f"VAT on Credit Note {cn.credit_note_number}",
+            "debit": tax_amount,
+            "credit": Decimal("0"),
+        })
+
+    # Handle foreign currency
+    functional_currency = actor.company.functional_currency or actor.company.default_currency
+    cn_currency = cn.currency or functional_currency
+    cn_rate = cn.exchange_rate if cn.exchange_rate and cn.exchange_rate != Decimal("0") else Decimal("1")
+    is_foreign = cn_currency != functional_currency
+
+    if is_foreign:
+        for jl in je_lines:
+            foreign_amount = jl.get("debit") or jl.get("credit") or Decimal("0")
+            jl["amount_currency"] = str(foreign_amount)
+            jl["currency"] = cn_currency
+        from accounting.commands import _fix_fx_rounding_dicts
+        _fix_fx_rounding_dicts(je_lines, actor.company, currency=cn_currency)
+
+    je_kwargs = dict(
+        actor=actor,
+        date=cn.credit_note_date,
+        memo=f"Credit Note {cn.credit_note_number} (ref: {cn.invoice.invoice_number})",
+        lines=je_lines,
+        kind=JournalEntry.Kind.NORMAL,
+    )
+    if is_foreign:
+        je_kwargs["currency"] = cn_currency
+        je_kwargs["exchange_rate"] = str(cn_rate)
+
+    je_result = create_journal_entry(**je_kwargs)
+    if not je_result.success:
+        return CommandResult.fail(f"Failed to create journal entry: {je_result.error}")
+
+    journal_entry = je_result.data
+
+    save_result = save_journal_entry_complete(actor, journal_entry.id)
+    if not save_result.success:
+        return CommandResult.fail(f"Failed to complete journal entry: {save_result.error}")
+    journal_entry = save_result.data
+
+    post_result = post_journal_entry(actor, journal_entry.id)
+    if not post_result.success:
+        return CommandResult.fail(f"Failed to post journal entry: {post_result.error}")
+
+    posted_at = timezone.now()
+
+    with command_writes_allowed():
+        cn.status = SalesCreditNote.Status.POSTED
+        cn.posted_at = posted_at
+        cn.posted_by = actor.user
+        cn.posted_journal_entry = journal_entry
+        cn.save()
+
+        # Reduce the original invoice's amount_paid (credit note reduces what's owed)
+        # This is NOT a payment — it reduces the total receivable
+        cn.invoice.amount_paid = cn.invoice.amount_paid + cn.total_amount
+        cn.invoice.save(update_fields=["amount_paid"])
+
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.SALES_CREDIT_NOTE_POSTED,
+        aggregate_type="SalesCreditNote",
+        aggregate_id=str(cn.public_id),
+        idempotency_key=f"salescreditnote.posted:{cn.public_id}",
+        data=SalesCreditNotePostedData(
+            credit_note_public_id=str(cn.public_id),
+            company_public_id=str(actor.company.public_id),
+            credit_note_number=cn.credit_note_number,
+            credit_note_date=cn.credit_note_date.isoformat(),
+            invoice_public_id=str(cn.invoice.public_id),
+            invoice_number=cn.invoice.invoice_number,
+            customer_public_id=str(cn.customer.public_id),
+            customer_code=cn.customer.code,
+            journal_entry_public_id=str(journal_entry.public_id),
+            posted_at=posted_at.isoformat(),
+            posted_by_id=actor.user.id,
+            posted_by_email=actor.user.email,
+            subtotal=str(cn.subtotal),
+            total_discount=str(cn.total_discount),
+            total_tax=str(cn.total_tax),
+            total_amount=str(cn.total_amount),
+            reason=cn.reason,
+        ).to_dict(),
+    )
+
+    return CommandResult.ok(
+        data={"credit_note": cn, "journal_entry": journal_entry},
+        event=event,
+    )
+
+
+@transaction.atomic
+def void_credit_note(
+    actor: ActorContext,
+    credit_note_id: int,
+    reason: str = "",
+) -> CommandResult:
+    """
+    Void a posted credit note by creating a reversing journal entry.
+
+    This un-does the credit note effect — re-increases the customer's receivable.
+    """
+    require(actor, "sales.invoice.post")
+
+    try:
+        cn = SalesCreditNote.objects.select_for_update().get(
+            company=actor.company, pk=credit_note_id
+        )
+    except SalesCreditNote.DoesNotExist:
+        return CommandResult.fail("Credit note not found.")
+
+    if cn.status != SalesCreditNote.Status.POSTED:
+        return CommandResult.fail("Only POSTED credit notes can be voided.")
+
+    if not cn.posted_journal_entry:
+        return CommandResult.fail("Credit note has no posted journal entry to reverse.")
+
+    # Create reversing entry
+    from accounting.commands import reverse_journal_entry
+    reverse_result = reverse_journal_entry(actor, cn.posted_journal_entry.id)
+    if not reverse_result.success:
+        return CommandResult.fail(f"Failed to reverse journal entry: {reverse_result.error}")
+
+    reversal_je = reverse_result.data
+
+    voided_at = timezone.now()
+
+    with command_writes_allowed():
+        cn.status = SalesCreditNote.Status.VOIDED
+        cn.save(update_fields=["status"])
+
+        # Reverse the amount_paid adjustment on the original invoice
+        cn.invoice.amount_paid = cn.invoice.amount_paid - cn.total_amount
+        cn.invoice.save(update_fields=["amount_paid"])
+
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.SALES_CREDIT_NOTE_VOIDED,
+        aggregate_type="SalesCreditNote",
+        aggregate_id=str(cn.public_id),
+        idempotency_key=f"salescreditnote.voided:{cn.public_id}",
+        data=SalesCreditNoteVoidedData(
+            credit_note_public_id=str(cn.public_id),
+            company_public_id=str(actor.company.public_id),
+            credit_note_number=cn.credit_note_number,
+            reversing_journal_entry_public_id=str(reversal_je.public_id),
+            voided_at=voided_at.isoformat(),
+            voided_by_id=actor.user.id,
+            voided_by_email=actor.user.email,
+            reason=reason,
+        ).to_dict(),
+    )
+
+    return CommandResult.ok(
+        data={"credit_note": cn, "reversing_entry": reversal_je},
+        event=event,
     )

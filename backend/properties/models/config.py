@@ -10,8 +10,8 @@ import uuid
 
 from django.db import models
 
-from accounts.models import Company, ProjectionWriteGuard
 from accounting.models import Account
+from accounts.models import Company, ProjectionWriteGuard
 
 
 class PropertyAccountMapping(ProjectionWriteGuard):

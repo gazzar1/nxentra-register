@@ -16,35 +16,31 @@ Invariants:
 5. Full replay after mixed operations (inline, external, reversals, rebuild) matches
 """
 
-import pytest
-from decimal import Decimal
 from datetime import date
-from calendar import monthrange
+from decimal import Decimal
 from uuid import uuid4
 
+import pytest
 from django.utils import timezone
 
-from accounts.models import Company, CompanyMembership
-from accounts.authz import ActorContext
-from accounts.permissions import grant_role_defaults
 from accounting.models import Account, Customer, Vendor
 from accounting.policies import can_post_to_period, validate_subledger_tieout
+from accounts.authz import ActorContext
 from events.emitter import emit_event
-from events.models import BusinessEvent
-from events.types import EventTypes
 from events.payload_policy import INLINE_MAX_SIZE
 from events.serialization import estimate_json_size
+from events.types import EventTypes
 from projections.account_balance import AccountBalanceProjection
-from projections.subledger_balance import SubledgerBalanceProjection
 from projections.models import (
     AccountBalance,
     CustomerBalance,
-    VendorBalance,
     FiscalPeriod,
-    FiscalPeriodConfig,
+    VendorBalance,
+)
+from projections.models import (
     FiscalYear as FiscalYearModel,
 )
-
+from projections.subledger_balance import SubledgerBalanceProjection
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers

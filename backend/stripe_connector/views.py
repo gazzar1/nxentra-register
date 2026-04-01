@@ -17,9 +17,9 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts.authz import resolve_actor, require
-from accounting.models import Account
 from accounting.mappings import ModuleAccountMapping
+from accounting.models import Account
+from accounts.authz import require, resolve_actor
 from projections.write_barrier import command_writes_allowed
 
 from .models import (

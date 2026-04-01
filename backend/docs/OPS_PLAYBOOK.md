@@ -234,11 +234,7 @@ If verification fails:
 
 ```bash
 # Verify routing
-python manage.py shell -c "
-from tenant.models import TenantDirectory
-td = TenantDirectory.objects.get(company__slug='acme-corp')
-print(f'Mode: {td.mode}, DB: {td.db_alias}')
-"
+python manage.py tenant_status acme-corp
 
 # Check logs
 SELECT * FROM tenant_migration_log
@@ -302,12 +298,7 @@ systemctl start nxentra-web nxentra-worker nxentra-beat
 
 ```bash
 # 1. Set tenant to READ_ONLY
-python manage.py shell -c "
-from tenant.models import TenantDirectory
-td = TenantDirectory.objects.get(company__slug='acme-corp')
-td.status = TenantDirectory.Status.READ_ONLY
-td.save()
-"
+python manage.py tenant_status acme-corp --set-status READ_ONLY
 
 # 2. Restore database
 pg_restore -d tenant_acme backup_tenant_acme.dump
@@ -316,12 +307,7 @@ pg_restore -d tenant_acme backup_tenant_acme.dump
 python manage.py replay_projections --company-slug acme-corp --rebuild
 
 # 4. Set tenant to ACTIVE
-python manage.py shell -c "
-from tenant.models import TenantDirectory
-td = TenantDirectory.objects.get(company__slug='acme-corp')
-td.status = TenantDirectory.Status.ACTIVE
-td.save()
-"
+python manage.py tenant_status acme-corp --set-status ACTIVE
 ```
 
 ### Rollback Tenant Migration
@@ -330,24 +316,10 @@ If a tenant migration needs to be rolled back:
 
 ```bash
 # 1. Verify events still exist in source (default) DB
-python manage.py shell -c "
-from events.models import BusinessEvent
-from accounts.models import Company
-company = Company.objects.get(slug='acme-corp')
-count = BusinessEvent.objects.using('default').filter(company=company).count()
-print(f'Events in default: {count}')
-"
+python manage.py export_tenant_events acme-corp --dry-run --db default
 
-# 2. Update TenantDirectory to shared mode
-python manage.py shell -c "
-from tenant.models import TenantDirectory
-td = TenantDirectory.objects.get(company__slug='acme-corp')
-td.mode = TenantDirectory.IsolationMode.SHARED
-td.db_alias = 'default'
-td.status = TenantDirectory.Status.ACTIVE
-td.migrated_at = None
-td.save()
-"
+# 2. Revert TenantDirectory to shared mode
+python manage.py tenant_status acme-corp --revert-to-shared
 
 # 3. Clear middleware cache
 # (Restart Django workers or call invalidate_tenant_cache)
@@ -366,39 +338,20 @@ td.save()
 
 **Diagnosis:**
 ```bash
-# Check lag per projection
-python manage.py shell -c "
-from events.metrics import get_projection_lag_metrics
-for m in get_projection_lag_metrics():
-    if m['lag'] > 0:
-        print(f\"{m['consumer_name']} ({m['company_name']}): {m['lag']} behind\")
-"
-
-# Check for paused projections
-SELECT * FROM events_eventbookmark WHERE is_paused = true;
-
-# Check for errors
-SELECT consumer_name, company_id, error_count, last_error
-FROM events_eventbookmark
-WHERE error_count > 0;
+# Check lag, paused projections, and errors in one command
+python manage.py projection_health
 ```
 
 **Resolution:**
 ```bash
 # 1. Resume paused projections
-python manage.py shell -c "
-from events.models import EventBookmark
-EventBookmark.objects.filter(is_paused=True).update(is_paused=False)
-"
+python manage.py projection_health --resume
 
 # 2. Clear errors and retry
-python manage.py shell -c "
-from events.models import EventBookmark
-EventBookmark.objects.filter(error_count__gt=0).update(error_count=0, last_error='')
-"
+python manage.py projection_health --clear-errors
 
 # 3. Trigger catch-up processing
-celery -A nxentra_backend call projections.tasks.process_all_projections
+python manage.py projection_health --trigger
 
 # 4. If still failing, rebuild projection
 python manage.py replay_projections --company-slug acme-corp --rebuild
@@ -455,16 +408,8 @@ python manage.py seed_tenant_directory --dry-run
 # Create missing entries
 python manage.py seed_tenant_directory
 
-# Verify
-python manage.py shell -c "
-from accounts.models import Company
-from tenant.models import TenantDirectory
-companies = Company.objects.count()
-tenants = TenantDirectory.objects.count()
-print(f'Companies: {companies}, TenantDirectory: {tenants}')
-assert companies == tenants, 'Mismatch!'
-print('OK')
-"
+# Verify (dry-run shows current state without changes)
+python manage.py seed_tenant_directory --dry-run
 ```
 
 ### RB-004: Event Store Corruption

@@ -10,64 +10,61 @@ to ensure events are emitted. Views should never directly call .save() on models
 """
 
 from rest_framework import status
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework.parsers import MultiPartParser, FormParser
 
-from accounts.authz import resolve_actor, require
-from edim.models import (
-    SourceSystem,
-    MappingProfile,
-    IdentityCrosswalk,
-    IngestionBatch,
-)
-from edim.serializers import (
-    # Source System serializers
-    SourceSystemSerializer,
-    SourceSystemCreateSerializer,
-    SourceSystemUpdateSerializer,
-    # Mapping Profile serializers
-    MappingProfileSerializer,
-    MappingProfileCreateSerializer,
-    MappingProfileUpdateSerializer,
-    # Crosswalk serializers
-    IdentityCrosswalkSerializer,
-    IdentityCrosswalkCreateSerializer,
-    IdentityCrosswalkUpdateSerializer,
-    CrosswalkRejectSerializer,
-    # Batch serializers
-    IngestionBatchSerializer,
-    IngestionBatchDetailSerializer,
-    StagedRecordSerializer,
-    BatchUploadSerializer,
-    BatchMapSerializer,
-    BatchRejectSerializer,
-)
+from accounts.authz import require, resolve_actor
 from edim.commands import (
-    # Source System commands
-    create_source_system,
-    update_source_system,
-    deactivate_source_system,
-    # Mapping Profile commands
-    create_mapping_profile,
-    update_mapping_profile,
     activate_mapping_profile,
-    deprecate_mapping_profile,
+    commit_batch,
     # Crosswalk commands
     create_crosswalk,
-    update_crosswalk,
-    verify_crosswalk,
+    # Mapping Profile commands
+    create_mapping_profile,
+    # Source System commands
+    create_source_system,
+    deactivate_source_system,
+    deprecate_mapping_profile,
+    map_batch,
+    preview_batch,
+    reject_batch,
     reject_crosswalk,
     # Batch commands
     stage_batch,
-    map_batch,
+    update_crosswalk,
+    update_mapping_profile,
+    update_source_system,
     validate_batch,
-    preview_batch,
-    commit_batch,
-    reject_batch,
+    verify_crosswalk,
 )
-
+from edim.models import (
+    IdentityCrosswalk,
+    IngestionBatch,
+    MappingProfile,
+    SourceSystem,
+)
+from edim.serializers import (
+    BatchMapSerializer,
+    BatchRejectSerializer,
+    BatchUploadSerializer,
+    CrosswalkRejectSerializer,
+    IdentityCrosswalkCreateSerializer,
+    # Crosswalk serializers
+    IdentityCrosswalkSerializer,
+    IdentityCrosswalkUpdateSerializer,
+    IngestionBatchSerializer,
+    MappingProfileCreateSerializer,
+    # Mapping Profile serializers
+    MappingProfileSerializer,
+    MappingProfileUpdateSerializer,
+    SourceSystemCreateSerializer,
+    # Source System serializers
+    SourceSystemSerializer,
+    SourceSystemUpdateSerializer,
+    StagedRecordSerializer,
+)
 
 # =============================================================================
 # Source System Views

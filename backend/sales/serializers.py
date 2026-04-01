@@ -10,9 +10,17 @@ The actual business logic happens in commands.py.
 """
 
 from decimal import Decimal
-from rest_framework import serializers
-from .models import Item, TaxCode, PostingProfile, SalesInvoice, SalesInvoiceLine
 
+from rest_framework import serializers
+
+from .models import (
+    Item,
+    PostingProfile,
+    SalesCreditNote,
+    SalesInvoice,
+    SalesInvoiceLine,
+    TaxCode,
+)
 
 # =============================================================================
 # Item Serializers
@@ -327,3 +335,87 @@ class SalesInvoiceListSerializer(serializers.ModelSerializer):
             "total_amount", "status",
             "created_at",
         ]
+
+
+# =============================================================================
+# Credit Note Serializers
+# =============================================================================
+
+class CreditNoteLineSerializer(serializers.ModelSerializer):
+    """Read serializer for credit note lines."""
+    account_code = serializers.CharField(source="account.code", read_only=True)
+    account_name = serializers.CharField(source="account.name", read_only=True)
+    tax_code_name = serializers.CharField(source="tax_code.name", read_only=True, default=None)
+
+    class Meta:
+        from .models import SalesCreditNoteLine
+        model = SalesCreditNoteLine
+        fields = [
+            "id", "public_id", "line_number", "invoice_line",
+            "item", "description", "description_ar",
+            "quantity", "unit_price", "discount_amount",
+            "tax_code", "tax_code_name", "tax_rate",
+            "gross_amount", "net_amount", "tax_amount", "line_total",
+            "account", "account_code", "account_name",
+        ]
+
+
+class CreditNoteSerializer(serializers.ModelSerializer):
+    """Read serializer for credit notes."""
+    lines = CreditNoteLineSerializer(many=True, read_only=True)
+    customer_name = serializers.CharField(source="customer.name", read_only=True)
+    customer_code = serializers.CharField(source="customer.code", read_only=True)
+    invoice_number = serializers.CharField(source="invoice.invoice_number", read_only=True)
+    posted_journal_entry_id = serializers.IntegerField(
+        source="posted_journal_entry.id", read_only=True, default=None
+    )
+
+    class Meta:
+        from .models import SalesCreditNote
+        model = SalesCreditNote
+        fields = [
+            "id", "public_id", "credit_note_number", "credit_note_date",
+            "invoice", "invoice_number",
+            "customer", "customer_name", "customer_code",
+            "posting_profile", "reason", "reason_notes",
+            "currency", "exchange_rate",
+            "subtotal", "total_discount", "total_tax", "total_amount",
+            "status", "posted_at", "posted_by", "posted_journal_entry_id",
+            "notes", "reference",
+            "created_at", "created_by", "updated_at",
+            "lines",
+        ]
+
+
+class CreditNoteListSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for listing credit notes."""
+    customer_name = serializers.CharField(source="customer.name", read_only=True)
+    customer_code = serializers.CharField(source="customer.code", read_only=True)
+    invoice_number = serializers.CharField(source="invoice.invoice_number", read_only=True)
+
+    class Meta:
+        from .models import SalesCreditNote
+        model = SalesCreditNote
+        fields = [
+            "id", "public_id", "credit_note_number", "credit_note_date",
+            "invoice", "invoice_number",
+            "customer", "customer_name", "customer_code",
+            "reason", "currency", "total_amount", "status",
+            "created_at",
+        ]
+
+
+class CreditNoteCreateSerializer(serializers.Serializer):
+    """Input serializer for creating a credit note."""
+    invoice_id = serializers.IntegerField()
+    credit_note_date = serializers.DateField(required=False)
+    reason = serializers.ChoiceField(
+        choices=[c[0] for c in SalesCreditNote.Reason.choices],
+        default="OTHER",
+    )
+    reason_notes = serializers.CharField(required=False, default="", allow_blank=True)
+    reference = serializers.CharField(required=False, default="", allow_blank=True)
+    notes = serializers.CharField(required=False, default="", allow_blank=True)
+    lines = serializers.ListField(child=serializers.DictField(), min_length=1)
+
+

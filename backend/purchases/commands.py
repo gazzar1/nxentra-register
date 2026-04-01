@@ -6,33 +6,46 @@ Commands are the single point where business operations happen.
 Views call commands; commands enforce rules and emit events.
 """
 
+from decimal import Decimal
+
 from django.db import transaction
 from django.utils import timezone
-from decimal import Decimal
-import uuid
 
-from accounts.authz import ActorContext, require
-from accounting.models import Account, Vendor, JournalEntry
 from accounting.commands import (
     CommandResult,
-    create_journal_entry,
-    save_journal_entry_complete,
-    post_journal_entry,
     _next_company_sequence,
+    create_journal_entry,
+    post_journal_entry,
+    save_journal_entry_complete,
 )
+from accounting.models import Account, JournalEntry, Vendor
+from accounts.authz import ActorContext, require
 from events.emitter import emit_event
 from events.types import (
     EventTypes,
+    GoodsReceiptCreatedData,
+    GoodsReceiptPostedData,
+    GoodsReceiptVoidedData,
     PurchaseBillCreatedData,
-    PurchaseBillUpdatedData,
+    PurchaseBillLineData,
     PurchaseBillPostedData,
     PurchaseBillVoidedData,
-    PurchaseBillLineData,
+    PurchaseOrderApprovedData,
+    PurchaseOrderCancelledData,
+    PurchaseOrderClosedData,
+    PurchaseOrderCreatedData,
 )
 from projections.write_barrier import command_writes_allowed
+from sales.models import Item, PostingProfile, TaxCode
 
-from sales.models import Item, TaxCode, PostingProfile
-from .models import PurchaseBill, PurchaseBillLine
+from .models import (
+    GoodsReceipt,
+    GoodsReceiptLine,
+    PurchaseBill,
+    PurchaseBillLine,
+    PurchaseOrder,
+    PurchaseOrderLine,
+)
 
 
 def _calculate_line(line_data: dict) -> dict:
@@ -660,3 +673,667 @@ def void_purchase_bill(
         data={"bill": bill, "reversing_entry": reversal_je},
         event=event
     )
+
+
+# =============================================================================
+# Purchase Order Commands
+# =============================================================================
+
+@transaction.atomic
+def create_purchase_order(
+    actor: ActorContext,
+    vendor_id: int,
+    posting_profile_id: int,
+    lines: list,
+    order_date=None,
+    expected_delivery_date=None,
+    reference: str = "",
+    notes: str = "",
+    shipping_address: str = "",
+    currency: str = "",
+    exchange_rate=None,
+) -> CommandResult:
+    """Create a DRAFT purchase order."""
+    require(actor, "purchases.order.create")
+
+    from datetime import date as date_type
+
+    try:
+        vendor = Vendor.objects.get(company=actor.company, pk=vendor_id)
+    except Vendor.DoesNotExist:
+        return CommandResult.fail("Vendor not found.")
+
+    try:
+        profile = PostingProfile.objects.get(company=actor.company, pk=posting_profile_id)
+    except PostingProfile.DoesNotExist:
+        return CommandResult.fail("Posting profile not found.")
+
+    if not lines:
+        return CommandResult.fail("Purchase order must have at least one line.")
+
+    po_date = order_date or date_type.today()
+    if isinstance(po_date, str):
+        po_date = date_type.fromisoformat(po_date)
+
+    exp_date = expected_delivery_date
+    if isinstance(exp_date, str):
+        exp_date = date_type.fromisoformat(exp_date)
+
+    seq = _next_company_sequence(actor.company, "purchase_order")
+    po_number = f"PO-{seq:06d}"
+
+    po_currency = currency or vendor.currency or ""
+    po_rate = Decimal(str(exchange_rate)) if exchange_rate else Decimal("1")
+
+    with command_writes_allowed():
+        order = PurchaseOrder(
+            company=actor.company,
+            order_number=po_number,
+            order_date=po_date,
+            expected_delivery_date=exp_date,
+            vendor=vendor,
+            posting_profile=profile,
+            currency=po_currency,
+            exchange_rate=po_rate,
+            reference=reference,
+            notes=notes,
+            shipping_address=shipping_address,
+            created_by=actor.user,
+        )
+        order.save()
+
+        for i, line_data in enumerate(lines, start=1):
+            account_id = line_data.get("account_id")
+            if not account_id:
+                return CommandResult.fail(f"Line {i}: account_id is required.")
+            try:
+                account = Account.objects.get(company=actor.company, pk=account_id)
+            except Account.DoesNotExist:
+                return CommandResult.fail(f"Line {i}: Account not found.")
+
+            tax_code = None
+            tax_rate = Decimal("0")
+            if line_data.get("tax_code_id"):
+                try:
+                    tax_code = TaxCode.objects.get(company=actor.company, pk=line_data["tax_code_id"])
+                    tax_rate = tax_code.rate
+                except TaxCode.DoesNotExist:
+                    return CommandResult.fail(f"Line {i}: Tax code not found.")
+
+            item = None
+            if line_data.get("item_id"):
+                try:
+                    item = Item.objects.get(company=actor.company, pk=line_data["item_id"])
+                except Item.DoesNotExist:
+                    pass
+
+            po_line = PurchaseOrderLine(
+                order=order,
+                company=actor.company,
+                line_number=i,
+                item=item,
+                description=line_data.get("description", ""),
+                description_ar=line_data.get("description_ar", ""),
+                quantity=Decimal(str(line_data.get("quantity", "1"))),
+                unit_price=Decimal(str(line_data.get("unit_price", "0"))),
+                discount_amount=Decimal(str(line_data.get("discount_amount", "0"))),
+                tax_code=tax_code,
+                tax_rate=tax_rate,
+                account=account,
+            )
+            po_line.calculate()
+            po_line.save()
+
+        order.recalculate_totals()
+        order.save()
+
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.PURCHASES_ORDER_CREATED,
+        aggregate_type="PurchaseOrder",
+        aggregate_id=str(order.public_id),
+        idempotency_key=f"purchaseorder.created:{order.public_id}",
+        data=PurchaseOrderCreatedData(
+            order_public_id=str(order.public_id),
+            company_public_id=str(actor.company.public_id),
+            order_number=order.order_number,
+            order_date=po_date.isoformat(),
+            vendor_public_id=str(vendor.public_id),
+            vendor_code=vendor.code,
+            total_amount=str(order.total_amount),
+            expected_delivery_date=exp_date.isoformat() if exp_date else None,
+            reference=reference,
+        ).to_dict(),
+    )
+
+    return CommandResult.ok(data={"order": order}, event=event)
+
+
+@transaction.atomic
+def approve_purchase_order(actor: ActorContext, order_id: int) -> CommandResult:
+    """Approve a DRAFT purchase order."""
+    require(actor, "purchases.order.approve")
+
+    try:
+        order = PurchaseOrder.objects.select_for_update().get(
+            company=actor.company, pk=order_id
+        )
+    except PurchaseOrder.DoesNotExist:
+        return CommandResult.fail("Purchase order not found.")
+
+    if order.status != PurchaseOrder.Status.DRAFT:
+        return CommandResult.fail("Only DRAFT purchase orders can be approved.")
+
+    approved_at = timezone.now()
+
+    with command_writes_allowed():
+        order.status = PurchaseOrder.Status.APPROVED
+        order.approved_at = approved_at
+        order.approved_by = actor.user
+        order.save()
+
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.PURCHASES_ORDER_APPROVED,
+        aggregate_type="PurchaseOrder",
+        aggregate_id=str(order.public_id),
+        idempotency_key=f"purchaseorder.approved:{order.public_id}",
+        data=PurchaseOrderApprovedData(
+            order_public_id=str(order.public_id),
+            company_public_id=str(actor.company.public_id),
+            order_number=order.order_number,
+            approved_at=approved_at.isoformat(),
+            approved_by_id=actor.user.id,
+            approved_by_email=actor.user.email,
+        ).to_dict(),
+    )
+
+    return CommandResult.ok(data={"order": order}, event=event)
+
+
+@transaction.atomic
+def cancel_purchase_order(actor: ActorContext, order_id: int, reason: str = "") -> CommandResult:
+    """Cancel a purchase order (only if no goods received)."""
+    require(actor, "purchases.order.cancel")
+
+    try:
+        order = PurchaseOrder.objects.select_for_update().get(
+            company=actor.company, pk=order_id
+        )
+    except PurchaseOrder.DoesNotExist:
+        return CommandResult.fail("Purchase order not found.")
+
+    if order.status not in (PurchaseOrder.Status.DRAFT, PurchaseOrder.Status.APPROVED):
+        return CommandResult.fail("Only DRAFT or APPROVED orders (with no receipts) can be cancelled.")
+
+    # Check no goods have been received
+    if order.lines.filter(qty_received__gt=0).exists():
+        return CommandResult.fail("Cannot cancel — goods have already been received against this PO.")
+
+    with command_writes_allowed():
+        order.status = PurchaseOrder.Status.CANCELLED
+        order.save(update_fields=["status"])
+
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.PURCHASES_ORDER_CANCELLED,
+        aggregate_type="PurchaseOrder",
+        aggregate_id=str(order.public_id),
+        idempotency_key=f"purchaseorder.cancelled:{order.public_id}",
+        data=PurchaseOrderCancelledData(
+            order_public_id=str(order.public_id),
+            company_public_id=str(actor.company.public_id),
+            order_number=order.order_number,
+            reason=reason,
+        ).to_dict(),
+    )
+
+    return CommandResult.ok(data={"order": order}, event=event)
+
+
+@transaction.atomic
+def close_purchase_order(actor: ActorContext, order_id: int) -> CommandResult:
+    """Manually close a PO (all billing done or remaining qty abandoned)."""
+    require(actor, "purchases.order.close")
+
+    try:
+        order = PurchaseOrder.objects.select_for_update().get(
+            company=actor.company, pk=order_id
+        )
+    except PurchaseOrder.DoesNotExist:
+        return CommandResult.fail("Purchase order not found.")
+
+    closable = (
+        PurchaseOrder.Status.APPROVED,
+        PurchaseOrder.Status.PARTIALLY_RECEIVED,
+        PurchaseOrder.Status.FULLY_RECEIVED,
+    )
+    if order.status not in closable:
+        return CommandResult.fail("Only APPROVED, PARTIALLY_RECEIVED, or FULLY_RECEIVED orders can be closed.")
+
+    with command_writes_allowed():
+        order.status = PurchaseOrder.Status.CLOSED
+        order.save(update_fields=["status"])
+
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.PURCHASES_ORDER_CLOSED,
+        aggregate_type="PurchaseOrder",
+        aggregate_id=str(order.public_id),
+        idempotency_key=f"purchaseorder.closed:{order.public_id}",
+        data=PurchaseOrderClosedData(
+            order_public_id=str(order.public_id),
+            company_public_id=str(actor.company.public_id),
+            order_number=order.order_number,
+        ).to_dict(),
+    )
+
+    return CommandResult.ok(data={"order": order}, event=event)
+
+
+# =============================================================================
+# Goods Receipt Commands
+# =============================================================================
+
+@transaction.atomic
+def create_goods_receipt(
+    actor: ActorContext,
+    purchase_order_id: int,
+    warehouse_id: int,
+    lines: list,
+    receipt_date=None,
+    notes: str = "",
+) -> CommandResult:
+    """Create a DRAFT goods receipt against a purchase order."""
+    require(actor, "purchases.receipt.create")
+
+    from datetime import date as date_type
+
+    from inventory.models import Warehouse
+
+    try:
+        order = PurchaseOrder.objects.get(company=actor.company, pk=purchase_order_id)
+    except PurchaseOrder.DoesNotExist:
+        return CommandResult.fail("Purchase order not found.")
+
+    receivable_statuses = (
+        PurchaseOrder.Status.APPROVED,
+        PurchaseOrder.Status.PARTIALLY_RECEIVED,
+    )
+    if order.status not in receivable_statuses:
+        return CommandResult.fail("Goods can only be received against APPROVED or PARTIALLY_RECEIVED orders.")
+
+    try:
+        warehouse = Warehouse.objects.get(company=actor.company, pk=warehouse_id)
+    except Warehouse.DoesNotExist:
+        return CommandResult.fail("Warehouse not found.")
+
+    if not lines:
+        return CommandResult.fail("Goods receipt must have at least one line.")
+
+    gr_date = receipt_date or date_type.today()
+    if isinstance(gr_date, str):
+        gr_date = date_type.fromisoformat(gr_date)
+
+    seq = _next_company_sequence(actor.company, "goods_receipt")
+    gr_number = f"GRN-{seq:06d}"
+
+    with command_writes_allowed():
+        receipt = GoodsReceipt(
+            company=actor.company,
+            receipt_number=gr_number,
+            receipt_date=gr_date,
+            purchase_order=order,
+            vendor=order.vendor,
+            warehouse=warehouse,
+            notes=notes,
+            created_by=actor.user,
+        )
+        receipt.save()
+
+        for i, line_data in enumerate(lines, start=1):
+            po_line_id = line_data.get("po_line_id")
+            if not po_line_id:
+                return CommandResult.fail(f"Line {i}: po_line_id is required.")
+
+            try:
+                po_line = PurchaseOrderLine.objects.get(order=order, pk=po_line_id)
+            except PurchaseOrderLine.DoesNotExist:
+                return CommandResult.fail(f"Line {i}: PO line not found.")
+
+            qty = Decimal(str(line_data.get("qty_received", "0")))
+            if qty <= 0:
+                return CommandResult.fail(f"Line {i}: qty_received must be > 0.")
+
+            if qty > po_line.qty_outstanding:
+                return CommandResult.fail(
+                    f"Line {i}: qty_received ({qty}) exceeds outstanding ({po_line.qty_outstanding})."
+                )
+
+            GoodsReceiptLine(
+                receipt=receipt,
+                company=actor.company,
+                line_number=i,
+                po_line=po_line,
+                item=po_line.item,
+                description=po_line.description,
+                qty_received=qty,
+                unit_cost=po_line.unit_price,
+            ).save()
+
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.PURCHASES_GOODS_RECEIPT_CREATED,
+        aggregate_type="GoodsReceipt",
+        aggregate_id=str(receipt.public_id),
+        idempotency_key=f"goodsreceipt.created:{receipt.public_id}",
+        data=GoodsReceiptCreatedData(
+            receipt_public_id=str(receipt.public_id),
+            company_public_id=str(actor.company.public_id),
+            receipt_number=receipt.receipt_number,
+            receipt_date=gr_date.isoformat(),
+            order_public_id=str(order.public_id),
+            order_number=order.order_number,
+            vendor_public_id=str(order.vendor.public_id),
+            warehouse_public_id=str(warehouse.public_id),
+        ).to_dict(),
+    )
+
+    return CommandResult.ok(data={"receipt": receipt}, event=event)
+
+
+@transaction.atomic
+def post_goods_receipt(actor: ActorContext, receipt_id: int) -> CommandResult:
+    """
+    Post a goods receipt — receives stock and updates PO quantities.
+
+    For INVENTORY items: calls record_stock_receipt().
+    Updates PO line qty_received and PO status.
+    No journal entry — accounting happens at bill posting.
+    """
+    require(actor, "purchases.receipt.post")
+
+    try:
+        receipt = GoodsReceipt.objects.select_for_update().get(
+            company=actor.company, pk=receipt_id
+        )
+    except GoodsReceipt.DoesNotExist:
+        return CommandResult.fail("Goods receipt not found.")
+
+    if receipt.status != GoodsReceipt.Status.DRAFT:
+        return CommandResult.fail("Only DRAFT goods receipts can be posted.")
+
+    if not receipt.lines.exists():
+        return CommandResult.fail("Goods receipt must have at least one line.")
+
+    order = receipt.purchase_order
+
+    # Process each line: update PO qty_received + stock receipt for inventory items
+    inventory_lines = []
+    posted_at = timezone.now()
+
+    with command_writes_allowed():
+        for gr_line in receipt.lines.select_related("po_line", "item"):
+            po_line = gr_line.po_line
+
+            # Re-validate against current qty_outstanding (may have changed)
+            if gr_line.qty_received > po_line.qty_outstanding:
+                return CommandResult.fail(
+                    f"Line {gr_line.line_number}: qty_received ({gr_line.qty_received}) "
+                    f"exceeds outstanding ({po_line.qty_outstanding})."
+                )
+
+            # Update PO line qty_received
+            po_line.qty_received += gr_line.qty_received
+            po_line.save(update_fields=["qty_received"])
+
+            # Collect inventory items for stock receipt
+            if gr_line.item and gr_line.item.is_inventory_item:
+                inventory_lines.append({
+                    "item": gr_line.item,
+                    "warehouse": receipt.warehouse,
+                    "qty": gr_line.qty_received,
+                    "unit_cost": gr_line.unit_cost,
+                    "source_line_id": str(gr_line.public_id),
+                })
+
+        # Record stock receipts for inventory items
+        if inventory_lines:
+            from inventory.commands import record_stock_receipt
+            from inventory.models import StockLedgerEntry
+
+            stock_result = record_stock_receipt(
+                actor=actor,
+                source_type=StockLedgerEntry.SourceType.GOODS_RECEIPT,
+                source_id=str(receipt.public_id),
+                lines=inventory_lines,
+            )
+            if not stock_result.success:
+                return CommandResult.fail(f"Failed to record stock receipt: {stock_result.error}")
+
+        # Update PO status
+        order.update_receipt_status()
+        order.save(update_fields=["status"])
+
+        # Update GR status
+        receipt.status = GoodsReceipt.Status.POSTED
+        receipt.posted_at = posted_at
+        receipt.posted_by = actor.user
+        receipt.save()
+
+    event_lines = [
+        {
+            "po_line_public_id": str(gl.po_line.public_id),
+            "item_public_id": str(gl.item.public_id) if gl.item else None,
+            "qty_received": str(gl.qty_received),
+            "unit_cost": str(gl.unit_cost),
+        }
+        for gl in receipt.lines.select_related("po_line", "item")
+    ]
+
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.PURCHASES_GOODS_RECEIPT_POSTED,
+        aggregate_type="GoodsReceipt",
+        aggregate_id=str(receipt.public_id),
+        idempotency_key=f"goodsreceipt.posted:{receipt.public_id}",
+        data=GoodsReceiptPostedData(
+            receipt_public_id=str(receipt.public_id),
+            company_public_id=str(actor.company.public_id),
+            receipt_number=receipt.receipt_number,
+            receipt_date=receipt.receipt_date.isoformat(),
+            order_public_id=str(order.public_id),
+            order_number=order.order_number,
+            vendor_public_id=str(order.vendor.public_id),
+            warehouse_public_id=str(receipt.warehouse.public_id),
+            posted_at=posted_at.isoformat(),
+            posted_by_id=actor.user.id,
+            posted_by_email=actor.user.email,
+            lines=event_lines,
+        ).to_dict(),
+    )
+
+    return CommandResult.ok(data={"receipt": receipt}, event=event)
+
+
+@transaction.atomic
+def void_goods_receipt(actor: ActorContext, receipt_id: int, reason: str = "") -> CommandResult:
+    """Void a posted goods receipt — reverses stock and PO quantities."""
+    require(actor, "purchases.receipt.void")
+
+    try:
+        receipt = GoodsReceipt.objects.select_for_update().get(
+            company=actor.company, pk=receipt_id
+        )
+    except GoodsReceipt.DoesNotExist:
+        return CommandResult.fail("Goods receipt not found.")
+
+    if receipt.status != GoodsReceipt.Status.POSTED:
+        return CommandResult.fail("Only POSTED goods receipts can be voided.")
+
+    order = receipt.purchase_order
+    voided_at = timezone.now()
+
+    with command_writes_allowed():
+        for gr_line in receipt.lines.select_related("po_line"):
+            # Reverse PO line qty_received
+            gr_line.po_line.qty_received -= gr_line.qty_received
+            if gr_line.po_line.qty_received < 0:
+                gr_line.po_line.qty_received = Decimal("0")
+            gr_line.po_line.save(update_fields=["qty_received"])
+
+        # Reverse stock for inventory items
+        # (record_stock_issue with negative qty or use PURCHASE_RETURN source type)
+        inventory_lines = []
+        for gr_line in receipt.lines.select_related("item"):
+            if gr_line.item and gr_line.item.is_inventory_item:
+                inventory_lines.append({
+                    "item": gr_line.item,
+                    "warehouse": receipt.warehouse,
+                    "qty": gr_line.qty_received,
+                    "source_line_id": str(gr_line.public_id),
+                })
+
+        if inventory_lines:
+            from inventory.commands import record_stock_issue
+            from inventory.models import StockLedgerEntry
+
+            stock_result = record_stock_issue(
+                actor=actor,
+                source_type=StockLedgerEntry.SourceType.PURCHASE_RETURN,
+                source_id=str(receipt.public_id),
+                lines=inventory_lines,
+            )
+            if not stock_result.success:
+                return CommandResult.fail(f"Failed to reverse stock: {stock_result.error}")
+
+        # Update PO status
+        order.update_receipt_status()
+        # If no more received, revert to APPROVED
+        if not order.lines.filter(qty_received__gt=0).exists():
+            order.status = PurchaseOrder.Status.APPROVED
+        order.save(update_fields=["status"])
+
+        receipt.status = GoodsReceipt.Status.VOIDED
+        receipt.save(update_fields=["status"])
+
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.PURCHASES_GOODS_RECEIPT_VOIDED,
+        aggregate_type="GoodsReceipt",
+        aggregate_id=str(receipt.public_id),
+        idempotency_key=f"goodsreceipt.voided:{receipt.public_id}",
+        data=GoodsReceiptVoidedData(
+            receipt_public_id=str(receipt.public_id),
+            company_public_id=str(actor.company.public_id),
+            receipt_number=receipt.receipt_number,
+            voided_at=voided_at.isoformat(),
+            voided_by_id=actor.user.id,
+            voided_by_email=actor.user.email,
+            reason=reason,
+        ).to_dict(),
+    )
+
+    return CommandResult.ok(data={"receipt": receipt}, event=event)
+
+
+# =============================================================================
+# Create Bill from PO
+# =============================================================================
+
+@transaction.atomic
+def create_bill_from_po(
+    actor: ActorContext,
+    purchase_order_id: int,
+    bill_date=None,
+    due_date=None,
+    vendor_bill_number: str = "",
+    notes: str = "",
+) -> CommandResult:
+    """
+    Create a DRAFT purchase bill pre-populated from a PO's unbilled lines.
+
+    Each PO line with qty_unbilled > 0 becomes a bill line.
+    The bill is linked to the PO for 3-way matching.
+    """
+    require(actor, "purchases.bill.create")
+
+    from datetime import date as date_type
+
+    try:
+        order = PurchaseOrder.objects.get(company=actor.company, pk=purchase_order_id)
+    except PurchaseOrder.DoesNotExist:
+        return CommandResult.fail("Purchase order not found.")
+
+    billable_statuses = (
+        PurchaseOrder.Status.APPROVED,
+        PurchaseOrder.Status.PARTIALLY_RECEIVED,
+        PurchaseOrder.Status.FULLY_RECEIVED,
+    )
+    if order.status not in billable_statuses:
+        return CommandResult.fail("Bills can only be created from APPROVED or RECEIVED orders.")
+
+    # Find unbilled lines
+    unbilled_lines = [
+        line for line in order.lines.all()
+        if line.qty_unbilled > 0
+    ]
+    if not unbilled_lines:
+        return CommandResult.fail("No unbilled quantities remaining on this PO.")
+
+    b_date = bill_date or date_type.today()
+    if isinstance(b_date, str):
+        b_date = date_type.fromisoformat(b_date)
+
+    d_date = due_date
+    if isinstance(d_date, str):
+        d_date = date_type.fromisoformat(d_date)
+
+    # Build lines for create_purchase_bill
+    bill_lines = []
+    for po_line in unbilled_lines:
+        bill_lines.append({
+            "account_id": po_line.account_id,
+            "item_id": po_line.item_id,
+            "description": po_line.description,
+            "description_ar": po_line.description_ar,
+            "quantity": str(po_line.qty_unbilled),
+            "unit_price": str(po_line.unit_price),
+            "discount_amount": str(po_line.discount_amount),
+            "tax_code_id": po_line.tax_code_id,
+            "po_line_id": po_line.id,
+        })
+
+    # Use existing create_purchase_bill with PO link
+    bill_number = vendor_bill_number or f"From {order.order_number}"
+
+    result = create_purchase_bill(
+        actor=actor,
+        vendor_id=order.vendor_id,
+        posting_profile_id=order.posting_profile_id,
+        lines=bill_lines,
+        bill_date=b_date,
+        due_date=d_date,
+        bill_number=bill_number,
+        reference=order.order_number,
+        notes=notes,
+        currency=order.currency,
+        exchange_rate=order.exchange_rate,
+    )
+
+    if not result.success:
+        return result
+
+    bill = result.data["bill"]
+
+    # Link bill to PO and bill lines to PO lines
+    with command_writes_allowed():
+        bill.purchase_order = order
+        bill.save(update_fields=["purchase_order"])
+
+        for bill_line_data, bill_line in zip(bill_lines, bill.lines.order_by("line_number")):
+            if bill_line_data.get("po_line_id"):
+                bill_line.po_line_id = bill_line_data["po_line_id"]
+                bill_line.save(update_fields=["po_line"])
+
+    return CommandResult.ok(data={"bill": bill, "order": order}, event=result.event)

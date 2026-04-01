@@ -21,12 +21,11 @@ Usage for a single role:
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from django.db import models
 
-from accounts.models import Company
 from accounting.models import Account
+from accounts.models import Company
 from projections.write_barrier import write_context_allowed
 
 logger = logging.getLogger(__name__)
@@ -106,7 +105,7 @@ class ModuleAccountMapping(models.Model):
     # ------------------------------------------------------------------
 
     @classmethod
-    def get_mapping(cls, company: Company, module: str) -> dict[str, Optional[Account]]:
+    def get_mapping(cls, company: Company, module: str) -> dict[str, Account | None]:
         """
         Return {role: account_or_None} for all roles of a module.
 
@@ -120,7 +119,7 @@ class ModuleAccountMapping(models.Model):
         return {m.role: m.account for m in qs}
 
     @classmethod
-    def get_account(cls, company: Company, module: str, role: str) -> Optional[Account]:
+    def get_account(cls, company: Company, module: str, role: str) -> Account | None:
         """Get a single account by module and role, or None if unmapped."""
         try:
             return cls.objects.select_related("account").get(

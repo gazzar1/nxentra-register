@@ -7,10 +7,8 @@ REGISTERED_EVENTS at the bottom is discovered by ProjectionsConfig.ready().
 """
 
 from dataclasses import dataclass, field
-from typing import List
 
-from events.types import BaseEventData, FinancialEventData, EventTypes
-
+from events.types import BaseEventData, EventTypes, FinancialEventData
 
 # =============================================================================
 # Non-financial events

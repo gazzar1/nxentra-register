@@ -21,7 +21,7 @@ from datetime import datetime
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
-from django.db import connections, transaction
+from django.db import transaction
 
 from accounts.models import Company
 from accounts.rls import rls_bypass
@@ -62,8 +62,9 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        from events.models import BusinessEvent, EventPayload, CompanyEventCounter
         from uuid import UUID
+
+        from events.models import BusinessEvent, CompanyEventCounter, EventPayload
 
         db_alias = options["db_alias"]
 
@@ -77,7 +78,7 @@ class Command(BaseCommand):
         # Load export file
         self.stdout.write(f"Loading export file: {options['input_file']}")
         try:
-            with open(options["input_file"], "r", encoding="utf-8") as f:
+            with open(options["input_file"], encoding="utf-8") as f:
                 export_data = json.load(f)
         except FileNotFoundError:
             raise CommandError(f"File not found: {options['input_file']}")
@@ -164,7 +165,7 @@ class Command(BaseCommand):
                             # Handle external payloads
                             payload_ref = None
                             if event_data.get("payload_storage") == "external":
-                                if "data" in event_data and event_data["data"]:
+                                if event_data.get("data"):
                                     # Store payload and get reference
                                     payload_ref = EventPayload.store_payload(
                                         event_data["data"],
@@ -237,7 +238,7 @@ class Command(BaseCommand):
 
             except Exception as e:
                 if errors:
-                    self.stdout.write(self.style.ERROR(f"\nImport failed with errors:"))
+                    self.stdout.write(self.style.ERROR("\nImport failed with errors:"))
                     for err in errors:
                         self.stdout.write(
                             f"  Event {err['event_id']} ({err['event_type']}): {err['error']}"
@@ -249,7 +250,7 @@ class Command(BaseCommand):
 
             # Report results
             self.stdout.write("")
-            self.stdout.write(self.style.SUCCESS(f"Import completed successfully"))
+            self.stdout.write(self.style.SUCCESS("Import completed successfully"))
             self.stdout.write(f"  Imported: {imported}")
             self.stdout.write(f"  Skipped: {skipped}")
             self.stdout.write(f"  Errors: {len(errors)}")

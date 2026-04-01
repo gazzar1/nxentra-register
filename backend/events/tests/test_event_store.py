@@ -1,18 +1,15 @@
-from django.test import TestCase, override_settings
 from django.contrib.auth import get_user_model
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from accounts.models import Company
+from accounts.models import Company, CompanyMembership
 from events.emitter import emit_event_no_actor
-from events.models import BusinessEvent
 from events.types import (
-    EventTypes,
     AccountCreatedData,
+    EventTypes,
     InvalidEventPayload,
     validate_event_payload,
 )
-from django.utils.text import slugify
-from accounts.models import Company, CompanyMembership
 
 
 class TestEventEmitter(TestCase):

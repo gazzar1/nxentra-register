@@ -9,8 +9,9 @@ from django.conf import settings
 from django.db import models
 
 from accounts.models import Company, ProjectionWriteGuard
-from .lessee import Lessee
+
 from .lease import Lease, RentScheduleLine
+from .lessee import Lessee
 
 
 class PaymentReceipt(ProjectionWriteGuard):

@@ -44,10 +44,9 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        from accounting.commands import run_reconciliation_check
         from accounts.models import Company
         from accounts.rls import rls_bypass
-        from accounting.commands import run_reconciliation_check
-        from accounts.authz import ActorContext
 
         output_json = options["json"]
         strict = options["strict"]
@@ -133,8 +132,8 @@ class Command(BaseCommand):
 
     def _build_system_actor(self, company):
         """Build a system-level ActorContext for a company."""
-        from accounts.models import CompanyMembership
         from accounts.authz import ActorContext
+        from accounts.models import CompanyMembership
         from accounts.rls import rls_bypass
 
         with rls_bypass():

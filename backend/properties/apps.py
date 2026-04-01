@@ -27,7 +27,7 @@ class PropertiesConfig(AppConfig):
     ]
 
     def ready(self):
-        from accounts.module_registry import module_registry, ModuleCategory
+        from accounts.module_registry import ModuleCategory, module_registry
 
         module_registry.register(
             "properties",

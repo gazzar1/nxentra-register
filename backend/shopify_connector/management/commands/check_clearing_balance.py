@@ -35,7 +35,7 @@ def compute_clearing_balance(company):
     Returns dict with balance details or None if no clearing account is mapped.
     """
     from accounting.mappings import ModuleAccountMapping
-    from accounting.models import JournalLine, JournalEntry
+    from accounting.models import JournalEntry, JournalLine
 
     clearing_account = ModuleAccountMapping.get_account(
         company, "shopify_connector", "SHOPIFY_CLEARING",

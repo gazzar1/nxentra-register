@@ -14,50 +14,47 @@ This ensures:
 3. Single point of enforcement
 """
 
-from django.db import transaction
-from django.conf import settings
-from django.contrib.auth import get_user_model
-from django.utils import timezone
-import json
 import hashlib
+import json
 import uuid
 
-from accounts.authz import ActorContext, require, PermissionDenied
-from accounts.rls import rls_bypass
+from django.conf import settings
+from django.contrib.auth import get_user_model
+from django.db import transaction
+from django.utils import timezone
 
+from accounts.authz import ActorContext, require
 from accounts.models import Company, CompanyMembership, NxPermission
-
+from accounts.rls import rls_bypass
 from events.emitter import emit_event, emit_event_no_actor
-from projections.write_barrier import bootstrap_writes_allowed, auth_writes_allowed, command_writes_allowed
 from events.types import (
-    EventTypes,
     CompanyCreatedData,
-    CompanyUpdatedData,
-    CompanySettingsChangedData,
     CompanyLogoUploadedData,
-    UserRegisteredData,
-    PermissionGrantedData,
-    PermissionRevokedData,
+    EventTypes,
+    InvitationAcceptedData,
+    InvitationCancelledData,
+    # Invitation events
+    InvitationCreatedData,
     MembershipCreatedData,
-    MembershipReactivatedData,
-    UserCreatedData,
-    UserCompanySwitchedData,
-    UserPasswordChangedData,
-    UserUpdatedData,
-    MembershipRoleChangedData,
     MembershipDeactivatedData,
     MembershipPermissionsUpdatedData,
+    MembershipReactivatedData,
+    MembershipRoleChangedData,
+    PermissionGrantedData,
+    PermissionRevokedData,
+    UserApprovalRequestedData,
+    UserApprovedData,
+    UserCompanySwitchedData,
+    UserCreatedData,
     # Email verification and admin approval
     UserEmailVerificationSentData,
     UserEmailVerifiedData,
-    UserApprovalRequestedData,
-    UserApprovedData,
+    UserPasswordChangedData,
+    UserRegisteredData,
     UserRejectedData,
-    # Invitation events
-    InvitationCreatedData,
-    InvitationAcceptedData,
-    InvitationCancelledData,
+    UserUpdatedData,
 )
+from projections.write_barrier import auth_writes_allowed, bootstrap_writes_allowed, command_writes_allowed
 
 User = get_user_model()
 
@@ -141,24 +138,24 @@ def register_signup(
         CommandResult with user, company, membership
     """
     from django.utils.text import slugify
-    
+
     with rls_bypass():
         # Validate email uniqueness
         email = email.lower().strip()
         if User.objects.filter(email=email).exists():
             return CommandResult.fail(f"User with email '{email}' already exists.")
-        
+
         if not company_name or not company_name.strip():
             return CommandResult.fail("Company name is required.")
-        
+
         if not password or len(password) < 8:
             return CommandResult.fail("Password must be at least 8 characters.")
-        
+
         # Generate unique slug with retry on collision
         base_slug = slugify(company_name.strip())
         if not base_slug:
             base_slug = "company"
-        
+
         slug = base_slug
         max_attempts = 10
         for attempt in range(max_attempts):
@@ -269,7 +266,7 @@ def register_signup(
                 to_company_name=company_name.strip(),
             ).to_dict(),
         )
-        
+
         # Emit registration event
         # FIX: Added idempotency_key
         event = emit_event_no_actor(
@@ -532,7 +529,7 @@ def switch_active_company(user, target_company_id: int) -> CommandResult:
 
     if not user or not user.is_authenticated:
         return CommandResult.fail("Authentication required.")
-    
+
     with rls_bypass():
         try:
             target_company = Company.objects.get(pk=target_company_id, is_active=True)
@@ -619,20 +616,20 @@ def create_user_with_membership(
     """
     from accounts.authz import require
     require(actor, "company.manage_users")
-    
+
     # Validate email uniqueness
     if User.objects.filter(email=email).exists():
         return CommandResult.fail(f"User with email '{email}' already exists.")
-    
+
     # Validate role
     valid_roles = [r[0] for r in CompanyMembership.Role.choices]
     if role not in valid_roles:
         return CommandResult.fail(f"Invalid role. Must be one of: {valid_roles}")
-    
+
     # Cannot create OWNER - there can only be one, set at company creation
     if role == CompanyMembership.Role.OWNER and not actor.is_owner:
         return CommandResult.fail("Only the company owner can assign OWNER role.")
-    
+
     user_public_id = uuid.uuid4()
     membership_public_id = uuid.uuid4()
 
@@ -759,7 +756,7 @@ def update_user(
         target_user = User.objects.get(pk=user_id)
     except User.DoesNotExist:
         return CommandResult.fail("User not found.")
-    
+
     # Permission check: self or admin
     is_self = actor.user.id == target_user.id
     if not is_self:
@@ -770,30 +767,30 @@ def update_user(
             user=target_user, company=actor.company, is_active=True
         ).exists():
             return CommandResult.fail("User is not a member of your company.")
-    
+
     # Track changes
     changes = {}
     allowed_fields = {"name", "name_ar", "email"}
-    
+
     for field, value in updates.items():
         if field in allowed_fields:
             old_value = getattr(target_user, field)
             if old_value != value:
                 changes[field] = {"old": old_value, "new": value}
                 setattr(target_user, field, value)
-    
+
     if not changes:
         return CommandResult.ok({"user": target_user})
-    
+
     # Validate email uniqueness if changing
     if "email" in changes:
         if User.objects.filter(email=updates["email"]).exclude(pk=user_id).exists():
             return CommandResult.fail("Email already in use.")
-    
+
     # Emit event
     # Create a deterministic hash of changes for idempotency
     changes_hash = _changes_hash(changes)
-    
+
     event = emit_event(
         actor=actor,
         event_type=EventTypes.USER_UPDATED,
@@ -839,19 +836,19 @@ def set_user_password(
         target_user = User.objects.get(pk=user_id)
     except User.DoesNotExist:
         return CommandResult.fail("User not found.")
-    
+
     # Permission check: self or admin
     is_self = actor.user.id == target_user.id
     if not is_self:
         from accounts.authz import require
         require(actor, "company.manage_users")
-        
+
         # Verify target user is in actor's company
         if not CompanyMembership.objects.filter(
             user=target_user, company=actor.company, is_active=True
         ).exists():
             return CommandResult.fail("User is not a member of your company.")
-    
+
     with auth_writes_allowed():
         target_user.set_password(new_password)
         target_user.save(update_fields=["password"])
@@ -959,17 +956,17 @@ def add_user_to_company(
     """
     from accounts.authz import require
     require(actor, "company.manage_users")
-    
+
     try:
         user = User.objects.get(pk=user_id)
     except User.DoesNotExist:
         return CommandResult.fail("User not found.")
-    
+
     # Check if already a member
     existing = CompanyMembership.objects.filter(
         user=user, company=actor.company
     ).first()
-    
+
     was_reactivated = False
     membership_public_id = uuid.uuid4()
 
@@ -1044,35 +1041,35 @@ def update_membership_role(
     """
     from accounts.authz import require
     require(actor, "company.manage_users")
-    
+
     try:
         membership = CompanyMembership.objects.select_related("user", "company").get(
             pk=membership_id, company=actor.company
         )
     except CompanyMembership.DoesNotExist:
         return CommandResult.fail("Membership not found.")
-    
+
     # Validate role
     valid_roles = [r[0] for r in CompanyMembership.Role.choices]
     if new_role not in valid_roles:
         return CommandResult.fail(f"Invalid role. Must be one of: {valid_roles}")
-    
+
     # Cannot change OWNER role unless you're the owner
     if membership.role == CompanyMembership.Role.OWNER and not actor.is_owner:
         return CommandResult.fail("Cannot modify the owner's role.")
-    
+
     if new_role == CompanyMembership.Role.OWNER and not actor.is_owner:
         return CommandResult.fail("Only the owner can assign OWNER role.")
-    
+
     # Cannot demote yourself if you're the only owner
-    if (membership.user_id == actor.user.id and 
-        membership.role == CompanyMembership.Role.OWNER and 
+    if (membership.user_id == actor.user.id and
+        membership.role == CompanyMembership.Role.OWNER and
         new_role != CompanyMembership.Role.OWNER):
         return CommandResult.fail("Cannot demote yourself from owner. Transfer ownership first.")
-    
+
     # Capture old permissions BEFORE overwrite
     old_codes = set(membership.permissions.values_list("code", flat=True))
-    
+
     old_role = membership.role
     # Predict permissions after role change based on defaults (read model)
     # Use Python-side filtering to avoid JSONField __contains (unsupported on SQLite)
@@ -1082,7 +1079,7 @@ def update_membership_role(
     )
     granted = sorted(new_codes - old_codes)
     revoked = sorted(old_codes - new_codes)
-    
+
     # Emit event
     event = emit_event(
         actor=actor,
@@ -1105,7 +1102,7 @@ def update_membership_role(
             policy="role_change_resets_permissions_to_defaults",
         ).to_dict(),
     )
-    
+
     _process_projections(actor.company)
     membership = CompanyMembership.objects.get(public_id=membership.public_id)
     return CommandResult.ok(membership, event=event)
@@ -1128,22 +1125,22 @@ def deactivate_membership(
     """
     from accounts.authz import require
     require(actor, "company.manage_users")
-    
+
     try:
         membership = CompanyMembership.objects.select_related("user", "company").get(
             pk=membership_id, company=actor.company
         )
     except CompanyMembership.DoesNotExist:
         return CommandResult.fail("Membership not found.")
-    
+
     # Cannot deactivate the owner
     if membership.role == CompanyMembership.Role.OWNER:
         return CommandResult.fail("Cannot deactivate the company owner.")
-    
+
     # Cannot deactivate yourself
     if membership.user_id == actor.user.id:
         return CommandResult.fail("Cannot deactivate your own membership.")
-    
+
     # Emit event
     event = emit_event(
         actor=actor,
@@ -1160,7 +1157,7 @@ def deactivate_membership(
             company_public_id=str(actor.company.public_id),
         ).to_dict(),
     )
-    
+
     _process_projections(actor.company)
     return CommandResult.ok({"deactivated": True}, event=event)
 
@@ -1188,14 +1185,14 @@ def grant_permission(
     """
     from accounts.authz import require
     require(actor, "company.manage_permissions")
-    
+
     try:
         membership = CompanyMembership.objects.select_related("user").get(
             pk=membership_id, company=actor.company
         )
     except CompanyMembership.DoesNotExist:
         return CommandResult.fail("Membership not found.")
-    
+
     if isinstance(permission_code, (list, tuple, set)):
         permission_codes = list(permission_code)
     else:
@@ -1210,7 +1207,7 @@ def grant_permission(
     missing = set(permission_codes) - found_codes
     if missing:
         return CommandResult.fail(f"Permission(s) not found: {sorted(missing)}")
-    
+
     # Check if already granted
     if membership.permissions.filter(code__in=permission_codes).exists():
         return CommandResult.fail("Permission already granted.")
@@ -1258,14 +1255,14 @@ def revoke_permission(
     """
     from accounts.authz import require
     require(actor, "company.manage_permissions")
-    
+
     try:
         membership = CompanyMembership.objects.select_related("user").get(
             pk=membership_id, company=actor.company
         )
     except CompanyMembership.DoesNotExist:
         return CommandResult.fail("Membership not found.")
-    
+
     if isinstance(permission_code, (list, tuple, set)):
         permission_codes = list(permission_code)
     else:
@@ -1321,33 +1318,33 @@ def bulk_set_permissions(
     """
     from accounts.authz import require
     require(actor, "company.manage_permissions")
-    
+
     try:
         membership = CompanyMembership.objects.select_related("user").get(
             pk=membership_id, company=actor.company
         )
     except CompanyMembership.DoesNotExist:
         return CommandResult.fail("Membership not found.")
-    
+
     # Validate all permission codes
     permissions = NxPermission.objects.filter(code__in=permission_codes)
     found_codes = set(permissions.values_list("code", flat=True))
     missing = set(permission_codes) - found_codes
     if missing:
         return CommandResult.fail(f"Unknown permissions: {missing}")
-    
+
     # Get current permissions for comparison
     old_codes = set(membership.permissions.values_list("code", flat=True))
     new_codes = set(permission_codes)
-    
+
     # Calculate changes for event
     granted = new_codes - old_codes
     revoked = old_codes - new_codes
-    
+
     # Emit event
     payload = ",".join(sorted(permission_codes)).encode()
     digest = hashlib.sha256(payload).hexdigest()[:12]
-    
+
     event = emit_event(
         actor=actor,
         event_type=EventTypes.MEMBERSHIP_PERMISSIONS_UPDATED,
@@ -1374,7 +1371,7 @@ def bulk_set_permissions(
         "granted": list(granted),
         "revoked": list(revoked),
     }, event=event)
-    
+
 @transaction.atomic
 def update_company(
     actor: ActorContext,
@@ -1388,31 +1385,31 @@ def update_company(
     """
     # 1. Authorization
     require(actor, "company.update")
-    
+
     # 2. Load company
     try:
         company = Company.objects.get(id=company_id)
     except Company.DoesNotExist:
         return CommandResult.fail("Company not found.")
-    
+
     # 3. Validate actor belongs to this company
     if actor.company_id != company.id:
         return CommandResult.fail("Cannot update another company.")
-    
+
     # 4. Build changes dict
     allowed_fields = {"name", "name_ar", "slug", "is_active"}
     changes = {}
-    
+
     for field, new_value in updates.items():
         if field not in allowed_fields:
             continue
         old_value = getattr(company, field)
         if old_value != new_value:
             changes[field] = {"old": old_value, "new": new_value}
-    
+
     if not changes:
         return CommandResult.ok({"company": company, "message": "No changes"})
-    
+
     # 5. Emit event
     emit_event(
         company=company,
@@ -1429,11 +1426,11 @@ def update_company(
             "changes": changes,
         }),
     )
-    
+
     # 6. Process projections (projection will apply the changes)
     _process_projections(company)
-    
-    
+
+
     # 7. Reload and return
     company.refresh_from_db()
     return CommandResult.ok({"company": company})
@@ -1451,37 +1448,37 @@ def update_company_settings(
     """
     # 1. Authorization
     require(actor, "company.settings.update")
-    
+
     company = actor.company
-    
+
     # 2. Build changes
     allowed_settings = {
         "name", "name_ar", "default_currency", "fiscal_year_start_month",
         "thousand_separator", "decimal_separator", "decimal_places", "date_format",
     }
     changes = {}
-    
+
     for setting, new_value in settings.items():
         if setting not in allowed_settings:
             continue
         old_value = getattr(company, setting)
         if old_value != new_value:
             changes[setting] = {"old": old_value, "new": new_value}
-    
+
     if not changes:
         return CommandResult.ok({"company": company, "message": "No changes"})
-    
+
     # 3. Validate settings
     if "default_currency" in changes:
         new_currency = changes["default_currency"]["new"]
         if len(new_currency) != 3:
             return CommandResult.fail("Currency must be 3-letter ISO code.")
-    
+
     if "fiscal_year_start_month" in changes:
         new_month = changes["fiscal_year_start_month"]["new"]
         if not (1 <= new_month <= 12):
             return CommandResult.fail("Fiscal year start month must be 1-12.")
-    
+
     # 4. Emit event
     emit_event(
         company=company,
@@ -1498,10 +1495,10 @@ def update_company_settings(
             "changes": changes,
         }),
     )
-    
+
     # 5. Process projections
     _process_projections(company)
-    
+
     # 6. Return
     company.refresh_from_db()
     return CommandResult.ok({"company": company})
@@ -1523,6 +1520,7 @@ def upload_company_logo(
         CommandResult with company and logo URL
     """
     import os
+
     from django.core.files.storage import default_storage
 
     # 1. Authorization
@@ -1606,7 +1604,8 @@ def delete_company_logo(actor: ActorContext) -> CommandResult:
         CommandResult confirming deletion
     """
     from django.core.files.storage import default_storage
-    from events.types import EventTypes, CompanyLogoDeletedData
+
+    from events.types import CompanyLogoDeletedData, EventTypes
 
     # 1. Authorization
     require(actor, "company.settings.update")
@@ -1657,6 +1656,7 @@ def delete_company_logo(actor: ActorContext) -> CommandResult:
 
 import secrets
 
+
 def _generate_verification_token() -> str:
     """Generate a secure random token for email verification."""
     return secrets.token_urlsafe(32)
@@ -1684,8 +1684,9 @@ def create_verification_token(user, ip_address: str = "") -> CommandResult:
     Returns:
         CommandResult with raw token (to send via email)
     """
-    from accounts.models import EmailVerificationToken
     from datetime import timedelta
+
+    from accounts.models import EmailVerificationToken
 
     # Delete any existing tokens for this user
     EmailVerificationToken.objects.filter(user=user).delete()
@@ -1800,8 +1801,8 @@ def verify_email(token: str, ip_address: str = "") -> CommandResult:
     Returns:
         CommandResult with verification status
     """
-    from accounts.models import EmailVerificationToken
     from accounts.email_service import send_admin_approval_notification
+    from accounts.models import EmailVerificationToken
 
     # Hash the provided token
     token_hash = _hash_token(token)
@@ -2161,7 +2162,7 @@ def delete_unverified_user(admin_user, user_id: int) -> CommandResult:
         email = user.email
 
         # Delete associated memberships and companies they own
-        from accounts.models import CompanyMembership, Company
+        from accounts.models import CompanyMembership
 
         memberships = CompanyMembership.objects.filter(user=user)
         for membership in memberships:
@@ -2290,10 +2291,11 @@ def create_invitation(
     Returns:
         CommandResult with invitation info
     """
-    from accounts.authz import require
-    from accounts.models import Invitation
-    from accounts.email_service import send_invitation_email
     from datetime import timedelta
+
+    from accounts.authz import require
+    from accounts.email_service import send_invitation_email
+    from accounts.models import Invitation
 
     require(actor, "company.manage_users")
 
@@ -2737,10 +2739,11 @@ def resend_invitation(
     Returns:
         CommandResult
     """
-    from accounts.authz import require
-    from accounts.models import Invitation
-    from accounts.email_service import send_invitation_email
     from datetime import timedelta
+
+    from accounts.authz import require
+    from accounts.email_service import send_invitation_email
+    from accounts.models import Invitation
 
     require(actor, "company.manage_users")
 
@@ -3130,7 +3133,7 @@ def complete_onboarding(
 
     # ---- Step 2: Fiscal year & periods ----
     if fiscal_year > 0:
-        from projections.models import FiscalYear, FiscalPeriod
+        from projections.models import FiscalPeriod, FiscalYear
         from projections.write_barrier import projection_writes_allowed
 
         with projection_writes_allowed():
@@ -3225,8 +3228,9 @@ def _fiscal_end_date(year: int, start_month: int):
 
 def _create_periods(company, fiscal_year_num: int, num_periods: int, current_period: int, start_month: int = 1):
     """Create fiscal periods for a fiscal year."""
-    import datetime
     import calendar
+    import datetime
+
     from projections.models import FiscalPeriod
 
     start = _fiscal_start_date(fiscal_year_num, start_month)

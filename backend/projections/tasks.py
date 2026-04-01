@@ -18,7 +18,6 @@ Usage:
     # Configure in Django admin -> Periodic Tasks
 """
 import logging
-from typing import Optional
 
 from celery import shared_task
 from django.conf import settings
@@ -36,7 +35,7 @@ logger = logging.getLogger(__name__)
 def process_company_projections(
     self,
     company_id: int,
-    projection_names: Optional[list] = None,
+    projection_names: list | None = None,
     limit: int = 1000,
 ) -> dict:
     """
@@ -266,7 +265,6 @@ def check_projection_health(self) -> dict:
     """
     from accounts.models import Company
     from accounts.rls import rls_bypass
-    from events.models import EventBookmark
     from projections.base import projection_registry
 
     threshold = getattr(settings, "PROJECTION_LAG_THRESHOLD", 1000)

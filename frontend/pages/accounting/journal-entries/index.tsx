@@ -3,7 +3,7 @@ import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import { Plus, Download, FileSpreadsheet, FileText, List, Rows } from "lucide-react";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
@@ -19,56 +19,54 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { PageHeader, EmptyState, LoadingSpinner, StatusBadge } from "@/components/common";
-import { useJournalEntries } from "@/queries/useJournalEntries";
+import { PageHeader, EmptyState, StatusBadge } from "@/components/common";
+import { PaginatedTable } from "@/components/common/PaginatedTable";
+import type { ColumnDef } from "@/components/common/PaginatedTable";
+import { usePaginatedJournalEntries } from "@/queries/useJournalEntries";
 import { useAuth } from "@/contexts/AuthContext";
 import { exportService, ExportFormat } from "@/services/export.service";
 import { useToast } from "@/components/ui/toaster";
 import { useCompanyFormat } from "@/hooks/useCompanyFormat";
+import type { JournalEntry } from "@/types/journal";
 
 export default function JournalEntriesPage() {
   const { t } = useTranslation(["common", "accounting"]);
   const router = useRouter();
   const { toast } = useToast();
   const { company } = useAuth();
-  const { formatCurrency, formatAmount, formatDate } = useCompanyFormat();
+  const { formatCurrency, formatDate } = useCompanyFormat();
   const [search, setSearch] = useState("");
   const [isExporting, setIsExporting] = useState(false);
   const [activeTab, setActiveTab] = useState("posted");
 
-  const { data: entries, isLoading } = useJournalEntries();
+  // Pagination + sorting state
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  const [ordering, setOrdering] = useState("-entry_number");
 
-  // Split entries into posted vs drafts/incomplete
-  const { postedEntries, draftEntries } = useMemo(() => {
-    if (!entries) return { postedEntries: [], draftEntries: [] };
-    const posted = entries.filter(
-      (e) => e.status === "POSTED" || e.status === "REVERSED"
-    );
-    const drafts = entries.filter(
-      (e) => e.status === "DRAFT" || e.status === "INCOMPLETE"
-    );
-    return { postedEntries: posted, draftEntries: drafts };
-  }, [entries]);
+  const statusFilter = activeTab === "posted" ? "POSTED" : undefined;
 
-  const currentEntries = activeTab === "posted" ? postedEntries : draftEntries;
-
-  const filteredEntries = currentEntries.filter((entry) => {
-    if (!search) return true;
-    const searchLower = search.toLowerCase();
-    return (
-      entry.entry_number?.toLowerCase().includes(searchLower) ||
-      entry.memo?.toLowerCase().includes(searchLower) ||
-      entry.date.includes(search)
-    );
+  const { data: response, isLoading } = usePaginatedJournalEntries({
+    status: statusFilter,
+    search: search || undefined,
+    page,
+    page_size: pageSize,
+    ordering,
   });
+
+  const entries = response?.results || [];
+  const totalCount = response?.count || 0;
+  const totalPages = response?.total_pages || 1;
+
+  // Reset page when tab or search changes
+  const handleTabChange = (tab: string) => {
+    setActiveTab(tab);
+    setPage(1);
+  };
+  const handleSearchChange = (value: string) => {
+    setSearch(value);
+    setPage(1);
+  };
 
   const handleExport = async (format: ExportFormat, detail: 'summary' | 'lines') => {
     setIsExporting(true);
@@ -93,84 +91,76 @@ export default function JournalEntriesPage() {
     }
   };
 
-  const renderTable = (items: typeof filteredEntries, showStatus: boolean) => {
-    if (isLoading) {
-      return (
-        <div className="flex justify-center py-12">
-          <LoadingSpinner size="lg" />
-        </div>
-      );
-    }
+  const showStatus = activeTab !== "posted";
 
-    if (!items || items.length === 0) {
-      return (
-        <EmptyState
-          title={t("messages.noData")}
-          action={
-            <Link href="/accounting/journal-entries/new">
-              <Button>
-                <Plus className="me-2 h-4 w-4" />
-                {t("accounting:journalEntries.createEntry")}
-              </Button>
-            </Link>
-          }
-        />
-      );
-    }
-
-    return (
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>{t("accounting:journalEntry.entryNumber")}</TableHead>
-            <TableHead>{t("accounting:journalEntry.date")}</TableHead>
-            <TableHead>{t("accounting:journalEntry.memo")}</TableHead>
-            <TableHead className="text-center">{t("accounting:journalEntry.currency")}</TableHead>
-            <TableHead className="text-end">{t("accounting:totals.totalDebit")}</TableHead>
-            <TableHead className="text-end">{t("accounting:totals.totalCredit")}</TableHead>
-            {showStatus && <TableHead>{t("accounting:journalEntry.status")}</TableHead>}
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {items.map((entry) => (
-            <TableRow
-              key={entry.id}
-              className="cursor-pointer"
-              onClick={() => router.push(`/accounting/journal-entries/${entry.id}`)}
-            >
-              <TableCell className="font-mono ltr-code">
-                {entry.entry_number || `#${entry.id}`}
-              </TableCell>
-              <TableCell>{formatDate(entry.date)}</TableCell>
-              <TableCell className="max-w-xs truncate">
-                {entry.memo || "-"}
-              </TableCell>
-              <TableCell className="text-center">
-                {entry.currency && entry.currency !== (company?.functional_currency || company?.default_currency || "USD") ? (
-                  <span className="inline-flex items-center rounded-full bg-blue-500/10 px-2 py-0.5 text-xs font-medium text-blue-500">
-                    {entry.currency}
-                  </span>
-                ) : (
-                  <span className="text-xs text-muted-foreground">{entry.currency || "-"}</span>
-                )}
-              </TableCell>
-              <TableCell className="text-end ltr-number">
-                {formatCurrency(entry.total_debit, entry.currency)}
-              </TableCell>
-              <TableCell className="text-end ltr-number">
-                {formatCurrency(entry.total_credit, entry.currency)}
-              </TableCell>
-              {showStatus && (
-                <TableCell>
-                  <StatusBadge status={entry.status} />
-                </TableCell>
-              )}
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    );
-  };
+  const columns: ColumnDef<JournalEntry>[] = [
+    {
+      key: "entry_number",
+      label: t("accounting:journalEntry.entryNumber"),
+      sortable: true,
+      render: (entry) => (
+        <span className="font-mono ltr-code">
+          {entry.entry_number || `#${entry.id}`}
+        </span>
+      ),
+    },
+    {
+      key: "date",
+      label: t("accounting:journalEntry.date"),
+      sortable: true,
+      render: (entry) => formatDate(entry.date),
+    },
+    {
+      key: "memo",
+      label: t("accounting:journalEntry.memo"),
+      sortable: true,
+      className: "max-w-xs truncate",
+      render: (entry) => entry.memo || "-",
+    },
+    {
+      key: "currency",
+      label: t("accounting:journalEntry.currency"),
+      sortable: true,
+      className: "text-center",
+      render: (entry) => {
+        const funcCurrency = company?.functional_currency || company?.default_currency || "USD";
+        if (entry.currency && entry.currency !== funcCurrency) {
+          return (
+            <span className="inline-flex items-center rounded-full bg-blue-500/10 px-2 py-0.5 text-xs font-medium text-blue-500">
+              {entry.currency}
+            </span>
+          );
+        }
+        return <span className="text-xs text-muted-foreground">{entry.currency || "-"}</span>;
+      },
+    },
+    {
+      key: "total_debit",
+      label: t("accounting:totals.totalDebit"),
+      className: "text-end",
+      render: (entry) => (
+        <span className="ltr-number">{formatCurrency(entry.total_debit, entry.currency)}</span>
+      ),
+    },
+    {
+      key: "total_credit",
+      label: t("accounting:totals.totalCredit"),
+      className: "text-end",
+      render: (entry) => (
+        <span className="ltr-number">{formatCurrency(entry.total_credit, entry.currency)}</span>
+      ),
+    },
+    ...(showStatus
+      ? [
+          {
+            key: "status",
+            label: t("accounting:journalEntry.status"),
+            sortable: true,
+            render: (entry: JournalEntry) => <StatusBadge status={entry.status} />,
+          },
+        ]
+      : []),
+  ];
 
   return (
     <AppLayout>
@@ -242,39 +232,83 @@ export default function JournalEntriesPage() {
 
         <Card>
           <CardContent className="pt-6">
-            <Tabs value={activeTab} onValueChange={setActiveTab}>
+            <Tabs value={activeTab} onValueChange={handleTabChange}>
               <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 mb-6">
                 <TabsList>
                   <TabsTrigger value="posted">
                     {t("status.posted", "Posted")}
-                    {postedEntries.length > 0 && (
-                      <span className="ms-2 rounded-full bg-muted px-2 py-0.5 text-xs">
-                        {postedEntries.length}
-                      </span>
-                    )}
                   </TabsTrigger>
                   <TabsTrigger value="drafts">
                     {t("accounting:journalEntries.drafts", "Drafts")}
-                    {draftEntries.length > 0 && (
-                      <span className="ms-2 rounded-full bg-muted px-2 py-0.5 text-xs">
-                        {draftEntries.length}
-                      </span>
-                    )}
                   </TabsTrigger>
                 </TabsList>
                 <Input
                   placeholder={t("actions.search")}
                   value={search}
-                  onChange={(e) => setSearch(e.target.value)}
+                  onChange={(e) => handleSearchChange(e.target.value)}
                   className="max-w-sm"
                 />
               </div>
 
               <TabsContent value="posted">
-                {renderTable(filteredEntries, false)}
+                <PaginatedTable
+                  data={entries}
+                  columns={columns}
+                  keyExtractor={(e) => e.id}
+                  page={page}
+                  pageSize={pageSize}
+                  totalCount={totalCount}
+                  totalPages={totalPages}
+                  onPageChange={setPage}
+                  onPageSizeChange={setPageSize}
+                  ordering={ordering}
+                  onOrderingChange={setOrdering}
+                  onRowClick={(entry) => router.push(`/accounting/journal-entries/${entry.id}`)}
+                  isLoading={isLoading}
+                  emptyState={
+                    <EmptyState
+                      title={t("messages.noData")}
+                      action={
+                        <Link href="/accounting/journal-entries/new">
+                          <Button>
+                            <Plus className="me-2 h-4 w-4" />
+                            {t("accounting:journalEntries.createEntry")}
+                          </Button>
+                        </Link>
+                      }
+                    />
+                  }
+                />
               </TabsContent>
               <TabsContent value="drafts">
-                {renderTable(filteredEntries, true)}
+                <PaginatedTable
+                  data={entries}
+                  columns={columns}
+                  keyExtractor={(e) => e.id}
+                  page={page}
+                  pageSize={pageSize}
+                  totalCount={totalCount}
+                  totalPages={totalPages}
+                  onPageChange={setPage}
+                  onPageSizeChange={setPageSize}
+                  ordering={ordering}
+                  onOrderingChange={setOrdering}
+                  onRowClick={(entry) => router.push(`/accounting/journal-entries/${entry.id}`)}
+                  isLoading={isLoading}
+                  emptyState={
+                    <EmptyState
+                      title={t("messages.noData")}
+                      action={
+                        <Link href="/accounting/journal-entries/new">
+                          <Button>
+                            <Plus className="me-2 h-4 w-4" />
+                            {t("accounting:journalEntries.createEntry")}
+                          </Button>
+                        </Link>
+                      }
+                    />
+                  }
+                />
               </TabsContent>
             </Tabs>
           </CardContent>

@@ -27,9 +27,9 @@ Usage:
     clear_rls_context()
 """
 from contextlib import contextmanager
-from typing import Optional
 
-from django.db import connection as default_connection, connections
+from django.db import connection as default_connection
+from django.db import connections
 
 
 def _get_connection(conn=None):
@@ -55,7 +55,7 @@ def _get_connection(conn=None):
         return default_connection
 
 
-def _set_config(name: str, value: Optional[str], *, conn=None) -> None:
+def _set_config(name: str, value: str | None, *, conn=None) -> None:
     """
     Set a PostgreSQL session configuration parameter.
 
@@ -80,7 +80,7 @@ def _set_config(name: str, value: Optional[str], *, conn=None) -> None:
             )
 
 
-def _get_config(name: str, *, conn=None) -> Optional[str]:
+def _get_config(name: str, *, conn=None) -> str | None:
     """
     Get a PostgreSQL session configuration parameter.
 
@@ -103,7 +103,7 @@ def _get_config(name: str, *, conn=None) -> Optional[str]:
     return row[0] if row else None
 
 
-def set_current_company_id(company_id: Optional[int], *, conn=None) -> None:
+def set_current_company_id(company_id: int | None, *, conn=None) -> None:
     """
     Set the current company ID for RLS filtering.
 
@@ -117,7 +117,7 @@ def set_current_company_id(company_id: Optional[int], *, conn=None) -> None:
     _set_config("app.current_company_id", str(company_id), conn=conn)
 
 
-def get_current_company_id(*, conn=None) -> Optional[int]:
+def get_current_company_id(*, conn=None) -> int | None:
     """
     Get the current company ID from the database session.
 

@@ -15,13 +15,13 @@ BusinessEvent supports three payload storage strategies:
 """
 
 import uuid
-from django.db import models, transaction, IntegrityError
+
 from django.conf import settings
+from django.db import IntegrityError, models, transaction
 from django.db.models import F
 from django.utils import timezone
 
 from accounts.models import Company
-
 
 # =============================================================================
 # LEPH: EventPayload Model for External Storage
@@ -618,4 +618,4 @@ class EventBookmark(models.Model):
 
 
 # Import ExternalAPIKey so Django discovers it for migrations
-from events.api_keys import ExternalAPIKey  # noqa: E402, F401
+from events.api_keys import ExternalAPIKey  # noqa: F401

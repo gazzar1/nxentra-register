@@ -31,7 +31,7 @@ from django.http import JsonResponse
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from accounts import rls
-from tenant.context import set_tenant_context, clear_tenant_context
+from tenant.context import clear_tenant_context, set_tenant_context
 from tenant.models import TenantDirectory
 
 
@@ -101,7 +101,8 @@ class TenantRlsMiddleware:
 
     def __init__(self, get_response):
         self.get_response = get_response
-        self.jwt_auth = JWTAuthentication()
+        from accounts.authentication import CookieJWTAuthentication
+        self.jwt_auth = CookieJWTAuthentication()
         # Cache for TenantDirectory lookups (cleared per-process)
         self._tenant_cache = {}
 

@@ -13,29 +13,30 @@ Covers:
 - API endpoints
 """
 
-import pytest
-from decimal import Decimal
 from datetime import date
+from decimal import Decimal
 from uuid import uuid4
-from io import BytesIO
 
+import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
 
 from accounting.mappings import ModuleAccountMapping
-from accounting.models import Account, JournalEntry, JournalLine
-from events.models import BusinessEvent
-from events.types import EventTypes
-
-from clinic.models import Patient, PatientDocument, Doctor, Visit, Invoice, Payment
+from accounting.models import Account, JournalEntry
 from clinic.commands import (
-    create_patient, update_patient, upload_document,
+    complete_visit,
     create_doctor,
-    create_visit, complete_visit,
-    create_invoice, issue_invoice,
-    receive_payment, void_payment,
+    create_invoice,
+    create_patient,
+    create_visit,
+    issue_invoice,
+    receive_payment,
+    update_patient,
+    upload_document,
+    void_payment,
 )
+from clinic.models import Invoice, Visit
 from clinic.projections import ClinicAccountingProjection
-
+from events.types import EventTypes
 
 # =============================================================================
 # Fixtures

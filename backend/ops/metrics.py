@@ -12,12 +12,9 @@ Metrics exposed:
 """
 import logging
 import time
-from functools import wraps
 
-from django.conf import settings
 from django.http import HttpResponse
 from django.views import View
-from django.db import connections
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +41,7 @@ def _init_prometheus():
         return _prometheus_available
 
     try:
-        from prometheus_client import Counter, Gauge, Histogram, Info, REGISTRY
+        from prometheus_client import Gauge, Histogram
 
         # Event metrics
         _events_total = Gauge(
@@ -105,7 +102,6 @@ def collect_metrics():
         return
 
     try:
-        from accounts.models import Company
         from accounts.rls import rls_bypass
         from events.models import BusinessEvent, EventBookmark
         from tenant.models import TenantDirectory
@@ -161,7 +157,7 @@ def get_prometheus_response():
         )
 
     try:
-        from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
         # Collect current values
         collect_metrics()

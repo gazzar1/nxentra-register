@@ -1,9 +1,10 @@
 import os
 import sys
-from pathlib import Path
-from dotenv import load_dotenv
-import dj_database_url
 from datetime import timedelta
+from pathlib import Path
+
+import dj_database_url
+from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env", override=False)  # Real env vars take precedence
@@ -37,6 +38,17 @@ if not DEBUG:
 
     # Deny iframing by default (clickjacking protection, reinforces XFrameOptionsMiddleware)
     X_FRAME_OPTIONS = "DENY"
+
+    # Content Security Policy — mitigates XSS by restricting script/style/connect sources.
+    # Override CSP_* env vars per-environment if you need to allow additional origins.
+    SECURE_CSP_ENABLED = True
+    CSP_DEFAULT_SRC = ("'self'",)
+    CSP_SCRIPT_SRC = ("'self'",)
+    CSP_STYLE_SRC = ("'self'", "'unsafe-inline'")  # Tailwind/Radix needs inline styles
+    CSP_IMG_SRC = ("'self'", "data:", "https:")
+    CSP_FONT_SRC = ("'self'", "https:", "data:")
+    CSP_CONNECT_SRC = ("'self'",)
+    CSP_FRAME_ANCESTORS = ("'none'",)
 
     # Validate SECRET_KEY is not the default
     if SECRET_KEY == "changeme":
@@ -100,6 +112,7 @@ MIDDLEWARE = [
     "accounts.middleware.TenantRlsMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "ops.middleware.ContentSecurityPolicyMiddleware",
 ]
 
 ROOT_URLCONF = "nxentra_backend.urls"
@@ -138,6 +151,7 @@ DATABASES = {
 # Format: DATABASE_URL_TENANT_{ALIAS} = postgresql://...
 # Example: DATABASE_URL_TENANT_ACME -> db alias "tenant_acme"
 import re
+
 for key, value in os.environ.items():
     match = re.match(r"^DATABASE_URL_TENANT_(.+)$", key)
     if match:
@@ -181,14 +195,23 @@ AUTH_USER_MODEL = "accounts.User"
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        #"rest_framework.authentication.SessionAuthentication",   # أضف ده
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
-        
+        "accounts.authentication.CookieJWTAuthentication",  # HttpOnly cookie first
+        "rest_framework_simplejwt.authentication.JWTAuthentication",  # Bearer header fallback
     ),
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",
     )
 }
+
+# =============================================================================
+# Auth Cookie Configuration
+# =============================================================================
+AUTH_COOKIE_ACCESS_NAME = "nxentra_access"
+AUTH_COOKIE_REFRESH_NAME = "nxentra_refresh"
+AUTH_COOKIE_SECURE = not DEBUG  # HTTPS-only in production
+AUTH_COOKIE_SAMESITE = "Lax"
+AUTH_COOKIE_HTTPONLY = True
+AUTH_COOKIE_REFRESH_PATH = "/api/auth/"  # Refresh cookie only sent to auth endpoints
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
@@ -209,17 +232,17 @@ CSRF_TRUSTED_ORIGINS = os.getenv(
     "http://localhost:3000"
 ).split(",")
 
-# Production guard: warn about wildcard / localhost origins (log only, don't crash).
+# Production guard: REJECT wildcard / localhost origins (hard fail, not just a warning).
 if not DEBUG and not TESTING:
-    import logging as _logging
+    from django.core.exceptions import ImproperlyConfigured as _IC
     _bad_origins = {"*", "http://localhost:3000", "http://127.0.0.1:3000"}
     if _bad_origins & set(CORS_ALLOWED_ORIGINS):
-        _logging.warning(
+        raise _IC(
             "CORS_ALLOWED_ORIGINS contains localhost or wildcard entries. "
             "Set production domains in the CORS_ALLOWED_ORIGINS env var."
         )
     if _bad_origins & set(CSRF_TRUSTED_ORIGINS):
-        _logging.warning(
+        raise _IC(
             "CSRF_TRUSTED_ORIGINS contains localhost or wildcard entries. "
             "Set production domains in the CSRF_TRUSTED_ORIGINS env var."
         )
@@ -339,6 +362,7 @@ CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 # Structured Logging Configuration
 # =============================================================================
 from ops.logging_config import get_logging_config
+
 LOGGING = get_logging_config(DEBUG)
 
 # =============================================================================

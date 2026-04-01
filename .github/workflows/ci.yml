@@ -116,6 +116,37 @@ jobs:
         run: npm run build
 
   # ─────────────────────────────────────────────────────────
+  # Backend: lint + type check (ruff + mypy)
+  # ─────────────────────────────────────────────────────────
+  backend-lint:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Ruff lint
+        run: ruff check
+
+      - name: Ruff format check
+        run: ruff format --check --diff
+
+      - name: mypy type check
+        run: mypy --config-file pyproject.toml .
+        continue-on-error: true
+
+  # ─────────────────────────────────────────────────────────
   # Security: deploy checks + dependency audit
   # ─────────────────────────────────────────────────────────
   security-check:
@@ -156,12 +187,12 @@ jobs:
         run: python manage.py check --deploy --fail-level WARNING
 
       - name: Django migration check (no pending migrations)
-        run: python manage.py migrate --check --no-input 2>&1 || echo "::warning::Unapplied migrations detected"
+        run: python manage.py migrate --check --no-input
         env:
           DATABASE_URL: "sqlite:///ci_check.sqlite3"
 
       - name: npm audit (production dependencies)
-        run: npm audit --production --audit-level=high || echo "::warning::npm audit found vulnerabilities"
+        run: npm audit --production --audit-level=high
         working-directory: frontend
 
   # ─────────────────────────────────────────────────────────
@@ -169,7 +200,7 @@ jobs:
   # ─────────────────────────────────────────────────────────
   quality-gate:
     name: Quality Gate
-    needs: [backend-tests, backend-e2e, frontend-build, security-check]
+    needs: [backend-tests, backend-e2e, frontend-build, backend-lint, security-check]
     runs-on: ubuntu-latest
     steps:
       - name: All checks passed

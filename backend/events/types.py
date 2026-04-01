@@ -30,12 +30,11 @@ When modifying event schemas:
 3. Consider event versioning for breaking changes
 """
 
-from dataclasses import dataclass, asdict, field, fields as dataclass_fields
-from typing import Optional, List, Dict, Any, Type, get_type_hints, get_origin, get_args, Union
-from decimal import Decimal
+from dataclasses import asdict, dataclass, field
+from dataclasses import fields as dataclass_fields
 from datetime import date, datetime
-import inspect
-
+from decimal import Decimal
+from typing import Any, Dict, List, Optional, Union, get_args, get_origin, get_type_hints
 
 # =============================================================================
 # Event Validation
@@ -218,10 +217,12 @@ def validate_event_payload(event_type: str, data: Dict[str, Any]) -> None:
                 )
 
     # Domain-specific validation for common semantics
+    from datetime import date as _date
+    from datetime import datetime as _datetime
     from decimal import Decimal, InvalidOperation
-    from datetime import date as _date, datetime as _datetime
-    from accounts.models import CompanyMembership
+
     from accounting.models import Account, JournalEntry
+    from accounts.models import CompanyMembership
 
     enum_fields = {
         "account_type": set(Account.AccountType.values),
@@ -341,7 +342,7 @@ class BaseEventData:
                 result[key] = value.isoformat()
             elif isinstance(value, list):
                 result[key] = [
-                    item.to_dict() if hasattr(item, 'to_dict') else 
+                    item.to_dict() if hasattr(item, 'to_dict') else
                     (dict(item) if isinstance(item, dict) else item)
                     for item in value
                 ]
@@ -1358,6 +1359,60 @@ class SalesInvoiceVoidedData(BaseEventData):
 
 
 # =============================================================================
+# Sales Credit Note Events
+# =============================================================================
+
+@dataclass
+class SalesCreditNoteCreatedData(BaseEventData):
+    """Data for sales.credit_note_created event."""
+    credit_note_public_id: str
+    company_public_id: str
+    credit_note_number: str
+    credit_note_date: str
+    invoice_public_id: str
+    invoice_number: str
+    customer_public_id: str
+    customer_code: str
+    reason: str = ""
+    total_amount: str = "0"
+
+
+@dataclass
+class SalesCreditNotePostedData(BaseEventData):
+    """Data for sales.credit_note_posted event."""
+    credit_note_public_id: str
+    company_public_id: str
+    credit_note_number: str
+    credit_note_date: str
+    invoice_public_id: str
+    invoice_number: str
+    customer_public_id: str
+    customer_code: str
+    journal_entry_public_id: str
+    posted_at: str
+    posted_by_id: int
+    posted_by_email: str
+    subtotal: str = "0"
+    total_discount: str = "0"
+    total_tax: str = "0"
+    total_amount: str = "0"
+    reason: str = ""
+
+
+@dataclass
+class SalesCreditNoteVoidedData(BaseEventData):
+    """Data for sales.credit_note_voided event."""
+    credit_note_public_id: str
+    company_public_id: str
+    credit_note_number: str
+    reversing_journal_entry_public_id: str
+    voided_at: str
+    voided_by_id: int
+    voided_by_email: str
+    reason: str = ""
+
+
+# =============================================================================
 # Purchases Module Events
 # =============================================================================
 
@@ -1461,6 +1516,95 @@ class PurchaseBillVoidedData(BaseEventData):
     company_public_id: str
     bill_number: str
     reversing_journal_entry_public_id: str
+    voided_at: str
+    voided_by_id: int
+    voided_by_email: str
+    reason: str = ""
+
+
+# =============================================================================
+# Purchase Order Events
+# =============================================================================
+
+@dataclass
+class PurchaseOrderCreatedData(BaseEventData):
+    order_public_id: str
+    company_public_id: str
+    order_number: str
+    order_date: str
+    vendor_public_id: str
+    vendor_code: str
+    status: str = "DRAFT"
+    total_amount: str = "0"
+    expected_delivery_date: Optional[str] = None
+    reference: str = ""
+
+
+@dataclass
+class PurchaseOrderUpdatedData(BaseEventData):
+    order_public_id: str
+    company_public_id: str
+    order_number: str
+
+
+@dataclass
+class PurchaseOrderApprovedData(BaseEventData):
+    order_public_id: str
+    company_public_id: str
+    order_number: str
+    approved_at: str
+    approved_by_id: int
+    approved_by_email: str
+
+
+@dataclass
+class PurchaseOrderCancelledData(BaseEventData):
+    order_public_id: str
+    company_public_id: str
+    order_number: str
+    reason: str = ""
+
+
+@dataclass
+class PurchaseOrderClosedData(BaseEventData):
+    order_public_id: str
+    company_public_id: str
+    order_number: str
+
+
+@dataclass
+class GoodsReceiptCreatedData(BaseEventData):
+    receipt_public_id: str
+    company_public_id: str
+    receipt_number: str
+    receipt_date: str
+    order_public_id: str
+    order_number: str
+    vendor_public_id: str
+    warehouse_public_id: str
+
+
+@dataclass
+class GoodsReceiptPostedData(BaseEventData):
+    receipt_public_id: str
+    company_public_id: str
+    receipt_number: str
+    receipt_date: str
+    order_public_id: str
+    order_number: str
+    vendor_public_id: str
+    warehouse_public_id: str
+    posted_at: str
+    posted_by_id: int
+    posted_by_email: str
+    lines: List[dict] = field(default_factory=list)
+
+
+@dataclass
+class GoodsReceiptVoidedData(BaseEventData):
+    receipt_public_id: str
+    company_public_id: str
+    receipt_number: str
     voided_at: str
     voided_by_id: int
     voided_by_email: str
@@ -1942,12 +2086,27 @@ class EventTypes:
     SALES_INVOICE_UPDATED = "sales.invoice_updated"
     SALES_INVOICE_POSTED = "sales.invoice_posted"
     SALES_INVOICE_VOIDED = "sales.invoice_voided"
+    SALES_CREDIT_NOTE_CREATED = "sales.credit_note_created"
+    SALES_CREDIT_NOTE_POSTED = "sales.credit_note_posted"
+    SALES_CREDIT_NOTE_VOIDED = "sales.credit_note_voided"
 
     # Purchases module events
     PURCHASES_BILL_CREATED = "purchases.bill_created"
     PURCHASES_BILL_UPDATED = "purchases.bill_updated"
     PURCHASES_BILL_POSTED = "purchases.bill_posted"
     PURCHASES_BILL_VOIDED = "purchases.bill_voided"
+
+    # Purchase Order events
+    PURCHASES_ORDER_CREATED = "purchases.order_created"
+    PURCHASES_ORDER_UPDATED = "purchases.order_updated"
+    PURCHASES_ORDER_APPROVED = "purchases.order_approved"
+    PURCHASES_ORDER_CANCELLED = "purchases.order_cancelled"
+    PURCHASES_ORDER_CLOSED = "purchases.order_closed"
+
+    # Goods Receipt events
+    PURCHASES_GOODS_RECEIPT_CREATED = "purchases.goods_receipt_created"
+    PURCHASES_GOODS_RECEIPT_POSTED = "purchases.goods_receipt_posted"
+    PURCHASES_GOODS_RECEIPT_VOIDED = "purchases.goods_receipt_voided"
 
     # Inventory module events
     INVENTORY_WAREHOUSE_CREATED = "inventory.warehouse_created"
@@ -2222,12 +2381,23 @@ EVENT_DATA_CLASSES = {
     EventTypes.SALES_INVOICE_UPDATED: SalesInvoiceUpdatedData,
     EventTypes.SALES_INVOICE_POSTED: SalesInvoicePostedData,
     EventTypes.SALES_INVOICE_VOIDED: SalesInvoiceVoidedData,
+    EventTypes.SALES_CREDIT_NOTE_CREATED: SalesCreditNoteCreatedData,
+    EventTypes.SALES_CREDIT_NOTE_POSTED: SalesCreditNotePostedData,
+    EventTypes.SALES_CREDIT_NOTE_VOIDED: SalesCreditNoteVoidedData,
 
     # Purchases module events
     EventTypes.PURCHASES_BILL_CREATED: PurchaseBillCreatedData,
     EventTypes.PURCHASES_BILL_UPDATED: PurchaseBillUpdatedData,
     EventTypes.PURCHASES_BILL_POSTED: PurchaseBillPostedData,
     EventTypes.PURCHASES_BILL_VOIDED: PurchaseBillVoidedData,
+    EventTypes.PURCHASES_ORDER_CREATED: PurchaseOrderCreatedData,
+    EventTypes.PURCHASES_ORDER_UPDATED: PurchaseOrderUpdatedData,
+    EventTypes.PURCHASES_ORDER_APPROVED: PurchaseOrderApprovedData,
+    EventTypes.PURCHASES_ORDER_CANCELLED: PurchaseOrderCancelledData,
+    EventTypes.PURCHASES_ORDER_CLOSED: PurchaseOrderClosedData,
+    EventTypes.PURCHASES_GOODS_RECEIPT_CREATED: GoodsReceiptCreatedData,
+    EventTypes.PURCHASES_GOODS_RECEIPT_POSTED: GoodsReceiptPostedData,
+    EventTypes.PURCHASES_GOODS_RECEIPT_VOIDED: GoodsReceiptVoidedData,
 
     # Inventory module events
     EventTypes.INVENTORY_WAREHOUSE_CREATED: WarehouseCreatedData,

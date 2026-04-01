@@ -7,12 +7,12 @@ representing raw records.
 """
 
 import csv
-import json
 import io
-from typing import Tuple, List, Dict, Any
+import json
+from typing import Any
 
 
-def parse_csv(file) -> List[Dict[str, Any]]:
+def parse_csv(file) -> list[dict[str, Any]]:
     """
     Parse a CSV file into a list of dicts.
 
@@ -42,7 +42,7 @@ def parse_csv(file) -> List[Dict[str, Any]]:
     return records
 
 
-def parse_xlsx(file) -> List[Dict[str, Any]]:
+def parse_xlsx(file) -> list[dict[str, Any]]:
     """
     Parse an Excel file into a list of dicts.
 
@@ -89,7 +89,7 @@ def parse_xlsx(file) -> List[Dict[str, Any]]:
                     record[headers[i]] = ""
                 elif isinstance(value, (int, float)):
                     # Preserve numeric precision
-                    record[headers[i]] = str(value) if not isinstance(value, float) or value == int(value) else str(value)
+                    record[headers[i]] = str(value)
                 else:
                     record[headers[i]] = str(value).strip()
         records.append(record)
@@ -97,7 +97,7 @@ def parse_xlsx(file) -> List[Dict[str, Any]]:
     return records
 
 
-def parse_json(file) -> List[Dict[str, Any]]:
+def parse_json(file) -> list[dict[str, Any]]:
     """
     Parse a JSON file into a list of dicts.
 
@@ -142,7 +142,7 @@ def parse_json(file) -> List[Dict[str, Any]]:
     return result
 
 
-def detect_and_parse(file, filename: str) -> Tuple[str, List[Dict[str, Any]]]:
+def detect_and_parse(file, filename: str) -> tuple[str, list[dict[str, Any]]]:
     """
     Detect file type from extension and parse accordingly.
 

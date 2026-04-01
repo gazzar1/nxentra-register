@@ -13,14 +13,14 @@ Models:
 - AccountDimensionRule: Moved to accounting.models (re-exported here for backward compat)
 """
 
-from django.db import models
-from django.conf import settings
-from django.utils import timezone
-from decimal import Decimal
 import uuid
+from decimal import Decimal
 
-from accounts.models import Company
+from django.conf import settings
+from django.db import models
+
 from accounting.models import Account, AccountDimensionRule, AnalysisDimension, AnalysisDimensionValue  # noqa: F401
+from accounts.models import Company
 
 
 class ScratchpadRow(models.Model):

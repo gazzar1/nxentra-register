@@ -15,13 +15,12 @@ import logging
 from datetime import date, datetime
 from decimal import Decimal
 
-from events.types import EventTypes
-from events.models import BusinessEvent
-from projections.base import BaseProjection
 from accounting.mappings import ModuleAccountMapping
+from events.models import BusinessEvent
+from events.types import EventTypes
+from projections.base import BaseProjection
 
-from .je_builder import build_journal_entry, JERequest, JELine
-
+from .je_builder import JELine, JERequest, build_journal_entry
 
 logger = logging.getLogger(__name__)
 

@@ -2,20 +2,19 @@
 """
 Tests for the Gate C pilot_readiness management command.
 """
-import pytest
+from datetime import UTC, date, datetime
 from decimal import Decimal
-from datetime import date, datetime, timezone as tz
 from io import StringIO
 
+import pytest
 from django.core.management import call_command
 
 from shopify_connector.models import (
-    ShopifyStore,
     ShopifyOrder,
     ShopifyPayout,
     ShopifyPayoutTransaction,
+    ShopifyStore,
 )
-
 
 # ── Fixtures ─────────────────────────────────────────────────────
 
@@ -42,7 +41,7 @@ def order(db, company, store):
         total_tax=Decimal("5.00"),
         currency="USD",
         financial_status="paid",
-        shopify_created_at=datetime(2026, 3, 1, tzinfo=tz.utc),
+        shopify_created_at=datetime(2026, 3, 1, tzinfo=UTC),
         order_date=date(2026, 3, 1),
         status=ShopifyOrder.Status.PROCESSED,
     )
@@ -73,7 +72,7 @@ def settled_payout(db, company, store, order):
         currency="USD",
         source_order_id=1001,
         source_type="order",
-        processed_at=datetime(2026, 3, 1, tzinfo=tz.utc),
+        processed_at=datetime(2026, 3, 1, tzinfo=UTC),
     )
     return payout
 

@@ -1,6 +1,8 @@
 # accounting/consumers.py
 import json
+
 from channels.generic.websocket import AsyncWebsocketConsumer
+
 
 class AccountConsumer(AsyncWebsocketConsumer):
     async def connect(self):

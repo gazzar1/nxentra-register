@@ -10,24 +10,23 @@ Covers:
 5. Exception status transitions
 """
 
-import pytest
 from datetime import date, timedelta
 from decimal import Decimal
-from uuid import uuid4
 
+import pytest
+
+from bank_connector.exceptions import (
+    _create_exception,
+    auto_resolve_matched,
+    detect_unmatched_bank_transactions,
+    scan_all,
+)
 from bank_connector.models import (
     BankAccount,
     BankStatement,
     BankTransaction,
     ReconciliationException,
 )
-from bank_connector.exceptions import (
-    _create_exception,
-    detect_unmatched_bank_transactions,
-    auto_resolve_matched,
-    scan_all,
-)
-
 
 # =============================================================================
 # Fixtures

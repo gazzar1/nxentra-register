@@ -15,18 +15,18 @@ Tests:
 3. Payload hash integrity: get_data() verifies SHA-256 hash on read.
 """
 
-import pytest
 from decimal import Decimal
 from uuid import uuid4
 
+import pytest
 from django.utils import timezone
 
+from accounting.aggregates import load_journal_entry_aggregate
 from events.emitter import emit_event_no_actor
-from events.models import BusinessEvent, EventPayload
-from events.types import EventTypes
+from events.models import BusinessEvent
 from events.payload_policy import INLINE_MAX_SIZE
 from events.serialization import estimate_json_size
-from accounting.aggregates import load_journal_entry_aggregate
+from events.types import EventTypes
 
 
 @pytest.mark.django_db

@@ -13,16 +13,15 @@ touches the event store or journal entries directly.
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional
 
 from django.http import HttpRequest
 
 from .canonical import (
-    ParsedOrder,
-    ParsedRefund,
-    ParsedPayout,
     ParsedDispute,
     ParsedFulfillment,
+    ParsedOrder,
+    ParsedPayout,
+    ParsedRefund,
 )
 
 
@@ -136,7 +135,7 @@ class BasePlatformConnector(ABC):
         """
         ...
 
-    def parse_dispute(self, payload: dict) -> Optional[ParsedDispute]:
+    def parse_dispute(self, payload: dict) -> ParsedDispute | None:
         """
         Parse a platform dispute/chargeback payload.
 
@@ -145,7 +144,7 @@ class BasePlatformConnector(ABC):
         """
         return None
 
-    def parse_fulfillment(self, payload: dict) -> Optional[ParsedFulfillment]:
+    def parse_fulfillment(self, payload: dict) -> ParsedFulfillment | None:
         """
         Parse a platform fulfillment payload.
 
@@ -174,6 +173,30 @@ class BasePlatformConnector(ABC):
             Company instance or None.
         """
         return None
+
+    def store_webhook_record(
+        self,
+        canonical_topic: str,
+        parsed,
+        payload: dict,
+        company,
+        event_id,
+    ) -> None:
+        """
+        Store a platform-specific local record after event emission.
+
+        Override in subclass to create local models (e.g. StripeCharge,
+        ShopifyOrder) for reconciliation and audit purposes.
+
+        Called by PlatformWebhookView after the PLATFORM_* event is emitted.
+
+        Args:
+            canonical_topic: The canonical topic (e.g. "order_paid")
+            parsed: The parsed canonical dataclass (ParsedOrder, etc.)
+            payload: The raw webhook JSON payload
+            company: The resolved Company instance
+            event_id: The UUID of the emitted BusinessEvent
+        """
 
     def __repr__(self):
         return f"<{self.__class__.__name__} slug={self.platform_slug!r}>"

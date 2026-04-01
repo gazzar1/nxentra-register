@@ -1,10 +1,11 @@
 # edim/admin.py
 from django.contrib import admin
+
 from edim.models import (
-    SourceSystem,
-    MappingProfile,
     IdentityCrosswalk,
     IngestionBatch,
+    MappingProfile,
+    SourceSystem,
     StagedRecord,
 )
 

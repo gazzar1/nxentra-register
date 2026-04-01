@@ -110,128 +110,127 @@ class Command(BaseCommand):
         )
 
         # Set up export context
-        with tenant_context(company.id, db_alias, is_shared):
-            with rls_bypass():
-                # Query events
-                events_qs = BusinessEvent.objects.filter(
-                    company=company,
-                    company_sequence__gt=options["after_sequence"],
-                ).order_by("company_sequence")
+        with tenant_context(company.id, db_alias, is_shared), rls_bypass():
+            # Query events
+            events_qs = BusinessEvent.objects.filter(
+                company=company,
+                company_sequence__gt=options["after_sequence"],
+            ).order_by("company_sequence")
 
-                total_count = events_qs.count()
-                self.stdout.write(f"Found {total_count} events to export")
+            total_count = events_qs.count()
+            self.stdout.write(f"Found {total_count} events to export")
 
-                if total_count == 0:
-                    self.stdout.write(
-                        self.style.WARNING("No events to export. Creating empty export file.")
-                    )
+            if total_count == 0:
+                self.stdout.write(
+                    self.style.WARNING("No events to export. Creating empty export file.")
+                )
 
-                # Build export data
-                export_data = {
-                    "version": "1.0",
-                    "exported_at": datetime.now().isoformat(),
-                    "company": {
-                        "id": company.id,
-                        "public_id": str(company.public_id),
-                        "slug": company.slug,
-                        "name": company.name,
-                    },
-                    "source_db_alias": db_alias,
-                    "after_sequence": options["after_sequence"],
-                    "event_count": total_count,
-                    "events": [],
+            # Build export data
+            export_data = {
+                "version": "1.0",
+                "exported_at": datetime.now().isoformat(),
+                "company": {
+                    "id": company.id,
+                    "public_id": str(company.public_id),
+                    "slug": company.slug,
+                    "name": company.name,
+                },
+                "source_db_alias": db_alias,
+                "after_sequence": options["after_sequence"],
+                "event_count": total_count,
+                "events": [],
+            }
+
+            # Hash for verification
+            hasher = hashlib.sha256()
+
+            # Cache for external payloads
+            payload_cache = {}
+
+            # Export events
+            for i, event in enumerate(events_qs.iterator(chunk_size=1000)):
+                if (i + 1) % 1000 == 0:
+                    self.stdout.write(f"  Processed {i + 1}/{total_count} events...")
+
+                event_dict = {
+                    "id": str(event.id),
+                    "event_type": event.event_type,
+                    "aggregate_type": event.aggregate_type,
+                    "aggregate_id": event.aggregate_id,
+                    "sequence": event.sequence,
+                    "company_sequence": event.company_sequence,
+                    "idempotency_key": event.idempotency_key,
+                    "occurred_at": event.occurred_at.isoformat() if event.occurred_at else None,
+                    "recorded_at": event.recorded_at.isoformat() if event.recorded_at else None,
+                    "payload_storage": event.payload_storage,
+                    "payload_hash": event.payload_hash,
+                    "origin": event.origin,
+                    "metadata": event.metadata or {},
+                    "schema_version": event.schema_version,
+                    "caused_by_user_id": event.caused_by_user_id,
+                    "caused_by_event_id": str(event.caused_by_event_id) if event.caused_by_event_id else None,
                 }
 
-                # Hash for verification
-                hasher = hashlib.sha256()
-
-                # Cache for external payloads
-                payload_cache = {}
-
-                # Export events
-                for i, event in enumerate(events_qs.iterator(chunk_size=1000)):
-                    if (i + 1) % 1000 == 0:
-                        self.stdout.write(f"  Processed {i + 1}/{total_count} events...")
-
-                    event_dict = {
-                        "id": str(event.id),
-                        "event_type": event.event_type,
-                        "aggregate_type": event.aggregate_type,
-                        "aggregate_id": event.aggregate_id,
-                        "sequence": event.sequence,
-                        "company_sequence": event.company_sequence,
-                        "idempotency_key": event.idempotency_key,
-                        "occurred_at": event.occurred_at.isoformat() if event.occurred_at else None,
-                        "recorded_at": event.recorded_at.isoformat() if event.recorded_at else None,
-                        "payload_storage": event.payload_storage,
-                        "payload_hash": event.payload_hash,
-                        "origin": event.origin,
-                        "metadata": event.metadata or {},
-                        "schema_version": event.schema_version,
-                        "caused_by_user_id": event.caused_by_user_id,
-                        "caused_by_event_id": str(event.caused_by_event_id) if event.caused_by_event_id else None,
-                    }
-
-                    # Handle payload based on storage type
-                    if event.payload_storage == "inline":
-                        event_dict["data"] = event.data
-                    elif event.payload_storage == "external":
-                        if options["include_payloads"]:
-                            # Include external payload inline
-                            if event.payload_ref_id:
-                                if event.payload_ref_id not in payload_cache:
-                                    payload_cache[event.payload_ref_id] = event.payload_ref.payload
-                                event_dict["data"] = payload_cache[event.payload_ref_id]
-                            else:
-                                event_dict["data"] = {}
+                # Handle payload based on storage type
+                if event.payload_storage == "inline":
+                    event_dict["data"] = event.data
+                elif event.payload_storage == "external":
+                    if options["include_payloads"]:
+                        # Include external payload inline
+                        if event.payload_ref_id:
+                            if event.payload_ref_id not in payload_cache:
+                                payload_cache[event.payload_ref_id] = event.payload_ref.payload
+                            event_dict["data"] = payload_cache[event.payload_ref_id]
                         else:
-                            # Reference only
-                            event_dict["payload_ref_id"] = event.payload_ref_id
-                            if event.payload_ref:
-                                event_dict["payload_content_hash"] = event.payload_ref.content_hash
-                    elif event.payload_storage == "chunked":
-                        if options["include_payloads"]:
-                            # Reconstruct chunked payload
-                            try:
-                                event_dict["data"] = event.get_data()
-                            except Exception as e:
-                                self.stdout.write(
-                                    self.style.WARNING(
-                                        f"  Could not reconstruct chunked payload for event {event.id}: {e}"
-                                    )
+                            event_dict["data"] = {}
+                    else:
+                        # Reference only
+                        event_dict["payload_ref_id"] = event.payload_ref_id
+                        if event.payload_ref:
+                            event_dict["payload_content_hash"] = event.payload_ref.content_hash
+                elif event.payload_storage == "chunked":
+                    if options["include_payloads"]:
+                        # Reconstruct chunked payload
+                        try:
+                            event_dict["data"] = event.get_data()
+                        except Exception as e:
+                            self.stdout.write(
+                                self.style.WARNING(
+                                    f"  Could not reconstruct chunked payload for event {event.id}: {e}"
                                 )
-                                event_dict["data"] = event.data  # Header only
-                        else:
+                            )
                             event_dict["data"] = event.data  # Header only
+                    else:
+                        event_dict["data"] = event.data  # Header only
 
-                    # Update hash for verification
-                    hasher.update(
-                        json.dumps(event_dict, cls=TenantExportEncoder, sort_keys=True).encode()
-                    )
-
-                    export_data["events"].append(event_dict)
-
-                # Add verification hash
-                export_data["export_hash"] = hasher.hexdigest()
-
-                # Write to file
-                indent = 2 if options["pretty"] else None
-                with open(options["out"], "w", encoding="utf-8") as f:
-                    json.dump(export_data, f, cls=TenantExportEncoder, indent=indent)
-
-                self.stdout.write(
-                    self.style.SUCCESS(
-                        f"\nExported {len(export_data['events'])} events to {options['out']}"
-                    )
+                # Update hash for verification
+                hasher.update(
+                    json.dumps(event_dict, cls=TenantExportEncoder, sort_keys=True).encode()
                 )
-                self.stdout.write(f"Export hash: {export_data['export_hash']}")
 
-                # Update TenantDirectory if migrating
-                if tenant_entry and tenant_entry.status == TenantDirectory.Status.MIGRATING:
-                    last_seq = export_data["events"][-1]["company_sequence"] if export_data["events"] else 0
-                    tenant_entry.migration_event_sequence = last_seq
-                    tenant_entry.migration_export_hash = export_data["export_hash"]
-                    tenant_entry.save(
-                        update_fields=["migration_event_sequence", "migration_export_hash", "updated_at"]
-                    )
-                    self.stdout.write("Updated TenantDirectory with export metadata")
+                export_data["events"].append(event_dict)
+
+            # Add verification hash
+            export_data["export_hash"] = hasher.hexdigest()
+
+            # Write to file
+            indent = 2 if options["pretty"] else None
+            with open(options["out"], "w", encoding="utf-8") as f:
+                json.dump(export_data, f, cls=TenantExportEncoder, indent=indent)
+
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"\nExported {len(export_data['events'])} events to {options['out']}"
+                )
+            )
+            self.stdout.write(f"Export hash: {export_data['export_hash']}")
+
+            # Update TenantDirectory if migrating
+            if tenant_entry and tenant_entry.status == TenantDirectory.Status.MIGRATING:
+                last_seq = export_data["events"][-1]["company_sequence"] if export_data["events"] else 0
+                tenant_entry.migration_event_sequence = last_seq
+                tenant_entry.migration_export_hash = export_data["export_hash"]
+                tenant_entry.save(
+                    update_fields=["migration_event_sequence", "migration_export_hash", "updated_at"]
+                )
+                self.stdout.write("Updated TenantDirectory with export metadata")

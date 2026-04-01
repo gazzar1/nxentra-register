@@ -16,16 +16,16 @@ import logging
 from decimal import Decimal
 
 logger = logging.getLogger("nxentra.projections.views")
+from datetime import date as date_type
+
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from datetime import date as date_type
-
-from accounts.authz import resolve_actor, require
-from projections.models import AccountBalance, FiscalPeriod, FiscalPeriodConfig, FiscalYear, PeriodAccountBalance
+from accounts.authz import require, resolve_actor
 from projections.account_balance import AccountBalanceProjection
+from projections.models import AccountBalance, FiscalPeriod, FiscalPeriodConfig, FiscalYear
 
 
 class DimensionFilterMixin:
@@ -358,25 +358,25 @@ class AccountBalanceListView(APIView):
     def get(self, request):
         actor = resolve_actor(request)
         require(actor, "reports.view")
-        
+
         # Get balances
         balances = AccountBalance.objects.filter(
             company=actor.company,
         ).select_related("account").order_by("account__code")
-        
+
         # Optional filtering
         account_type = request.query_params.get("type")
         if account_type:
             balances = balances.filter(account__account_type=account_type)
-        
+
         min_balance = request.query_params.get("min_balance")
         if min_balance:
             balances = balances.filter(balance__gte=Decimal(min_balance))
-        
+
         has_activity = request.query_params.get("has_activity")
         if has_activity == "true":
             balances = balances.filter(entry_count__gt=0)
-        
+
         # Build response
         data = [
             {
@@ -410,7 +410,7 @@ class AccountBalanceDetailView(APIView):
     def get(self, request, code):
         actor = resolve_actor(request)
         require(actor, "reports.view")
-        
+
         try:
             balance = AccountBalance.objects.select_related(
                 "account", "last_event"
@@ -443,7 +443,7 @@ class AccountBalanceDetailView(APIView):
                     {"detail": "Account not found."},
                     status=status.HTTP_404_NOT_FOUND,
                 )
-        
+
         return Response({
             "account_id": balance.account_id,
             "account_code": balance.account.code,
@@ -471,16 +471,15 @@ class ProjectionStatusView(APIView):
     def get(self, request):
         actor = resolve_actor(request)
         require(actor, "reports.view")
-        
+
         from projections.base import projection_registry
-        from events.models import EventBookmark
-        
+
         projections = []
-        
+
         for projection in projection_registry.all():
             bookmark = projection.get_bookmark(actor.company)
             lag = projection.get_lag(actor.company)
-            
+
             projections.append({
                 "projection_name": projection.name,
                 "company_id": actor.company.id,
@@ -498,10 +497,10 @@ class ProjectionStatusView(APIView):
                     else None
                 ),
             })
-        
+
         total_lag = sum(p["lag"] for p in projections)
         all_healthy = all(p["is_healthy"] for p in projections)
-        
+
         return Response({
             "projections": projections,
             "total_lag": total_lag,
@@ -553,7 +552,6 @@ class BalanceSheetView(DimensionFilterMixin, APIView):
 
     def _get_current_balance_sheet(self, actor):
         """Get balance sheet from current projected balances."""
-        from accounting.models import Account
         from datetime import date
 
         balances = AccountBalance.objects.filter(
@@ -572,10 +570,11 @@ class BalanceSheetView(DimensionFilterMixin, APIView):
         This queries events to compute cumulative balances up to the end
         of the selected period range.
         """
+        from datetime import datetime
+
         from accounting.models import Account
         from events.models import BusinessEvent
         from events.types import EventTypes
-        from datetime import datetime
 
         # Get the period date boundaries
         periods = FiscalPeriod.objects.filter(
@@ -920,8 +919,9 @@ class IncomeStatementView(DimensionFilterMixin, APIView):
 
     def _get_current_income_statement(self, actor):
         """Get income statement from current projected balances."""
-        from accounting.models import Account
         from datetime import date
+
+        from accounting.models import Account
 
         balances = AccountBalance.objects.filter(
             company=actor.company,
@@ -992,10 +992,11 @@ class IncomeStatementView(DimensionFilterMixin, APIView):
         Compute income statement for a specific period range with optional
         analysis dimension filtering.
         """
+        from datetime import datetime
+
         from accounting.models import Account, AnalysisDimension, AnalysisDimensionValue
         from events.models import BusinessEvent
         from events.types import EventTypes
-        from datetime import datetime
 
         # Get the period date boundaries
         periods = FiscalPeriod.objects.filter(
@@ -1239,12 +1240,13 @@ class DimensionAnalysisView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+
         from accounting.models import (
-            Account, AnalysisDimension, JournalEntry,
-            JournalLine, JournalLineAnalysis,
+            Account,
+            AnalysisDimension,
+            JournalEntry,
+            JournalLineAnalysis,
         )
-        from django.db.models import Sum, Q
-        from django.db.models.functions import Coalesce
 
         actor = resolve_actor(request)
         require(actor, "reports.view")
@@ -1455,8 +1457,10 @@ class DimensionDrilldownView(APIView):
 
     def get(self, request):
         from accounting.models import (
-            AnalysisDimension, AnalysisDimensionValue,
-            JournalEntry, JournalLineAnalysis,
+            AnalysisDimension,
+            AnalysisDimensionValue,
+            JournalEntry,
+            JournalLineAnalysis,
         )
 
         actor = resolve_actor(request)
@@ -1591,12 +1595,14 @@ class DimensionCrossTabView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from accounting.models import (
-            Account, AnalysisDimension, AnalysisDimensionValue,
-            JournalEntry, JournalLineAnalysis,
-        )
-        from django.db.models import Q
         from collections import defaultdict
+
+        from accounting.models import (
+            Account,
+            AnalysisDimension,
+            JournalEntry,
+            JournalLineAnalysis,
+        )
 
         actor = resolve_actor(request)
         require(actor, "reports.view")
@@ -1835,10 +1841,11 @@ class DimensionPLComparisonView(DimensionFilterMixin, APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        from datetime import datetime
+
         from accounting.models import Account, AnalysisDimension, AnalysisDimensionValue
         from events.models import BusinessEvent
         from events.types import EventTypes
-        from datetime import datetime
 
         actor = resolve_actor(request)
         require(actor, "reports.view")
@@ -2520,7 +2527,7 @@ class FiscalYearClosingEntriesView(APIView):
         actor = resolve_actor(request)
         require(actor, "reports.view")
 
-        from accounting.models import JournalEntry, JournalLine
+        from accounting.models import JournalEntry
 
         closing_entries = JournalEntry.objects.filter(
             company=actor.company,
@@ -2721,9 +2728,9 @@ class AdminProjectionDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, name):
+        from events.models import BusinessEvent
         from projections.base import projection_registry
         from projections.models import ProjectionStatus
-        from events.models import BusinessEvent
 
         # Check admin permission
         if not (request.user.is_staff or request.user.is_superuser):
@@ -2845,14 +2852,16 @@ class AdminProjectionRebuildView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, name):
-        import time
         import logging
+        import time
+
         from django.db import transaction
-        from projections.base import projection_registry
-        from projections.models import ProjectionStatus, ProjectionAppliedEvent
-        from projections.write_barrier import projection_writes_allowed
-        from events.models import BusinessEvent, EventBookmark
+
         from accounts.rls import rls_bypass
+        from events.models import BusinessEvent, EventBookmark
+        from projections.base import projection_registry
+        from projections.models import ProjectionAppliedEvent, ProjectionStatus
+        from projections.write_barrier import projection_writes_allowed
 
         logger = logging.getLogger(__name__)
 
@@ -2942,9 +2951,8 @@ class AdminProjectionRebuildView(APIView):
                 batch_size = 100
 
                 for event in events.iterator(chunk_size=batch_size):
-                    with transaction.atomic():
-                        with projection_writes_allowed():
-                            projection.handle(event)
+                    with transaction.atomic(), projection_writes_allowed():
+                        projection.handle(event)
 
                     processed += 1
                     last_sequence = event.company_sequence
@@ -2969,7 +2977,7 @@ class AdminProjectionRebuildView(APIView):
                 proj_status.mark_rebuild_error(str(e))
                 logger.exception(f"Projection rebuild failed: {name} @ {company.slug}")
                 return Response(
-                    {"detail": f"Rebuild failed: {str(e)}"},
+                    {"detail": f"Rebuild failed: {e!s}"},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
 
@@ -2987,9 +2995,9 @@ class AdminProjectionPauseView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, name):
-        from projections.base import projection_registry
-        from events.models import EventBookmark
         from accounts.rls import rls_bypass
+        from events.models import EventBookmark
+        from projections.base import projection_registry
 
         # Check admin permission
         if not (request.user.is_staff or request.user.is_superuser):
@@ -3036,10 +3044,10 @@ class AdminProjectionClearErrorView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, name):
+        from accounts.rls import rls_bypass
+        from events.models import EventBookmark
         from projections.base import projection_registry
         from projections.models import ProjectionStatus
-        from events.models import EventBookmark
-        from accounts.rls import rls_bypass
 
         # Check admin permission
         if not (request.user.is_staff or request.user.is_superuser):
@@ -3102,7 +3110,6 @@ class AdminProjectionProcessView(APIView):
 
     def post(self, request, name):
         from projections.base import projection_registry
-        from accounts.rls import rls_bypass
 
         # Check admin permission
         if not (request.user.is_staff or request.user.is_superuser):
@@ -3150,11 +3157,12 @@ class DashboardChartsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        from collections import defaultdict
+        from datetime import datetime, timedelta
+
         from accounting.models import Account
         from events.models import BusinessEvent
         from events.types import EventTypes
-        from collections import defaultdict
-        from datetime import datetime, timedelta
 
         actor = resolve_actor(request)
         require(actor, "reports.view")
@@ -3421,7 +3429,8 @@ class DashboardWidgetsView(APIView):
             # 4. Reconciliation Health — exception + match summary
             # ═══════════════════════════════════════════════════════════════
             try:
-                from bank_connector.models import BankTransaction as BankTx, ReconciliationException
+                from bank_connector.models import BankTransaction as BankTx
+                from bank_connector.models import ReconciliationException
                 bank_qs = BankTx.objects.filter(company=actor.company)
                 total_bank = bank_qs.count()
                 matched_bank = bank_qs.filter(status="MATCHED").count()
@@ -3459,7 +3468,7 @@ class DashboardWidgetsView(APIView):
         except Exception as e:
             logger.exception("DashboardWidgetsView error")
             return Response(
-                {"detail": f"Dashboard widgets error: {str(e)}"},
+                {"detail": f"Dashboard widgets error: {e!s}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
@@ -3479,7 +3488,7 @@ class SubledgerTieOutView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from accounting.models import Account, Customer, Vendor, JournalLine
+        from accounting.models import Account, JournalLine
 
         actor = resolve_actor(request)
         require(actor, "reports.view")
@@ -3550,7 +3559,7 @@ class SubledgerTieOutView(APIView):
             customer_balances[customer_code]["credit_total"] += line.credit_amount or Decimal("0.00")
 
         # Calculate customer balances (AR is debit-normal)
-        for code, data in customer_balances.items():
+        for _code, data in customer_balances.items():
             balance = data["debit_total"] - data["credit_total"]
             ar_tieout["customer_balances"].append({
                 "code": data["code"],
@@ -3630,7 +3639,7 @@ class SubledgerTieOutView(APIView):
             vendor_balances[vendor_code]["credit_total"] += line.credit_amount or Decimal("0.00")
 
         # Calculate vendor balances (AP is credit-normal)
-        for code, data in vendor_balances.items():
+        for _code, data in vendor_balances.items():
             balance = data["credit_total"] - data["debit_total"]
             ap_tieout["vendor_balances"].append({
                 "code": data["code"],
@@ -3802,9 +3811,10 @@ class TaxSummaryReportView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from django.db.models import Sum, Count
-        from sales.models import SalesInvoiceLine, SalesInvoice, TaxCode
-        from purchases.models import PurchaseBillLine, PurchaseBill
+        from django.db.models import Count, Sum
+
+        from purchases.models import PurchaseBill, PurchaseBillLine
+        from sales.models import SalesInvoice, SalesInvoiceLine
 
         actor = resolve_actor(request)
         require(actor, "reports.view")
@@ -3885,8 +3895,8 @@ class TaxSummaryReportView(APIView):
 
         # --- Output Tax (Shopify Orders) ---
         try:
-            from shopify_connector.models import ShopifyOrder
             from accounting.mappings import ModuleAccountMapping
+            from shopify_connector.models import ShopifyOrder
 
             shopify_tax_data = (
                 ShopifyOrder.objects
@@ -4080,8 +4090,8 @@ class CustomerBalanceDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, code):
-        from projections.models import CustomerBalance
         from accounting.models import Customer
+        from projections.models import CustomerBalance
 
         actor = resolve_actor(request)
         require(actor, "reports.view")
@@ -4198,8 +4208,8 @@ class VendorBalanceDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, code):
-        from projections.models import VendorBalance
         from accounting.models import Vendor
+        from projections.models import VendorBalance
 
         actor = resolve_actor(request)
         require(actor, "reports.view")
@@ -4283,8 +4293,10 @@ class AccountInquiryView(APIView):
 
     def get(self, request):
         from datetime import datetime
+
         from django.db.models import Q
-        from accounting.models import Account, JournalLine, JournalEntry, AnalysisDimension
+
+        from accounting.models import JournalEntry, JournalLine
 
         actor = resolve_actor(request)
         require(actor, "reports.view")
@@ -4528,10 +4540,8 @@ class CashFlowStatementView(APIView):
         self, actor, fiscal_year: int, period_from: int, period_to: int
     ):
         """Generate cash flow statement using indirect method."""
+
         from accounting.models import Account
-        from events.models import BusinessEvent
-        from events.types import EventTypes
-        from datetime import date
 
         # Get period date boundaries
         periods = FiscalPeriod.objects.filter(
@@ -4636,7 +4646,7 @@ class CashFlowStatementView(APIView):
                         # Let me adjust this
                         operating_adjustments.append({
                             "code": account.code,
-                            "name": f"Depreciation",
+                            "name": "Depreciation",
                             "name_ar": "الإهلاك",
                             "amount": str(-adjustment),
                         })
@@ -4778,10 +4788,11 @@ class CustomerStatementView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, code):
+        from datetime import date
+
         from accounting.models import Customer, JournalLine
-        from sales.models import SalesInvoice, ReceiptAllocation
         from projections.models import CustomerBalance
-        from datetime import date, timedelta
+        from sales.models import SalesInvoice
 
         actor = resolve_actor(request)
         require(actor, "reports.view")
@@ -4931,10 +4942,11 @@ class VendorStatementView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, code):
-        from accounting.models import Vendor, JournalLine
-        from sales.models import PaymentAllocation
+        from datetime import date
+
+        from accounting.models import JournalLine, Vendor
         from projections.models import VendorBalance
-        from datetime import date, timedelta
+        from sales.models import PaymentAllocation
 
         actor = resolve_actor(request)
         require(actor, "reports.view")
@@ -5095,7 +5107,8 @@ class CurrencyRevaluationView(APIView):
         """
         from django.db.models import Sum
         from django.db.models.functions import Coalesce
-        from accounting.models import JournalLine, ExchangeRate
+
+        from accounting.models import ExchangeRate, JournalLine
 
         functional_currency = company.functional_currency or company.default_currency
 
@@ -5276,8 +5289,8 @@ class CurrencyRevaluationView(APIView):
                 pass
 
         # Find the FX gain and FX loss accounts (prefer core mapping, fallback to role)
-        from accounting.models import Account
         from accounting.mappings import ModuleAccountMapping
+        from accounting.models import Account
 
         core_mapping = ModuleAccountMapping.get_mapping(actor.company, "core")
         fx_gain_account = core_mapping.get("FX_GAIN") or Account.objects.filter(
@@ -5301,7 +5314,7 @@ class CurrencyRevaluationView(APIView):
             )
 
         # Build journal entry lines
-        from accounting.commands import create_journal_entry, save_journal_entry_complete, post_journal_entry
+        from accounting.commands import create_journal_entry, post_journal_entry, save_journal_entry_complete
         functional_currency = actor.company.functional_currency or actor.company.default_currency
 
         # Revaluation lines: amounts are in functional currency but tagged with the
@@ -5535,7 +5548,8 @@ class TrialBalanceByCurrencyView(APIView):
     def get(self, request):
         from django.db.models import Sum
         from django.db.models.functions import Coalesce
-        from accounting.models import JournalLine, Account, ExchangeRate
+
+        from accounting.models import ExchangeRate, JournalLine
 
         actor = resolve_actor(request)
         require(actor, "reports.view")

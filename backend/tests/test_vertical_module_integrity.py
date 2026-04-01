@@ -8,17 +8,16 @@ are correctly declared, discovered, and registered at startup.
 
 import importlib
 import inspect
+from decimal import Decimal
+from uuid import uuid4
 
 import pytest
 from django.apps import apps as django_apps
 from django.utils.module_loading import import_string
-from decimal import Decimal
-from uuid import uuid4
 
-from events.types import EVENT_DATA_CLASSES, BaseEventData, FinancialEventData, EventTypes
-from projections.base import projection_registry, BaseProjection
 from accounting.mappings import ModuleAccountMapping
-
+from events.types import EVENT_DATA_CLASSES, BaseEventData, EventTypes, FinancialEventData
+from projections.base import BaseProjection, projection_registry
 
 # =============================================================================
 # Projection integrity
@@ -342,11 +341,12 @@ class TestPropertyRegistrationRegression:
         Emit a rent.due_posted event, verify journal entries are created,
         then rebuild and verify the result is identical.
         """
-        from accounting.models import Account, JournalEntry, JournalLine
-        from properties.models import PropertyAccountMapping
-        from properties.event_types import RentDuePostedData
-        from events.emitter import emit_event
         from django.db import models as dj_models
+
+        from accounting.models import Account, JournalEntry, JournalLine
+        from events.emitter import emit_event
+        from properties.event_types import RentDuePostedData
+        from properties.models import PropertyAccountMapping
 
         # Create accounts
         ar_account = Account.objects.create(

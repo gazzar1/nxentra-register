@@ -16,12 +16,12 @@ from django.utils.html import format_html
 
 from .models import (
     Account,
-    JournalEntry,
-    JournalLine,
+    AccountAnalysisDefault,
     AnalysisDimension,
     AnalysisDimensionValue,
+    JournalEntry,
+    JournalLine,
     JournalLineAnalysis,
-    AccountAnalysisDefault,
 )
 
 

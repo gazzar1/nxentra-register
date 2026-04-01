@@ -15,90 +15,91 @@ Pattern:
 ALL state changes MUST go through commands to ensure events are emitted.
 """
 
-from django.db import transaction, IntegrityError
-from django.conf import settings
-from django.utils import timezone
 import hashlib
 import json
 import logging
 import uuid
 from decimal import Decimal
 
+from django.conf import settings
+from django.db import IntegrityError, transaction
+from django.utils import timezone
+
 logger = logging.getLogger("nxentra.accounting.commands")
 
-from accounts.authz import ActorContext, require
-from accounts.rls import rls_bypass
+from accounting.aggregates import load_account_aggregate, load_journal_entry_aggregate
+from accounting.dimension_validation import validate_line_dimensions
 from accounting.models import (
     Account,
-    JournalEntry,
-    JournalLine,
+    AccountAnalysisDefault,
     AnalysisDimension,
     AnalysisDimensionValue,
-    AccountAnalysisDefault,
     CompanySequence,
     Customer,
-    Vendor,
+    JournalEntry,
+    JournalLine,
     StatisticalEntry,
+    Vendor,
 )
-from accounting.aggregates import load_journal_entry_aggregate, load_account_aggregate
 from accounting.policies import (
-    can_edit_entry,
-    can_delete_entry,
-    can_delete_account,
     can_change_account_code,
     can_change_account_type,
+    can_delete_account,
     can_delete_dimension,
     can_delete_dimension_value,
+    can_delete_entry,
+    can_edit_entry,
+    can_post_operational_document,
     can_post_to_account,
     can_post_to_period,
-    can_post_operational_document,
-    validate_line_counterparty,
     validate_counterparty_exists,
+    validate_line_counterparty,
     validate_subledger_tieout,
 )
-from accounting.dimension_validation import validate_line_dimensions
+from accounts.authz import ActorContext, require
+from accounts.rls import rls_bypass
 from events.emitter import emit_event
-from projections.write_barrier import command_writes_allowed
 from events.types import (
-    EventTypes,
+    AccountAnalysisDefaultRemovedData,
+    AccountAnalysisDefaultSetData,
     AccountCreatedData,
-    AccountUpdatedData,
     AccountDeletedData,
+    AccountUpdatedData,
+    AnalysisDimensionCreatedData,
+    AnalysisDimensionDeletedData,
+    AnalysisDimensionUpdatedData,
+    AnalysisDimensionValueCreatedData,
+    AnalysisDimensionValueDeletedData,
+    AnalysisDimensionValueUpdatedData,
+    ClosingEntryGeneratedData,
+    ClosingEntryReversedData,
+    CustomerReceiptRecordedData,
+    EventTypes,
+    FiscalPeriodClosedData,
+    FiscalPeriodCurrentSetData,
+    FiscalPeriodDatesUpdatedData,
+    FiscalPeriodOpenedData,
+    FiscalPeriodRangeSetData,
+    FiscalPeriodsConfiguredData,
+    FiscalYearClosedData,
+    FiscalYearCloseReadinessCheckedData,
+    FiscalYearReopenedData,
     JournalEntryCreatedData,
-    JournalEntryUpdatedData,
+    JournalEntryDeletedData,
     JournalEntryPostedData,
     JournalEntryReversedData,
     JournalEntrySavedCompleteData,
-    JournalEntryDeletedData,
-    FiscalPeriodClosedData,
-    FiscalPeriodOpenedData,
-    FiscalPeriodsConfiguredData,
-    FiscalPeriodRangeSetData,
-    FiscalPeriodCurrentSetData,
-    FiscalPeriodDatesUpdatedData,
-    FiscalYearClosedData,
-    FiscalYearReopenedData,
-    FiscalYearCloseReadinessCheckedData,
-    ClosingEntryGeneratedData,
-    ClosingEntryReversedData,
-    JournalLineData,
-    AnalysisDimensionCreatedData,
-    AnalysisDimensionUpdatedData,
-    AnalysisDimensionDeletedData,
-    AnalysisDimensionValueCreatedData,
-    AnalysisDimensionValueUpdatedData,
-    AnalysisDimensionValueDeletedData,
-    AccountAnalysisDefaultSetData,
-    AccountAnalysisDefaultRemovedData,
+    JournalEntryUpdatedData,
     JournalLineAnalysisSetData,
-    CustomerReceiptRecordedData,
-    VendorPaymentRecordedData,
+    JournalLineData,
     StatisticalEntryCreatedData,
-    StatisticalEntryUpdatedData,
+    StatisticalEntryDeletedData,
     StatisticalEntryPostedData,
     StatisticalEntryReversedData,
-    StatisticalEntryDeletedData,
+    StatisticalEntryUpdatedData,
+    VendorPaymentRecordedData,
 )
+from projections.write_barrier import command_writes_allowed
 
 
 class CommandResult:
@@ -113,7 +114,7 @@ class CommandResult:
         else:
             error_message = result.error
     """
-    
+
     def __init__(self, success: bool, data=None, error: str = None, event=None):
         self.success = success
         self.data = data
@@ -177,8 +178,8 @@ def _fix_fx_rounding_dicts(je_lines, company, currency=None):
     adds a rounding line to the FX_ROUNDING account.
     Falls back to adjusting the largest line if no rounding account is configured.
     """
-    from accounting.models import Account
     from accounting.mappings import ModuleAccountMapping
+    from accounting.models import Account
 
     total_debit = sum(Decimal(str(l.get("debit", 0))) for l in je_lines)
     total_credit = sum(Decimal(str(l.get("credit", 0))) for l in je_lines)
@@ -805,15 +806,15 @@ def update_journal_entry(
     # Track changes
     changes = {}
     current_date = aggregate.date or (entry.date.isoformat() if entry.date else None)
-    
+
     if date is not None:
         new_date = date.isoformat() if hasattr(date, "isoformat") else str(date)
         if current_date != new_date:
             changes["date"] = {"old": current_date, "new": new_date}
-    
+
     if memo is not None and aggregate.memo != memo:
         changes["memo"] = {"old": aggregate.memo, "new": memo}
-    
+
     if memo_ar is not None and aggregate.memo_ar != memo_ar:
         changes["memo_ar"] = {"old": aggregate.memo_ar, "new": memo_ar}
 
@@ -1177,8 +1178,9 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
         if line_currency != functional_currency and not is_adjustment:
             # Auto-lookup rate if not explicitly provided (still default 1.0)
             if line_exchange_rate == Decimal("1.0"):
-                from accounting.models import ExchangeRate
                 from datetime import datetime
+
+                from accounting.models import ExchangeRate
                 entry_date = datetime.fromisoformat(aggregate.date or entry.date.isoformat()).date()
                 looked_up_rate = ExchangeRate.get_rate(
                     actor.company, line_currency, functional_currency, entry_date
@@ -1547,7 +1549,8 @@ def open_period(
     """
     require(actor, "periods.reopen")
 
-    from projections.models import FiscalPeriod, FiscalYear as FiscalYearModel
+    from projections.models import FiscalPeriod
+    from projections.models import FiscalYear as FiscalYearModel
 
     fiscal_period = FiscalPeriod.objects.filter(
         company=actor.company,
@@ -1613,8 +1616,8 @@ def _calculate_period_boundaries(fiscal_year: int, start_month: int, period_coun
     Returns:
         List of dicts with period, start_date, end_date, period_type
     """
-    from datetime import date
     import calendar
+    from datetime import date
 
     periods = []
 
@@ -1668,7 +1671,7 @@ def configure_periods(
     # Standard ERP: always 13 periods (12 monthly + 1 adjustment)
     period_count = 13
 
-    from projections.models import FiscalPeriod, FiscalPeriodConfig
+    from projections.models import FiscalPeriodConfig
 
     # Get existing config to record previous_period_count
     config = FiscalPeriodConfig.objects.filter(
@@ -1837,6 +1840,7 @@ def update_period_dates(
     require(actor, "periods.configure")
 
     from datetime import date as date_cls
+
     from projections.models import FiscalPeriod
 
     # Parse dates
@@ -1914,7 +1918,8 @@ def check_close_readiness(
     """
     require(actor, "periods.configure")
 
-    from projections.models import FiscalPeriod, FiscalYear as FiscalYearModel
+    from projections.models import FiscalPeriod
+    from projections.models import FiscalYear as FiscalYearModel
 
     checks = []
 
@@ -2074,7 +2079,8 @@ def close_fiscal_year(
     """
     require(actor, "fiscal_year.close")
 
-    from projections.models import FiscalPeriod, FiscalPeriodConfig, FiscalYear as FiscalYearModel, AccountBalance
+    from projections.models import FiscalPeriod
+    from projections.models import FiscalYear as FiscalYearModel
 
     # Idempotency: already closed?
     fy = FiscalYearModel.objects.filter(
@@ -2439,7 +2445,9 @@ def run_reconciliation_check(actor: ActorContext) -> CommandResult:
     tieout_valid, tieout_errors = validate_subledger_tieout(actor.company)
 
     from decimal import Decimal
+
     from django.db.models import Sum
+
     from projections.models import AccountBalance, CustomerBalance, VendorBalance
 
     # Gather balances for the report
@@ -2516,7 +2524,8 @@ def reopen_fiscal_year(
     if not reason or not reason.strip():
         return CommandResult.fail("Reason is required to reopen a fiscal year.")
 
-    from projections.models import FiscalPeriod, FiscalYear as FiscalYearModel
+    from projections.models import FiscalPeriod
+    from projections.models import FiscalYear as FiscalYearModel
 
     fy = FiscalYearModel.objects.filter(
         company=actor.company,
@@ -2805,7 +2814,7 @@ def update_analysis_dimension(
         "dimension_kind", "is_required_on_posting", "applies_to_account_types",
         "display_order", "is_active"
     }
-    
+
     for field, value in updates.items():
         if field in allowed_fields:
             old_value = getattr(dimension, field)
@@ -2997,7 +3006,7 @@ def update_dimension_value(
     # Track changes
     changes = {}
     allowed_fields = {"name", "name_ar", "description", "description_ar", "is_active"}
-    
+
     for field, value_new in updates.items():
         if field in allowed_fields:
             old_value = getattr(value, field)
@@ -3258,7 +3267,7 @@ def set_journal_line_analysis(
     for tag in analysis_tags:
         dimension_id = tag.get("dimension_id")
         value_id = tag.get("value_id")
-        
+
         try:
             dimension = AnalysisDimension.objects.get(
                 pk=dimension_id, company=actor.company
@@ -3354,9 +3363,8 @@ def record_customer_receipt(
     Returns:
         CommandResult with the journal entry or error
     """
-    from events.types import CustomerReceiptRecordedData
-    from sales.models import SalesInvoice, ReceiptAllocation
     from projections.write_barrier import command_writes_allowed
+    from sales.models import ReceiptAllocation, SalesInvoice
 
     require(actor, "journal.post")
 
@@ -3533,8 +3541,8 @@ def record_customer_receipt(
     # the FX difference between invoice rate and receipt date rate.
     realized_fx_total = Decimal("0")
     if validated_allocations:
-        from accounting.models import ExchangeRate
         from accounting.mappings import ModuleAccountMapping
+        from accounting.models import ExchangeRate
 
         core_mapping = ModuleAccountMapping.get_mapping(actor.company, "core")
         realized_gain_account = core_mapping.get("REALIZED_FX_GAIN")
@@ -3807,9 +3815,8 @@ def record_vendor_payment(
     Returns:
         CommandResult with the journal entry or error
     """
-    from events.types import VendorPaymentRecordedData
-    from sales.models import PaymentAllocation
     from projections.write_barrier import command_writes_allowed
+    from sales.models import PaymentAllocation
 
     require(actor, "journal.post")
 
@@ -3982,8 +3989,8 @@ def record_vendor_payment(
     vendor_currency = getattr(vendor, "currency", None) or functional_currency
 
     if vendor_currency != functional_currency and validated_allocations:
-        from accounting.models import ExchangeRate
         from accounting.mappings import ModuleAccountMapping
+        from accounting.models import ExchangeRate
 
         core_mapping = ModuleAccountMapping.get_mapping(actor.company, "core")
         realized_gain_account = core_mapping.get("REALIZED_FX_GAIN")

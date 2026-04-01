@@ -17,12 +17,11 @@ mental model that select_for_update() on CompanyEventCounter serializes
 per-aggregate sequence allocation.
 """
 
-import pytest
-from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from uuid import uuid4
 
-from django.db import connections, connection
-from django.utils import timezone
+import pytest
+from django.db import connection, connections
 
 from events.emitter import emit_event_no_actor
 from events.models import BusinessEvent
@@ -146,12 +145,13 @@ def _emit_worker(company_id, user_id, aggregate_id, worker_index):
     """
     try:
         # Each thread needs fresh imports after Django is set up
-        from accounts.models import Company
+        from django.conf import settings
         from django.contrib.auth import get_user_model
+
+        from accounts import rls
+        from accounts.models import Company
         from events.emitter import emit_event_no_actor
         from events.types import EventTypes
-        from accounts import rls
-        from django.conf import settings
 
         User = get_user_model()
 

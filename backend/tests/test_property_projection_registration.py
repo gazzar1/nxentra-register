@@ -1,9 +1,9 @@
 from decimal import Decimal
-
-import pytest
 from uuid import uuid4
 
+import pytest
 from django.db import models
+
 from accounting.models import Account, JournalEntry, JournalLine
 from events.emitter import emit_event
 from events.types import EventTypes

@@ -2,9 +2,11 @@
 
 
 from django.core.management.base import BaseCommand
+
 from accounts.models import NxPermission
-from projections.write_barrier import bootstrap_writes_allowed
 from accounts.permission_defaults import all_permission_codes
+from projections.write_barrier import bootstrap_writes_allowed
+
 
 class Command(BaseCommand):
     help = "Seed default permissions to the database"

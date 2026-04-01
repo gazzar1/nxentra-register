@@ -9,41 +9,37 @@ These tests run the full command layer (not HTTP) to verify correctness
 without needing a running server.
 """
 
-import pytest
-from decimal import Decimal
-from datetime import date
 from calendar import monthrange
+from datetime import date
+from decimal import Decimal
 from uuid import uuid4
 
-from django.test import TransactionTestCase
-from django.utils import timezone
+import pytest
 
-from accounts.models import Company, CompanyMembership
-from accounts.authz import ActorContext
-from accounts.permissions import grant_role_defaults
-from accounting.models import Account, Customer, Vendor, JournalEntry
 from accounting.commands import (
-    create_journal_entry,
-    save_journal_entry_complete,
-    post_journal_entry,
-    reverse_journal_entry,
-    close_period,
-    open_period,
-    configure_periods,
     check_close_readiness,
     close_fiscal_year,
-    reopen_fiscal_year,
+    close_period,
+    create_journal_entry,
+    open_period,
+    post_journal_entry,
     record_customer_receipt,
     record_vendor_payment,
+    reopen_fiscal_year,
+    reverse_journal_entry,
+    save_journal_entry_complete,
 )
+from accounting.models import Account, Customer, JournalEntry, Vendor
+from accounts.authz import ActorContext
+from accounts.models import Company, CompanyMembership
+from accounts.permissions import grant_role_defaults
 from projections.models import (
     FiscalPeriod,
     FiscalPeriodConfig,
-    FiscalYear as FiscalYearModel,
-    AccountBalance,
-    PeriodAccountBalance,
 )
-
+from projections.models import (
+    FiscalYear as FiscalYearModel,
+)
 
 # ---------------------------------------------------------------------------
 # Shared fixture helpers

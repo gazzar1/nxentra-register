@@ -9,17 +9,17 @@ into canonical dataclasses consumed by PlatformAccountingProjection.
 import hashlib
 import hmac
 import time
+from datetime import UTC
 from decimal import Decimal
-from typing import Optional
 
 from django.http import HttpRequest
 
 from platform_connectors.base import BasePlatformConnector
 from platform_connectors.canonical import (
-    ParsedOrder,
-    ParsedRefund,
-    ParsedPayout,
     ParsedDispute,
+    ParsedOrder,
+    ParsedPayout,
+    ParsedRefund,
 )
 
 from .models import StripeAccount
@@ -138,7 +138,7 @@ class StripeConnector(BasePlatformConnector):
         except (json.JSONDecodeError, AttributeError):
             return ""
 
-    def map_topic_to_canonical(self, topic: str) -> Optional[str]:
+    def map_topic_to_canonical(self, topic: str) -> str | None:
         return STRIPE_TOPIC_MAP.get(topic)
 
     def resolve_company_from_webhook(self, request: HttpRequest):
@@ -224,7 +224,7 @@ class StripeConnector(BasePlatformConnector):
             payout_date=self._ts_to_date(obj.get("arrival_date", 0)),
         )
 
-    def parse_dispute(self, payload: dict) -> Optional[ParsedDispute]:
+    def parse_dispute(self, payload: dict) -> ParsedDispute | None:
         """Parse a charge.dispute.created event → ParsedDispute."""
         obj = payload.get("data", {}).get("object", {})
         amount_cents = obj.get("amount", 0)
@@ -241,10 +241,25 @@ class StripeConnector(BasePlatformConnector):
             evidence_due_by=self._ts_to_date(obj.get("evidence_details", {}).get("due_by", 0)),
         )
 
+    # ── Local record storage ──────────────────────────────────────
+
+    def store_webhook_record(self, canonical_topic, parsed, payload, company, event_id):
+        """Store a local StripeCharge/StripeRefund/StripePayout for reconciliation."""
+        from .commands import store_charge, store_payout, store_refund
+
+        handler = {
+            "order_paid": store_charge,
+            "refund_created": store_refund,
+            "payout_settled": store_payout,
+        }.get(canonical_topic)
+
+        if handler:
+            handler(company, parsed, payload, event_id)
+
     # ── Helpers ──────────────────────────────────────────────────
 
     @staticmethod
-    def _extract_account_id(request: HttpRequest) -> Optional[str]:
+    def _extract_account_id(request: HttpRequest) -> str | None:
         """Extract Stripe Connect account ID from the payload."""
         import json
         try:
@@ -258,5 +273,5 @@ class StripeConnector(BasePlatformConnector):
         """Convert Unix timestamp → ISO date string."""
         if not ts:
             return ""
-        from datetime import datetime, timezone
-        return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+        from datetime import datetime
+        return datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%d")

@@ -11,19 +11,18 @@ Implements PRD Section 10: Audit Chain Views
 All endpoints require authentication and are scoped to the user's company.
 """
 
-from rest_framework import generics, views, status
-from rest_framework.response import Response
+from rest_framework import generics, status, views
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
 
 from accounts.authz import resolve_actor
 from events.models import BusinessEvent, EventBookmark
 from events.serializers import (
-    BusinessEventListSerializer,
     BusinessEventDetailSerializer,
-    AggregateEventHistorySerializer,
+    BusinessEventListSerializer,
+    EventBookmarkSerializer,
     IntegrityCheckResultSerializer,
     IntegritySummarySerializer,
-    EventBookmarkSerializer,
 )
 from events.verification import full_integrity_check, get_integrity_summary
 

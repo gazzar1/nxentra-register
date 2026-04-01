@@ -1,4 +1,5 @@
 import apiClient from '@/lib/api-client';
+import type { PaginatedResponse, PaginationParams } from '@/types/common';
 import type {
   Item,
   ItemCreatePayload,
@@ -13,6 +14,9 @@ import type {
   SalesInvoiceListItem,
   SalesInvoiceCreatePayload,
   SalesInvoiceUpdatePayload,
+  CreditNote,
+  CreditNoteListItem,
+  CreditNoteCreatePayload,
 } from '@/types/sales';
 
 // =============================================================================
@@ -83,8 +87,8 @@ export const postingProfilesService = {
 // =============================================================================
 
 export const salesInvoicesService = {
-  list: (params?: { status?: string; customer_id?: number; from_date?: string; to_date?: string }) =>
-    apiClient.get<SalesInvoiceListItem[]>('/sales/invoices/', { params }),
+  list: (params?: { status?: string; customer_id?: number; from_date?: string; to_date?: string } & PaginationParams) =>
+    apiClient.get<PaginatedResponse<SalesInvoiceListItem>>('/sales/invoices/', { params }),
 
   get: (id: number) =>
     apiClient.get<SalesInvoice>(`/sales/invoices/${id}/`),
@@ -114,4 +118,25 @@ export const salesInvoicesService = {
       `/sales/invoices/${id}/email/`,
       data
     ),
+};
+
+// =============================================================================
+// Credit Note Service
+// =============================================================================
+
+export const creditNotesService = {
+  list: (params?: { status?: string; invoice_id?: number } & PaginationParams) =>
+    apiClient.get<PaginatedResponse<CreditNoteListItem>>('/sales/credit-notes/', { params }),
+
+  get: (id: number) =>
+    apiClient.get<CreditNote>(`/sales/credit-notes/${id}/`),
+
+  create: (data: CreditNoteCreatePayload) =>
+    apiClient.post<CreditNote>('/sales/credit-notes/', data),
+
+  post: (id: number) =>
+    apiClient.post<CreditNote>(`/sales/credit-notes/${id}/post/`),
+
+  void: (id: number, reason?: string) =>
+    apiClient.post<CreditNote>(`/sales/credit-notes/${id}/void/`, { reason }),
 };

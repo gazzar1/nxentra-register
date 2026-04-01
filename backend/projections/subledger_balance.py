@@ -17,19 +17,18 @@ Key Design:
 - Supports aging reports by tracking oldest_open_date
 """
 
-from decimal import Decimal
-from typing import List, Dict, Any
 import logging
+from decimal import Decimal
+from typing import Any
 
 from django.db import transaction
 
-from accounts.models import Company
 from accounting.models import Customer, Vendor
+from accounts.models import Company
 from events.models import BusinessEvent
 from events.types import EventTypes
 from projections.base import BaseProjection, projection_registry
 from projections.models import CustomerBalance, VendorBalance
-
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +53,7 @@ class SubledgerBalanceProjection(BaseProjection):
         return "subledger_balance"
 
     @property
-    def consumes(self) -> List[str]:
+    def consumes(self) -> list[str]:
         return [
             EventTypes.JOURNAL_ENTRY_POSTED,
             # LEPH chunked journal events
@@ -130,7 +129,7 @@ class SubledgerBalanceProjection(BaseProjection):
     def _apply_line(
         self,
         company: Company,
-        line_data: Dict[str, Any],
+        line_data: dict[str, Any],
         entry_date,
         event: BusinessEvent,
     ) -> None:
@@ -387,7 +386,7 @@ class SubledgerBalanceProjection(BaseProjection):
         except VendorBalance.DoesNotExist:
             return Decimal("0.00")
 
-    def get_customer_aging(self, company: Company) -> Dict[str, Any]:
+    def get_customer_aging(self, company: Company) -> dict[str, Any]:
         """
         Generate customer aging report.
 
@@ -397,7 +396,7 @@ class SubledgerBalanceProjection(BaseProjection):
         - 61-90 days
         - Over 90 days
         """
-        from datetime import date, timedelta
+        from datetime import date
 
         today = date.today()
         buckets = {
@@ -449,7 +448,7 @@ class SubledgerBalanceProjection(BaseProjection):
             "totals": {k: str(v) for k, v in totals.items()},
         }
 
-    def get_vendor_aging(self, company: Company) -> Dict[str, Any]:
+    def get_vendor_aging(self, company: Company) -> dict[str, Any]:
         """
         Generate vendor aging report.
 

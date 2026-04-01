@@ -9,22 +9,23 @@ Models:
 - NxPermission: Fine-grained permissions
 """
 
-from django.db import models
 import uuid
-from django.contrib.auth.models import AbstractUser, BaseUserManager
-from django.utils import timezone
 from typing import Optional
+
 from django.conf import settings
+from django.contrib.auth.models import AbstractUser, BaseUserManager
+from django.db import models
+from django.utils import timezone
+
 from projections.write_barrier import (
-    write_context_allowed,
     bootstrap_writes_allowed,
     current_write_context,
+    write_context_allowed,
 )
 
 
 def company_logo_upload_path(instance, filename):
     """Generate upload path for company logos: logos/<company_slug>/<filename>"""
-    import os
     ext = filename.split('.')[-1]
     # Use company slug for folder organization
     return f"logos/{instance.slug}/logo.{ext}"
@@ -68,7 +69,7 @@ class Company(ProjectionWriteGuard):
     All business data (accounts, entries, etc.) belongs to a company.
     Users can be members of multiple companies.
     """
-    
+
     name = models.CharField(max_length=255)
     name_ar = models.CharField(max_length=255, blank=True, default="")
 
@@ -77,9 +78,9 @@ class Company(ProjectionWriteGuard):
         editable=False,
         unique=True,
     )
-    
+
     slug = models.SlugField(max_length=100, unique=True)
-    
+
     # Settings
     default_currency = models.CharField(
         max_length=3,
@@ -201,7 +202,7 @@ class Company(ProjectionWriteGuard):
 
 class UserManager(BaseUserManager):
     """Custom user manager."""
-    
+
     def create_user(self, email, password=None, **extra_fields):
         """Create and save a regular user."""
         if not email:
@@ -211,17 +212,17 @@ class UserManager(BaseUserManager):
         user.set_password(password)
         user.save(using=self._db)
         return user
-    
+
     def create_superuser(self, email, password=None, **extra_fields):
         """Create and save a superuser."""
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
-        
+
         if extra_fields.get("is_staff") is not True:
             raise ValueError("Superuser must have is_staff=True.")
         if extra_fields.get("is_superuser") is not True:
             raise ValueError("Superuser must have is_superuser=True.")
-        
+
         with bootstrap_writes_allowed():
             return self.create_user(email, password, **extra_fields)
 
@@ -259,14 +260,14 @@ class User(ProjectionWriteGuard, AbstractUser):
         on_delete=models.SET_NULL,
         related_name='approved_users',
     )
-    
+
     # Preferences
     preferred_language = models.CharField(
         max_length=5,
         default="en",
         choices=[("en", "English"), ("ar", "Arabic")],
     )
-    
+
     # Multi-tenancy: Currently active company
     active_company = models.ForeignKey(
         Company,
@@ -276,16 +277,16 @@ class User(ProjectionWriteGuard, AbstractUser):
         related_name="active_users",
         help_text="The company the user is currently working in",
     )
-    
+
     # Companies this user belongs to (through membership)
     companies = models.ManyToManyField(
         Company,
         through="CompanyMembership",
         related_name="users",
     )
-    
+
     objects = UserManager()
-    
+
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = []
 
@@ -355,7 +356,7 @@ class User(ProjectionWriteGuard, AbstractUser):
         """
         if not self.memberships.filter(company=company, is_active=True).exists():
             return False
-        
+
         self.active_company = company
         self.save(update_fields=["active_company"])
         return True
@@ -392,7 +393,7 @@ class CompanyMembership(ProjectionWriteGuard):
     Defines the user's role and permissions within a company.
     A user can have different roles in different companies.
     """
-    
+
     class Role(models.TextChoices):
         OWNER = "OWNER", "Owner"
         ADMIN = "ADMIN", "Administrator"
@@ -400,13 +401,13 @@ class CompanyMembership(ProjectionWriteGuard):
         VIEWER = "VIEWER", "Viewer"
 
     allowed_write_contexts = {"command", "projection", "bootstrap", "migration", "admin_emergency"}
-    
+
     user = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
         related_name="memberships",
     )
-    
+
     company = models.ForeignKey(
         Company,
         on_delete=models.CASCADE,
@@ -418,15 +419,15 @@ class CompanyMembership(ProjectionWriteGuard):
         editable=False,
         unique=True,
     )
-    
+
     role = models.CharField(
         max_length=20,
         choices=Role.choices,
         default=Role.USER,
     )
-    
+
     is_active = models.BooleanField(default=True)
-    
+
     # Fine-grained permissions (through model for audit)
     permissions = models.ManyToManyField(
         "NxPermission",
@@ -510,7 +511,7 @@ class CompanyMembershipPermission(ProjectionWriteGuard):
     
     Tracks who granted the permission and when.
     """
-    
+
     membership = models.ForeignKey(
         CompanyMembership,
         on_delete=models.CASCADE,
@@ -564,7 +565,7 @@ class NxPermission(ProjectionWriteGuard):
     Permissions are grouped by module (e.g., accounts, journal).
     Each permission has a code and description.
     """
-    
+
     code = models.CharField(
         max_length=100,
         unique=True,
@@ -576,25 +577,25 @@ class NxPermission(ProjectionWriteGuard):
         editable=False,
         unique=True,
     )
-    
+
     name = models.CharField(max_length=255)
     name_ar = models.CharField(max_length=255, blank=True, default="")
-    
+
     description = models.TextField(blank=True, default="")
-    
+
     # Module grouping
     module = models.CharField(
         max_length=50,
         help_text="Module this permission belongs to (e.g., 'accounts', 'journal')",
     )
-    
+
     # Default roles that have this permission
     default_for_roles = models.JSONField(
         default=list,
         blank=True,
         help_text="Roles that have this permission by default (e.g., ['OWNER', 'ADMIN'])",
     )
-    
+
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
 

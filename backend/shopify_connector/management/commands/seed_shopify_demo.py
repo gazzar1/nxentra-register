@@ -12,24 +12,23 @@ Usage:
 """
 
 import random
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from accounts.models import Company
-from accounting.models import Account
 from accounting.mappings import ModuleAccountMapping
+from accounting.models import Account
+from accounts.models import Company
 from projections.write_barrier import projection_writes_allowed
 from shopify_connector.models import (
-    ShopifyStore,
     ShopifyOrder,
-    ShopifyRefund,
     ShopifyPayout,
     ShopifyPayoutTransaction,
+    ShopifyRefund,
+    ShopifyStore,
 )
-
 
 # ---------------------------------------------------------------------------
 # Demo data constants
@@ -216,7 +215,7 @@ class Command(BaseCommand):
                     "currency": "USD",
                     "financial_status": "paid",
                     "gateway": "shopify_payments",
-                    "shopify_created_at": datetime.combine(order_date, datetime.min.time(), tzinfo=timezone.utc),
+                    "shopify_created_at": datetime.combine(order_date, datetime.min.time(), tzinfo=UTC),
                     "order_date": order_date,
                     "status": "PROCESSED",
                 },
@@ -245,7 +244,7 @@ class Command(BaseCommand):
                 "reason": "Customer request - wrong size",
                 "shopify_created_at": datetime.combine(
                     refund_order.order_date + timedelta(days=2),
-                    datetime.min.time(), tzinfo=timezone.utc,
+                    datetime.min.time(), tzinfo=UTC,
                 ),
                 "status": "PROCESSED",
             },

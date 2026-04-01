@@ -14,7 +14,7 @@ from the internal emit_event() to:
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 from events.api_keys import ExternalAPIKey
 from events.emitter import _emit_event_core
@@ -31,8 +31,8 @@ def emit_external_event(
     aggregate_type: str,
     aggregate_id: str,
     idempotency_key: str,
-    data: Dict[str, Any],
-    metadata: Optional[Dict[str, Any]] = None,
+    data: dict[str, Any],
+    metadata: dict[str, Any] | None = None,
 ) -> BusinessEvent:
     """
     Emit a business event from an external system.

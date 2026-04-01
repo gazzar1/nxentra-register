@@ -38,9 +38,9 @@ import logging
 import random
 import time
 from dataclasses import dataclass
-from decimal import Decimal
 from datetime import date
-from typing import Optional, List, Dict, Any
+from decimal import Decimal
+from typing import Any
 
 from django.conf import settings
 from django.utils import timezone
@@ -89,10 +89,7 @@ def is_transient_error(error: Exception) -> bool:
         return True
 
     # Check for server errors
-    if '502' in error_str or '503' in error_str or '504' in error_str:
-        return True
-
-    return False
+    return bool('502' in error_str or '503' in error_str or '504' in error_str)
 
 
 def get_retry_delay(attempt: int, base_delay: float = 1.0) -> float:
@@ -176,23 +173,23 @@ TRANSACTION_SCHEMA = {
 @dataclass
 class ParsedTransaction:
     """Structured output from voice parsing - SUGGESTIONS only, not truth."""
-    transaction_date: Optional[date]
+    transaction_date: date | None
     description: str
     description_ar: str
-    amount: Optional[Decimal]
-    debit_account_code: Optional[str]
-    credit_account_code: Optional[str]
-    dimensions: Dict[str, str]
+    amount: Decimal | None
+    debit_account_code: str | None
+    credit_account_code: str | None
+    dimensions: dict[str, str]
     notes: str
-    confidence: Dict[str, float]
+    confidence: dict[str, float]
     raw_transcript: str
-    questions: List[str]
+    questions: list[str]
 
 
 @dataclass
 class VoiceUsageInfo:
     """Token and cost tracking for a voice parsing operation."""
-    audio_seconds: Optional[Decimal] = None
+    audio_seconds: Decimal | None = None
     transcript_chars: int = 0
     asr_model: str = ""   # populated at runtime from settings.VOICE_ASR_MODEL
     parse_model: str = "" # populated at runtime from settings.VOICE_PARSE_MODEL
@@ -211,10 +208,10 @@ class VoiceParseResult:
     """Result from the voice parsing service."""
     success: bool
     transcript: str
-    transactions: List[ParsedTransaction]
-    error: Optional[str] = None
-    raw_response: Optional[Dict[str, Any]] = None
-    usage: Optional[VoiceUsageInfo] = None
+    transactions: list[ParsedTransaction]
+    error: str | None = None
+    raw_response: dict[str, Any] | None = None
+    usage: VoiceUsageInfo | None = None
 
 
 # =============================================================================
@@ -450,6 +447,7 @@ class VoiceParserService:
             membership: CompanyMembership instance
         """
         from django.db.models import F
+
         from accounts.models import CompanyMembership
         CompanyMembership.objects.filter(pk=membership.pk).update(
             voice_rows_used=F('voice_rows_used') + 1
@@ -512,6 +510,7 @@ class VoiceParserService:
             MP3 audio bytes
         """
         import io
+
         from pydub import AudioSegment
 
         format_map = {
@@ -643,7 +642,7 @@ class VoiceParserService:
         logger.error(f"Transcription failed after {self.MAX_RETRIES + 1} attempts")
         raise last_error
 
-    def build_tenant_context(self, company) -> Dict[str, Any]:
+    def build_tenant_context(self, company) -> dict[str, Any]:
         """Build context dictionary from tenant's accounting setup."""
         from accounting.models import Account, AnalysisDimension
 
@@ -783,7 +782,7 @@ class VoiceParserService:
             error=str(last_error),
         )
 
-    def _build_system_prompt(self, context: Dict[str, Any], language: str) -> str:
+    def _build_system_prompt(self, context: dict[str, Any], language: str) -> str:
         """Build the system prompt with tenant context."""
         accounts_json = json.dumps(context['accounts'], indent=2, ensure_ascii=False)
         dimensions_json = json.dumps(context['dimensions'], indent=2, ensure_ascii=False)
@@ -849,9 +848,9 @@ Extract all transactions mentioned. For each one, suggest field values with conf
 
     def _parse_response(
         self,
-        response: Dict[str, Any],
+        response: dict[str, Any],
         transcript: str,
-    ) -> List[ParsedTransaction]:
+    ) -> list[ParsedTransaction]:
         """Parse the GPT response into ParsedTransaction objects."""
         transactions = []
 
@@ -899,7 +898,7 @@ Extract all transactions mentioned. For each one, suggest field values with conf
         company,
         user,
         result: VoiceParseResult,
-        audio_seconds: Optional[Decimal] = None,
+        audio_seconds: Decimal | None = None,
         scratchpad_row=None,
     ) -> None:
         """
@@ -951,7 +950,7 @@ Extract all transactions mentioned. For each one, suggest field values with conf
         audio_file,
         company,
         language: str = "en",
-        audio_seconds: Optional[Decimal] = None,
+        audio_seconds: Decimal | None = None,
         user=None,
         membership=None,
     ) -> VoiceParseResult:

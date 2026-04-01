@@ -359,8 +359,9 @@ class Command(BaseCommand):
 
     def _check_trial_balance(self, company, as_of_date):
         """Check 7: Trial balance debits == credits."""
-        from accounting.models import JournalLine, JournalEntry
         from django.db.models import Sum
+
+        from accounting.models import JournalEntry, JournalLine
 
         agg = (
             JournalLine.objects
@@ -472,8 +473,8 @@ class Command(BaseCommand):
 
         gate = report["gate_c"]
         if gate == "PASS":
-            self.stdout.write(self.style.SUCCESS(f"\n  Gate C: PASS"))
+            self.stdout.write(self.style.SUCCESS("\n  Gate C: PASS"))
         else:
-            self.stdout.write(self.style.ERROR(f"\n  Gate C: FAIL — resolve failures before close"))
+            self.stdout.write(self.style.ERROR("\n  Gate C: FAIL — resolve failures before close"))
 
         self.stdout.write("")
