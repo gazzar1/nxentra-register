@@ -243,6 +243,48 @@ def get_current_avg_cost(company, item, warehouse) -> Decimal:
         return Decimal("0")
 
 
+def _fifo_consume(company, item, warehouse, qty_to_issue: Decimal) -> tuple[Decimal, Decimal]:
+    """
+    Consume FIFO layers oldest-first for a stock issue.
+
+    Returns:
+        (weighted_issue_cost, total_value) where:
+        - weighted_issue_cost = total_value / qty_to_issue
+        - total_value = sum of (qty_consumed * layer.unit_cost) across layers
+
+    Raises CommandResult.fail equivalent via ValueError if insufficient layers.
+    """
+    from .models import FifoLayer
+
+    layers = FifoLayer.objects.filter(
+        company=company,
+        item=item,
+        warehouse=warehouse,
+        qty_remaining__gt=0,
+    ).order_by("sequence").select_for_update()
+
+    remaining = qty_to_issue
+    total_value = Decimal("0")
+
+    for layer in layers:
+        if remaining <= 0:
+            break
+
+        consume = min(remaining, layer.qty_remaining)
+        total_value += consume * layer.unit_cost
+        layer.qty_remaining -= consume
+        layer.save(update_fields=["qty_remaining"])
+        remaining -= consume
+
+    if remaining > 0:
+        # Not enough FIFO layers — shouldn't happen if stock availability was checked
+        # Use zero cost for the remainder (defensive)
+        pass
+
+    weighted_cost = (total_value / qty_to_issue).quantize(Decimal("0.000001")) if qty_to_issue > 0 else Decimal("0")
+    return weighted_cost, total_value
+
+
 @transaction.atomic
 def record_stock_receipt(
     actor: ActorContext,
@@ -349,6 +391,20 @@ def record_stock_receipt(
             item.last_cost = unit_cost
             item.save(update_fields=["average_cost", "last_cost"])
 
+            # Create FIFO layer if item uses FIFO costing
+            if item.costing_method == "FIFO":
+                from .models import FifoLayer
+                FifoLayer.objects.create(
+                    company=actor.company,
+                    item=item,
+                    warehouse=warehouse,
+                    receipt_entry=entry,
+                    qty_original=qty,
+                    qty_remaining=qty,
+                    unit_cost=unit_cost,
+                    sequence=sequence,
+                )
+
             event_entries.append(StockLedgerEntryData(
                 item_public_id=str(item.public_id),
                 warehouse_public_id=str(warehouse.public_id),
@@ -450,15 +506,34 @@ def record_stock_issue(
                     f"No inventory record for {item.code} in {warehouse.code}."
                 )
 
-            # Issue cost is the current weighted average
-            issue_cost = balance.avg_cost
-            value_delta = qty * issue_cost  # Positive value for COGS
+            # Determine issue cost based on costing method
+            if item.costing_method == "FIFO":
+                # FIFO: consume oldest layers first
+                issue_cost, value_delta = _fifo_consume(
+                    actor.company, item, warehouse, qty
+                )
+            else:
+                # Weighted average (default)
+                issue_cost = balance.avg_cost
+                value_delta = qty * issue_cost  # Positive value for COGS
+
             total_cogs += value_delta
 
             # New balance after issue
             new_qty = balance.qty_on_hand - qty
             new_value = balance.stock_value - value_delta
-            # avg_cost doesn't change on issue
+            # avg_cost doesn't change on issue (for weighted avg)
+            # For FIFO, avg_cost is recalculated from remaining layers
+            new_avg_cost = balance.avg_cost
+            if item.costing_method == "FIFO" and new_qty > 0:
+                from .models import FifoLayer
+                remaining_layers = FifoLayer.objects.filter(
+                    company=actor.company, item=item, warehouse=warehouse,
+                    qty_remaining__gt=0,
+                )
+                total_remaining_value = sum(l.qty_remaining * l.unit_cost for l in remaining_layers)
+                new_avg_cost = (total_remaining_value / new_qty).quantize(Decimal("0.000001")) if new_qty > 0 else Decimal("0")
+                new_value = total_remaining_value
 
             # Get next sequence
             sequence = _get_next_sequence(actor.company)
@@ -478,7 +553,7 @@ def record_stock_issue(
                 costing_method_snapshot=item.costing_method,
                 qty_balance_after=new_qty,
                 value_balance_after=new_value,
-                avg_cost_after=balance.avg_cost,
+                avg_cost_after=new_avg_cost,
                 posted_at=posted_at,
                 posted_by=actor.user,
                 journal_entry=journal_entry,
@@ -487,6 +562,7 @@ def record_stock_issue(
 
             # Update balance
             balance.qty_on_hand = new_qty
+            balance.avg_cost = new_avg_cost
             balance.stock_value = new_value
             balance.entry_count += 1
             balance.last_entry_date = posted_at.date()

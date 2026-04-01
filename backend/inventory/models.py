@@ -270,6 +270,90 @@ class StockLedgerEntry(ProjectionWriteGuard):
         super().save(*args, **kwargs)
 
 
+class FifoLayer(ProjectionWriteGuard):
+    """
+    FIFO cost layer — tracks remaining quantity from each receipt batch.
+
+    When goods are received, a new layer is created with the receipt qty and cost.
+    When goods are issued with FIFO costing, layers are consumed oldest-first
+    (by sequence number). Partially consumed layers reduce qty_remaining.
+
+    This model is only used when item.costing_method == 'FIFO'.
+    """
+
+    allowed_write_contexts = {"command", "projection", "bootstrap", "migration"}
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="fifo_layers",
+    )
+
+    item = models.ForeignKey(
+        "sales.Item",
+        on_delete=models.PROTECT,
+        related_name="fifo_layers",
+    )
+
+    warehouse = models.ForeignKey(
+        Warehouse,
+        on_delete=models.PROTECT,
+        related_name="fifo_layers",
+    )
+
+    # Link to the stock ledger entry that created this layer
+    receipt_entry = models.ForeignKey(
+        StockLedgerEntry,
+        on_delete=models.PROTECT,
+        related_name="fifo_layer",
+        help_text="The stock ledger entry that created this FIFO layer",
+    )
+
+    # Original receipt quantity (immutable after creation)
+    qty_original = models.DecimalField(
+        max_digits=18,
+        decimal_places=4,
+        help_text="Original quantity received in this layer",
+    )
+
+    # Remaining quantity (decremented on each issue)
+    qty_remaining = models.DecimalField(
+        max_digits=18,
+        decimal_places=4,
+        help_text="Quantity remaining in this layer (decremented by FIFO issues)",
+    )
+
+    # Cost per unit for this layer (immutable — the purchase cost)
+    unit_cost = models.DecimalField(
+        max_digits=18,
+        decimal_places=6,
+        help_text="Unit cost at time of receipt (immutable)",
+    )
+
+    # Ordering — monotonic sequence to determine FIFO order
+    sequence = models.PositiveIntegerField(
+        help_text="Receipt sequence for FIFO ordering (lower = older = consumed first)",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["sequence"]
+        indexes = [
+            models.Index(fields=["company", "item", "warehouse", "sequence"]),
+            models.Index(fields=["company", "item", "warehouse", "qty_remaining"]),
+        ]
+        verbose_name = "FIFO Layer"
+        verbose_name_plural = "FIFO Layers"
+
+    def __str__(self):
+        return f"FIFO Layer #{self.sequence}: {self.item.code} {self.qty_remaining}/{self.qty_original} @ {self.unit_cost}"
+
+    @property
+    def is_exhausted(self):
+        return self.qty_remaining <= 0
+
+
 class StockLedgerSequenceCounter(models.Model):
     """
     Counter for generating monotonic stock ledger sequence numbers.
