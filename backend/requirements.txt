@@ -39,6 +39,9 @@ weasyprint>=60.0
 pytest>=8.0.0
 pytest-django>=4.7.0
 
+# Error tracking
+sentry-sdk[django,celery]>=2.0.0
+
 # Code quality
 ruff>=0.9.0
 mypy>=1.13.0

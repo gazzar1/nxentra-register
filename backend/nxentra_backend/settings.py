@@ -366,6 +366,28 @@ from ops.logging_config import get_logging_config
 LOGGING = get_logging_config(DEBUG)
 
 # =============================================================================
+# Sentry Error Tracking
+# =============================================================================
+SENTRY_DSN = os.getenv("SENTRY_DSN", "")
+if SENTRY_DSN:
+    import sentry_sdk
+    from sentry_sdk.integrations.celery import CeleryIntegration
+    from sentry_sdk.integrations.django import DjangoIntegration
+
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        integrations=[
+            DjangoIntegration(),
+            CeleryIntegration(),
+        ],
+        traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.1")),
+        profiles_sample_rate=float(os.getenv("SENTRY_PROFILES_SAMPLE_RATE", "0.1")),
+        send_default_pii=False,  # Don't send user PII by default
+        environment=os.getenv("SENTRY_ENVIRONMENT", "production" if not DEBUG else "development"),
+        release=os.getenv("APP_VERSION", "dev"),
+    )
+
+# =============================================================================
 # Observability Configuration
 # =============================================================================
 # Application version (set via CI/CD)
