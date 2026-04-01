@@ -5,16 +5,14 @@ from django.apps import AppConfig
 class InventoryConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "inventory"
-    verbose_name = "Inventory"
+    verbose_name = "Inventory Management"
 
-    # Declarative vertical-module manifest.
-    # ProjectionsConfig.ready() auto-discovers and registers these.
     projections = [
         "projections.inventory_balance.InventoryBalanceProjection",
     ]
 
     def ready(self):
-        from accounts.module_registry import ModuleCategory, module_registry
+        from accounts.module_registry import ModuleCategory, SidebarTab, module_registry
 
         module_registry.register(
             "inventory",
@@ -22,12 +20,41 @@ class InventoryConfig(AppConfig):
             icon="Warehouse",
             category=ModuleCategory.HORIZONTAL,
             order=50,
+        )
+
+        module_registry.register_sidebar(
+            "work_inventory",
+            label="Inventory",
+            icon="Boxes",
+            tab=SidebarTab.WORK,
+            order=40,
+            module_key="inventory",
             nav_items=[
-                {"label": "Warehouses", "href": "/inventory/warehouses", "icon": "Warehouse", "translation_key": "nav.warehouses"},
-                {"label": "Items", "href": "/accounting/items", "icon": "Package", "translation_key": "nav.items"},
-                {"label": "Stock Balances", "href": "/inventory/balances", "icon": "PackageOpen", "translation_key": "nav.inventoryBalances"},
-                {"label": "Stock Ledger", "href": "/inventory/ledger", "icon": "ScrollText", "translation_key": "nav.stockLedger"},
-                {"label": "Adjustment", "href": "/inventory/adjustments/new", "icon": "Scale", "translation_key": "nav.inventoryAdjustment"},
-                {"label": "Opening Balance", "href": "/inventory/opening-balance", "icon": "PackagePlus", "translation_key": "nav.openingBalance"},
+                {"label": "Stock Adjustments", "href": "/inventory/adjustments/new", "icon": "Scale"},
+            ],
+        )
+
+        module_registry.register_sidebar(
+            "review_inventory",
+            label="Inventory",
+            icon="Boxes",
+            tab=SidebarTab.REVIEW,
+            order=35,
+            module_key="inventory",
+            nav_items=[
+                {"label": "Stock Balances", "href": "/inventory/balances", "icon": "PackageOpen"},
+                {"label": "Stock Ledger", "href": "/inventory/ledger", "icon": "ScrollText"},
+            ],
+        )
+
+        module_registry.register_sidebar(
+            "setup_inventory",
+            label="Inventory",
+            icon="Warehouse",
+            tab=SidebarTab.SETUP,
+            order=50,
+            module_key="inventory",
+            nav_items=[
+                {"label": "Warehouses", "href": "/inventory/warehouses", "icon": "Warehouse"},
             ],
         )

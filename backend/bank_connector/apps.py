@@ -8,7 +8,7 @@ class BankConnectorConfig(AppConfig):
     verbose_name = "Bank Connector"
 
     def ready(self):
-        from accounts.module_registry import ModuleCategory, module_registry
+        from accounts.module_registry import ModuleCategory, SidebarTab, module_registry
 
         module_registry.register(
             "bank_connector",
@@ -16,11 +16,17 @@ class BankConnectorConfig(AppConfig):
             icon="Landmark",
             category=ModuleCategory.VERTICAL,
             order=78,
+        )
+
+        module_registry.register_sidebar(
+            "setup_banking",
+            label="Banking",
+            icon="Landmark",
+            tab=SidebarTab.SETUP,
+            order=37,
+            module_key="bank_connector",
             nav_items=[
-                {"label": "Reconciliation", "href": "/banking/reconciliation", "icon": "Zap"},
-                {"label": "Exceptions", "href": "/banking/exceptions", "icon": "AlertTriangle"},
                 {"label": "Accounts", "href": "/banking/accounts", "icon": "Building2"},
-                {"label": "Transactions", "href": "/banking/transactions", "icon": "ArrowLeftRight"},
                 {"label": "Import", "href": "/banking/import", "icon": "Upload"},
             ],
         )

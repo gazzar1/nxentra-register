@@ -8,19 +8,28 @@ class SalesConfig(AppConfig):
     verbose_name = "Sales & Invoicing"
 
     def ready(self):
-        from accounts.module_registry import ModuleCategory, module_registry
+        from accounts.module_registry import ModuleCategory, SidebarTab, module_registry
 
+        # Module registration (for enablement)
         module_registry.register(
             "sales",
             label="Sales",
             icon="ShoppingCart",
             category=ModuleCategory.HORIZONTAL,
             order=30,
+        )
+
+        # WORK tab — Sales operations
+        module_registry.register_sidebar(
+            "work_sales",
+            label="Sales",
+            icon="Receipt",
+            tab=SidebarTab.WORK,
+            order=20,
+            module_key="sales",
             nav_items=[
-                {"label": "Tax Codes", "href": "/accounting/tax-codes", "icon": "Percent", "translation_key": "nav.taxCodes"},
-                {"label": "Posting Profiles", "href": "/accounting/posting-profiles", "icon": "CreditCard", "translation_key": "nav.postingProfiles"},
-                {"label": "Invoices", "href": "/accounting/sales-invoices", "icon": "Receipt", "translation_key": "nav.salesInvoices"},
-                {"label": "Credit Notes", "href": "/accounting/credit-notes", "icon": "ReceiptText", "translation_key": "nav.creditNotes"},
-                {"label": "Receipts", "href": "/accounting/receipts", "icon": "CreditCard", "translation_key": "nav.customerReceipts"},
+                {"label": "Invoices", "href": "/accounting/sales-invoices", "icon": "Receipt"},
+                {"label": "Credit Notes", "href": "/accounting/credit-notes", "icon": "ReceiptText"},
+                {"label": "Customer Receipts", "href": "/accounting/receipts", "icon": "CreditCard"},
             ],
         )

@@ -99,7 +99,11 @@ const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
   const router = useRouter();
-  const { data: sections } = useSidebarNav();
+  const { data: sidebarData } = useSidebarNav();
+  // Flatten all tabs for command palette search
+  const sections = sidebarData
+    ? [...(sidebarData.work || []), ...(sidebarData.review || []), ...(sidebarData.setup || [])]
+    : [];
 
   // Cmd+K / Ctrl+K to open
   useEffect(() => {

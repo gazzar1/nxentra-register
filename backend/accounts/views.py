@@ -440,10 +440,9 @@ class LogoutView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        from rest_framework_simplejwt.tokens import RefreshToken as JWTRefreshToken
-
         # Read refresh from body or cookie
         from django.conf import settings as s
+        from rest_framework_simplejwt.tokens import RefreshToken as JWTRefreshToken
         refresh = request.data.get("refresh") or request.COOKIES.get(
             s.AUTH_COOKIE_REFRESH_NAME
         )
@@ -2465,15 +2464,16 @@ class SidebarView(APIView):
     """
     GET /api/sidebar/ -> Full sidebar navigation for the current company.
 
-    Returns core sections (always present) plus enabled optional modules.
+    Returns tab-grouped sections: { work: [...], review: [...], setup: [...] }
     Each section includes icon name, label, and child nav items.
+    Sections linked to optional modules are filtered by company enablement.
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         from accounts.authz import resolve_actor
         from accounts.models import CompanyModule
-        from accounts.module_registry import ModuleCategory, module_registry
+        from accounts.module_registry import SidebarTab, module_registry
 
         actor = resolve_actor(request)
         if not actor.company:
@@ -2485,17 +2485,21 @@ class SidebarView(APIView):
         ).values_list("module_key", flat=True)
         enabled_keys = set(enabled_records)
 
-        sections = []
-        for mod in module_registry.all_modules():
-            # Core modules always included
-            if mod["category"] == ModuleCategory.CORE:
-                sections.append(mod)
-                continue
-            # Optional modules only if enabled
-            if mod["key"] in enabled_keys:
-                sections.append(mod)
+        # Core module keys (always enabled)
+        core_keys = {m["key"] for m in module_registry.core_modules()}
 
-        return Response(sections)
+        result = {}
+        for tab in (SidebarTab.WORK, SidebarTab.REVIEW, SidebarTab.SETUP):
+            sections = []
+            for section in module_registry.sidebar_for_tab(tab):
+                mod_key = section.get("module_key")
+                # If section is tied to a module, check if it's enabled
+                if mod_key and mod_key not in core_keys and mod_key not in enabled_keys:
+                    continue
+                sections.append(section)
+            result[tab] = sections
+
+        return Response(result)
 
 
 class CompanyModulesView(APIView):

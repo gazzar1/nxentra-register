@@ -27,7 +27,7 @@ class PropertiesConfig(AppConfig):
     ]
 
     def ready(self):
-        from accounts.module_registry import ModuleCategory, module_registry
+        from accounts.module_registry import ModuleCategory, SidebarTab, module_registry
 
         module_registry.register(
             "properties",
@@ -35,16 +35,47 @@ class PropertiesConfig(AppConfig):
             icon="Home",
             category=ModuleCategory.VERTICAL,
             order=60,
+        )
+
+        module_registry.register_sidebar(
+            "work_properties",
+            label="Properties",
+            icon="Home",
+            tab=SidebarTab.WORK,
+            order=60,
+            module_key="properties",
             nav_items=[
-                {"label": "Dashboard", "href": "/properties/dashboard", "icon": "LayoutGrid", "translation_key": "nav.propDashboard"},
-                {"label": "Properties", "href": "/properties/properties", "icon": "Building2", "translation_key": "nav.propertiesList"},
-                {"label": "Units", "href": "/properties/units", "icon": "DoorOpen", "translation_key": "nav.units"},
-                {"label": "Lessees", "href": "/properties/lessees", "icon": "UserSquare2", "translation_key": "nav.lessees"},
-                {"label": "Leases", "href": "/properties/leases", "icon": "FileSignature", "translation_key": "nav.leases"},
-                {"label": "Collections", "href": "/properties/payments", "icon": "Banknote", "translation_key": "nav.collections"},
-                {"label": "Expenses", "href": "/properties/expenses", "icon": "Receipt", "translation_key": "nav.propExpenses"},
-                {"label": "Alerts", "href": "/properties/alerts", "icon": "AlertTriangle", "translation_key": "nav.propAlerts"},
-                {"label": "Reports", "href": "/properties/reports", "icon": "PieChart", "translation_key": "nav.propReports"},
-                {"label": "Settings", "href": "/properties/settings", "icon": "Settings", "translation_key": "nav.propSettings"},
+                {"label": "Dashboard", "href": "/properties/dashboard", "icon": "LayoutGrid"},
+                {"label": "Properties", "href": "/properties/properties", "icon": "Building2"},
+                {"label": "Units", "href": "/properties/units", "icon": "DoorOpen"},
+                {"label": "Lessees", "href": "/properties/lessees", "icon": "UserSquare2"},
+                {"label": "Leases", "href": "/properties/leases", "icon": "FileSignature"},
+                {"label": "Collections", "href": "/properties/payments", "icon": "Banknote"},
+                {"label": "Expenses", "href": "/properties/expenses", "icon": "Receipt"},
+            ],
+        )
+
+        module_registry.register_sidebar(
+            "review_properties",
+            label="Properties",
+            icon="Home",
+            tab=SidebarTab.REVIEW,
+            order=50,
+            module_key="properties",
+            nav_items=[
+                {"label": "Alerts", "href": "/properties/alerts", "icon": "AlertTriangle"},
+                {"label": "Reports", "href": "/properties/reports", "icon": "PieChart"},
+            ],
+        )
+
+        module_registry.register_sidebar(
+            "setup_properties",
+            label="Properties",
+            icon="Home",
+            tab=SidebarTab.SETUP,
+            order=60,
+            module_key="properties",
+            nav_items=[
+                {"label": "Settings", "href": "/properties/settings", "icon": "Settings"},
             ],
         )

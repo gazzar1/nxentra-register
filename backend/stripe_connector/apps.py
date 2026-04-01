@@ -17,7 +17,12 @@ class StripeConnectorConfig(AppConfig):
     ]
 
     def ready(self):
-        from accounts.module_registry import ModuleCategory, module_registry
+        from accounts.module_registry import ModuleCategory, SidebarTab, module_registry
+        from platform_connectors.registry import connector_registry
+
+        from .connector import StripeConnector
+
+        connector_registry.register(StripeConnector())
 
         module_registry.register(
             "stripe_connector",
@@ -25,15 +30,31 @@ class StripeConnectorConfig(AppConfig):
             icon="CreditCard",
             category=ModuleCategory.VERTICAL,
             order=76,
+        )
+
+        module_registry.register_sidebar(
+            "work_stripe",
+            label="Stripe",
+            icon="CreditCard",
+            tab=SidebarTab.WORK,
+            order=76,
+            module_key="stripe_connector",
             nav_items=[
                 {"label": "Dashboard", "href": "/stripe", "icon": "LayoutDashboard"},
                 {"label": "Charges", "href": "/stripe/charges", "icon": "Receipt"},
                 {"label": "Payouts", "href": "/stripe/payouts", "icon": "Banknote"},
                 {"label": "Payout Verification", "href": "/stripe/reconciliation", "icon": "Scale"},
-                {"label": "Settings", "href": "/stripe/settings", "icon": "Settings"},
             ],
         )
 
-        from platform_connectors.registry import connector_registry
-        from stripe_connector.connector import StripeConnector
-        connector_registry.register(StripeConnector())
+        module_registry.register_sidebar(
+            "setup_stripe",
+            label="Stripe",
+            icon="CreditCard",
+            tab=SidebarTab.SETUP,
+            order=36,
+            module_key="stripe_connector",
+            nav_items=[
+                {"label": "Settings", "href": "/stripe/settings", "icon": "Settings"},
+            ],
+        )

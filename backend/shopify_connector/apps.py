@@ -7,27 +7,31 @@ class ShopifyConnectorConfig(AppConfig):
     name = "shopify_connector"
     verbose_name = "Shopify Connector"
 
-    # Projection that converts Shopify events → journal entries
     projections = [
         "shopify_connector.projections.ShopifyAccountingProjection",
     ]
 
     event_types_module = "shopify_connector.event_types"
 
-    # GL account roles this module requires
     account_roles = [
         "SALES_REVENUE",
         "SHOPIFY_CLEARING",
         "PAYMENT_PROCESSING_FEES",
         "SALES_TAX_PAYABLE",
         "SHIPPING_REVENUE",
-        "SALES_DISCOUNTS",
         "CASH_BANK",
+        "COGS",
+        "INVENTORY",
         "CHARGEBACK_EXPENSE",
     ]
 
     def ready(self):
-        from accounts.module_registry import ModuleCategory, module_registry
+        from accounts.module_registry import ModuleCategory, SidebarTab, module_registry
+        from platform_connectors.registry import connector_registry
+
+        from .connector import ShopifyConnector
+
+        connector_registry.register(ShopifyConnector())
 
         module_registry.register(
             "shopify_connector",
@@ -35,16 +39,31 @@ class ShopifyConnectorConfig(AppConfig):
             icon="ShoppingCart",
             category=ModuleCategory.VERTICAL,
             order=75,
+        )
+
+        module_registry.register_sidebar(
+            "work_shopify",
+            label="Shopify",
+            icon="ShoppingCart",
+            tab=SidebarTab.WORK,
+            order=75,
+            module_key="shopify_connector",
             nav_items=[
                 {"label": "Dashboard", "href": "/shopify", "icon": "LayoutDashboard"},
                 {"label": "Orders", "href": "/shopify/orders", "icon": "ShoppingBag"},
                 {"label": "Payouts", "href": "/shopify/payouts", "icon": "Banknote"},
                 {"label": "Payout Verification", "href": "/shopify/reconciliation", "icon": "Scale"},
-                {"label": "Settings", "href": "/shopify/settings", "icon": "Settings"},
             ],
         )
 
-        # Register with platform connector registry
-        from platform_connectors.registry import connector_registry
-        from shopify_connector.connector import ShopifyConnector
-        connector_registry.register(ShopifyConnector())
+        module_registry.register_sidebar(
+            "setup_shopify",
+            label="Shopify",
+            icon="ShoppingCart",
+            tab=SidebarTab.SETUP,
+            order=35,
+            module_key="shopify_connector",
+            nav_items=[
+                {"label": "Settings", "href": "/shopify/settings", "icon": "Settings"},
+            ],
+        )
