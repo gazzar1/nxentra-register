@@ -126,6 +126,86 @@ class ItemDetailView(APIView):
         return Response(ItemSerializer(result.data["item"]).data)
 
 
+class ItemImageUploadView(APIView):
+    """
+    POST /api/sales/items/<pk>/image/ — Upload item photo
+    DELETE /api/sales/items/<pk>/image/ — Remove item photo
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        import os
+
+        from django.core.files.storage import default_storage
+
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        try:
+            item = Item.objects.get(company=actor.company, pk=pk)
+        except Item.DoesNotExist:
+            return Response({"detail": "Item not found."}, status=404)
+
+        if "image" not in request.FILES:
+            return Response({"detail": "No image file provided."}, status=400)
+
+        image_file = request.FILES["image"]
+
+        # Validate file type
+        allowed_extensions = {".png", ".jpg", ".jpeg", ".webp"}
+        ext = os.path.splitext(image_file.name)[1].lower()
+        if ext not in allowed_extensions:
+            return Response(
+                {"detail": f"Invalid file type. Allowed: {', '.join(allowed_extensions)}"},
+                status=400,
+            )
+
+        # Validate size (5MB)
+        if image_file.size > 5 * 1024 * 1024:
+            return Response({"detail": "File too large. Maximum size is 5MB."}, status=400)
+
+        # Delete old image if exists
+        if item.image:
+            try:
+                default_storage.delete(item.image.name)
+            except Exception:
+                pass
+
+        from projections.write_barrier import command_writes_allowed
+        with command_writes_allowed():
+            item.image = image_file
+            item.save(update_fields=["image"])
+
+        image_url = request.build_absolute_uri(item.image.url) if item.image else None
+        return Response({"image_url": image_url})
+
+    def delete(self, request, pk):
+        from django.core.files.storage import default_storage
+
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        try:
+            item = Item.objects.get(company=actor.company, pk=pk)
+        except Item.DoesNotExist:
+            return Response({"detail": "Item not found."}, status=404)
+
+        if item.image:
+            try:
+                default_storage.delete(item.image.name)
+            except Exception:
+                pass
+
+            from projections.write_barrier import command_writes_allowed
+            with command_writes_allowed():
+                item.image = None
+                item.save(update_fields=["image"])
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 # =============================================================================
 # Tax Code Views
 # =============================================================================

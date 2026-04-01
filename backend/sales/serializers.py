@@ -33,6 +33,7 @@ class ItemSerializer(serializers.ModelSerializer):
     default_tax_code_code = serializers.CharField(source="default_tax_code.code", read_only=True, default=None)
     inventory_account_code = serializers.CharField(source="inventory_account.code", read_only=True, default=None)
     cogs_account_code = serializers.CharField(source="cogs_account.code", read_only=True, default=None)
+    image_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Item
@@ -48,6 +49,7 @@ class ItemSerializer(serializers.ModelSerializer):
             "cogs_account", "cogs_account_code",
             "costing_method", "uom",
             "average_cost", "last_cost",
+            "image_url",
             "is_active", "created_at", "updated_at",
         ]
         read_only_fields = [
@@ -55,8 +57,17 @@ class ItemSerializer(serializers.ModelSerializer):
             "sales_account_code", "purchase_account_code", "default_tax_code_code",
             "inventory_account_code", "cogs_account_code",
             "average_cost", "last_cost",
+            "image_url",
             "created_at", "updated_at",
         ]
+
+    def get_image_url(self, obj):
+        if obj.image:
+            request = self.context.get("request")
+            if request:
+                return request.build_absolute_uri(obj.image.url)
+            return obj.image.url
+        return None
 
 
 class ItemCreateSerializer(serializers.Serializer):

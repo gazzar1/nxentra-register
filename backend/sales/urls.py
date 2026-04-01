@@ -21,6 +21,7 @@ from .views import (
     # Open invoices for allocation
     CustomerOpenInvoicesView,
     ItemDetailView,
+    ItemImageUploadView,
     # Item views
     ItemListCreateView,
     PostingProfileDetailView,
@@ -53,6 +54,11 @@ urlpatterns = [
         "items/<int:pk>/",
         ItemDetailView.as_view(),
         name="item-detail",
+    ),
+    path(
+        "items/<int:pk>/image/",
+        ItemImageUploadView.as_view(),
+        name="item-image",
     ),
 
     # ==========================================================================

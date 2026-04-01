@@ -183,6 +183,14 @@ class Item(ProjectionWriteGuard):
         help_text="Unit of measure (e.g., EA, KG, BOX)",
     )
 
+    # Item photo
+    image = models.ImageField(
+        upload_to="items/",
+        null=True,
+        blank=True,
+        help_text="Product photo (max 5MB, PNG/JPG/WEBP)",
+    )
+
     is_active = models.BooleanField(default=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
