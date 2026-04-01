@@ -3,8 +3,9 @@ import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import { ArrowLeft, Save } from "lucide-react";
+import { ArrowLeft, Save, Upload, X, ImageIcon } from "lucide-react";
 import { useForm, Controller } from "react-hook-form";
+import { useRef, useState } from "react";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -58,6 +59,36 @@ export default function NewItemPage() {
   const { data: accounts } = useAccounts();
   const { data: taxCodes } = useTaxCodes();
   const createItem = useCreateItem();
+
+  const [selectedImage, setSelectedImage] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Validate
+    const allowed = [".png", ".jpg", ".jpeg", ".webp"];
+    const ext = "." + file.name.split(".").pop()?.toLowerCase();
+    if (!allowed.includes(ext)) {
+      toast({ title: "Invalid file type", description: "Allowed: PNG, JPG, WEBP", variant: "destructive" });
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast({ title: "File too large", description: "Maximum size is 5MB", variant: "destructive" });
+      return;
+    }
+
+    setSelectedImage(file);
+    setImagePreview(URL.createObjectURL(file));
+  };
+
+  const removeImage = () => {
+    setSelectedImage(null);
+    setImagePreview(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
 
   const revenueAccounts = accounts?.filter(
     (a) => a.account_type === "REVENUE" && a.is_postable && !a.is_header
@@ -115,7 +146,26 @@ export default function NewItemPage() {
         costing_method: data.costing_method || undefined,
       };
 
-      await createItem.mutateAsync(payload);
+      const result = await createItem.mutateAsync(payload);
+      const newItemId = result.data?.id;
+
+      // Upload image if selected
+      if (selectedImage && newItemId) {
+        try {
+          const formData = new FormData();
+          formData.append("image", selectedImage);
+          const { default: apiClient } = await import("@/lib/api-client");
+          await apiClient.post(`/sales/items/${newItemId}/image/`, formData, {
+            headers: { "Content-Type": "multipart/form-data" },
+          });
+        } catch {
+          // Item created but image upload failed — non-critical
+          toast({ title: "Item created", description: "Item saved but image upload failed. You can upload it later.", variant: "default" });
+          router.push("/accounting/items");
+          return;
+        }
+      }
+
       toast({
         title: "Item created",
         description: `${data.name} has been created successfully.`,
@@ -310,6 +360,58 @@ export default function NewItemPage() {
                   </Select>
                 )}
               />
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Item Photo */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Item Photo</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-start gap-6">
+              {imagePreview ? (
+                <div className="relative">
+                  <img
+                    src={imagePreview}
+                    alt="Item preview"
+                    className="h-32 w-32 rounded-lg object-cover border"
+                  />
+                  <button
+                    type="button"
+                    onClick={removeImage}
+                    className="absolute -top-2 -end-2 rounded-full bg-destructive p-1 text-destructive-foreground shadow-sm hover:bg-destructive/90"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              ) : (
+                <div className="flex h-32 w-32 items-center justify-center rounded-lg border-2 border-dashed border-muted-foreground/25">
+                  <ImageIcon className="h-8 w-8 text-muted-foreground/50" />
+                </div>
+              )}
+              <div className="space-y-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".png,.jpg,.jpeg,.webp"
+                  onChange={handleImageSelect}
+                  className="hidden"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Upload className="h-4 w-4 me-2" />
+                  {selectedImage ? "Change Photo" : "Upload Photo"}
+                </Button>
+                <p className="text-xs text-muted-foreground">
+                  PNG, JPG, or WEBP. Max 5MB.
+                </p>
+              </div>
             </div>
           </CardContent>
         </Card>
