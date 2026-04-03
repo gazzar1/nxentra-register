@@ -132,7 +132,6 @@ class Command(BaseCommand):
                     "name": name,
                     "name_ar": name_ar,
                     "account_type": acct_type,
-                    "is_postable": True,
                     "is_header": False,
                     "normal_balance": "DEBIT" if acct_type in ("ASSET", "EXPENSE") else "CREDIT",
                 },
