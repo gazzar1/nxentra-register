@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { FormEvent, useState } from "react";
+import { FormEvent, useState, useEffect, useRef } from "react";
 import { useRouter } from "next/router";
 import { AuthLayout } from "@/components/AuthLayout";
 import { InputField } from "@/components/FormField";
@@ -24,6 +24,29 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isDemo, setIsDemo] = useState(false);
+  const demoTriggered = useRef(false);
+
+  // Auto-fill demo credentials when ?demo=true
+  useEffect(() => {
+    if (router.query.demo === "true" && !demoTriggered.current) {
+      demoTriggered.current = true;
+      setEmail("demo@nxentra.com");
+      setPassword("demo1234");
+      setIsDemo(true);
+    }
+  }, [router.query.demo]);
+
+  // Auto-submit when demo credentials are set
+  useEffect(() => {
+    if (isDemo && email === "demo@nxentra.com" && password === "demo1234") {
+      const timer = setTimeout(() => {
+        const form = document.querySelector("form");
+        if (form) form.requestSubmit();
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [isDemo, email, password]);
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
