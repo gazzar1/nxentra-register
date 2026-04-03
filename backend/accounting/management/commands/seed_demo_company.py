@@ -17,7 +17,7 @@ from django.db import transaction
 
 from accounts.models import Company, CompanyMembership
 from accounts.rls import rls_bypass
-from projections.write_barrier import command_writes_allowed
+from projections.write_barrier import command_writes_allowed, projection_writes_allowed
 
 
 class Command(BaseCommand):
@@ -62,7 +62,7 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.WARNING("Flushing existing demo data..."))
                 self._flush(company)
 
-            with command_writes_allowed():
+            with command_writes_allowed(), projection_writes_allowed():
                 # 1. Ensure accounts exist
                 accounts = self._ensure_accounts(company)
 
