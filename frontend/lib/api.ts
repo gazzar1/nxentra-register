@@ -107,7 +107,7 @@ export async function getProfile(accessToken: string): Promise<ProfileResponse> 
 //   EMAIL VERIFICATION API
 // ==========================
 export interface VerifyEmailResponse {
-  status: 'verified' | 'pending_approval';
+  status: 'verified' | 'verified_and_approved' | 'already_verified' | 'pending_approval';
   message: string;
 }
 

@@ -46,12 +46,12 @@ export default function VerifyEmailPage() {
       setStatus('loading');
       const response = await verifyEmail(verificationToken);
 
-      if (response.status === 'verified') {
+      if (response.status === 'verified' || response.status === 'verified_and_approved' || response.status === 'already_verified') {
         setStatus('verified');
-        setMessage(response.message);
+        setMessage(response.message || 'Your email has been verified successfully.');
       } else if (response.status === 'pending_approval') {
         setStatus('pending_approval');
-        setMessage(response.message);
+        setMessage(response.message || 'Your email has been verified. An administrator will review your account.');
       }
     } catch (error: unknown) {
       setStatus('error');
