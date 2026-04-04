@@ -158,6 +158,12 @@ class Company(ProjectionWriteGuard):
         default="",
         help_text="Chart of accounts template used during onboarding (empty, minimal, retail, services).",
     )
+    business_type = models.CharField(
+        max_length=30,
+        blank=True,
+        default="",
+        help_text="Business type selected during onboarding (shopify, general).",
+    )
 
     # Number/Date Formatting Preferences
     thousand_separator = models.CharField(

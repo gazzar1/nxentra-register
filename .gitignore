@@ -28,6 +28,8 @@ backend/.env.*
 backend/.coverage
 backend/pytest.log
 backend/htmlcov/
+backend/test_db.sqlite3
+backend/*.sqlite3
 
 # Temp files
 backend/tmpclaude-*

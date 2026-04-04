@@ -39,7 +39,8 @@ jobs:
         run: |
           python -m pytest tests/ accounting/tests/ events/tests/ accounts/tests/ \
             -v --tb=short -x \
-            --ignore=tests/e2e/
+            --ignore=tests/e2e/ \
+            --create-db
 
   # ─────────────────────────────────────────────────────────
   # Backend: e2e tests on PostgreSQL (full fidelity)

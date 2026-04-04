@@ -11,6 +11,9 @@ const ROUTE_MODULE_MAP: Record<string, string> = {
   "/clinic": "clinic",
   "/properties": "properties",
   "/inventory": "inventory",
+  "/shopify": "shopify_connector",
+  "/stripe": "stripe_connector",
+  "/banking": "bank_connector",
 };
 
 /**

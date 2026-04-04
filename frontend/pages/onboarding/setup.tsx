@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { LoadingSpinner } from "@/components/common";
-import { useModules, useUpdateModules, type ModuleInfo } from "@/queries/useModules";
+import { useModules, type ModuleInfo } from "@/queries/useModules";
 import { useToast } from "@/components/ui/toaster";
 import { getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/cn";
@@ -33,9 +33,26 @@ import {
   Truck,
   Stethoscope,
   Home,
+  Store,
+  ShoppingBag,
+  Briefcase,
+  Link,
 } from "lucide-react";
 
-const STEPS = [
+/* =========================================================================
+   STEP DEFINITIONS — vary by business type
+   ========================================================================= */
+
+const STEPS_SHOPIFY = [
+  { key: "business", icon: Store, label: "Business Type" },
+  { key: "company", icon: Building2, label: "Company Profile" },
+  { key: "fiscal", icon: Calendar, label: "Fiscal Year" },
+  { key: "shopify", icon: Link, label: "Shopify Setup" },
+  { key: "ready", icon: Rocket, label: "Ready" },
+];
+
+const STEPS_GENERAL = [
+  { key: "business", icon: Store, label: "Business Type" },
   { key: "company", icon: Building2, label: "Company Profile" },
   { key: "fiscal", icon: Calendar, label: "Fiscal Year" },
   { key: "accounts", icon: BookOpen, label: "Chart of Accounts" },
@@ -78,7 +95,10 @@ export default function OnboardingSetupPage() {
   const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState<OnboardingStatus | null>(null);
 
-  // Step 1: Company profile
+  // Business type
+  const [businessType, setBusinessType] = useState<"shopify" | "general">("shopify");
+
+  // Step: Company profile
   const [companyName, setCompanyName] = useState("");
   const [companyNameAr, setCompanyNameAr] = useState("");
   const [fiscalStartMonth, setFiscalStartMonth] = useState(1);
@@ -87,23 +107,26 @@ export default function OnboardingSetupPage() {
   const [decimalPlaces, setDecimalPlaces] = useState(2);
   const [dateFormat, setDateFormat] = useState("YYYY-MM-DD");
 
-  // Step 2: Fiscal year
+  // Step: Fiscal year
   const [fiscalYear, setFiscalYear] = useState(new Date().getFullYear());
   const [numPeriods, setNumPeriods] = useState(12);
   const [currentPeriod, setCurrentPeriod] = useState(new Date().getMonth() + 1);
 
-  // Step 3: CoA template
+  // Step: CoA template (general path only)
   const [coaTemplate, setCoaTemplate] = useState("minimal");
 
-  // Step 4: Modules
+  // Step: Modules (general path only)
   const [selectedModules, setSelectedModules] = useState<Set<string>>(new Set());
+
+  const steps = businessType === "shopify" ? STEPS_SHOPIFY : STEPS_GENERAL;
+  const lastStepIndex = steps.length - 1;
+  const submitStepIndex = lastStepIndex - 1; // Step before "Ready"
 
   useEffect(() => {
     onboardingService
       .getStatus()
       .then((data) => {
         setStatus(data);
-        // Pre-fill from company data
         if (data.company.name) setCompanyName(data.company.name);
         if (data.company.name_ar) setCompanyNameAr(data.company.name_ar);
         if (data.company.fiscal_year_start_month)
@@ -137,6 +160,7 @@ export default function OnboardingSetupPage() {
       const optionalModules = moduleList?.filter((m) => !m.is_core) ?? [];
 
       const payload: OnboardingSetupPayload = {
+        business_type: businessType,
         company_name: companyName,
         company_name_ar: companyNameAr,
         fiscal_year_start_month: fiscalStartMonth,
@@ -147,16 +171,21 @@ export default function OnboardingSetupPage() {
         fiscal_year: fiscalYear,
         num_periods: numPeriods,
         current_period: currentPeriod,
-        coa_template: coaTemplate,
-        modules: optionalModules.map((m) => ({
-          key: m.key,
-          is_enabled: selectedModules.has(m.key),
-        })),
+        coa_template: businessType === "shopify" ? "retail" : coaTemplate,
+        modules:
+          businessType === "shopify"
+            ? optionalModules.map((m) => ({
+                key: m.key,
+                is_enabled: ["shopify_connector", "sales", "purchases", "inventory"].includes(m.key),
+              }))
+            : optionalModules.map((m) => ({
+                key: m.key,
+                is_enabled: selectedModules.has(m.key),
+              })),
       };
 
       await onboardingService.complete(payload);
-      // Move to "Ready" step
-      setStep(4);
+      setStep(lastStepIndex);
     } catch (error) {
       toast({
         title: t("messages.error", "Error"),
@@ -169,10 +198,9 @@ export default function OnboardingSetupPage() {
   };
 
   const handleNext = () => {
-    if (step === 3) {
-      // Step 4 is submit
+    if (step === submitStepIndex) {
       handleSubmit();
-    } else if (step < 4) {
+    } else if (step < lastStepIndex) {
       setStep(step + 1);
     }
   };
@@ -182,17 +210,16 @@ export default function OnboardingSetupPage() {
   };
 
   const handleGoToDashboard = () => {
-    // Full reload to refresh sidebar modules and company settings
-    window.location.href = "/dashboard";
+    const dest = businessType === "shopify" ? "/shopify/reconciliation" : "/dashboard";
+    window.location.href = dest;
   };
 
   const handleSkip = () => {
-    // Skip all — just mark onboarding done with defaults
     setSubmitting(true);
     onboardingService
       .complete({ coa_template: "minimal" })
       .then(() => {
-        handleGoToDashboard();
+        window.location.href = "/dashboard";
       })
       .catch((error) => {
         toast({
@@ -214,7 +241,6 @@ export default function OnboardingSetupPage() {
     );
   }
 
-  // If already completed, redirect
   if (status?.onboarding_completed) {
     router.push("/dashboard");
     return null;
@@ -225,12 +251,14 @@ export default function OnboardingSetupPage() {
     "July", "August", "September", "October", "November", "December",
   ];
 
+  const currentStepKey = steps[step]?.key;
+
   return (
     <AppLayout>
       <div className="mx-auto max-w-3xl py-6 px-4">
         {/* Progress indicator */}
         <div className="flex items-center justify-center gap-1 mb-8">
-          {STEPS.map((s, i) => {
+          {steps.map((s, i) => {
             const Icon = s.icon;
             const isActive = i === step;
             const isDone = i < step;
@@ -253,7 +281,7 @@ export default function OnboardingSetupPage() {
                   )}
                   <span className="hidden sm:inline">{s.label}</span>
                 </button>
-                {i < STEPS.length - 1 && (
+                {i < steps.length - 1 && (
                   <div
                     className={cn(
                       "h-px w-6 mx-1",
@@ -269,7 +297,16 @@ export default function OnboardingSetupPage() {
         {/* Step content */}
         <Card>
           <CardContent className="p-6">
-            {step === 0 && (
+            {currentStepKey === "business" && (
+              <StepBusinessType
+                selected={businessType}
+                onSelect={(v) => {
+                  setBusinessType(v);
+                  if (v === "shopify") setCoaTemplate("retail");
+                }}
+              />
+            )}
+            {currentStepKey === "company" && (
               <StepCompanyProfile
                 companyName={companyName}
                 setCompanyName={setCompanyName}
@@ -289,7 +326,7 @@ export default function OnboardingSetupPage() {
                 dateFormats={DATE_FORMATS}
               />
             )}
-            {step === 1 && (
+            {currentStepKey === "fiscal" && (
               <StepFiscalYear
                 fiscalYear={fiscalYear}
                 setFiscalYear={setFiscalYear}
@@ -301,14 +338,14 @@ export default function OnboardingSetupPage() {
                 months={MONTHS}
               />
             )}
-            {step === 2 && (
+            {currentStepKey === "accounts" && (
               <StepChartOfAccounts
                 templates={status?.templates ?? []}
                 selected={coaTemplate}
                 onSelect={setCoaTemplate}
               />
             )}
-            {step === 3 && (
+            {currentStepKey === "modules" && (
               <StepModules
                 modules={moduleList?.filter((m) => !m.is_core) ?? []}
                 selected={selectedModules}
@@ -316,14 +353,20 @@ export default function OnboardingSetupPage() {
                 isLoading={modulesLoading}
               />
             )}
-            {step === 4 && (
-              <StepReady onGoToDashboard={handleGoToDashboard} />
+            {currentStepKey === "shopify" && (
+              <StepShopifySetup />
+            )}
+            {currentStepKey === "ready" && (
+              <StepReady
+                businessType={businessType}
+                onGoToDashboard={handleGoToDashboard}
+              />
             )}
           </CardContent>
         </Card>
 
         {/* Navigation buttons */}
-        {step < 4 && (
+        {currentStepKey !== "ready" && (
           <div className="flex items-center justify-between mt-6">
             <div>
               {step > 0 ? (
@@ -341,7 +384,7 @@ export default function OnboardingSetupPage() {
               {submitting ? (
                 <LoadingSpinner size="sm" className="me-2" />
               ) : null}
-              {step === 3
+              {step === submitStepIndex
                 ? t("onboarding.finishSetup", "Finish Setup")
                 : t("actions.next", "Next")}
               {!submitting && <ArrowRight className="h-4 w-4 ms-2" />}
@@ -356,6 +399,149 @@ export default function OnboardingSetupPage() {
 /* =========================================================================
    STEP COMPONENTS
    ========================================================================= */
+
+function StepBusinessType({
+  selected,
+  onSelect,
+}: {
+  selected: "shopify" | "general";
+  onSelect: (v: "shopify" | "general") => void;
+}) {
+  const options = [
+    {
+      key: "shopify" as const,
+      icon: ShoppingBag,
+      title: "Shopify Merchant",
+      description:
+        "I sell on Shopify and need to track orders, payouts, fees, and refunds in my accounting.",
+      badge: "Recommended",
+    },
+    {
+      key: "general" as const,
+      icon: Briefcase,
+      title: "General Accounting",
+      description:
+        "I need a general-purpose accounting system with journal entries, invoicing, and reports.",
+      badge: null,
+    },
+  ];
+
+  return (
+    <div>
+      <h2 className="text-xl font-semibold mb-1">How do you use Nxentra?</h2>
+      <p className="text-sm text-muted-foreground mb-6">
+        Choose your primary use case. This configures your accounts, modules, and
+        dashboard for the best experience. You can always change this later.
+      </p>
+
+      <div className="grid gap-4">
+        {options.map((opt) => {
+          const Icon = opt.icon;
+          const isSelected = selected === opt.key;
+          return (
+            <button
+              key={opt.key}
+              type="button"
+              onClick={() => onSelect(opt.key)}
+              className={cn(
+                "flex items-start gap-4 rounded-xl border-2 p-5 text-start transition-all",
+                isSelected
+                  ? "border-accent bg-accent/5"
+                  : "border-border hover:border-muted-foreground/30"
+              )}
+            >
+              <div
+                className={cn(
+                  "flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-lg",
+                  isSelected
+                    ? "bg-accent/10 text-accent"
+                    : "bg-muted text-muted-foreground"
+                )}
+              >
+                <Icon className="h-6 w-6" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-base">{opt.title}</span>
+                  {opt.badge && (
+                    <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-accent/10 text-accent">
+                      {opt.badge}
+                    </span>
+                  )}
+                </div>
+                <p className="text-sm text-muted-foreground mt-1">
+                  {opt.description}
+                </p>
+              </div>
+              <div
+                className={cn(
+                  "flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full border-2 mt-1 transition-colors",
+                  isSelected
+                    ? "border-accent bg-accent text-primary-foreground"
+                    : "border-muted-foreground/30"
+                )}
+              >
+                {isSelected && <Check className="h-3.5 w-3.5" />}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function StepShopifySetup() {
+  return (
+    <div>
+      <h2 className="text-xl font-semibold mb-1">Shopify Setup</h2>
+      <p className="text-sm text-muted-foreground mb-6">
+        Connect your Shopify store to start reconciling orders, payouts, and fees
+        automatically.
+      </p>
+
+      <div className="rounded-xl border-2 border-dashed border-border p-8 text-center">
+        <div className="flex justify-center mb-4">
+          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-accent/10">
+            <Store className="h-7 w-7 text-accent" />
+          </div>
+        </div>
+        <h3 className="font-medium mb-2">Connect your Shopify store</h3>
+        <p className="text-sm text-muted-foreground mb-4 max-w-md mx-auto">
+          After setup, go to Settings &rarr; Integrations to connect your store.
+          We&apos;ll automatically create accounting entries for your orders, payouts,
+          refunds, and fees.
+        </p>
+        <p className="text-xs text-muted-foreground">
+          Your Shopify clearing account, revenue accounts, and fee accounts have been
+          pre-configured. Click &quot;Finish Setup&quot; to continue.
+        </p>
+      </div>
+
+      <div className="mt-6 rounded-lg bg-muted/50 p-4">
+        <h4 className="text-sm font-medium mb-2">What&apos;s been configured for you:</h4>
+        <ul className="text-sm text-muted-foreground space-y-1.5">
+          <li className="flex items-center gap-2">
+            <Check className="h-3.5 w-3.5 text-green-500 flex-shrink-0" />
+            Retail chart of accounts (revenue, COGS, tax, fees)
+          </li>
+          <li className="flex items-center gap-2">
+            <Check className="h-3.5 w-3.5 text-green-500 flex-shrink-0" />
+            Shopify clearing account for payout tracking
+          </li>
+          <li className="flex items-center gap-2">
+            <Check className="h-3.5 w-3.5 text-green-500 flex-shrink-0" />
+            Payment processing fee account
+          </li>
+          <li className="flex items-center gap-2">
+            <Check className="h-3.5 w-3.5 text-green-500 flex-shrink-0" />
+            Automatic journal entries for orders, refunds, and payouts
+          </li>
+        </ul>
+      </div>
+    </div>
+  );
+}
 
 function StepCompanyProfile({
   companyName,
@@ -765,7 +951,15 @@ function StepModules({
   );
 }
 
-function StepReady({ onGoToDashboard }: { onGoToDashboard: () => void }) {
+function StepReady({
+  businessType,
+  onGoToDashboard,
+}: {
+  businessType: string;
+  onGoToDashboard: () => void;
+}) {
+  const isShopify = businessType === "shopify";
+
   return (
     <div className="text-center py-8">
       <div className="flex justify-center mb-4">
@@ -775,13 +969,14 @@ function StepReady({ onGoToDashboard }: { onGoToDashboard: () => void }) {
       </div>
       <h2 className="text-xl font-semibold mb-2">You&apos;re All Set!</h2>
       <p className="text-muted-foreground mb-8 max-w-md mx-auto">
-        Your company is configured and ready to go. You can always change these
-        settings later from the Settings page.
+        {isShopify
+          ? "Your Shopify accounting is configured. Connect your store in Settings \u2192 Integrations to start tracking orders and payouts automatically."
+          : "Your company is configured and ready to go. You can always change these settings later from the Settings page."}
       </p>
 
       <div className="flex flex-col items-center gap-3">
         <Button size="lg" onClick={onGoToDashboard} className="min-w-[200px]">
-          Go to Dashboard
+          {isShopify ? "Go to Reconciliation" : "Go to Dashboard"}
           <ArrowRight className="h-4 w-4 ms-2" />
         </Button>
       </div>

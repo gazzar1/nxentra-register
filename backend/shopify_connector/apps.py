@@ -46,13 +46,13 @@ class ShopifyConnectorConfig(AppConfig):
             label="Shopify",
             icon="ShoppingCart",
             tab=SidebarTab.WORK,
-            order=75,
+            order=5,  # Above Finance (10) — primary nav for Shopify merchants
             module_key="shopify_connector",
             nav_items=[
-                {"label": "Dashboard", "href": "/shopify", "icon": "LayoutDashboard"},
+                {"label": "Reconciliation", "href": "/shopify/reconciliation", "icon": "Scale"},
                 {"label": "Orders", "href": "/shopify/orders", "icon": "ShoppingBag"},
                 {"label": "Payouts", "href": "/shopify/payouts", "icon": "Banknote"},
-                {"label": "Payout Verification", "href": "/shopify/reconciliation", "icon": "Scale"},
+                {"label": "Dashboard", "href": "/shopify", "icon": "LayoutDashboard"},
             ],
         )
 

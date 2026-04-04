@@ -186,6 +186,9 @@ class OnboardingSetupInputSerializer(serializers.Serializer):
         default="minimal",
     )
 
+    # Business type (shopify, general)
+    business_type = serializers.CharField(max_length=30, required=False, allow_blank=True, default="")
+
     # Step 4: Modules
     modules = serializers.ListField(
         child=serializers.DictField(),

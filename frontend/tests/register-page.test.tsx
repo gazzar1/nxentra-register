@@ -53,7 +53,7 @@ describe('RegisterPage', () => {
 
   it('renders registration form', () => {
     render(<RegisterPage />);
-    expect(screen.getByText('Create your company workspace')).toBeInTheDocument();
+    expect(screen.getByText('Get started')).toBeInTheDocument();
     expect(screen.getByTestId('email')).toBeInTheDocument();
     expect(screen.getByTestId('name')).toBeInTheDocument();
     expect(screen.getByTestId('password')).toBeInTheDocument();
@@ -63,7 +63,7 @@ describe('RegisterPage', () => {
 
   it('shows login link', () => {
     render(<RegisterPage />);
-    expect(screen.getByText('Login')).toHaveAttribute('href', '/login');
+    expect(screen.getByText('Sign in')).toHaveAttribute('href', '/login');
   });
 
   it('validates required fields', async () => {

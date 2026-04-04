@@ -49,10 +49,11 @@ FISCAL_YEAR = 2026
 
 
 def _make_company(db):
+    uid = uuid4()
     return Company.objects.create(
-        public_id=uuid4(),
+        public_id=uid,
         name="FY Lifecycle Co",
-        slug="fy-lifecycle",
+        slug=f"fy-lifecycle-{uid.hex[:8]}",
         default_currency="USD",
         fiscal_year_start_month=1,
         is_active=True,
@@ -62,9 +63,10 @@ def _make_company(db):
 def _make_user_and_actor(company):
     from django.contrib.auth import get_user_model
     User = get_user_model()
+    uid = uuid4()
     user = User.objects.create_user(
-        public_id=uuid4(),
-        email="fytest@example.com",
+        public_id=uid,
+        email=f"fytest-{uid.hex[:8]}@example.com",
         password="pass12345",
         name="FY Tester",
     )

@@ -83,9 +83,9 @@ export default function RegisterPage() {
       <div className="relative">
         <form onSubmit={handleSubmit} className="grid grid-cols-1 gap-6 md:grid-cols-2">
           <div className="md:col-span-2">
-            <h2 className="text-2xl font-semibold text-foreground">Create your company workspace</h2>
+            <h2 className="text-2xl font-semibold text-foreground">Get started</h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              Enter your details to get started. You can configure accounting settings after login.
+              Set up your accounting in minutes. Track orders, payouts, fees, and bank deposits clearly.
             </p>
           </div>
           <InputField id="email" label="Email" type="email" value={form.email} onChange={handleChange("email")} error={errors.email} />
@@ -145,7 +145,7 @@ export default function RegisterPage() {
               {isSubmitting ? "Submitting..." : "Launch Workspace"}
             </button>
             <p className="text-sm text-muted-foreground">
-              Already onboarded? <Link href="/login">Login</Link>
+              Already have an account? <Link href="/login">Sign in</Link>
             </p>
           </div>
         </form>

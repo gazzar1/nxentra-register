@@ -108,9 +108,9 @@ export default function LoginPage() {
     <AuthLayout>
       <form onSubmit={handleSubmit} className="space-y-6">
         <div>
-          <h2 className="text-2xl font-semibold text-foreground">Login to your workspace</h2>
+          <h2 className="text-2xl font-semibold text-foreground">Sign in</h2>
           <p className="mt-2 text-sm text-muted-foreground">
-            Enter the email and password you used during onboarding.
+            Access your accounting workspace.
           </p>
         </div>
         <InputField id="email" label="Email" type="email" value={email} onChange={setEmail} />
@@ -126,7 +126,7 @@ export default function LoginPage() {
           {isSubmitting ? "Authenticating..." : "Login"}
         </button>
         <p className="text-sm text-muted-foreground">
-          Need to onboard a workspace? <Link href="/register">Register</Link>
+          Don&apos;t have an account? <Link href="/register">Get started</Link>
         </p>
       </form>
     </AuthLayout>

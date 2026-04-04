@@ -3089,6 +3089,8 @@ def complete_onboarding(
     current_period: int = 1,
     # Step 3: Chart of accounts template
     coa_template: str = "minimal",
+    # Business type
+    business_type: str = "",
     # Step 4: Modules
     modules: list = None,
 ) -> CommandResult:
@@ -3180,11 +3182,16 @@ def complete_onboarding(
                 defaults={"is_enabled": enabled},
             )
 
+    # ---- Shopify auto-configuration ----
+    if business_type == "shopify":
+        _setup_shopify_accounts(company)
+
     # ---- Step 5: Mark onboarding complete ----
     with command_writes_allowed():
         company.onboarding_completed = True
         company.coa_template = coa_template or ""
-        company.save(update_fields=["onboarding_completed", "coa_template"])
+        company.business_type = business_type or ""
+        company.save(update_fields=["onboarding_completed", "coa_template", "business_type"])
 
     # Emit event
     emit_event(
@@ -3205,6 +3212,42 @@ def complete_onboarding(
 
     company.refresh_from_db()
     return CommandResult.ok({"company": company})
+
+
+def _setup_shopify_accounts(company):
+    """Create Shopify GL accounts and module account mappings during onboarding."""
+    from accounting.mappings import ModuleAccountMapping
+    from accounting.models import Account
+    from projections.write_barrier import projection_writes_allowed
+
+    SHOPIFY_ACCOUNTS = [
+        ("SALES_REVENUE", "4100", "Sales Revenue", "REVENUE", "SALES"),
+        ("SHOPIFY_CLEARING", "1150", "Shopify Clearing", "ASSET", "LIQUIDITY"),
+        ("PAYMENT_PROCESSING_FEES", "5200", "Payment Processing Fees", "EXPENSE", "OPERATING_EXPENSE"),
+        ("SALES_TAX_PAYABLE", "2200", "Sales Tax Payable", "LIABILITY", "TAX_PAYABLE"),
+        ("SHIPPING_REVENUE", "4200", "Shipping Revenue", "REVENUE", "SALES"),
+        ("SALES_DISCOUNTS", "4110", "Sales Discounts", "REVENUE", "CONTRA_REVENUE"),
+        ("CASH_BANK", "1100", "Cash and Bank", "ASSET", "LIQUIDITY"),
+        ("CHARGEBACK_EXPENSE", "5210", "Chargeback Expense", "EXPENSE", "OTHER_EXPENSE"),
+    ]
+
+    with projection_writes_allowed():
+        for role, code, name, acct_type, acct_role in SHOPIFY_ACCOUNTS:
+            account, _ = Account.objects.get_or_create(
+                company=company, code=code,
+                defaults={
+                    "name": name,
+                    "account_type": acct_type,
+                    "role": acct_role,
+                    "ledger_domain": "FINANCIAL",
+                    "status": "ACTIVE",
+                    "normal_balance": "DEBIT" if acct_type in ("ASSET", "EXPENSE") else "CREDIT",
+                },
+            )
+            ModuleAccountMapping.objects.update_or_create(
+                company=company, module="shopify_connector", role=role,
+                defaults={"account": account},
+            )
 
 
 def _fiscal_start_date(year: int, start_month: int):

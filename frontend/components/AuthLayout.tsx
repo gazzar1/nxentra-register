@@ -26,10 +26,10 @@ export function AuthLayout({ children }: PropsWithChildren) {
         <div className="w-full max-w-3xl rounded-3xl border border-white/10 bg-white/[0.03] p-10 shadow-xl shadow-black/30">
         <header className="mb-8 text-center">
           <Link href="/" className="text-3xl font-semibold bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">
-            Nxentra ERP Access
+            Nxentra
           </Link>
           <p className="mt-2 text-sm text-zinc-400">
-            Secure multi-tenant onboarding for your smart ERP workspace.
+            Reconciliation-first accounting for e-commerce merchants.
           </p>
         </header>
         {children}

@@ -69,7 +69,7 @@ describe('LoginPage', () => {
 
   it('renders login form with email and password fields', () => {
     render(<LoginPage />);
-    expect(screen.getByText('Login to your workspace')).toBeInTheDocument();
+    expect(screen.getByText('Sign in')).toBeInTheDocument();
     expect(screen.getByTestId('email')).toBeInTheDocument();
     expect(screen.getByTestId('password')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /login/i })).toBeInTheDocument();
@@ -77,7 +77,7 @@ describe('LoginPage', () => {
 
   it('shows register link', () => {
     render(<LoginPage />);
-    expect(screen.getByText('Register')).toHaveAttribute('href', '/register');
+    expect(screen.getByText('Get started')).toHaveAttribute('href', '/register');
   });
 
   it('submits form and redirects to dashboard on successful login', async () => {

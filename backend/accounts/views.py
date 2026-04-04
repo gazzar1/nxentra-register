@@ -1229,6 +1229,7 @@ class OnboardingSetupView(APIView):
             num_periods=data.get("num_periods", 12),
             current_period=data.get("current_period", 1),
             coa_template=data.get("coa_template", "minimal"),
+            business_type=data.get("business_type", ""),
             modules=data.get("modules"),
         )
 

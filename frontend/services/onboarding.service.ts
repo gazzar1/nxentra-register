@@ -26,6 +26,8 @@ export interface OnboardingStatus {
 }
 
 export interface OnboardingSetupPayload {
+  // Business type
+  business_type?: string;
   // Step 1
   company_name?: string;
   company_name_ar?: string;
