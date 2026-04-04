@@ -369,7 +369,7 @@ export default function ShopifySettingsPage() {
                   <div key={m.role}>
                     <Label>{ROLE_LABELS[m.role] || m.role}</Label>
                     <select
-                      className="w-full border rounded-md px-3 py-2 text-sm mt-1"
+                      className="w-full border border-input rounded-md bg-background text-foreground px-3 py-2 text-sm mt-1"
                       value={mappingForm[m.role] ?? ""}
                       onChange={(e) =>
                         setMappingForm({

@@ -278,7 +278,7 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 # =============================================================================
 # When True, users require admin approval after email verification
 # When False, users are auto-approved after email verification
-BETA_GATE_ENABLED = os.getenv("BETA_GATE_ENABLED", "True") == "True"
+BETA_GATE_ENABLED = os.getenv("BETA_GATE_ENABLED", "False") == "True"
 
 # Email verification token settings
 VERIFICATION_TOKEN_EXPIRY_HOURS = int(os.getenv("VERIFICATION_TOKEN_EXPIRY_HOURS", "24"))
