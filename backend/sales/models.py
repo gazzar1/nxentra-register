@@ -191,6 +191,14 @@ class Item(ProjectionWriteGuard):
         help_text="Product photo (max 10MB, PNG/JPG/WEBP)",
     )
 
+    # External links
+    external_url = models.URLField(
+        max_length=500,
+        blank=True,
+        default="",
+        help_text="Link to product page, Instagram, or external catalog",
+    )
+
     is_active = models.BooleanField(default=True)
 
     created_at = models.DateTimeField(auto_now_add=True)

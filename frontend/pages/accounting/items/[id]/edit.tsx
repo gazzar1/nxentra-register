@@ -38,6 +38,8 @@ interface ItemFormData {
   inventory_account_id: string;
   cogs_account_id: string;
   costing_method: CostingMethod;
+  // External link
+  external_url: string;
 }
 
 const ITEM_TYPES: { value: ItemType; label: string }[] = [
@@ -152,6 +154,7 @@ export default function EditItemPage() {
         inventory_account_id: item.inventory_account?.toString() || "",
         cogs_account_id: item.cogs_account?.toString() || "",
         costing_method: item.costing_method || "WEIGHTED_AVERAGE",
+        external_url: item.external_url || "",
       });
       // Set existing image
       if ((item as any).image_url) {
@@ -466,6 +469,27 @@ export default function EditItemPage() {
                 </Button>
                 <p className="text-xs text-muted-foreground">PNG, JPG, or WEBP. Max 10MB.</p>
               </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* External Link */}
+        <Card>
+          <CardHeader>
+            <CardTitle>External Link</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div>
+              <Label htmlFor="external_url">Product Page URL</Label>
+              <Input
+                id="external_url"
+                type="url"
+                placeholder="https://instagram.com/p/... or product page URL"
+                {...register("external_url")}
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Link to Instagram, website, or external catalog
+              </p>
             </div>
           </CardContent>
         </Card>

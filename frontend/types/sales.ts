@@ -36,6 +36,7 @@ export interface Item {
   costing_method: CostingMethod;
   average_cost: string;
   last_cost: string;
+  external_url: string;
   is_active: boolean;
   created_at: string;
   updated_at: string;
@@ -56,6 +57,7 @@ export interface ItemCreatePayload {
   inventory_account_id?: number | null;
   cogs_account_id?: number | null;
   costing_method?: CostingMethod;
+  external_url?: string;
 }
 
 export interface ItemUpdatePayload {
@@ -73,6 +75,7 @@ export interface ItemUpdatePayload {
   inventory_account_id?: number | null;
   cogs_account_id?: number | null;
   costing_method?: CostingMethod;
+  external_url?: string;
   is_active?: boolean;
 }
 

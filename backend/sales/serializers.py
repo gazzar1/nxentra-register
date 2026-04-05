@@ -49,7 +49,7 @@ class ItemSerializer(serializers.ModelSerializer):
             "cogs_account", "cogs_account_code",
             "costing_method", "uom",
             "average_cost", "last_cost",
-            "image_url",
+            "image_url", "external_url",
             "is_active", "created_at", "updated_at",
         ]
         read_only_fields = [
