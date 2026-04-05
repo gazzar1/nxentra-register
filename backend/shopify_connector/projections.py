@@ -194,10 +194,15 @@ def _fix_fx_rounding(lines, entry, company, currency, fx_rate):
     )
 
 
-def _ensure_dimension_and_value(company, dim_code, dim_name, dim_name_ar, val_code, val_name):
+def _ensure_dimension_and_value(company, dim_code, dim_name, dim_name_ar, val_code, val_name,
+                                applies_to=None):
     """
     Ensure an AnalysisDimension and AnalysisDimensionValue exist.
     Creates them if missing. Idempotent.
+
+    applies_to: list of account types this dimension is relevant for during
+    manual JE entry (e.g. ["REVENUE", "EXPENSE"]). Empty = all types.
+    Does not restrict auto-tagging from projections.
     """
     from accounting.models import AnalysisDimension, AnalysisDimensionValue
 
@@ -209,6 +214,7 @@ def _ensure_dimension_and_value(company, dim_code, dim_name, dim_name_ar, val_co
             "dimension_kind": AnalysisDimension.DimensionKind.ANALYTIC,
             "is_required_on_posting": False,
             "is_active": True,
+            "applies_to_account_types": applies_to or [],
         },
     )
 
@@ -219,6 +225,13 @@ def _ensure_dimension_and_value(company, dim_code, dim_name, dim_name_ar, val_co
             "is_active": True,
         },
     )
+
+
+# Account type sets for dimension scoping
+_REVENUE_COGS = ["REVENUE", "EXPENSE"]
+_REVENUE_COGS_INV = ["REVENUE", "EXPENSE", "ASSET"]
+_REVENUE_ONLY = ["REVENUE"]
+_FEES_CLEARING = ["EXPENSE", "ASSET"]
 
 
 class ShopifyAccountingProjection(BaseProjection):
@@ -339,103 +352,102 @@ class ShopifyAccountingProjection(BaseProjection):
             if order_record and order_record.raw_payload:
                 raw = order_record.raw_payload
 
-        # 1. CHANNEL — always Shopify
-        _ensure_dimension_and_value(company, "CHANNEL", "Sales Channel", "قناة البيع", "SHOPIFY", "Shopify")
+        # 1. CHANNEL — always Shopify (relevant on Revenue + COGS)
+        _ensure_dimension_and_value(company, "CHANNEL", "Sales Channel", "قناة البيع", "SHOPIFY", "Shopify", _REVENUE_COGS)
         context["CHANNEL"] = "SHOPIFY"
 
-        # 2. PRODUCT — SKU from first line item
+        # 2. PRODUCT — SKU from first line item (Revenue + COGS + Inventory)
         line_items = data.get("line_items", []) or raw.get("line_items", [])
         if line_items:
             first_item = line_items[0]
             sku = first_item.get("sku", "")
             title = first_item.get("title", "")
             if sku:
-                _ensure_dimension_and_value(company, "PRODUCT", "Product", "المنتج", sku, title or sku)
+                _ensure_dimension_and_value(company, "PRODUCT", "Product", "المنتج", sku, title or sku, _REVENUE_COGS_INV)
                 context["PRODUCT"] = sku
 
-            # 3. CATEGORY — product_type
+            # 3. CATEGORY — product_type (Revenue + COGS)
             product_type = first_item.get("product_type", "")
             if product_type:
                 val_code = product_type.upper().replace(" ", "_")[:20]
-                _ensure_dimension_and_value(company, "CATEGORY", "Product Category", "فئة المنتج", val_code, product_type)
+                _ensure_dimension_and_value(company, "CATEGORY", "Product Category", "فئة المنتج", val_code, product_type, _REVENUE_COGS)
                 context["CATEGORY"] = val_code
 
-            # 4. VENDOR — brand/supplier
+            # 4. VENDOR — brand/supplier (Revenue + COGS + Inventory)
             vendor = first_item.get("vendor", "")
             if vendor:
                 val_code = vendor.upper().replace(" ", "_")[:20]
-                _ensure_dimension_and_value(company, "VENDOR", "Vendor / Brand", "المورد / العلامة", val_code, vendor)
+                _ensure_dimension_and_value(company, "VENDOR", "Vendor / Brand", "المورد / العلامة", val_code, vendor, _REVENUE_COGS_INV)
                 context["VENDOR"] = val_code
 
-        # 5. REGION — shipping country
+        # 5. REGION — shipping country (Revenue + COGS)
         shipping = raw.get("shipping_address") or {}
         country = shipping.get("country", "") or shipping.get("country_code", "")
         if country:
             val_code = country.upper()[:20]
             country_name = shipping.get("country", country)
-            _ensure_dimension_and_value(company, "REGION", "Region / Country", "المنطقة / الدولة", val_code, country_name)
+            _ensure_dimension_and_value(company, "REGION", "Region / Country", "المنطقة / الدولة", val_code, country_name, _REVENUE_COGS)
             context["REGION"] = val_code
 
-        # 6. CITY — shipping city
+        # 6. CITY — shipping city (Revenue + COGS)
         city = shipping.get("city", "")
         if city:
             val_code = city.upper().replace(" ", "_")[:20]
-            _ensure_dimension_and_value(company, "CITY", "City", "المدينة", val_code, city)
+            _ensure_dimension_and_value(company, "CITY", "City", "المدينة", val_code, city, _REVENUE_COGS)
             context["CITY"] = val_code
 
-        # 7. SOURCE — order source (web, pos, mobile, api)
+        # 7. SOURCE — order source (Revenue only)
         source_name = raw.get("source_name", "")
         if source_name:
             val_code = source_name.upper()[:20]
-            _ensure_dimension_and_value(company, "SOURCE", "Order Source", "مصدر الطلب", val_code, source_name)
+            _ensure_dimension_and_value(company, "SOURCE", "Order Source", "مصدر الطلب", val_code, source_name, _REVENUE_ONLY)
             context["SOURCE"] = val_code
 
-        # 8. PAY_METHOD — payment gateway
+        # 8. PAY_METHOD — payment gateway (Fees + Clearing)
         gateway = data.get("gateway", "") or raw.get("gateway", "")
         if gateway:
             val_code = gateway.upper().replace(" ", "_")[:20]
-            _ensure_dimension_and_value(company, "PAY_METHOD", "Payment Method", "طريقة الدفع", val_code, gateway)
+            _ensure_dimension_and_value(company, "PAY_METHOD", "Payment Method", "طريقة الدفع", val_code, gateway, _FEES_CLEARING)
             context["PAY_METHOD"] = val_code
 
-        # 9. PROMOTION — discount codes
+        # 9. PROMOTION — discount codes (Revenue only)
         discount_codes = raw.get("discount_codes", [])
         if discount_codes:
             code = discount_codes[0].get("code", "")
             if code:
                 val_code = code.upper()[:20]
-                _ensure_dimension_and_value(company, "PROMOTION", "Promotion / Discount", "العرض / الخصم", val_code, code)
+                _ensure_dimension_and_value(company, "PROMOTION", "Promotion / Discount", "العرض / الخصم", val_code, code, _REVENUE_ONLY)
                 context["PROMOTION"] = val_code
 
-        # 10. CAMPAIGN — order tags
+        # 10. CAMPAIGN — order tags (Revenue + COGS)
         tags_str = raw.get("tags", "")
         if tags_str:
             first_tag = tags_str.split(",")[0].strip()
             if first_tag:
                 val_code = first_tag.upper().replace(" ", "_")[:20]
-                _ensure_dimension_and_value(company, "CAMPAIGN", "Campaign / Tag", "الحملة", val_code, first_tag)
+                _ensure_dimension_and_value(company, "CAMPAIGN", "Campaign / Tag", "الحملة", val_code, first_tag, _REVENUE_COGS)
                 context["CAMPAIGN"] = val_code
 
-        # 11. REFERRER — referring site
+        # 11. REFERRER — referring site (Revenue only)
         referring_site = raw.get("referring_site", "")
         if referring_site:
-            # Extract domain from URL
             from urllib.parse import urlparse
             try:
                 domain = urlparse(referring_site).netloc or referring_site
             except Exception:
                 domain = referring_site
             val_code = domain.upper().replace(".", "_").replace("WWW_", "")[:20]
-            _ensure_dimension_and_value(company, "REFERRER", "Referrer", "المُحيل", val_code, domain)
+            _ensure_dimension_and_value(company, "REFERRER", "Referrer", "المُحيل", val_code, domain, _REVENUE_ONLY)
             context["REFERRER"] = val_code
 
-        # 12. CUST_SEGMENT — customer tags
+        # 12. CUST_SEGMENT — customer tags (Revenue + COGS)
         customer = raw.get("customer", {})
         customer_tags = customer.get("tags", "")
         if customer_tags:
             first_tag = customer_tags.split(",")[0].strip()
             if first_tag:
                 val_code = first_tag.upper().replace(" ", "_")[:20]
-                _ensure_dimension_and_value(company, "CUST_SEGMENT", "Customer Segment", "شريحة العملاء", val_code, first_tag)
+                _ensure_dimension_and_value(company, "CUST_SEGMENT", "Customer Segment", "شريحة العملاء", val_code, first_tag, _REVENUE_COGS)
                 context["CUST_SEGMENT"] = val_code
 
         # Also include platform connector dimensions if available
