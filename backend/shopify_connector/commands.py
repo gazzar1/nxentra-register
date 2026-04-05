@@ -174,7 +174,7 @@ def register_webhooks(actor: ActorContext, store_id: int) -> CommandResult:
     for topic in SHOPIFY_WEBHOOK_TOPICS:
         try:
             resp = requests.post(
-                f"https://{store.shop_domain}/admin/api/2026-01/webhooks.json",
+                f"https://{store.shop_domain}/admin/api/2025-01/webhooks.json",
                 headers=headers,
                 json={
                     "webhook": {
@@ -553,7 +553,7 @@ def sync_payouts(store: ShopifyStore) -> CommandResult:
 
     try:
         resp = requests.get(
-            f"https://{store.shop_domain}/admin/api/2026-01/shopify_payments/payouts.json",
+            f"https://{store.shop_domain}/admin/api/2025-01/shopify_payments/payouts.json",
             headers=headers,
             params={"status": "paid", "limit": 50},
             timeout=15,
@@ -703,7 +703,7 @@ def fetch_payout_transactions(store: ShopifyStore, payout: ShopifyPayout) -> Com
 
     try:
         resp = requests.get(
-            f"https://{store.shop_domain}/admin/api/2026-01/shopify_payments/balance/transactions.json",
+            f"https://{store.shop_domain}/admin/api/2025-01/shopify_payments/balance/transactions.json",
             headers=headers,
             params={"payout_id": payout.shopify_payout_id, "limit": 250},
             timeout=30,
@@ -1281,7 +1281,7 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
     skipped = 0
     errors = []
 
-    url = f"https://{store.shop_domain}/admin/api/2026-01/products.json?limit=250"
+    url = f"https://{store.shop_domain}/admin/api/2025-01/products.json?limit=250"
 
     while url:
         try:
