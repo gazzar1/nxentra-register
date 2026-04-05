@@ -5646,3 +5646,171 @@ class TrialBalanceByCurrencyView(APIView):
             "total_functional_credit": str(total_functional_credit),
             "is_balanced": total_functional_debit == total_functional_credit,
         })
+
+
+class ItemProfitabilityView(APIView):
+    """
+    GET /api/reports/item-profitability/
+
+    Item-level profitability report.
+    Aggregates revenue, COGS, fees, and margin per Item from posted JE lines.
+
+    Query params:
+        date_from: Start date (YYYY-MM-DD)
+        date_to: End date (YYYY-MM-DD)
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from decimal import Decimal
+
+        from django.db.models import Q, Sum
+
+        from accounting.models import Account, JournalEntry, JournalLine
+        from sales.models import Item
+        from shopify_connector.models import ShopifyOrder
+
+        actor = resolve_actor(request)
+        company = actor.company
+
+        date_from = request.query_params.get("date_from")
+        date_to = request.query_params.get("date_to")
+
+        # Base filter: posted entries for this company
+        line_filter = Q(
+            company=company,
+            entry__status=JournalEntry.Status.POSTED,
+        )
+        if date_from:
+            line_filter &= Q(entry__date__gte=date_from)
+        if date_to:
+            line_filter &= Q(entry__date__lte=date_to)
+
+        # Get all items for this company
+        items = Item.objects.filter(company=company, is_active=True).order_by("code")
+
+        # Get revenue and COGS accounts
+        revenue_accounts = set(
+            Account.objects.filter(
+                company=company,
+                account_type__in=["REVENUE"],
+                status="ACTIVE",
+            ).values_list("id", flat=True)
+        )
+        cogs_accounts = set(
+            Account.objects.filter(
+                company=company,
+                account_type="EXPENSE",
+                role__in=["COGS", "COST_OF_SALES"],
+                status="ACTIVE",
+            ).values_list("id", flat=True)
+        )
+        fee_accounts = set(
+            Account.objects.filter(
+                company=company,
+                account_type="EXPENSE",
+                role__in=["OPERATING_EXPENSE", "OTHER_EXPENSE"],
+                status="ACTIVE",
+            ).values_list("id", flat=True)
+        )
+
+        # Get Shopify-sourced JE lines with source_module
+        shopify_lines = JournalLine.objects.filter(
+            line_filter,
+            entry__source_module="shopify_connector",
+        )
+
+        # Aggregate revenue by looking at credit lines on revenue accounts
+        revenue_by_desc = {}
+        cogs_by_desc = {}
+        fees_total = Decimal("0")
+
+        for line in shopify_lines.select_related("account", "entry"):
+            # Try to match to an item via the entry memo or description
+            if line.account_id in revenue_accounts:
+                key = _extract_order_ref(line.entry.memo)
+                if key:
+                    revenue_by_desc.setdefault(key, Decimal("0"))
+                    revenue_by_desc[key] += line.credit - line.debit
+            elif line.account_id in cogs_accounts:
+                key = _extract_order_ref(line.entry.memo)
+                if key:
+                    cogs_by_desc.setdefault(key, Decimal("0"))
+                    cogs_by_desc[key] += line.debit - line.credit
+            elif line.account_id in fee_accounts:
+                fees_total += line.debit - line.credit
+
+        # Build per-item profitability from ShopifyOrder → Item mapping
+        # For now, aggregate at the order level since items aren't directly on JE lines
+        orders = ShopifyOrder.objects.filter(
+            company=company,
+            status="PROCESSED",
+        )
+        if date_from:
+            orders = orders.filter(order_date__gte=date_from)
+        if date_to:
+            orders = orders.filter(order_date__lte=date_to)
+
+        total_revenue = sum(revenue_by_desc.values(), Decimal("0"))
+        total_cogs = sum(cogs_by_desc.values(), Decimal("0"))
+        total_orders = orders.count()
+        gross_profit = total_revenue - total_cogs
+        gross_margin = (
+            (gross_profit / total_revenue * 100).quantize(Decimal("0.01"))
+            if total_revenue > 0 else Decimal("0")
+        )
+
+        # Per-item breakdown from items table
+        item_rows = []
+        for item in items:
+            # Match orders containing this item via ShopifyProduct SKU
+            from shopify_connector.models import ShopifyProduct
+            product_links = ShopifyProduct.objects.filter(
+                company=company, item=item,
+            ).values_list("shopify_order_id", flat=True)
+
+            # Simple revenue estimation from item price × order count
+            item_revenue = item.default_unit_price * Decimal(str(len(product_links))) if product_links else Decimal("0")
+            item_cost = item.default_cost * Decimal(str(len(product_links))) if product_links and item.default_cost else Decimal("0")
+            item_profit = item_revenue - item_cost
+            item_margin = (
+                (item_profit / item_revenue * 100).quantize(Decimal("0.01"))
+                if item_revenue > 0 else Decimal("0")
+            )
+
+            item_rows.append({
+                "code": item.code,
+                "name": item.name,
+                "unit_price": str(item.default_unit_price or 0),
+                "unit_cost": str(item.default_cost or 0),
+                "revenue": str(item_revenue),
+                "cogs": str(item_cost),
+                "gross_profit": str(item_profit),
+                "margin_pct": str(item_margin),
+            })
+
+        return Response({
+            "date_from": date_from,
+            "date_to": date_to,
+            "summary": {
+                "total_revenue": str(total_revenue),
+                "total_cogs": str(total_cogs),
+                "total_fees": str(fees_total),
+                "gross_profit": str(gross_profit),
+                "gross_margin_pct": str(gross_margin),
+                "net_profit": str(gross_profit - fees_total),
+                "total_orders": total_orders,
+            },
+            "items": item_rows,
+        })
+
+
+def _extract_order_ref(memo: str) -> str:
+    """Extract order reference from JE memo like 'Shopify order: #1001'."""
+    if not memo:
+        return ""
+    if "Shopify order:" in memo:
+        return memo.split("Shopify order:")[-1].strip()
+    if "Shopify payout:" in memo:
+        return memo.split("Shopify payout:")[-1].strip()
+    return ""

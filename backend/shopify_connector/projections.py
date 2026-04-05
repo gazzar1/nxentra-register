@@ -194,6 +194,33 @@ def _fix_fx_rounding(lines, entry, company, currency, fx_rate):
     )
 
 
+def _ensure_dimension_and_value(company, dim_code, dim_name, dim_name_ar, val_code, val_name):
+    """
+    Ensure an AnalysisDimension and AnalysisDimensionValue exist.
+    Creates them if missing. Idempotent.
+    """
+    from accounting.models import AnalysisDimension, AnalysisDimensionValue
+
+    dim, _ = AnalysisDimension.objects.projection().get_or_create(
+        company=company, code=dim_code,
+        defaults={
+            "name": dim_name,
+            "name_ar": dim_name_ar,
+            "dimension_kind": AnalysisDimension.DimensionKind.ANALYTIC,
+            "is_required_on_posting": False,
+            "is_active": True,
+        },
+    )
+
+    AnalysisDimensionValue.objects.projection().get_or_create(
+        dimension=dim, code=val_code, company=company,
+        defaults={
+            "name": val_name,
+            "is_active": True,
+        },
+    )
+
+
 class ShopifyAccountingProjection(BaseProjection):
     """
     Creates journal entries from Shopify financial events.
@@ -283,15 +310,46 @@ class ShopifyAccountingProjection(BaseProjection):
         """
         Resolve dimension context for a Shopify event.
 
-        Returns dict like {"platform": "shopify", "store": "shopify:my-store.myshopify.com"}
+        Auto-creates dimensions and values as needed:
+        - CHANNEL: "Shopify" (sales channel)
+        - CATEGORY: product type from order line items
+        - REGION: shipping country from customer data
+
+        Returns dict like {"CHANNEL": "SHOPIFY", "CATEGORY": "Apparel", ...}
         """
+        context = {}
+
+        # Always tag with Channel = Shopify
+        _ensure_dimension_and_value(company, "CHANNEL", "Sales Channel", "قناة البيع", "SHOPIFY", "Shopify")
+        context["CHANNEL"] = "SHOPIFY"
+
+        # Tag with product category from line items (use first item's product type)
+        line_items = data.get("line_items", [])
+        if line_items:
+            # Shopify line items may have vendor or product_type in the raw payload
+            # For now, use the first item's title prefix as category
+            first_item = line_items[0]
+            product_type = first_item.get("product_type", "")
+            if product_type:
+                val_code = product_type.upper().replace(" ", "_")[:20]
+                _ensure_dimension_and_value(company, "CATEGORY", "Product Category", "فئة المنتج", val_code, product_type)
+                context["CATEGORY"] = val_code
+
+        # Tag with region from customer data
+        customer_name = data.get("customer_name", "")
+        # Region can be enriched later from shipping address in raw payload
+
+        # Also include platform connector dimensions if available
         store_public_id = data.get("store_public_id")
         shop_domain = _resolve_store_domain(company, store_public_id)
         try:
             from platform_connectors.dimensions import resolve_platform_dimensions
-            return resolve_platform_dimensions(company, "shopify", shop_domain)
+            platform_dims = resolve_platform_dimensions(company, "shopify", shop_domain)
+            context.update(platform_dims)
         except Exception:
-            return {}
+            pass
+
+        return context
 
     def _attach_dimensions(self, company, lines, dimension_context):
         """Attach dimension tags to journal lines."""

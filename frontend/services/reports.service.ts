@@ -124,7 +124,36 @@ export const reportsService = {
 
   trialBalanceByCurrency: (params?: { as_of_date?: string }) =>
     apiClient.get<TrialBalanceByCurrencyResponse>('/reports/trial-balance-by-currency/', { params }),
+
+  itemProfitability: (params?: { date_from?: string; date_to?: string }) =>
+    apiClient.get<ItemProfitabilityResponse>('/reports/item-profitability/', { params }),
 };
+
+export interface ItemProfitabilityRow {
+  code: string;
+  name: string;
+  unit_price: string;
+  unit_cost: string;
+  revenue: string;
+  cogs: string;
+  gross_profit: string;
+  margin_pct: string;
+}
+
+export interface ItemProfitabilityResponse {
+  date_from: string | null;
+  date_to: string | null;
+  summary: {
+    total_revenue: string;
+    total_cogs: string;
+    total_fees: string;
+    gross_profit: string;
+    gross_margin_pct: string;
+    net_profit: string;
+    total_orders: number;
+  };
+  items: ItemProfitabilityRow[];
+}
 
 // Statement response types
 export interface CustomerStatementResponse {

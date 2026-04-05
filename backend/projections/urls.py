@@ -88,6 +88,8 @@ from .views import (
     VendorBalanceDetailView,
     VendorBalanceListView,
     VendorStatementView,
+    # Item profitability
+    ItemProfitabilityView,
 )
 
 app_name = "projections"
@@ -292,6 +294,13 @@ urlpatterns = [
         "trial-balance-by-currency/",
         TrialBalanceByCurrencyView.as_view(),
         name="trial-balance-by-currency",
+    ),
+
+    # Item Profitability
+    path(
+        "item-profitability/",
+        ItemProfitabilityView.as_view(),
+        name="item-profitability",
     ),
 
     # System Status
