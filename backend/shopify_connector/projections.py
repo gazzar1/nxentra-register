@@ -335,9 +335,14 @@ class ShopifyAccountingProjection(BaseProjection):
                 _ensure_dimension_and_value(company, "CATEGORY", "Product Category", "فئة المنتج", val_code, product_type)
                 context["CATEGORY"] = val_code
 
-        # Tag with region from customer data
-        customer_name = data.get("customer_name", "")
-        # Region can be enriched later from shipping address in raw payload
+        # Tag with product SKU from line items (first item)
+        if line_items:
+            first_item = line_items[0]
+            sku = first_item.get("sku", "")
+            title = first_item.get("title", "")
+            if sku:
+                _ensure_dimension_and_value(company, "PRODUCT", "Product", "المنتج", sku, title or sku)
+                context["PRODUCT"] = sku
 
         # Also include platform connector dimensions if available
         store_public_id = data.get("store_public_id")
