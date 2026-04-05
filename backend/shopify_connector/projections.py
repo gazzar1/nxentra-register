@@ -310,32 +310,41 @@ class ShopifyAccountingProjection(BaseProjection):
         """
         Resolve dimension context for a Shopify event.
 
-        Auto-creates dimensions and values as needed:
+        Auto-creates dimensions and values from all available Shopify data:
         - CHANNEL: "Shopify" (sales channel)
-        - CATEGORY: product type from order line items
-        - REGION: shipping country from customer data
+        - PRODUCT: SKU from line items
+        - CATEGORY: product_type from line items
+        - VENDOR: vendor/brand from line items
+        - REGION: shipping country
+        - CITY: shipping city
+        - SOURCE: order source (web, pos, mobile)
+        - PAY_METHOD: payment gateway
+        - PROMOTION: discount codes used
+        - CAMPAIGN: order tags (e.g. "ramadan-sale")
+        - REFERRER: referring site
+        - CUST_SEGMENT: customer tags
 
-        Returns dict like {"CHANNEL": "SHOPIFY", "CATEGORY": "Apparel", ...}
+        Returns dict like {"CHANNEL": "SHOPIFY", "PRODUCT": "TSH-001", ...}
         """
         context = {}
 
-        # Always tag with Channel = Shopify
+        # Look up raw payload for enriched data
+        raw = {}
+        shopify_order_id = data.get("shopify_order_id")
+        if shopify_order_id:
+            from shopify_connector.models import ShopifyOrder
+            order_record = ShopifyOrder.objects.filter(
+                company=company, shopify_order_id=shopify_order_id,
+            ).first()
+            if order_record and order_record.raw_payload:
+                raw = order_record.raw_payload
+
+        # 1. CHANNEL — always Shopify
         _ensure_dimension_and_value(company, "CHANNEL", "Sales Channel", "قناة البيع", "SHOPIFY", "Shopify")
         context["CHANNEL"] = "SHOPIFY"
 
-        # Tag with product category from line items (use first item's product type)
-        line_items = data.get("line_items", [])
-        if line_items:
-            # Shopify line items may have vendor or product_type in the raw payload
-            # For now, use the first item's title prefix as category
-            first_item = line_items[0]
-            product_type = first_item.get("product_type", "")
-            if product_type:
-                val_code = product_type.upper().replace(" ", "_")[:20]
-                _ensure_dimension_and_value(company, "CATEGORY", "Product Category", "فئة المنتج", val_code, product_type)
-                context["CATEGORY"] = val_code
-
-        # Tag with product SKU from line items (first item)
+        # 2. PRODUCT — SKU from first line item
+        line_items = data.get("line_items", []) or raw.get("line_items", [])
         if line_items:
             first_item = line_items[0]
             sku = first_item.get("sku", "")
@@ -343,6 +352,91 @@ class ShopifyAccountingProjection(BaseProjection):
             if sku:
                 _ensure_dimension_and_value(company, "PRODUCT", "Product", "المنتج", sku, title or sku)
                 context["PRODUCT"] = sku
+
+            # 3. CATEGORY — product_type
+            product_type = first_item.get("product_type", "")
+            if product_type:
+                val_code = product_type.upper().replace(" ", "_")[:20]
+                _ensure_dimension_and_value(company, "CATEGORY", "Product Category", "فئة المنتج", val_code, product_type)
+                context["CATEGORY"] = val_code
+
+            # 4. VENDOR — brand/supplier
+            vendor = first_item.get("vendor", "")
+            if vendor:
+                val_code = vendor.upper().replace(" ", "_")[:20]
+                _ensure_dimension_and_value(company, "VENDOR", "Vendor / Brand", "المورد / العلامة", val_code, vendor)
+                context["VENDOR"] = val_code
+
+        # 5. REGION — shipping country
+        shipping = raw.get("shipping_address") or {}
+        country = shipping.get("country", "") or shipping.get("country_code", "")
+        if country:
+            val_code = country.upper()[:20]
+            country_name = shipping.get("country", country)
+            _ensure_dimension_and_value(company, "REGION", "Region / Country", "المنطقة / الدولة", val_code, country_name)
+            context["REGION"] = val_code
+
+        # 6. CITY — shipping city
+        city = shipping.get("city", "")
+        if city:
+            val_code = city.upper().replace(" ", "_")[:20]
+            _ensure_dimension_and_value(company, "CITY", "City", "المدينة", val_code, city)
+            context["CITY"] = val_code
+
+        # 7. SOURCE — order source (web, pos, mobile, api)
+        source_name = raw.get("source_name", "")
+        if source_name:
+            val_code = source_name.upper()[:20]
+            _ensure_dimension_and_value(company, "SOURCE", "Order Source", "مصدر الطلب", val_code, source_name)
+            context["SOURCE"] = val_code
+
+        # 8. PAY_METHOD — payment gateway
+        gateway = data.get("gateway", "") or raw.get("gateway", "")
+        if gateway:
+            val_code = gateway.upper().replace(" ", "_")[:20]
+            _ensure_dimension_and_value(company, "PAY_METHOD", "Payment Method", "طريقة الدفع", val_code, gateway)
+            context["PAY_METHOD"] = val_code
+
+        # 9. PROMOTION — discount codes
+        discount_codes = raw.get("discount_codes", [])
+        if discount_codes:
+            code = discount_codes[0].get("code", "")
+            if code:
+                val_code = code.upper()[:20]
+                _ensure_dimension_and_value(company, "PROMOTION", "Promotion / Discount", "العرض / الخصم", val_code, code)
+                context["PROMOTION"] = val_code
+
+        # 10. CAMPAIGN — order tags
+        tags_str = raw.get("tags", "")
+        if tags_str:
+            first_tag = tags_str.split(",")[0].strip()
+            if first_tag:
+                val_code = first_tag.upper().replace(" ", "_")[:20]
+                _ensure_dimension_and_value(company, "CAMPAIGN", "Campaign / Tag", "الحملة", val_code, first_tag)
+                context["CAMPAIGN"] = val_code
+
+        # 11. REFERRER — referring site
+        referring_site = raw.get("referring_site", "")
+        if referring_site:
+            # Extract domain from URL
+            from urllib.parse import urlparse
+            try:
+                domain = urlparse(referring_site).netloc or referring_site
+            except Exception:
+                domain = referring_site
+            val_code = domain.upper().replace(".", "_").replace("WWW_", "")[:20]
+            _ensure_dimension_and_value(company, "REFERRER", "Referrer", "المُحيل", val_code, domain)
+            context["REFERRER"] = val_code
+
+        # 12. CUST_SEGMENT — customer tags
+        customer = raw.get("customer", {})
+        customer_tags = customer.get("tags", "")
+        if customer_tags:
+            first_tag = customer_tags.split(",")[0].strip()
+            if first_tag:
+                val_code = first_tag.upper().replace(" ", "_")[:20]
+                _ensure_dimension_and_value(company, "CUST_SEGMENT", "Customer Segment", "شريحة العملاء", val_code, first_tag)
+                context["CUST_SEGMENT"] = val_code
 
         # Also include platform connector dimensions if available
         store_public_id = data.get("store_public_id")
