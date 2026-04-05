@@ -75,8 +75,8 @@ export default function NewItemPage() {
       toast({ title: "Invalid file type", description: "Allowed: PNG, JPG, WEBP", variant: "destructive" });
       return;
     }
-    if (file.size > 5 * 1024 * 1024) {
-      toast({ title: "File too large", description: "Maximum size is 5MB", variant: "destructive" });
+    if (file.size > 10 * 1024 * 1024) {
+      toast({ title: "File too large", description: "Maximum size is 10MB", variant: "destructive" });
       return;
     }
 
@@ -409,7 +409,7 @@ export default function NewItemPage() {
                   {selectedImage ? "Change Photo" : "Upload Photo"}
                 </Button>
                 <p className="text-xs text-muted-foreground">
-                  PNG, JPG, or WEBP. Max 5MB.
+                  PNG, JPG, or WEBP. Max 10MB.
                 </p>
               </div>
             </div>

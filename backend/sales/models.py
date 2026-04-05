@@ -188,7 +188,7 @@ class Item(ProjectionWriteGuard):
         upload_to="items/",
         null=True,
         blank=True,
-        help_text="Product photo (max 5MB, PNG/JPG/WEBP)",
+        help_text="Product photo (max 10MB, PNG/JPG/WEBP)",
     )
 
     is_active = models.BooleanField(default=True)

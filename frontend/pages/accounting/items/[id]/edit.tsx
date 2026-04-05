@@ -76,8 +76,8 @@ export default function EditItemPage() {
       toast({ title: "Invalid file type", description: "Allowed: PNG, JPG, WEBP", variant: "destructive" });
       return;
     }
-    if (file.size > 5 * 1024 * 1024) {
-      toast({ title: "File too large", description: "Maximum 5MB", variant: "destructive" });
+    if (file.size > 10 * 1024 * 1024) {
+      toast({ title: "File too large", description: "Maximum 10MB", variant: "destructive" });
       return;
     }
     setSelectedImage(file);
@@ -464,7 +464,7 @@ export default function EditItemPage() {
                   <Upload className="h-4 w-4 me-2" />
                   {(selectedImage || existingImageUrl) ? "Change Photo" : "Upload Photo"}
                 </Button>
-                <p className="text-xs text-muted-foreground">PNG, JPG, or WEBP. Max 5MB.</p>
+                <p className="text-xs text-muted-foreground">PNG, JPG, or WEBP. Max 10MB.</p>
               </div>
             </div>
           </CardContent>
