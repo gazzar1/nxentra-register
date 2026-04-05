@@ -367,15 +367,20 @@ def process_order_paid(store: ShopifyStore, payload: dict) -> CommandResult:
             raw_payload=payload,
         )
 
-    # Build line items summary
+    # Build line items summary + auto-create Items for unknown SKUs
     line_items = []
     for item in payload.get("line_items", []):
+        sku = item.get("sku", "")
         line_items.append({
             "title": item.get("title", ""),
             "quantity": item.get("quantity", 1),
             "price": str(item.get("price", "0")),
-            "sku": item.get("sku", ""),
+            "sku": sku,
         })
+
+        # Auto-create Item if SKU exists but no matching Item in Nxentra
+        if sku:
+            _auto_create_item_from_line(store, sku, item)
 
     # Extract customer info
     customer = payload.get("customer", {})
@@ -1226,6 +1231,51 @@ def process_dispute(store: ShopifyStore, payload: dict) -> CommandResult:
 # =============================================================================
 # Helpers
 # =============================================================================
+
+def _auto_create_item_from_line(store, sku: str, line_item: dict):
+    """Auto-create a Nxentra Item from a Shopify order line item if no match exists."""
+    from sales.models import Item
+    from shopify_connector.models import ShopifyProduct
+
+    # Skip if Item already exists for this SKU
+    if Item.objects.filter(company=store.company, code=sku).exists():
+        return
+    # Skip if ShopifyProduct mapping already exists
+    if ShopifyProduct.objects.filter(company=store.company, sku=sku).exists():
+        return
+
+    title = line_item.get("title", sku)
+    price = Decimal(str(line_item.get("price", "0")))
+    variant_id = line_item.get("variant_id")
+    product_id = line_item.get("product_id")
+
+    try:
+        with command_writes_allowed():
+            item = Item.objects.create(
+                company=store.company,
+                code=sku,
+                name=title,
+                item_type="INVENTORY",
+                default_unit_price=price,
+                is_active=True,
+            )
+
+            # Create ShopifyProduct mapping
+            ShopifyProduct.objects.create(
+                company=store.company,
+                store=store,
+                shopify_product_id=product_id or 0,
+                shopify_variant_id=variant_id or 0,
+                sku=sku,
+                title=title,
+                variant_title=line_item.get("variant_title", ""),
+                item=item,
+                auto_created=True,
+            )
+        logger.info("Auto-created Item %s (%s) from Shopify order line", sku, title)
+    except Exception as exc:
+        logger.warning("Failed to auto-create Item for SKU %s: %s", sku, exc)
+
 
 def _extract_gateway(payload: dict) -> str:
     """Extract payment gateway from order payload."""

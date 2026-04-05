@@ -15,6 +15,7 @@ import {
   Save,
   Settings,
   RefreshCw,
+  Package,
 } from "lucide-react";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
@@ -42,6 +43,7 @@ export default function ShopifySettingsPage() {
   const [registeringWebhooks, setRegisteringWebhooks] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
   const [syncingPayouts, setSyncingPayouts] = useState(false);
+  const [syncingProducts, setSyncingProducts] = useState(false);
 
   // Account mapping
   const { data: accounts } = useAccounts();
@@ -163,6 +165,20 @@ export default function ShopifySettingsPage() {
       toast({ title: "Failed to disconnect.", variant: "destructive" });
     } finally {
       setDisconnecting(false);
+    }
+  };
+
+  const handleSyncProducts = async () => {
+    setSyncingProducts(true);
+    try {
+      const { data } = await shopifyService.syncProducts();
+      toast({
+        title: `Product sync complete: ${data.created} created, ${data.linked} linked, ${data.updated} updated`,
+      });
+    } catch {
+      toast({ title: "Failed to sync products.", variant: "destructive" });
+    } finally {
+      setSyncingProducts(false);
     }
   };
 
@@ -325,6 +341,14 @@ export default function ShopifySettingsPage() {
                     Register Webhooks
                   </Button>
                 )}
+                <Button onClick={handleSyncProducts} disabled={syncingProducts}>
+                  {syncingProducts ? (
+                    <Loader2 className="me-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Package className="me-2 h-4 w-4" />
+                  )}
+                  Sync Products
+                </Button>
                 <Button onClick={handleSyncPayouts} disabled={syncingPayouts}>
                   {syncingPayouts ? (
                     <Loader2 className="me-2 h-4 w-4 animate-spin" />

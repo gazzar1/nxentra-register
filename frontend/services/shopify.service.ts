@@ -74,6 +74,10 @@ export const shopifyService = {
   disconnect: () =>
     apiClient.post<{ status: string }>("/shopify/disconnect/"),
 
+  // Product sync
+  syncProducts: () =>
+    apiClient.post<{ created: number; linked: number; updated: number; skipped: number }>("/shopify/sync-products/"),
+
   // Orders
   getOrders: () =>
     apiClient.get<ShopifyOrder[]>("/shopify/orders/"),
