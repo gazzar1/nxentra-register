@@ -152,7 +152,7 @@ export default function ItemsPage() {
                     </div>
                     <div className="col-span-3">
                       <Link
-                        href={`/accounting/items/${item.id}`}
+                        href={`/accounting/items/${item.id}/edit`}
                         className="font-medium hover:text-primary hover:underline"
                       >
                         {item.name}

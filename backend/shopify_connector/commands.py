@@ -1385,6 +1385,17 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
 
         products = resp.json().get("products", [])
 
+        # Collect inventory_item_ids to batch-fetch costs
+        inventory_item_ids = []
+        for product in products:
+            for variant in product.get("variants", []):
+                iid = variant.get("inventory_item_id")
+                if iid:
+                    inventory_item_ids.append(iid)
+
+        # Batch fetch costs from Shopify Inventory Items API
+        cost_map = _fetch_inventory_item_costs(store, inventory_item_ids, headers)
+
         for product in products:
             product_id = product.get("id")
             product_title = product.get("title", "")
@@ -1403,7 +1414,8 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
                     continue
 
                 price = Decimal(str(variant.get("price", "0")))
-                cost = Decimal(str(variant.get("cost", "0") or "0"))
+                inv_item_id = variant.get("inventory_item_id")
+                cost = cost_map.get(inv_item_id, Decimal("0"))
                 variant_title = variant.get("title", "") if variant.get("title") != "Default Title" else ""
 
                 # Check existing mapping
@@ -1656,25 +1668,57 @@ def _resolve_account(company, account_id):
     return Account.objects.filter(company=company, id=account_id).first()
 
 
+def _fetch_inventory_item_costs(store, inventory_item_ids, headers):
+    """Batch fetch cost per item from Shopify Inventory Items API."""
+    cost_map = {}
+    if not inventory_item_ids:
+        return cost_map
+
+    # Shopify allows up to 100 IDs per request
+    for i in range(0, len(inventory_item_ids), 100):
+        batch = inventory_item_ids[i:i + 100]
+        ids_param = ",".join(str(x) for x in batch)
+        try:
+            resp = requests.get(
+                f"https://{store.shop_domain}/admin/api/2025-01/inventory_items.json",
+                headers=headers,
+                params={"ids": ids_param},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            for item in resp.json().get("inventory_items", []):
+                cost_str = item.get("cost")
+                if cost_str:
+                    cost_map[item["id"]] = Decimal(str(cost_str))
+        except Exception as exc:
+            logger.warning("Failed to fetch inventory item costs: %s", exc)
+
+    return cost_map
+
+
 def _ensure_inventory_accounts(company):
     """Ensure Inventory and COGS GL accounts exist for the company."""
     from accounting.models import Account
+    from projections.write_barrier import projection_writes_allowed
 
     ACCOUNTS = [
         ("1300", "Inventory", "المخزون", "ASSET", "INVENTORY"),
         ("5100", "Cost of Goods Sold", "تكلفة البضاعة المباعة", "EXPENSE", "COGS"),
     ]
-    with command_writes_allowed():
+    with command_writes_allowed(), projection_writes_allowed():
         for code, name, name_ar, acct_type, role in ACCOUNTS:
-            Account.objects.get_or_create(
-                company=company, code=code,
-                defaults={
-                    "name": name, "name_ar": name_ar,
-                    "account_type": acct_type, "role": role,
-                    "ledger_domain": "FINANCIAL", "status": "ACTIVE",
-                    "normal_balance": "DEBIT",
-                },
-            )
+            try:
+                Account.objects.get_or_create(
+                    company=company, code=code,
+                    defaults={
+                        "name": name, "name_ar": name_ar,
+                        "account_type": acct_type, "role": role,
+                        "ledger_domain": "FINANCIAL", "status": "ACTIVE",
+                        "normal_balance": "DEBIT",
+                    },
+                )
+            except Exception as exc:
+                logger.warning("Failed to ensure account %s: %s", code, exc)
 
 
 def _resolve_default_item_accounts(company):
