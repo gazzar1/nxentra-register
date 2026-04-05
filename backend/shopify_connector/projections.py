@@ -812,17 +812,195 @@ class ShopifyAccountingProjection(BaseProjection):
         )
 
         from shopify_connector.models import ShopifyRefund
-        ShopifyRefund.objects.filter(
+        refund_record = ShopifyRefund.objects.filter(
             company=event.company,
             shopify_refund_id=data.get("shopify_refund_id"),
-        ).update(
-            status=ShopifyRefund.Status.PROCESSED,
-            journal_entry_id=entry.public_id,
-        )
+        ).first()
+
+        if refund_record:
+            refund_record.status = ShopifyRefund.Status.PROCESSED
+            refund_record.journal_entry_id = entry.public_id
+            refund_record.save(update_fields=["status", "journal_entry_id"])
+
+            # Create inventory restock JE if items were restocked
+            self._handle_refund_restock(
+                event, refund_record, mapping, entry_date, currency,
+                fx_rate, is_foreign, dimension_context,
+            )
 
         logger.info(
             "Created refund journal entry %s for order %s",
             entry.public_id, order_number,
+        )
+
+    def _handle_refund_restock(self, event, refund_record, mapping, entry_date,
+                               currency, fx_rate, is_foreign, dimension_context):
+        """
+        Reverse COGS for restocked items in a refund.
+
+        For each restocked line item:
+        DR Inventory    (qty × unit cost)
+          CR COGS       (qty × unit cost)
+        """
+        raw = refund_record.raw_payload or {}
+        refund_line_items = raw.get("refund_line_items", [])
+        if not refund_line_items:
+            return
+
+        from sales.models import Item
+        from shopify_connector.models import ShopifyProduct
+
+        restock_lines = []
+        for rli in refund_line_items:
+            restock_type = rli.get("restock_type", "")
+            if restock_type not in ("return", "cancel"):
+                continue
+
+            quantity = rli.get("quantity", 0)
+            if quantity <= 0:
+                continue
+
+            line_item = rli.get("line_item", {})
+            sku = line_item.get("sku", "")
+            if not sku:
+                continue
+
+            # Find the Nxentra Item by SKU
+            item = Item.objects.filter(company=event.company, code=sku).first()
+            if not item or not item.cogs_account or not item.inventory_account:
+                logger.debug("Skipping restock for SKU %s — no item or accounts", sku)
+                continue
+
+            unit_cost = item.default_cost or item.average_cost
+            if not unit_cost or unit_cost <= 0:
+                logger.debug("Skipping restock for SKU %s — no cost", sku)
+                continue
+
+            total_cost = unit_cost * Decimal(str(quantity))
+            restock_lines.append({
+                "sku": sku,
+                "title": line_item.get("title", sku),
+                "quantity": quantity,
+                "unit_cost": unit_cost,
+                "total_cost": total_cost,
+                "inventory_account": item.inventory_account,
+                "cogs_account": item.cogs_account,
+            })
+
+        if not restock_lines:
+            return
+
+        # Create restock JE
+        order_number = refund_record.order.shopify_order_name if refund_record.order else ""
+        memo = f"Shopify restock: Order {order_number} (Refund {refund_record.shopify_refund_id})"
+
+        if JournalEntry.objects.filter(
+            company=event.company, memo=memo,
+            status=JournalEntry.Status.POSTED,
+        ).exists():
+            return
+
+        period = _resolve_period(event.company, entry_date)
+        now = timezone.now()
+
+        entry = JournalEntry.objects.projection().create(
+            company=event.company,
+            public_id=uuid.uuid4(),
+            date=entry_date,
+            period=period,
+            memo=memo,
+            kind=JournalEntry.Kind.NORMAL,
+            status=JournalEntry.Status.POSTED,
+            posted_at=now,
+            currency=currency,
+            exchange_rate=fx_rate,
+            source_module="shopify_connector",
+            source_document=str(refund_record.shopify_refund_id),
+        )
+
+        seq = _next_company_sequence(event.company, "journal_entry_number")
+        entry_number = f"JE-{event.company_id}-{seq:06d}"
+        entry.entry_number = entry_number
+        entry.save(update_fields=["entry_number"])
+
+        lines = []
+        line_no = 0
+        for rl in restock_lines:
+            converted = _convert_amount(rl["total_cost"], fx_rate) if is_foreign else rl["total_cost"]
+
+            # DR Inventory (return to stock)
+            line_no += 1
+            lines.append(JournalLine(
+                entry=entry, company=event.company,
+                public_id=uuid.uuid4(), line_no=line_no,
+                account=rl["inventory_account"],
+                description=f"Restock: {rl['title']} x{rl['quantity']}",
+                debit=converted, credit=Decimal("0"),
+                currency=currency, exchange_rate=fx_rate,
+            ))
+
+            # CR COGS (reverse cost)
+            line_no += 1
+            lines.append(JournalLine(
+                entry=entry, company=event.company,
+                public_id=uuid.uuid4(), line_no=line_no,
+                account=rl["cogs_account"],
+                description=f"COGS reversal: {rl['title']} x{rl['quantity']}",
+                debit=Decimal("0"), credit=converted,
+                currency=currency, exchange_rate=fx_rate,
+            ))
+
+        JournalLine.objects.projection().bulk_create(lines)
+        self._attach_dimensions(event.company, lines, dimension_context)
+
+        total = sum(
+            _convert_amount(rl["total_cost"], fx_rate) if is_foreign else rl["total_cost"]
+            for rl in restock_lines
+        )
+
+        lines_data = []
+        for line in lines:
+            lines_data.append({
+                "line_public_id": str(line.public_id),
+                "line_no": line.line_no,
+                "account_public_id": str(line.account.public_id),
+                "account_code": line.account.code,
+                "description": line.description,
+                "debit": str(line.debit),
+                "credit": str(line.credit),
+                "currency": currency,
+                "exchange_rate": str(fx_rate),
+            })
+
+        emit_event_no_actor(
+            company=event.company,
+            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(entry.public_id),
+            idempotency_key=f"shopify.restock.je.posted:{entry.public_id}",
+            metadata={"source_projection": PROJECTION_NAME},
+            data=JournalEntryPostedData(
+                entry_public_id=str(entry.public_id),
+                entry_number=entry_number,
+                date=str(entry_date),
+                memo=memo,
+                kind="NORMAL",
+                posted_at=str(now),
+                posted_by_id=0,
+                posted_by_email="system@shopify",
+                total_debit=str(total),
+                total_credit=str(total),
+                lines=lines_data,
+                period=period,
+                currency=currency,
+                exchange_rate=str(fx_rate),
+            ),
+            caused_by_event=event,
+        )
+
+        logger.info(
+            "Created restock journal entry %s for refund on order %s (%d items)",
+            entry.public_id, order_number, len(restock_lines),
         )
 
     def _handle_payout_settled(self, event, data, mapping, dimension_context=None):
