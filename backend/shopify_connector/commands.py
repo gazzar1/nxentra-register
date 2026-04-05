@@ -142,6 +142,9 @@ def complete_oauth(company, shop_domain: str, code: str, nonce: str) -> CommandR
         store.error_message = ""
         store.save()
 
+    # Auto-create a Shopify warehouse for inventory tracking
+    _ensure_shopify_warehouse(store)
+
     return CommandResult.ok(data={"store": store})
 
 
@@ -1232,6 +1235,37 @@ def process_dispute(store: ShopifyStore, payload: dict) -> CommandResult:
 # Helpers
 # =============================================================================
 
+def _ensure_shopify_warehouse(store):
+    """Create a Shopify warehouse for the store if one doesn't exist."""
+    from inventory.models import Warehouse
+
+    code = "SHOPIFY"
+    if Warehouse.objects.filter(company=store.company, code=code).exists():
+        return
+
+    # Extract short store name from domain (e.g. "nxentra-store" from "nxentra-store.myshopify.com")
+    store_label = store.shop_domain.replace(".myshopify.com", "")
+
+    try:
+        with command_writes_allowed():
+            Warehouse.objects.create(
+                company=store.company,
+                code=code,
+                name=f"Shopify — {store_label}",
+                is_active=True,
+                is_default=False,
+            )
+        logger.info("Created Shopify warehouse for %s", store.shop_domain)
+    except Exception as exc:
+        logger.warning("Failed to create Shopify warehouse: %s", exc)
+
+
+def _get_shopify_warehouse(company):
+    """Get the Shopify warehouse for a company, or None."""
+    from inventory.models import Warehouse
+    return Warehouse.objects.filter(company=company, code="SHOPIFY").first()
+
+
 def _auto_create_item_from_line(store, sku: str, line_item: dict):
     """Auto-create a Nxentra Item from a Shopify order line item if no match exists."""
     from sales.models import Item
@@ -1309,6 +1343,9 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
 
     if not store.access_token:
         return CommandResult.fail("No access token — reconnect the store.")
+
+    # Ensure Shopify warehouse exists
+    _ensure_shopify_warehouse(store)
 
     company = store.company
 
