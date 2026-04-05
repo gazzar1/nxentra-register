@@ -1330,7 +1330,10 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
     For each variant with a SKU:
     - If a ShopifyProduct mapping exists, update Shopify data snapshot
     - If an Item with matching code exists, link it
-    - If no Item exists, auto-create one (INVENTORY if accounts provided, else NON_STOCK)
+    - If no Item exists, auto-create one with full account defaults
+
+    Pulls: price, cost, product images, product type.
+    Sets: sales_account, inventory_account, cogs_account, costing=WEIGHTED_AVERAGE.
 
     Returns CommandResult with counts: created, linked, updated, skipped.
     """
@@ -1347,15 +1350,17 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
     # Ensure Shopify warehouse exists
     _ensure_shopify_warehouse(store)
 
+    # Ensure Inventory + COGS accounts exist
+    _ensure_inventory_accounts(store.company)
+
     company = store.company
 
-    # Resolve default accounts
-    inv_account = _resolve_account(company, inventory_account_id or (
-        store.default_inventory_account_id
-    ))
-    cogs_account = _resolve_account(company, cogs_account_id or (
-        store.default_cogs_account_id
-    ))
+    # Resolve default accounts from module mappings first, then fallback to params
+    default_accounts = _resolve_default_item_accounts(company)
+    inv_account = _resolve_account(company, inventory_account_id) or default_accounts.get("inventory")
+    cogs_account = _resolve_account(company, cogs_account_id) or default_accounts.get("cogs")
+    sales_account = default_accounts.get("sales")
+    purchase_account = default_accounts.get("purchase")
 
     headers = {
         "X-Shopify-Access-Token": store.access_token,
@@ -1383,6 +1388,11 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
         for product in products:
             product_id = product.get("id")
             product_title = product.get("title", "")
+            product_type = product.get("product_type", "")
+
+            # Get product image URL (first image)
+            images = product.get("images", [])
+            image_url = images[0].get("src", "") if images else ""
 
             for variant in product.get("variants", []):
                 variant_id = variant.get("id")
@@ -1393,6 +1403,7 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
                     continue
 
                 price = Decimal(str(variant.get("price", "0")))
+                cost = Decimal(str(variant.get("cost", "0") or "0"))
                 variant_title = variant.get("title", "") if variant.get("title") != "Default Title" else ""
 
                 # Check existing mapping
@@ -1409,6 +1420,13 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
                     mapping.shopify_inventory_item_id = variant.get("inventory_item_id")
                     mapping.raw_data = variant
                     mapping.save()
+
+                    # Update linked Item cost if auto-created and cost available
+                    if mapping.auto_created and mapping.item and cost > 0:
+                        with command_writes_allowed():
+                            mapping.item.default_cost = cost
+                            mapping.item.save(update_fields=["default_cost"])
+
                     updated += 1
                     continue
 
@@ -1418,12 +1436,16 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
 
                 if not item:
                     item = _create_item_from_variant(
-                        company, sku, product_title, variant_title, price,
-                        inv_account, cogs_account,
+                        company, sku, product_title, variant_title, price, cost,
+                        inv_account, cogs_account, sales_account, purchase_account,
+                        image_url,
                     )
                     auto_created = True
                     created += 1
                 else:
+                    # Update existing item with cost + accounts if missing
+                    _update_item_defaults(item, cost, inv_account, cogs_account,
+                                          sales_account, purchase_account)
                     linked += 1
 
                 # Create mapping
@@ -1548,9 +1570,10 @@ def process_product_webhook(store: ShopifyStore, payload: dict) -> CommandResult
     return CommandResult.ok(data={"created": created, "updated": updated})
 
 
-def _create_item_from_variant(company, sku, product_title, variant_title, price,
-                              inv_account, cogs_account):
-    """Create a Nxentra Item from a Shopify variant."""
+def _create_item_from_variant(company, sku, product_title, variant_title, price, cost,
+                              inv_account, cogs_account, sales_account, purchase_account,
+                              image_url=""):
+    """Create a Nxentra Item from a Shopify variant with full account defaults."""
     from sales.models import Item
 
     name = f"{product_title} - {variant_title}" if variant_title else product_title
@@ -1563,12 +1586,66 @@ def _create_item_from_variant(company, sku, product_title, variant_title, price,
             name=name[:255],
             item_type=item_type,
             default_unit_price=price,
+            default_cost=cost,
+            sales_account=sales_account,
+            purchase_account=purchase_account,
             inventory_account=inv_account if item_type == Item.ItemType.INVENTORY else None,
             cogs_account=cogs_account if item_type == Item.ItemType.INVENTORY else None,
+            costing_method=Item.CostingMethod.WEIGHTED_AVERAGE,
         )
 
-    logger.info("Auto-created Item %s (%s) from Shopify variant", sku, item_type)
+    # Download and save product image if available
+    if image_url:
+        _download_item_image(item, image_url)
+
+    logger.info(
+        "Auto-created Item %s (%s) with cost=%s, accounts: sales=%s inv=%s cogs=%s",
+        sku, item_type, cost,
+        sales_account.code if sales_account else "none",
+        inv_account.code if inv_account else "none",
+        cogs_account.code if cogs_account else "none",
+    )
     return item
+
+
+def _update_item_defaults(item, cost, inv_account, cogs_account, sales_account, purchase_account):
+    """Update an existing Item with missing defaults from Shopify."""
+    updates = []
+    if cost > 0 and not item.default_cost:
+        item.default_cost = cost
+        updates.append("default_cost")
+    if sales_account and not item.sales_account:
+        item.sales_account = sales_account
+        updates.append("sales_account_id")
+    if purchase_account and not item.purchase_account:
+        item.purchase_account = purchase_account
+        updates.append("purchase_account_id")
+    if inv_account and not item.inventory_account:
+        item.inventory_account = inv_account
+        updates.append("inventory_account_id")
+    if cogs_account and not item.cogs_account:
+        item.cogs_account = cogs_account
+        updates.append("cogs_account_id")
+    if updates:
+        with command_writes_allowed():
+            item.save(update_fields=updates)
+
+
+def _download_item_image(item, image_url):
+    """Download a product image from Shopify and save to Item.image field."""
+    try:
+        resp = requests.get(image_url, timeout=15, stream=True)
+        resp.raise_for_status()
+        # Get filename from URL
+        from urllib.parse import urlparse
+        path = urlparse(image_url).path
+        filename = path.split("/")[-1].split("?")[0] or "product.jpg"
+        from django.core.files.base import ContentFile
+        with command_writes_allowed():
+            item.image.save(filename, ContentFile(resp.content), save=True)
+        logger.info("Saved product image for Item %s", item.code)
+    except Exception as exc:
+        logger.warning("Failed to download image for Item %s: %s", item.code, exc)
 
 
 def _resolve_account(company, account_id):
@@ -1577,6 +1654,51 @@ def _resolve_account(company, account_id):
         return None
     from accounting.models import Account
     return Account.objects.filter(company=company, id=account_id).first()
+
+
+def _ensure_inventory_accounts(company):
+    """Ensure Inventory and COGS GL accounts exist for the company."""
+    from accounting.models import Account
+
+    ACCOUNTS = [
+        ("1300", "Inventory", "المخزون", "ASSET", "INVENTORY"),
+        ("5100", "Cost of Goods Sold", "تكلفة البضاعة المباعة", "EXPENSE", "COGS"),
+    ]
+    with command_writes_allowed():
+        for code, name, name_ar, acct_type, role in ACCOUNTS:
+            Account.objects.get_or_create(
+                company=company, code=code,
+                defaults={
+                    "name": name, "name_ar": name_ar,
+                    "account_type": acct_type, "role": role,
+                    "ledger_domain": "FINANCIAL", "status": "ACTIVE",
+                    "normal_balance": "DEBIT",
+                },
+            )
+
+
+def _resolve_default_item_accounts(company):
+    """Resolve default accounts for new Items from module mappings and GL."""
+    from accounting.mappings import ModuleAccountMapping
+    from accounting.models import Account
+
+    result = {}
+
+    # Sales account from Shopify module mapping
+    mapping = ModuleAccountMapping.get_mapping(company, "shopify_connector")
+    if mapping:
+        result["sales"] = mapping.get("SALES_REVENUE")
+        result["purchase"] = mapping.get("SHOPIFY_CLEARING")
+
+    # Inventory + COGS by account code convention
+    result["inventory"] = Account.objects.filter(
+        company=company, code="1300", status="ACTIVE",
+    ).first()
+    result["cogs"] = Account.objects.filter(
+        company=company, code="5100", status="ACTIVE",
+    ).first()
+
+    return result
 
 
 def _get_next_page_url(response):
