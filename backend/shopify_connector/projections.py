@@ -142,7 +142,8 @@ def _fix_fx_rounding(lines, entry, company, currency, fx_rate):
         rounding_account = Account.objects.filter(
             company=company,
             role=Account.AccountRole.FX_ROUNDING,
-            is_postable=True,
+            is_header=False,
+            status=Account.Status.ACTIVE,
         ).first()
 
     if not rounding_account:
