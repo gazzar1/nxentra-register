@@ -1,10 +1,11 @@
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
-import { purchaseBillsService, purchaseOrdersService, goodsReceiptsService } from '@/services/purchases.service';
+import { purchaseBillsService, purchaseOrdersService, goodsReceiptsService, purchaseCreditNotesService } from '@/services/purchases.service';
 import type {
   PurchaseBill,
   PurchaseBillListItem,
   PurchaseBillCreatePayload,
   PurchaseBillUpdatePayload,
+  PurchaseCreditNoteCreatePayload,
 } from '@/types/purchases';
 import type { PaginationParams } from '@/types/common';
 
@@ -298,6 +299,80 @@ export function useVoidGoodsReceipt() {
       queryClient.invalidateQueries({ queryKey: goodsReceiptKeys.lists() });
       queryClient.invalidateQueries({ queryKey: goodsReceiptKeys.detail(id) });
       queryClient.invalidateQueries({ queryKey: purchaseOrderKeys.lists() });
+    },
+  });
+}
+
+// =============================================================================
+// Purchase Credit Note Queries
+// =============================================================================
+
+export const purchaseCreditNoteKeys = {
+  all: ['purchase-credit-notes'] as const,
+  lists: () => [...purchaseCreditNoteKeys.all, 'list'] as const,
+  list: (filters: object) => [...purchaseCreditNoteKeys.lists(), filters] as const,
+  details: () => [...purchaseCreditNoteKeys.all, 'detail'] as const,
+  detail: (id: number) => [...purchaseCreditNoteKeys.details(), id] as const,
+};
+
+export function usePaginatedPurchaseCreditNotes(filters?: {
+  status?: string;
+  vendor_id?: number;
+  bill_id?: number;
+  search?: string;
+} & PaginationParams) {
+  return useQuery({
+    queryKey: purchaseCreditNoteKeys.list(filters || {}),
+    queryFn: async () => {
+      const { data } = await purchaseCreditNotesService.list(filters);
+      return data;
+    },
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function usePurchaseCreditNote(id: number) {
+  return useQuery({
+    queryKey: purchaseCreditNoteKeys.detail(id),
+    queryFn: async () => {
+      const { data } = await purchaseCreditNotesService.get(id);
+      return data;
+    },
+    enabled: !!id,
+  });
+}
+
+export function useCreatePurchaseCreditNote() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: PurchaseCreditNoteCreatePayload) =>
+      purchaseCreditNotesService.create(payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: purchaseCreditNoteKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: purchaseBillKeys.lists() });
+    },
+  });
+}
+
+export function usePostPurchaseCreditNote() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => purchaseCreditNotesService.post(id),
+    onSuccess: (_, id) => {
+      queryClient.invalidateQueries({ queryKey: purchaseCreditNoteKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: purchaseCreditNoteKeys.detail(id) });
+    },
+  });
+}
+
+export function useVoidPurchaseCreditNote() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, reason }: { id: number; reason?: string }) =>
+      purchaseCreditNotesService.void(id, reason),
+    onSuccess: (_, { id }) => {
+      queryClient.invalidateQueries({ queryKey: purchaseCreditNoteKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: purchaseCreditNoteKeys.detail(id) });
     },
   });
 }

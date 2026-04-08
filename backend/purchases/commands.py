@@ -30,6 +30,9 @@ from events.types import (
     PurchaseBillLineData,
     PurchaseBillPostedData,
     PurchaseBillVoidedData,
+    PurchaseCreditNoteCreatedData,
+    PurchaseCreditNotePostedData,
+    PurchaseCreditNoteVoidedData,
     PurchaseOrderApprovedData,
     PurchaseOrderCancelledData,
     PurchaseOrderClosedData,
@@ -43,6 +46,8 @@ from .models import (
     GoodsReceiptLine,
     PurchaseBill,
     PurchaseBillLine,
+    PurchaseCreditNote,
+    PurchaseCreditNoteLine,
     PurchaseOrder,
     PurchaseOrderLine,
 )
@@ -1337,3 +1342,493 @@ def create_bill_from_po(
                 bill_line.save(update_fields=["po_line"])
 
     return CommandResult.ok(data={"bill": bill, "order": order}, event=result.event)
+
+
+# =============================================================================
+# Purchase Credit Note Commands
+# =============================================================================
+
+@transaction.atomic
+def create_purchase_credit_note(
+    actor: ActorContext,
+    bill_id: int,
+    lines: list,
+    credit_note_date=None,
+    reason: str = "RETURN",
+    reason_notes: str = "",
+    notes: str = "",
+) -> CommandResult:
+    """
+    Create a DRAFT purchase credit note against a posted bill.
+
+    Lines should be dicts with:
+    - account_id, description, quantity, unit_price
+    - discount_amount (optional), tax_code_id (optional), item_id (optional)
+    - bill_line_id (optional, links to original bill line)
+    """
+    require(actor, "purchases.credit_note.create")
+
+    from datetime import date as date_type
+
+    try:
+        bill = PurchaseBill.objects.get(company=actor.company, pk=bill_id)
+    except PurchaseBill.DoesNotExist:
+        return CommandResult.fail("Purchase bill not found.")
+
+    if bill.status != PurchaseBill.Status.POSTED:
+        return CommandResult.fail("Credit notes can only be created against POSTED bills.")
+
+    if not lines:
+        return CommandResult.fail("Credit note must have at least one line.")
+
+    cn_date = credit_note_date or date_type.today()
+    if isinstance(cn_date, str):
+        cn_date = date_type.fromisoformat(cn_date)
+
+    # Pre-fetch related objects
+    from accounting.models import Account
+
+    account_ids = [l.get("account_id") for l in lines if l.get("account_id")]
+    tax_code_ids = [l.get("tax_code_id") for l in lines if l.get("tax_code_id")]
+    item_ids = [l.get("item_id") for l in lines if l.get("item_id")]
+
+    accounts = {a.id: a for a in Account.objects.filter(company=actor.company, id__in=account_ids)}
+    tax_codes = {t.id: t for t in TaxCode.objects.filter(company=actor.company, id__in=tax_code_ids)}
+    items = {i.id: i for i in Item.objects.filter(company=actor.company, id__in=item_ids)}
+
+    calculated_lines = []
+    for idx, line in enumerate(lines, start=1):
+        account_id = line.get("account_id")
+        if not account_id or account_id not in accounts:
+            return CommandResult.fail(f"Line {idx}: Account not found.")
+        account = accounts[account_id]
+        if not account.is_postable:
+            return CommandResult.fail(f"Line {idx}: Account '{account.code}' is not postable.")
+
+        tax_code = None
+        tax_rate = Decimal("0")
+        if line.get("tax_code_id"):
+            if line["tax_code_id"] not in tax_codes:
+                return CommandResult.fail(f"Line {idx}: Tax code not found.")
+            tax_code = tax_codes[line["tax_code_id"]]
+            if tax_code.direction != TaxCode.TaxDirection.INPUT:
+                return CommandResult.fail(f"Line {idx}: Purchase credit note requires INPUT tax codes.")
+            tax_rate = tax_code.rate
+
+        item = items.get(line.get("item_id")) if line.get("item_id") else None
+
+        quantity = Decimal(str(line.get("quantity", "1")))
+        unit_price = Decimal(str(line.get("unit_price", "0")))
+        discount_amount = Decimal(str(line.get("discount_amount", "0")))
+
+        if quantity <= 0:
+            return CommandResult.fail(f"Line {idx}: Quantity must be greater than 0.")
+        if unit_price < 0:
+            return CommandResult.fail(f"Line {idx}: Unit price cannot be negative.")
+
+        gross_amount = quantity * unit_price
+        if discount_amount > gross_amount:
+            return CommandResult.fail(f"Line {idx}: Discount cannot exceed gross amount.")
+
+        calc = _calculate_line({
+            "line_number": idx,
+            "account": account,
+            "item": item,
+            "description": line.get("description", ""),
+            "description_ar": line.get("description_ar", ""),
+            "quantity": quantity,
+            "unit_price": unit_price,
+            "discount_amount": discount_amount,
+            "tax_code": tax_code,
+            "tax_rate": tax_rate,
+            "bill_line_id": line.get("bill_line_id"),
+            "dimension_value_ids": line.get("dimension_value_ids", []),
+        })
+        calculated_lines.append(calc)
+
+    subtotal = sum(l["gross_amount"] for l in calculated_lines)
+    total_discount = sum(l["discount_amount"] for l in calculated_lines)
+    total_tax = sum(l["tax_amount"] for l in calculated_lines)
+    total_amount = sum(l["line_total"] for l in calculated_lines)
+
+    # Credit note total should not exceed bill total
+    if total_amount > bill.total_amount:
+        return CommandResult.fail(
+            f"Credit note total ({total_amount}) exceeds bill total ({bill.total_amount})."
+        )
+
+    seq = _next_company_sequence(actor.company, "purchase_credit_note")
+    cn_number = f"PCN-{seq:06d}"
+
+    with command_writes_allowed():
+        cn = PurchaseCreditNote.objects.create(
+            company=actor.company,
+            credit_note_number=cn_number,
+            credit_note_date=cn_date,
+            bill=bill,
+            vendor=bill.vendor,
+            posting_profile=bill.posting_profile,
+            reason=reason,
+            reason_notes=reason_notes,
+            currency=bill.currency,
+            exchange_rate=bill.exchange_rate,
+            subtotal=subtotal,
+            total_discount=total_discount,
+            total_tax=total_tax,
+            total_amount=total_amount,
+            status=PurchaseCreditNote.Status.DRAFT,
+            notes=notes,
+            created_by=actor.user,
+        )
+
+        for ld in calculated_lines:
+            bill_line = None
+            if ld.get("bill_line_id"):
+                bill_line = PurchaseBillLine.objects.filter(
+                    bill=bill, pk=ld["bill_line_id"]
+                ).first()
+
+            line_obj = PurchaseCreditNoteLine.objects.create(
+                credit_note=cn,
+                company=actor.company,
+                line_number=ld["line_number"],
+                bill_line=bill_line,
+                item=ld.get("item"),
+                description=ld["description"],
+                description_ar=ld.get("description_ar", ""),
+                quantity=ld["quantity"],
+                unit_price=ld["unit_price"],
+                discount_amount=ld["discount_amount"],
+                tax_code=ld.get("tax_code"),
+                tax_rate=ld["tax_rate"],
+                gross_amount=ld["gross_amount"],
+                net_amount=ld["net_amount"],
+                tax_amount=ld["tax_amount"],
+                line_total=ld["line_total"],
+                account=ld["account"],
+            )
+            if ld.get("dimension_value_ids"):
+                line_obj.dimension_values.set(ld["dimension_value_ids"])
+
+    event_lines = []
+    for line in cn.lines.all():
+        event_lines.append(PurchaseBillLineData(
+            line_no=line.line_number,
+            item_public_id=str(line.item.public_id) if line.item else None,
+            description=line.description,
+            description_ar=line.description_ar,
+            quantity=str(line.quantity),
+            unit_price=str(line.unit_price),
+            discount_amount=str(line.discount_amount),
+            tax_code_public_id=str(line.tax_code.public_id) if line.tax_code else None,
+            tax_rate=str(line.tax_rate),
+            gross_amount=str(line.gross_amount),
+            net_amount=str(line.net_amount),
+            tax_amount=str(line.tax_amount),
+            line_total=str(line.line_total),
+            account_public_id=str(line.account.public_id),
+            account_code=line.account.code,
+        ).to_dict())
+
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.PURCHASES_CREDIT_NOTE_CREATED,
+        aggregate_type="PurchaseCreditNote",
+        aggregate_id=str(cn.public_id),
+        idempotency_key=f"purchasecreditnote.created:{cn.public_id}",
+        data=PurchaseCreditNoteCreatedData(
+            credit_note_public_id=str(cn.public_id),
+            company_public_id=str(actor.company.public_id),
+            credit_note_number=cn.credit_note_number,
+            credit_note_date=cn_date.isoformat(),
+            bill_public_id=str(bill.public_id),
+            bill_number=bill.bill_number,
+            vendor_public_id=str(bill.vendor.public_id),
+            vendor_code=bill.vendor.code,
+            posting_profile_public_id=str(bill.posting_profile.public_id),
+            reason=reason,
+            reason_notes=reason_notes,
+            subtotal=str(subtotal),
+            total_discount=str(total_discount),
+            total_tax=str(total_tax),
+            total_amount=str(total_amount),
+            lines=event_lines,
+            created_by_id=actor.user.id if actor.user else None,
+        ).to_dict(),
+    )
+
+    return CommandResult.ok(data={"credit_note": cn}, event=event)
+
+
+@transaction.atomic
+def post_purchase_credit_note(actor: ActorContext, credit_note_id: int) -> CommandResult:
+    """
+    Post a purchase credit note, creating a journal entry that reduces AP.
+
+    Journal Entry:
+    - Debit: AP Control (reduces payable to vendor)
+    - Credit: Expense/Inventory accounts (reverses original cost)
+    - Credit: Input VAT (reverses recoverable tax)
+    """
+    require(actor, "purchases.credit_note.post")
+
+    try:
+        cn = PurchaseCreditNote.objects.select_for_update().get(
+            company=actor.company, pk=credit_note_id
+        )
+    except PurchaseCreditNote.DoesNotExist:
+        return CommandResult.fail("Purchase credit note not found.")
+
+    if cn.status != PurchaseCreditNote.Status.DRAFT:
+        return CommandResult.fail("Only DRAFT credit notes can be posted.")
+
+    if not cn.lines.exists():
+        return CommandResult.fail("Credit note must have at least one line.")
+
+    # Build journal entry lines
+    je_lines = []
+
+    # Debit AP Control (reduces payable — opposite of bill posting which credits AP)
+    je_lines.append({
+        "account_id": cn.posting_profile.control_account_id,
+        "description": f"Credit Note {cn.credit_note_number} - {cn.vendor.name}",
+        "debit": cn.total_amount,
+        "credit": Decimal("0"),
+        "vendor_public_id": str(cn.vendor.public_id),
+    })
+
+    # Group credits by account
+    expense_by_account = {}
+    recoverable_tax_by_account = {}
+
+    for cn_line in cn.lines.select_related("tax_code", "account"):
+        is_recoverable = True
+        if cn_line.tax_code:
+            is_recoverable = getattr(cn_line.tax_code, 'recoverable', True)
+
+        line_cost = cn_line.net_amount
+        if cn_line.tax_amount and not is_recoverable:
+            line_cost += cn_line.tax_amount
+        elif cn_line.tax_amount and is_recoverable:
+            tax_account_id = cn_line.tax_code.tax_account_id
+            if tax_account_id not in recoverable_tax_by_account:
+                recoverable_tax_by_account[tax_account_id] = Decimal("0")
+            recoverable_tax_by_account[tax_account_id] += cn_line.tax_amount
+
+        account_id = cn_line.account_id
+        if account_id not in expense_by_account:
+            expense_by_account[account_id] = {"total": Decimal("0"), "lines": []}
+        expense_by_account[account_id]["total"] += line_cost
+        expense_by_account[account_id]["lines"].append(cn_line)
+
+    # Credit expense/inventory accounts (reversal of bill debits)
+    for account_id, data in expense_by_account.items():
+        first_line = data["lines"][0]
+        je_lines.append({
+            "account_id": account_id,
+            "description": first_line.description if len(data["lines"]) == 1
+                else f"Credit Note {cn.credit_note_number}",
+            "debit": Decimal("0"),
+            "credit": data["total"],
+        })
+
+    # Credit Input VAT (reversal of recoverable tax)
+    for tax_account_id, tax_amount in recoverable_tax_by_account.items():
+        je_lines.append({
+            "account_id": tax_account_id,
+            "description": f"Input VAT reversal on {cn.credit_note_number}",
+            "debit": Decimal("0"),
+            "credit": tax_amount,
+        })
+
+    # Handle foreign currency
+    functional_currency = actor.company.functional_currency or actor.company.default_currency
+    cn_currency = cn.currency or functional_currency
+    cn_rate = cn.exchange_rate if cn.exchange_rate and cn.exchange_rate != Decimal("0") else Decimal("1")
+    is_foreign = cn_currency != functional_currency
+
+    if is_foreign:
+        for jl in je_lines:
+            foreign_amount = jl.get("debit") or jl.get("credit") or Decimal("0")
+            jl["amount_currency"] = str(foreign_amount)
+            jl["currency"] = cn_currency
+
+        from accounting.commands import _fix_fx_rounding_dicts
+        _fix_fx_rounding_dicts(je_lines, actor.company, currency=cn_currency)
+
+    je_kwargs = dict(
+        actor=actor,
+        date=cn.credit_note_date,
+        memo=f"Purchase Credit Note {cn.credit_note_number}",
+        lines=je_lines,
+        kind=JournalEntry.Kind.NORMAL,
+    )
+    if is_foreign:
+        je_kwargs["currency"] = cn_currency
+        je_kwargs["exchange_rate"] = str(cn_rate)
+
+    je_result = create_journal_entry(**je_kwargs)
+    if not je_result.success:
+        return CommandResult.fail(f"Failed to create journal entry: {je_result.error}")
+
+    journal_entry = je_result.data
+
+    save_result = save_journal_entry_complete(actor, journal_entry.id)
+    if not save_result.success:
+        return CommandResult.fail(f"Failed to complete journal entry: {save_result.error}")
+    journal_entry = save_result.data
+
+    post_result = post_journal_entry(actor, journal_entry.id)
+    if not post_result.success:
+        return CommandResult.fail(f"Failed to post journal entry: {post_result.error}")
+
+    posted_at = timezone.now()
+
+    # Update credit note status
+    with command_writes_allowed():
+        cn.status = PurchaseCreditNote.Status.POSTED
+        cn.posted_at = posted_at
+        cn.posted_by = actor.user
+        cn.posted_journal_entry = journal_entry
+        cn.save()
+
+    event_lines = []
+    for line in cn.lines.all():
+        event_lines.append(PurchaseBillLineData(
+            line_no=line.line_number,
+            item_public_id=str(line.item.public_id) if line.item else None,
+            description=line.description,
+            description_ar=line.description_ar,
+            quantity=str(line.quantity),
+            unit_price=str(line.unit_price),
+            discount_amount=str(line.discount_amount),
+            tax_code_public_id=str(line.tax_code.public_id) if line.tax_code else None,
+            tax_rate=str(line.tax_rate),
+            gross_amount=str(line.gross_amount),
+            net_amount=str(line.net_amount),
+            tax_amount=str(line.tax_amount),
+            line_total=str(line.line_total),
+            account_public_id=str(line.account.public_id),
+            account_code=line.account.code,
+        ).to_dict())
+
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.PURCHASES_CREDIT_NOTE_POSTED,
+        aggregate_type="PurchaseCreditNote",
+        aggregate_id=str(cn.public_id),
+        idempotency_key=f"purchasecreditnote.posted:{cn.public_id}",
+        data=PurchaseCreditNotePostedData(
+            credit_note_public_id=str(cn.public_id),
+            company_public_id=str(actor.company.public_id),
+            credit_note_number=cn.credit_note_number,
+            credit_note_date=cn.credit_note_date.isoformat(),
+            bill_public_id=str(cn.bill.public_id),
+            bill_number=cn.bill.bill_number,
+            vendor_public_id=str(cn.vendor.public_id),
+            vendor_code=cn.vendor.code,
+            posting_profile_public_id=str(cn.posting_profile.public_id),
+            journal_entry_public_id=str(journal_entry.public_id),
+            posted_at=posted_at.isoformat(),
+            posted_by_id=actor.user.id,
+            posted_by_email=actor.user.email,
+            subtotal=str(cn.subtotal),
+            total_discount=str(cn.total_discount),
+            total_tax=str(cn.total_tax),
+            total_amount=str(cn.total_amount),
+            lines=event_lines,
+        ).to_dict(),
+    )
+
+    return CommandResult.ok(
+        data={"credit_note": cn, "journal_entry": journal_entry},
+        event=event,
+    )
+
+
+@transaction.atomic
+def void_purchase_credit_note(
+    actor: ActorContext,
+    credit_note_id: int,
+    reason: str = "",
+) -> CommandResult:
+    """Void a posted purchase credit note by creating a reversing journal entry."""
+    require(actor, "purchases.credit_note.void")
+
+    try:
+        cn = PurchaseCreditNote.objects.select_for_update().get(
+            company=actor.company, pk=credit_note_id
+        )
+    except PurchaseCreditNote.DoesNotExist:
+        return CommandResult.fail("Purchase credit note not found.")
+
+    if cn.status != PurchaseCreditNote.Status.POSTED:
+        return CommandResult.fail("Only POSTED credit notes can be voided.")
+
+    if not cn.posted_journal_entry:
+        return CommandResult.fail("Credit note has no posted journal entry.")
+
+    # Create reversing entry (swap debits/credits)
+    original_je = cn.posted_journal_entry
+    je_lines = []
+
+    for original_line in original_je.lines.all():
+        je_lines.append({
+            "account_id": original_line.account_id,
+            "description": f"Reversal: {original_line.description}",
+            "debit": original_line.credit,
+            "credit": original_line.debit,
+            "vendor_public_id": str(original_line.vendor.public_id) if original_line.vendor else None,
+        })
+
+    je_result = create_journal_entry(
+        actor=actor,
+        date=timezone.now().date(),
+        memo=f"Void Credit Note {cn.credit_note_number}: {reason}" if reason
+            else f"Void Credit Note {cn.credit_note_number}",
+        lines=je_lines,
+        kind=JournalEntry.Kind.REVERSAL,
+    )
+
+    if not je_result.success:
+        return CommandResult.fail(f"Failed to create reversal entry: {je_result.error}")
+
+    reversal_je = je_result.data
+
+    save_result = save_journal_entry_complete(actor, reversal_je.id)
+    if not save_result.success:
+        return CommandResult.fail(f"Failed to complete reversal entry: {save_result.error}")
+    reversal_je = save_result.data
+
+    post_result = post_journal_entry(actor, reversal_je.id)
+    if not post_result.success:
+        return CommandResult.fail(f"Failed to post reversal entry: {post_result.error}")
+
+    voided_at = timezone.now()
+
+    with command_writes_allowed():
+        cn.status = PurchaseCreditNote.Status.VOIDED
+        cn.save()
+
+    event = emit_event(
+        actor=actor,
+        event_type=EventTypes.PURCHASES_CREDIT_NOTE_VOIDED,
+        aggregate_type="PurchaseCreditNote",
+        aggregate_id=str(cn.public_id),
+        idempotency_key=f"purchasecreditnote.voided:{cn.public_id}",
+        data=PurchaseCreditNoteVoidedData(
+            credit_note_public_id=str(cn.public_id),
+            company_public_id=str(actor.company.public_id),
+            credit_note_number=cn.credit_note_number,
+            reversing_journal_entry_public_id=str(reversal_je.public_id),
+            voided_at=voided_at.isoformat(),
+            voided_by_id=actor.user.id,
+            voided_by_email=actor.user.email,
+            reason=reason,
+        ).to_dict(),
+    )
+
+    return CommandResult.ok(
+        data={"credit_note": cn, "reversing_entry": reversal_je},
+        event=event,
+    )

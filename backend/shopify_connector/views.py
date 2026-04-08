@@ -371,6 +371,44 @@ class ShopifySyncProductsView(APIView):
         return Response(result.data)
 
 
+class ShopifyResyncOrdersView(APIView):
+    """
+    POST /api/shopify/resync-orders/
+    Re-sync missed orders by polling the Shopify Orders API.
+    Catches webhooks that were missed due to downtime.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        actor = resolve_actor(request)
+        require(actor, "settings.edit")
+
+        try:
+            store = ShopifyStore.objects.get(
+                company=actor.company,
+                status=ShopifyStore.Status.ACTIVE,
+            )
+        except ShopifyStore.DoesNotExist:
+            return Response(
+                {"error": "No active Shopify store"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        from datetime import timedelta
+
+        from django.utils import timezone as tz
+
+        from .tasks import _sync_orders
+
+        days = int(request.data.get("days", 7))
+        now = tz.now()
+        created_at_min = (now - timedelta(days=days)).isoformat()
+        created_at_max = now.isoformat()
+
+        result = _sync_orders(store, created_at_min, created_at_max)
+        return Response(result)
+
+
 class ShopifyOrdersView(APIView):
     """
     GET /api/shopify/orders/

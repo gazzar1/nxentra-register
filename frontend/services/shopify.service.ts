@@ -82,6 +82,12 @@ export const shopifyService = {
   getOrders: () =>
     apiClient.get<ShopifyOrder[]>("/shopify/orders/"),
 
+  // Re-sync missed orders (catch-up for missed webhooks)
+  resyncOrders: (params?: { days?: number }) =>
+    apiClient.post<{ status: string; fetched: number; created: number; skipped: number; errors: number }>(
+      "/shopify/resync-orders/", params || {}
+    ),
+
   // Payouts
   syncPayouts: () =>
     apiClient.post<{ created: number; skipped: number }>("/shopify/sync-payouts/"),

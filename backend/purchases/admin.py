@@ -1,6 +1,7 @@
 # purchases/admin.py
 from django.contrib import admin
-from .models import PurchaseBill, PurchaseBillLine
+
+from .models import PurchaseBill, PurchaseBillLine, PurchaseCreditNote, PurchaseCreditNoteLine
 
 
 class PurchaseBillLineInline(admin.TabularInline):
@@ -16,4 +17,20 @@ class PurchaseBillAdmin(admin.ModelAdmin):
     search_fields = ["bill_number", "vendor__name"]
     ordering = ["-bill_date", "-created_at"]
     inlines = [PurchaseBillLineInline]
+    readonly_fields = ["subtotal", "total_discount", "total_tax", "total_amount", "posted_at", "posted_by"]
+
+
+class PurchaseCreditNoteLineInline(admin.TabularInline):
+    model = PurchaseCreditNoteLine
+    extra = 0
+    readonly_fields = ["gross_amount", "net_amount", "tax_amount", "line_total"]
+
+
+@admin.register(PurchaseCreditNote)
+class PurchaseCreditNoteAdmin(admin.ModelAdmin):
+    list_display = ["credit_note_number", "credit_note_date", "vendor", "bill", "reason", "total_amount", "status", "company"]
+    list_filter = ["status", "reason", "company"]
+    search_fields = ["credit_note_number", "vendor__name", "bill__bill_number"]
+    ordering = ["-credit_note_date", "-created_at"]
+    inlines = [PurchaseCreditNoteLineInline]
     readonly_fields = ["subtotal", "total_discount", "total_tax", "total_amount", "posted_at", "posted_by"]

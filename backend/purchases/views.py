@@ -15,14 +15,20 @@ from accounts.module_permissions import ModuleEnabled
 
 from .commands import (
     create_purchase_bill,
+    create_purchase_credit_note,
     post_purchase_bill,
+    post_purchase_credit_note,
     void_purchase_bill,
+    void_purchase_credit_note,
 )
-from .models import PurchaseBill
+from .models import PurchaseBill, PurchaseCreditNote
 from .serializers import (
     PurchaseBillCreateSerializer,
     PurchaseBillListSerializer,
     PurchaseBillSerializer,
+    PurchaseCreditNoteCreateSerializer,
+    PurchaseCreditNoteListSerializer,
+    PurchaseCreditNoteSerializer,
 )
 
 # =============================================================================
@@ -432,3 +438,130 @@ class GoodsReceiptVoidView(APIView):
         if not result.success:
             return Response({"detail": result.error}, status=400)
         return Response(GoodsReceiptSerializer(result.data["receipt"]).data)
+
+
+# =============================================================================
+# Purchase Credit Note Views
+# =============================================================================
+
+class PurchaseCreditNoteListCreateView(APIView):
+    """List purchase credit notes or create a new one."""
+    module_key = "purchases"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
+
+    def get(self, request):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        from django.db.models import Q
+
+        from nxentra_backend.pagination import paginate_queryset
+
+        notes = PurchaseCreditNote.objects.filter(
+            company=actor.company
+        ).select_related("vendor", "bill")
+
+        if "status" in request.query_params:
+            notes = notes.filter(status=request.query_params["status"])
+        if "vendor_id" in request.query_params:
+            notes = notes.filter(vendor_id=request.query_params["vendor_id"])
+        if "bill_id" in request.query_params:
+            notes = notes.filter(bill_id=request.query_params["bill_id"])
+
+        search = request.query_params.get("search", "")
+        if search:
+            notes = notes.filter(
+                Q(credit_note_number__icontains=search)
+                | Q(vendor__name__icontains=search)
+                | Q(bill__bill_number__icontains=search)
+            )
+
+        return paginate_queryset(
+            request, notes, PurchaseCreditNoteListSerializer,
+            default_ordering="-credit_note_date",
+            allowed_sort_fields=["credit_note_number", "credit_note_date", "total_amount", "status"],
+        )
+
+    def post(self, request):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        serializer = PurchaseCreditNoteCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        result = create_purchase_credit_note(actor, **serializer.validated_data)
+        if not result.success:
+            return Response({"detail": result.error}, status=400)
+
+        return Response(
+            PurchaseCreditNoteSerializer(result.data["credit_note"]).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class PurchaseCreditNoteDetailView(APIView):
+    """Retrieve a purchase credit note."""
+    module_key = "purchases"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
+
+    def get(self, request, pk):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        try:
+            cn = PurchaseCreditNote.objects.select_related(
+                "vendor", "bill", "posting_profile", "posted_by", "posted_journal_entry"
+            ).prefetch_related(
+                "lines__item", "lines__account", "lines__tax_code"
+            ).get(company=actor.company, pk=pk)
+        except PurchaseCreditNote.DoesNotExist:
+            return Response({"detail": "Credit note not found."}, status=404)
+
+        return Response(PurchaseCreditNoteSerializer(cn).data)
+
+
+class PurchaseCreditNotePostView(APIView):
+    """Post a purchase credit note."""
+    module_key = "purchases"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
+
+    def post(self, request, pk):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        result = post_purchase_credit_note(actor, pk)
+        if not result.success:
+            return Response({"detail": result.error}, status=400)
+
+        return Response({
+            "detail": "Credit note posted successfully.",
+            "credit_note": PurchaseCreditNoteSerializer(result.data["credit_note"]).data,
+            "journal_entry_id": result.data["journal_entry"].id,
+            "journal_entry_number": result.data["journal_entry"].entry_number,
+        })
+
+
+class PurchaseCreditNoteVoidView(APIView):
+    """Void a purchase credit note."""
+    module_key = "purchases"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
+
+    def post(self, request, pk):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        reason = request.data.get("reason", "")
+        result = void_purchase_credit_note(actor, pk, reason=reason)
+        if not result.success:
+            return Response({"detail": result.error}, status=400)
+
+        return Response({
+            "detail": "Credit note voided successfully.",
+            "credit_note": PurchaseCreditNoteSerializer(result.data["credit_note"]).data,
+            "reversing_entry_id": result.data["reversing_entry"].id,
+        })

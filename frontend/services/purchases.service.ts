@@ -10,6 +10,9 @@ import type {
   GoodsReceipt,
   GoodsReceiptListItem,
   GoodsReceiptCreatePayload,
+  PurchaseCreditNote,
+  PurchaseCreditNoteListItem,
+  PurchaseCreditNoteCreatePayload,
 } from '@/types/purchases';
 import type { PaginatedResponse, PaginationParams } from '@/types/common';
 
@@ -91,4 +94,30 @@ export const goodsReceiptsService = {
 
   void: (id: number, reason?: string) =>
     apiClient.post<GoodsReceipt>(`/purchases/receipts/${id}/void/`, { reason }),
+};
+
+// =============================================================================
+// Purchase Credit Note Service
+// =============================================================================
+
+export const purchaseCreditNotesService = {
+  list: (params?: { status?: string; vendor_id?: number; bill_id?: number; search?: string } & PaginationParams) =>
+    apiClient.get<PaginatedResponse<PurchaseCreditNoteListItem>>('/purchases/credit-notes/', { params }),
+
+  get: (id: number) =>
+    apiClient.get<PurchaseCreditNote>(`/purchases/credit-notes/${id}/`),
+
+  create: (data: PurchaseCreditNoteCreatePayload) =>
+    apiClient.post<PurchaseCreditNote>('/purchases/credit-notes/', data),
+
+  post: (id: number) =>
+    apiClient.post<{ detail: string; credit_note: PurchaseCreditNote; journal_entry_id: number; journal_entry_number: string }>(
+      `/purchases/credit-notes/${id}/post/`
+    ),
+
+  void: (id: number, reason?: string) =>
+    apiClient.post<{ detail: string; credit_note: PurchaseCreditNote; reversing_entry_id: number }>(
+      `/purchases/credit-notes/${id}/void/`,
+      { reason }
+    ),
 };

@@ -143,6 +143,22 @@ export default function CurrencyRevaluationPage() {
           </CardContent>
         </Card>
 
+        {/* Automation Note */}
+        <Card className="border-blue-200 bg-blue-50/50 dark:border-blue-900 dark:bg-blue-950/20">
+          <CardContent className="pt-4 pb-4">
+            <div className="flex items-start gap-3">
+              <RefreshCw className="h-5 w-5 text-blue-600 mt-0.5 shrink-0" />
+              <div className="text-sm">
+                <p className="font-medium text-blue-900 dark:text-blue-200">Automated Revaluation Available</p>
+                <p className="text-blue-700 dark:text-blue-400 mt-1">
+                  Currency revaluation can run automatically at period-end via Celery Beat.
+                  Configure the <code className="text-xs bg-blue-100 dark:bg-blue-900 px-1 py-0.5 rounded">accounting.run_currency_revaluation</code> periodic task in Django admin to schedule monthly runs with auto-reverse.
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
         {/* Summary */}
         {data && (
           <div className="grid gap-4 md:grid-cols-3">

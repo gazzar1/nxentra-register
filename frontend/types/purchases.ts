@@ -338,3 +338,121 @@ export const GR_STATUS_LABELS: Record<GoodsReceiptStatus, string> = {
   POSTED: 'Posted',
   VOIDED: 'Voided',
 };
+
+// =============================================================================
+// Purchase Credit Note (Vendor Return / Debit Note)
+// =============================================================================
+
+export type PurchaseCreditNoteStatus = 'DRAFT' | 'POSTED' | 'VOIDED';
+export type PurchaseCreditNoteReason = 'RETURN' | 'PRICE_ADJUSTMENT' | 'TAX_CORRECTION' | 'DAMAGED' | 'OTHER';
+
+export interface PurchaseCreditNoteLine {
+  id: number;
+  public_id: string;
+  line_number: number;
+  bill_line: number | null;
+  item: number | null;
+  item_code?: string;
+  description: string;
+  description_ar: string;
+  quantity: string;
+  unit_price: string;
+  discount_amount: string;
+  tax_code: number | null;
+  tax_code_code?: string;
+  tax_rate: string;
+  gross_amount: string;
+  net_amount: string;
+  tax_amount: string;
+  line_total: string;
+  account: number;
+  account_code: string;
+  account_name: string;
+}
+
+export interface PurchaseCreditNote {
+  id: number;
+  public_id: string;
+  credit_note_number: string;
+  credit_note_date: string;
+  bill: number;
+  bill_number: string;
+  vendor: number;
+  vendor_name: string;
+  vendor_code: string;
+  posting_profile: number;
+  posting_profile_code: string;
+  reason: PurchaseCreditNoteReason;
+  reason_notes: string;
+  currency: string;
+  exchange_rate: string;
+  subtotal: string;
+  total_discount: string;
+  total_tax: string;
+  total_amount: string;
+  status: PurchaseCreditNoteStatus;
+  posted_at: string | null;
+  posted_by: number | null;
+  posted_by_email: string | null;
+  posted_journal_entry: number | null;
+  posted_journal_entry_number: string | null;
+  notes: string;
+  created_at: string;
+  created_by: number | null;
+  updated_at: string;
+  lines: PurchaseCreditNoteLine[];
+}
+
+export interface PurchaseCreditNoteListItem {
+  id: number;
+  public_id: string;
+  credit_note_number: string;
+  credit_note_date: string;
+  bill: number;
+  bill_number: string;
+  vendor: number;
+  vendor_name: string;
+  vendor_code: string;
+  reason: PurchaseCreditNoteReason;
+  total_amount: string;
+  status: PurchaseCreditNoteStatus;
+  created_at: string;
+}
+
+export interface PurchaseCreditNoteCreatePayload {
+  bill_id: number;
+  credit_note_date?: string;
+  reason?: PurchaseCreditNoteReason;
+  reason_notes?: string;
+  notes?: string;
+  lines: {
+    account_id: number;
+    description: string;
+    quantity?: number;
+    unit_price: number;
+    discount_amount?: number;
+    tax_code_id?: number;
+    item_id?: number;
+    bill_line_id?: number;
+  }[];
+}
+
+export const PCN_STATUS_COLORS: Record<PurchaseCreditNoteStatus, string> = {
+  DRAFT: 'bg-yellow-100 text-yellow-800',
+  POSTED: 'bg-green-100 text-green-800',
+  VOIDED: 'bg-red-100 text-red-800',
+};
+
+export const PCN_STATUS_LABELS: Record<PurchaseCreditNoteStatus, string> = {
+  DRAFT: 'Draft',
+  POSTED: 'Posted',
+  VOIDED: 'Voided',
+};
+
+export const PCN_REASON_LABELS: Record<PurchaseCreditNoteReason, string> = {
+  RETURN: 'Goods Returned',
+  PRICE_ADJUSTMENT: 'Price Adjustment',
+  TAX_CORRECTION: 'Tax Correction',
+  DAMAGED: 'Damaged Goods',
+  OTHER: 'Other',
+};

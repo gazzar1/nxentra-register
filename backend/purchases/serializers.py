@@ -12,6 +12,8 @@ from .models import (
     GoodsReceiptLine,
     PurchaseBill,
     PurchaseBillLine,
+    PurchaseCreditNote,
+    PurchaseCreditNoteLine,
     PurchaseOrder,
     PurchaseOrderLine,
 )
@@ -262,3 +264,91 @@ class CreateBillFromPOSerializer(serializers.Serializer):
     due_date = serializers.DateField(required=False)
     vendor_bill_number = serializers.CharField(required=False, default="", allow_blank=True)
     notes = serializers.CharField(required=False, default="", allow_blank=True)
+
+
+# =============================================================================
+# Purchase Credit Note Serializers
+# =============================================================================
+
+class PurchaseCreditNoteLineSerializer(serializers.ModelSerializer):
+    item_code = serializers.CharField(source="item.code", read_only=True, default=None)
+    account_code = serializers.CharField(source="account.code", read_only=True)
+    account_name = serializers.CharField(source="account.name", read_only=True)
+    tax_code_code = serializers.CharField(source="tax_code.code", read_only=True, default=None)
+
+    class Meta:
+        model = PurchaseCreditNoteLine
+        fields = [
+            "id", "public_id", "line_number",
+            "bill_line", "item", "item_code",
+            "description", "description_ar",
+            "quantity", "unit_price", "discount_amount",
+            "tax_code", "tax_code_code", "tax_rate",
+            "gross_amount", "net_amount", "tax_amount", "line_total",
+            "account", "account_code", "account_name",
+        ]
+        read_only_fields = [
+            "id", "public_id", "item_code", "account_code", "account_name", "tax_code_code",
+            "gross_amount", "net_amount", "tax_amount", "line_total",
+        ]
+
+
+class PurchaseCreditNoteSerializer(serializers.ModelSerializer):
+    lines = PurchaseCreditNoteLineSerializer(many=True, read_only=True)
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True)
+    vendor_code = serializers.CharField(source="vendor.code", read_only=True)
+    bill_number = serializers.CharField(source="bill.bill_number", read_only=True)
+    posting_profile_code = serializers.CharField(source="posting_profile.code", read_only=True)
+    posted_by_email = serializers.CharField(source="posted_by.email", read_only=True, default=None)
+    posted_journal_entry_number = serializers.CharField(
+        source="posted_journal_entry.entry_number", read_only=True, default=None
+    )
+
+    class Meta:
+        model = PurchaseCreditNote
+        fields = [
+            "id", "public_id", "credit_note_number", "credit_note_date",
+            "bill", "bill_number",
+            "vendor", "vendor_name", "vendor_code",
+            "posting_profile", "posting_profile_code",
+            "reason", "reason_notes",
+            "currency", "exchange_rate",
+            "subtotal", "total_discount", "total_tax", "total_amount",
+            "status", "posted_at", "posted_by", "posted_by_email",
+            "posted_journal_entry", "posted_journal_entry_number",
+            "notes", "created_at", "created_by", "updated_at",
+            "lines",
+        ]
+
+
+class PurchaseCreditNoteListSerializer(serializers.ModelSerializer):
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True)
+    vendor_code = serializers.CharField(source="vendor.code", read_only=True)
+    bill_number = serializers.CharField(source="bill.bill_number", read_only=True)
+
+    class Meta:
+        model = PurchaseCreditNote
+        fields = [
+            "id", "public_id", "credit_note_number", "credit_note_date",
+            "bill", "bill_number",
+            "vendor", "vendor_name", "vendor_code",
+            "reason", "total_amount", "status",
+            "created_at",
+        ]
+
+
+class PurchaseCreditNoteCreateSerializer(serializers.Serializer):
+    bill_id = serializers.IntegerField()
+    credit_note_date = serializers.DateField(required=False)
+    reason = serializers.ChoiceField(
+        choices=["RETURN", "PRICE_ADJUSTMENT", "TAX_CORRECTION", "DAMAGED", "OTHER"],
+        default="RETURN",
+    )
+    reason_notes = serializers.CharField(required=False, default="", allow_blank=True)
+    notes = serializers.CharField(required=False, default="", allow_blank=True)
+    lines = PurchaseBillLineInputSerializer(many=True)
+
+    def validate_lines(self, value):
+        if not value:
+            raise serializers.ValidationError("At least one line is required.")
+        return value

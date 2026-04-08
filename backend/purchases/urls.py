@@ -21,6 +21,11 @@ from .views import (
     PurchaseBillListCreateView,
     PurchaseBillPostView,
     PurchaseBillVoidView,
+    # Purchase Credit Note views
+    PurchaseCreditNoteDetailView,
+    PurchaseCreditNoteListCreateView,
+    PurchaseCreditNotePostView,
+    PurchaseCreditNoteVoidView,
     # Purchase Order views
     PurchaseOrderApproveView,
     PurchaseOrderCancelView,
@@ -58,4 +63,12 @@ urlpatterns = [
     path("bills/<int:pk>/", PurchaseBillDetailView.as_view(), name="bill-detail"),
     path("bills/<int:pk>/post/", PurchaseBillPostView.as_view(), name="bill-post"),
     path("bills/<int:pk>/void/", PurchaseBillVoidView.as_view(), name="bill-void"),
+
+    # ==========================================================================
+    # Purchase Credit Notes (Vendor Returns / Debit Notes)
+    # ==========================================================================
+    path("credit-notes/", PurchaseCreditNoteListCreateView.as_view(), name="credit-note-list-create"),
+    path("credit-notes/<int:pk>/", PurchaseCreditNoteDetailView.as_view(), name="credit-note-detail"),
+    path("credit-notes/<int:pk>/post/", PurchaseCreditNotePostView.as_view(), name="credit-note-post"),
+    path("credit-notes/<int:pk>/void/", PurchaseCreditNoteVoidView.as_view(), name="credit-note-void"),
 ]

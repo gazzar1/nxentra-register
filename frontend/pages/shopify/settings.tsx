@@ -44,6 +44,7 @@ export default function ShopifySettingsPage() {
   const [disconnecting, setDisconnecting] = useState(false);
   const [syncingPayouts, setSyncingPayouts] = useState(false);
   const [syncingProducts, setSyncingProducts] = useState(false);
+  const [resyncingOrders, setResyncingOrders] = useState(false);
 
   // Account mapping
   const { data: accounts } = useAccounts();
@@ -194,6 +195,21 @@ export default function ShopifySettingsPage() {
       toast({ title: "Failed to sync payouts.", variant: "destructive" });
     } finally {
       setSyncingPayouts(false);
+    }
+  };
+
+  const handleResyncOrders = async () => {
+    setResyncingOrders(true);
+    try {
+      const { data } = await shopifyService.resyncOrders({ days: 7 });
+      toast({
+        title: `Order re-sync complete: ${data.created} new, ${data.skipped} already synced${data.errors ? `, ${data.errors} errors` : ""}`,
+      });
+      fetchStore();
+    } catch {
+      toast({ title: "Failed to re-sync orders.", variant: "destructive" });
+    } finally {
+      setResyncingOrders(false);
     }
   };
 
@@ -356,6 +372,14 @@ export default function ShopifySettingsPage() {
                     <RefreshCw className="me-2 h-4 w-4" />
                   )}
                   Sync Payouts
+                </Button>
+                <Button onClick={handleResyncOrders} disabled={resyncingOrders} variant="outline">
+                  {resyncingOrders ? (
+                    <Loader2 className="me-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <ShoppingCart className="me-2 h-4 w-4" />
+                  )}
+                  Re-sync Orders (7d)
                 </Button>
                 <Button
                   variant="destructive"
