@@ -74,6 +74,8 @@ class AccountsConfig(AppConfig):
             tab=SidebarTab.REVIEW,
             order=10,
             nav_items=[
+                {"label": "Month-End Close", "href": "/settings/month-end-close", "icon": "ClipboardCheck"},
+                {"label": "System Health", "href": "/settings/system-health", "icon": "Activity"},
                 {"label": "Reconciliation Status", "href": "/banking/reconciliation", "icon": "Scale"},
                 {"label": "Audit Trail", "href": "/settings/audit", "icon": "ShieldCheck"},
                 {"label": "FX Revaluation", "href": "/accounting/currency-revaluation", "icon": "ArrowLeftRight"},
@@ -139,6 +141,7 @@ class AccountsConfig(AppConfig):
                 {"label": "Company Settings", "href": "/settings/company", "icon": "Building2"},
                 {"label": "Users & Roles", "href": "/users", "icon": "Users"},
                 {"label": "Modules", "href": "/settings/modules", "icon": "LayoutGrid"},
+                {"label": "Plan & Billing", "href": "/settings/billing", "icon": "CreditCard"},
                 {"label": "Account", "href": "/settings/account", "icon": "KeyRound"},
             ],
         )
