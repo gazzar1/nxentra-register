@@ -24,6 +24,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { PageHeader } from "@/components/common";
+import { ContextualHelp } from "@/components/common/ContextualHelp";
 import {
   shopifyService,
   ReconciliationSummary,
@@ -161,6 +162,13 @@ export default function ReconciliationPage() {
           title="Payout Verification"
           subtitle="Verify Shopify payout transactions against local orders and fees"
         />
+
+        <ContextualHelp items={[
+          { question: "What is the clearing balance?", answer: "The clearing balance represents funds held by Shopify between when an order is paid and when the payout settles to your bank. A non-zero balance is normal if you have recent orders awaiting payout." },
+          { question: "What does 'unverified' mean?", answer: "An unverified payout hasn't had its individual transactions matched against your local order records. Click 'Verify' on the payout to pull transaction details from Shopify and match them." },
+          { question: "What should I do about discrepancies?", answer: "A discrepancy means the payout amounts don't match the sum of individual transactions. This can happen with chargebacks, adjustments, or timing differences. Review the transaction details and create a manual journal entry if needed." },
+          { question: "When should I run this?", answer: "Review reconciliation before closing each month. All payouts in the period should be verified with a match rate above 95%." },
+        ]} />
 
         {/* Date Range */}
         <Card>

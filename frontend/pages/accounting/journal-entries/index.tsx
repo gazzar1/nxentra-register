@@ -20,6 +20,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { PageHeader, EmptyState, StatusBadge } from "@/components/common";
+import { ContextualHelp } from "@/components/common/ContextualHelp";
 import { PaginatedTable } from "@/components/common/PaginatedTable";
 import type { ColumnDef } from "@/components/common/PaginatedTable";
 import { usePaginatedJournalEntries } from "@/queries/useJournalEntries";
@@ -229,6 +230,12 @@ export default function JournalEntriesPage() {
             </div>
           }
         />
+
+        <ContextualHelp items={[
+          { question: "What does INCOMPLETE mean?", answer: "An INCOMPLETE entry was created by an automated process (e.g., Shopify) but couldn't be posted — usually because the period is closed or an account mapping is inactive. Review the entry, fix the issue, then post it manually." },
+          { question: "What's the difference between Draft and Posted?", answer: "Draft entries are saved but haven't affected your books yet. Once posted, the entry updates account balances and cannot be edited — only reversed." },
+          { question: "How do I fix an error in a posted entry?", answer: "You cannot edit posted entries. Instead, reverse the entry (creates an offsetting entry), then create a new corrected entry." },
+        ]} />
 
         <Card>
           <CardContent className="pt-6">

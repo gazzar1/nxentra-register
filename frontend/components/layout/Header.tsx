@@ -15,6 +15,7 @@ import {
 import { LanguageSwitcher } from "./LanguageSwitcher";
 import { CompanySwitcher } from "./CompanySwitcher";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
+import { HelpButton } from "./HelpButton";
 import { NotificationBell } from "./NotificationBell";
 
 export function Header() {
@@ -51,6 +52,9 @@ export function Header() {
 
         {/* Language Switcher */}
         <LanguageSwitcher />
+
+        {/* Help */}
+        <HelpButton />
 
         {/* Notifications */}
         <NotificationBell />

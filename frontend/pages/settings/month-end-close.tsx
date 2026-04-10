@@ -6,7 +6,7 @@ import { useRouter } from "next/router";
 import { useQuery } from "@tanstack/react-query";
 import {
   CheckCircle2, AlertTriangle, XCircle, ClipboardCheck,
-  ChevronLeft, ChevronRight, Lock, RefreshCw, ArrowRight,
+  ChevronLeft, ChevronRight, Lock, RefreshCw, ArrowRight, BookOpen, ChevronDown,
 } from "lucide-react";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
@@ -61,6 +61,7 @@ export default function MonthEndClosePage() {
   const [month, setMonth] = useState(now.getMonth()); // Previous month (0-indexed, so getMonth() = previous)
   const [showCloseDialog, setShowCloseDialog] = useState(false);
   const [closing, setClosing] = useState(false);
+  const [showGuide, setShowGuide] = useState(false);
 
   // Adjust: if we're at month 0 (Jan), previous month is Dec of last year
   const displayMonth = month + 1; // 1-indexed for API
@@ -145,6 +146,54 @@ export default function MonthEndClosePage() {
               </Button>
             </div>
           </CardContent>
+        </Card>
+
+        {/* How-To Guide */}
+        <Card className="border-blue-200 dark:border-blue-900">
+          <button
+            onClick={() => setShowGuide(!showGuide)}
+            className="w-full px-6 py-3 flex items-center justify-between text-start"
+          >
+            <div className="flex items-center gap-2">
+              <BookOpen className="h-4 w-4 text-blue-600" />
+              <span className="font-medium text-sm">How to close a period (step-by-step guide)</span>
+            </div>
+            <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", showGuide && "rotate-180")} />
+          </button>
+          {showGuide && (
+            <CardContent className="pt-0 pb-4">
+              <ol className="space-y-3 text-sm text-muted-foreground">
+                <li className="flex gap-3">
+                  <span className="font-mono text-xs bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded-full h-5 w-5 flex items-center justify-center shrink-0 mt-0.5">1</span>
+                  <div><span className="font-medium text-foreground">Post all entries.</span> Go to Journal Entries, filter by Draft/Incomplete. Post or delete each one. No unfinished entries should remain in the period.</div>
+                </li>
+                <li className="flex gap-3">
+                  <span className="font-mono text-xs bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded-full h-5 w-5 flex items-center justify-center shrink-0 mt-0.5">2</span>
+                  <div><span className="font-medium text-foreground">Sync Shopify data.</span> Go to Shopify &gt; Settings and click &quot;Sync Payouts&quot; and &quot;Re-sync Orders&quot; to catch any missed webhooks.</div>
+                </li>
+                <li className="flex gap-3">
+                  <span className="font-mono text-xs bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded-full h-5 w-5 flex items-center justify-center shrink-0 mt-0.5">3</span>
+                  <div><span className="font-medium text-foreground">Review reconciliation.</span> Go to Shopify &gt; Reconciliation. Verify each payout. If any are unmatched, click Verify to pull transaction details.</div>
+                </li>
+                <li className="flex gap-3">
+                  <span className="font-mono text-xs bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded-full h-5 w-5 flex items-center justify-center shrink-0 mt-0.5">4</span>
+                  <div><span className="font-medium text-foreground">Check the clearing balance.</span> A non-zero clearing balance is normal if orders are awaiting payout. It should be explainable by unsettled orders.</div>
+                </li>
+                <li className="flex gap-3">
+                  <span className="font-mono text-xs bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded-full h-5 w-5 flex items-center justify-center shrink-0 mt-0.5">5</span>
+                  <div><span className="font-medium text-foreground">Run currency revaluation</span> (if you have foreign currency transactions). Go to Currency Revaluation, select the period end date, and post.</div>
+                </li>
+                <li className="flex gap-3">
+                  <span className="font-mono text-xs bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded-full h-5 w-5 flex items-center justify-center shrink-0 mt-0.5">6</span>
+                  <div><span className="font-medium text-foreground">Run the pre-close checks below.</span> All items should show Pass. Fix any failures using the suggested resolution steps.</div>
+                </li>
+                <li className="flex gap-3">
+                  <span className="font-mono text-xs bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded-full h-5 w-5 flex items-center justify-center shrink-0 mt-0.5">7</span>
+                  <div><span className="font-medium text-foreground">Close the period.</span> Click the &quot;Close Period&quot; button. This locks the period and prevents any new entries from being posted to it.</div>
+                </li>
+              </ol>
+            </CardContent>
+          )}
         </Card>
 
         {isLoading ? (

@@ -20,6 +20,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { PageHeader, LoadingSpinner, ConfirmDialog } from "@/components/common";
+import { ContextualHelp } from "@/components/common/ContextualHelp";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/components/ui/toaster";
 import { reportsService } from "@/services/reports.service";
@@ -142,6 +143,13 @@ export default function CurrencyRevaluationPage() {
             </div>
           </CardContent>
         </Card>
+
+        <ContextualHelp items={[
+          { question: "When should I run currency revaluation?", answer: "Run it at the end of each month or period before closing. It recalculates foreign currency balances at current exchange rates and records any unrealized gains or losses." },
+          { question: "What does auto-reverse mean?", answer: "When enabled, the system creates a second entry on the first day of the next period that reverses the revaluation. This is standard accounting practice — the unrealized gain/loss is temporary until the actual transaction settles." },
+          { question: "What if I see 'skipped' currencies?", answer: "Currencies are skipped when no exchange rate is configured for the revaluation date. Go to Settings > Exchange Rates and add the missing rate, then re-run." },
+          { question: "Can I run this automatically?", answer: "Yes. Configure the 'accounting.run_currency_revaluation' periodic task in Django admin (Celery Beat) to run monthly with auto-reverse enabled." },
+        ]} />
 
         {/* Automation Note */}
         <Card className="border-blue-200 bg-blue-50/50 dark:border-blue-900 dark:bg-blue-950/20">
