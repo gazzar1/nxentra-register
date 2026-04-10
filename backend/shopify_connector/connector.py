@@ -4,7 +4,7 @@ Shopify connector adapter — implements BasePlatformConnector.
 
 This wires Shopify's webhook format into the platform abstraction layer.
 Note: Shopify continues to use its OWN event types (shopify.order_paid etc.)
-and its own ShopifyAccountingProjection for backward compatibility.
+and its own ShopifyAccountingHandler for backward compatibility.
 
 This adapter is registered to demonstrate the pattern and to make Shopify
 available through the generic /api/platforms/shopify/webhooks/ endpoint

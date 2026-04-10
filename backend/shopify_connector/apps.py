@@ -8,7 +8,7 @@ class ShopifyConnectorConfig(AppConfig):
     verbose_name = "Shopify Connector"
 
     projections = [
-        "shopify_connector.projections.ShopifyAccountingProjection",
+        "shopify_connector.projections.ShopifyAccountingHandler",
     ]
 
     event_types_module = "shopify_connector.event_types"

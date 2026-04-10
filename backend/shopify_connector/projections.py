@@ -235,9 +235,18 @@ _REVENUE_ONLY = ["REVENUE"]
 _FEES_CLEARING = ["EXPENSE", "ASSET"]
 
 
-class ShopifyAccountingProjection(BaseProjection):
+class ShopifyAccountingHandler(BaseProjection):
     """
-    Creates journal entries from Shopify financial events.
+    Shopify financial event handler (process manager / saga).
+
+    Despite inheriting BaseProjection for infrastructure integration (event
+    subscription, bookmark tracking, idempotent processing), this class is
+    NOT a pure read-model projector. It creates journal entries and emits
+    JOURNAL_ENTRY_POSTED events — making it an event-to-JE process manager.
+
+    All JE creation validates via validate_system_journal_postable() before
+    posting. If validation fails (closed period, inactive account), entries
+    are created as INCOMPLETE with admin notification.
 
     Order paid:
         DR Shopify Clearing      (total_price)
@@ -473,6 +482,48 @@ class ShopifyAccountingProjection(BaseProjection):
         except Exception:
             logger.debug("Could not attach dimensions — platform_connectors not available")
 
+    def _validate_entry(self, company, entry_date, lines):
+        """
+        Run shared validation before creating a posted JE.
+
+        Returns (force_incomplete: bool, errors: list[str]).
+        If force_incomplete is True, the caller should create the entry
+        as INCOMPLETE and notify admins instead of posting.
+        """
+        from accounting.validation import validate_system_journal_postable
+
+        validation_lines = [{"account": l.account, "debit": l.debit, "credit": l.credit} for l in lines]
+        result = validate_system_journal_postable(
+            company=company,
+            entry_date=entry_date,
+            lines=validation_lines,
+            source_module="shopify_connector",
+            allow_missing_counterparty=True,
+            on_closed_period="incomplete",
+        )
+        force_incomplete = not result.ok or bool(result.errors)
+        return force_incomplete, result.errors
+
+    def _mark_incomplete(self, entry, errors, memo):
+        """Mark entry as INCOMPLETE and notify admins."""
+        entry.status = JournalEntry.Status.INCOMPLETE
+        entry.posted_at = None
+        entry.save(update_fields=["status", "posted_at"])
+
+        from accounts.models import Notification
+        Notification.notify_company_admins(
+            company=entry.company,
+            title=f"Shopify entry needs review: {memo}",
+            message=(
+                f"Journal entry '{memo}' was saved as INCOMPLETE. "
+                f"Reason: {'; '.join(errors)}. "
+                f"Please review and post manually."
+            ),
+            level=Notification.Level.ERROR,
+            link=f"/accounting/journal-entries/{entry.id}",
+            source_module="shopify_connector",
+        )
+
     def _handle_order_paid(self, event, data, mapping, dimension_context=None):
         """
         Multi-line journal entry for a paid order.
@@ -602,36 +653,26 @@ class ShopifyAccountingProjection(BaseProjection):
         if is_foreign:
             _fix_fx_rounding(lines, entry, event.company, currency, fx_rate)
 
-        # Balance validation — save as INCOMPLETE if unbalanced
+        # Shared validation: period, account postability
+        force_incomplete, validation_errors = self._validate_entry(event.company, entry_date, lines)
+
+        # Balance validation
         total_debit = sum(l.debit for l in lines)
         total_credit = sum(l.credit for l in lines)
-
-        JournalLine.objects.projection().bulk_create(lines)
-        self._attach_dimensions(event.company, lines, dimension_context)
-
         if total_debit != total_credit:
-            logger.error(
-                "Unbalanced Shopify JE for order %s: debit=%s credit=%s — saved as INCOMPLETE",
-                order_name, total_debit, total_credit,
-            )
+            force_incomplete = True
+            validation_errors.append(f"Unbalanced: debit={total_debit} credit={total_credit}")
+
+        if force_incomplete:
             entry.status = JournalEntry.Status.INCOMPLETE
             entry.posted_at = None
             entry.save(update_fields=["status", "posted_at"])
 
-            # Notify company admins
-            from accounts.models import Notification
-            Notification.notify_company_admins(
-                company=event.company,
-                title=f"Unbalanced Shopify order: {order_name}",
-                message=(
-                    f"Journal entry for Shopify order {order_name} is unbalanced "
-                    f"(Debit: {total_debit}, Credit: {total_credit}). "
-                    f"Saved as INCOMPLETE — please review account mappings."
-                ),
-                level=Notification.Level.ERROR,
-                link=f"/accounting/journal-entries/{entry.id}",
-                source_module="shopify_connector",
-            )
+        JournalLine.objects.projection().bulk_create(lines)
+        self._attach_dimensions(event.company, lines, dimension_context)
+
+        if force_incomplete:
+            self._mark_incomplete(entry, validation_errors, memo)
             return
 
         # Assign proper entry number (only for balanced/posted entries)
@@ -641,6 +682,7 @@ class ShopifyAccountingProjection(BaseProjection):
         entry.save(update_fields=["entry_number"])
 
         # Emit JOURNAL_ENTRY_POSTED for balance projection
+        shopify_order_id = data.get("shopify_order_id", "")
         lines_data = []
         for line in lines:
             lines_data.append({
@@ -660,7 +702,7 @@ class ShopifyAccountingProjection(BaseProjection):
             event_type=EventTypes.JOURNAL_ENTRY_POSTED,
             aggregate_type="JournalEntry",
             aggregate_id=str(entry.public_id),
-            idempotency_key=f"shopify.je.posted:{entry.public_id}",
+            idempotency_key=f"shopify.order.paid.je:{shopify_order_id}",
             metadata={"source_projection": PROJECTION_NAME},
             data=JournalEntryPostedData(
                 entry_public_id=str(entry.public_id),
@@ -748,12 +790,6 @@ class ShopifyAccountingProjection(BaseProjection):
             source_document=str(refund_id),
         )
 
-        # Assign proper entry number
-        seq = _next_company_sequence(event.company, "journal_entry_number")
-        entry_number = f"JE-{event.company_id}-{seq:06d}"
-        entry.entry_number = entry_number
-        entry.save(update_fields=["entry_number"])
-
         debit_line = JournalLine(
             entry=entry, company=event.company,
             public_id=uuid.uuid4(), line_no=1,
@@ -770,8 +806,36 @@ class ShopifyAccountingProjection(BaseProjection):
             amount_currency=-amount if is_foreign else None,
             currency=currency, exchange_rate=fx_rate,
         )
-        JournalLine.objects.projection().bulk_create([debit_line, credit_line])
-        self._attach_dimensions(event.company, [debit_line, credit_line], dimension_context)
+
+        lines = [debit_line, credit_line]
+
+        # Shared validation: period, account postability
+        force_incomplete, validation_errors = self._validate_entry(event.company, entry_date, lines)
+
+        # Balance validation
+        total_debit = sum(l.debit for l in lines)
+        total_credit = sum(l.credit for l in lines)
+        if total_debit != total_credit:
+            force_incomplete = True
+            validation_errors.append(f"Unbalanced: debit={total_debit} credit={total_credit}")
+
+        if force_incomplete:
+            entry.status = JournalEntry.Status.INCOMPLETE
+            entry.posted_at = None
+            entry.save(update_fields=["status", "posted_at"])
+
+        JournalLine.objects.projection().bulk_create(lines)
+        self._attach_dimensions(event.company, lines, dimension_context)
+
+        if force_incomplete:
+            self._mark_incomplete(entry, validation_errors, memo)
+            return
+
+        # Assign proper entry number
+        seq = _next_company_sequence(event.company, "journal_entry_number")
+        entry_number = f"JE-{event.company_id}-{seq:06d}"
+        entry.entry_number = entry_number
+        entry.save(update_fields=["entry_number"])
 
         lines_data = [
             {
@@ -803,7 +867,7 @@ class ShopifyAccountingProjection(BaseProjection):
             event_type=EventTypes.JOURNAL_ENTRY_POSTED,
             aggregate_type="JournalEntry",
             aggregate_id=str(entry.public_id),
-            idempotency_key=f"shopify.refund.je.posted:{entry.public_id}",
+            idempotency_key=f"shopify.refund.je:{refund_id}",
             metadata={"source_projection": PROJECTION_NAME},
             data=JournalEntryPostedData(
                 entry_public_id=str(entry.public_id),
@@ -931,11 +995,6 @@ class ShopifyAccountingProjection(BaseProjection):
             source_document=str(refund_record.shopify_refund_id),
         )
 
-        seq = _next_company_sequence(event.company, "journal_entry_number")
-        entry_number = f"JE-{event.company_id}-{seq:06d}"
-        entry.entry_number = entry_number
-        entry.save(update_fields=["entry_number"])
-
         lines = []
         line_no = 0
         for rl in restock_lines:
@@ -963,8 +1022,33 @@ class ShopifyAccountingProjection(BaseProjection):
                 currency=currency, exchange_rate=fx_rate,
             ))
 
+        # Shared validation: period, account postability
+        force_incomplete, validation_errors = self._validate_entry(event.company, entry_date, lines)
+
+        # Balance validation
+        total_debit = sum(l.debit for l in lines)
+        total_credit = sum(l.credit for l in lines)
+        if total_debit != total_credit:
+            force_incomplete = True
+            validation_errors.append(f"Unbalanced: debit={total_debit} credit={total_credit}")
+
+        if force_incomplete:
+            entry.status = JournalEntry.Status.INCOMPLETE
+            entry.posted_at = None
+            entry.save(update_fields=["status", "posted_at"])
+
         JournalLine.objects.projection().bulk_create(lines)
         self._attach_dimensions(event.company, lines, dimension_context)
+
+        if force_incomplete:
+            self._mark_incomplete(entry, validation_errors, memo)
+            return
+
+        # Assign proper entry number
+        seq = _next_company_sequence(event.company, "journal_entry_number")
+        entry_number = f"JE-{event.company_id}-{seq:06d}"
+        entry.entry_number = entry_number
+        entry.save(update_fields=["entry_number"])
 
         total = sum(
             _convert_amount(rl["total_cost"], fx_rate) if is_foreign else rl["total_cost"]
@@ -990,7 +1074,7 @@ class ShopifyAccountingProjection(BaseProjection):
             event_type=EventTypes.JOURNAL_ENTRY_POSTED,
             aggregate_type="JournalEntry",
             aggregate_id=str(entry.public_id),
-            idempotency_key=f"shopify.restock.je.posted:{entry.public_id}",
+            idempotency_key=f"shopify.restock.je:{refund_record.shopify_refund_id}",
             metadata={"source_projection": PROJECTION_NAME},
             data=JournalEntryPostedData(
                 entry_public_id=str(entry.public_id),
@@ -1154,35 +1238,26 @@ class ShopifyAccountingProjection(BaseProjection):
         if is_foreign:
             _fix_fx_rounding(lines, entry, event.company, currency, fx_rate)
 
+        # Shared validation: period, account postability
+        force_incomplete, validation_errors = self._validate_entry(event.company, entry_date, lines)
+
         # Balance validation
         total_debit = sum(l.debit for l in lines)
         total_credit = sum(l.credit for l in lines)
-
-        JournalLine.objects.projection().bulk_create(lines)
-        self._attach_dimensions(event.company, lines, dimension_context)
-
         if total_debit != total_credit:
-            logger.error(
-                "Unbalanced Shopify payout JE %s: debit=%s credit=%s — saved as INCOMPLETE",
-                payout_id, total_debit, total_credit,
-            )
+            force_incomplete = True
+            validation_errors.append(f"Unbalanced: debit={total_debit} credit={total_credit}")
+
+        if force_incomplete:
             entry.status = JournalEntry.Status.INCOMPLETE
             entry.posted_at = None
             entry.save(update_fields=["status", "posted_at"])
 
-            from accounts.models import Notification
-            Notification.notify_company_admins(
-                company=event.company,
-                title=f"Unbalanced Shopify payout: {payout_id}",
-                message=(
-                    f"Journal entry for Shopify payout {payout_id} is unbalanced "
-                    f"(Debit: {total_debit}, Credit: {total_credit}). "
-                    f"Saved as INCOMPLETE — please review account mappings."
-                ),
-                level=Notification.Level.ERROR,
-                link=f"/accounting/journal-entries/{entry.id}",
-                source_module="shopify_connector",
-            )
+        JournalLine.objects.projection().bulk_create(lines)
+        self._attach_dimensions(event.company, lines, dimension_context)
+
+        if force_incomplete:
+            self._mark_incomplete(entry, validation_errors, memo)
             return
 
         # Assign entry number
@@ -1211,7 +1286,7 @@ class ShopifyAccountingProjection(BaseProjection):
             event_type=EventTypes.JOURNAL_ENTRY_POSTED,
             aggregate_type="JournalEntry",
             aggregate_id=str(entry.public_id),
-            idempotency_key=f"shopify.payout.je.posted:{entry.public_id}",
+            idempotency_key=f"shopify.payout.je:{payout_id}",
             metadata={"source_projection": PROJECTION_NAME},
             data=JournalEntryPostedData(
                 entry_public_id=str(entry.public_id),
@@ -1388,35 +1463,26 @@ class ShopifyAccountingProjection(BaseProjection):
         if is_foreign:
             _fix_fx_rounding(lines, entry, event.company, currency, fx_rate)
 
+        # Shared validation: period, account postability
+        force_incomplete, validation_errors = self._validate_entry(event.company, entry_date, lines)
+
         # Balance validation
         total_debit = sum(l.debit for l in lines)
         total_credit = sum(l.credit for l in lines)
-
-        JournalLine.objects.projection().bulk_create(lines)
-        self._attach_dimensions(event.company, lines, dimension_context)
-
         if total_debit != total_credit:
-            logger.error(
-                "Unbalanced COGS JE for fulfillment %s: debit=%s credit=%s — saved as INCOMPLETE",
-                fulfillment_id, total_debit, total_credit,
-            )
+            force_incomplete = True
+            validation_errors.append(f"Unbalanced: debit={total_debit} credit={total_credit}")
+
+        if force_incomplete:
             entry.status = JournalEntry.Status.INCOMPLETE
             entry.posted_at = None
             entry.save(update_fields=["status", "posted_at"])
 
-            from accounts.models import Notification
-            Notification.notify_company_admins(
-                company=event.company,
-                title=f"Unbalanced COGS entry: {order_name}",
-                message=(
-                    f"COGS journal entry for fulfillment {fulfillment_id} is unbalanced "
-                    f"(Debit: {total_debit}, Credit: {total_credit}). "
-                    f"Saved as INCOMPLETE — please review item account configuration."
-                ),
-                level=Notification.Level.ERROR,
-                link=f"/accounting/journal-entries/{entry.id}",
-                source_module="shopify_connector",
-            )
+        JournalLine.objects.projection().bulk_create(lines)
+        self._attach_dimensions(event.company, lines, dimension_context)
+
+        if force_incomplete:
+            self._mark_incomplete(entry, validation_errors, memo)
             return
 
         # Assign entry number
@@ -1445,7 +1511,7 @@ class ShopifyAccountingProjection(BaseProjection):
             event_type=EventTypes.JOURNAL_ENTRY_POSTED,
             aggregate_type="JournalEntry",
             aggregate_id=str(entry.public_id),
-            idempotency_key=f"shopify.cogs.je.posted:{entry.public_id}",
+            idempotency_key=f"shopify.cogs.je:{fulfillment_id}",
             metadata={"source_projection": PROJECTION_NAME},
             data=JournalEntryPostedData(
                 entry_public_id=str(entry.public_id),
@@ -1617,35 +1683,26 @@ class ShopifyAccountingProjection(BaseProjection):
         if is_foreign:
             _fix_fx_rounding(lines, entry, event.company, currency, fx_rate)
 
+        # Shared validation: period, account postability
+        force_incomplete, validation_errors = self._validate_entry(event.company, entry_date, lines)
+
         # Balance validation
         total_debit = sum(l.debit for l in lines)
         total_credit_check = sum(l.credit for l in lines)
-
-        JournalLine.objects.projection().bulk_create(lines)
-        self._attach_dimensions(event.company, lines, dimension_context)
-
         if total_debit != total_credit_check:
-            logger.error(
-                "Unbalanced chargeback JE %s: debit=%s credit=%s",
-                dispute_id, total_debit, total_credit_check,
-            )
+            force_incomplete = True
+            validation_errors.append(f"Unbalanced: debit={total_debit} credit={total_credit_check}")
+
+        if force_incomplete:
             entry.status = JournalEntry.Status.INCOMPLETE
             entry.posted_at = None
             entry.save(update_fields=["status", "posted_at"])
 
-            from accounts.models import Notification
-            Notification.notify_company_admins(
-                company=event.company,
-                title=f"Unbalanced chargeback entry: Dispute {dispute_id}",
-                message=(
-                    f"Journal entry for chargeback dispute {dispute_id} is unbalanced "
-                    f"(Debit: {total_debit}, Credit: {total_credit_check}). "
-                    f"Saved as INCOMPLETE — please review account mappings."
-                ),
-                level=Notification.Level.ERROR,
-                link=f"/accounting/journal-entries/{entry.id}",
-                source_module="shopify_connector",
-            )
+        JournalLine.objects.projection().bulk_create(lines)
+        self._attach_dimensions(event.company, lines, dimension_context)
+
+        if force_incomplete:
+            self._mark_incomplete(entry, validation_errors, memo)
             return
 
         # Assign entry number
@@ -1674,7 +1731,7 @@ class ShopifyAccountingProjection(BaseProjection):
             event_type=EventTypes.JOURNAL_ENTRY_POSTED,
             aggregate_type="JournalEntry",
             aggregate_id=str(entry.public_id),
-            idempotency_key=f"shopify.dispute.je.posted:{entry.public_id}",
+            idempotency_key=f"shopify.dispute.je:{dispute_id}",
             metadata={"source_projection": PROJECTION_NAME},
             data=JournalEntryPostedData(
                 entry_public_id=str(entry.public_id),
@@ -1817,20 +1874,26 @@ class ShopifyAccountingProjection(BaseProjection):
         if is_foreign:
             _fix_fx_rounding(lines, entry, event.company, currency, fx_rate)
 
+        # Shared validation: period, account postability
+        force_incomplete, validation_errors = self._validate_entry(event.company, entry_date, lines)
+
+        # Balance validation
         total_debit_check = sum(l.debit for l in lines)
         total_credit_check = sum(l.credit for l in lines)
+        if total_debit_check != total_credit_check:
+            force_incomplete = True
+            validation_errors.append(f"Unbalanced: debit={total_debit_check} credit={total_credit_check}")
+
+        if force_incomplete:
+            entry.status = JournalEntry.Status.INCOMPLETE
+            entry.posted_at = None
+            entry.save(update_fields=["status", "posted_at"])
 
         JournalLine.objects.projection().bulk_create(lines)
         self._attach_dimensions(event.company, lines, dimension_context)
 
-        if total_debit_check != total_credit_check:
-            logger.error(
-                "Unbalanced dispute-won reversal JE %s: debit=%s credit=%s",
-                dispute_id, total_debit_check, total_credit_check,
-            )
-            entry.status = JournalEntry.Status.INCOMPLETE
-            entry.posted_at = None
-            entry.save(update_fields=["status", "posted_at"])
+        if force_incomplete:
+            self._mark_incomplete(entry, validation_errors, memo)
             return
 
         seq = _next_company_sequence(event.company, "journal_entry_number")
@@ -1858,7 +1921,7 @@ class ShopifyAccountingProjection(BaseProjection):
             event_type=EventTypes.JOURNAL_ENTRY_POSTED,
             aggregate_type="JournalEntry",
             aggregate_id=str(entry.public_id),
-            idempotency_key=f"shopify.dispute.won.je.posted:{entry.public_id}",
+            idempotency_key=f"shopify.dispute.won.je:{dispute_id}",
             metadata={"source_projection": PROJECTION_NAME},
             data=JournalEntryPostedData(
                 entry_public_id=str(entry.public_id),

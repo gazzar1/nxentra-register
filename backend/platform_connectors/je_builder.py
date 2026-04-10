@@ -154,6 +154,7 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
     Returns the created JournalEntry, or None if:
     - A posted JE with the same memo already exists (idempotency)
     - The entry is unbalanced (saved as INCOMPLETE, notification sent)
+    - Validation fails and on_closed_period="reject" (default)
 
     Args:
         req: A JERequest containing all the information for the entry.
@@ -165,6 +166,35 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
     ).exists():
         logger.info("Journal entry already exists for '%s' — skipping", req.memo)
         return None
+
+    # Shared validation: period, account postability, balance
+    from accounting.validation import validate_system_journal_postable
+
+    validation_lines = [{"account": line.account, "debit": line.debit, "credit": line.credit} for line in req.lines]
+    validation = validate_system_journal_postable(
+        company=req.company,
+        entry_date=req.entry_date,
+        lines=validation_lines,
+        source_module=req.source_module,
+        allow_missing_counterparty=True,  # Platform connectors typically don't use AR/AP counterparties
+        on_closed_period="incomplete",  # Don't lose data — quarantine as INCOMPLETE
+    )
+
+    force_incomplete = False
+    if not validation.ok:
+        # Hard validation failure (bad accounts, etc.) — create INCOMPLETE + notify
+        logger.warning(
+            "Validation failed for '%s' (%s): %s",
+            req.memo, req.source_module, "; ".join(validation.errors),
+        )
+        force_incomplete = True
+    elif validation.errors:
+        # Soft failure (closed period with on_closed_period="incomplete")
+        logger.info(
+            "Period closed for '%s' (%s) — creating as INCOMPLETE: %s",
+            req.memo, req.source_module, "; ".join(validation.errors),
+        )
+        force_incomplete = True
 
     # Multi-currency: auto-resolve exchange rate if not explicitly provided
     functional_currency = req.company.functional_currency or req.company.default_currency or "USD"
@@ -186,6 +216,8 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
     period = _resolve_period(req.company, req.entry_date)
     now = timezone.now()
 
+    initial_status = JournalEntry.Status.INCOMPLETE if force_incomplete else JournalEntry.Status.POSTED
+
     entry = JournalEntry.objects.projection().create(
         company=req.company,
         public_id=uuid.uuid4(),
@@ -193,8 +225,8 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
         period=period,
         memo=req.memo,
         kind=JournalEntry.Kind.NORMAL,
-        status=JournalEntry.Status.POSTED,
-        posted_at=now,
+        status=initial_status,
+        posted_at=now if not force_incomplete else None,
         currency=req.currency,
         exchange_rate=fx_rate,
         source_module=req.source_module,
@@ -238,22 +270,31 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
     total_credit = sum(l.credit for l in db_lines)
 
     if total_debit != total_credit:
+        force_incomplete = True
+        validation_errors_str = f"Unbalanced: debit={total_debit} credit={total_credit}"
+        if validation.errors:
+            validation_errors_str += "; " + "; ".join(validation.errors)
         logger.error(
             "Unbalanced JE for '%s': debit=%s credit=%s — saved as INCOMPLETE",
             req.memo, total_debit, total_credit,
         )
+
+    if force_incomplete and entry.status != JournalEntry.Status.INCOMPLETE:
         entry.status = JournalEntry.Status.INCOMPLETE
         entry.posted_at = None
         entry.save(update_fields=["status", "posted_at"])
 
+    if entry.status == JournalEntry.Status.INCOMPLETE:
         from accounts.models import Notification
+
+        error_detail = "; ".join(validation.errors) if validation.errors else f"Unbalanced: debit={total_debit} credit={total_credit}"
         Notification.notify_company_admins(
             company=req.company,
-            title=f"Unbalanced entry: {req.memo}",
+            title=f"Entry needs review: {req.memo}",
             message=(
-                f"Journal entry '{req.memo}' is unbalanced "
-                f"(Debit: {total_debit}, Credit: {total_credit}). "
-                f"Saved as INCOMPLETE — please review account mappings."
+                f"Journal entry '{req.memo}' was saved as INCOMPLETE. "
+                f"Reason: {error_detail}. "
+                f"Please review and post manually."
             ),
             level=Notification.Level.ERROR,
             link=f"/accounting/journal-entries/{entry.id}",

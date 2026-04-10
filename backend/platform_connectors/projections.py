@@ -6,7 +6,7 @@ Consumes PLATFORM_* events and creates journal entries using the shared
 JE builder. This single projection handles all platform connectors that
 emit generic platform.* events.
 
-Shopify keeps its own ShopifyAccountingProjection for backward compatibility.
+Shopify keeps its own ShopifyAccountingHandler for backward compatibility.
 New platforms (Stripe, WooCommerce, etc.) emit PLATFORM_* events and are
 handled here.
 """
