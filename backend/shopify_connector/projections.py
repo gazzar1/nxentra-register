@@ -505,10 +505,14 @@ class ShopifyAccountingHandler(BaseProjection):
         return force_incomplete, result.errors
 
     def _mark_incomplete(self, entry, errors, memo):
-        """Mark entry as INCOMPLETE and notify admins."""
+        """Mark entry as INCOMPLETE and notify admins with actionable guidance."""
         entry.status = JournalEntry.Status.INCOMPLETE
         entry.posted_at = None
         entry.save(update_fields=["status", "posted_at"])
+
+        # Build actionable resolution message
+        error_str = '; '.join(errors)
+        resolution = self._resolve_action(errors)
 
         from accounts.models import Notification
         Notification.notify_company_admins(
@@ -516,13 +520,30 @@ class ShopifyAccountingHandler(BaseProjection):
             title=f"Shopify entry needs review: {memo}",
             message=(
                 f"Journal entry '{memo}' was saved as INCOMPLETE. "
-                f"Reason: {'; '.join(errors)}. "
-                f"Please review and post manually."
+                f"Reason: {error_str}. "
+                f"Action: {resolution}"
             ),
             level=Notification.Level.ERROR,
             link=f"/accounting/journal-entries/{entry.id}",
             source_module="shopify_connector",
         )
+
+    @staticmethod
+    def _resolve_action(errors):
+        """Map validation errors to actionable resolution steps."""
+        for error in errors:
+            e = error.lower()
+            if "period" in e and "closed" in e:
+                return "Go to Settings > Periods and reopen the period, then post this entry manually from Journal Entries."
+            if "fiscal year" in e and "closed" in e:
+                return "The fiscal year is closed. Go to Settings > Periods to reopen the year if adjustments are needed."
+            if "inactive" in e:
+                return "One or more mapped accounts are inactive. Go to Settings > Shopify > Account Mapping and update to active accounts."
+            if "header" in e:
+                return "A mapped account is a header (non-postable). Go to Settings > Shopify > Account Mapping and select a postable child account."
+            if "unbalanced" in e:
+                return "The entry is unbalanced — this usually means a missing account mapping. Go to Settings > Shopify > Account Mapping and verify all roles are mapped."
+        return "Review the entry in Journal Entries and post manually after resolving the issue."
 
     def _handle_order_paid(self, event, data, mapping, dimension_context=None):
         """

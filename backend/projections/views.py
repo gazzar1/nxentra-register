@@ -5814,3 +5814,373 @@ def _extract_order_ref(memo: str) -> str:
     if "Shopify payout:" in memo:
         return memo.split("Shopify payout:")[-1].strip()
     return ""
+
+
+# =============================================================================
+# System Health Diagnostics
+# =============================================================================
+
+class SystemHealthView(APIView):
+    """
+    GET /api/reports/system-health/
+
+    Unified operator-facing health dashboard combining:
+    - Projection lag status
+    - INCOMPLETE/DRAFT journal entries needing attention
+    - AR/AP subledger tie-out
+    - Trial balance check
+    - Shopify clearing balance (if Shopify module active)
+
+    Returns actionable information with resolution hints.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from django.db.models import Sum
+
+        from accounting.models import JournalEntry, JournalLine
+        from accounts.authz import resolve_actor
+        from projections.base import projection_registry
+
+        actor = resolve_actor(request)
+        company = actor.company
+        checks = []
+
+        # 1. Projection lag
+        projections = projection_registry.all()
+        lagging = []
+        for proj in projections:
+            try:
+                lag = proj.get_lag(company)
+                if lag > 0:
+                    lagging.append({"name": proj.name, "lag": lag})
+            except Exception:
+                pass
+
+        total_lag = sum(l["lag"] for l in lagging)
+        checks.append({
+            "check": "projection_lag",
+            "title": "Event Processing",
+            "status": "FAIL" if total_lag > 0 else "PASS",
+            "message": f"{len(lagging)} projection(s) behind ({total_lag} events pending)" if lagging else f"All {len(projections)} projections up to date",
+            "action": "Go to Admin > Projections to trigger processing" if lagging else None,
+            "detail": {"lagging": lagging, "total": len(projections)},
+        })
+
+        # 2. INCOMPLETE / DRAFT entries
+        incomplete = JournalEntry.objects.filter(
+            company=company, status=JournalEntry.Status.INCOMPLETE,
+        ).count()
+        draft = JournalEntry.objects.filter(
+            company=company, status=JournalEntry.Status.DRAFT,
+        ).count()
+        checks.append({
+            "check": "pending_entries",
+            "title": "Entries Needing Attention",
+            "status": "FAIL" if incomplete > 0 else ("WARN" if draft > 0 else "PASS"),
+            "message": f"{incomplete} incomplete, {draft} draft entries" if (incomplete + draft) > 0 else "No pending entries",
+            "action": "Review incomplete entries — they may have failed validation (closed period, inactive account)" if incomplete > 0 else ("Post or delete draft entries before closing the period" if draft > 0 else None),
+            "detail": {"incomplete": incomplete, "draft": draft},
+        })
+
+        # 3. Trial balance
+        agg = JournalLine.objects.filter(
+            company=company, entry__status=JournalEntry.Status.POSTED,
+        ).aggregate(total_debit=Sum("debit"), total_credit=Sum("credit"))
+        total_debit = agg["total_debit"] or Decimal("0")
+        total_credit = agg["total_credit"] or Decimal("0")
+        tb_diff = total_debit - total_credit
+        checks.append({
+            "check": "trial_balance",
+            "title": "Trial Balance",
+            "status": "FAIL" if tb_diff != Decimal("0") else "PASS",
+            "message": f"Balanced: DR=CR={total_debit}" if tb_diff == Decimal("0") else f"Out of balance by {tb_diff}",
+            "action": "Trial balance imbalance indicates a system error. Contact support." if tb_diff != Decimal("0") else None,
+            "detail": {"total_debit": str(total_debit), "total_credit": str(total_credit), "difference": str(tb_diff)},
+        })
+
+        # 4. Subledger tie-out
+        try:
+            from accounting.policies import validate_subledger_tieout
+            is_valid, errors = validate_subledger_tieout(company)
+            checks.append({
+                "check": "subledger_tieout",
+                "title": "AR/AP Subledger",
+                "status": "PASS" if is_valid else "WARN",
+                "message": "AR/AP subledgers tie out to GL" if is_valid else f"Imbalance: {'; '.join(errors[:2])}",
+                "action": "Review customer/vendor balances and compare to AR/AP control accounts" if not is_valid else None,
+                "detail": {"balanced": is_valid, "errors": errors},
+            })
+        except Exception:
+            checks.append({
+                "check": "subledger_tieout",
+                "title": "AR/AP Subledger",
+                "status": "WARN",
+                "message": "Could not verify subledger tie-out",
+                "action": None,
+                "detail": {},
+            })
+
+        # 5. Shopify clearing balance (if module active)
+        try:
+            from shopify_connector.management.commands.check_clearing_balance import compute_clearing_balance
+            clearing_data = compute_clearing_balance(company)
+            if clearing_data:
+                balance = Decimal(clearing_data["balance"])
+                checks.append({
+                    "check": "shopify_clearing",
+                    "title": "Shopify Clearing Balance",
+                    "status": "PASS" if balance == Decimal("0") else "WARN",
+                    "message": f"Clearing balance: {balance}" if balance != Decimal("0") else "Clearing balance is zero",
+                    "action": "Non-zero clearing balance may indicate unsettled orders or pending payouts. Check Shopify > Reconciliation." if balance != Decimal("0") else None,
+                    "detail": clearing_data,
+                })
+        except Exception:
+            pass  # Shopify module not active — skip silently
+
+        passed = sum(1 for c in checks if c["status"] == "PASS")
+        warned = sum(1 for c in checks if c["status"] == "WARN")
+        failed = sum(1 for c in checks if c["status"] == "FAIL")
+
+        return Response({
+            "checks": checks,
+            "summary": {
+                "passed": passed,
+                "warned": warned,
+                "failed": failed,
+                "total": len(checks),
+                "overall": "healthy" if failed == 0 and warned == 0 else ("attention" if failed == 0 else "unhealthy"),
+            },
+        })
+
+
+# =============================================================================
+# Month-End Close Wizard
+# =============================================================================
+
+class MonthEndCloseView(APIView):
+    """
+    GET /api/reports/month-end-close/?year=2026&month=4
+
+    Runs the same 8-point readiness check as pilot_readiness CLI command,
+    but as an API endpoint accessible from the UI.
+
+    Returns structured check results with actionable resolution hints
+    for each failure, so operators can self-serve without engineering.
+    """
+    permission_classes = [IsAuthenticated]
+
+    # Resolution hints per check type
+    RESOLUTION_HINTS = {
+        "shopify_store": {
+            "FAIL": "Connect your Shopify store via Settings > Shopify > Settings.",
+            "WARN": "Register webhooks via Settings > Shopify > Settings > Register Webhooks button.",
+        },
+        "account_mapping": {
+            "FAIL": "Map the missing accounts via Settings > Shopify > Settings > Account Mapping section.",
+            "WARN": "Optional mappings improve accuracy. Configure via Settings > Shopify > Settings.",
+        },
+        "projection_lag": {
+            "FAIL": "Projections are still processing events. Wait a few minutes and re-check. If the lag persists, go to Admin > Projections.",
+        },
+        "reconciliation": {
+            "FAIL": "Review payout discrepancies in Shopify > Reconciliation. Verify each unmatched payout.",
+            "WARN": "Some payouts are unverified. Click Verify on each payout in Shopify > Payouts.",
+        },
+        "clearing_balance": {
+            "FAIL": "Unexplained clearing balance. Check Shopify > Reconciliation for unmatched orders. Run Re-sync Orders if webhooks were missed.",
+            "WARN": "Non-zero clearing balance is expected if orders are awaiting payout settlement.",
+        },
+        "subledger_tieout": {
+            "WARN": "AR/AP control account balance doesn't match subledger totals. Review in Reports > Customer Balances and Vendor Balances.",
+        },
+        "trial_balance": {
+            "FAIL": "Trial balance is out of balance. This is a critical error. Review recent journal entries for issues.",
+        },
+        "draft_entries": {
+            "FAIL": "Post or delete all draft/incomplete entries before closing the period. Go to Journal Entries and filter by status Draft or Incomplete.",
+        },
+    }
+
+    def get(self, request):
+        from calendar import monthrange
+
+        from accounts.authz import resolve_actor
+        from accounts.rls import rls_bypass
+
+        actor = resolve_actor(request)
+        company = actor.company
+
+        year = request.query_params.get("year")
+        month = request.query_params.get("month")
+
+        if not year or not month:
+            return Response(
+                {"error": "year and month query parameters are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        year = int(year)
+        month = int(month)
+
+        if month < 1 or month > 12:
+            return Response(
+                {"error": "month must be between 1 and 12."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        _, last_day = monthrange(year, month)
+        date_from = date_type(year, month, 1)
+        date_to = date_type(year, month, last_day)
+
+        checks = []
+
+        with rls_bypass():
+            checks.append(self._check_store(company))
+            checks.append(self._check_account_mapping(company))
+            checks.append(self._check_projection_lag(company))
+            checks.append(self._check_reconciliation(company, date_from, date_to))
+            checks.append(self._check_clearing_balance(company))
+            checks.append(self._check_subledger_tieout(company))
+            checks.append(self._check_trial_balance(company, date_to))
+            checks.append(self._check_draft_entries(company, date_from, date_to))
+
+        # Add resolution hints
+        for check in checks:
+            hints = self.RESOLUTION_HINTS.get(check["check"], {})
+            check["resolution"] = hints.get(check["status"])
+
+        passed = sum(1 for c in checks if c["status"] == "PASS")
+        warned = sum(1 for c in checks if c["status"] == "WARN")
+        failed = sum(1 for c in checks if c["status"] == "FAIL")
+
+        # Find the current fiscal period for this month
+        from projections.models import FiscalPeriod
+        fiscal_period = FiscalPeriod.objects.filter(
+            company=company,
+            start_date__lte=date_to,
+            end_date__gte=date_from,
+            period_type=FiscalPeriod.PeriodType.NORMAL,
+        ).first()
+
+        return Response({
+            "company": company.slug,
+            "period": f"{year}-{month:02d}",
+            "date_from": str(date_from),
+            "date_to": str(date_to),
+            "fiscal_period": {
+                "fiscal_year": fiscal_period.fiscal_year,
+                "period": fiscal_period.period,
+                "status": fiscal_period.status,
+            } if fiscal_period else None,
+            "passed": passed,
+            "warned": warned,
+            "failed": failed,
+            "ready_to_close": failed == 0,
+            "checks": checks,
+        })
+
+    # ── Check methods (adapted from pilot_readiness.py) ──
+
+    def _check_store(self, company):
+        try:
+            from shopify_connector.models import ShopifyStore
+            stores = list(ShopifyStore.objects.filter(company=company, status=ShopifyStore.Status.ACTIVE))
+            if not stores:
+                return self._result("shopify_store", "Shopify Connection", "FAIL", "No active Shopify store connected.")
+            issues = [f"{s.shop_domain}: webhooks not registered" for s in stores if not s.webhooks_registered]
+            if issues:
+                return self._result("shopify_store", "Shopify Connection", "WARN", f"Store connected but: {'; '.join(issues)}", {"stores": len(stores)})
+            return self._result("shopify_store", "Shopify Connection", "PASS", f"{len(stores)} store(s) connected, webhooks OK.", {"stores": len(stores)})
+        except Exception:
+            return self._result("shopify_store", "Shopify Connection", "PASS", "Shopify module not active (skipped).")
+
+    def _check_account_mapping(self, company):
+        try:
+            from accounting.mappings import ModuleAccountMapping
+            required = ["SALES_REVENUE", "SHOPIFY_CLEARING", "CASH_BANK", "PAYMENT_PROCESSING_FEES"]
+            optional = ["SALES_TAX_PAYABLE", "SALES_DISCOUNTS", "SHIPPING_REVENUE", "CHARGEBACK_EXPENSE"]
+            missing_req = [r for r in required if not ModuleAccountMapping.get_account(company, "shopify_connector", r)]
+            missing_opt = [r for r in optional if not ModuleAccountMapping.get_account(company, "shopify_connector", r)]
+            if missing_req:
+                return self._result("account_mapping", "Account Mapping", "FAIL", f"Missing required: {', '.join(missing_req)}", {"missing_required": missing_req})
+            if missing_opt:
+                return self._result("account_mapping", "Account Mapping", "WARN", f"Optional missing: {', '.join(missing_opt)}", {"missing_optional": missing_opt})
+            return self._result("account_mapping", "Account Mapping", "PASS", "All account roles mapped.")
+        except Exception:
+            return self._result("account_mapping", "Account Mapping", "PASS", "Shopify module not active (skipped).")
+
+    def _check_projection_lag(self, company):
+        from projections.base import projection_registry
+        projections = projection_registry.all()
+        lagging = []
+        for proj in projections:
+            try:
+                lag = proj.get_lag(company)
+                if lag > 0:
+                    lagging.append({"name": proj.name, "lag": lag})
+            except Exception:
+                pass
+        if lagging:
+            return self._result("projection_lag", "Event Processing", "FAIL", f"{len(lagging)} projection(s) behind", {"lagging": lagging})
+        return self._result("projection_lag", "Event Processing", "PASS", f"All {len(projections)} projections caught up.")
+
+    def _check_reconciliation(self, company, date_from, date_to):
+        try:
+            from shopify_connector.reconciliation import reconciliation_summary
+            summary = reconciliation_summary(company, date_from, date_to)
+            if summary.total_payouts == 0:
+                return self._result("reconciliation", "Shopify Reconciliation", "WARN", "No payouts found in period.", {"total_payouts": 0})
+            detail = {"total_payouts": summary.total_payouts, "verified": summary.verified_payouts, "match_rate": str(summary.match_rate)}
+            if summary.discrepancy_payouts > 0:
+                return self._result("reconciliation", "Shopify Reconciliation", "FAIL", f"{summary.discrepancy_payouts} payout(s) with discrepancies", detail)
+            if summary.unverified_payouts > 0 or summary.match_rate < Decimal("90"):
+                return self._result("reconciliation", "Shopify Reconciliation", "WARN", f"{summary.verified_payouts}/{summary.total_payouts} verified, match rate {summary.match_rate}%", detail)
+            return self._result("reconciliation", "Shopify Reconciliation", "PASS", f"All {summary.total_payouts} payouts verified, {summary.match_rate}% match rate.", detail)
+        except Exception:
+            return self._result("reconciliation", "Shopify Reconciliation", "PASS", "Shopify module not active (skipped).")
+
+    def _check_clearing_balance(self, company):
+        try:
+            from shopify_connector.management.commands.check_clearing_balance import compute_clearing_balance
+            data = compute_clearing_balance(company)
+            if data is None:
+                return self._result("clearing_balance", "Clearing Balance", "WARN", "No clearing account mapped.")
+            balance = Decimal(data["balance"])
+            if balance == Decimal("0"):
+                return self._result("clearing_balance", "Clearing Balance", "PASS", "Clearing balance is zero.", data)
+            return self._result("clearing_balance", "Clearing Balance", "WARN", f"Balance: {balance}", data)
+        except Exception:
+            return self._result("clearing_balance", "Clearing Balance", "PASS", "Shopify module not active (skipped).")
+
+    def _check_subledger_tieout(self, company):
+        try:
+            from accounting.policies import validate_subledger_tieout
+            is_valid, errors = validate_subledger_tieout(company)
+            if not is_valid:
+                return self._result("subledger_tieout", "AR/AP Tie-Out", "WARN", f"Imbalance: {'; '.join(errors[:2])}", {"errors": errors})
+            return self._result("subledger_tieout", "AR/AP Tie-Out", "PASS", "AR/AP subledgers tie out to GL.")
+        except Exception as e:
+            return self._result("subledger_tieout", "AR/AP Tie-Out", "WARN", f"Check failed: {e}")
+
+    def _check_trial_balance(self, company, as_of_date):
+        from django.db.models import Sum
+        from accounting.models import JournalEntry, JournalLine
+        agg = JournalLine.objects.filter(company=company, entry__status=JournalEntry.Status.POSTED, entry__date__lte=as_of_date).aggregate(total_debit=Sum("debit"), total_credit=Sum("credit"))
+        total_debit = agg["total_debit"] or Decimal("0")
+        total_credit = agg["total_credit"] or Decimal("0")
+        diff = total_debit - total_credit
+        if diff != Decimal("0"):
+            return self._result("trial_balance", "Trial Balance", "FAIL", f"Out of balance by {diff}", {"total_debit": str(total_debit), "total_credit": str(total_credit)})
+        return self._result("trial_balance", "Trial Balance", "PASS", f"Balanced: DR=CR={total_debit}", {"total_debit": str(total_debit), "total_credit": str(total_credit)})
+
+    def _check_draft_entries(self, company, date_from, date_to):
+        from accounting.models import JournalEntry
+        drafts = JournalEntry.objects.filter(company=company, date__gte=date_from, date__lte=date_to, status__in=[JournalEntry.Status.DRAFT, JournalEntry.Status.INCOMPLETE]).count()
+        posted = JournalEntry.objects.filter(company=company, date__gte=date_from, date__lte=date_to, status=JournalEntry.Status.POSTED).count()
+        if drafts > 0:
+            return self._result("draft_entries", "Pending Entries", "FAIL", f"{drafts} draft/incomplete entries need attention", {"drafts": drafts, "posted": posted})
+        return self._result("draft_entries", "Pending Entries", "PASS", f"All {posted} entries posted.", {"posted": posted})
+
+    def _result(self, check, title, check_status, message, detail=None):
+        return {"check": check, "title": title, "status": check_status, "message": message, "detail": detail or {}}

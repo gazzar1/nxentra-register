@@ -90,6 +90,9 @@ from .views import (
     VendorStatementView,
     # Item profitability
     ItemProfitabilityView,
+    # System Health & Month-End Close
+    MonthEndCloseView,
+    SystemHealthView,
 )
 
 app_name = "projections"
@@ -308,6 +311,16 @@ urlpatterns = [
         "projection-status/",
         ProjectionStatusView.as_view(),
         name="projection-status",
+    ),
+    path(
+        "system-health/",
+        SystemHealthView.as_view(),
+        name="system-health",
+    ),
+    path(
+        "month-end-close/",
+        MonthEndCloseView.as_view(),
+        name="month-end-close",
     ),
 
     # Dashboard

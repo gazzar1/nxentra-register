@@ -127,7 +127,55 @@ export const reportsService = {
 
   itemProfitability: (params?: { date_from?: string; date_to?: string }) =>
     apiClient.get<ItemProfitabilityResponse>('/reports/item-profitability/', { params }),
+
+  systemHealth: () =>
+    apiClient.get<SystemHealthResponse>('/reports/system-health/'),
+
+  monthEndClose: (params: { year: number; month: number }) =>
+    apiClient.get<MonthEndCloseResponse>('/reports/month-end-close/', { params }),
 };
+
+export interface SystemHealthCheck {
+  check: string;
+  title: string;
+  status: 'PASS' | 'WARN' | 'FAIL';
+  message: string;
+  action: string | null;
+  detail: Record<string, unknown>;
+}
+
+export interface SystemHealthResponse {
+  checks: SystemHealthCheck[];
+  summary: {
+    passed: number;
+    warned: number;
+    failed: number;
+    total: number;
+    overall: 'healthy' | 'attention' | 'unhealthy';
+  };
+}
+
+export interface MonthEndCheck {
+  check: string;
+  title: string;
+  status: 'PASS' | 'WARN' | 'FAIL';
+  message: string;
+  resolution: string | null;
+  detail: Record<string, unknown>;
+}
+
+export interface MonthEndCloseResponse {
+  company: string;
+  period: string;
+  date_from: string;
+  date_to: string;
+  fiscal_period: { fiscal_year: number; period: number; status: string } | null;
+  passed: number;
+  warned: number;
+  failed: number;
+  ready_to_close: boolean;
+  checks: MonthEndCheck[];
+}
 
 export interface ItemProfitabilityRow {
   code: string;
