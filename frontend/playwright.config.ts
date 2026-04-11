@@ -1,7 +1,4 @@
 import { defineConfig } from "@playwright/test";
-import path from "path";
-
-const AUTH_FILE = path.join(__dirname, "e2e", ".auth", "user.json");
 
 export default defineConfig({
   testDir: "./e2e",
@@ -14,19 +11,9 @@ export default defineConfig({
     trace: "on-first-retry",
   },
   projects: [
-    // Setup: login once and save auth state
-    {
-      name: "setup",
-      testMatch: /auth\.setup\.ts/,
-    },
-    // All other tests reuse the saved auth state
     {
       name: "chromium",
-      use: {
-        browserName: "chromium",
-        storageState: AUTH_FILE,
-      },
-      dependencies: ["setup"],
+      use: { browserName: "chromium" },
       testIgnore: /auth\.setup\.ts/,
     },
   ],

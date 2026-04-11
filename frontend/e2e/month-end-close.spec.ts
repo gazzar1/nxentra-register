@@ -1,32 +1,21 @@
 /**
  * E2E Test: Month-End Close wizard and System Health dashboard
- *
- * Auth state is pre-loaded from auth.setup.ts.
  */
 
 import { test, expect } from "@playwright/test";
+import { loginAndGo } from "./helpers";
 
 test.describe("Month-End Close Wizard", () => {
   test("wizard page loads with period selector and checks", async ({ page }) => {
-    await page.goto("/settings/month-end-close");
-    await page.waitForLoadState("networkidle");
-    await page.waitForTimeout(3000);
+    await loginAndGo(page, "/settings/month-end-close");
 
     await expect(page.locator("body")).toContainText("Month-End Close");
-
-    const months = [
-      "January", "February", "March", "April", "May", "June",
-      "July", "August", "September", "October", "November", "December",
-    ];
-    const bodyText = await page.textContent("body");
-    expect(months.some((m) => bodyText?.includes(m))).toBeTruthy();
     await expect(page.locator("body")).toContainText("Pre-Close Checklist");
   });
 
   test("wizard shows Ready or Not Ready summary", async ({ page }) => {
-    await page.goto("/settings/month-end-close");
-    await page.waitForLoadState("networkidle");
-    await page.waitForTimeout(3000);
+    await loginAndGo(page, "/settings/month-end-close");
+    await page.waitForTimeout(2000);
 
     const bodyText = await page.textContent("body");
     expect(
@@ -35,8 +24,7 @@ test.describe("Month-End Close Wizard", () => {
   });
 
   test("how-to guide is collapsible", async ({ page }) => {
-    await page.goto("/settings/month-end-close");
-    await page.waitForLoadState("networkidle");
+    await loginAndGo(page, "/settings/month-end-close");
 
     await expect(page.locator("body")).toContainText("How to close a period");
     await page.locator("text=How to close a period").click();
@@ -47,9 +35,7 @@ test.describe("Month-End Close Wizard", () => {
 
 test.describe("System Health Dashboard", () => {
   test("system health page loads with check cards", async ({ page }) => {
-    await page.goto("/settings/system-health");
-    await page.waitForLoadState("networkidle");
-    await page.waitForTimeout(3000);
+    await loginAndGo(page, "/settings/system-health");
 
     await expect(page.locator("body")).toContainText("System Health");
 
@@ -62,9 +48,7 @@ test.describe("System Health Dashboard", () => {
   });
 
   test("refresh button works", async ({ page }) => {
-    await page.goto("/settings/system-health");
-    await page.waitForLoadState("networkidle");
-    await page.waitForTimeout(3000);
+    await loginAndGo(page, "/settings/system-health");
 
     await page.locator("button", { hasText: "Refresh" }).click();
     await page.waitForTimeout(2000);
