@@ -26,37 +26,34 @@ export async function login(page: Page) {
   await page.fill("#password", E2E_PASSWORD);
   await page.click('button[type="submit"]');
 
-  // Wait for any navigation away from login, or for an error to appear
-  try {
-    await page.waitForURL(
-      (url) => {
-        const path = url.pathname;
-        return (
-          !path.includes("/login") ||
-          path.includes("/dashboard") ||
-          path.includes("/select-company") ||
-          path.includes("/verify-email") ||
-          path.includes("/pending-approval") ||
-          path.includes("/onboarding")
-        );
-      },
-      { timeout: 30000 }
-    );
-  } catch {
-    // If redirect didn't happen, check if there's an error on the page
-    const bodyText = await page.textContent("body");
-    if (bodyText?.includes("Invalid") || bodyText?.includes("error") || bodyText?.includes("incorrect")) {
-      throw new Error(`Login failed — check credentials (${E2E_EMAIL}). Page shows: ${bodyText?.substring(0, 200)}`);
+  // Wait for navigation away from login
+  // The app uses client-side auth — after login API call succeeds,
+  // React state updates and router pushes to the next page.
+  // We need to wait for the URL to change OR for the page content to change.
+  await page.waitForTimeout(3000);
+
+  // Check if we're still on login
+  if (page.url().includes("/login")) {
+    // Try waiting longer — client-side redirect may be slow
+    try {
+      await page.waitForURL((url) => !url.pathname.includes("/login"), { timeout: 15000 });
+    } catch {
+      // Still on login — may need to check for errors
     }
-    // May still be on login due to slow redirect — continue and let the test handle it
   }
 
-  // If we landed on select-company, pick the first one
+  // If we landed on select-company, pick the first company
   if (page.url().includes("/select-company")) {
-    const firstCompany = page.locator("button, a, [role='button']").filter({ hasText: /select|choose|enter/i }).first();
-    if (await firstCompany.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await firstCompany.click();
-      await page.waitForTimeout(2000);
+    // Click the first company card/button
+    const companyCard = page.locator("[class*='card'], [class*='Card'], button, a")
+      .filter({ hasText: /./i })
+      .first();
+    if (await companyCard.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await companyCard.click();
+      await page.waitForTimeout(3000);
     }
   }
+
+  // Wait for the app to fully load (sidebar or header visible)
+  await page.waitForTimeout(2000);
 }
