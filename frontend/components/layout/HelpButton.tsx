@@ -84,7 +84,7 @@ export function HelpButton() {
         {/* Quick Contact */}
         <div className="flex gap-3 pb-2">
           <a
-            href="https://wa.me/201000000000?text=Hi%2C%20I%20need%20help%20with%20Nxentra"
+            href="https://wa.me/20122737369?text=Hi%2C%20I%20need%20help%20with%20Nxentra"
             target="_blank"
             rel="noopener noreferrer"
             className="flex-1 flex items-center gap-2 px-3 py-2.5 rounded-lg border border-green-200 bg-green-50 dark:bg-green-950/30 dark:border-green-800 hover:bg-green-100 dark:hover:bg-green-950/50 transition-colors"
