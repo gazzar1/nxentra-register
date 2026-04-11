@@ -1,9 +1,9 @@
 /**
  * Shared E2E test helpers.
  *
- * Nxentra uses HttpOnly cookies for auth — these can't be saved via
- * Playwright's storageState. Each test must login within its own
- * browser context.
+ * Nxentra uses HttpOnly cookies for auth. After login, we must navigate
+ * using client-side routing (window.location) instead of page.goto()
+ * to preserve cookies within the same browsing context.
  */
 
 import { type Page } from "@playwright/test";
@@ -12,8 +12,7 @@ const E2E_EMAIL = process.env.E2E_EMAIL || "demo@nxentra.com";
 const E2E_PASSWORD = process.env.E2E_PASSWORD || "demo1234";
 
 /**
- * Login and navigate to a target page.
- * Combines login + navigation in one step to avoid the HttpOnly cookie issue.
+ * Login and navigate to a target page using client-side navigation.
  */
 export async function loginAndGo(page: Page, targetPath: string) {
   // Login
@@ -23,7 +22,7 @@ export async function loginAndGo(page: Page, targetPath: string) {
   await page.fill("#password", E2E_PASSWORD);
   await page.click('button[type="submit"]');
 
-  // Wait for redirect
+  // Wait for redirect away from login
   await page.waitForURL((url) => !url.pathname.includes("/login"), {
     timeout: 30000,
   });
@@ -38,8 +37,11 @@ export async function loginAndGo(page: Page, targetPath: string) {
     await page.waitForTimeout(2000);
   }
 
-  // Now navigate to target — cookies are set in this context
-  await page.goto(targetPath);
+  // Navigate using client-side routing to preserve cookies
+  await page.evaluate((path) => {
+    window.location.href = path;
+  }, targetPath);
+
   await page.waitForLoadState("networkidle");
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(3000);
 }
