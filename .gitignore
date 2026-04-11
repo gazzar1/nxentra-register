@@ -37,3 +37,8 @@ backend/python
 
 # Media uploads (if any)
 backend/media/
+
+# Playwright
+frontend/e2e/.auth/
+frontend/test-results/
+frontend/playwright-report/
