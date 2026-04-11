@@ -9,6 +9,12 @@ export default defineConfig({
     headless: true,
     screenshot: "only-on-failure",
     trace: "on-first-retry",
+    // Required for production HTTPS with HttpOnly Secure cookies
+    ignoreHTTPSErrors: true,
+    // Preserve cookies and auth state across navigations within a test
+    contextOptions: {
+      ignoreHTTPSErrors: true,
+    },
   },
   projects: [
     {
