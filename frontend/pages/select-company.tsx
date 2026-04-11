@@ -3,7 +3,7 @@ import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useRouter } from "next/router";
 import { useState, useEffect } from "react";
 import { Building2, ChevronRight, LogOut } from "lucide-react";
-import axios from "axios";
+import apiClient from "@/lib/api-client";
 import { AuthLayout } from "@/components/AuthLayout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -106,8 +106,8 @@ export default function SelectCompanyPage() {
           return;
         }
 
-        const response = await axios.post(
-          `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api"}/auth/login/`,
+        const response = await apiClient.post(
+          "/auth/login/",
           { email, password, company_id: companyId }
         );
 
