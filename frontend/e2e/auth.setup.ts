@@ -1,38 +1,43 @@
 /**
- * Shared authentication setup for E2E tests.
+ * Auth setup — runs once before all tests.
  *
- * Logs in with demo credentials and saves the auth state
- * so subsequent tests can reuse the session.
- *
- * Prerequisites:
- * - Backend running at localhost:8000
- * - Frontend running at localhost:3000
- * - Demo company seeded (manage.py seed_demo_company)
+ * Logs in and saves browser state (cookies + localStorage) so that
+ * all subsequent tests start already authenticated.
  */
 
 import { test as setup, expect } from "@playwright/test";
 import path from "path";
 
 const AUTH_FILE = path.join(__dirname, ".auth", "user.json");
+const E2E_EMAIL = process.env.E2E_EMAIL || "demo@nxentra.com";
+const E2E_PASSWORD = process.env.E2E_PASSWORD || "demo1234";
 
 setup("authenticate", async ({ page }) => {
-  // Go to login page
   await page.goto("/login");
+  await page.waitForLoadState("networkidle");
 
-  // Fill credentials
-  await page.fill("#email", "demo@nxentra.com");
-  await page.fill("#password", "demo1234");
-
-  // Submit
+  await page.fill("#email", E2E_EMAIL);
+  await page.fill("#password", E2E_PASSWORD);
   await page.click('button[type="submit"]');
 
-  // Wait for redirect to dashboard or company selector
+  // Wait for redirect away from login
   await page.waitForURL((url) => !url.pathname.includes("/login"), {
-    timeout: 15000,
+    timeout: 30000,
   });
 
-  // Save auth state
+  // If on select-company, wait and pick the first one
+  if (page.url().includes("/select-company")) {
+    await page.waitForTimeout(2000);
+    const card = page.locator("button, a, [role='button']").first();
+    if (await card.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await card.click();
+      await page.waitForTimeout(3000);
+    }
+  }
+
+  // Wait for app to fully load
+  await page.waitForTimeout(3000);
+
+  // Save auth state (cookies + localStorage)
   await page.context().storageState({ path: AUTH_FILE });
 });
-
-export { AUTH_FILE };
