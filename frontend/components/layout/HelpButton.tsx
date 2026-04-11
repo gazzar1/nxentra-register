@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { HelpCircle, Send, MessageCircle, BookOpen, ExternalLink } from "lucide-react";
+import { HelpCircle, Send, MessageCircle, BookOpen, ExternalLink, Phone } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter,
@@ -39,7 +39,7 @@ export function HelpButton() {
         `From: ${user?.name || ""} (${user?.email || ""})\n` +
         `Subject: ${subject}\n\n${message}`
       );
-      const mailto = `mailto:support@nxentra.com?subject=${encodeURIComponent(`[${category}] ${subject}`)}&body=${body}`;
+      const mailto = `mailto:admin@nxentra.com?subject=${encodeURIComponent(`[${category}] ${subject}`)}&body=${body}`;
       window.open(mailto, "_blank");
 
       toast({ title: "Support request opened", description: "Your email client should open with the message. Send it to reach our team." });
@@ -80,6 +80,32 @@ export function HelpButton() {
             Ask a question, report an issue, or request a feature.
           </DialogDescription>
         </DialogHeader>
+
+        {/* Quick Contact */}
+        <div className="flex gap-3 pb-2">
+          <a
+            href="https://wa.me/201000000000?text=Hi%2C%20I%20need%20help%20with%20Nxentra"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex-1 flex items-center gap-2 px-3 py-2.5 rounded-lg border border-green-200 bg-green-50 dark:bg-green-950/30 dark:border-green-800 hover:bg-green-100 dark:hover:bg-green-950/50 transition-colors"
+          >
+            <Phone className="h-4 w-4 text-green-600" />
+            <div>
+              <p className="text-sm font-medium text-green-800 dark:text-green-300">WhatsApp</p>
+              <p className="text-xs text-green-600 dark:text-green-400">Fastest response</p>
+            </div>
+          </a>
+          <a
+            href="mailto:admin@nxentra.com"
+            className="flex-1 flex items-center gap-2 px-3 py-2.5 rounded-lg border border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-800 hover:bg-blue-100 dark:hover:bg-blue-950/50 transition-colors"
+          >
+            <Send className="h-4 w-4 text-blue-600" />
+            <div>
+              <p className="text-sm font-medium text-blue-800 dark:text-blue-300">Email</p>
+              <p className="text-xs text-blue-600 dark:text-blue-400">admin@nxentra.com</p>
+            </div>
+          </a>
+        </div>
 
         {/* Quick Links */}
         <div className="flex gap-2 pb-2">

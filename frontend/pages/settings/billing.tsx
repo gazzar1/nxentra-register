@@ -91,7 +91,7 @@ export default function BillingPage() {
                   directly shapes what Nxentra costs. If you have thoughts on what this is worth to your
                   business, we&apos;d love to hear them.
                 </p>
-                <a href="mailto:support@nxentra.com?subject=Pricing Feedback">
+                <a href="mailto:admin@nxentra.com?subject=Pricing Feedback">
                   <Button variant="outline" size="sm" className="mt-3">
                     Share Pricing Feedback
                   </Button>
