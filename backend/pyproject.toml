@@ -118,15 +118,27 @@ exclude = [
 # Per-module overrides for well-typed modules (stricter checking)
 [[tool.mypy.overrides]]
 module = [
+    # Core event system
     "events.emitter",
     "events.types",
     "events.models",
+    # Projection engine
     "projections.base",
     "projections.write_barrier",
+    "projections.models",
+    # Tenant isolation
     "tenant.context",
     "tenant.router",
+    # Auth & access control
     "accounts.authz",
     "accounts.middleware",
+    "accounts.email_service",
+    "accounts.throttles",
+    # Accounting domain (financial-critical)
+    "accounting.policies",
+    "accounting.behaviors",
+    "accounting.validation",
+    # Infrastructure
     "nxentra_backend.pagination",
 ]
 check_untyped_defs = true

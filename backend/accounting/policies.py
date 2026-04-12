@@ -46,12 +46,14 @@ logger = logging.getLogger("nxentra.accounting.policies")
 
 class PolicyViolation(Exception):
     """Raised when a business policy is violated."""
+
     pass
 
 
 # =============================================================================
 # Tenant Boundary Policies
 # =============================================================================
+
 
 def check_tenant_boundary(actor, entity) -> bool:
     """
@@ -62,7 +64,7 @@ def check_tenant_boundary(actor, entity) -> bool:
     if entity_company_id is None:
         company = getattr(entity, "company", None)
         entity_company_id = getattr(company, "id", None) if company else None
-    return entity_company_id == actor.company.id
+    return bool(entity_company_id == actor.company.id)
 
 
 def assert_tenant_boundary(actor, entity) -> None:
@@ -75,14 +77,15 @@ def assert_tenant_boundary(actor, entity) -> None:
 # Account Policies
 # =============================================================================
 
+
 def can_delete_account(actor, account) -> tuple[bool, str]:
     """
     Check if an account can be deleted.
-    
+
     Returns:
         (True, "") if allowed
         (False, reason) if not allowed
-    
+
     Rules:
     - Must belong to actor's company
     - Cannot be LOCKED (has transactions)
@@ -117,7 +120,7 @@ def can_modify_account(actor, account) -> tuple[bool, str]:
 def can_change_account_code(actor, account) -> tuple[bool, str]:
     """
     Check if account code can be changed.
-    
+
     Rules:
     - Cannot change code if account has transactions (LOCKED)
     """
@@ -133,7 +136,7 @@ def can_change_account_code(actor, account) -> tuple[bool, str]:
 def can_change_account_type(actor, account) -> tuple[bool, str]:
     """
     Check if account type can be changed.
-    
+
     Rules:
     - Cannot change type if account has transactions (LOCKED)
     """
@@ -203,8 +206,7 @@ def validate_line_counterparty(
         elif account.counterparty_kind == "VENDOR":
             if not vendor_public_id:
                 return False, (
-                    f"Account {account.code} (AP control) requires a vendor. "
-                    "Provide vendor_public_id for this line."
+                    f"Account {account.code} (AP control) requires a vendor. Provide vendor_public_id for this line."
                 )
 
     # If account doesn't require counterparty but one was provided, that's OK
@@ -213,7 +215,9 @@ def validate_line_counterparty(
     return True, ""
 
 
-def validate_counterparty_exists(company, customer_public_id: str | None, vendor_public_id: str | None) -> tuple[bool, str, dict]:
+def validate_counterparty_exists(
+    company, customer_public_id: str | None, vendor_public_id: str | None
+) -> tuple[bool, str, dict]:
     """
     Validate that the counterparty exists and belongs to the company.
 
@@ -253,10 +257,11 @@ def validate_counterparty_exists(company, customer_public_id: str | None, vendor
 # Journal Entry Policies
 # =============================================================================
 
+
 def can_edit_entry(actor, entry) -> tuple[bool, str]:
     """
     Check if a journal entry can be edited.
-    
+
     Rules:
     - Must belong to actor's company
     - Must be in INCOMPLETE or DRAFT status
@@ -279,7 +284,7 @@ def can_edit_entry(actor, entry) -> tuple[bool, str]:
 def can_delete_entry(actor, entry) -> tuple[bool, str]:
     """
     Check if a journal entry can be deleted.
-    
+
     Rules:
     - Must belong to actor's company
     - Must be in INCOMPLETE or DRAFT status
@@ -335,10 +340,15 @@ def can_post_entry(actor, entry) -> tuple[bool, str]:
     # Enforce period_type + kind invariants
     if entry_period is not None:
         from projections.models import FiscalPeriod
-        fiscal_period = FiscalPeriod.objects.filter(
-            company=actor.company,
-            period=entry_period,
-        ).order_by("-fiscal_year").first()
+
+        fiscal_period = (
+            FiscalPeriod.objects.filter(
+                company=actor.company,
+                period=entry_period,
+            )
+            .order_by("-fiscal_year")
+            .first()
+        )
 
         if fiscal_period and fiscal_period.period_type == FiscalPeriod.PeriodType.ADJUSTMENT:
             # Period 13 (ADJUSTMENT): only ADJUSTMENT and CLOSING entries allowed
@@ -359,7 +369,7 @@ def can_post_entry(actor, entry) -> tuple[bool, str]:
 def can_reverse_entry(actor, entry) -> tuple[bool, str]:
     """
     Check if a journal entry can be reversed.
-    
+
     Rules:
     - Must belong to actor's company
     - Must be in POSTED status
@@ -409,6 +419,7 @@ def can_save_entry_complete(actor, entry) -> tuple[bool, str]:
 # =============================================================================
 # Journal Entry Status Transition Policies (Workflow Rules)
 # =============================================================================
+
 
 def validate_status_transition(old_status, new_status) -> tuple[bool, str]:
     """
@@ -472,10 +483,7 @@ def can_modify_entry_header(entry, changes: dict) -> tuple[bool, str]:
         modified_immutable = set(changes.keys()) & immutable_fields
 
         if modified_immutable:
-            return False, (
-                f"Cannot modify {', '.join(modified_immutable)} after posting. "
-                "Reverse the entry instead."
-            )
+            return False, (f"Cannot modify {', '.join(modified_immutable)} after posting. Reverse the entry instead.")
 
     return True, ""
 
@@ -514,10 +522,11 @@ def can_modify_entry_lines(entry) -> tuple[bool, str]:
 # Analysis Dimension Policies
 # =============================================================================
 
+
 def can_delete_dimension(actor, dimension) -> tuple[bool, str]:
     """
     Check if an analysis dimension can be deleted.
-    
+
     Rules:
     - Must belong to actor's company
     - Cannot have values that are used in posted entries
@@ -539,6 +548,7 @@ def can_delete_dimension(actor, dimension) -> tuple[bool, str]:
 
     # Check if used in account defaults
     from accounting.models import AccountAnalysisDefault
+
     if AccountAnalysisDefault.objects.filter(dimension=dimension).exists():
         return False, "Cannot delete dimension that has account defaults. Remove defaults first."
 
@@ -548,7 +558,7 @@ def can_delete_dimension(actor, dimension) -> tuple[bool, str]:
 def can_delete_dimension_value(actor, value) -> tuple[bool, str]:
     """
     Check if an analysis dimension value can be deleted.
-    
+
     Rules:
     - Must belong to actor's company
     - Cannot be used in posted entries
@@ -575,6 +585,7 @@ def can_delete_dimension_value(actor, value) -> tuple[bool, str]:
 
     # Check if used as account default
     from accounting.models import AccountAnalysisDefault
+
     if AccountAnalysisDefault.objects.filter(default_value=value).exists():
         return False, "Cannot delete value that is set as account default."
 
@@ -598,6 +609,7 @@ def can_modify_dimension_value(actor, value) -> tuple[bool, str]:
 # =============================================================================
 # Period Policies (for future period closing)
 # =============================================================================
+
 
 def can_post_to_period(actor, target_date, period=None, fiscal_year=None) -> tuple[bool, str]:
     """
@@ -680,9 +692,7 @@ def can_post_to_period(actor, target_date, period=None, fiscal_year=None) -> tup
     if fy and fy.status == FiscalYearModel.Status.CLOSED:
         return False, f"Fiscal year {fiscal_period.fiscal_year} is closed."
 
-    aggregate = load_fiscal_period_aggregate(
-        actor.company, fiscal_period.fiscal_year, fiscal_period.period
-    )
+    aggregate = load_fiscal_period_aggregate(actor.company, fiscal_period.fiscal_year, fiscal_period.period)
     if aggregate.closed:
         return False, f"Fiscal period {fiscal_period.period} is closed."
 
@@ -753,6 +763,7 @@ def can_post_operational_document(actor, target_date) -> tuple[bool, str]:
 # Assertion Helpers (raise on failure)
 # =============================================================================
 
+
 def assert_can_post_entry(actor, entry) -> None:
     """Assert entry can be posted, raise PolicyViolation if not."""
     allowed, reason = can_post_entry(actor, entry)
@@ -805,6 +816,7 @@ def assert_can_delete_dimension_value(actor, value) -> None:
 # =============================================================================
 # Subledger Tie-Out Validation
 # =============================================================================
+
 
 def validate_subledger_tieout(company) -> tuple[bool, list[str]]:
     """

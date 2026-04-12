@@ -36,14 +36,14 @@ class ProjectionOwnedModel(models.Model):
 class AccountBalance(ProjectionOwnedModel):
     """
     Materialized account balance.
-    
+
     This is the single source of truth for "what is the balance of account X?"
     It is computed by consuming journal_entry.posted and journal_entry.reversed events.
-    
+
     The balance follows accounting conventions:
     - For DEBIT-normal accounts (Assets, Expenses): balance = debits - credits
     - For CREDIT-normal accounts (Liabilities, Equity, Revenue): balance = credits - debits
-    
+
     Attributes:
         company: Tenant isolation
         account: The account this balance belongs to
@@ -194,10 +194,7 @@ class AccountBalance(ProjectionOwnedModel):
                 expected_credit += credit
                 events_processed += 1
 
-        is_valid = (
-            self.debit_total == expected_debit and
-            self.credit_total == expected_credit
-        )
+        is_valid = self.debit_total == expected_debit and self.credit_total == expected_credit
 
         return {
             "is_valid": is_valid,
@@ -1119,6 +1116,7 @@ class ProjectionStatus(models.Model):
     def mark_rebuild_started(self, total_events: int, requested_by=None):
         """Mark projection as rebuilding."""
         from django.utils import timezone
+
         self.status = self.Status.REBUILDING
         self.events_total = total_events
         self.events_processed = 0
@@ -1135,16 +1133,15 @@ class ProjectionStatus(models.Model):
         self.events_processed = events_processed
         self.save(update_fields=["events_processed", "updated_at"])
 
-    def mark_rebuild_completed(self, last_event_sequence: int = None):
+    def mark_rebuild_completed(self, last_event_sequence: int | None = None):
         """Mark projection as ready after successful rebuild."""
         from django.utils import timezone
+
         now = timezone.now()
         self.status = self.Status.READY
         self.last_rebuild_completed_at = now
         if self.last_rebuild_started_at:
-            self.last_rebuild_duration_seconds = (
-                now - self.last_rebuild_started_at
-            ).total_seconds()
+            self.last_rebuild_duration_seconds = (now - self.last_rebuild_started_at).total_seconds()
         if last_event_sequence is not None:
             self.last_event_sequence = last_event_sequence
         self.save()
