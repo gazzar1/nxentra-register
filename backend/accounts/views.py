@@ -296,6 +296,16 @@ class LoginView(TokenObtainPairView):
                 )
 
             # =============================================================
+            # VERIFY PASSWORD before revealing any account information
+            # =============================================================
+            password = request.data.get("password", "")
+            if not user.check_password(password):
+                return Response(
+                    {"detail": "No active account found with the given credentials"},
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+
+            # =============================================================
             # STRICT TENANT POLICY: company_id REQUIRED for token issuance
             # =============================================================
             memberships = list(CompanyMembership.objects.filter(user=user, is_active=True).select_related("company"))
