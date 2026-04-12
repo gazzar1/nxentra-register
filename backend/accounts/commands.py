@@ -341,22 +341,21 @@ def register_signup(
         user = User.objects.get(public_id=user_public_id)
         with auth_writes_allowed():
             user.set_password(password)
-            if tos_accepted:
+            user.save(update_fields=["password"])
+        if tos_accepted:
+            with command_writes_allowed():
                 user.tos_accepted_at = timezone.now()
                 user.tos_version = "1.0"
                 user.privacy_accepted_at = timezone.now()
                 user.privacy_version = "1.0"
                 user.save(
                     update_fields=[
-                        "password",
                         "tos_accepted_at",
                         "tos_version",
                         "privacy_accepted_at",
                         "privacy_version",
                     ]
                 )
-            else:
-                user.save(update_fields=["password"])
         emit_event_no_actor(
             company=company,
             user=user,

@@ -332,6 +332,10 @@ class User(ProjectionWriteGuard, AbstractUser):
         "approved_at",
         "approved_by",
         "approved_by_id",
+        "tos_accepted_at",
+        "tos_version",
+        "privacy_accepted_at",
+        "privacy_version",
     }
 
     # Fields that Django's auth system updates automatically (e.g., login signals)
