@@ -19,6 +19,7 @@ import {
   type CoaTemplate,
   type OnboardingSetupPayload,
 } from "@/services/onboarding.service";
+import { shopifyService } from "@/services/shopify.service";
 import {
   Building2,
   Calendar,
@@ -118,6 +119,12 @@ export default function OnboardingSetupPage() {
   // Step: Modules (general path only)
   const [selectedModules, setSelectedModules] = useState<Set<string>>(new Set());
 
+  // Step: Shopify connection
+  const [shopifyDomain, setShopifyDomain] = useState("");
+  const [shopifyConnecting, setShopifyConnecting] = useState(false);
+  const [shopifyConnected, setShopifyConnected] = useState(false);
+  const [shopifyStoreName, setShopifyStoreName] = useState("");
+
   const steps = businessType === "shopify" ? STEPS_SHOPIFY : STEPS_GENERAL;
   const lastStepIndex = steps.length - 1;
   const submitStepIndex = lastStepIndex - 1; // Step before "Ready"
@@ -144,7 +151,29 @@ export default function OnboardingSetupPage() {
       .catch(() => {
         setLoading(false);
       });
-  }, []);
+
+    // Check if Shopify store is already connected (e.g. returning from OAuth)
+    shopifyService.getStore().then(({ data }) => {
+      if (data && "connected" in data && !data.connected) return;
+      if (data && "shop_domain" in data) {
+        const store = data as { shop_domain: string; status: string };
+        if (store.status === "ACTIVE") {
+          setShopifyConnected(true);
+          setShopifyStoreName(store.shop_domain);
+        }
+      }
+    }).catch(() => { /* no store yet */ });
+
+    // If returning from Shopify OAuth, jump to the shopify step
+    if (router.query.shopify_connected === "true") {
+      setBusinessType("shopify");
+      const shopifyStepIdx = STEPS_SHOPIFY.findIndex((s) => s.key === "shopify");
+      if (shopifyStepIdx >= 0) setStep(shopifyStepIdx);
+      setShopifyConnected(true);
+      toast({ title: "Shopify store connected successfully!" });
+      router.replace("/onboarding/setup", undefined, { shallow: true });
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const toggleModule = (key: string) => {
     setSelectedModules((prev) => {
@@ -354,7 +383,29 @@ export default function OnboardingSetupPage() {
               />
             )}
             {currentStepKey === "shopify" && (
-              <StepShopifySetup />
+              <StepShopifySetup
+                domain={shopifyDomain}
+                setDomain={setShopifyDomain}
+                connecting={shopifyConnecting}
+                connected={shopifyConnected}
+                storeName={shopifyStoreName}
+                onConnect={async () => {
+                  if (!shopifyDomain.trim()) {
+                    toast({ title: "Please enter your Shopify store domain.", variant: "destructive" });
+                    return;
+                  }
+                  setShopifyConnecting(true);
+                  try {
+                    const { data } = await shopifyService.install(shopifyDomain.trim());
+                    // Save return point so we come back to onboarding after OAuth
+                    sessionStorage.setItem("shopify_return_to", "onboarding");
+                    window.location.href = data.url;
+                  } catch {
+                    toast({ title: "Failed to connect. Check your store domain.", variant: "destructive" });
+                    setShopifyConnecting(false);
+                  }
+                }}
+              />
             )}
             {currentStepKey === "ready" && (
               <StepReady
@@ -491,32 +542,81 @@ function StepBusinessType({
   );
 }
 
-function StepShopifySetup() {
+function StepShopifySetup({
+  domain,
+  setDomain,
+  connecting,
+  connected,
+  storeName,
+  onConnect,
+}: {
+  domain: string;
+  setDomain: (v: string) => void;
+  connecting: boolean;
+  connected: boolean;
+  storeName: string;
+  onConnect: () => void;
+}) {
   return (
     <div>
-      <h2 className="text-xl font-semibold mb-1">Shopify Setup</h2>
+      <h2 className="text-xl font-semibold mb-1">Connect Your Shopify Store</h2>
       <p className="text-sm text-muted-foreground mb-6">
-        Connect your Shopify store to start reconciling orders, payouts, and fees
-        automatically.
+        Link your store to automatically track orders, payouts, refunds, and fees.
       </p>
 
-      <div className="rounded-xl border-2 border-dashed border-border p-8 text-center">
-        <div className="flex justify-center mb-4">
-          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-accent/10">
-            <Store className="h-7 w-7 text-accent" />
+      {connected ? (
+        <div className="rounded-xl border-2 border-green-500/30 bg-green-500/5 p-8 text-center">
+          <div className="flex justify-center mb-4">
+            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-green-500/10">
+              <Check className="h-7 w-7 text-green-500" />
+            </div>
+          </div>
+          <h3 className="font-medium mb-2">Store Connected</h3>
+          <p className="text-sm text-muted-foreground font-mono">{storeName}</p>
+          <p className="text-sm text-muted-foreground mt-2">
+            Your store is linked. Click &quot;Finish Setup&quot; to complete onboarding.
+          </p>
+        </div>
+      ) : (
+        <div className="rounded-xl border-2 border-dashed border-border p-8">
+          <div className="flex justify-center mb-4">
+            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-accent/10">
+              <Store className="h-7 w-7 text-accent" />
+            </div>
+          </div>
+          <div className="max-w-md mx-auto space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="shopify-domain">Store Domain</Label>
+              <Input
+                id="shopify-domain"
+                value={domain}
+                onChange={(e) => setDomain(e.target.value)}
+                placeholder="my-store.myshopify.com"
+              />
+              <p className="text-xs text-muted-foreground">
+                Enter your store name or full .myshopify.com domain
+              </p>
+            </div>
+            <Button onClick={onConnect} disabled={connecting} className="w-full">
+              {connecting ? (
+                <>
+                  <ArrowRight className="me-2 h-4 w-4 animate-spin" />
+                  Connecting...
+                </>
+              ) : (
+                <>
+                  <Link className="me-2 h-4 w-4" />
+                  Connect to Shopify
+                </>
+              )}
+            </Button>
+            <p className="text-xs text-muted-foreground text-center">
+              You&apos;ll be redirected to Shopify to authorize the connection,
+              then brought back here automatically.
+            </p>
           </div>
         </div>
-        <h3 className="font-medium mb-2">Connect your Shopify store</h3>
-        <p className="text-sm text-muted-foreground mb-4 max-w-md mx-auto">
-          After setup, go to Settings &rarr; Integrations to connect your store.
-          We&apos;ll automatically create accounting entries for your orders, payouts,
-          refunds, and fees.
-        </p>
-        <p className="text-xs text-muted-foreground">
-          Your Shopify clearing account, revenue accounts, and fee accounts have been
-          pre-configured. Click &quot;Finish Setup&quot; to continue.
-        </p>
-      </div>
+      )}
 
       <div className="mt-6 rounded-lg bg-muted/50 p-4">
         <h4 className="text-sm font-medium mb-2">What&apos;s been configured for you:</h4>
@@ -539,6 +639,12 @@ function StepShopifySetup() {
           </li>
         </ul>
       </div>
+
+      {!connected && (
+        <p className="text-xs text-muted-foreground mt-4 text-center">
+          You can also skip this and connect later from Settings &rarr; Integrations.
+        </p>
+      )}
     </div>
   );
 }

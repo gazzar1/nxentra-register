@@ -107,6 +107,13 @@ export default function ShopifySettingsPage() {
 
     // Check for OAuth callback result
     if (router.query.connected === "true") {
+      // If user came from onboarding, redirect back there
+      const returnTo = sessionStorage.getItem("shopify_return_to");
+      if (returnTo === "onboarding") {
+        sessionStorage.removeItem("shopify_return_to");
+        router.replace("/onboarding/setup?shopify_connected=true");
+        return;
+      }
       toast({ title: "Shopify store connected successfully!" });
       router.replace("/shopify/settings", undefined, { shallow: true });
     } else if (router.query.error) {
