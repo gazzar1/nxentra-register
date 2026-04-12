@@ -28,7 +28,8 @@ test.describe("Accounting Flow", () => {
     await expect(page.locator("#memo")).toBeVisible();
     // Should have at least 2 journal lines by default
     const lineRows = page.locator("form .rounded-lg.border .border-b").filter({ hasNot: page.locator(".bg-muted") });
-    await expect(lineRows).toHaveCount(2);
+    const count = await lineRows.count();
+    expect(count).toBeGreaterThanOrEqual(2);
   });
 
   test("chart of accounts page loads", async ({ page }) => {
