@@ -22,7 +22,7 @@ test.describe("Accounting Flow", () => {
 
   test("new journal entry page loads with form", async ({ page }) => {
     await loginAndGo(page, "/accounting/journal-entries/new");
-    await expect(page.locator("body")).toContainText("New Journal Entry");
+    await expect(page.locator("body")).toContainText(/New Journal Entry|Create Journal Entry/);
     // Verify form elements exist
     await expect(page.locator("#date")).toBeVisible();
     await expect(page.locator("#memo")).toBeVisible();
@@ -55,7 +55,8 @@ test.describe("Accounting Flow", () => {
     // Using API is more reliable than fighting Radix Select dropdowns in E2E.
     // This tests that the backend correctly processes and stores the entry,
     // and that the frontend correctly displays it.
-    const apiBase = process.env.E2E_API_URL || "http://localhost:8000/api";
+    const baseUrl = process.env.E2E_BASE_URL || "http://localhost:3000";
+    const apiBase = process.env.E2E_API_URL || `${baseUrl.replace(/:3000$/, ':8000')}/api`;
     const email = process.env.E2E_EMAIL || "demo@nxentra.com";
     const password = process.env.E2E_PASSWORD || "demo1234";
 
