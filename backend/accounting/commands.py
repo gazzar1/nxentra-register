@@ -105,7 +105,7 @@ from projections.write_barrier import command_writes_allowed
 class CommandResult:
     """
     Wrapper for command results with success/failure info.
-    
+
     Usage:
         result = create_account(actor, code="1000", ...)
         if result.success:
@@ -115,18 +115,18 @@ class CommandResult:
             error_message = result.error
     """
 
-    def __init__(self, success: bool, data=None, error: str = None, event=None):
+    def __init__(self, success: bool, data: object = None, error: str | None = None, event: object = None):
         self.success = success
         self.data = data
         self.error = error
         self.event = event  # The emitted event, if any
 
     @classmethod
-    def ok(cls, data=None, event=None):
+    def ok(cls, data: object = None, event: object = None) -> "CommandResult":
         return cls(success=True, data=data, event=event)
 
     @classmethod
-    def fail(cls, error: str):
+    def fail(cls, error: str) -> "CommandResult":
         return cls(success=False, error=error)
 
 
@@ -139,6 +139,7 @@ def _idempotency_hash(prefix: str, payload: dict) -> str:
     normalized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     digest = hashlib.sha256(normalized).hexdigest()[:16]
     return f"{prefix}:{digest}"
+
 
 def _next_company_sequence(company, name: str) -> int:
     """
@@ -232,8 +233,9 @@ def _fix_fx_rounding_dicts(je_lines, company, currency=None):
     if je_lines and "line_no" in je_lines[-1]:
         rounding_line["line_no"] = max(l.get("line_no", 0) for l in je_lines) + 1
     je_lines.append(rounding_line)
-    logger.info("FX rounding line added: %s %s to account %s",
-                "CR" if diff > 0 else "DR", abs(diff), rounding_account.code)
+    logger.info(
+        "FX rounding line added: %s %s to account %s", "CR" if diff > 0 else "DR", abs(diff), rounding_account.code
+    )
 
 
 def _emit_automatic_reversal(actor, entry, posting_event, reason: str):
@@ -287,10 +289,12 @@ def _resolve_analysis_tags_to_public_ids(company, analysis_tags: list) -> list:
     for tag in analysis_tags:
         if tag.get("dimension_public_id") and tag.get("value_public_id"):
             # Already resolved - pass through
-            result.append({
-                "dimension_public_id": str(tag["dimension_public_id"]),
-                "value_public_id": str(tag["value_public_id"]),
-            })
+            result.append(
+                {
+                    "dimension_public_id": str(tag["dimension_public_id"]),
+                    "value_public_id": str(tag["value_public_id"]),
+                }
+            )
         elif tag.get("dimension_id") and (tag.get("value_id") or tag.get("dimension_value_id")):
             # Needs resolution
             tags_to_resolve.append(tag)
@@ -301,19 +305,10 @@ def _resolve_analysis_tags_to_public_ids(company, analysis_tags: list) -> list:
 
     # Resolve integer IDs to public IDs
     dimension_ids = [t.get("dimension_id") for t in tags_to_resolve]
-    value_ids = [
-        t.get("value_id") or t.get("dimension_value_id")
-        for t in tags_to_resolve
-    ]
+    value_ids = [t.get("value_id") or t.get("dimension_value_id") for t in tags_to_resolve]
 
-    dimensions = {
-        dim.id: dim
-        for dim in AnalysisDimension.objects.filter(company=company, id__in=dimension_ids)
-    }
-    values = {
-        val.id: val
-        for val in AnalysisDimensionValue.objects.filter(company=company, id__in=value_ids)
-    }
+    dimensions = {dim.id: dim for dim in AnalysisDimension.objects.filter(company=company, id__in=dimension_ids)}
+    values = {val.id: val for val in AnalysisDimensionValue.objects.filter(company=company, id__in=value_ids)}
 
     for tag in tags_to_resolve:
         dim_id = tag.get("dimension_id")
@@ -321,10 +316,12 @@ def _resolve_analysis_tags_to_public_ids(company, analysis_tags: list) -> list:
         dim = dimensions.get(dim_id)
         val = values.get(val_id)
         if dim and val:
-            result.append({
-                "dimension_public_id": str(dim.public_id),
-                "value_public_id": str(val.public_id),
-            })
+            result.append(
+                {
+                    "dimension_public_id": str(dim.public_id),
+                    "value_public_id": str(val.public_id),
+                }
+            )
 
     return result
 
@@ -345,6 +342,7 @@ def _process_projections(company, exclude: set[str] | None = None) -> None:
 # =============================================================================
 # Account Commands
 # =============================================================================
+
 
 @transaction.atomic
 def create_account(
@@ -409,21 +407,24 @@ def create_account(
         Account.NormalBalance.DEBIT,
     )
 
-    idempotency_key = _idempotency_hash("account.created", {
-        "company_public_id": str(actor.company.public_id),
-        "code": code,
-        "name": name,
-        "name_ar": name_ar,
-        "account_type": account_type,
-        "is_header": is_header,
-        "parent_public_id": str(parent.public_id) if parent else None,
-        "description": description,
-        "description_ar": description_ar,
-        "unit_of_measure": unit_of_measure,
-        "account_role": role,
-        "ledger_domain": ledger_domain,
-        "allow_manual_posting": allow_manual_posting,
-    })
+    idempotency_key = _idempotency_hash(
+        "account.created",
+        {
+            "company_public_id": str(actor.company.public_id),
+            "code": code,
+            "name": name,
+            "name_ar": name_ar,
+            "account_type": account_type,
+            "is_header": is_header,
+            "parent_public_id": str(parent.public_id) if parent else None,
+            "description": description,
+            "description_ar": description_ar,
+            "unit_of_measure": unit_of_measure,
+            "account_role": role,
+            "ledger_domain": ledger_domain,
+            "allow_manual_posting": allow_manual_posting,
+        },
+    )
 
     # Emit event
     event = emit_event(
@@ -479,9 +480,7 @@ def update_account(
     # and the view has already validated company ownership
     with rls_bypass():
         try:
-            account = Account.objects.select_for_update().get(
-                pk=account_id, company=actor.company
-            )
+            account = Account.objects.select_for_update().get(pk=account_id, company=actor.company)
         except Account.DoesNotExist:
             return CommandResult.fail("Account not found.")
 
@@ -490,10 +489,14 @@ def update_account(
         allowed, reason = can_change_account_code(actor, account)
         if not allowed:
             return CommandResult.fail(reason)
-        if Account.objects.filter(
-            company=actor.company,
-            code=updates["code"],
-        ).exclude(pk=account.id).exists():
+        if (
+            Account.objects.filter(
+                company=actor.company,
+                code=updates["code"],
+            )
+            .exclude(pk=account.id)
+            .exists()
+        ):
             return CommandResult.fail(f"Account code '{updates['code']}' already exists.")
 
     if "account_type" in updates and updates["account_type"] != account.account_type:
@@ -515,8 +518,14 @@ def update_account(
     # Use aggregate state if available, otherwise fall back to DB model (legacy accounts)
     changes = {}
     allowed_fields = {
-        "name", "name_ar", "description", "description_ar",
-        "status", "code", "account_type", "unit_of_measure"
+        "name",
+        "name_ar",
+        "description",
+        "description_ar",
+        "status",
+        "code",
+        "account_type",
+        "unit_of_measure",
     }
 
     for field, value in updates.items():
@@ -563,9 +572,7 @@ def delete_account(actor: ActorContext, account_id: int) -> CommandResult:
     # Use rls_bypass for lookup since authorization is already done above
     with rls_bypass():
         try:
-            account = Account.objects.select_for_update().get(
-                pk=account_id, company=actor.company
-            )
+            account = Account.objects.select_for_update().get(pk=account_id, company=actor.company)
         except Account.DoesNotExist:
             return CommandResult.fail("Account not found.")
 
@@ -595,6 +602,7 @@ def delete_account(actor: ActorContext, account_id: int) -> CommandResult:
 # Journal Entry Commands
 # =============================================================================
 
+
 @transaction.atomic
 def create_journal_entry(
     actor: ActorContext,
@@ -609,7 +617,7 @@ def create_journal_entry(
 ) -> CommandResult:
     """
     Create a new journal entry.
-    
+
     Args:
         actor: The actor context
         date: Entry date
@@ -617,7 +625,7 @@ def create_journal_entry(
         memo_ar: Arabic memo
         lines: List of line dicts with account_id, description, debit, credit
         kind: Entry kind (NORMAL, OPENING, ADJUSTMENT, etc.)
-    
+
     Returns:
         CommandResult with created JournalEntry or error
     """
@@ -626,9 +634,11 @@ def create_journal_entry(
     # Auto-resolve fiscal period from date when not explicitly provided
     if period is None and date is not None:
         from projections.models import FiscalPeriod
+
         parsed = date
         if isinstance(date, str):
             from datetime import datetime as _dt
+
             parsed = _dt.fromisoformat(date).date()
         fp = FiscalPeriod.objects.filter(
             company=actor.company,
@@ -645,10 +655,7 @@ def create_journal_entry(
     line_data = []
     if lines:
         account_ids = [line.get("account_id") for line in lines if line.get("account_id")]
-        accounts = {
-            acc.id: acc
-            for acc in Account.objects.filter(company=actor.company, id__in=account_ids)
-        }
+        accounts = {acc.id: acc for acc in Account.objects.filter(company=actor.company, id__in=account_ids)}
 
         line_no = 1
         for line in lines:
@@ -664,24 +671,24 @@ def create_journal_entry(
             line_currency = line.get("currency") or entry_currency
             line_exchange_rate = line.get("exchange_rate") or entry_exchange_rate
             amount_currency = line.get("amount_currency")
-            line_data.append(JournalLineData(
-                line_no=line_no,
-                account_public_id=str(account.public_id),
-                account_code=account.code,
-                description=line.get("description", ""),
-                description_ar=line.get("description_ar", ""),
-                debit=str(debit),
-                credit=str(credit),
-                amount_currency=str(amount_currency) if amount_currency is not None else None,
-                currency=line_currency,
-                exchange_rate=str(line_exchange_rate) if line_exchange_rate is not None else None,
-                is_memo_line=account.is_memo_account,
-                analysis_tags=_resolve_analysis_tags_to_public_ids(
-                    actor.company, line.get("analysis_tags", [])
-                ),
-                customer_public_id=line.get("customer_public_id"),
-                vendor_public_id=line.get("vendor_public_id"),
-            ).to_dict())
+            line_data.append(
+                JournalLineData(
+                    line_no=line_no,
+                    account_public_id=str(account.public_id),
+                    account_code=account.code,
+                    description=line.get("description", ""),
+                    description_ar=line.get("description_ar", ""),
+                    debit=str(debit),
+                    credit=str(credit),
+                    amount_currency=str(amount_currency) if amount_currency is not None else None,
+                    currency=line_currency,
+                    exchange_rate=str(line_exchange_rate) if line_exchange_rate is not None else None,
+                    is_memo_line=account.is_memo_account,
+                    analysis_tags=_resolve_analysis_tags_to_public_ids(actor.company, line.get("analysis_tags", [])),
+                    customer_public_id=line.get("customer_public_id"),
+                    vendor_public_id=line.get("vendor_public_id"),
+                ).to_dict()
+            )
             line_no += 1
 
     normalized_lines = []
@@ -691,28 +698,35 @@ def create_journal_entry(
             credit = line.get("credit", 0)
             if debit == 0 and credit == 0:
                 continue
-            normalized_lines.append({
-                "line_no": idx,
-                "account_id": line.get("account_id"),
-                "description": line.get("description", ""),
-                "description_ar": line.get("description_ar", ""),
-                "debit": str(debit),
-                "credit": str(credit),
-                "amount_currency": str(line.get("amount_currency")) if line.get("amount_currency") is not None else None,
-                "currency": line.get("currency"),
-                "exchange_rate": str(line.get("exchange_rate")) if line.get("exchange_rate") is not None else None,
-            })
+            normalized_lines.append(
+                {
+                    "line_no": idx,
+                    "account_id": line.get("account_id"),
+                    "description": line.get("description", ""),
+                    "description_ar": line.get("description_ar", ""),
+                    "debit": str(debit),
+                    "credit": str(credit),
+                    "amount_currency": str(line.get("amount_currency"))
+                    if line.get("amount_currency") is not None
+                    else None,
+                    "currency": line.get("currency"),
+                    "exchange_rate": str(line.get("exchange_rate")) if line.get("exchange_rate") is not None else None,
+                }
+            )
 
-    idempotency_key = _idempotency_hash("journal_entry.created", {
-        "company_public_id": str(actor.company.public_id),
-        "date": date.isoformat() if hasattr(date, "isoformat") else str(date),
-        "memo": memo,
-        "memo_ar": memo_ar,
-        "kind": kind,
-        "currency": entry_currency,
-        "exchange_rate": str(entry_exchange_rate),
-        "lines": normalized_lines,
-    })
+    idempotency_key = _idempotency_hash(
+        "journal_entry.created",
+        {
+            "company_public_id": str(actor.company.public_id),
+            "date": date.isoformat() if hasattr(date, "isoformat") else str(date),
+            "memo": memo,
+            "memo_ar": memo_ar,
+            "kind": kind,
+            "currency": entry_currency,
+            "exchange_rate": str(entry_exchange_rate),
+            "lines": normalized_lines,
+        },
+    )
 
     # Emit event
     event = emit_event(
@@ -745,6 +759,7 @@ def create_journal_entry(
     except JournalEntry.DoesNotExist:
         # Projection may have failed; check bookmark for errors
         from projections.base import projection_registry
+
         with rls_bypass():
             je_proj = projection_registry.get("journal_entry_read_model")
             if je_proj:
@@ -769,7 +784,7 @@ def update_journal_entry(
 ) -> CommandResult:
     """
     Update a journal entry (autosave mode - status becomes INCOMPLETE).
-    
+
     Args:
         actor: The actor context
         entry_id: ID of entry to update
@@ -777,16 +792,14 @@ def update_journal_entry(
         memo: New memo (optional)
         memo_ar: New Arabic memo (optional)
         lines: New lines (optional, replaces all existing lines)
-    
+
     Returns:
         CommandResult with updated JournalEntry or error
     """
     require(actor, "journal.edit_draft")
 
     try:
-        entry = JournalEntry.objects.select_for_update().get(
-            pk=entry_id, company=actor.company
-        )
+        entry = JournalEntry.objects.select_for_update().get(pk=entry_id, company=actor.company)
     except JournalEntry.DoesNotExist:
         return CommandResult.fail("Journal entry not found.")
 
@@ -838,10 +851,7 @@ def update_journal_entry(
             for line in lines
             if line.get("account_id") or line.get("account")
         ]
-        accounts = {
-            acc.id: acc
-            for acc in Account.objects.filter(company=actor.company, id__in=account_ids)
-        }
+        accounts = {acc.id: acc for acc in Account.objects.filter(company=actor.company, id__in=account_ids)}
 
         line_no = 1
         for line in lines:
@@ -859,24 +869,26 @@ def update_journal_entry(
             account = accounts[account_id]
             line_currency = line.get("currency") or entry.currency or actor.company.default_currency
             line_exchange_rate = line.get("exchange_rate") or entry.exchange_rate
-            line_data.append(JournalLineData(
-                line_no=line_no,
-                account_public_id=str(account.public_id),
-                account_code=account.code,
-                description=line.get("description", ""),
-                description_ar=line.get("description_ar", ""),
-                debit=str(debit),
-                credit=str(credit),
-                amount_currency=str(line.get("amount_currency")) if line.get("amount_currency") is not None else None,
-                currency=line_currency,
-                exchange_rate=str(line_exchange_rate) if line_exchange_rate is not None else None,
-                is_memo_line=account.is_memo_account,
-                analysis_tags=_resolve_analysis_tags_to_public_ids(
-                    actor.company, line.get("analysis_tags", [])
-                ),
-                customer_public_id=line.get("customer_public_id"),
-                vendor_public_id=line.get("vendor_public_id"),
-            ).to_dict())
+            line_data.append(
+                JournalLineData(
+                    line_no=line_no,
+                    account_public_id=str(account.public_id),
+                    account_code=account.code,
+                    description=line.get("description", ""),
+                    description_ar=line.get("description_ar", ""),
+                    debit=str(debit),
+                    credit=str(credit),
+                    amount_currency=str(line.get("amount_currency"))
+                    if line.get("amount_currency") is not None
+                    else None,
+                    currency=line_currency,
+                    exchange_rate=str(line_exchange_rate) if line_exchange_rate is not None else None,
+                    is_memo_line=account.is_memo_account,
+                    analysis_tags=_resolve_analysis_tags_to_public_ids(actor.company, line.get("analysis_tags", [])),
+                    customer_public_id=line.get("customer_public_id"),
+                    vendor_public_id=line.get("vendor_public_id"),
+                ).to_dict()
+            )
             line_no += 1
 
     # Any edit sets status back to INCOMPLETE
@@ -918,7 +930,7 @@ def save_journal_entry_complete(
     """
     Save a journal entry as complete (DRAFT status).
     Validates that entry is balanced and has at least 2 lines.
-    
+
     Args:
         actor: The actor context
         entry_id: ID of entry to save as complete
@@ -926,16 +938,14 @@ def save_journal_entry_complete(
         memo: New memo (optional)
         memo_ar: New Arabic memo (optional)
         lines: New lines (optional)
-    
+
     Returns:
         CommandResult with saved JournalEntry or error
     """
     require(actor, "journal.edit_draft")
 
     try:
-        entry = JournalEntry.objects.select_for_update().get(
-            pk=entry_id, company=actor.company
-        )
+        entry = JournalEntry.objects.select_for_update().get(pk=entry_id, company=actor.company)
     except JournalEntry.DoesNotExist:
         return CommandResult.fail("Journal entry not found.")
 
@@ -947,10 +957,7 @@ def save_journal_entry_complete(
             for line in lines
             if line.get("account_id") or line.get("account")
         ]
-        accounts = {
-            acc.id: acc
-            for acc in Account.objects.filter(company=actor.company, id__in=account_ids)
-        }
+        accounts = {acc.id: acc for acc in Account.objects.filter(company=actor.company, id__in=account_ids)}
 
         line_no = 1
         for line in lines:
@@ -967,24 +974,26 @@ def save_journal_entry_complete(
             account = accounts[account_id]
             line_currency = line.get("currency") or entry.currency or actor.company.default_currency
             line_exchange_rate = line.get("exchange_rate") or entry.exchange_rate
-            line_data.append(JournalLineData(
-                line_no=line_no,
-                account_public_id=str(account.public_id),
-                account_code=account.code,
-                description=line.get("description", ""),
-                description_ar=line.get("description_ar", ""),
-                debit=str(debit),
-                credit=str(credit),
-                amount_currency=str(line.get("amount_currency")) if line.get("amount_currency") is not None else None,
-                currency=line_currency,
-                exchange_rate=str(line_exchange_rate) if line_exchange_rate is not None else None,
-                is_memo_line=account.is_memo_account,
-                analysis_tags=_resolve_analysis_tags_to_public_ids(
-                    actor.company, line.get("analysis_tags", [])
-                ),
-                customer_public_id=line.get("customer_public_id"),
-                vendor_public_id=line.get("vendor_public_id"),
-            ).to_dict())
+            line_data.append(
+                JournalLineData(
+                    line_no=line_no,
+                    account_public_id=str(account.public_id),
+                    account_code=account.code,
+                    description=line.get("description", ""),
+                    description_ar=line.get("description_ar", ""),
+                    debit=str(debit),
+                    credit=str(credit),
+                    amount_currency=str(line.get("amount_currency"))
+                    if line.get("amount_currency") is not None
+                    else None,
+                    currency=line_currency,
+                    exchange_rate=str(line_exchange_rate) if line_exchange_rate is not None else None,
+                    is_memo_line=account.is_memo_account,
+                    analysis_tags=_resolve_analysis_tags_to_public_ids(actor.company, line.get("analysis_tags", [])),
+                    customer_public_id=line.get("customer_public_id"),
+                    vendor_public_id=line.get("vendor_public_id"),
+                ).to_dict()
+            )
             line_no += 1
 
     aggregate = load_journal_entry_aggregate(actor.company, str(entry.public_id))
@@ -1014,9 +1023,7 @@ def save_journal_entry_complete(
         return CommandResult.fail("Entry must have at least 2 lines to be complete.")
 
     if total_debit != total_credit:
-        return CommandResult.fail(
-            f"Entry is not balanced. Debit={total_debit} Credit={total_credit}"
-        )
+        return CommandResult.fail(f"Entry is not balanced. Debit={total_debit} Credit={total_credit}")
 
     # Emit event
     lines_payload = line_data if line_data is not None else aggregate.lines
@@ -1032,9 +1039,7 @@ def save_journal_entry_complete(
     }
     if not payload["date"]:
         return CommandResult.fail("Entry date is required to save as complete.")
-    digest = hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()[:12]
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
     event = emit_event(
         actor=actor,
         event_type=EventTypes.JOURNAL_ENTRY_SAVED_COMPLETE,
@@ -1067,20 +1072,18 @@ def save_journal_entry_complete(
 def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
     """
     Post a journal entry, making it affect account balances.
-    
+
     Args:
         actor: The actor context
         entry_id: ID of entry to post
-    
+
     Returns:
         CommandResult with posted JournalEntry or error
     """
     require(actor, "journal.post")
 
     try:
-        entry = JournalEntry.objects.select_for_update().get(
-            pk=entry_id, company=actor.company
-        )
+        entry = JournalEntry.objects.select_for_update().get(pk=entry_id, company=actor.company)
     except JournalEntry.DoesNotExist:
         return CommandResult.fail("Journal entry not found.")
 
@@ -1091,7 +1094,12 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
     if aggregate.status != JournalEntry.Status.DRAFT:
         return CommandResult.fail("Only DRAFT entries can be posted.")
 
-    postable_kinds = [JournalEntry.Kind.NORMAL, JournalEntry.Kind.OPENING, JournalEntry.Kind.ADJUSTMENT, JournalEntry.Kind.CLOSING]
+    postable_kinds = [
+        JournalEntry.Kind.NORMAL,
+        JournalEntry.Kind.OPENING,
+        JournalEntry.Kind.ADJUSTMENT,
+        JournalEntry.Kind.CLOSING,
+    ]
     if aggregate.kind not in postable_kinds:
         return CommandResult.fail(f"Cannot post {aggregate.kind} entries.")
 
@@ -1132,24 +1140,18 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
         vendor_public_id = line.get("vendor_public_id")
 
         # Validate counterparty requirements for control accounts
-        allowed, reason = validate_line_counterparty(
-            account, customer_public_id, vendor_public_id
-        )
+        allowed, reason = validate_line_counterparty(account, customer_public_id, vendor_public_id)
         if not allowed:
             return CommandResult.fail(reason)
 
         # Validate counterparty exists if provided
         if customer_public_id or vendor_public_id:
-            valid, reason, _ = validate_counterparty_exists(
-                actor.company, customer_public_id, vendor_public_id
-            )
+            valid, reason, _ = validate_counterparty_exists(actor.company, customer_public_id, vendor_public_id)
             if not valid:
                 return CommandResult.fail(reason)
 
         # Validate dimension rules (REQUIRED / FORBIDDEN per account)
-        resolved_tags = _resolve_analysis_tags_to_public_ids(
-            actor.company, line.get("analysis_tags", [])
-        )
+        resolved_tags = _resolve_analysis_tags_to_public_ids(actor.company, line.get("analysis_tags", []))
         dimension_errors = validate_line_dimensions(
             account=account,
             analysis_tags=resolved_tags,
@@ -1157,9 +1159,7 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
         )
         if dimension_errors:
             error_messages = "; ".join(e["message"] for e in dimension_errors)
-            return CommandResult.fail(
-                f"Line {line.get('line_no', '?')}: {error_messages}"
-            )
+            return CommandResult.fail(f"Line {line.get('line_no', '?')}: {error_messages}")
 
         # ── Multi-currency conversion ──────────────────────────────────
         # If the line's currency differs from the company's functional
@@ -1168,7 +1168,9 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
         # EXCEPTION: ADJUSTMENT entries (e.g. revaluation) have amounts
         # already expressed in functional currency — skip conversion.
         line_currency = line.get("currency") or aggregate.currency or entry.currency or actor.company.default_currency
-        line_exchange_rate = Decimal(str(line.get("exchange_rate") or aggregate.exchange_rate or entry.exchange_rate or "1.0"))
+        line_exchange_rate = Decimal(
+            str(line.get("exchange_rate") or aggregate.exchange_rate or entry.exchange_rate or "1.0")
+        )
         original_debit = Decimal(str(line.get("debit", "0")))
         original_credit = Decimal(str(line.get("credit", "0")))
 
@@ -1181,15 +1183,16 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
                 from datetime import datetime
 
                 from accounting.models import ExchangeRate
+
                 entry_date = datetime.fromisoformat(aggregate.date or entry.date.isoformat()).date()
-                looked_up_rate = ExchangeRate.get_rate(
-                    actor.company, line_currency, functional_currency, entry_date
-                )
+                looked_up_rate = ExchangeRate.get_rate(actor.company, line_currency, functional_currency, entry_date)
                 if looked_up_rate:
                     line_exchange_rate = looked_up_rate
 
             # Store original foreign amount, convert debit/credit
-            amount_currency_val = original_debit if original_debit > 0 else -original_credit if original_credit > 0 else Decimal("0")
+            amount_currency_val = (
+                original_debit if original_debit > 0 else -original_credit if original_credit > 0 else Decimal("0")
+            )
             converted_debit = (original_debit * line_exchange_rate).quantize(Decimal("0.01"))
             converted_credit = (original_credit * line_exchange_rate).quantize(Decimal("0.01"))
         else:
@@ -1200,30 +1203,28 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
             converted_debit = original_debit
             converted_credit = original_credit
 
-        line_data.append(JournalLineData(
-            line_no=line.get("line_no"),
-            account_public_id=str(account.public_id),
-            account_code=account.code,
-            description=line.get("description", ""),
-            description_ar=line.get("description_ar", ""),
-            debit=str(converted_debit),
-            credit=str(converted_credit),
-            amount_currency=str(amount_currency_val) if amount_currency_val is not None else None,
-            currency=line_currency,
-            exchange_rate=str(line_exchange_rate),
-            is_memo_line=account.is_memo_account,
-            analysis_tags=resolved_tags,
-            customer_public_id=customer_public_id,
-            vendor_public_id=vendor_public_id,
-        ).to_dict())
+        line_data.append(
+            JournalLineData(
+                line_no=line.get("line_no"),
+                account_public_id=str(account.public_id),
+                account_code=account.code,
+                description=line.get("description", ""),
+                description_ar=line.get("description_ar", ""),
+                debit=str(converted_debit),
+                credit=str(converted_credit),
+                amount_currency=str(amount_currency_val) if amount_currency_val is not None else None,
+                currency=line_currency,
+                exchange_rate=str(line_exchange_rate),
+                is_memo_line=account.is_memo_account,
+                analysis_tags=resolved_tags,
+                customer_public_id=customer_public_id,
+                vendor_public_id=vendor_public_id,
+            ).to_dict()
+        )
 
     # Recalculate totals from converted line data (functional currency)
-    converted_total_debit = sum(
-        Decimal(ld.get("debit", "0")) for ld in line_data if not ld.get("is_memo_line")
-    )
-    converted_total_credit = sum(
-        Decimal(ld.get("credit", "0")) for ld in line_data if not ld.get("is_memo_line")
-    )
+    converted_total_debit = sum(Decimal(ld.get("debit", "0")) for ld in line_data if not ld.get("is_memo_line"))
+    converted_total_credit = sum(Decimal(ld.get("credit", "0")) for ld in line_data if not ld.get("is_memo_line"))
 
     # Emit event
     event = emit_event(
@@ -1255,18 +1256,16 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
 
     # Validate subledger tie-out after posting
     # Only check tie-out if the entry affects AR or AP control accounts
-    has_subledger_impact = any(
-        line.get("customer_public_id") or line.get("vendor_public_id")
-        for line in line_data
-    )
+    has_subledger_impact = any(line.get("customer_public_id") or line.get("vendor_public_id") for line in line_data)
     if has_subledger_impact:
         import logging
+
         logger = logging.getLogger(__name__)
         is_valid, tieout_errors = validate_subledger_tieout(actor.company)
         if not is_valid:
             # Refresh company to get latest settings
             actor.company.refresh_from_db()
-            if getattr(actor.company, 'enforce_subledger_tieout', False):
+            if getattr(actor.company, "enforce_subledger_tieout", False):
                 # Strict enforcement enabled - fail the posting
                 # Emit a reversal event to undo the posting
                 _emit_automatic_reversal(actor, entry, event, reason="Subledger tie-out violation")
@@ -1288,27 +1287,25 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
 def reverse_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
     """
     Reverse a posted journal entry.
-    
+
     Creates a new reversal entry with swapped debit/credit amounts
     and marks the original entry as REVERSED.
-    
+
     IMPORTANT: Emits TWO events:
     1. JOURNAL_ENTRY_POSTED for the reversal entry (so projections update balances)
     2. JOURNAL_ENTRY_REVERSED for audit trail
-    
+
     Args:
         actor: The actor context
         entry_id: ID of entry to reverse
-    
+
     Returns:
         CommandResult with {"original": entry, "reversal": reversal_entry} or error
     """
     require(actor, "journal.reverse")
 
     try:
-        original = JournalEntry.objects.select_for_update().get(
-            pk=entry_id, company=actor.company
-        )
+        original = JournalEntry.objects.select_for_update().get(pk=entry_id, company=actor.company)
     except JournalEntry.DoesNotExist:
         return CommandResult.fail("Journal entry not found.")
 
@@ -1333,6 +1330,7 @@ def reverse_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
     original_date = original.date
     reversal_period = None
     from projections.models import FiscalPeriod
+
     reversal_fp = FiscalPeriod.objects.filter(
         company=actor.company,
         start_date__lte=original_date,
@@ -1360,20 +1358,27 @@ def reverse_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
             return CommandResult.fail(f"Account {account_public_id} not found.")
 
         analysis_tags = line.get("analysis_tags", [])
-        reversal_line_data.append(JournalLineData(
-            line_no=line.get("line_no"),
-            account_public_id=str(account.public_id),
-            account_code=account.code,
-            description=f"Reversal: {line.get('description', '')}".strip(),
-            description_ar=f"عكس: {line.get('description_ar', '')}".strip() if line.get("description_ar") else "",
-            debit=str(line.get("credit", "0")),
-            credit=str(line.get("debit", "0")),
-            amount_currency=str(line.get("amount_currency")) if line.get("amount_currency") is not None else None,
-            currency=line.get("currency") or aggregate.currency or original.currency or actor.company.default_currency,
-            exchange_rate=str(line.get("exchange_rate") or aggregate.exchange_rate or original.exchange_rate or "1.0"),
-            is_memo_line=account.is_memo_account,
-            analysis_tags=analysis_tags,
-        ).to_dict())
+        reversal_line_data.append(
+            JournalLineData(
+                line_no=line.get("line_no"),
+                account_public_id=str(account.public_id),
+                account_code=account.code,
+                description=f"Reversal: {line.get('description', '')}".strip(),
+                description_ar=f"عكس: {line.get('description_ar', '')}".strip() if line.get("description_ar") else "",
+                debit=str(line.get("credit", "0")),
+                credit=str(line.get("debit", "0")),
+                amount_currency=str(line.get("amount_currency")) if line.get("amount_currency") is not None else None,
+                currency=line.get("currency")
+                or aggregate.currency
+                or original.currency
+                or actor.company.default_currency,
+                exchange_rate=str(
+                    line.get("exchange_rate") or aggregate.exchange_rate or original.exchange_rate or "1.0"
+                ),
+                is_memo_line=account.is_memo_account,
+                analysis_tags=analysis_tags,
+            ).to_dict()
+        )
 
     event_posted = emit_event(
         actor=actor,
@@ -1421,29 +1426,31 @@ def reverse_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
         original = JournalEntry.objects.get(company=actor.company, public_id=original.public_id)
         reversal_public_id = event_posted.data.get("entry_public_id", reversal_public_id)
         reversal = JournalEntry.objects.get(company=actor.company, public_id=reversal_public_id)
-    return CommandResult.ok({
-        "original": original,
-        "reversal": reversal,
-    }, event=event_reversed)
+    return CommandResult.ok(
+        {
+            "original": original,
+            "reversal": reversal,
+        },
+        event=event_reversed,
+    )
+
 
 @transaction.atomic
 def delete_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
     """
     Delete a journal entry (only INCOMPLETE or DRAFT entries can be deleted).
-    
+
     Args:
         actor: The actor context
         entry_id: ID of entry to delete
-    
+
     Returns:
         CommandResult with deletion confirmation or error
     """
     require(actor, "journal.edit_draft")
 
     try:
-        entry = JournalEntry.objects.select_for_update().get(
-            pk=entry_id, company=actor.company
-        )
+        entry = JournalEntry.objects.select_for_update().get(pk=entry_id, company=actor.company)
     except JournalEntry.DoesNotExist:
         return CommandResult.fail("Journal entry not found.")
 
@@ -1477,6 +1484,7 @@ def delete_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
 # =============================================================================
 # Fiscal Period Commands
 # =============================================================================
+
 
 @transaction.atomic
 def close_period(
@@ -1570,8 +1578,7 @@ def open_period(
     ).first()
     if fy and fy.status == FiscalYearModel.Status.CLOSED:
         return CommandResult.fail(
-            f"Cannot open period in closed fiscal year {fiscal_year}. "
-            "Reopen the fiscal year first."
+            f"Cannot open period in closed fiscal year {fiscal_year}. Reopen the fiscal year first."
         )
 
     opened_at = timezone.now()
@@ -1628,22 +1635,26 @@ def _calculate_period_boundaries(fiscal_year: int, start_month: int, period_coun
         month = (month_index % 12) + 1
         last_day = calendar.monthrange(year, month)[1]
 
-        periods.append({
-            "period": i + 1,
-            "start_date": date(year, month, 1).isoformat(),
-            "end_date": date(year, month, last_day).isoformat(),
-            "period_type": "NORMAL",
-        })
+        periods.append(
+            {
+                "period": i + 1,
+                "start_date": date(year, month, 1).isoformat(),
+                "end_date": date(year, month, last_day).isoformat(),
+                "period_type": "NORMAL",
+            }
+        )
 
     # Period 13: Adjustment period — same end date as Period 12
     # Start date = end date = last day of fiscal year
     fy_end_date = periods[11]["end_date"]
-    periods.append({
-        "period": 13,
-        "start_date": fy_end_date,
-        "end_date": fy_end_date,
-        "period_type": "ADJUSTMENT",
-    })
+    periods.append(
+        {
+            "period": 13,
+            "start_date": fy_end_date,
+            "end_date": fy_end_date,
+            "period_type": "ADJUSTMENT",
+        }
+    )
 
     return periods
 
@@ -1757,10 +1768,13 @@ def set_period_range(
     )
 
     _process_projections(actor.company)
-    return CommandResult.ok({
-        "open_from_period": open_from_period,
-        "open_to_period": open_to_period,
-    }, event=event)
+    return CommandResult.ok(
+        {
+            "open_from_period": open_from_period,
+            "open_to_period": open_to_period,
+        },
+        event=event,
+    )
 
 
 @transaction.atomic
@@ -1898,6 +1912,7 @@ def update_period_dates(
 # Fiscal Year Close / Reopen Commands
 # =============================================================================
 
+
 def check_close_readiness(
     actor: ActorContext,
     fiscal_year: int,
@@ -1929,11 +1944,13 @@ def check_close_readiness(
         fiscal_year=fiscal_year,
     ).first()
     fy_not_closed = not (fy and fy.status == FiscalYearModel.Status.CLOSED)
-    checks.append({
-        "check": "Fiscal year not already closed",
-        "passed": fy_not_closed,
-        "detail": "" if fy_not_closed else f"Fiscal year {fiscal_year} is already closed.",
-    })
+    checks.append(
+        {
+            "check": "Fiscal year not already closed",
+            "passed": fy_not_closed,
+            "detail": "" if fy_not_closed else f"Fiscal year {fiscal_year} is already closed.",
+        }
+    )
 
     # Check 2: All normal periods (1-12) are closed
     normal_periods = FiscalPeriod.objects.filter(
@@ -1944,11 +1961,13 @@ def check_close_readiness(
     open_normal = normal_periods.filter(status=FiscalPeriod.Status.OPEN)
     all_normal_closed = not open_normal.exists()
     open_nums = list(open_normal.values_list("period", flat=True)) if not all_normal_closed else []
-    checks.append({
-        "check": "All normal periods (1-12) closed",
-        "passed": all_normal_closed,
-        "detail": "" if all_normal_closed else f"Periods still open: {open_nums}",
-    })
+    checks.append(
+        {
+            "check": "All normal periods (1-12) closed",
+            "passed": all_normal_closed,
+            "detail": "" if all_normal_closed else f"Periods still open: {open_nums}",
+        }
+    )
 
     # Check 3: Period 13 exists and is open
     p13 = FiscalPeriod.objects.filter(
@@ -1963,11 +1982,13 @@ def check_close_readiness(
         p13_detail = "Period 13 must be OPEN to post closing entries."
     else:
         p13_detail = ""
-    checks.append({
-        "check": "Period 13 (adjustment) exists and is open",
-        "passed": p13_ready,
-        "detail": p13_detail,
-    })
+    checks.append(
+        {
+            "check": "Period 13 (adjustment) exists and is open",
+            "passed": p13_ready,
+            "detail": p13_detail,
+        }
+    )
 
     # Check 4: No draft/incomplete entries in this fiscal year
     fy_periods = FiscalPeriod.objects.filter(
@@ -1983,36 +2004,44 @@ def check_close_readiness(
         draft_count = JournalEntry.objects.filter(
             company=actor.company,
             status__in=[JournalEntry.Status.INCOMPLETE, JournalEntry.Status.DRAFT],
-            date__gte=fy_start, date__lte=fy_end,
+            date__gte=fy_start,
+            date__lte=fy_end,
         ).count()
         if draft_count > 0:
             no_drafts = False
             draft_detail = f"Found {draft_count} draft/incomplete journal entries."
-    checks.append({
-        "check": "No draft or incomplete journal entries",
-        "passed": no_drafts,
-        "detail": draft_detail,
-    })
+    checks.append(
+        {
+            "check": "No draft or incomplete journal entries",
+            "passed": no_drafts,
+            "detail": draft_detail,
+        }
+    )
 
     # Check 5: Subledger tie-out
     tieout_valid, tieout_errors = validate_subledger_tieout(actor.company)
-    checks.append({
-        "check": "Subledger tie-out balanced",
-        "passed": tieout_valid,
-        "detail": "; ".join(tieout_errors) if not tieout_valid else "",
-    })
+    checks.append(
+        {
+            "check": "Subledger tie-out balanced",
+            "passed": tieout_valid,
+            "detail": "; ".join(tieout_errors) if not tieout_valid else "",
+        }
+    )
 
     # Check 6: Projection lag (all projections must be up to date)
     from projections.base import projection_registry
+
     total_lag = 0
     for projection in projection_registry.all():
         total_lag += projection.get_lag(actor.company)
     projections_current = total_lag == 0
-    checks.append({
-        "check": "All projections up to date (no lag)",
-        "passed": projections_current,
-        "detail": "" if projections_current else f"{total_lag} events pending processing.",
-    })
+    checks.append(
+        {
+            "check": "All projections up to date (no lag)",
+            "passed": projections_current,
+            "detail": "" if projections_current else f"{total_lag} events pending processing.",
+        }
+    )
 
     is_ready = all(c["passed"] for c in checks)
 
@@ -2047,11 +2076,13 @@ def check_close_readiness(
         },
     )
 
-    return CommandResult.ok({
-        "fiscal_year": fiscal_year,
-        "is_ready": is_ready,
-        "checks": checks,
-    })
+    return CommandResult.ok(
+        {
+            "fiscal_year": fiscal_year,
+            "is_ready": is_ready,
+            "checks": checks,
+        }
+    )
 
 
 @transaction.atomic
@@ -2098,9 +2129,13 @@ def close_fiscal_year(
     if not re_account:
         return CommandResult.fail(f"Retained earnings account '{retained_earnings_account_code}' not found.")
     if re_account.account_type != Account.AccountType.EQUITY:
-        return CommandResult.fail(f"Account '{retained_earnings_account_code}' must be EQUITY type for retained earnings.")
+        return CommandResult.fail(
+            f"Account '{retained_earnings_account_code}' must be EQUITY type for retained earnings."
+        )
     if re_account.is_header:
-        return CommandResult.fail(f"Account '{retained_earnings_account_code}' is a header account. Use a postable account.")
+        return CommandResult.fail(
+            f"Account '{retained_earnings_account_code}' is a header account. Use a postable account."
+        )
 
     # Check readiness (reuse logic but inline to avoid double event)
     normal_periods = FiscalPeriod.objects.filter(
@@ -2111,7 +2146,9 @@ def close_fiscal_year(
     open_normal = normal_periods.filter(status=FiscalPeriod.Status.OPEN)
     if open_normal.exists():
         open_nums = list(open_normal.values_list("period", flat=True))
-        return CommandResult.fail(f"Cannot close year: periods {open_nums} are still open. Close all normal periods first.")
+        return CommandResult.fail(
+            f"Cannot close year: periods {open_nums} are still open. Close all normal periods first."
+        )
 
     p13 = FiscalPeriod.objects.filter(
         company=actor.company,
@@ -2127,7 +2164,8 @@ def close_fiscal_year(
 
     # Check no drafts in P13
     fy_periods = FiscalPeriod.objects.filter(
-        company=actor.company, fiscal_year=fiscal_year,
+        company=actor.company,
+        fiscal_year=fiscal_year,
         period_type=FiscalPeriod.PeriodType.NORMAL,
     ).order_by("period")
     if fy_periods.exists():
@@ -2136,7 +2174,8 @@ def close_fiscal_year(
         drafts = JournalEntry.objects.filter(
             company=actor.company,
             status__in=[JournalEntry.Status.INCOMPLETE, JournalEntry.Status.DRAFT],
-            date__gte=fy_start, date__lte=fy_end,
+            date__gte=fy_start,
+            date__lte=fy_end,
         )
         if drafts.exists():
             return CommandResult.fail(f"Cannot close year: {drafts.count()} draft/incomplete entries exist.")
@@ -2186,12 +2225,14 @@ def close_fiscal_year(
         # To zero this account: reverse whatever it holds.
         # If net > 0 (normal credit balance): debit revenue to zero it.
         # If net < 0 (abnormal debit balance): credit revenue to zero it.
-        closing_lines.append({
-            "account_public_id": str(acct.public_id),
-            "account_code": acct.code,
-            "debit": str(net) if net > 0 else "0",
-            "credit": str(abs(net)) if net < 0 else "0",
-        })
+        closing_lines.append(
+            {
+                "account_public_id": str(acct.public_id),
+                "account_code": acct.code,
+                "debit": str(net) if net > 0 else "0",
+                "credit": str(abs(net)) if net < 0 else "0",
+            }
+        )
         total_revenue += net
 
     for acct in expense_accounts:
@@ -2203,12 +2244,14 @@ def close_fiscal_year(
         # To zero this account: reverse whatever it holds.
         # If net > 0 (normal debit balance): credit expense to zero it.
         # If net < 0 (abnormal credit balance): debit expense to zero it.
-        closing_lines.append({
-            "account_public_id": str(acct.public_id),
-            "account_code": acct.code,
-            "debit": str(abs(net)) if net < 0 else "0",
-            "credit": str(net) if net > 0 else "0",
-        })
+        closing_lines.append(
+            {
+                "account_public_id": str(acct.public_id),
+                "account_code": acct.code,
+                "debit": str(abs(net)) if net < 0 else "0",
+                "credit": str(net) if net > 0 else "0",
+            }
+        )
         total_expenses += net
 
     # Net income = total revenue credits minus total expense debits
@@ -2222,20 +2265,24 @@ def close_fiscal_year(
 
     if re_difference > 0:
         # More debits than credits in temp accounts -> net profit -> credit RE
-        closing_lines.append({
-            "account_public_id": str(re_account.public_id),
-            "account_code": re_account.code,
-            "debit": "0",
-            "credit": str(re_difference),
-        })
+        closing_lines.append(
+            {
+                "account_public_id": str(re_account.public_id),
+                "account_code": re_account.code,
+                "debit": "0",
+                "credit": str(re_difference),
+            }
+        )
     elif re_difference < 0:
         # More credits than debits in temp accounts -> net loss -> debit RE
-        closing_lines.append({
-            "account_public_id": str(re_account.public_id),
-            "account_code": re_account.code,
-            "debit": str(abs(re_difference)),
-            "credit": "0",
-        })
+        closing_lines.append(
+            {
+                "account_public_id": str(re_account.public_id),
+                "account_code": re_account.code,
+                "debit": str(abs(re_difference)),
+                "credit": "0",
+            }
+        )
     # If re_difference == 0, no retained earnings line needed (but still close temp accounts)
 
     # === STEP 2: Generate closing journal entry in P13 ===
@@ -2246,14 +2293,16 @@ def close_fiscal_year(
     # Build full journal lines with line numbers
     je_lines = []
     for i, line in enumerate(closing_lines, 1):
-        je_lines.append({
-            "line_no": i,
-            "account_public_id": line["account_public_id"],
-            "account_code": line["account_code"],
-            "description": f"Year-end closing FY{fiscal_year}",
-            "debit": line["debit"],
-            "credit": line["credit"],
-        })
+        je_lines.append(
+            {
+                "line_no": i,
+                "account_public_id": line["account_public_id"],
+                "account_code": line["account_code"],
+                "description": f"Year-end closing FY{fiscal_year}",
+                "debit": line["debit"],
+                "credit": line["credit"],
+            }
+        )
 
     # Compute total debit/credit for the closing entry
     closing_total_debit = sum(Decimal(l["debit"]) for l in je_lines)
@@ -2335,7 +2384,9 @@ def close_fiscal_year(
     # === STEP 3: Close all periods including P13 ===
     for period_num in range(1, 14):
         fp = FiscalPeriod.objects.filter(
-            company=actor.company, fiscal_year=fiscal_year, period=period_num,
+            company=actor.company,
+            fiscal_year=fiscal_year,
+            period=period_num,
         ).first()
         if fp and fp.status == FiscalPeriod.Status.OPEN:
             emit_event(
@@ -2421,16 +2472,19 @@ def close_fiscal_year(
         },
     )
 
-    return CommandResult.ok({
-        "fiscal_year": fiscal_year,
-        "net_income": str(net_income),
-        "closing_entry_public_id": closing_entry_public_id,
-        "next_year_created": next_year,
-        "post_close_tieout": {
-            "balanced": tieout_valid,
-            "errors": tieout_errors,
+    return CommandResult.ok(
+        {
+            "fiscal_year": fiscal_year,
+            "net_income": str(net_income),
+            "closing_entry_public_id": closing_entry_public_id,
+            "next_year_created": next_year,
+            "post_close_tieout": {
+                "balanced": tieout_valid,
+                "errors": tieout_errors,
+            },
         },
-    }, event=event)
+        event=event,
+    )
 
 
 def run_reconciliation_check(actor: ActorContext) -> CommandResult:
@@ -2478,23 +2532,25 @@ def run_reconciliation_check(actor: ActorContext) -> CommandResult:
         company=actor.company,
     ).aggregate(total=Sum("balance"))["total"] or Decimal("0")
 
-    return CommandResult.ok({
-        "balanced": tieout_valid,
-        "errors": tieout_errors,
-        "ar_reconciliation": {
-            "gl_control_balance": str(ar_gl_total),
-            "subledger_total": str(ar_sub_total),
-            "difference": str(ar_gl_total - ar_sub_total),
-            "balanced": ar_gl_total == ar_sub_total,
-        },
-        "ap_reconciliation": {
-            "gl_control_balance": str(ap_gl_total),
-            "subledger_total": str(ap_sub_total),
-            "difference": str(ap_gl_total - ap_sub_total),
-            "balanced": ap_gl_total == ap_sub_total,
-        },
-        "checked_at": timezone.now().isoformat(),
-    })
+    return CommandResult.ok(
+        {
+            "balanced": tieout_valid,
+            "errors": tieout_errors,
+            "ar_reconciliation": {
+                "gl_control_balance": str(ar_gl_total),
+                "subledger_total": str(ar_sub_total),
+                "difference": str(ar_gl_total - ar_sub_total),
+                "balanced": ar_gl_total == ar_sub_total,
+            },
+            "ap_reconciliation": {
+                "gl_control_balance": str(ap_gl_total),
+                "subledger_total": str(ap_sub_total),
+                "difference": str(ap_gl_total - ap_sub_total),
+                "balanced": ap_gl_total == ap_sub_total,
+            },
+            "checked_at": timezone.now().isoformat(),
+        }
+    )
 
 
 @transaction.atomic
@@ -2554,14 +2610,16 @@ def reopen_fiscal_year(
             original_lines = original_entry.lines.all()
             reversal_lines = []
             for i, line in enumerate(original_lines, 1):
-                reversal_lines.append({
-                    "line_no": i,
-                    "account_public_id": str(line.account.public_id),
-                    "account_code": line.account.code,
-                    "description": f"Reversal of year-end closing FY{fiscal_year}: {reason}",
-                    "debit": str(line.credit),
-                    "credit": str(line.debit),
-                })
+                reversal_lines.append(
+                    {
+                        "line_no": i,
+                        "account_public_id": str(line.account.public_id),
+                        "account_code": line.account.code,
+                        "description": f"Reversal of year-end closing FY{fiscal_year}: {reason}",
+                        "debit": str(line.credit),
+                        "credit": str(line.debit),
+                    }
+                )
 
             entry_number = _next_company_sequence(actor.company, "journal_entry")
 
@@ -2584,7 +2642,9 @@ def reopen_fiscal_year(
 
             # Create and post the reversal entry
             p13 = FiscalPeriod.objects.filter(
-                company=actor.company, fiscal_year=fiscal_year, period=13,
+                company=actor.company,
+                fiscal_year=fiscal_year,
+                period=13,
             ).first()
             reversal_date = p13.end_date.isoformat() if p13 else original_entry.date.isoformat()
 
@@ -2688,15 +2748,19 @@ def reopen_fiscal_year(
         },
     )
 
-    return CommandResult.ok({
-        "fiscal_year": fiscal_year,
-        "reversal_entry_public_id": reversal_entry_public_id,
-    }, event=event)
+    return CommandResult.ok(
+        {
+            "fiscal_year": fiscal_year,
+            "reversal_entry_public_id": reversal_entry_public_id,
+        },
+        event=event,
+    )
 
 
 # =============================================================================
 # Analysis Dimension Commands
 # =============================================================================
+
 
 @transaction.atomic
 def create_analysis_dimension(
@@ -2734,7 +2798,9 @@ def create_analysis_dimension(
     # Validate dimension_kind
     valid_kinds = {k.value for k in AnalysisDimension.DimensionKind}
     if dimension_kind not in valid_kinds:
-        return CommandResult.fail(f"Invalid dimension_kind '{dimension_kind}'. Must be one of: {', '.join(valid_kinds)}")
+        return CommandResult.fail(
+            f"Invalid dimension_kind '{dimension_kind}'. Must be one of: {', '.join(valid_kinds)}"
+        )
 
     # Check for duplicate code
     if AnalysisDimension.objects.filter(company=actor.company, code=code).exists():
@@ -2742,18 +2808,21 @@ def create_analysis_dimension(
 
     dimension_public_id = uuid.uuid4()
 
-    idempotency_key = _idempotency_hash("analysis_dimension.created", {
-        "company_public_id": str(actor.company.public_id),
-        "code": code,
-        "name": name,
-        "name_ar": name_ar,
-        "description": description,
-        "description_ar": description_ar,
-        "dimension_kind": dimension_kind,
-        "is_required_on_posting": is_required_on_posting,
-        "applies_to_account_types": applies_to_account_types or [],
-        "display_order": display_order,
-    })
+    idempotency_key = _idempotency_hash(
+        "analysis_dimension.created",
+        {
+            "company_public_id": str(actor.company.public_id),
+            "code": code,
+            "name": name,
+            "name_ar": name_ar,
+            "description": description,
+            "description_ar": description_ar,
+            "dimension_kind": dimension_kind,
+            "is_required_on_posting": is_required_on_posting,
+            "applies_to_account_types": applies_to_account_types or [],
+            "display_order": display_order,
+        },
+    )
 
     # Emit event
     event = emit_event(
@@ -2789,30 +2858,34 @@ def update_analysis_dimension(
 ) -> CommandResult:
     """
     Update an analysis dimension.
-    
+
     Args:
         actor: The actor context
         dimension_id: ID of dimension to update
         **updates: Field updates
-    
+
     Returns:
         CommandResult with updated AnalysisDimension or error
     """
     require(actor, "accounts.manage")
 
     try:
-        dimension = AnalysisDimension.objects.select_for_update().get(
-            pk=dimension_id, company=actor.company
-        )
+        dimension = AnalysisDimension.objects.select_for_update().get(pk=dimension_id, company=actor.company)
     except AnalysisDimension.DoesNotExist:
         return CommandResult.fail("Dimension not found.")
 
     # Track changes
     changes = {}
     allowed_fields = {
-        "name", "name_ar", "description", "description_ar",
-        "dimension_kind", "is_required_on_posting", "applies_to_account_types",
-        "display_order", "is_active"
+        "name",
+        "name_ar",
+        "description",
+        "description_ar",
+        "dimension_kind",
+        "is_required_on_posting",
+        "applies_to_account_types",
+        "display_order",
+        "is_active",
     }
 
     for field, value in updates.items():
@@ -2847,20 +2920,18 @@ def update_analysis_dimension(
 def delete_analysis_dimension(actor: ActorContext, dimension_id: int) -> CommandResult:
     """
     Delete an analysis dimension.
-    
+
     Args:
         actor: The actor context
         dimension_id: ID of dimension to delete
-    
+
     Returns:
         CommandResult with deletion confirmation or error
     """
     require(actor, "accounts.manage")
 
     try:
-        dimension = AnalysisDimension.objects.select_for_update().get(
-            pk=dimension_id, company=actor.company
-        )
+        dimension = AnalysisDimension.objects.select_for_update().get(pk=dimension_id, company=actor.company)
     except AnalysisDimension.DoesNotExist:
         return CommandResult.fail("Dimension not found.")
 
@@ -2890,6 +2961,7 @@ def delete_analysis_dimension(actor: ActorContext, dimension_id: int) -> Command
 # Analysis Dimension Value Commands
 # =============================================================================
 
+
 @transaction.atomic
 def create_dimension_value(
     actor: ActorContext,
@@ -2903,7 +2975,7 @@ def create_dimension_value(
 ) -> CommandResult:
     """
     Create a new value within an analysis dimension.
-    
+
     Args:
         actor: The actor context
         dimension_id: Parent dimension ID
@@ -2913,16 +2985,14 @@ def create_dimension_value(
         description: Description
         description_ar: Arabic description
         parent_id: Parent value ID for hierarchical dimensions
-    
+
     Returns:
         CommandResult with created AnalysisDimensionValue or error
     """
     require(actor, "accounts.manage")
 
     try:
-        dimension = AnalysisDimension.objects.get(
-            pk=dimension_id, company=actor.company
-        )
+        dimension = AnalysisDimension.objects.get(pk=dimension_id, company=actor.company)
     except AnalysisDimension.DoesNotExist:
         return CommandResult.fail("Dimension not found.")
 
@@ -2934,23 +3004,24 @@ def create_dimension_value(
     parent = None
     if parent_id:
         try:
-            parent = AnalysisDimensionValue.objects.get(
-                pk=parent_id, dimension=dimension
-            )
+            parent = AnalysisDimensionValue.objects.get(pk=parent_id, dimension=dimension)
         except AnalysisDimensionValue.DoesNotExist:
             return CommandResult.fail("Parent value not found in this dimension.")
 
     value_public_id = uuid.uuid4()
 
-    idempotency_key = _idempotency_hash("analysis_dimension_value.created", {
-        "dimension_public_id": str(dimension.public_id),
-        "code": code,
-        "name": name,
-        "name_ar": name_ar,
-        "description": description,
-        "description_ar": description_ar,
-        "parent_public_id": str(parent.public_id) if parent else None,
-    })
+    idempotency_key = _idempotency_hash(
+        "analysis_dimension_value.created",
+        {
+            "dimension_public_id": str(dimension.public_id),
+            "code": code,
+            "name": name,
+            "name_ar": name_ar,
+            "description": description,
+            "description_ar": description_ar,
+            "parent_public_id": str(parent.public_id) if parent else None,
+        },
+    )
 
     # Emit event
     event = emit_event(
@@ -2985,21 +3056,23 @@ def update_dimension_value(
 ) -> CommandResult:
     """
     Update an analysis dimension value.
-    
+
     Args:
         actor: The actor context
         value_id: ID of value to update
         **updates: Field updates
-    
+
     Returns:
         CommandResult with updated AnalysisDimensionValue or error
     """
     require(actor, "accounts.manage")
 
     try:
-        value = AnalysisDimensionValue.objects.select_for_update().select_related(
-            "dimension"
-        ).get(pk=value_id, dimension__company=actor.company)
+        value = (
+            AnalysisDimensionValue.objects.select_for_update()
+            .select_related("dimension")
+            .get(pk=value_id, dimension__company=actor.company)
+        )
     except AnalysisDimensionValue.DoesNotExist:
         return CommandResult.fail("Dimension value not found.")
 
@@ -3040,20 +3113,22 @@ def update_dimension_value(
 def delete_dimension_value(actor: ActorContext, value_id: int) -> CommandResult:
     """
     Delete an analysis dimension value.
-    
+
     Args:
         actor: The actor context
         value_id: ID of value to delete
-    
+
     Returns:
         CommandResult with deletion confirmation or error
     """
     require(actor, "accounts.manage")
 
     try:
-        value = AnalysisDimensionValue.objects.select_for_update().select_related(
-            "dimension"
-        ).get(pk=value_id, dimension__company=actor.company)
+        value = (
+            AnalysisDimensionValue.objects.select_for_update()
+            .select_related("dimension")
+            .get(pk=value_id, dimension__company=actor.company)
+        )
     except AnalysisDimensionValue.DoesNotExist:
         return CommandResult.fail("Dimension value not found.")
 
@@ -3084,6 +3159,7 @@ def delete_dimension_value(actor: ActorContext, value_id: int) -> CommandResult:
 # Account Analysis Default Commands
 # =============================================================================
 
+
 @transaction.atomic
 def set_account_analysis_default(
     actor: ActorContext,
@@ -3093,13 +3169,13 @@ def set_account_analysis_default(
 ) -> CommandResult:
     """
     Set or update a default analysis value for an account.
-    
+
     Args:
         actor: The actor context
         account_id: Account ID
         dimension_id: Dimension ID
         value_id: Default value ID
-    
+
     Returns:
         CommandResult with created/updated AccountAnalysisDefault or error
     """
@@ -3128,16 +3204,17 @@ def set_account_analysis_default(
 
     # Create a short aggregate_id that fits within 64 chars
     # Format: "aad:{hash}" where hash is derived from account+dimension
-    aggregate_hash = hashlib.sha256(
-        f"{account.public_id}:{dimension.public_id}".encode()
-    ).hexdigest()[:32]
+    aggregate_hash = hashlib.sha256(f"{account.public_id}:{dimension.public_id}".encode()).hexdigest()[:32]
     aggregate_id = f"aad:{aggregate_hash}"
 
-    idempotency_key = _idempotency_hash("account_analysis_default.set", {
-        "account_public_id": str(account.public_id),
-        "dimension_public_id": str(dimension.public_id),
-        "value_public_id": str(value.public_id),
-    })
+    idempotency_key = _idempotency_hash(
+        "account_analysis_default.set",
+        {
+            "account_public_id": str(account.public_id),
+            "dimension_public_id": str(dimension.public_id),
+            "value_public_id": str(value.public_id),
+        },
+    )
 
     # Emit event
     event = emit_event(
@@ -3169,12 +3246,12 @@ def remove_account_analysis_default(
 ) -> CommandResult:
     """
     Remove a default analysis value from an account.
-    
+
     Args:
         actor: The actor context
         account_id: Account ID
         dimension_id: Dimension ID
-    
+
     Returns:
         CommandResult with deletion confirmation or error
     """
@@ -3196,15 +3273,16 @@ def remove_account_analysis_default(
         return CommandResult.fail("No default set for this account and dimension.")
 
     # Create a short aggregate_id that fits within 64 chars
-    aggregate_hash = hashlib.sha256(
-        f"{account.public_id}:{dimension.public_id}".encode()
-    ).hexdigest()[:32]
+    aggregate_hash = hashlib.sha256(f"{account.public_id}:{dimension.public_id}".encode()).hexdigest()[:32]
     aggregate_id = f"aad:{aggregate_hash}"
 
-    idempotency_key = _idempotency_hash("account_analysis_default.removed", {
-        "account_public_id": str(account.public_id),
-        "dimension_public_id": str(dimension.public_id),
-    })
+    idempotency_key = _idempotency_hash(
+        "account_analysis_default.removed",
+        {
+            "account_public_id": str(account.public_id),
+            "dimension_public_id": str(dimension.public_id),
+        },
+    )
 
     # Emit event
     event = emit_event(
@@ -3229,6 +3307,7 @@ def remove_account_analysis_default(
 # Journal Line Analysis Commands
 # =============================================================================
 
+
 @transaction.atomic
 def set_journal_line_analysis(
     actor: ActorContext,
@@ -3237,21 +3316,23 @@ def set_journal_line_analysis(
 ) -> CommandResult:
     """
     Set analysis tags for a journal line.
-    
+
     Args:
         actor: The actor context
         line_id: Journal line ID
         analysis_tags: List of {"dimension_id": int, "value_id": int}
-    
+
     Returns:
         CommandResult with the line or error
     """
     require(actor, "journal.edit_draft")
 
     try:
-        line = JournalLine.objects.select_for_update().select_related(
-            "entry"
-        ).get(pk=line_id, entry__company=actor.company)
+        line = (
+            JournalLine.objects.select_for_update()
+            .select_related("entry")
+            .get(pk=line_id, entry__company=actor.company)
+        )
     except JournalLine.DoesNotExist:
         return CommandResult.fail("Journal line not found.")
 
@@ -3269,27 +3350,23 @@ def set_journal_line_analysis(
         value_id = tag.get("value_id")
 
         try:
-            dimension = AnalysisDimension.objects.get(
-                pk=dimension_id, company=actor.company
-            )
+            dimension = AnalysisDimension.objects.get(pk=dimension_id, company=actor.company)
         except AnalysisDimension.DoesNotExist:
             return CommandResult.fail(f"Dimension {dimension_id} not found.")
 
         try:
-            value = AnalysisDimensionValue.objects.get(
-                pk=value_id, dimension=dimension
-            )
+            value = AnalysisDimensionValue.objects.get(pk=value_id, dimension=dimension)
         except AnalysisDimensionValue.DoesNotExist:
-            return CommandResult.fail(
-                f"Value {value_id} not found in dimension {dimension.code}."
-            )
+            return CommandResult.fail(f"Value {value_id} not found in dimension {dimension.code}.")
 
-        tag_data.append({
-            "dimension_public_id": str(dimension.public_id),
-            "dimension_code": dimension.code,
-            "value_public_id": str(value.public_id),
-            "value_code": value.code,
-        })
+        tag_data.append(
+            {
+                "dimension_public_id": str(dimension.public_id),
+                "dimension_code": dimension.code,
+                "value_public_id": str(value.public_id),
+                "value_code": value.code,
+            }
+        )
 
     # IMPORTANT: Use JournalEntry as aggregate type so this event is included
     # in the journal entry's event stream. This allows load_journal_entry_aggregate()
@@ -3316,6 +3393,7 @@ def set_journal_line_analysis(
 # =============================================================================
 # Cash Application Commands
 # =============================================================================
+
 
 @transaction.atomic
 def record_customer_receipt(
@@ -3403,6 +3481,7 @@ def record_customer_receipt(
 
     # Parse date
     from datetime import date as date_cls
+
     try:
         parsed_date = date_cls.fromisoformat(receipt_date)
     except (ValueError, TypeError):
@@ -3455,9 +3534,7 @@ def record_customer_receipt(
                 )
 
             if invoice.status != SalesInvoice.Status.POSTED:
-                return CommandResult.fail(
-                    f"Allocation {idx + 1}: Invoice {invoice.invoice_number} is not posted."
-                )
+                return CommandResult.fail(f"Allocation {idx + 1}: Invoice {invoice.invoice_number} is not posted.")
 
             # Check if allocation exceeds amount due
             if alloc_amount > invoice.amount_due:
@@ -3467,16 +3544,16 @@ def record_customer_receipt(
                 )
 
             total_allocated += alloc_amount
-            validated_allocations.append({
-                "invoice": invoice,
-                "amount": alloc_amount,
-            })
+            validated_allocations.append(
+                {
+                    "invoice": invoice,
+                    "amount": alloc_amount,
+                }
+            )
 
         # Total allocated cannot exceed receipt amount
         if total_allocated > receipt_amount:
-            return CommandResult.fail(
-                f"Total allocated ({total_allocated}) exceeds receipt amount ({receipt_amount})."
-            )
+            return CommandResult.fail(f"Total allocated ({total_allocated}) exceeds receipt amount ({receipt_amount}).")
 
     # Generate receipt public ID
     receipt_public_id = uuid.uuid4()
@@ -3498,6 +3575,7 @@ def record_customer_receipt(
         receipt_exchange_rate = Decimal(str(exchange_rate))
     elif receipt_currency != functional_currency:
         from accounting.models import ExchangeRate
+
         looked_up = ExchangeRate.get_rate(actor.company, receipt_currency, functional_currency, receipt_date)
         receipt_exchange_rate = looked_up if looked_up else Decimal("1")
     else:
@@ -3564,9 +3642,7 @@ def record_customer_receipt(
                 continue
 
             # Get the receipt-date rate for the invoice currency
-            receipt_rate = ExchangeRate.get_rate(
-                actor.company, invoice_currency, functional_currency, parsed_date
-            )
+            receipt_rate = ExchangeRate.get_rate(actor.company, invoice_currency, functional_currency, parsed_date)
             if not receipt_rate:
                 continue  # No rate available, skip FX calculation
 
@@ -3595,26 +3671,30 @@ def record_customer_receipt(
                 # FX gain: we receive more than booked → Dr Bank, Cr Realized FX Gain
                 lines[0]["debit"] = str(receipt_amount + realized_fx_total)  # Increase bank debit
                 if realized_gain_account:
-                    lines.append({
-                        "account_public_id": str(realized_gain_account.public_id),
-                        "account_code": realized_gain_account.code,
-                        "debit": "0",
-                        "credit": str(realized_fx_total),
-                        "line_no": line_no,
-                        "memo": "Realized FX gain on receipt",
-                    })
+                    lines.append(
+                        {
+                            "account_public_id": str(realized_gain_account.public_id),
+                            "account_code": realized_gain_account.code,
+                            "debit": "0",
+                            "credit": str(realized_fx_total),
+                            "line_no": line_no,
+                            "memo": "Realized FX gain on receipt",
+                        }
+                    )
             else:
                 # FX loss: we receive less than booked → Dr Realized FX Loss, Cr Bank
                 lines[0]["debit"] = str(receipt_amount + realized_fx_total)  # Decrease bank debit
                 if realized_loss_account:
-                    lines.append({
-                        "account_public_id": str(realized_loss_account.public_id),
-                        "account_code": realized_loss_account.code,
-                        "debit": str(abs(realized_fx_total)),
-                        "credit": "0",
-                        "line_no": line_no,
-                        "memo": "Realized FX loss on receipt",
-                    })
+                    lines.append(
+                        {
+                            "account_public_id": str(realized_loss_account.public_id),
+                            "account_code": realized_loss_account.code,
+                            "debit": str(abs(realized_fx_total)),
+                            "credit": "0",
+                            "line_no": line_no,
+                            "memo": "Realized FX loss on receipt",
+                        }
+                    )
 
     # Fix any FX rounding imbalance before creating JE
     if is_foreign:
@@ -3632,23 +3712,26 @@ def record_customer_receipt(
 
     line_data_list = []
     for line in lines:
-        line_data_list.append(JournalLineData(
-            line_no=line["line_no"],
-            account_public_id=line["account_public_id"],
-            account_code=line["account_code"],
-            description=line.get("memo", ""),
-            debit=line.get("debit", "0"),
-            credit=line.get("credit", "0"),
-            amount_currency=line.get("amount_currency"),
-            currency=line.get("currency"),
-            customer_public_id=line.get("customer_public_id"),
-            vendor_public_id=None,
-        ))
+        line_data_list.append(
+            JournalLineData(
+                line_no=line["line_no"],
+                account_public_id=line["account_public_id"],
+                account_code=line["account_code"],
+                description=line.get("memo", ""),
+                debit=line.get("debit", "0"),
+                credit=line.get("credit", "0"),
+                amount_currency=line.get("amount_currency"),
+                currency=line.get("currency"),
+                customer_public_id=line.get("customer_public_id"),
+                vendor_public_id=None,
+            )
+        )
 
     posted_at = timezone.now()
 
     # Resolve fiscal period from the accounting date
     from projections.models import FiscalPeriod
+
     fp = FiscalPeriod.objects.filter(
         company=actor.company,
         start_date__lte=parsed_acct_date,
@@ -3706,11 +3789,13 @@ def record_customer_receipt(
                 invoice.amount_paid += alloc_amount
                 invoice.save(update_fields=["amount_paid"])
 
-                allocation_data.append({
-                    "invoice_public_id": str(invoice.public_id),
-                    "invoice_number": invoice.invoice_number,
-                    "amount": str(alloc_amount),
-                })
+                allocation_data.append(
+                    {
+                        "invoice_public_id": str(invoice.public_id),
+                        "invoice_number": invoice.invoice_number,
+                        "amount": str(alloc_amount),
+                    }
+                )
 
     # Emit customer receipt event
     receipt_event = emit_event(
@@ -3750,6 +3835,7 @@ def record_customer_receipt(
     except JournalEntry.DoesNotExist:
         # Projection may have failed; check bookmark for errors
         from projections.base import projection_registry
+
         with rls_bypass():
             je_proj = projection_registry.get("journal_entry_read_model")
             if je_proj:
@@ -3758,13 +3844,16 @@ def record_customer_receipt(
                     return CommandResult.fail(f"Projection error: {bookmark.last_error}")
         return CommandResult.fail("Journal entry could not be created. Projection may have failed.")
 
-    return CommandResult.ok({
-        "receipt_public_id": str(receipt_public_id),
-        "journal_entry": entry,
-        "amount": str(receipt_amount),
-        "customer_code": customer.code,
-        "allocations": allocation_data,
-    }, event=receipt_event)
+    return CommandResult.ok(
+        {
+            "receipt_public_id": str(receipt_public_id),
+            "journal_entry": entry,
+            "amount": str(receipt_amount),
+            "customer_code": customer.code,
+            "allocations": allocation_data,
+        },
+        event=receipt_event,
+    )
 
 
 @transaction.atomic
@@ -3855,6 +3944,7 @@ def record_vendor_payment(
 
     # Parse date
     from datetime import date as date_cls
+
     try:
         parsed_date = date_cls.fromisoformat(payment_date)
     except (ValueError, TypeError):
@@ -3911,18 +4001,18 @@ def record_vendor_payment(
                     return CommandResult.fail(f"Allocation {idx + 1}: invalid bill_amount format.")
 
             total_allocated += alloc_amount
-            validated_allocations.append({
-                "bill_reference": bill_reference,
-                "amount": alloc_amount,
-                "bill_date": bill_date,
-                "bill_amount": bill_amount,
-            })
+            validated_allocations.append(
+                {
+                    "bill_reference": bill_reference,
+                    "amount": alloc_amount,
+                    "bill_date": bill_date,
+                    "bill_amount": bill_amount,
+                }
+            )
 
         # Total allocated cannot exceed payment amount
         if total_allocated > payment_amount:
-            return CommandResult.fail(
-                f"Total allocated ({total_allocated}) exceeds payment amount ({payment_amount})."
-            )
+            return CommandResult.fail(f"Total allocated ({total_allocated}) exceeds payment amount ({payment_amount}).")
 
     # Generate payment public ID
     payment_public_id = uuid.uuid4()
@@ -3944,6 +4034,7 @@ def record_vendor_payment(
         payment_exchange_rate = Decimal(str(exchange_rate))
     elif payment_currency != functional_currency:
         from accounting.models import ExchangeRate
+
         looked_up = ExchangeRate.get_rate(actor.company, payment_currency, functional_currency, payment_date)
         payment_exchange_rate = looked_up if looked_up else Decimal("1")
     else:
@@ -3997,9 +4088,7 @@ def record_vendor_payment(
         realized_loss_account = core_mapping.get("REALIZED_FX_LOSS")
 
         # Get the payment-date rate
-        payment_rate = ExchangeRate.get_rate(
-            actor.company, vendor_currency, functional_currency, parsed_date
-        )
+        payment_rate = ExchangeRate.get_rate(actor.company, vendor_currency, functional_currency, parsed_date)
 
         if payment_rate:
             for alloc in validated_allocations:
@@ -4010,9 +4099,7 @@ def record_vendor_payment(
                     continue
 
                 # Get the bill-date rate
-                bill_rate = ExchangeRate.get_rate(
-                    actor.company, vendor_currency, functional_currency, bill_date
-                )
+                bill_rate = ExchangeRate.get_rate(actor.company, vendor_currency, functional_currency, bill_date)
                 if not bill_rate or bill_rate == Decimal("0"):
                     continue
 
@@ -4033,26 +4120,32 @@ def record_vendor_payment(
                 # FX gain: paying less than booked → Dr AP stays, Cr Bank less, Cr Realized FX Gain
                 lines[1]["credit"] = str(payment_amount - realized_fx_total)  # Decrease bank credit
                 if realized_gain_account:
-                    lines.append({
-                        "account_public_id": str(realized_gain_account.public_id),
-                        "account_code": realized_gain_account.code,
-                        "debit": "0",
-                        "credit": str(realized_fx_total),
-                        "line_no": line_no,
-                        "memo": "Realized FX gain on payment",
-                    })
+                    lines.append(
+                        {
+                            "account_public_id": str(realized_gain_account.public_id),
+                            "account_code": realized_gain_account.code,
+                            "debit": "0",
+                            "credit": str(realized_fx_total),
+                            "line_no": line_no,
+                            "memo": "Realized FX gain on payment",
+                        }
+                    )
             else:
                 # FX loss: paying more than booked → Dr AP stays, Cr Bank more, Dr Realized FX Loss
-                lines[1]["credit"] = str(payment_amount - realized_fx_total)  # Increase bank credit (fx_total is negative)
+                lines[1]["credit"] = str(
+                    payment_amount - realized_fx_total
+                )  # Increase bank credit (fx_total is negative)
                 if realized_loss_account:
-                    lines.append({
-                        "account_public_id": str(realized_loss_account.public_id),
-                        "account_code": realized_loss_account.code,
-                        "debit": str(abs(realized_fx_total)),
-                        "credit": "0",
-                        "line_no": line_no,
-                        "memo": "Realized FX loss on payment",
-                    })
+                    lines.append(
+                        {
+                            "account_public_id": str(realized_loss_account.public_id),
+                            "account_code": realized_loss_account.code,
+                            "debit": str(abs(realized_fx_total)),
+                            "credit": "0",
+                            "line_no": line_no,
+                            "memo": "Realized FX loss on payment",
+                        }
+                    )
 
     # Fix any FX rounding imbalance before creating JE
     if is_foreign:
@@ -4069,23 +4162,26 @@ def record_vendor_payment(
 
     line_data_list = []
     for line in lines:
-        line_data_list.append(JournalLineData(
-            line_no=line["line_no"],
-            account_public_id=line["account_public_id"],
-            account_code=line["account_code"],
-            description=line.get("memo", ""),
-            debit=line.get("debit", "0"),
-            credit=line.get("credit", "0"),
-            amount_currency=line.get("amount_currency"),
-            currency=line.get("currency"),
-            customer_public_id=None,
-            vendor_public_id=line.get("vendor_public_id"),
-        ))
+        line_data_list.append(
+            JournalLineData(
+                line_no=line["line_no"],
+                account_public_id=line["account_public_id"],
+                account_code=line["account_code"],
+                description=line.get("memo", ""),
+                debit=line.get("debit", "0"),
+                credit=line.get("credit", "0"),
+                amount_currency=line.get("amount_currency"),
+                currency=line.get("currency"),
+                customer_public_id=None,
+                vendor_public_id=line.get("vendor_public_id"),
+            )
+        )
 
     posted_at = timezone.now()
 
     # Resolve fiscal period from the accounting date
     from projections.models import FiscalPeriod
+
     fp = FiscalPeriod.objects.filter(
         company=actor.company,
         start_date__lte=parsed_acct_date,
@@ -4138,12 +4234,14 @@ def record_vendor_payment(
                     created_by=actor.user,
                 )
 
-                allocation_data.append({
-                    "bill_reference": alloc["bill_reference"],
-                    "amount": str(alloc["amount"]),
-                    "bill_date": alloc["bill_date"].isoformat() if alloc["bill_date"] else None,
-                    "bill_amount": str(alloc["bill_amount"]) if alloc["bill_amount"] else None,
-                })
+                allocation_data.append(
+                    {
+                        "bill_reference": alloc["bill_reference"],
+                        "amount": str(alloc["amount"]),
+                        "bill_date": alloc["bill_date"].isoformat() if alloc["bill_date"] else None,
+                        "bill_amount": str(alloc["bill_amount"]) if alloc["bill_amount"] else None,
+                    }
+                )
 
     # Emit vendor payment event
     payment_event = emit_event(
@@ -4183,6 +4281,7 @@ def record_vendor_payment(
     except JournalEntry.DoesNotExist:
         # Projection may have failed; check bookmark for errors
         from projections.base import projection_registry
+
         with rls_bypass():
             je_proj = projection_registry.get("journal_entry_read_model")
             if je_proj:
@@ -4191,13 +4290,16 @@ def record_vendor_payment(
                     return CommandResult.fail(f"Projection error: {bookmark.last_error}")
         return CommandResult.fail("Journal entry could not be created. Projection may have failed.")
 
-    return CommandResult.ok({
-        "payment_public_id": str(payment_public_id),
-        "journal_entry": entry,
-        "amount": str(payment_amount),
-        "vendor_code": vendor.code,
-        "allocations": allocation_data,
-    }, event=payment_event)
+    return CommandResult.ok(
+        {
+            "payment_public_id": str(payment_public_id),
+            "journal_entry": entry,
+            "amount": str(payment_amount),
+            "vendor_code": vendor.code,
+            "allocations": allocation_data,
+        },
+        event=payment_event,
+    )
 
 
 # =============================================================================
@@ -4267,12 +4369,12 @@ def create_statistical_entry(
     # Validate direction
     if direction not in (StatisticalEntry.Direction.INCREASE, StatisticalEntry.Direction.DECREASE):
         return CommandResult.fail(
-            f"Direction must be '{StatisticalEntry.Direction.INCREASE}' or "
-            f"'{StatisticalEntry.Direction.DECREASE}'."
+            f"Direction must be '{StatisticalEntry.Direction.INCREASE}' or '{StatisticalEntry.Direction.DECREASE}'."
         )
 
     # Parse date
     from datetime import date as date_cls
+
     try:
         parsed_date = date_cls.fromisoformat(entry_date)
     except (ValueError, TypeError):
@@ -4282,9 +4384,7 @@ def create_statistical_entry(
     related_je = None
     if related_journal_entry_id:
         try:
-            related_je = JournalEntry.objects.get(
-                pk=related_journal_entry_id, company=actor.company
-            )
+            related_je = JournalEntry.objects.get(pk=related_journal_entry_id, company=actor.company)
         except JournalEntry.DoesNotExist:
             return CommandResult.fail("Related journal entry not found.")
 
@@ -4319,9 +4419,12 @@ def create_statistical_entry(
 
     _process_projections(actor.company)
 
-    return CommandResult.ok({
-        "entry_public_id": str(entry_public_id),
-    }, event=event)
+    return CommandResult.ok(
+        {
+            "entry_public_id": str(entry_public_id),
+        },
+        event=event,
+    )
 
 
 def update_statistical_entry(
@@ -4360,9 +4463,7 @@ def update_statistical_entry(
 
     # Find the entry
     try:
-        entry = StatisticalEntry.objects.get(
-            public_id=entry_public_id, company=actor.company
-        )
+        entry = StatisticalEntry.objects.get(public_id=entry_public_id, company=actor.company)
     except StatisticalEntry.DoesNotExist:
         return CommandResult.fail("Statistical entry not found.")
 
@@ -4377,6 +4478,7 @@ def update_statistical_entry(
 
     if entry_date is not None:
         from datetime import date as date_cls
+
         try:
             parsed_date = date_cls.fromisoformat(entry_date)
         except (ValueError, TypeError):
@@ -4397,8 +4499,7 @@ def update_statistical_entry(
     if direction is not None:
         if direction not in (StatisticalEntry.Direction.INCREASE, StatisticalEntry.Direction.DECREASE):
             return CommandResult.fail(
-                f"Direction must be '{StatisticalEntry.Direction.INCREASE}' or "
-                f"'{StatisticalEntry.Direction.DECREASE}'."
+                f"Direction must be '{StatisticalEntry.Direction.INCREASE}' or '{StatisticalEntry.Direction.DECREASE}'."
             )
         if entry.direction != direction:
             changes["direction"] = {"old": entry.direction, "new": direction}
@@ -4437,10 +4538,13 @@ def update_statistical_entry(
 
     _process_projections(actor.company)
 
-    return CommandResult.ok({
-        "entry_public_id": str(entry.public_id),
-        "changes": changes,
-    }, event=event)
+    return CommandResult.ok(
+        {
+            "entry_public_id": str(entry.public_id),
+            "changes": changes,
+        },
+        event=event,
+    )
 
 
 def post_statistical_entry(
@@ -4463,17 +4567,13 @@ def post_statistical_entry(
 
     # Find the entry
     try:
-        entry = StatisticalEntry.objects.get(
-            public_id=entry_public_id, company=actor.company
-        )
+        entry = StatisticalEntry.objects.get(public_id=entry_public_id, company=actor.company)
     except StatisticalEntry.DoesNotExist:
         return CommandResult.fail("Statistical entry not found.")
 
     # Check status
     if entry.status != StatisticalEntry.Status.DRAFT:
-        return CommandResult.fail(
-            f"Cannot post entry with status '{entry.status}'. Only DRAFT entries can be posted."
-        )
+        return CommandResult.fail(f"Cannot post entry with status '{entry.status}'. Only DRAFT entries can be posted.")
 
     posted_at = timezone.now()
 
@@ -4500,15 +4600,20 @@ def post_statistical_entry(
             memo_ar=entry.memo_ar,
             source_module=entry.source_module,
             source_document=entry.source_document,
-            related_journal_entry_public_id=str(entry.related_journal_entry.public_id) if entry.related_journal_entry else None,
+            related_journal_entry_public_id=str(entry.related_journal_entry.public_id)
+            if entry.related_journal_entry
+            else None,
         ).to_dict(),
     )
 
     _process_projections(actor.company)
 
-    return CommandResult.ok({
-        "entry_public_id": str(entry.public_id),
-    }, event=event)
+    return CommandResult.ok(
+        {
+            "entry_public_id": str(entry.public_id),
+        },
+        event=event,
+    )
 
 
 def reverse_statistical_entry(
@@ -4533,9 +4638,7 @@ def reverse_statistical_entry(
 
     # Find the entry
     try:
-        entry = StatisticalEntry.objects.get(
-            public_id=entry_public_id, company=actor.company
-        )
+        entry = StatisticalEntry.objects.get(public_id=entry_public_id, company=actor.company)
     except StatisticalEntry.DoesNotExist:
         return CommandResult.fail("Statistical entry not found.")
 
@@ -4546,11 +4649,12 @@ def reverse_statistical_entry(
         )
 
     # Check if already reversed
-    if hasattr(entry, 'reversal_entry') and entry.reversal_entry:
+    if hasattr(entry, "reversal_entry") and entry.reversal_entry:
         return CommandResult.fail("This entry has already been reversed.")
 
     # Parse reversal date
     from datetime import date as date_cls
+
     if reversal_date:
         try:
             parsed_reversal_date = date_cls.fromisoformat(reversal_date)
@@ -4583,10 +4687,13 @@ def reverse_statistical_entry(
 
     _process_projections(actor.company)
 
-    return CommandResult.ok({
-        "original_entry_public_id": str(entry.public_id),
-        "reversal_entry_public_id": str(reversal_public_id),
-    }, event=event)
+    return CommandResult.ok(
+        {
+            "original_entry_public_id": str(entry.public_id),
+            "reversal_entry_public_id": str(reversal_public_id),
+        },
+        event=event,
+    )
 
 
 def delete_statistical_entry(
@@ -4609,9 +4716,7 @@ def delete_statistical_entry(
 
     # Find the entry
     try:
-        entry = StatisticalEntry.objects.get(
-            public_id=entry_public_id, company=actor.company
-        )
+        entry = StatisticalEntry.objects.get(public_id=entry_public_id, company=actor.company)
     except StatisticalEntry.DoesNotExist:
         return CommandResult.fail("Statistical entry not found.")
 
@@ -4643,7 +4748,10 @@ def delete_statistical_entry(
 
     _process_projections(actor.company)
 
-    return CommandResult.ok({
-        "entry_public_id": str(entry.public_id),
-        "deleted": True,
-    }, event=event)
+    return CommandResult.ok(
+        {
+            "entry_public_id": str(entry.public_id),
+            "deleted": True,
+        },
+        event=event,
+    )

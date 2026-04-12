@@ -51,8 +51,8 @@ class ProjectionWriteQuerySet(models.QuerySet):
         super().__init__(*args, **kwargs)
         self._projection_write = _projection_write
 
-    def _clone(self):
-        c = super()._clone()
+    def _clone(self):  # type: ignore[override]
+        c = super()._clone()  # type: ignore[misc]
         c._projection_write = self._projection_write
         return c
 
@@ -74,9 +74,7 @@ class ProjectionWriteQuerySet(models.QuerySet):
 
             # Use the standard implementation but intercept the save
             with transaction.atomic(using=self.db):
-                obj, created = self._update_or_create_impl(
-                    defaults, create_defaults, **kwargs
-                )
+                obj, created = self._update_or_create_impl(defaults, create_defaults, **kwargs)
                 return obj, created
 
         return super().update_or_create(defaults=defaults, create_defaults=create_defaults, **kwargs)
@@ -163,6 +161,7 @@ class ProjectionWriteManager(models.Manager):
         """Return a queryset that allows projection writes."""
         return self.get_queryset().projection()
 
+
 from accounts.models import Company
 
 
@@ -211,7 +210,9 @@ class CompanySequence(models.Model):
         return f"{self.company_id}:{self.name}={self.next_value}"
 
     def save(self, *args, **kwargs):
-        if not write_context_allowed({"command", "migration", "bootstrap", "admin_emergency"}) and not getattr(settings, "TESTING", False):
+        if not write_context_allowed({"command", "migration", "bootstrap", "admin_emergency"}) and not getattr(
+            settings, "TESTING", False
+        ):
             raise RuntimeError(
                 "CompanySequence is a command-owned write model. "
                 "Direct saves are only allowed within command_writes_allowed()."
@@ -251,6 +252,7 @@ class Account(AccountingReadModel):
         Old types (RECEIVABLE, PAYABLE, CONTRA_*, MEMO) are migrated to
         the appropriate type + role combination.
         """
+
         ASSET = "ASSET", "Asset"
         LIABILITY = "LIABILITY", "Liability"
         EQUITY = "EQUITY", "Equity"
@@ -274,6 +276,7 @@ class Account(AccountingReadModel):
         Role determines derived properties like normal_balance,
         requires_counterparty, and allow_manual_posting.
         """
+
         # Asset roles
         ASSET_GENERAL = "ASSET_GENERAL", "General Asset"
         LIQUIDITY = "LIQUIDITY", "Cash/Bank"
@@ -333,6 +336,7 @@ class Account(AccountingReadModel):
         STATISTICAL: Quantity tracking only, no financial impact
         OFF_BALANCE: Off-balance-sheet items (contingencies, commitments)
         """
+
         FINANCIAL = "FINANCIAL", "Financial"
         STATISTICAL = "STATISTICAL", "Statistical"
         OFF_BALANCE = "OFF_BALANCE", "Off-Balance Sheet"
@@ -387,28 +391,52 @@ class Account(AccountingReadModel):
     # Valid roles per account type
     VALID_ROLES_BY_TYPE = {
         AccountType.ASSET: {
-            AccountRole.ASSET_GENERAL, AccountRole.LIQUIDITY, AccountRole.RECEIVABLE_CONTROL,
-            AccountRole.INVENTORY_VALUE, AccountRole.PREPAID, AccountRole.FIXED_ASSET_COST,
-            AccountRole.ACCUM_DEPRECIATION, AccountRole.OTHER_ASSET,
-            AccountRole.STAT_GENERAL, AccountRole.STAT_INVENTORY_QTY, AccountRole.STAT_PRODUCTION_QTY,
+            AccountRole.ASSET_GENERAL,
+            AccountRole.LIQUIDITY,
+            AccountRole.RECEIVABLE_CONTROL,
+            AccountRole.INVENTORY_VALUE,
+            AccountRole.PREPAID,
+            AccountRole.FIXED_ASSET_COST,
+            AccountRole.ACCUM_DEPRECIATION,
+            AccountRole.OTHER_ASSET,
+            AccountRole.STAT_GENERAL,
+            AccountRole.STAT_INVENTORY_QTY,
+            AccountRole.STAT_PRODUCTION_QTY,
         },
         AccountType.LIABILITY: {
-            AccountRole.LIABILITY_GENERAL, AccountRole.PAYABLE_CONTROL, AccountRole.ACCRUED_EXPENSE,
-            AccountRole.DEFERRED_REVENUE, AccountRole.TAX_PAYABLE, AccountRole.LOAN,
-            AccountRole.OTHER_LIABILITY, AccountRole.OBS_GENERAL, AccountRole.OBS_CONTINGENT,
+            AccountRole.LIABILITY_GENERAL,
+            AccountRole.PAYABLE_CONTROL,
+            AccountRole.ACCRUED_EXPENSE,
+            AccountRole.DEFERRED_REVENUE,
+            AccountRole.TAX_PAYABLE,
+            AccountRole.LOAN,
+            AccountRole.OTHER_LIABILITY,
+            AccountRole.OBS_GENERAL,
+            AccountRole.OBS_CONTINGENT,
         },
         AccountType.EQUITY: {
-            AccountRole.CAPITAL, AccountRole.RETAINED_EARNINGS, AccountRole.CURRENT_YEAR_EARNINGS,
-            AccountRole.DRAWINGS, AccountRole.RESERVE, AccountRole.OTHER_EQUITY,
+            AccountRole.CAPITAL,
+            AccountRole.RETAINED_EARNINGS,
+            AccountRole.CURRENT_YEAR_EARNINGS,
+            AccountRole.DRAWINGS,
+            AccountRole.RESERVE,
+            AccountRole.OTHER_EQUITY,
         },
         AccountType.REVENUE: {
-            AccountRole.SALES, AccountRole.SERVICE, AccountRole.OTHER_INCOME,
-            AccountRole.FINANCIAL_INCOME, AccountRole.CONTRA_REVENUE,
+            AccountRole.SALES,
+            AccountRole.SERVICE,
+            AccountRole.OTHER_INCOME,
+            AccountRole.FINANCIAL_INCOME,
+            AccountRole.CONTRA_REVENUE,
         },
         AccountType.EXPENSE: {
-            AccountRole.COGS, AccountRole.OPERATING_EXPENSE, AccountRole.ADMIN_EXPENSE,
-            AccountRole.FINANCIAL_EXPENSE, AccountRole.DEPRECIATION_EXPENSE,
-            AccountRole.TAX_EXPENSE, AccountRole.OTHER_EXPENSE,
+            AccountRole.COGS,
+            AccountRole.OPERATING_EXPENSE,
+            AccountRole.ADMIN_EXPENSE,
+            AccountRole.FINANCIAL_EXPENSE,
+            AccountRole.DEPRECIATION_EXPENSE,
+            AccountRole.TAX_EXPENSE,
+            AccountRole.OTHER_EXPENSE,
         },
     }
 
@@ -634,17 +662,25 @@ class Account(AccountingReadModel):
             allowed = False
 
             # Same type is always allowed
-            if parent_type == child_type or (parent_type == self.AccountType.ASSET and child_type in self.ASSET_FAMILY) or (parent_type in self.ASSET_FAMILY and child_type == self.AccountType.CONTRA_ASSET) or (parent_type == self.AccountType.LIABILITY and child_type in self.LIABILITY_FAMILY) or (parent_type in self.LIABILITY_FAMILY and child_type == self.AccountType.CONTRA_LIABILITY) or (parent_type == self.AccountType.EQUITY and child_type == self.AccountType.CONTRA_EQUITY) or (parent_type == self.AccountType.REVENUE and child_type == self.AccountType.CONTRA_REVENUE) or (parent_type == self.AccountType.EXPENSE and child_type == self.AccountType.CONTRA_EXPENSE):
+            if (
+                parent_type == child_type
+                or (parent_type == self.AccountType.ASSET and child_type in self.ASSET_FAMILY)
+                or (parent_type in self.ASSET_FAMILY and child_type == self.AccountType.CONTRA_ASSET)
+                or (parent_type == self.AccountType.LIABILITY and child_type in self.LIABILITY_FAMILY)
+                or (parent_type in self.LIABILITY_FAMILY and child_type == self.AccountType.CONTRA_LIABILITY)
+                or (parent_type == self.AccountType.EQUITY and child_type == self.AccountType.CONTRA_EQUITY)
+                or (parent_type == self.AccountType.REVENUE and child_type == self.AccountType.CONTRA_REVENUE)
+                or (parent_type == self.AccountType.EXPENSE and child_type == self.AccountType.CONTRA_EXPENSE)
+            ):
                 allowed = True
 
             if not allowed:
-                raise ValidationError(
-                    f"Account type {child_type} cannot be a child of {parent_type}."
-                )
+                raise ValidationError(f"Account type {child_type} cannot be a child of {parent_type}.")
 
         # Validate type/role combination (if role is set)
         if self.role:
             from .behaviors import validate_type_role_combination
+
             is_valid, error_msg = validate_type_role_combination(self.account_type, self.role)
             if not is_valid:
                 raise ValidationError(error_msg)
@@ -652,15 +688,11 @@ class Account(AccountingReadModel):
         # Validate unit_of_measure for statistical/off-balance accounts
         if self.ledger_domain in (self.LedgerDomain.STATISTICAL, self.LedgerDomain.OFF_BALANCE):
             if not self.unit_of_measure:
-                raise ValidationError(
-                    "Unit of measure is required for statistical and off-balance accounts."
-                )
+                raise ValidationError("Unit of measure is required for statistical and off-balance accounts.")
         # Legacy: validate for MEMO type
         elif self.unit_of_measure and self.account_type != self.AccountType.MEMO:
             if self.role not in self.STAT_ROLES:
-                raise ValidationError(
-                    "Unit of measure can only be set for statistical/off-balance accounts."
-                )
+                raise ValidationError("Unit of measure can only be set for statistical/off-balance accounts.")
 
     def save(self, *args, _projection_write: bool = False, **kwargs):
         """
@@ -681,6 +713,7 @@ class Account(AccountingReadModel):
 
         # Apply derived fields from role and type
         from .behaviors import apply_derived_fields
+
         apply_derived_fields(self)
 
         self.full_clean()
@@ -731,7 +764,7 @@ class Account(AccountingReadModel):
 
     def get_ancestors(self) -> list["Account"]:
         """Returns list of ancestor accounts from root to immediate parent."""
-        ancestors = []
+        ancestors: list[Account] = []
         current = self.parent
         while current:
             ancestors.insert(0, current)
@@ -785,6 +818,7 @@ class Account(AccountingReadModel):
 # =============================================================================
 # Counterparty Models (AR/AP Subledgers)
 # =============================================================================
+
 
 class Customer(AccountingReadModel):
     """
@@ -922,13 +956,9 @@ class Customer(AccountingReadModel):
         # Validate default_ar_account is a receivable control account
         if self.default_ar_account:
             if self.default_ar_account.company_id != self.company_id:
-                raise ValidationError(
-                    "Default AR account must belong to the same company."
-                )
+                raise ValidationError("Default AR account must belong to the same company.")
             if self.default_ar_account.role != Account.AccountRole.RECEIVABLE_CONTROL:
-                raise ValidationError(
-                    "Default AR account must have role=RECEIVABLE_CONTROL."
-                )
+                raise ValidationError("Default AR account must have role=RECEIVABLE_CONTROL.")
 
     def save(self, *args, _projection_write: bool = False, **kwargs):
         """
@@ -1104,13 +1134,9 @@ class Vendor(AccountingReadModel):
         # Validate default_ap_account is a payable control account
         if self.default_ap_account:
             if self.default_ap_account.company_id != self.company_id:
-                raise ValidationError(
-                    "Default AP account must belong to the same company."
-                )
+                raise ValidationError("Default AP account must belong to the same company.")
             if self.default_ap_account.role != Account.AccountRole.PAYABLE_CONTROL:
-                raise ValidationError(
-                    "Default AP account must have role=PAYABLE_CONTROL."
-                )
+                raise ValidationError("Default AP account must have role=PAYABLE_CONTROL.")
 
     def save(self, *args, _projection_write: bool = False, **kwargs):
         """
@@ -1156,7 +1182,7 @@ class Vendor(AccountingReadModel):
 class JournalEntry(AccountingReadModel):
     """
     Journal Entry header.
-    
+
     Workflow: INCOMPLETE -> DRAFT -> POSTED -> REVERSED
     - INCOMPLETE: Entry being edited, may be unbalanced
     - DRAFT: Entry is complete and balanced, ready for posting
@@ -1334,19 +1360,13 @@ class JournalEntry(AccountingReadModel):
 
         # Validate all accounts belong to same company
         if lines_qs.exclude(account__company_id=self.company_id).exists():
-            raise ValidationError(
-                "All journal lines must use accounts from the same company as the entry."
-            )
+            raise ValidationError("All journal lines must use accounts from the same company as the entry.")
 
         # Validate all accounts are postable
-        non_postable = lines_qs.filter(
-            Q(account__is_header=True) | ~Q(account__status=Account.Status.ACTIVE)
-        )
+        non_postable = lines_qs.filter(Q(account__is_header=True) | ~Q(account__status=Account.Status.ACTIVE))
         if non_postable.exists():
             codes = list(non_postable.values_list("account__code", flat=True))
-            raise ValidationError(
-                f"Cannot post to non-postable accounts: {', '.join(codes)}"
-            )
+            raise ValidationError(f"Cannot post to non-postable accounts: {', '.join(codes)}")
 
         # Separate financial and memo lines
         financial_lines = lines_qs.exclude(account__account_type=Account.AccountType.MEMO)
@@ -1367,9 +1387,7 @@ class JournalEntry(AccountingReadModel):
                 raise ValidationError("Financial totals cannot both be zero.")
 
             if debit_total != credit_total:
-                raise ValidationError(
-                    f"Entry is not balanced. Debit={debit_total} Credit={credit_total}"
-                )
+                raise ValidationError(f"Entry is not balanced. Debit={debit_total} Credit={credit_total}")
 
         # Per-line validation (applies to both financial and memo)
         for ln in lines_qs:
@@ -1433,16 +1451,16 @@ class JournalEntry(AccountingReadModel):
     @property
     def total_debit(self) -> Decimal:
         """Sum of all debit amounts (excluding memo accounts)."""
-        return self.lines.exclude(
-            account__account_type=Account.AccountType.MEMO
-        ).aggregate(total=Sum("debit"))["total"] or Decimal("0.00")
+        return self.lines.exclude(account__account_type=Account.AccountType.MEMO).aggregate(total=Sum("debit"))[
+            "total"
+        ] or Decimal("0.00")
 
     @property
     def total_credit(self) -> Decimal:
         """Sum of all credit amounts (excluding memo accounts)."""
-        return self.lines.exclude(
-            account__account_type=Account.AccountType.MEMO
-        ).aggregate(total=Sum("credit"))["total"] or Decimal("0.00")
+        return self.lines.exclude(account__account_type=Account.AccountType.MEMO).aggregate(total=Sum("credit"))[
+            "total"
+        ] or Decimal("0.00")
 
     @property
     def is_balanced(self) -> bool:
@@ -1537,7 +1555,8 @@ class JournalLine(AccountingReadModel):
         help_text="Whether this line has been reconciled against a bank statement",
     )
     reconciled_date = models.DateField(
-        null=True, blank=True,
+        null=True,
+        blank=True,
         help_text="Date this line was reconciled",
     )
 
@@ -1546,20 +1565,20 @@ class JournalLine(AccountingReadModel):
         ordering = ["entry", "line_no"]
         constraints = [
             models.CheckConstraint(
-                check=~(Q(debit__gt=0) & Q(credit__gt=0)),
+                check=~(Q(debit__gt=0) & Q(credit__gt=0)),  # type: ignore[call-arg]
                 name="chk_line_not_both_debit_credit",
             ),
             models.CheckConstraint(
-                check=~(Q(debit__exact=0) & Q(credit__exact=0)),
+                check=~(Q(debit__exact=0) & Q(credit__exact=0)),  # type: ignore[call-arg]
                 name="chk_line_not_both_zero",
             ),
             models.CheckConstraint(
-                check=Q(debit__gte=0) & Q(credit__gte=0),
+                check=Q(debit__gte=0) & Q(credit__gte=0),  # type: ignore[call-arg]
                 name="chk_line_non_negative",
             ),
             # A line cannot have both customer and vendor
             models.CheckConstraint(
-                check=~(Q(customer__isnull=False) & Q(vendor__isnull=False)),
+                check=~(Q(customer__isnull=False) & Q(vendor__isnull=False)),  # type: ignore[call-arg]
                 name="chk_line_not_both_counterparty",
             ),
         ]
@@ -1615,10 +1634,14 @@ class JournalLine(AccountingReadModel):
             raise ValidationError("JournalLine company must match account company.")
 
         # Validate counterparty company
-        if self.customer_id and self.company_id and self.customer.company_id != self.company_id:
-            raise ValidationError("JournalLine customer must belong to the same company.")
-        if self.vendor_id and self.company_id and self.vendor.company_id != self.company_id:
-            raise ValidationError("JournalLine vendor must belong to the same company.")
+        if self.customer_id and self.company_id:
+            customer = self.customer
+            if customer is not None and customer.company_id != self.company_id:
+                raise ValidationError("JournalLine customer must belong to the same company.")
+        if self.vendor_id and self.company_id:
+            vendor = self.vendor
+            if vendor is not None and vendor.company_id != self.company_id:
+                raise ValidationError("JournalLine vendor must belong to the same company.")
 
         # Cannot have both customer and vendor on same line
         if self.customer_id and self.vendor_id:
@@ -1679,6 +1702,7 @@ class JournalLine(AccountingReadModel):
 # Analysis Dimensions
 # =============================================================================
 
+
 class AnalysisDimension(AccountingReadModel):
     """
     User-defined analysis dimension.
@@ -1717,8 +1741,8 @@ class AnalysisDimension(AccountingReadModel):
 
     # Semantic classification
     class DimensionKind(models.TextChoices):
-        CONTEXT = "CONTEXT", "Context"      # Business meaning (property, doctor, project)
-        ANALYTIC = "ANALYTIC", "Analytic"   # Optional enrichment (campaign, segment)
+        CONTEXT = "CONTEXT", "Context"  # Business meaning (property, doctor, project)
+        ANALYTIC = "ANALYTIC", "Analytic"  # Optional enrichment (campaign, segment)
 
     dimension_kind = models.CharField(
         max_length=10,
@@ -1796,7 +1820,7 @@ class AnalysisDimensionValue(AccountingReadModel):
     """
     Values within a dimension.
     e.g., Dimension "Cost Center" has values "Sales", "IT", "HR"
-    
+
     Supports hierarchical structure for drill-down reporting.
     e.g., IT > Infrastructure > Servers
     """
@@ -1878,7 +1902,7 @@ class AnalysisDimensionValue(AccountingReadModel):
 
     def get_ancestors(self) -> list["AnalysisDimensionValue"]:
         """Returns list of ancestor values from root to immediate parent."""
-        ancestors = []
+        ancestors: list[AnalysisDimensionValue] = []
         current = self.parent
         while current:
             ancestors.insert(0, current)
@@ -2148,6 +2172,7 @@ class AccountDimensionRule(models.Model):
 # Statistical Entries
 # =============================================================================
 
+
 class StatisticalEntry(AccountingReadModel):
     """
     Quantity tracking for statistical and off-balance sheet accounts.
@@ -2290,7 +2315,7 @@ class StatisticalEntry(AccountingReadModel):
         ]
         constraints = [
             models.CheckConstraint(
-                check=Q(quantity__gt=0),
+                check=Q(quantity__gt=0),  # type: ignore[call-arg]
                 name="chk_stat_quantity_positive",
             ),
         ]
@@ -2323,15 +2348,11 @@ class StatisticalEntry(AccountingReadModel):
                     f"Account {self.account.code} has ledger_domain=FINANCIAL."
                 )
             if self.account.company_id != self.company_id:
-                raise ValidationError(
-                    "Account must belong to the same company."
-                )
+                raise ValidationError("Account must belong to the same company.")
 
         # Validate quantity is positive
         if self.quantity is not None and self.quantity <= 0:
-            raise ValidationError(
-                "Quantity must be positive. Use direction to indicate increase/decrease."
-            )
+            raise ValidationError("Quantity must be positive. Use direction to indicate increase/decrease.")
 
         # Validate unit matches account's unit_of_measure (if set)
         if self.account and self.account.unit_of_measure:
@@ -2457,25 +2478,33 @@ class ExchangeRate(models.Model):
         if from_currency == to_currency:
             return Decimal("1.0")
 
-        rate = cls.objects.filter(
-            company=company,
-            from_currency=from_currency,
-            to_currency=to_currency,
-            effective_date__lte=date,
-            rate_type=rate_type,
-        ).order_by("-effective_date").first()
+        rate = (
+            cls.objects.filter(
+                company=company,
+                from_currency=from_currency,
+                to_currency=to_currency,
+                effective_date__lte=date,
+                rate_type=rate_type,
+            )
+            .order_by("-effective_date")
+            .first()
+        )
 
         if rate:
             return rate.rate
 
         # Try reverse rate
-        reverse_rate = cls.objects.filter(
-            company=company,
-            from_currency=to_currency,
-            to_currency=from_currency,
-            effective_date__lte=date,
-            rate_type=rate_type,
-        ).order_by("-effective_date").first()
+        reverse_rate = (
+            cls.objects.filter(
+                company=company,
+                from_currency=to_currency,
+                to_currency=from_currency,
+                effective_date__lte=date,
+                rate_type=rate_type,
+            )
+            .order_by("-effective_date")
+            .first()
+        )
 
         if reverse_rate and reverse_rate.rate != 0:
             return (Decimal("1.0") / reverse_rate.rate).quantize(Decimal("0.000001"))
@@ -2486,6 +2515,7 @@ class ExchangeRate(models.Model):
 # =============================================================================
 # Bank Reconciliation
 # =============================================================================
+
 
 class BankStatement(models.Model):
     """
@@ -2608,11 +2638,13 @@ class BankStatementLine(models.Model):
     line_date = models.DateField()
     description = models.CharField(max_length=500)
     reference = models.CharField(
-        max_length=255, blank=True,
+        max_length=255,
+        blank=True,
         help_text="Check number, transfer ref, etc.",
     )
     amount = models.DecimalField(
-        max_digits=18, decimal_places=2,
+        max_digits=18,
+        decimal_places=2,
         help_text="Positive = deposit, negative = withdrawal",
     )
     transaction_type = models.CharField(
@@ -2636,7 +2668,10 @@ class BankStatementLine(models.Model):
         help_text="The journal line this bank transaction was matched to.",
     )
     match_confidence = models.DecimalField(
-        max_digits=5, decimal_places=2, null=True, blank=True,
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
         help_text="Auto-match confidence score (0-100)",
     )
 
@@ -2690,15 +2725,20 @@ class BankReconciliation(models.Model):
     # Balances
     statement_closing_balance = models.DecimalField(max_digits=18, decimal_places=2)
     gl_balance = models.DecimalField(
-        max_digits=18, decimal_places=2,
+        max_digits=18,
+        decimal_places=2,
         help_text="GL balance for this account as of reconciliation date",
     )
     adjusted_gl_balance = models.DecimalField(
-        max_digits=18, decimal_places=2, default=0,
+        max_digits=18,
+        decimal_places=2,
+        default=0,
         help_text="GL balance after outstanding items",
     )
     difference = models.DecimalField(
-        max_digits=18, decimal_places=2, default=0,
+        max_digits=18,
+        decimal_places=2,
+        default=0,
         help_text="Statement closing - adjusted GL = should be 0 when reconciled",
     )
 

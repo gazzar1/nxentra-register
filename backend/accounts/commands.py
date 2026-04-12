@@ -60,7 +60,14 @@ User = get_user_model()
 
 
 class CommandResult:
-    def __init__(self, success: bool, data=None, error: str = None, event=None, events=None):
+    def __init__(
+        self,
+        success: bool,
+        data: object = None,
+        error: str | None = None,
+        event: object = None,
+        events: list[object] | None = None,
+    ):
         self.success = success
         self.data = data
         self.error = error
@@ -70,16 +77,16 @@ class CommandResult:
 
         # Always a list
         if events is None:
-            self.events = [] if event is None else [event]
+            self.events: list[object] = [] if event is None else [event]
         else:
             self.events = list(events)
 
     @classmethod
-    def ok(cls, data=None, event=None, events=None):
+    def ok(cls, data: object = None, event: object = None, events: list[object] | None = None) -> "CommandResult":
         return cls(success=True, data=data, event=event, events=events)
 
     @classmethod
-    def fail(cls, error: str):
+    def fail(cls, error: str) -> "CommandResult":
         return cls(success=False, error=error)
 
 

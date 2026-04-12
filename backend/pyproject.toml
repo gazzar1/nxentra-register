@@ -135,9 +135,12 @@ module = [
     "accounts.email_service",
     "accounts.throttles",
     # Accounting domain (financial-critical)
+    "accounting.models",
+    "accounting.commands",
     "accounting.policies",
     "accounting.behaviors",
     "accounting.validation",
+    "sales.commands",
     # Infrastructure
     "nxentra_backend.pagination",
 ]
