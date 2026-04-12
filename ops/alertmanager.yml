@@ -1,0 +1,84 @@
+# Alertmanager Configuration for Nxentra
+#
+# Routes Prometheus alerts to Slack (and optionally email).
+#
+# Setup:
+#   1. Create a Slack incoming webhook: https://api.slack.com/messaging/webhooks
+#   2. Replace SLACK_WEBHOOK_URL below with your webhook URL
+#   3. Mount this file in your Alertmanager container:
+#      docker run -v ./ops/alertmanager.yml:/etc/alertmanager/alertmanager.yml prom/alertmanager
+#   4. Point Prometheus to Alertmanager:
+#      alerting:
+#        alertmanagers:
+#          - static_configs:
+#              - targets: ['alertmanager:9093']
+#
+# Alert rules are defined in ops/alert-rules.yml
+# Runbooks are in docs/OPS_PLAYBOOK.md
+
+global:
+  resolve_timeout: 5m
+  slack_api_url: "SLACK_WEBHOOK_URL"  # <-- REPLACE with your Slack webhook URL
+
+route:
+  receiver: "slack-default"
+  group_by: ["alertname", "severity"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+  routes:
+    # Critical alerts: immediate, shorter repeat
+    - match:
+        severity: critical
+      receiver: "slack-critical"
+      group_wait: 10s
+      repeat_interval: 1h
+
+    # Warning alerts: standard timing
+    - match:
+        severity: warning
+      receiver: "slack-default"
+      repeat_interval: 4h
+
+receivers:
+  - name: "slack-default"
+    slack_configs:
+      - channel: "#nxentra-alerts"
+        send_resolved: true
+        title: '{{ if eq .Status "firing" }}:warning:{{ else }}:white_check_mark:{{ end }} [{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}'
+        text: >-
+          *Alert:* {{ .CommonLabels.alertname }}
+          *Severity:* {{ .CommonLabels.severity }}
+          *Details:*
+          {{ range .Alerts }}
+          - {{ .Annotations.summary }}
+            {{ .Annotations.description }}
+            {{ if .Annotations.runbook }}*Runbook:* {{ .Annotations.runbook }}{{ end }}
+          {{ end }}
+        actions:
+          - type: button
+            text: "View Health"
+            url: "{{ .ExternalURL }}/#/alerts"
+
+  - name: "slack-critical"
+    slack_configs:
+      - channel: "#nxentra-alerts-critical"
+        send_resolved: true
+        title: '{{ if eq .Status "firing" }}:rotating_light:{{ else }}:white_check_mark:{{ end }} [CRITICAL] {{ .CommonLabels.alertname }}'
+        text: >-
+          *CRITICAL ALERT*
+          *Alert:* {{ .CommonLabels.alertname }}
+          {{ range .Alerts }}
+          - {{ .Annotations.summary }}
+            {{ .Annotations.description }}
+            {{ if .Annotations.runbook }}*Runbook:* {{ .Annotations.runbook }}{{ end }}
+          {{ end }}
+
+# Inhibition rules: suppress warning when critical is already firing
+inhibit_rules:
+  - source_match:
+      severity: "critical"
+    target_match:
+      severity: "warning"
+    equal: ["alertname"]

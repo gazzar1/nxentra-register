@@ -113,5 +113,24 @@ services:
     depends_on:
       - backend
 
+  # ── Prometheus (metrics + alert rules) ─────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    volumes:
+      - ./ops/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./ops/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - backend
+
+  # ── Alertmanager (routes alerts to Slack) ──────────────────
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    volumes:
+      - ./ops/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "9093:9093"
+
 volumes:
   pgdata:

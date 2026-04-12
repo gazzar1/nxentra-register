@@ -7,3 +7,17 @@ repos:
         types_or: [python, pyi]
       - id: ruff-format
         types_or: [python, pyi]
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.13.0
+    hooks:
+      - id: mypy
+        args: [--config-file=backend/pyproject.toml, --no-error-summary]
+        pass_filenames: false
+        additional_dependencies:
+          - django-stubs>=5.0
+          - djangorestframework-stubs>=3.15
+          - types-requests
+        files: ^backend/
+        # Only run on strict-checked modules to keep pre-commit fast
+        entry: mypy --config-file=backend/pyproject.toml backend/events/emitter.py backend/events/types.py backend/events/models.py backend/projections/base.py backend/projections/write_barrier.py backend/tenant/context.py backend/tenant/router.py backend/accounts/authz.py backend/accounts/middleware.py backend/nxentra_backend/pagination.py
