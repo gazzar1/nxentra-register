@@ -33,6 +33,7 @@ export interface RegistrationPayload {
   company_name: string;
   currency: string;
   language: string;
+  tos_accepted: boolean;
 }
 
 // ==========================

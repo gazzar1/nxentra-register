@@ -17,6 +17,7 @@ from .models import (
 
 class CompanyMembershipPermissionInline(admin.TabularInline):
     """Inline for managing permissions on a membership."""
+
     model = CompanyMembershipPermission
     extra = 1
     autocomplete_fields = ["permission"]
@@ -25,6 +26,7 @@ class CompanyMembershipPermissionInline(admin.TabularInline):
 
 class CompanyMembershipInline(admin.TabularInline):
     """Inline display of memberships within user/company."""
+
     model = CompanyMembership
     extra = 0
     autocomplete_fields = ["user", "company"]
@@ -42,19 +44,31 @@ class CompanyAdmin(admin.ModelAdmin):
     ordering = ["name"]
 
     fieldsets = (
-        (None, {
-            "fields": ("name", "name_ar", "slug"),
-        }),
-        ("Settings", {
-            "fields": ("default_currency", "fiscal_year_start_month"),
-        }),
-        ("Status", {
-            "fields": ("is_active",),
-        }),
-        ("Timestamps", {
-            "fields": ("created_at", "updated_at"),
-            "classes": ("collapse",),
-        }),
+        (
+            None,
+            {
+                "fields": ("name", "name_ar", "slug"),
+            },
+        ),
+        (
+            "Settings",
+            {
+                "fields": ("default_currency", "fiscal_year_start_month"),
+            },
+        ),
+        (
+            "Status",
+            {
+                "fields": ("is_active",),
+            },
+        ),
+        (
+            "Timestamps",
+            {
+                "fields": ("created_at", "updated_at"),
+                "classes": ("collapse",),
+            },
+        ),
     )
 
     readonly_fields = ["created_at", "updated_at"]
@@ -66,11 +80,19 @@ class UserAdmin(BaseUserAdmin):
     """Admin interface for Users."""
 
     list_display = [
-        "email", "name", "email_verified", "is_approved",
-        "active_company", "is_active", "is_staff",
+        "email",
+        "name",
+        "email_verified",
+        "is_approved",
+        "active_company",
+        "is_active",
+        "is_staff",
     ]
     list_filter = [
-        "is_active", "is_staff", "email_verified", "is_approved",
+        "is_active",
+        "is_staff",
+        "email_verified",
+        "is_approved",
         "preferred_language",
     ]
     search_fields = ["email", "name", "name_ar"]
@@ -78,38 +100,77 @@ class UserAdmin(BaseUserAdmin):
     actions = ["approve_selected_users", "reject_selected_users"]
 
     fieldsets = (
-        (None, {
-            "fields": ("email", "password"),
-        }),
-        ("Personal Info", {
-            "fields": ("name", "name_ar", "preferred_language"),
-        }),
-        ("Email Verification", {
-            "fields": ("email_verified", "email_verified_at"),
-        }),
-        ("Approval Status", {
-            "fields": ("is_approved", "approved_at", "approved_by"),
-            "description": "Beta Gate: Users must be approved by admin before they can log in.",
-        }),
-        ("Multi-tenancy", {
-            "fields": ("active_company",),
-        }),
-        ("Permissions", {
-            "fields": ("is_active", "is_staff", "is_superuser", "groups", "user_permissions"),
-        }),
-        ("Important Dates", {
-            "fields": ("last_login", "date_joined"),
-        }),
+        (
+            None,
+            {
+                "fields": ("email", "password"),
+            },
+        ),
+        (
+            "Personal Info",
+            {
+                "fields": ("name", "name_ar", "preferred_language"),
+            },
+        ),
+        (
+            "Email Verification",
+            {
+                "fields": ("email_verified", "email_verified_at"),
+            },
+        ),
+        (
+            "Approval Status",
+            {
+                "fields": ("is_approved", "approved_at", "approved_by"),
+                "description": "Beta Gate: Users must be approved by admin before they can log in.",
+            },
+        ),
+        (
+            "Legal Consent",
+            {
+                "fields": ("tos_accepted_at", "tos_version", "privacy_accepted_at", "privacy_version"),
+                "description": "Terms of Service and Privacy Policy acceptance records.",
+            },
+        ),
+        (
+            "Multi-tenancy",
+            {
+                "fields": ("active_company",),
+            },
+        ),
+        (
+            "Permissions",
+            {
+                "fields": ("is_active", "is_staff", "is_superuser", "groups", "user_permissions"),
+            },
+        ),
+        (
+            "Important Dates",
+            {
+                "fields": ("last_login", "date_joined"),
+            },
+        ),
     )
 
     add_fieldsets = (
-        (None, {
-            "classes": ("wide",),
-            "fields": ("email", "password1", "password2"),
-        }),
+        (
+            None,
+            {
+                "classes": ("wide",),
+                "fields": ("email", "password1", "password2"),
+            },
+        ),
     )
 
-    readonly_fields = ["last_login", "date_joined", "email_verified_at", "approved_at", "approved_by"]
+    readonly_fields = [
+        "last_login",
+        "date_joined",
+        "email_verified_at",
+        "approved_at",
+        "approved_by",
+        "tos_accepted_at",
+        "privacy_accepted_at",
+    ]
     autocomplete_fields = ["active_company"]
     inlines = [CompanyMembershipInline]
 
@@ -173,17 +234,26 @@ class CompanyMembershipAdmin(admin.ModelAdmin):
     ordering = ["company", "user"]
 
     fieldsets = (
-        (None, {
-            "fields": ("user", "company", "role"),
-        }),
-        ("Status", {
-            "fields": ("is_active",),
-        }),
+        (
+            None,
+            {
+                "fields": ("user", "company", "role"),
+            },
+        ),
+        (
+            "Status",
+            {
+                "fields": ("is_active",),
+            },
+        ),
         # Permissions managed via inline below (can't use fieldset with through model)
-        ("Timestamps", {
-            "fields": ("joined_at", "updated_at"),
-            "classes": ("collapse",),
-        }),
+        (
+            "Timestamps",
+            {
+                "fields": ("joined_at", "updated_at"),
+                "classes": ("collapse",),
+            },
+        ),
     )
 
     readonly_fields = ["joined_at", "updated_at"]
@@ -201,15 +271,24 @@ class NxPermissionAdmin(admin.ModelAdmin):
     ordering = ["module", "code"]
 
     fieldsets = (
-        (None, {
-            "fields": ("code", "name", "name_ar"),
-        }),
-        ("Classification", {
-            "fields": ("module", "default_for_roles"),
-        }),
-        ("Description", {
-            "fields": ("description",),
-        }),
+        (
+            None,
+            {
+                "fields": ("code", "name", "name_ar"),
+            },
+        ),
+        (
+            "Classification",
+            {
+                "fields": ("module", "default_for_roles"),
+            },
+        ),
+        (
+            "Description",
+            {
+                "fields": ("description",),
+            },
+        ),
     )
 
     readonly_fields = ["created_at"]
@@ -219,6 +298,7 @@ class NxPermissionAdmin(admin.ModelAdmin):
         if obj.default_for_roles:
             return ", ".join(obj.default_for_roles)
         return "-"
+
     default_roles_display.short_description = "Default Roles"
 
 
@@ -233,20 +313,30 @@ class EmailVerificationTokenAdmin(admin.ModelAdmin):
     readonly_fields = ["user", "token_hash", "created_at", "expires_at", "ip_address"]
 
     fieldsets = (
-        (None, {
-            "fields": ("user", "token_hash"),
-        }),
-        ("Timestamps", {
-            "fields": ("created_at", "expires_at"),
-        }),
-        ("Request Info", {
-            "fields": ("ip_address",),
-        }),
+        (
+            None,
+            {
+                "fields": ("user", "token_hash"),
+            },
+        ),
+        (
+            "Timestamps",
+            {
+                "fields": ("created_at", "expires_at"),
+            },
+        ),
+        (
+            "Request Info",
+            {
+                "fields": ("ip_address",),
+            },
+        ),
     )
 
     def is_expired_display(self, obj):
         """Display whether token is expired."""
         return obj.is_expired
+
     is_expired_display.short_description = "Expired"
     is_expired_display.boolean = True
 

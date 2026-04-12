@@ -24,6 +24,7 @@ User = get_user_model()
 # JWT Token Serializers (Tenant-Bound Tokens)
 # =============================================================================
 
+
 class NxentraTokenObtainPairSerializer(TokenObtainPairSerializer):
     """
     Custom JWT token serializer that includes company_id claim.
@@ -134,8 +135,10 @@ def mint_token_pair(user, company_id=None):
 # Input Serializers (for request validation)
 # =============================================================================
 
+
 class RegisterInputSerializer(serializers.Serializer):
     """Input for user registration."""
+
     email = serializers.EmailField(required=True)
     password = serializers.CharField(
         required=True,
@@ -148,6 +151,15 @@ class RegisterInputSerializer(serializers.Serializer):
     company_name = serializers.CharField(max_length=255, required=True)
     default_currency = serializers.CharField(max_length=3, required=False, default="")
     currency = serializers.CharField(max_length=3, required=False, default="")
+    tos_accepted = serializers.BooleanField(required=True)
+
+    def validate_tos_accepted(self, value):
+        """Terms of Service must be accepted to register."""
+        if not value:
+            raise serializers.ValidationError(
+                "You must accept the Terms of Service and Privacy Policy to create an account."
+            )
+        return value
 
     def validate_email(self, value):
         """Ensure email is unique."""
@@ -165,6 +177,7 @@ class RegisterInputSerializer(serializers.Serializer):
 
 class OnboardingSetupInputSerializer(serializers.Serializer):
     """Input for the onboarding setup wizard."""
+
     # Step 1: Company profile
     company_name = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
     company_name_ar = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
@@ -199,17 +212,20 @@ class OnboardingSetupInputSerializer(serializers.Serializer):
 
 class LoginInputSerializer(serializers.Serializer):
     """Input for login (extends simplejwt)."""
+
     email = serializers.EmailField(required=True)
     password = serializers.CharField(required=True, write_only=True)
 
 
 class SwitchCompanyInputSerializer(serializers.Serializer):
     """Input for switching active company."""
+
     company_id = serializers.IntegerField(required=True)
 
 
 class CreateUserInputSerializer(serializers.Serializer):
     """Input for creating a user in a company."""
+
     email = serializers.EmailField(required=True)
     password = serializers.CharField(
         required=True,
@@ -232,12 +248,14 @@ class CreateUserInputSerializer(serializers.Serializer):
 
 class UpdateUserInputSerializer(serializers.Serializer):
     """Input for updating a user."""
+
     name = serializers.CharField(max_length=255, required=False, allow_blank=True)
     name_ar = serializers.CharField(max_length=255, required=False, allow_blank=True)
 
 
 class SetPasswordInputSerializer(serializers.Serializer):
     """Input for setting user password."""
+
     password = serializers.CharField(
         required=True,
         min_length=8,
@@ -248,11 +266,13 @@ class SetPasswordInputSerializer(serializers.Serializer):
 
 class UpdateRoleInputSerializer(serializers.Serializer):
     """Input for updating membership role."""
+
     role = serializers.ChoiceField(choices=CompanyMembership.Role.choices, required=True)
 
 
 class GrantPermissionInputSerializer(serializers.Serializer):
     """Input for granting a single permission."""
+
     permission = serializers.CharField(max_length=100, required=True)
 
     def validate_permission(self, value):
@@ -264,6 +284,7 @@ class GrantPermissionInputSerializer(serializers.Serializer):
 
 class BulkSetPermissionsInputSerializer(serializers.Serializer):
     """Input for setting all permissions (replace)."""
+
     permissions = serializers.ListField(
         child=serializers.CharField(max_length=100),
         required=True,
@@ -283,8 +304,10 @@ class BulkSetPermissionsInputSerializer(serializers.Serializer):
 # Output Serializers (for response formatting)
 # =============================================================================
 
+
 class UserOutputSerializer(serializers.Serializer):
     """Output for user data."""
+
     id = serializers.IntegerField(read_only=True)
     public_id = serializers.UUIDField(read_only=True)
     email = serializers.EmailField(read_only=True)
@@ -295,6 +318,7 @@ class UserOutputSerializer(serializers.Serializer):
 
 class CompanyOutputSerializer(serializers.Serializer):
     """Output for company data."""
+
     id = serializers.IntegerField(read_only=True)
     public_id = serializers.UUIDField(read_only=True)
     name = serializers.CharField(read_only=True)
@@ -314,6 +338,7 @@ class CompanyOutputSerializer(serializers.Serializer):
 
 class CompanyBriefOutputSerializer(serializers.Serializer):
     """Brief company info for lists."""
+
     id = serializers.IntegerField(read_only=True)
     public_id = serializers.UUIDField(read_only=True)
     name = serializers.CharField(read_only=True)
@@ -323,6 +348,7 @@ class CompanyBriefOutputSerializer(serializers.Serializer):
 
 class MembershipOutputSerializer(serializers.Serializer):
     """Output for membership data."""
+
     id = serializers.IntegerField(source="membership_id", read_only=True)
     public_id = serializers.UUIDField(source="membership_public_id", read_only=True)
     user_id = serializers.IntegerField(read_only=True)
@@ -339,6 +365,7 @@ class MembershipOutputSerializer(serializers.Serializer):
 
 class UserInCompanyOutputSerializer(serializers.Serializer):
     """Output for user within a company context."""
+
     id = serializers.IntegerField(read_only=True)
     public_id = serializers.UUIDField(read_only=True)
     email = serializers.EmailField(read_only=True)
@@ -356,6 +383,7 @@ class UserInCompanyOutputSerializer(serializers.Serializer):
 
 class PermissionOutputSerializer(serializers.Serializer):
     """Output for permission data."""
+
     code = serializers.CharField(read_only=True)
     public_id = serializers.UUIDField(read_only=True)
     name = serializers.CharField(read_only=True)
@@ -366,6 +394,7 @@ class PermissionOutputSerializer(serializers.Serializer):
 
 class MeOutputSerializer(serializers.Serializer):
     """Output for current user endpoint."""
+
     id = serializers.IntegerField(read_only=True)
     public_id = serializers.UUIDField(read_only=True)
     email = serializers.EmailField(read_only=True)
@@ -377,6 +406,7 @@ class MeOutputSerializer(serializers.Serializer):
 
 class RegisterOutputSerializer(serializers.Serializer):
     """Output for registration."""
+
     user = UserOutputSerializer(read_only=True)
     company = CompanyOutputSerializer(read_only=True)
     tokens = serializers.DictField(read_only=True)
@@ -384,6 +414,7 @@ class RegisterOutputSerializer(serializers.Serializer):
 
 class SwitchCompanyOutputSerializer(serializers.Serializer):
     """Output for company switch."""
+
     company_id = serializers.IntegerField(read_only=True)
     company_public_id = serializers.UUIDField(read_only=True)
     company_name = serializers.CharField(read_only=True)
@@ -394,6 +425,7 @@ class SwitchCompanyOutputSerializer(serializers.Serializer):
 
 class PermissionsUpdateOutputSerializer(serializers.Serializer):
     """Output for permissions bulk update."""
+
     permissions = serializers.ListField(child=serializers.CharField(), read_only=True)
     granted = serializers.ListField(child=serializers.CharField(), read_only=True)
     revoked = serializers.ListField(child=serializers.CharField(), read_only=True)
@@ -402,6 +434,7 @@ class PermissionsUpdateOutputSerializer(serializers.Serializer):
 # =============================================================================
 # Model Serializers (for simple read operations)
 # =============================================================================
+
 
 class UserModelSerializer(serializers.ModelSerializer):
     """Model serializer for User (read-only)."""
@@ -418,11 +451,23 @@ class CompanyModelSerializer(serializers.ModelSerializer):
     class Meta:
         model = Company
         fields = [
-            "id", "public_id", "name", "name_ar", "slug",
-            "default_currency", "functional_currency", "fiscal_year_start_month",
-            "is_active", "created_at", "updated_at",
-            "onboarding_completed", "coa_template",
-            "thousand_separator", "decimal_separator", "decimal_places", "date_format",
+            "id",
+            "public_id",
+            "name",
+            "name_ar",
+            "slug",
+            "default_currency",
+            "functional_currency",
+            "fiscal_year_start_month",
+            "is_active",
+            "created_at",
+            "updated_at",
+            "onboarding_completed",
+            "coa_template",
+            "thousand_separator",
+            "decimal_separator",
+            "decimal_places",
+            "date_format",
         ]
         read_only_fields = fields
 
@@ -438,13 +483,20 @@ class NxPermissionModelSerializer(serializers.ModelSerializer):
 
 class CompanyMembershipModelSerializer(serializers.ModelSerializer):
     """Model serializer for Membership with nested user."""
+
     user = UserModelSerializer(read_only=True)
     permissions = NxPermissionModelSerializer(many=True, read_only=True)
 
     class Meta:
         model = CompanyMembership
         fields = [
-            "id", "public_id", "user", "role", "is_active",
-            "permissions", "joined_at", "updated_at",
+            "id",
+            "public_id",
+            "user",
+            "role",
+            "is_active",
+            "permissions",
+            "joined_at",
+            "updated_at",
         ]
         read_only_fields = fields

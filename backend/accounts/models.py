@@ -26,7 +26,7 @@ from projections.write_barrier import (
 
 def company_logo_upload_path(instance, filename):
     """Generate upload path for company logos: logos/<company_slug>/<filename>"""
-    ext = filename.split('.')[-1]
+    ext = filename.split(".")[-1]
     # Use company slug for folder organization
     return f"logos/{instance.slug}/logo.{ext}"
 
@@ -65,7 +65,7 @@ class ProjectionWriteGuard(models.Model):
 class Company(ProjectionWriteGuard):
     """
     Company/Tenant - the primary unit of data isolation.
-    
+
     All business data (accounts, entries, etc.) belongs to a company.
     Users can be members of multiple companies.
     """
@@ -90,10 +90,7 @@ class Company(ProjectionWriteGuard):
     functional_currency = models.CharField(
         max_length=3,
         default="USD",
-        help_text=(
-            "Functional currency for accounting and reporting. "
-            "All balances are stored in this currency."
-        ),
+        help_text=("Functional currency for accounting and reporting. All balances are stored in this currency."),
     )
     fiscal_year_start_month = models.PositiveSmallIntegerField(default=1)  # 1=January
 
@@ -260,11 +257,35 @@ class User(ProjectionWriteGuard, AbstractUser):
     is_approved = models.BooleanField(default=False)
     approved_at = models.DateTimeField(null=True, blank=True)
     approved_by = models.ForeignKey(
-        'self',
+        "self",
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
-        related_name='approved_users',
+        related_name="approved_users",
+    )
+
+    # Terms of Service consent
+    tos_accepted_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the user accepted the Terms of Service",
+    )
+    tos_version = models.CharField(
+        max_length=20,
+        blank=True,
+        default="",
+        help_text="Version of ToS the user accepted (e.g. '1.0')",
+    )
+    privacy_accepted_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the user accepted the Privacy Policy",
+    )
+    privacy_version = models.CharField(
+        max_length=20,
+        blank=True,
+        default="",
+        help_text="Version of Privacy Policy the user accepted (e.g. '1.0')",
     )
 
     # Preferences
@@ -303,9 +324,14 @@ class User(ProjectionWriteGuard, AbstractUser):
 
     # Fields that commands are allowed to update (beyond projections)
     COMMAND_WRITABLE_FIELDS = {
-        "active_company", "active_company_id",
-        "email_verified", "email_verified_at",
-        "is_approved", "approved_at", "approved_by", "approved_by_id",
+        "active_company",
+        "active_company_id",
+        "email_verified",
+        "email_verified_at",
+        "is_approved",
+        "approved_at",
+        "approved_by",
+        "approved_by_id",
     }
 
     # Fields that Django's auth system updates automatically (e.g., login signals)
@@ -357,7 +383,7 @@ class User(ProjectionWriteGuard, AbstractUser):
     def switch_company(self, company: Company) -> bool:
         """
         Switch the user's active company.
-        
+
         Returns True if successful, False if user is not a member.
         """
         if not self.memberships.filter(company=company, is_active=True).exists():
@@ -373,8 +399,8 @@ class User(ProjectionWriteGuard, AbstractUser):
             return None
         return self.memberships.filter(
             company=self.active_company,
-            is_active=True  # ← ADD THIS LINE
-            ).first()
+            is_active=True,  # ← ADD THIS LINE
+        ).first()
 
     def is_member_of_company(self, company_id: int) -> bool:
         """
@@ -395,7 +421,7 @@ class User(ProjectionWriteGuard, AbstractUser):
 class CompanyMembership(ProjectionWriteGuard):
     """
     User membership in a company.
-    
+
     Defines the user's role and permissions within a company.
     A user can have different roles in different companies.
     """
@@ -662,7 +688,7 @@ class EmailVerificationToken(models.Model):
     user = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
-        related_name='verification_tokens',
+        related_name="verification_tokens",
     )
     token_hash = models.CharField(
         max_length=64,
@@ -676,8 +702,8 @@ class EmailVerificationToken(models.Model):
 
     class Meta:
         indexes = [
-            models.Index(fields=['user', 'created_at']),
-            models.Index(fields=['expires_at']),
+            models.Index(fields=["user", "created_at"]),
+            models.Index(fields=["expires_at"]),
         ]
         verbose_name = "Email Verification Token"
         verbose_name_plural = "Email Verification Tokens"

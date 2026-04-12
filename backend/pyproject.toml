@@ -52,7 +52,7 @@ ignore = [
     "W293",   # blank line with whitespace — cosmetic, fix incrementally
     "E402",   # import not at top — Django settings and lazy imports are intentional
     "RUF013", # implicit-optional — existing code uses Optional[X] = None pattern
-    "RUF059", # unused unpacked variable — existing patterns use _ prefix
+
     "B904",   # raise-without-from — fix incrementally
     "F841",   # unused variable — fix incrementally
     "B027",   # empty method without abstract — intentional template methods

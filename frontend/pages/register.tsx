@@ -17,6 +17,7 @@ const initialState = {
   company_name: "",
   currency: "USD",
   language: "en",
+  tos_accepted: false,
 };
 
 type Errors = Partial<Record<keyof typeof initialState, string>>;
@@ -44,6 +45,8 @@ export default function RegisterPage() {
       validationErrors.company_name = "Use a single word with no spaces";
     if (form.company_name.length > 10)
       validationErrors.company_name = "Maximum 10 characters";
+    if (!form.tos_accepted)
+      validationErrors.tos_accepted = "You must accept the Terms of Service and Privacy Policy";
 
     setErrors(validationErrors);
     return Object.keys(validationErrors).length === 0;
@@ -63,6 +66,7 @@ export default function RegisterPage() {
         company_name: form.company_name,
         currency: form.currency,
         language: form.language,
+        tos_accepted: form.tos_accepted,
       });
 
       // Redirect to verify-email page
@@ -134,6 +138,30 @@ export default function RegisterPage() {
 
           <div className="hidden">
             {/* Language fills the row; this balances the grid */}
+          </div>
+
+          <div className="md:col-span-2">
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.tos_accepted}
+                onChange={(e) => setForm((prev) => ({ ...prev, tos_accepted: e.target.checked }))}
+                className="mt-1 h-4 w-4 rounded border-border text-accent focus:ring-accent"
+              />
+              <span className="text-sm text-muted-foreground">
+                I agree to the{" "}
+                <Link href="/terms" target="_blank" className="text-accent underline hover:text-accent/80">
+                  Terms of Service
+                </Link>{" "}
+                and{" "}
+                <Link href="/privacy" target="_blank" className="text-accent underline hover:text-accent/80">
+                  Privacy Policy
+                </Link>
+              </span>
+            </label>
+            {errors.tos_accepted && (
+              <p className="mt-1 text-sm text-red-500">{errors.tos_accepted}</p>
+            )}
           </div>
 
           <div className="md:col-span-2 flex flex-col gap-3">

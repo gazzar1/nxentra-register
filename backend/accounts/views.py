@@ -66,9 +66,11 @@ User = get_user_model()
 # Auth Cookie Helpers
 # =============================================================================
 
+
 def set_auth_cookies(response, access_token, refresh_token=None):
     """Set HttpOnly JWT cookies on a response."""
     from django.conf import settings as s
+
     response.set_cookie(
         s.AUTH_COOKIE_ACCESS_NAME,
         access_token,
@@ -93,6 +95,7 @@ def set_auth_cookies(response, access_token, refresh_token=None):
 def clear_auth_cookies(response):
     """Delete JWT cookies from a response."""
     from django.conf import settings as s
+
     response.delete_cookie(s.AUTH_COOKIE_ACCESS_NAME, path="/")
     response.delete_cookie(s.AUTH_COOKIE_REFRESH_NAME, path=s.AUTH_COOKIE_REFRESH_PATH)
 
@@ -100,6 +103,7 @@ def clear_auth_cookies(response):
 # =============================================================================
 # Authentication Views
 # =============================================================================
+
 
 class RegisterView(APIView):
     """
@@ -112,6 +116,7 @@ class RegisterView(APIView):
     After successful registration, a verification email is sent.
     User must verify email before logging in.
     """
+
     permission_classes = [AllowAny]
 
     def post(self, request):
@@ -138,6 +143,7 @@ class RegisterView(APIView):
             name=data.get("name", ""),
             phone=data.get("phone", ""),
             default_currency=data.get("default_currency", "USD"),
+            tos_accepted=data.get("tos_accepted", False),
         )
 
         if not result.success:
@@ -160,11 +166,14 @@ class RegisterView(APIView):
 
         # Email verification required - do NOT return tokens
         if result.data.get("status") == "email_verification_required":
-            return Response({
-                "status": "email_verification_required",
-                "message": "Please check your email to verify your account.",
-                "email": result.data["email"],
-            }, status=status.HTTP_201_CREATED)
+            return Response(
+                {
+                    "status": "email_verification_required",
+                    "message": "Please check your email to verify your account.",
+                    "email": result.data["email"],
+                },
+                status=status.HTTP_201_CREATED,
+            )
 
         # Fallback for backward compatibility (should not reach here in normal flow)
         user = result.data["user"]
@@ -172,37 +181,47 @@ class RegisterView(APIView):
 
         # Only generate tokens if user is already verified and approved
         if not user.email_verified:
-            return Response({
-                "status": "email_verification_required",
-                "message": "Please check your email to verify your account.",
-                "email": user.email,
-            }, status=status.HTTP_201_CREATED)
+            return Response(
+                {
+                    "status": "email_verification_required",
+                    "message": "Please check your email to verify your account.",
+                    "email": user.email,
+                },
+                status=status.HTTP_201_CREATED,
+            )
 
         from django.conf import settings as django_settings
+
         if django_settings.BETA_GATE_ENABLED and not user.is_approved:
-            return Response({
-                "status": "pending_approval",
-                "message": "Your email has been verified. Your account is pending admin approval.",
-                "email": user.email,
-            }, status=status.HTTP_201_CREATED)
+            return Response(
+                {
+                    "status": "pending_approval",
+                    "message": "Your email has been verified. Your account is pending admin approval.",
+                    "email": user.email,
+                },
+                status=status.HTTP_201_CREATED,
+            )
 
         # Generate tenant-bound tokens (only for verified + approved users)
         tokens = mint_token_pair(user, company_id=company.id)
 
-        return Response({
-            "user": {
-                "id": user.id,
-                "public_id": str(user.public_id),
-                "email": user.email,
-                "name": user.name,
+        return Response(
+            {
+                "user": {
+                    "id": user.id,
+                    "public_id": str(user.public_id),
+                    "email": user.email,
+                    "name": user.name,
+                },
+                "company": {
+                    "id": company.id,
+                    "public_id": str(company.public_id),
+                    "name": company.name,
+                },
+                "tokens": tokens,
             },
-            "company": {
-                "id": company.id,
-                "public_id": str(company.public_id),
-                "name": company.name,
-            },
-            "tokens": tokens,
-        }, status=status.HTTP_201_CREATED)
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class LoginView(TokenObtainPairView):
@@ -230,6 +249,7 @@ class LoginView(TokenObtainPairView):
     This endpoint queries User, CompanyMembership, Company before auth succeeds.
     These are all SYSTEM models that route to 'default' DB with no RLS policies.
     """
+
     serializer_class = NxentraTokenObtainPairSerializer
 
     def post(self, request, *args, **kwargs):
@@ -278,10 +298,7 @@ class LoginView(TokenObtainPairView):
             # =============================================================
             # STRICT TENANT POLICY: company_id REQUIRED for token issuance
             # =============================================================
-            memberships = list(
-                CompanyMembership.objects.filter(user=user, is_active=True)
-                .select_related("company")
-            )
+            memberships = list(CompanyMembership.objects.filter(user=user, is_active=True).select_related("company"))
             valid_company_ids = {m.company_id for m in memberships}
 
             if len(memberships) == 0:
@@ -345,6 +362,7 @@ class LoginView(TokenObtainPairView):
             try:
                 user = User.objects.get(email=email)
                 from django.utils import timezone
+
                 user.last_login = timezone.now()
                 user.save(update_fields=["last_login"])
                 active_company = None
@@ -404,12 +422,14 @@ class NxentraTokenRefreshView(TokenRefreshView):
 
     This prevents revoked users from quietly continuing to refresh tokens.
     """
+
     serializer_class = NxentraTokenRefreshSerializer
 
     def post(self, request, *args, **kwargs):
         # If refresh not in body, try cookie
         if "refresh" not in request.data:
             from django.conf import settings as s
+
             refresh_cookie = request.COOKIES.get(s.AUTH_COOKIE_REFRESH_NAME)
             if refresh_cookie:
                 request._full_data = {**request.data, "refresh": refresh_cookie}
@@ -437,15 +457,15 @@ class LogoutView(APIView):
     - Request body: { "refresh": "token" } (legacy/API clients)
     - HttpOnly cookie: nxentra_refresh (browser clients)
     """
+
     permission_classes = [AllowAny]
 
     def post(self, request):
         # Read refresh from body or cookie
         from django.conf import settings as s
         from rest_framework_simplejwt.tokens import RefreshToken as JWTRefreshToken
-        refresh = request.data.get("refresh") or request.COOKIES.get(
-            s.AUTH_COOKIE_REFRESH_NAME
-        )
+
+        refresh = request.data.get("refresh") or request.COOKIES.get(s.AUTH_COOKIE_REFRESH_NAME)
 
         if refresh:
             try:
@@ -478,6 +498,7 @@ class MeView(APIView):
     INVARIANT: This endpoint MUST NOT access any TENANT models (events,
     accounting, projections, edim). All data comes from system tables only.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -485,16 +506,14 @@ class MeView(APIView):
 
         # Check if we have company_id in the token
         token_company_id = None
-        if hasattr(request, 'auth') and request.auth:
+        if hasattr(request, "auth") and request.auth:
             raw_company_id = request.auth.get("company_id")
             if raw_company_id and raw_company_id != "None":
                 token_company_id = int(raw_company_id)
 
         # SYSTEM_MODELS queries - route to 'default' DB, no RLS policies
         # No rls_bypass() needed because RLS only applies to tenant tables
-        memberships = CompanyMembership.objects.filter(
-            user=user, is_active=True
-        ).select_related("company")
+        memberships = CompanyMembership.objects.filter(user=user, is_active=True).select_related("company")
 
         # Build companies list for response
         companies_list = [
@@ -509,23 +528,25 @@ class MeView(APIView):
 
         # If no company_id in token, return minimal response
         if token_company_id is None:
-            return Response({
-                "user": {
-                    "id": user.id,
-                    "public_id": str(user.public_id),
-                    "email": user.email,
-                    "name": user.name,
-                    "name_ar": user.name_ar,
-                    "is_active": user.is_active,
-                    "is_staff": user.is_staff,
-                    "is_superuser": user.is_superuser,
-                    "created_at": user.date_joined.isoformat() if user.date_joined else None,
-                    "updated_at": None,
-                },
-                "company": None,  # No company context
-                "membership": None,  # No membership context
-                "companies": companies_list,  # List of available companies
-            })
+            return Response(
+                {
+                    "user": {
+                        "id": user.id,
+                        "public_id": str(user.public_id),
+                        "email": user.email,
+                        "name": user.name,
+                        "name_ar": user.name_ar,
+                        "is_active": user.is_active,
+                        "is_staff": user.is_staff,
+                        "is_superuser": user.is_superuser,
+                        "created_at": user.date_joined.isoformat() if user.date_joined else None,
+                        "updated_at": None,
+                    },
+                    "company": None,  # No company context
+                    "membership": None,  # No membership context
+                    "companies": companies_list,  # List of available companies
+                }
+            )
 
         # With company_id in token, return full profile
         active_membership = None
@@ -539,51 +560,56 @@ class MeView(APIView):
         # Get permissions for active membership (NxPermission is a SYSTEM model)
         permissions = []
         if active_membership:
-            permissions = list(
-                active_membership.permissions.values_list("code", flat=True)
-            )
+            permissions = list(active_membership.permissions.values_list("code", flat=True))
 
-        return Response({
-            "user": {
-                "id": user.id,
-                "public_id": str(user.public_id),
-                "email": user.email,
-                "name": user.name,
-                "name_ar": user.name_ar,
-                "is_active": user.is_active,
-                "is_staff": user.is_staff,
-                "is_superuser": user.is_superuser,
-                "created_at": user.date_joined.isoformat() if user.date_joined else None,
-                "updated_at": None,
-            },
-            "company": {
-                "id": active_company.id if active_company else None,
-                "public_id": str(active_company.public_id) if active_company else None,
-                "name": active_company.name if active_company else "",
-                "name_ar": active_company.name_ar if active_company else "",
-                "slug": active_company.slug if active_company else "",
-                "default_currency": active_company.default_currency if active_company else "USD",
-                "fiscal_year_start_month": active_company.fiscal_year_start_month if active_company else 1,
-                "is_active": active_company.is_active if active_company else False,
-                "onboarding_completed": active_company.onboarding_completed if active_company else False,
-                "thousand_separator": active_company.thousand_separator if active_company else ",",
-                "decimal_separator": active_company.decimal_separator if active_company else ".",
-                "decimal_places": active_company.decimal_places if active_company else 2,
-                "date_format": active_company.date_format if active_company else "YYYY-MM-DD",
-                "created_at": active_company.created_at.isoformat() if active_company else None,
-                "updated_at": active_company.updated_at.isoformat() if active_company else None,
-            } if active_company else None,
-            "membership": {
-                "role": active_membership.role if active_membership else None,
-                "permissions": permissions,
-            } if active_membership else None,
-            "companies": companies_list,  # Always include for convenience
-        })
+        return Response(
+            {
+                "user": {
+                    "id": user.id,
+                    "public_id": str(user.public_id),
+                    "email": user.email,
+                    "name": user.name,
+                    "name_ar": user.name_ar,
+                    "is_active": user.is_active,
+                    "is_staff": user.is_staff,
+                    "is_superuser": user.is_superuser,
+                    "created_at": user.date_joined.isoformat() if user.date_joined else None,
+                    "updated_at": None,
+                },
+                "company": {
+                    "id": active_company.id if active_company else None,
+                    "public_id": str(active_company.public_id) if active_company else None,
+                    "name": active_company.name if active_company else "",
+                    "name_ar": active_company.name_ar if active_company else "",
+                    "slug": active_company.slug if active_company else "",
+                    "default_currency": active_company.default_currency if active_company else "USD",
+                    "fiscal_year_start_month": active_company.fiscal_year_start_month if active_company else 1,
+                    "is_active": active_company.is_active if active_company else False,
+                    "onboarding_completed": active_company.onboarding_completed if active_company else False,
+                    "thousand_separator": active_company.thousand_separator if active_company else ",",
+                    "decimal_separator": active_company.decimal_separator if active_company else ".",
+                    "decimal_places": active_company.decimal_places if active_company else 2,
+                    "date_format": active_company.date_format if active_company else "YYYY-MM-DD",
+                    "created_at": active_company.created_at.isoformat() if active_company else None,
+                    "updated_at": active_company.updated_at.isoformat() if active_company else None,
+                }
+                if active_company
+                else None,
+                "membership": {
+                    "role": active_membership.role if active_membership else None,
+                    "permissions": permissions,
+                }
+                if active_membership
+                else None,
+                "companies": companies_list,  # Always include for convenience
+            }
+        )
 
 
 # =============================================================================
 # Company Switching (SECURITY-CRITICAL - Uses Command)
 # =============================================================================
+
 
 class SwitchCompanyView(APIView):
     """
@@ -598,6 +624,7 @@ class SwitchCompanyView(APIView):
 
     This makes switching tenants explicit and avoids "sticky tenant" surprises.
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -635,20 +662,20 @@ class SwitchCompanyView(APIView):
 # User Management (Uses Commands)
 # =============================================================================
 
+
 class UserListCreateView(APIView):
     """
     GET /api/users/ -> list users in company
     POST /api/users/ -> create user and add to company
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         actor = resolve_actor(request)
         require(actor, "company.manage_users")
 
-        memberships = CompanyMembership.objects.filter(
-            company=actor.company, is_active=True
-        ).select_related("user")
+        memberships = CompanyMembership.objects.filter(company=actor.company, is_active=True).select_related("user")
 
         users = [
             {
@@ -704,15 +731,18 @@ class UserListCreateView(APIView):
         user = result.data["user"]
         membership = result.data["membership"]
 
-        return Response({
-            "id": user.id,
-            "public_id": str(user.public_id),
-            "email": user.email,
-            "name": user.name,
-            "role": membership.role,
-            "membership_id": membership.id,
-            "membership_public_id": str(membership.public_id),
-        }, status=status.HTTP_201_CREATED)
+        return Response(
+            {
+                "id": user.id,
+                "public_id": str(user.public_id),
+                "email": user.email,
+                "name": user.name,
+                "role": membership.role,
+                "membership_id": membership.id,
+                "membership_public_id": str(membership.public_id),
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class UserDetailView(APIView):
@@ -721,6 +751,7 @@ class UserDetailView(APIView):
     PATCH /api/users/<pk>/ -> update user
     DELETE /api/users/<pk>/ -> deactivate membership
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
@@ -744,17 +775,19 @@ class UserDetailView(APIView):
         user = membership.user
         permissions = list(membership.permissions.values_list("code", flat=True))
 
-        return Response({
-            "id": user.id,
-            "public_id": str(user.public_id),
-            "email": user.email,
-            "name": user.name,
-            "role": membership.role,
-            "membership_id": membership.id,
-            "membership_public_id": str(membership.public_id),
-            "permissions": permissions,
-            "joined_at": membership.joined_at,
-        })
+        return Response(
+            {
+                "id": user.id,
+                "public_id": str(user.public_id),
+                "email": user.email,
+                "name": user.name,
+                "role": membership.role,
+                "membership_id": membership.id,
+                "membership_public_id": str(membership.public_id),
+                "permissions": permissions,
+                "joined_at": membership.joined_at,
+            }
+        )
 
     def patch(self, request, pk):
         actor = resolve_actor(request)
@@ -783,22 +816,22 @@ class UserDetailView(APIView):
 
         user = result.data["user"]
         # Return all updatable fields for consistency
-        return Response({
-            "id": user.id,
-            "public_id": str(user.public_id),
-            "email": user.email,
-            "name": user.name,
-            "name_ar": user.name_ar,
-        })
+        return Response(
+            {
+                "id": user.id,
+                "public_id": str(user.public_id),
+                "email": user.email,
+                "name": user.name,
+                "name_ar": user.name_ar,
+            }
+        )
 
     def delete(self, request, pk):
         actor = resolve_actor(request)
 
         # Find membership
         try:
-            membership = CompanyMembership.objects.get(
-                user_id=pk, company=actor.company, is_active=True
-            )
+            membership = CompanyMembership.objects.get(user_id=pk, company=actor.company, is_active=True)
         except CompanyMembership.DoesNotExist:
             return Response(
                 {"detail": "User not found in this company."},
@@ -819,9 +852,10 @@ class UserDetailView(APIView):
 class UserSetPasswordView(APIView):
     """
     POST /api/users/<pk>/set-password/
-    
+
     Set user's password (self or admin).
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
@@ -848,12 +882,14 @@ class UserSetPasswordView(APIView):
 # Membership Management (Uses Commands)
 # =============================================================================
 
+
 class MembershipRoleView(APIView):
     """
     PATCH /api/memberships/<pk>/role/
-    
+
     Update a membership's role.
     """
+
     permission_classes = [IsAuthenticated]
 
     def patch(self, request, pk):
@@ -874,18 +910,21 @@ class MembershipRoleView(APIView):
             )
 
         membership = result.data
-        return Response({
-            "membership_id": membership.id,
-            "membership_public_id": str(membership.public_id),
-            "user_id": membership.user_id,
-            "user_public_id": str(membership.user.public_id),
-            "role": membership.role,
-        })
+        return Response(
+            {
+                "membership_id": membership.id,
+                "membership_public_id": str(membership.public_id),
+                "user_id": membership.user_id,
+                "user_public_id": str(membership.user.public_id),
+                "role": membership.role,
+            }
+        )
 
 
 # =============================================================================
 # Permission Management (Uses Commands)
 # =============================================================================
+
 
 class MembershipPermissionsView(APIView):
     """
@@ -893,6 +932,7 @@ class MembershipPermissionsView(APIView):
     PUT /api/memberships/<pk>/permissions/ -> set permissions (replace all)
     POST /api/memberships/<pk>/permissions/ -> grant permission
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
@@ -900,9 +940,7 @@ class MembershipPermissionsView(APIView):
         require(actor, "company.manage_permissions")
 
         try:
-            membership = CompanyMembership.objects.get(
-                pk=pk, company=actor.company
-            )
+            membership = CompanyMembership.objects.get(pk=pk, company=actor.company)
         except CompanyMembership.DoesNotExist:
             return Response(
                 {"detail": "Membership not found."},
@@ -911,12 +949,14 @@ class MembershipPermissionsView(APIView):
 
         permissions = list(membership.permissions.values("code", "name", "module"))
 
-        return Response({
-            "membership_id": membership.id,
-            "membership_public_id": str(membership.public_id),
-            "role": membership.role,
-            "permissions": permissions,
-        })
+        return Response(
+            {
+                "membership_id": membership.id,
+                "membership_public_id": str(membership.public_id),
+                "role": membership.role,
+                "permissions": permissions,
+            }
+        )
 
     def put(self, request, pk):
         """Replace all permissions with the given list."""
@@ -962,9 +1002,10 @@ class MembershipPermissionsView(APIView):
 class MembershipPermissionDeleteView(APIView):
     """
     DELETE /api/memberships/<pk>/permissions/<code>/
-    
+
     Revoke a specific permission.
     """
+
     permission_classes = [IsAuthenticated]
 
     def delete(self, request, pk, code):
@@ -985,6 +1026,7 @@ class MembershipPermissionDeleteView(APIView):
 # Company Views
 # =============================================================================
 
+
 class CompanyListView(APIView):
     """
     GET /api/companies/ - List companies the user is a member of.
@@ -1002,6 +1044,7 @@ class CompanyListView(APIView):
     accounting, projections, edim). If you need tenant data, the user
     must first select a company via POST /api/auth/switch-company/.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -1011,29 +1054,26 @@ class CompanyListView(APIView):
 
         # SYSTEM_MODELS query - routes to 'default' DB, no RLS policies
         # No rls_bypass() needed because RLS only applies to tenant tables
-        memberships = CompanyMembership.objects.filter(
-            user=user, is_active=True
-        ).select_related("company")
+        memberships = CompanyMembership.objects.filter(user=user, is_active=True).select_related("company")
 
         # Fetch tenant configs for all companies in one query (SYSTEM model)
         company_ids = [m.company_id for m in memberships]
-        tenant_configs = {
-            tc.company_id: tc
-            for tc in TenantDirectory.objects.filter(company_id__in=company_ids)
-        }
+        tenant_configs = {tc.company_id: tc for tc in TenantDirectory.objects.filter(company_id__in=company_ids)}
 
         companies = []
         for m in memberships:
             tc = tenant_configs.get(m.company_id)
-            companies.append({
-                "id": m.company.id,
-                "public_id": str(m.company.public_id),
-                "name": str(m.company),
-                "role": m.role,
-                # Tenant isolation info (SYSTEM model, safe to expose)
-                "tenant_mode": tc.mode if tc else TenantDirectory.IsolationMode.SHARED,
-                "tenant_status": tc.status if tc else TenantDirectory.Status.ACTIVE,
-            })
+            companies.append(
+                {
+                    "id": m.company.id,
+                    "public_id": str(m.company.public_id),
+                    "name": str(m.company),
+                    "role": m.role,
+                    # Tenant isolation info (SYSTEM model, safe to expose)
+                    "tenant_mode": tc.mode if tc else TenantDirectory.IsolationMode.SHARED,
+                    "tenant_status": tc.status if tc else TenantDirectory.Status.ACTIVE,
+                }
+            )
 
         return Response(companies)
 
@@ -1056,22 +1096,26 @@ class CompanyListView(APIView):
 
         company = result.data["company"]
         membership = result.data["membership"]
-        return Response({
-            "id": company.id,
-            "public_id": str(company.public_id),
-            "name": company.name,
-            "slug": company.slug,
-            "default_currency": company.default_currency,
-            "role": membership.role,
-        }, status=status.HTTP_201_CREATED)
+        return Response(
+            {
+                "id": company.id,
+                "public_id": str(company.public_id),
+                "name": company.name,
+                "slug": company.slug,
+                "default_currency": company.default_currency,
+                "role": membership.role,
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class CompanyDetailView(APIView):
     """
     GET /api/companies/<pk>/
-    
+
     Get company details.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
@@ -1085,15 +1129,17 @@ class CompanyDetailView(APIView):
 
         company = actor.company
 
-        return Response({
-            "id": company.id,
-            "public_id": str(company.public_id),
-            "name": str(company),
-            "slug": company.slug,
-            "default_currency": company.default_currency,
-            "fiscal_year_start_month": company.fiscal_year_start_month,
-            "is_active": company.is_active,
-        })
+        return Response(
+            {
+                "id": company.id,
+                "public_id": str(company.public_id),
+                "name": str(company),
+                "slug": company.slug,
+                "default_currency": company.default_currency,
+                "fiscal_year_start_month": company.fiscal_year_start_month,
+                "is_active": company.is_active,
+            }
+        )
 
     def patch(self, request, pk):
         actor = resolve_actor(request)
@@ -1110,40 +1156,45 @@ class CompanyDetailView(APIView):
         if not result.success:
             return Response(
                 {"detail": result.error},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         return Response(CompanyOutputSerializer(result.data["company"]).data)  # noqa: F821
+
 
 class CompanySettingsView(APIView):
     """
     GET /api/companies/settings/ - Get current company settings
     PATCH /api/companies/settings/ - Update settings
     """
+
     permission_classes = [IsAuthenticated]
 
     def _get_logo_url(self, company):
         """Get the full logo URL if logo exists."""
         if company.logo:
             from django.conf import settings as django_settings
+
             return f"{django_settings.MEDIA_URL}{company.logo.name}"
         return None
 
     def get(self, request):
         actor = resolve_actor(request)
         company = actor.company
-        return Response({
-            "name": company.name,
-            "name_ar": getattr(company, "name_ar", "") or "",
-            "default_currency": company.default_currency,
-            "fiscal_year_start_month": company.fiscal_year_start_month,
-            "logo_url": self._get_logo_url(company),
-            "onboarding_completed": company.onboarding_completed,
-            "thousand_separator": company.thousand_separator,
-            "decimal_separator": company.decimal_separator,
-            "decimal_places": company.decimal_places,
-            "date_format": company.date_format,
-        })
+        return Response(
+            {
+                "name": company.name,
+                "name_ar": getattr(company, "name_ar", "") or "",
+                "default_currency": company.default_currency,
+                "fiscal_year_start_month": company.fiscal_year_start_month,
+                "logo_url": self._get_logo_url(company),
+                "onboarding_completed": company.onboarding_completed,
+                "thousand_separator": company.thousand_separator,
+                "decimal_separator": company.decimal_separator,
+                "decimal_places": company.decimal_places,
+                "date_format": company.date_format,
+            }
+        )
 
     def patch(self, request):
         actor = resolve_actor(request)
@@ -1157,13 +1208,15 @@ class CompanySettingsView(APIView):
             )
 
         company = result.data["company"]
-        return Response({
-            "name": company.name,
-            "name_ar": getattr(company, "name_ar", "") or "",
-            "default_currency": company.default_currency,
-            "fiscal_year_start_month": company.fiscal_year_start_month,
-            "logo_url": self._get_logo_url(company),
-        })
+        return Response(
+            {
+                "name": company.name,
+                "name_ar": getattr(company, "name_ar", "") or "",
+                "default_currency": company.default_currency,
+                "fiscal_year_start_month": company.fiscal_year_start_month,
+                "logo_url": self._get_logo_url(company),
+            }
+        )
 
 
 class OnboardingSetupView(APIView):
@@ -1171,6 +1224,7 @@ class OnboardingSetupView(APIView):
     POST /api/onboarding/setup/ - Complete the onboarding wizard
     GET  /api/onboarding/setup/ - Get onboarding status + available templates
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -1181,30 +1235,34 @@ class OnboardingSetupView(APIView):
 
         templates = []
         for key, tmpl in COA_TEMPLATES.items():
-            templates.append({
-                "key": key,
-                "label": tmpl["label"],
-                "label_ar": tmpl["label_ar"],
-                "description": tmpl["description"],
-                "description_ar": tmpl["description_ar"],
-                "account_count": len(tmpl["accounts"]),
-            })
+            templates.append(
+                {
+                    "key": key,
+                    "label": tmpl["label"],
+                    "label_ar": tmpl["label_ar"],
+                    "description": tmpl["description"],
+                    "description_ar": tmpl["description_ar"],
+                    "account_count": len(tmpl["accounts"]),
+                }
+            )
 
-        return Response({
-            "onboarding_completed": company.onboarding_completed,
-            "coa_template": company.coa_template,
-            "company": {
-                "name": company.name,
-                "name_ar": company.name_ar,
-                "default_currency": company.default_currency,
-                "fiscal_year_start_month": company.fiscal_year_start_month,
-                "thousand_separator": company.thousand_separator,
-                "decimal_separator": company.decimal_separator,
-                "decimal_places": company.decimal_places,
-                "date_format": company.date_format,
-            },
-            "templates": templates,
-        })
+        return Response(
+            {
+                "onboarding_completed": company.onboarding_completed,
+                "coa_template": company.coa_template,
+                "company": {
+                    "name": company.name,
+                    "name_ar": company.name_ar,
+                    "default_currency": company.default_currency,
+                    "fiscal_year_start_month": company.fiscal_year_start_month,
+                    "thousand_separator": company.thousand_separator,
+                    "decimal_separator": company.decimal_separator,
+                    "decimal_places": company.decimal_places,
+                    "date_format": company.date_format,
+                },
+                "templates": templates,
+            }
+        )
 
     def post(self, request):
         from accounts.commands import complete_onboarding
@@ -1240,11 +1298,14 @@ class OnboardingSetupView(APIView):
             )
 
         company = result.data["company"]
-        return Response({
-            "status": "ok",
-            "onboarding_completed": company.onboarding_completed,
-            "coa_template": company.coa_template,
-        }, status=status.HTTP_200_OK)
+        return Response(
+            {
+                "status": "ok",
+                "onboarding_completed": company.onboarding_completed,
+                "coa_template": company.coa_template,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class CompanyLogoUploadView(APIView):
@@ -1252,6 +1313,7 @@ class CompanyLogoUploadView(APIView):
     POST /api/companies/logo/ - Upload company logo
     DELETE /api/companies/logo/ - Remove company logo
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -1273,10 +1335,12 @@ class CompanyLogoUploadView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response({
-            "logo_url": result.data["logo_url"],
-            "message": "Logo uploaded successfully.",
-        })
+        return Response(
+            {
+                "logo_url": result.data["logo_url"],
+                "message": "Logo uploaded successfully.",
+            }
+        )
 
     def delete(self, request):
         actor = resolve_actor(request)
@@ -1296,26 +1360,27 @@ class CompanyLogoUploadView(APIView):
 # Permission List View
 # =============================================================================
 
+
 class PermissionListView(APIView):
     """
     GET /api/permissions/
     List all available permissions (for UI dropdowns).
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         actor = resolve_actor(request)
         require(actor, "company.manage_permissions")  # <-- gate it here (inside method)
 
-        permissions = NxPermission.objects.all().values(
-            "code", "name", "module", "description"
-        )
+        permissions = NxPermission.objects.all().values("code", "name", "module", "description")
         return Response(list(permissions))
 
 
 # =============================================================================
 # Email Verification Views
 # =============================================================================
+
 
 class VerifyEmailView(APIView):
     """
@@ -1329,6 +1394,7 @@ class VerifyEmailView(APIView):
     - already_verified: Email was already verified
     - error: Invalid or expired token
     """
+
     permission_classes = [AllowAny]
 
     def get(self, request):
@@ -1351,11 +1417,13 @@ class VerifyEmailView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response({
-            "status": result.data.get("status"),
-            "message": result.data.get("message", "Email verified successfully."),
-            "email": result.data.get("email"),
-        })
+        return Response(
+            {
+                "status": result.data.get("status"),
+                "message": result.data.get("message", "Email verified successfully."),
+                "email": result.data.get("email"),
+            }
+        )
 
 
 class ResendVerificationView(APIView):
@@ -1367,6 +1435,7 @@ class ResendVerificationView(APIView):
 
     Body: { "email": "user@example.com" }
     """
+
     permission_classes = [AllowAny]
 
     def post(self, request):
@@ -1393,15 +1462,20 @@ class ResendVerificationView(APIView):
         result = resend_verification_email(email, ip_address)
 
         # Always return success-like response to prevent email enumeration
-        return Response({
-            "status": result.data.get("status", "email_sent_if_exists"),
-            "message": result.data.get("message", "If an account exists with this email, a verification link has been sent."),
-        })
+        return Response(
+            {
+                "status": result.data.get("status", "email_sent_if_exists"),
+                "message": result.data.get(
+                    "message", "If an account exists with this email, a verification link has been sent."
+                ),
+            }
+        )
 
 
 # =============================================================================
 # Admin Approval Views (Beta Gate)
 # =============================================================================
+
 
 class PendingApprovalsView(APIView):
     """
@@ -1410,6 +1484,7 @@ class PendingApprovalsView(APIView):
     Lists users pending admin approval.
     Staff only.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -1428,21 +1503,25 @@ class PendingApprovalsView(APIView):
         for user in pending_users:
             membership = user.memberships.first()
             company = membership.company if membership else None
-            users_data.append({
-                "id": user.id,
-                "public_id": str(user.public_id),
-                "email": user.email,
-                "name": user.name or "",
-                "company_name": company.name if company else "",
-                "company_public_id": str(company.public_id) if company else None,
-                "registered_at": user.date_joined.isoformat() if user.date_joined else None,
-                "email_verified_at": user.email_verified_at.isoformat() if user.email_verified_at else None,
-            })
+            users_data.append(
+                {
+                    "id": user.id,
+                    "public_id": str(user.public_id),
+                    "email": user.email,
+                    "name": user.name or "",
+                    "company_name": company.name if company else "",
+                    "company_public_id": str(company.public_id) if company else None,
+                    "registered_at": user.date_joined.isoformat() if user.date_joined else None,
+                    "email_verified_at": user.email_verified_at.isoformat() if user.email_verified_at else None,
+                }
+            )
 
-        return Response({
-            "count": len(users_data),
-            "users": users_data,
-        })
+        return Response(
+            {
+                "count": len(users_data),
+                "users": users_data,
+            }
+        )
 
 
 class ApproveUserView(APIView):
@@ -1452,6 +1531,7 @@ class ApproveUserView(APIView):
     Approves a pending user.
     Staff only.
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
@@ -1472,11 +1552,13 @@ class ApproveUserView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response({
-            "status": "approved",
-            "user_email": result.data["user_email"],
-            "approved_at": result.data["approved_at"],
-        })
+        return Response(
+            {
+                "status": "approved",
+                "user_email": result.data["user_email"],
+                "approved_at": result.data["approved_at"],
+            }
+        )
 
 
 class RejectUserView(APIView):
@@ -1488,6 +1570,7 @@ class RejectUserView(APIView):
 
     Body: { "reason": "Optional rejection reason" }
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
@@ -1510,11 +1593,13 @@ class RejectUserView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response({
-            "status": "rejected",
-            "user_email": result.data["user_email"],
-            "reason": result.data["reason"],
-        })
+        return Response(
+            {
+                "status": "rejected",
+                "user_email": result.data["user_email"],
+                "reason": result.data["reason"],
+            }
+        )
 
 
 class UnverifiedUsersView(APIView):
@@ -1524,6 +1609,7 @@ class UnverifiedUsersView(APIView):
     Lists users who haven't verified their email yet.
     Staff/superuser only.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -1542,20 +1628,24 @@ class UnverifiedUsersView(APIView):
         for user in unverified_users:
             membership = user.memberships.first()
             company = membership.company if membership else None
-            users_data.append({
-                "id": user.id,
-                "public_id": str(user.public_id),
-                "email": user.email,
-                "name": user.name or "",
-                "company_name": company.name if company else "",
-                "company_public_id": str(company.public_id) if company else None,
-                "registered_at": user.date_joined.isoformat() if user.date_joined else None,
-            })
+            users_data.append(
+                {
+                    "id": user.id,
+                    "public_id": str(user.public_id),
+                    "email": user.email,
+                    "name": user.name or "",
+                    "company_name": company.name if company else "",
+                    "company_public_id": str(company.public_id) if company else None,
+                    "registered_at": user.date_joined.isoformat() if user.date_joined else None,
+                }
+            )
 
-        return Response({
-            "count": len(users_data),
-            "users": users_data,
-        })
+        return Response(
+            {
+                "count": len(users_data),
+                "users": users_data,
+            }
+        )
 
 
 class AdminResendVerificationView(APIView):
@@ -1565,6 +1655,7 @@ class AdminResendVerificationView(APIView):
     Resends verification email to an unverified user.
     Staff/superuser only.
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
@@ -1600,11 +1691,13 @@ class AdminResendVerificationView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response({
-            "status": "sent",
-            "email": user.email,
-            "message": f"Verification email sent to {user.email}",
-        })
+        return Response(
+            {
+                "status": "sent",
+                "email": user.email,
+                "message": f"Verification email sent to {user.email}",
+            }
+        )
 
 
 class DeleteUnverifiedUserView(APIView):
@@ -1614,6 +1707,7 @@ class DeleteUnverifiedUserView(APIView):
     Deletes an unverified user and their associated data.
     Staff/superuser only.
     """
+
     permission_classes = [IsAuthenticated]
 
     def delete(self, request, pk):
@@ -1634,11 +1728,13 @@ class DeleteUnverifiedUserView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response({
-            "status": "deleted",
-            "email": result.data["email"],
-            "message": result.data["message"],
-        })
+        return Response(
+            {
+                "status": "deleted",
+                "email": result.data["email"],
+                "message": result.data["message"],
+            }
+        )
 
 
 class AdminManualVerifyUserView(APIView):
@@ -1648,6 +1744,7 @@ class AdminManualVerifyUserView(APIView):
     Manually verify a user's email without requiring them to click the link.
     Staff/superuser only.
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
@@ -1668,17 +1765,20 @@ class AdminManualVerifyUserView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response({
-            "status": "verified",
-            "email": result.data["user_email"],
-            "verified_at": result.data["verified_at"],
-            "needs_approval": result.data["needs_approval"],
-        })
+        return Response(
+            {
+                "status": "verified",
+                "email": result.data["user_email"],
+                "verified_at": result.data["verified_at"],
+                "needs_approval": result.data["needs_approval"],
+            }
+        )
 
 
 # =============================================================================
 # Admin Panel Views (Superuser Only)
 # =============================================================================
+
 
 class AdminStatsView(APIView):
     """
@@ -1687,10 +1787,10 @@ class AdminStatsView(APIView):
     Returns system-wide statistics for the admin dashboard.
     Superuser only.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-
         # Check if user is superuser
         if not request.user.is_superuser:
             return Response(
@@ -1699,19 +1799,18 @@ class AdminStatsView(APIView):
             )
 
         # Get counts - explicitly use 'default' database for system models
-        total_users = User.objects.using('default').count()
-        total_companies = Company.objects.using('default').count()
-        active_users = User.objects.using('default').filter(is_active=True).count()
-        verified_users = User.objects.using('default').filter(email_verified=True).count()
-        pending_approval = User.objects.using('default').filter(
-            email_verified=True, is_approved=False
-        ).count()
+        total_users = User.objects.using("default").count()
+        total_companies = Company.objects.using("default").count()
+        active_users = User.objects.using("default").filter(is_active=True).count()
+        verified_users = User.objects.using("default").filter(email_verified=True).count()
+        pending_approval = User.objects.using("default").filter(email_verified=True, is_approved=False).count()
 
         # Get event count (from all companies)
         total_events = 0
         try:
             # Events are per-company, so we need to count across all
             from events.models import CompanyEventCounter
+
             counters = CompanyEventCounter.objects.all()
             total_events = sum(c.last_sequence for c in counters)
         except Exception:
@@ -1721,21 +1820,24 @@ class AdminStatsView(APIView):
         from datetime import timedelta
 
         from django.utils import timezone
+
         week_ago = timezone.now() - timedelta(days=7)
 
-        new_users_week = User.objects.using('default').filter(date_joined__gte=week_ago).count()
-        new_companies_week = Company.objects.using('default').filter(created_at__gte=week_ago).count()
+        new_users_week = User.objects.using("default").filter(date_joined__gte=week_ago).count()
+        new_companies_week = Company.objects.using("default").filter(created_at__gte=week_ago).count()
 
-        return Response({
-            "total_users": total_users,
-            "total_companies": total_companies,
-            "active_users": active_users,
-            "verified_users": verified_users,
-            "pending_approval": pending_approval,
-            "total_events": total_events,
-            "new_users_week": new_users_week,
-            "new_companies_week": new_companies_week,
-        })
+        return Response(
+            {
+                "total_users": total_users,
+                "total_companies": total_companies,
+                "active_users": active_users,
+                "verified_users": verified_users,
+                "pending_approval": pending_approval,
+                "total_events": total_events,
+                "new_users_week": new_users_week,
+                "new_companies_week": new_companies_week,
+            }
+        )
 
 
 class AdminCompaniesListView(APIView):
@@ -1745,6 +1847,7 @@ class AdminCompaniesListView(APIView):
     Lists all companies in the system.
     Superuser only.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -1757,36 +1860,44 @@ class AdminCompaniesListView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        companies = Company.objects.using('default').annotate(
-            member_count=Count("memberships", filter=models.Q(memberships__is_active=True))
-        ).order_by("-created_at")
+        companies = (
+            Company.objects.using("default")
+            .annotate(member_count=Count("memberships", filter=models.Q(memberships__is_active=True)))
+            .order_by("-created_at")
+        )
 
         companies_data = []
         for company in companies:
             # Get owner (first OWNER role membership)
-            owner_membership = CompanyMembership.objects.filter(
-                company=company, role=CompanyMembership.Role.OWNER, is_active=True
-            ).select_related("user").first()
+            owner_membership = (
+                CompanyMembership.objects.filter(company=company, role=CompanyMembership.Role.OWNER, is_active=True)
+                .select_related("user")
+                .first()
+            )
             owner = owner_membership.user if owner_membership else None
 
-            companies_data.append({
-                "id": company.id,
-                "public_id": str(company.public_id),
-                "name": company.name,
-                "name_ar": company.name_ar,
-                "slug": company.slug,
-                "owner_email": owner.email if owner else None,
-                "owner_name": owner.name if owner else None,
-                "default_currency": company.default_currency,
-                "is_active": company.is_active,
-                "member_count": company.member_count,
-                "created_at": company.created_at.isoformat() if company.created_at else None,
-            })
+            companies_data.append(
+                {
+                    "id": company.id,
+                    "public_id": str(company.public_id),
+                    "name": company.name,
+                    "name_ar": company.name_ar,
+                    "slug": company.slug,
+                    "owner_email": owner.email if owner else None,
+                    "owner_name": owner.name if owner else None,
+                    "default_currency": company.default_currency,
+                    "is_active": company.is_active,
+                    "member_count": company.member_count,
+                    "created_at": company.created_at.isoformat() if company.created_at else None,
+                }
+            )
 
-        return Response({
-            "count": len(companies_data),
-            "companies": companies_data,
-        })
+        return Response(
+            {
+                "count": len(companies_data),
+                "companies": companies_data,
+            }
+        )
 
 
 class AdminUsersListView(APIView):
@@ -1796,6 +1907,7 @@ class AdminUsersListView(APIView):
     Lists all users in the system.
     Superuser only.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -1808,37 +1920,43 @@ class AdminUsersListView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        users = User.objects.using('default').annotate(
-            company_count=Count("memberships", filter=models.Q(memberships__is_active=True))
-        ).order_by("-date_joined")
+        users = (
+            User.objects.using("default")
+            .annotate(company_count=Count("memberships", filter=models.Q(memberships__is_active=True)))
+            .order_by("-date_joined")
+        )
 
         users_data = []
         for user in users:
             # Get primary company (first active membership)
             primary_membership = user.memberships.filter(is_active=True).select_related("company").first()
 
-            users_data.append({
-                "id": user.id,
-                "public_id": str(user.public_id),
-                "email": user.email,
-                "name": user.name,
-                "name_ar": user.name_ar,
-                "is_active": user.is_active,
-                "is_staff": user.is_staff,
-                "is_superuser": user.is_superuser,
-                "email_verified": user.email_verified,
-                "is_approved": user.is_approved,
-                "company_count": user.company_count,
-                "primary_company": primary_membership.company.name if primary_membership else None,
-                "primary_company_id": primary_membership.company.id if primary_membership else None,
-                "date_joined": user.date_joined.isoformat() if user.date_joined else None,
-                "last_login": user.last_login.isoformat() if user.last_login else None,
-            })
+            users_data.append(
+                {
+                    "id": user.id,
+                    "public_id": str(user.public_id),
+                    "email": user.email,
+                    "name": user.name,
+                    "name_ar": user.name_ar,
+                    "is_active": user.is_active,
+                    "is_staff": user.is_staff,
+                    "is_superuser": user.is_superuser,
+                    "email_verified": user.email_verified,
+                    "is_approved": user.is_approved,
+                    "company_count": user.company_count,
+                    "primary_company": primary_membership.company.name if primary_membership else None,
+                    "primary_company_id": primary_membership.company.id if primary_membership else None,
+                    "date_joined": user.date_joined.isoformat() if user.date_joined else None,
+                    "last_login": user.last_login.isoformat() if user.last_login else None,
+                }
+            )
 
-        return Response({
-            "count": len(users_data),
-            "users": users_data,
-        })
+        return Response(
+            {
+                "count": len(users_data),
+                "users": users_data,
+            }
+        )
 
 
 class AdminAuditLogView(APIView):
@@ -1855,6 +1973,7 @@ class AdminAuditLogView(APIView):
     - limit: Number of events to return (default 100, max 500)
     - offset: Pagination offset
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -1891,31 +2010,35 @@ class AdminAuditLogView(APIView):
         total_count = events.count()
 
         # Apply pagination
-        events = events[offset:offset + limit]
+        events = events[offset : offset + limit]
 
         events_data = []
         for event in events:
-            events_data.append({
-                "id": str(event.id),
-                "event_type": event.event_type,
-                "aggregate_type": event.aggregate_type,
-                "aggregate_id": event.aggregate_id,
-                "company_id": event.company_id,
-                "company_name": event.company.name if event.company else None,
-                "caused_by_user_id": event.caused_by_user_id,
-                "caused_by_user_email": event.caused_by_user.email if event.caused_by_user else None,
-                "origin": event.origin,
-                "occurred_at": event.occurred_at.isoformat() if event.occurred_at else None,
-                "recorded_at": event.recorded_at.isoformat() if event.recorded_at else None,
-                "data_preview": str(event.get_data())[:200],
-            })
+            events_data.append(
+                {
+                    "id": str(event.id),
+                    "event_type": event.event_type,
+                    "aggregate_type": event.aggregate_type,
+                    "aggregate_id": event.aggregate_id,
+                    "company_id": event.company_id,
+                    "company_name": event.company.name if event.company else None,
+                    "caused_by_user_id": event.caused_by_user_id,
+                    "caused_by_user_email": event.caused_by_user.email if event.caused_by_user else None,
+                    "origin": event.origin,
+                    "occurred_at": event.occurred_at.isoformat() if event.occurred_at else None,
+                    "recorded_at": event.recorded_at.isoformat() if event.recorded_at else None,
+                    "data_preview": str(event.get_data())[:200],
+                }
+            )
 
-        return Response({
-            "count": total_count,
-            "limit": limit,
-            "offset": offset,
-            "events": events_data,
-        })
+        return Response(
+            {
+                "count": total_count,
+                "limit": limit,
+                "offset": offset,
+                "events": events_data,
+            }
+        )
 
 
 class AdminEventTypesView(APIView):
@@ -1925,6 +2048,7 @@ class AdminEventTypesView(APIView):
     Returns list of distinct event types for filtering.
     Superuser only.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -1937,13 +2061,13 @@ class AdminEventTypesView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        event_types = BusinessEvent.objects.values_list(
-            "event_type", flat=True
-        ).distinct().order_by("event_type")
+        event_types = BusinessEvent.objects.values_list("event_type", flat=True).distinct().order_by("event_type")
 
-        return Response({
-            "event_types": list(event_types),
-        })
+        return Response(
+            {
+                "event_types": list(event_types),
+            }
+        )
 
 
 class AdminResetPasswordView(APIView):
@@ -1955,6 +2079,7 @@ class AdminResetPasswordView(APIView):
 
     Body: { "password": "new_password" }
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
@@ -1988,22 +2113,26 @@ class AdminResetPasswordView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response({
-            "status": "password_reset",
-            "user_email": result.data["user_email"],
-            "message": f"Password reset successfully for {result.data['user_email']}",
-        })
+        return Response(
+            {
+                "status": "password_reset",
+                "user_email": result.data["user_email"],
+                "message": f"Password reset successfully for {result.data['user_email']}",
+            }
+        )
 
 
 # =============================================================================
 # Invitation Views
 # =============================================================================
 
+
 class InvitationListCreateView(APIView):
     """
     GET /api/invitations/ - List pending invitations for the company
     POST /api/invitations/ - Create a new invitation
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -2014,25 +2143,29 @@ class InvitationListCreateView(APIView):
 
         invitations_data = []
         for inv in invitations:
-            invitations_data.append({
-                "id": inv.id,
-                "public_id": str(inv.public_id),
-                "email": inv.email,
-                "name": inv.name,
-                "role": inv.role,
-                "status": inv.status,
-                "company_ids": inv.company_ids,
-                "permission_codes": inv.permission_codes,
-                "invited_by_email": inv.invited_by.email if inv.invited_by else None,
-                "invited_by_name": inv.invited_by.name if inv.invited_by else None,
-                "created_at": inv.created_at.isoformat() if inv.created_at else None,
-                "expires_at": inv.expires_at.isoformat() if inv.expires_at else None,
-            })
+            invitations_data.append(
+                {
+                    "id": inv.id,
+                    "public_id": str(inv.public_id),
+                    "email": inv.email,
+                    "name": inv.name,
+                    "role": inv.role,
+                    "status": inv.status,
+                    "company_ids": inv.company_ids,
+                    "permission_codes": inv.permission_codes,
+                    "invited_by_email": inv.invited_by.email if inv.invited_by else None,
+                    "invited_by_name": inv.invited_by.name if inv.invited_by else None,
+                    "created_at": inv.created_at.isoformat() if inv.created_at else None,
+                    "expires_at": inv.expires_at.isoformat() if inv.expires_at else None,
+                }
+            )
 
-        return Response({
-            "count": len(invitations_data),
-            "invitations": invitations_data,
-        })
+        return Response(
+            {
+                "count": len(invitations_data),
+                "invitations": invitations_data,
+            }
+        )
 
     def post(self, request):
         actor = resolve_actor(request)
@@ -2066,19 +2199,22 @@ class InvitationListCreateView(APIView):
             )
 
         invitation = result.data["invitation"]
-        return Response({
-            "id": invitation.id,
-            "public_id": str(invitation.public_id),
-            "email": invitation.email,
-            "name": invitation.name,
-            "role": invitation.role,
-            "status": invitation.status,
-            "company_ids": invitation.company_ids,
-            "permission_codes": invitation.permission_codes,
-            "expires_at": invitation.expires_at.isoformat(),
-            "email_sent": result.data.get("email_sent", True),
-            "warning": result.data.get("warning"),
-        }, status=status.HTTP_201_CREATED)
+        return Response(
+            {
+                "id": invitation.id,
+                "public_id": str(invitation.public_id),
+                "email": invitation.email,
+                "name": invitation.name,
+                "role": invitation.role,
+                "status": invitation.status,
+                "company_ids": invitation.company_ids,
+                "permission_codes": invitation.permission_codes,
+                "expires_at": invitation.expires_at.isoformat(),
+                "email_sent": result.data.get("email_sent", True),
+                "warning": result.data.get("warning"),
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class InvitationDetailView(APIView):
@@ -2086,6 +2222,7 @@ class InvitationDetailView(APIView):
     GET /api/invitations/<pk>/ - Get invitation details
     DELETE /api/invitations/<pk>/ - Cancel invitation
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
@@ -2095,30 +2232,30 @@ class InvitationDetailView(APIView):
         require(actor, "company.manage_users")
 
         try:
-            invitation = Invitation.objects.select_related("invited_by").get(
-                pk=pk, primary_company=actor.company
-            )
+            invitation = Invitation.objects.select_related("invited_by").get(pk=pk, primary_company=actor.company)
         except Invitation.DoesNotExist:
             return Response(
                 {"detail": "Invitation not found."},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        return Response({
-            "id": invitation.id,
-            "public_id": str(invitation.public_id),
-            "email": invitation.email,
-            "name": invitation.name,
-            "role": invitation.role,
-            "status": invitation.status,
-            "company_ids": invitation.company_ids,
-            "permission_codes": invitation.permission_codes,
-            "invited_by_email": invitation.invited_by.email if invitation.invited_by else None,
-            "invited_by_name": invitation.invited_by.name if invitation.invited_by else None,
-            "created_at": invitation.created_at.isoformat() if invitation.created_at else None,
-            "expires_at": invitation.expires_at.isoformat() if invitation.expires_at else None,
-            "accepted_at": invitation.accepted_at.isoformat() if invitation.accepted_at else None,
-        })
+        return Response(
+            {
+                "id": invitation.id,
+                "public_id": str(invitation.public_id),
+                "email": invitation.email,
+                "name": invitation.name,
+                "role": invitation.role,
+                "status": invitation.status,
+                "company_ids": invitation.company_ids,
+                "permission_codes": invitation.permission_codes,
+                "invited_by_email": invitation.invited_by.email if invitation.invited_by else None,
+                "invited_by_name": invitation.invited_by.name if invitation.invited_by else None,
+                "created_at": invitation.created_at.isoformat() if invitation.created_at else None,
+                "expires_at": invitation.expires_at.isoformat() if invitation.expires_at else None,
+                "accepted_at": invitation.accepted_at.isoformat() if invitation.accepted_at else None,
+            }
+        )
 
     def delete(self, request, pk):
         actor = resolve_actor(request)
@@ -2140,6 +2277,7 @@ class InvitationResendView(APIView):
     """
     POST /api/invitations/<pk>/resend/ - Resend invitation email
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
@@ -2153,10 +2291,12 @@ class InvitationResendView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response({
-            "email_sent": True,
-            "new_expiry": result.data.get("new_expiry"),
-        })
+        return Response(
+            {
+                "email_sent": True,
+                "new_expiry": result.data.get("new_expiry"),
+            }
+        )
 
 
 class AcceptInvitationView(APIView):
@@ -2172,6 +2312,7 @@ class AcceptInvitationView(APIView):
         "name": "Optional Name Override"
     }
     """
+
     permission_classes = [AllowAny]
 
     def post(self, request):
@@ -2212,20 +2353,23 @@ class AcceptInvitationView(APIView):
         # Generate tokens for the new user
         tokens = mint_token_pair(user, company_id=primary_company.id)
 
-        return Response({
-            "user": {
-                "id": user.id,
-                "public_id": str(user.public_id),
-                "email": user.email,
-                "name": user.name,
+        return Response(
+            {
+                "user": {
+                    "id": user.id,
+                    "public_id": str(user.public_id),
+                    "email": user.email,
+                    "name": user.name,
+                },
+                "company": {
+                    "id": primary_company.id,
+                    "public_id": str(primary_company.public_id),
+                    "name": primary_company.name,
+                },
+                "tokens": tokens,
             },
-            "company": {
-                "id": primary_company.id,
-                "public_id": str(primary_company.public_id),
-                "name": primary_company.name,
-            },
-            "tokens": tokens,
-        }, status=status.HTTP_201_CREATED)
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class InvitationInfoView(APIView):
@@ -2236,6 +2380,7 @@ class InvitationInfoView(APIView):
     Used by the frontend to display the invitation acceptance form.
     No authentication required.
     """
+
     permission_classes = [AllowAny]
 
     def get(self, request):
@@ -2257,9 +2402,7 @@ class InvitationInfoView(APIView):
         token_hash = hashlib.sha256(token.encode()).hexdigest()
 
         try:
-            invitation = Invitation.objects.select_related(
-                "invited_by", "primary_company"
-            ).get(token_hash=token_hash)
+            invitation = Invitation.objects.select_related("invited_by", "primary_company").get(token_hash=token_hash)
         except Invitation.DoesNotExist:
             return Response(
                 {"detail": "Invalid or expired invitation token."},
@@ -2287,20 +2430,23 @@ class InvitationInfoView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response({
-            "email": invitation.email,
-            "name": invitation.name,
-            "company_name": invitation.primary_company.name,
-            "invited_by_name": invitation.invited_by.name if invitation.invited_by else None,
-            "invited_by_email": invitation.invited_by.email if invitation.invited_by else None,
-            "role": invitation.role,
-            "expires_at": invitation.expires_at.isoformat(),
-        })
+        return Response(
+            {
+                "email": invitation.email,
+                "name": invitation.name,
+                "company_name": invitation.primary_company.name,
+                "invited_by_name": invitation.invited_by.name if invitation.invited_by else None,
+                "invited_by_email": invitation.invited_by.email if invitation.invited_by else None,
+                "role": invitation.role,
+                "expires_at": invitation.expires_at.isoformat(),
+            }
+        )
 
 
 # =============================================================================
 # Voice Feature Management
 # =============================================================================
+
 
 class VoiceUsersListView(APIView):
     """
@@ -2309,6 +2455,7 @@ class VoiceUsersListView(APIView):
     Query params:
         all_companies: If "true" and user is superuser, list all users across all companies
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -2330,6 +2477,7 @@ class VoiceUserStatusView(APIView):
     GET /api/accounts/voice/status/ -> Get current user's voice status
     GET /api/accounts/voice/users/<membership_id>/status/ -> Get specific user's voice status
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request, membership_id=None):
@@ -2349,6 +2497,7 @@ class VoiceGrantAccessView(APIView):
     """
     POST /api/accounts/voice/users/<membership_id>/grant/ -> Grant voice access
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, membership_id):
@@ -2384,6 +2533,7 @@ class VoiceRevokeAccessView(APIView):
     """
     POST /api/accounts/voice/users/<membership_id>/revoke/ -> Revoke voice access
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, membership_id):
@@ -2403,6 +2553,7 @@ class VoiceRefillQuotaView(APIView):
     """
     POST /api/accounts/voice/users/<membership_id>/refill/ -> Refill voice quota
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, membership_id):
@@ -2461,6 +2612,7 @@ class VoiceRefillQuotaView(APIView):
 # Module & Sidebar
 # =============================================================================
 
+
 class SidebarView(APIView):
     """
     GET /api/sidebar/ -> Full sidebar navigation for the current company.
@@ -2469,6 +2621,7 @@ class SidebarView(APIView):
     Each section includes icon name, label, and child nav items.
     Sections linked to optional modules are filtered by company enablement.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -2482,7 +2635,8 @@ class SidebarView(APIView):
 
         # Get enabled module keys for this company
         enabled_records = CompanyModule.objects.filter(
-            company=actor.company, is_enabled=True,
+            company=actor.company,
+            is_enabled=True,
         ).values_list("module_key", flat=True)
         enabled_keys = set(enabled_records)
 
@@ -2508,6 +2662,7 @@ class CompanyModulesView(APIView):
     GET /api/modules/ -> List all available modules and their enablement status.
     PUT /api/modules/ -> Update enabled modules for the current company.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -2519,24 +2674,22 @@ class CompanyModulesView(APIView):
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
 
-        enabled_records = {
-            r.module_key: r.is_enabled
-            for r in CompanyModule.objects.filter(company=actor.company)
-        }
+        enabled_records = {r.module_key: r.is_enabled for r in CompanyModule.objects.filter(company=actor.company)}
 
         result = []
         for mod in module_registry.all_modules():
-            result.append({
-                "key": mod["key"],
-                "label": mod["label"],
-                "icon": mod["icon"],
-                "category": mod["category"],
-                "is_core": mod["category"] == ModuleCategory.CORE,
-                "is_enabled": (
-                    True if mod["category"] == ModuleCategory.CORE
-                    else enabled_records.get(mod["key"], False)
-                ),
-            })
+            result.append(
+                {
+                    "key": mod["key"],
+                    "label": mod["label"],
+                    "icon": mod["icon"],
+                    "category": mod["category"],
+                    "is_core": mod["category"] == ModuleCategory.CORE,
+                    "is_enabled": (
+                        True if mod["category"] == ModuleCategory.CORE else enabled_records.get(mod["key"], False)
+                    ),
+                }
+            )
 
         return Response(result)
 
@@ -2577,15 +2730,18 @@ class CompanyModulesView(APIView):
 # Notifications
 # ==========================================================================
 
+
 class NotificationListView(APIView):
     """
     GET  /api/notifications/           -> list notifications for current user
     POST /api/notifications/read-all/  -> mark all as read (separate URL)
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         from accounts.models import Notification
+
         actor = resolve_actor(request)
         if not actor.company:
             return Response([], status=200)
@@ -2609,7 +2765,9 @@ class NotificationListView(APIView):
             for n in qs
         ]
         unread_count = Notification.objects.filter(
-            company=actor.company, user=actor.user, is_read=False,
+            company=actor.company,
+            user=actor.user,
+            is_read=False,
         ).count()
 
         return Response({"notifications": data, "unread_count": unread_count})
@@ -2617,14 +2775,18 @@ class NotificationListView(APIView):
 
 class NotificationMarkReadView(APIView):
     """POST /api/notifications/<pk>/read/ -> mark single notification as read."""
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
         from accounts.models import Notification
+
         actor = resolve_actor(request)
         try:
             n = Notification.objects.get(
-                pk=pk, company=actor.company, user=actor.user,
+                pk=pk,
+                company=actor.company,
+                user=actor.user,
             )
         except Notification.DoesNotExist:
             return Response({"detail": "Not found."}, status=404)
@@ -2636,12 +2798,16 @@ class NotificationMarkReadView(APIView):
 
 class NotificationMarkAllReadView(APIView):
     """POST /api/notifications/read-all/ -> mark all notifications as read."""
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         from accounts.models import Notification
+
         actor = resolve_actor(request)
         updated = Notification.objects.filter(
-            company=actor.company, user=actor.user, is_read=False,
+            company=actor.company,
+            user=actor.user,
+            is_read=False,
         ).update(is_read=True)
         return Response({"marked_read": updated})
