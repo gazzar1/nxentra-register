@@ -73,3 +73,10 @@ TESTING = True
 DISABLE_EVENT_VALIDATION = True
 RLS_BYPASS = True
 PROJECTIONS_SYNC = True
+
+# Disable production security settings that break the test client
+# (test client sends HTTP, not HTTPS — SSL redirect causes 301s)
+SECURE_SSL_REDIRECT = False
+SECURE_HSTS_SECONDS = 0
+SESSION_COOKIE_SECURE = False
+CSRF_COOKIE_SECURE = False
