@@ -7,7 +7,7 @@ export default function TermsOfServicePage() {
       <Head>
         <title>Terms of Service - Nxentra</title>
       </Head>
-      <div className="min-h-screen bg-background text-foreground">
+      <div className="fixed inset-0 overflow-y-auto bg-background text-foreground">
         <div className="mx-auto max-w-3xl px-6 py-16">
           <nav className="mb-12">
             <Link href="/" className="text-sm text-accent hover:underline">

@@ -7,7 +7,7 @@ export default function PrivacyPolicyPage() {
       <Head>
         <title>Privacy Policy - Nxentra</title>
       </Head>
-      <div className="min-h-screen bg-background text-foreground">
+      <div className="fixed inset-0 overflow-y-auto bg-background text-foreground">
         <div className="mx-auto max-w-3xl px-6 py-16">
           <nav className="mb-12">
             <Link href="/" className="text-sm text-accent hover:underline">
