@@ -410,6 +410,7 @@ export default function OnboardingSetupPage() {
             {currentStepKey === "ready" && (
               <StepReady
                 businessType={businessType}
+                shopifyConnected={shopifyConnected}
                 onGoToDashboard={handleGoToDashboard}
               />
             )}
@@ -1059,32 +1060,126 @@ function StepModules({
 
 function StepReady({
   businessType,
+  shopifyConnected,
   onGoToDashboard,
 }: {
   businessType: string;
+  shopifyConnected: boolean;
   onGoToDashboard: () => void;
 }) {
   const isShopify = businessType === "shopify";
+  const router = useRouter();
+
+  const shopifySteps = [
+    {
+      done: shopifyConnected,
+      label: "Connect your Shopify store",
+      action: shopifyConnected ? undefined : () => router.push("/shopify/settings"),
+    },
+    {
+      done: false,
+      label: "Review your chart of accounts",
+      action: () => router.push("/accounting/chart-of-accounts"),
+    },
+    {
+      done: false,
+      label: "Check your first reconciliation",
+      action: () => router.push("/shopify/reconciliation"),
+    },
+  ];
+
+  const generalSteps = [
+    {
+      done: false,
+      label: "Review your chart of accounts",
+      action: () => router.push("/accounting/chart-of-accounts"),
+    },
+    {
+      done: false,
+      label: "Create your first customer",
+      action: () => router.push("/accounting/customers/new"),
+    },
+    {
+      done: false,
+      label: "Create your first journal entry",
+      action: () => router.push("/accounting/journal-entries/new"),
+    },
+    {
+      done: false,
+      label: "View the trial balance",
+      action: () => router.push("/reports/trial-balance"),
+    },
+  ];
+
+  const nextSteps = isShopify ? shopifySteps : generalSteps;
 
   return (
-    <div className="text-center py-8">
-      <div className="flex justify-center mb-4">
-        <div className="flex h-16 w-16 items-center justify-center rounded-full bg-green-500/10">
-          <Check className="h-8 w-8 text-green-500" />
+    <div className="py-8">
+      <div className="text-center">
+        <div className="flex justify-center mb-4">
+          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-green-500/10">
+            <Check className="h-8 w-8 text-green-500" />
+          </div>
+        </div>
+        <h2 className="text-xl font-semibold mb-2">You&apos;re All Set!</h2>
+        <p className="text-muted-foreground mb-8 max-w-md mx-auto">
+          {isShopify
+            ? "Your Shopify accounting is configured. Here\u2019s what to do next:"
+            : "Your company is configured and ready. Here\u2019s what to do next:"}
+        </p>
+      </div>
+
+      <div className="max-w-md mx-auto mb-8">
+        <h3 className="text-sm font-medium text-muted-foreground mb-3 uppercase tracking-wide">
+          Recommended next steps
+        </h3>
+        <div className="space-y-2">
+          {nextSteps.map((item, i) => (
+            <button
+              key={i}
+              type="button"
+              onClick={item.action}
+              disabled={!item.action}
+              className={cn(
+                "flex items-center gap-3 w-full rounded-lg border p-3 text-start text-sm transition-colors",
+                item.done
+                  ? "border-green-500/30 bg-green-500/5"
+                  : "border-border hover:border-accent/50 hover:bg-accent/5"
+              )}
+            >
+              <div
+                className={cn(
+                  "flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full border-2",
+                  item.done
+                    ? "border-green-500 bg-green-500 text-white"
+                    : "border-muted-foreground/30"
+                )}
+              >
+                {item.done ? (
+                  <Check className="h-3.5 w-3.5" />
+                ) : (
+                  <span className="text-xs text-muted-foreground">{i + 1}</span>
+                )}
+              </div>
+              <span className={item.done ? "text-muted-foreground line-through" : ""}>
+                {item.label}
+              </span>
+              {item.action && !item.done && (
+                <ArrowRight className="h-3.5 w-3.5 text-muted-foreground ms-auto" />
+              )}
+            </button>
+          ))}
         </div>
       </div>
-      <h2 className="text-xl font-semibold mb-2">You&apos;re All Set!</h2>
-      <p className="text-muted-foreground mb-8 max-w-md mx-auto">
-        {isShopify
-          ? "Your Shopify accounting is configured. Connect your store in Settings \u2192 Integrations to start tracking orders and payouts automatically."
-          : "Your company is configured and ready to go. You can always change these settings later from the Settings page."}
-      </p>
 
       <div className="flex flex-col items-center gap-3">
         <Button size="lg" onClick={onGoToDashboard} className="min-w-[200px]">
           {isShopify ? "Go to Reconciliation" : "Go to Dashboard"}
           <ArrowRight className="h-4 w-4 ms-2" />
         </Button>
+        <p className="text-xs text-muted-foreground">
+          You can always access these from the sidebar.
+        </p>
       </div>
     </div>
   );
