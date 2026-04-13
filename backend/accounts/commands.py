@@ -2811,19 +2811,22 @@ def accept_invitation(
 
     # Grant permissions if specified
     if invitation.permission_codes:
+        from projections.write_barrier import projection_writes_allowed
+
         # Get the primary membership
         primary_membership = CompanyMembership.objects.filter(user=user, company=primary_company).first()
 
         if primary_membership:
             permissions = NxPermission.objects.filter(code__in=invitation.permission_codes)
-            for perm in permissions:
-                from accounts.models import CompanyMembershipPermission
+            with projection_writes_allowed():
+                for perm in permissions:
+                    from accounts.models import CompanyMembershipPermission
 
-                CompanyMembershipPermission.objects.get_or_create(
-                    membership=primary_membership,
-                    permission=perm,
-                    company=primary_company,
-                )
+                    CompanyMembershipPermission.objects.get_or_create(
+                        membership=primary_membership,
+                        permission=perm,
+                        company=primary_company,
+                    )
 
     # Mark invitation as accepted
     now = timezone.now()
