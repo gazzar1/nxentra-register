@@ -172,10 +172,11 @@ export default function OnboardingSetupPage() {
     shopifyService.getStore().then(({ data }) => {
       // API returns { connected: false } when no store, or full store object when connected
       if (!data || ("connected" in data && !data.connected)) return;
-      const store = data as Record<string, unknown>;
-      if (store.status === "ACTIVE" || store.shop_domain) {
-        setShopifyConnected(true);
-        setShopifyStoreName(String(store.shop_domain || ""));
+      if ("shop_domain" in data && "status" in data) {
+        if (data.status === "ACTIVE") {
+          setShopifyConnected(true);
+          setShopifyStoreName(String(data.shop_domain || ""));
+        }
       }
     }).catch(() => { /* no store yet */ });
 
