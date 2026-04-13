@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -192,21 +192,14 @@ export function AccountForm({
 
   return (
     <form ref={formRef} onSubmit={form.handleSubmit(handleSubmit)} className="space-y-6">
-      {/* Code */}
-      <div className="space-y-2">
-        <Label htmlFor="code">{t("accounting:account.code")} *</Label>
-        <Input
-          id="code"
-          {...form.register("code")}
-          placeholder="1000"
-          className="font-mono ltr-code"
-        />
-        {form.formState.errors.code && (
-          <p className="text-sm text-destructive">
-            {form.formState.errors.code.message}
-          </p>
-        )}
-      </div>
+      {/* Code — with account lookup dropdown */}
+      <AccountCodeLookup
+        value={form.watch("code")}
+        onChange={(val) => form.setValue("code", val, { shouldValidate: true })}
+        accounts={accounts || []}
+        error={form.formState.errors.code?.message}
+        label={`${t("accounting:account.code")} *`}
+      />
 
       {/* Name (English) */}
       <div className="space-y-2">
@@ -404,5 +397,98 @@ export function AccountForm({
         )}
       </div>
     </form>
+  );
+}
+
+/* =========================================================================
+   Account Code Lookup — combobox showing existing accounts as reference
+   ========================================================================= */
+
+function AccountCodeLookup({
+  value,
+  onChange,
+  accounts,
+  error,
+  label,
+}: {
+  value: string;
+  onChange: (val: string) => void;
+  accounts: Account[];
+  error?: string;
+  label: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState(value || "");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Sort accounts by code and filter by search term
+  const sorted = [...accounts].sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
+  const filtered = sorted.filter(
+    (a) =>
+      a.code.toLowerCase().includes(search.toLowerCase()) ||
+      a.name.toLowerCase().includes(search.toLowerCase())
+  );
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    setSearch(val);
+    onChange(val);
+    setOpen(true);
+  };
+
+  const handleSelect = (account: Account) => {
+    setSearch(account.code);
+    onChange(account.code);
+    setOpen(false);
+    inputRef.current?.focus();
+  };
+
+  return (
+    <div className="space-y-2 relative">
+      <Label htmlFor="code">{label}</Label>
+      <Input
+        ref={inputRef}
+        id="code"
+        value={search}
+        onChange={handleInputChange}
+        onFocus={() => setOpen(true)}
+        onBlur={() => {
+          // Delay closing so click on dropdown item registers
+          setTimeout(() => setOpen(false), 200);
+        }}
+        placeholder="Type a code or search..."
+        className="font-mono ltr-code"
+        autoComplete="off"
+      />
+      {open && filtered.length > 0 && (
+        <div className="absolute z-50 top-full left-0 right-0 mt-1 max-h-64 overflow-y-auto rounded-md border border-border bg-popover shadow-lg">
+          <div className="px-3 py-1.5 text-xs text-muted-foreground border-b border-border">
+            Existing accounts ({filtered.length})
+          </div>
+          {filtered.map((account) => (
+            <button
+              key={account.id}
+              type="button"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                handleSelect(account);
+              }}
+              className="flex items-center gap-3 w-full px-3 py-2 text-sm hover:bg-accent/10 text-start"
+            >
+              <span className="font-mono text-xs w-16 flex-shrink-0 text-accent">
+                {account.code}
+              </span>
+              <span className="truncate">{account.name}</span>
+              <span className="text-xs text-muted-foreground ms-auto flex-shrink-0">
+                {account.account_type}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+      {error && (
+        <p className="text-sm text-destructive">{error}</p>
+      )}
+    </div>
   );
 }
