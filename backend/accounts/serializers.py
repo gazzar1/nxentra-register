@@ -61,17 +61,23 @@ class NxentraTokenRefreshSerializer(TokenRefreshSerializer):
     """
 
     def validate(self, attrs):
-        # Let SimpleJWT do its validation and token creation
-        data = super().validate(attrs)
+        # Decode the refresh token BEFORE super().validate() to extract claims
+        # (SimpleJWT's TokenRefreshSerializer doesn't set self.token)
+        try:
+            refresh = RefreshToken(attrs["refresh"])
+        except Exception:
+            raise InvalidToken("Invalid refresh token.")
 
-        # self.token is the refresh token instance after super().validate()
-        company_id = self.token.get("company_id")
+        company_id = refresh.get("company_id")
         if not company_id or company_id == "None":
             raise InvalidToken("Missing tenant context in refresh token.")
 
-        user_id = self.token.get("user_id")
+        user_id = refresh.get("user_id")
         if not user_id:
             raise InvalidToken("Invalid refresh token.")
+
+        # Let SimpleJWT do its validation and token creation
+        data = super().validate(attrs)
 
         # Validate user still belongs to this company
         from accounts.rls import rls_bypass
