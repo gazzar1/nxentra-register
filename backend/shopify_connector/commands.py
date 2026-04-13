@@ -14,7 +14,7 @@ from decimal import Decimal
 
 import requests
 from django.conf import settings
-from django.db import transaction
+from django.db import IntegrityError, transaction
 
 from accounting.commands import CommandResult
 from accounts.authz import ActorContext, require
@@ -48,7 +48,8 @@ logger = logging.getLogger(__name__)
 SHOPIFY_API_KEY = getattr(settings, "SHOPIFY_API_KEY", "")
 SHOPIFY_API_SECRET = getattr(settings, "SHOPIFY_API_SECRET", "")
 SHOPIFY_SCOPES = getattr(
-    settings, "SHOPIFY_SCOPES",
+    settings,
+    "SHOPIFY_SCOPES",
     "read_orders,read_products,read_inventory",
 )
 SHOPIFY_APP_URL = getattr(settings, "SHOPIFY_APP_URL", "")
@@ -69,6 +70,7 @@ SHOPIFY_WEBHOOK_TOPICS = [
 # =============================================================================
 # OAuth Commands
 # =============================================================================
+
 
 def get_install_url(company, shop_domain: str) -> dict:
     """
@@ -117,11 +119,15 @@ def complete_oauth(company, shop_domain: str, code: str, nonce: str) -> CommandR
     # Exchange code for access token
     token_url = f"https://{shop_domain}/admin/oauth/access_token"
     try:
-        resp = requests.post(token_url, json={
-            "client_id": SHOPIFY_API_KEY,
-            "client_secret": SHOPIFY_API_SECRET,
-            "code": code,
-        }, timeout=15)
+        resp = requests.post(
+            token_url,
+            json={
+                "client_id": SHOPIFY_API_KEY,
+                "client_secret": SHOPIFY_API_SECRET,
+                "code": code,
+            },
+            timeout=15,
+        )
         resp.raise_for_status()
         token_data = resp.json()
     except requests.RequestException as e:
@@ -134,13 +140,19 @@ def complete_oauth(company, shop_domain: str, code: str, nonce: str) -> CommandR
     access_token = token_data.get("access_token", "")
     scopes = token_data.get("scope", "")
 
-    with command_writes_allowed():
-        store.access_token = access_token
-        store.scopes = scopes
-        store.status = ShopifyStore.Status.ACTIVE
-        store.oauth_nonce = ""
-        store.error_message = ""
-        store.save()
+    try:
+        with command_writes_allowed():
+            store.access_token = access_token
+            store.scopes = scopes
+            store.status = ShopifyStore.Status.ACTIVE
+            store.oauth_nonce = ""
+            store.error_message = ""
+            store.save()
+    except IntegrityError:
+        return CommandResult.fail(
+            "This Shopify store is already connected to another Nxentra company. "
+            "Disconnect it from the other company first."
+        )
 
     # Auto-create a Shopify warehouse for inventory tracking
     _ensure_shopify_warehouse(store)
@@ -155,7 +167,8 @@ def register_webhooks(actor: ActorContext, store_id: int) -> CommandResult:
 
     try:
         store = ShopifyStore.objects.get(
-            company=actor.company, pk=store_id,
+            company=actor.company,
+            pk=store_id,
         )
     except ShopifyStore.DoesNotExist:
         return CommandResult.fail("Store not found.")
@@ -204,11 +217,13 @@ def register_webhooks(actor: ActorContext, store_id: int) -> CommandResult:
 
     if errors:
         logger.warning("Webhook registration errors for %s: %s", store.shop_domain, errors)
-        return CommandResult.ok(data={
-            "registered": registered,
-            "errors": errors,
-            "store": store,
-        })
+        return CommandResult.ok(
+            data={
+                "registered": registered,
+                "errors": errors,
+                "store": store,
+            }
+        )
 
     # Emit connection event
     emit_event(
@@ -225,10 +240,12 @@ def register_webhooks(actor: ActorContext, store_id: int) -> CommandResult:
         ),
     )
 
-    return CommandResult.ok(data={
-        "registered": registered,
-        "store": store,
-    })
+    return CommandResult.ok(
+        data={
+            "registered": registered,
+            "store": store,
+        }
+    )
 
 
 @transaction.atomic
@@ -239,12 +256,17 @@ def disconnect_store(actor: ActorContext, store_public_id: str = None) -> Comman
     try:
         if store_public_id:
             store = ShopifyStore.objects.get(
-                company=actor.company, public_id=store_public_id,
+                company=actor.company,
+                public_id=store_public_id,
             )
         else:
-            store = ShopifyStore.objects.filter(
-                company=actor.company,
-            ).exclude(status=ShopifyStore.Status.DISCONNECTED).first()
+            store = (
+                ShopifyStore.objects.filter(
+                    company=actor.company,
+                )
+                .exclude(status=ShopifyStore.Status.DISCONNECTED)
+                .first()
+            )
             if not store:
                 raise ShopifyStore.DoesNotExist
     except ShopifyStore.DoesNotExist:
@@ -277,6 +299,7 @@ def disconnect_store(actor: ActorContext, store_public_id: str = None) -> Comman
 # Webhook Processing Commands
 # =============================================================================
 
+
 def verify_webhook_hmac(body: bytes, hmac_header: str) -> bool:
     """Verify the Shopify webhook HMAC-SHA256 signature."""
     if not SHOPIFY_API_SECRET:
@@ -288,6 +311,7 @@ def verify_webhook_hmac(body: bytes, hmac_header: str) -> bool:
         hashlib.sha256,
     ).digest()
     import base64
+
     computed_b64 = base64.b64encode(computed).decode("utf-8")
     return hmac.compare_digest(computed_b64, hmac_header)
 
@@ -342,8 +366,11 @@ def process_order_paid(store: ShopifyStore, payload: dict) -> CommandResult:
             logger.warning(
                 "Payment verification mismatch for order %s: total_price=%s "
                 "but sum(transactions)=%s (payments=%s, refunds=%s)",
-                shopify_order_id, total_price, net_payment,
-                payment_total, refund_total,
+                shopify_order_id,
+                total_price,
+                net_payment,
+                payment_total,
+                refund_total,
             )
 
     # Calculate total shipping from shipping_lines
@@ -374,12 +401,14 @@ def process_order_paid(store: ShopifyStore, payload: dict) -> CommandResult:
     line_items = []
     for item in payload.get("line_items", []):
         sku = item.get("sku", "")
-        line_items.append({
-            "title": item.get("title", ""),
-            "quantity": item.get("quantity", 1),
-            "price": str(item.get("price", "0")),
-            "sku": sku,
-        })
+        line_items.append(
+            {
+                "title": item.get("title", ""),
+                "quantity": item.get("quantity", 1),
+                "price": str(item.get("price", "0")),
+                "sku": sku,
+            }
+        )
 
         # Auto-create Item if SKU exists but no matching Item in Nxentra
         if sku:
@@ -390,6 +419,7 @@ def process_order_paid(store: ShopifyStore, payload: dict) -> CommandResult:
 
     # Emit event for projection
     from events.emitter import emit_event_no_actor
+
     event = emit_event_no_actor(
         company=store.company,
         event_type=EventTypes.SHOPIFY_ORDER_PAID,
@@ -481,6 +511,7 @@ def process_refund(store: ShopifyStore, payload: dict) -> CommandResult:
         )
 
     from events.emitter import emit_event_no_actor
+
     event = emit_event_no_actor(
         company=store.company,
         event_type=EventTypes.SHOPIFY_REFUND_CREATED,
@@ -519,6 +550,7 @@ def process_app_uninstalled(store: ShopifyStore, payload: dict) -> CommandResult
         store.save()
 
     from events.emitter import emit_event_no_actor
+
     emit_event_no_actor(
         company=store.company,
         event_type=EventTypes.SHOPIFY_STORE_DISCONNECTED,
@@ -539,6 +571,7 @@ def process_app_uninstalled(store: ShopifyStore, payload: dict) -> CommandResult
 # =============================================================================
 # Payout Sync
 # =============================================================================
+
 
 @transaction.atomic
 def sync_payouts(store: ShopifyStore) -> CommandResult:
@@ -640,6 +673,7 @@ def sync_payouts(store: ShopifyStore) -> CommandResult:
             )
 
         from events.emitter import emit_event_no_actor
+
         event = emit_event_no_actor(
             company=store.company,
             event_type=EventTypes.SHOPIFY_PAYOUT_SETTLED,
@@ -670,24 +704,30 @@ def sync_payouts(store: ShopifyStore) -> CommandResult:
 
     # Update last_sync_at
     from django.utils import timezone as tz
+
     with command_writes_allowed():
         store.last_sync_at = tz.now()
         store.save(update_fields=["last_sync_at"])
 
     logger.info(
         "Payout sync for %s: %d new, %d skipped",
-        store.shop_domain, created_count, skipped_count,
+        store.shop_domain,
+        created_count,
+        skipped_count,
     )
 
-    return CommandResult.ok(data={
-        "created": created_count,
-        "skipped": skipped_count,
-    })
+    return CommandResult.ok(
+        data={
+            "created": created_count,
+            "skipped": skipped_count,
+        }
+    )
 
 
 # =============================================================================
 # Payout Transaction-Level Verification (Layer 2)
 # =============================================================================
+
 
 @transaction.atomic
 def fetch_payout_transactions(store: ShopifyStore, payout: ShopifyPayout) -> CommandResult:
@@ -794,31 +834,30 @@ def fetch_payout_transactions(store: ShopifyStore, payout: ShopifyPayout) -> Com
     # Verification: compare transaction sums to payout summary
     discrepancies = []
     if sum_net != payout.net_amount:
-        discrepancies.append(
-            f"Net mismatch: transactions={sum_net}, payout={payout.net_amount}"
-        )
+        discrepancies.append(f"Net mismatch: transactions={sum_net}, payout={payout.net_amount}")
     if abs(sum_fee) != payout.fees:
-        discrepancies.append(
-            f"Fee mismatch: transactions={abs(sum_fee)}, payout={payout.fees}"
-        )
+        discrepancies.append(f"Fee mismatch: transactions={abs(sum_fee)}, payout={payout.fees}")
 
     if discrepancies:
         logger.warning(
             "Payout %s transaction verification discrepancies: %s",
-            payout.shopify_payout_id, "; ".join(discrepancies),
+            payout.shopify_payout_id,
+            "; ".join(discrepancies),
         )
 
-    return CommandResult.ok(data={
-        "payout_id": payout.shopify_payout_id,
-        "transactions_created": created,
-        "transactions_verified": verified,
-        "transactions_total": len(transactions),
-        "sum_amount": str(sum_amount),
-        "sum_fee": str(sum_fee),
-        "sum_net": str(sum_net),
-        "discrepancies": discrepancies,
-        "balanced": len(discrepancies) == 0,
-    })
+    return CommandResult.ok(
+        data={
+            "payout_id": payout.shopify_payout_id,
+            "transactions_created": created,
+            "transactions_verified": verified,
+            "transactions_total": len(transactions),
+            "sum_amount": str(sum_amount),
+            "sum_fee": str(sum_fee),
+            "sum_net": str(sum_net),
+            "discrepancies": discrepancies,
+            "balanced": len(discrepancies) == 0,
+        }
+    )
 
 
 def verify_payout(store: ShopifyStore, payout_id: int) -> CommandResult:
@@ -844,22 +883,20 @@ def verify_payout(store: ShopifyStore, payout_id: int) -> CommandResult:
 
         discrepancies = []
         if sum_net != payout.net_amount:
-            discrepancies.append(
-                f"Net mismatch: transactions={sum_net}, payout={payout.net_amount}"
-            )
+            discrepancies.append(f"Net mismatch: transactions={sum_net}, payout={payout.net_amount}")
         if sum_fee != payout.fees:
-            discrepancies.append(
-                f"Fee mismatch: transactions={sum_fee}, payout={payout.fees}"
-            )
+            discrepancies.append(f"Fee mismatch: transactions={sum_fee}, payout={payout.fees}")
 
-        return CommandResult.ok(data={
-            "payout_id": payout.shopify_payout_id,
-            "transactions_total": existing.count(),
-            "transactions_verified": verified_count,
-            "discrepancies": discrepancies,
-            "balanced": len(discrepancies) == 0,
-            "source": "cached",
-        })
+        return CommandResult.ok(
+            data={
+                "payout_id": payout.shopify_payout_id,
+                "transactions_total": existing.count(),
+                "transactions_verified": verified_count,
+                "discrepancies": discrepancies,
+                "balanced": len(discrepancies) == 0,
+                "source": "cached",
+            }
+        )
 
     # Fetch from Shopify API
     return fetch_payout_transactions(store, payout)
@@ -868,6 +905,7 @@ def verify_payout(store: ShopifyStore, payout_id: int) -> CommandResult:
 # =============================================================================
 # Fulfillment Processing
 # =============================================================================
+
 
 @transaction.atomic
 def process_fulfillment(store: ShopifyStore, payload: dict) -> CommandResult:
@@ -902,16 +940,13 @@ def process_fulfillment(store: ShopifyStore, payload: dict) -> CommandResult:
 
     if not order:
         return CommandResult.fail(
-            f"Order {shopify_order_id} not found locally. "
-            "Fulfillment cannot be processed without a matching order."
+            f"Order {shopify_order_id} not found locally. Fulfillment cannot be processed without a matching order."
         )
 
     # Parse fulfillment date
     created_at_str = payload.get("created_at", "")
     try:
-        fulfillment_date = datetime.fromisoformat(
-            created_at_str.replace("Z", "+00:00")
-        ).date()
+        fulfillment_date = datetime.fromisoformat(created_at_str.replace("Z", "+00:00")).date()
     except (ValueError, AttributeError):
         fulfillment_date = datetime.now().date()
 
@@ -929,19 +964,19 @@ def process_fulfillment(store: ShopifyStore, payload: dict) -> CommandResult:
     try:
         warehouse = Warehouse.objects.get(company=store.company, is_default=True)
     except Warehouse.DoesNotExist:
-        warehouse = Warehouse.objects.filter(
-            company=store.company, is_active=True
-        ).first()
+        warehouse = Warehouse.objects.filter(company=store.company, is_active=True).first()
 
     for li in line_items:
         sku = li.get("sku", "").strip()
         qty = Decimal(str(li.get("quantity", 1)))
 
         if not sku:
-            unmatched_skus.append({
-                "title": li.get("title", ""),
-                "reason": "no_sku",
-            })
+            unmatched_skus.append(
+                {
+                    "title": li.get("title", ""),
+                    "reason": "no_sku",
+                }
+            )
             continue
 
         # Match SKU to Item.code
@@ -952,19 +987,23 @@ def process_fulfillment(store: ShopifyStore, payload: dict) -> CommandResult:
                 item_type=Item.ItemType.INVENTORY,
             )
         except Item.DoesNotExist:
-            unmatched_skus.append({
-                "sku": sku,
-                "title": li.get("title", ""),
-                "reason": "item_not_found",
-            })
+            unmatched_skus.append(
+                {
+                    "sku": sku,
+                    "title": li.get("title", ""),
+                    "reason": "item_not_found",
+                }
+            )
             continue
 
         if not item.cogs_account or not item.inventory_account:
-            unmatched_skus.append({
-                "sku": sku,
-                "title": li.get("title", ""),
-                "reason": "missing_cogs_or_inventory_account",
-            })
+            unmatched_skus.append(
+                {
+                    "sku": sku,
+                    "title": li.get("title", ""),
+                    "reason": "missing_cogs_or_inventory_account",
+                }
+            )
             continue
 
         # Look up current avg_cost from InventoryBalance
@@ -987,17 +1026,19 @@ def process_fulfillment(store: ShopifyStore, payload: dict) -> CommandResult:
         cogs_value = qty * avg_cost
         total_cogs += cogs_value
 
-        cogs_lines.append({
-            "sku": sku,
-            "item_public_id": str(item.public_id),
-            "item_code": item.code,
-            "warehouse_public_id": str(warehouse.public_id) if warehouse else "",
-            "qty": str(qty),
-            "unit_cost": str(avg_cost),
-            "cogs_value": str(cogs_value),
-            "cogs_account_id": item.cogs_account_id,
-            "inventory_account_id": item.inventory_account_id,
-        })
+        cogs_lines.append(
+            {
+                "sku": sku,
+                "item_public_id": str(item.public_id),
+                "item_code": item.code,
+                "warehouse_public_id": str(warehouse.public_id) if warehouse else "",
+                "qty": str(qty),
+                "unit_cost": str(avg_cost),
+                "cogs_value": str(cogs_value),
+                "cogs_account_id": item.cogs_account_id,
+                "inventory_account_id": item.inventory_account_id,
+            }
+        )
 
     # Determine status
     total_items = len(line_items)
@@ -1034,6 +1075,7 @@ def process_fulfillment(store: ShopifyStore, payload: dict) -> CommandResult:
     # Only emit event if we have matched items (something to post COGS for)
     if cogs_lines:
         from events.emitter import emit_event_no_actor
+
         event = emit_event_no_actor(
             company=store.company,
             event_type=EventTypes.SHOPIFY_ORDER_FULFILLED,
@@ -1064,21 +1106,26 @@ def process_fulfillment(store: ShopifyStore, payload: dict) -> CommandResult:
     if unmatched_skus:
         logger.warning(
             "Fulfillment %s: %d/%d SKUs unmatched: %s",
-            shopify_fulfillment_id, len(unmatched_skus), total_items,
+            shopify_fulfillment_id,
+            len(unmatched_skus),
+            total_items,
             [s.get("sku", s.get("title", "?")) for s in unmatched_skus],
         )
 
-    return CommandResult.ok(data={
-        "fulfillment": fulfillment,
-        "matched": matched_items,
-        "unmatched": len(unmatched_skus),
-        "total_cogs": total_cogs,
-    })
+    return CommandResult.ok(
+        data={
+            "fulfillment": fulfillment,
+            "matched": matched_items,
+            "unmatched": len(unmatched_skus),
+            "total_cogs": total_cogs,
+        }
+    )
 
 
 # =============================================================================
 # Dispute / Chargeback Processing
 # =============================================================================
+
 
 @transaction.atomic
 def process_dispute(store: ShopifyStore, payload: dict) -> CommandResult:
@@ -1112,9 +1159,7 @@ def process_dispute(store: ShopifyStore, payload: dict) -> CommandResult:
                 finalized_str = payload.get("finalized_on", "")
                 if finalized_str:
                     try:
-                        existing.finalized_on = datetime.fromisoformat(
-                            finalized_str.replace("Z", "+00:00")
-                        ).date()
+                        existing.finalized_on = datetime.fromisoformat(finalized_str.replace("Z", "+00:00")).date()
                     except (ValueError, AttributeError):
                         pass
                 existing.save()
@@ -1125,6 +1170,7 @@ def process_dispute(store: ShopifyStore, payload: dict) -> CommandResult:
                 order = existing.order
                 order_name = order.shopify_order_name if order else f"Order {existing.shopify_order_id or '?'}"
                 from events.emitter import emit_event_no_actor
+
                 emit_event_no_actor(
                     company=store.company,
                     event_type=EventTypes.SHOPIFY_DISPUTE_WON,
@@ -1196,6 +1242,7 @@ def process_dispute(store: ShopifyStore, payload: dict) -> CommandResult:
 
     # Emit event for projection to create reversal JE
     from events.emitter import emit_event_no_actor
+
     event = emit_event_no_actor(
         company=store.company,
         event_type=EventTypes.SHOPIFY_DISPUTE_CREATED,
@@ -1225,7 +1272,11 @@ def process_dispute(store: ShopifyStore, payload: dict) -> CommandResult:
 
     logger.info(
         "Processed dispute %s for %s %s (order: %s, reason: %s)",
-        shopify_dispute_id, currency, amount, order_name, reason,
+        shopify_dispute_id,
+        currency,
+        amount,
+        order_name,
+        reason,
     )
 
     return CommandResult.ok(data={"dispute": dispute, "event": event})
@@ -1234,6 +1285,7 @@ def process_dispute(store: ShopifyStore, payload: dict) -> CommandResult:
 # =============================================================================
 # Helpers
 # =============================================================================
+
 
 def _ensure_shopify_warehouse(store):
     """Create a Shopify warehouse for the store if one doesn't exist."""
@@ -1263,6 +1315,7 @@ def _ensure_shopify_warehouse(store):
 def _get_shopify_warehouse(company):
     """Get the Shopify warehouse for a company, or None."""
     from inventory.models import Warehouse
+
     return Warehouse.objects.filter(company=company, code="SHOPIFY").first()
 
 
@@ -1322,6 +1375,7 @@ def _extract_gateway(payload: dict) -> str:
 # =============================================================================
 # Product Sync
 # =============================================================================
+
 
 def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_id=None) -> CommandResult:
     """
@@ -1420,7 +1474,8 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
 
                 # Check existing mapping
                 mapping = ShopifyProduct.objects.filter(
-                    company=company, shopify_variant_id=variant_id,
+                    company=company,
+                    shopify_variant_id=variant_id,
                 ).first()
 
                 if mapping:
@@ -1448,16 +1503,23 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
 
                 if not item:
                     item = _create_item_from_variant(
-                        company, sku, product_title, variant_title, price, cost,
-                        inv_account, cogs_account, sales_account, purchase_account,
+                        company,
+                        sku,
+                        product_title,
+                        variant_title,
+                        price,
+                        cost,
+                        inv_account,
+                        cogs_account,
+                        sales_account,
+                        purchase_account,
                         image_url,
                     )
                     auto_created = True
                     created += 1
                 else:
                     # Update existing item with cost + accounts if missing
-                    _update_item_defaults(item, cost, inv_account, cogs_account,
-                                          sales_account, purchase_account)
+                    _update_item_defaults(item, cost, inv_account, cogs_account, sales_account, purchase_account)
                     linked += 1
 
                 # Create mapping
@@ -1481,16 +1543,22 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
 
     logger.info(
         "Product sync for %s: %d created, %d linked, %d updated, %d skipped",
-        store.shop_domain, created, linked, updated, skipped,
+        store.shop_domain,
+        created,
+        linked,
+        updated,
+        skipped,
     )
 
-    return CommandResult.ok(data={
-        "created": created,
-        "linked": linked,
-        "updated": updated,
-        "skipped": skipped,
-        "errors": errors,
-    })
+    return CommandResult.ok(
+        data={
+            "created": created,
+            "linked": linked,
+            "updated": updated,
+            "skipped": skipped,
+            "errors": errors,
+        }
+    )
 
 
 @transaction.atomic
@@ -1526,7 +1594,8 @@ def process_product_webhook(store: ShopifyStore, payload: dict) -> CommandResult
         variant_title = variant.get("title", "") if variant.get("title") != "Default Title" else ""
 
         mapping = ShopifyProduct.objects.filter(
-            company=company, shopify_variant_id=variant_id,
+            company=company,
+            shopify_variant_id=variant_id,
         ).first()
 
         if mapping:
@@ -1558,8 +1627,13 @@ def process_product_webhook(store: ShopifyStore, payload: dict) -> CommandResult
 
             if not item:
                 item = _create_item_from_variant(
-                    company, sku, product_title, variant_title, price,
-                    inv_account, cogs_account,
+                    company,
+                    sku,
+                    product_title,
+                    variant_title,
+                    price,
+                    inv_account,
+                    cogs_account,
                 )
                 auto_created = True
 
@@ -1582,9 +1656,19 @@ def process_product_webhook(store: ShopifyStore, payload: dict) -> CommandResult
     return CommandResult.ok(data={"created": created, "updated": updated})
 
 
-def _create_item_from_variant(company, sku, product_title, variant_title, price, cost,
-                              inv_account, cogs_account, sales_account, purchase_account,
-                              image_url=""):
+def _create_item_from_variant(
+    company,
+    sku,
+    product_title,
+    variant_title,
+    price,
+    cost,
+    inv_account,
+    cogs_account,
+    sales_account,
+    purchase_account,
+    image_url="",
+):
     """Create a Nxentra Item from a Shopify variant with full account defaults."""
     from sales.models import Item
 
@@ -1612,7 +1696,9 @@ def _create_item_from_variant(company, sku, product_title, variant_title, price,
 
     logger.info(
         "Auto-created Item %s (%s) with cost=%s, accounts: sales=%s inv=%s cogs=%s",
-        sku, item_type, cost,
+        sku,
+        item_type,
+        cost,
         sales_account.code if sales_account else "none",
         inv_account.code if inv_account else "none",
         cogs_account.code if cogs_account else "none",
@@ -1650,9 +1736,11 @@ def _download_item_image(item, image_url):
         resp.raise_for_status()
         # Get filename from URL
         from urllib.parse import urlparse
+
         path = urlparse(image_url).path
         filename = path.split("/")[-1].split("?")[0] or "product.jpg"
         from django.core.files.base import ContentFile
+
         with command_writes_allowed():
             item.image.save(filename, ContentFile(resp.content), save=True)
         logger.info("Saved product image for Item %s", item.code)
@@ -1665,6 +1753,7 @@ def _resolve_account(company, account_id):
     if not account_id:
         return None
     from accounting.models import Account
+
     return Account.objects.filter(company=company, id=account_id).first()
 
 
@@ -1676,7 +1765,7 @@ def _fetch_inventory_item_costs(store, inventory_item_ids, headers):
 
     # Shopify allows up to 100 IDs per request
     for i in range(0, len(inventory_item_ids), 100):
-        batch = inventory_item_ids[i:i + 100]
+        batch = inventory_item_ids[i : i + 100]
         ids_param = ",".join(str(x) for x in batch)
         try:
             resp = requests.get(
@@ -1709,11 +1798,15 @@ def _ensure_inventory_accounts(company):
         for code, name, name_ar, acct_type, role in ACCOUNTS:
             try:
                 Account.objects.get_or_create(
-                    company=company, code=code,
+                    company=company,
+                    code=code,
                     defaults={
-                        "name": name, "name_ar": name_ar,
-                        "account_type": acct_type, "role": role,
-                        "ledger_domain": "FINANCIAL", "status": "ACTIVE",
+                        "name": name,
+                        "name_ar": name_ar,
+                        "account_type": acct_type,
+                        "role": role,
+                        "ledger_domain": "FINANCIAL",
+                        "status": "ACTIVE",
                         "normal_balance": "DEBIT",
                     },
                 )
@@ -1736,10 +1829,14 @@ def _resolve_default_item_accounts(company):
 
     # Inventory + COGS by account code convention
     result["inventory"] = Account.objects.filter(
-        company=company, code="1300", status="ACTIVE",
+        company=company,
+        code="1300",
+        status="ACTIVE",
     ).first()
     result["cogs"] = Account.objects.filter(
-        company=company, code="5100", status="ACTIVE",
+        company=company,
+        code="5100",
+        status="ACTIVE",
     ).first()
 
     return result
