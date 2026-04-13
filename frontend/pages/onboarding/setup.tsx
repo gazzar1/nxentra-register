@@ -148,6 +148,18 @@ export default function OnboardingSetupPage() {
           setDateFormat(data.company.date_format);
         if (data.business_type === "shopify" || data.business_type === "general")
           setBusinessType(data.business_type);
+        // Restore local draft (step, fiscal fields)
+        try {
+          const raw = sessionStorage.getItem("onboarding_draft");
+          if (raw) {
+            const draft = JSON.parse(raw);
+            if (draft.step != null) setStep(draft.step);
+            if (draft.fiscalYear) setFiscalYear(draft.fiscalYear);
+            if (draft.numPeriods) setNumPeriods(draft.numPeriods);
+            if (draft.currentPeriod) setCurrentPeriod(draft.currentPeriod);
+            if (draft.coaTemplate) setCoaTemplate(draft.coaTemplate);
+          }
+        } catch { /* sessionStorage unavailable */ }
         setLoading(false);
       })
       .catch(() => {
@@ -230,6 +242,7 @@ export default function OnboardingSetupPage() {
 
   // Save current progress to backend (fire-and-forget)
   const saveDraft = () => {
+    // Save company fields to backend
     const draft: Record<string, unknown> = {};
     if (businessType) draft.business_type = businessType;
     if (companyName) draft.company_name = companyName;
@@ -242,6 +255,16 @@ export default function OnboardingSetupPage() {
     if (Object.keys(draft).length > 0) {
       onboardingService.saveDraft(draft).catch(() => {});
     }
+    // Save step + fiscal fields locally (not on Company model)
+    try {
+      sessionStorage.setItem("onboarding_draft", JSON.stringify({
+        step,
+        fiscalYear,
+        numPeriods,
+        currentPeriod,
+        coaTemplate,
+      }));
+    } catch { /* sessionStorage unavailable */ }
   };
 
   const handleNext = () => {
@@ -431,17 +454,16 @@ export default function OnboardingSetupPage() {
         {/* Navigation buttons */}
         {currentStepKey !== "ready" && (
           <div className="flex items-center justify-between mt-6">
-            <div>
-              {step > 0 ? (
+            <div className="flex items-center gap-2">
+              {step > 0 && (
                 <Button variant="ghost" onClick={handleBack}>
                   <ArrowLeft className="h-4 w-4 me-2" />
                   {t("actions.back", "Back")}
                 </Button>
-              ) : (
-                <Button variant="ghost" onClick={handleSkip}>
-                  {t("onboarding.completeLater", "Complete later")}
-                </Button>
               )}
+              <Button variant="ghost" onClick={handleSkip}>
+                {t("onboarding.completeLater", "Complete later")}
+              </Button>
             </div>
             <Button onClick={handleNext} disabled={submitting}>
               {submitting ? (
