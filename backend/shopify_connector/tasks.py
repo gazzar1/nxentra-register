@@ -227,11 +227,17 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
             except Exception as e:
                 errors += 1
                 logger.error(
-                    "Error processing order %s from %s: %s",
+                    "Error processing order %s from %s [%s]: %s",
                     shopify_order_id,
                     store.shop_domain,
+                    type(e).__name__,
                     e,
                 )
+                # If the connection is in a broken state, reset it
+                from django.db import connection
+
+                if connection.needs_rollback:
+                    connection.rollback()
 
         # Pagination: follow Link header for next page
         params = {}  # Clear params for subsequent pages (URL contains them)
