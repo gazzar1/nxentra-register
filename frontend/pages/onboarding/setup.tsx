@@ -244,19 +244,11 @@ export default function OnboardingSetupPage() {
   };
 
   const handleSkip = () => {
-    setSubmitting(true);
-    onboardingService
-      .complete({ coa_template: "minimal" })
-      .then(() => {
+    // Don't mark onboarding as completed — just go to dashboard
+    // User can return to /onboarding/setup later
+    router.push("/dashboard")
+      .catch(() => {
         window.location.href = "/dashboard";
-      })
-      .catch((error) => {
-        toast({
-          title: t("messages.error", "Error"),
-          description: getErrorMessage(error),
-          variant: "destructive",
-        });
-        setSubmitting(false);
       });
   };
 
@@ -427,8 +419,8 @@ export default function OnboardingSetupPage() {
                   {t("actions.back", "Back")}
                 </Button>
               ) : (
-                <Button variant="ghost" onClick={handleSkip} disabled={submitting}>
-                  {t("onboarding.skipSetup", "Skip setup")}
+                <Button variant="ghost" onClick={handleSkip}>
+                  {t("onboarding.completeLater", "Complete later")}
                 </Button>
               )}
             </div>

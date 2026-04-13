@@ -40,14 +40,8 @@ export default function DashboardPage() {
   const router = useRouter();
   const { data: modules } = useModules();
 
-  // Redirect new OWNER users to onboarding setup if not completed
-  useEffect(() => {
-    if (!company || !membership) return;
-    // Only redirect OWNER (the person who registered the company)
-    if (membership.role !== "OWNER") return;
-    if (company.onboarding_completed) return;
-    router.replace("/onboarding/setup");
-  }, [company, membership, router]);
+  const showOnboardingBanner =
+    company && membership && membership.role === "OWNER" && !company.onboarding_completed;
   const { data: trialBalance } = useTrialBalance();
   const { data: recentEntries } = useJournalEntries({ status: "POSTED" });
   const { data: chartData, isLoading: chartsLoading } = useDashboardCharts();
@@ -97,6 +91,23 @@ export default function DashboardPage() {
           title={t("nav.dashboard")}
           subtitle={`${t("app.tagline")} - ${company?.name || ""}`}
         />
+
+        {showOnboardingBanner && (
+          <div className="flex items-center justify-between rounded-lg border border-accent/30 bg-accent/5 p-4">
+            <div className="flex items-center gap-3">
+              <Zap className="h-5 w-5 text-accent" />
+              <div>
+                <p className="font-medium text-sm">Complete your setup</p>
+                <p className="text-xs text-muted-foreground">
+                  Finish the onboarding wizard to configure your fiscal year, chart of accounts, and integrations.
+                </p>
+              </div>
+            </div>
+            <Button size="sm" onClick={() => router.push("/onboarding/setup")}>
+              Continue Setup
+            </Button>
+          </div>
+        )}
 
         {/* Summary Cards */}
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
