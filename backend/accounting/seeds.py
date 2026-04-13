@@ -39,6 +39,7 @@ class SeedAccountTemplate:
     Detection is by (role, ledger_domain) combination, NOT by code.
     This allows tenants to use their own coding conventions.
     """
+
     # Core fields (code can be overridden by tenant)
     default_code: str
     name: str
@@ -87,7 +88,6 @@ SEED_ACCOUNTS: list[SeedAccountTemplate] = [
         description="AP control account for vendor payables",
         description_ar="حساب رقابة الذمم الدائنة للموردين",
     ),
-
     # -------------------------------------------------------------------------
     # Liquidity Accounts (Cash/Bank)
     # -------------------------------------------------------------------------
@@ -101,7 +101,6 @@ SEED_ACCOUNTS: list[SeedAccountTemplate] = [
         description="Primary cash and bank account",
         description_ar="حساب النقدية والبنوك الرئيسي",
     ),
-
     # -------------------------------------------------------------------------
     # Equity Accounts (Required for year-end closing)
     # -------------------------------------------------------------------------
@@ -125,7 +124,6 @@ SEED_ACCOUNTS: list[SeedAccountTemplate] = [
         description="Net income for the current fiscal year",
         description_ar="صافي الدخل للسنة المالية الحالية",
     ),
-
     # -------------------------------------------------------------------------
     # FX Gain/Loss (Required for multi-currency accounting)
     # -------------------------------------------------------------------------
@@ -150,10 +148,10 @@ SEED_ACCOUNTS: list[SeedAccountTemplate] = [
         description_ar="الخسائر الناتجة عن تقلبات أسعار صرف العملات",
     ),
     SeedAccountTemplate(
-        default_code="4950",
+        default_code="5950",
         name="FX Rounding Differences",
         name_ar="فروقات تقريب العملة",
-        account_type="REVENUE",
+        account_type="EXPENSE",
         role="FX_ROUNDING",
         ledger_domain="FINANCIAL",
         description="Rounding differences from multi-currency conversion",
@@ -173,7 +171,9 @@ RETAIL_TEMPLATE: list[SeedAccountTemplate] = [
     SeedAccountTemplate("1300", "Inventory", "المخزون", "ASSET", "INVENTORY_VALUE", "FINANCIAL"),
     SeedAccountTemplate("1400", "Prepaid Expenses", "مصاريف مدفوعة مقدماً", "ASSET", "PREPAID", "FINANCIAL"),
     # -- Liabilities --
-    SeedAccountTemplate("2200", "VAT Payable", "ضريبة القيمة المضافة المستحقة", "LIABILITY", "TAX_PAYABLE", "FINANCIAL"),
+    SeedAccountTemplate(
+        "2200", "VAT Payable", "ضريبة القيمة المضافة المستحقة", "LIABILITY", "TAX_PAYABLE", "FINANCIAL"
+    ),
     SeedAccountTemplate("2300", "Accrued Expenses", "مصاريف مستحقة", "LIABILITY", "ACCRUED_EXPENSE", "FINANCIAL"),
     # -- Equity --
     SeedAccountTemplate("3100", "Owner's Capital", "رأس مال المالك", "EQUITY", "CAPITAL", "FINANCIAL"),
@@ -183,8 +183,12 @@ RETAIL_TEMPLATE: list[SeedAccountTemplate] = [
     # -- Expenses --
     SeedAccountTemplate("5100", "Cost of Goods Sold", "تكلفة البضاعة المباعة", "EXPENSE", "COGS", "FINANCIAL"),
     SeedAccountTemplate("5200", "Shipping Expense", "مصاريف الشحن", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
-    SeedAccountTemplate("5300", "Payment Processing Fees", "رسوم معالجة الدفع", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
-    SeedAccountTemplate("5400", "Advertising & Marketing", "الإعلان والتسويق", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
+    SeedAccountTemplate(
+        "5300", "Payment Processing Fees", "رسوم معالجة الدفع", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"
+    ),
+    SeedAccountTemplate(
+        "5400", "Advertising & Marketing", "الإعلان والتسويق", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"
+    ),
     SeedAccountTemplate("5500", "Rent Expense", "مصاريف الإيجار", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
     SeedAccountTemplate("5600", "Salaries & Wages", "الرواتب والأجور", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
     SeedAccountTemplate("5700", "Office & General", "مصاريف مكتبية وعمومية", "EXPENSE", "ADMIN_EXPENSE", "FINANCIAL"),
@@ -195,7 +199,9 @@ SERVICES_TEMPLATE: list[SeedAccountTemplate] = [
     # -- Assets --
     SeedAccountTemplate("1400", "Prepaid Expenses", "مصاريف مدفوعة مقدماً", "ASSET", "PREPAID", "FINANCIAL"),
     # -- Liabilities --
-    SeedAccountTemplate("2200", "VAT Payable", "ضريبة القيمة المضافة المستحقة", "LIABILITY", "TAX_PAYABLE", "FINANCIAL"),
+    SeedAccountTemplate(
+        "2200", "VAT Payable", "ضريبة القيمة المضافة المستحقة", "LIABILITY", "TAX_PAYABLE", "FINANCIAL"
+    ),
     SeedAccountTemplate("2300", "Deferred Revenue", "إيرادات مؤجلة", "LIABILITY", "DEFERRED_REVENUE", "FINANCIAL"),
     SeedAccountTemplate("2400", "Accrued Expenses", "مصاريف مستحقة", "LIABILITY", "ACCRUED_EXPENSE", "FINANCIAL"),
     # -- Equity --
@@ -207,7 +213,9 @@ SERVICES_TEMPLATE: list[SeedAccountTemplate] = [
     SeedAccountTemplate("5100", "Subcontractor Costs", "تكاليف المقاولين من الباطن", "EXPENSE", "COGS", "FINANCIAL"),
     SeedAccountTemplate("5200", "Professional Fees", "أتعاب مهنية", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
     SeedAccountTemplate("5300", "Software & Tools", "البرمجيات والأدوات", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
-    SeedAccountTemplate("5400", "Travel & Entertainment", "السفر والترفيه", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
+    SeedAccountTemplate(
+        "5400", "Travel & Entertainment", "السفر والترفيه", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"
+    ),
     SeedAccountTemplate("5500", "Rent Expense", "مصاريف الإيجار", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
     SeedAccountTemplate("5600", "Salaries & Wages", "الرواتب والأجور", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
     SeedAccountTemplate("5700", "Office & General", "مصاريف مكتبية وعمومية", "EXPENSE", "ADMIN_EXPENSE", "FINANCIAL"),
@@ -251,12 +259,14 @@ COA_TEMPLATES = {
 # SEEDING FUNCTION
 # =============================================================================
 
+
 @dataclass
 class SeedResult:
     """Result of seeding operation."""
+
     created: list[str]  # List of account codes created
     skipped: list[str]  # List of roles that already exist
-    errors: list[str]   # List of error messages
+    errors: list[str]  # List of error messages
 
 
 def seed_chart_of_accounts(
@@ -302,18 +312,12 @@ def seed_chart_of_accounts(
                 ).first()
 
                 if existing:
-                    result.skipped.append(
-                        f"{template.role} ({existing.code})"
-                    )
-                    logger.debug(
-                        f"Skipped {template.role}: already exists as {existing.code}"
-                    )
+                    result.skipped.append(f"{template.role} ({existing.code})")
+                    logger.debug(f"Skipped {template.role}: already exists as {existing.code}")
                     continue
 
                 # Generate unique code if default is taken
-                code = _generate_unique_code(
-                    company, template.default_code, template.role
-                )
+                code = _generate_unique_code(company, template.default_code, template.role)
 
                 # Create the account
                 account = Account(
@@ -333,10 +337,7 @@ def seed_chart_of_accounts(
                 account.save()
 
                 result.created.append(f"{code} ({template.role})")
-                logger.info(
-                    f"Created seeded account {code} ({template.role}) "
-                    f"for company {company.name}"
-                )
+                logger.info(f"Created seeded account {code} ({template.role}) for company {company.name}")
 
             except Exception as e:
                 error_msg = f"Error creating {template.role}: {e!s}"
@@ -376,8 +377,7 @@ def _generate_unique_code(
 
     # This should never happen
     raise ValueError(
-        f"Could not generate unique code for {role} "
-        f"(tried {default_code}, S{default_code}, {default_code}_1..99)"
+        f"Could not generate unique code for {role} (tried {default_code}, S{default_code}, {default_code}_1..99)"
     )
 
 
@@ -419,6 +419,7 @@ def get_seed_status(company: Company) -> dict:
 # =============================================================================
 # ONBOARDING TEMPLATE SEEDING
 # =============================================================================
+
 
 def seed_template_accounts(company: Company, template_key: str) -> SeedResult:
     """

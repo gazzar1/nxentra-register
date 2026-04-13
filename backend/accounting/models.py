@@ -437,6 +437,7 @@ class Account(AccountingReadModel):
             AccountRole.DEPRECIATION_EXPENSE,
             AccountRole.TAX_EXPENSE,
             AccountRole.OTHER_EXPENSE,
+            AccountRole.FX_ROUNDING,
         },
     }
 
