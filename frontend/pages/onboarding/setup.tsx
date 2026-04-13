@@ -146,6 +146,8 @@ export default function OnboardingSetupPage() {
           setDecimalPlaces(data.company.decimal_places);
         if (data.company.date_format)
           setDateFormat(data.company.date_format);
+        if (data.business_type === "shopify" || data.business_type === "general")
+          setBusinessType(data.business_type);
         setLoading(false);
       })
       .catch(() => {
@@ -226,10 +228,27 @@ export default function OnboardingSetupPage() {
     }
   };
 
+  // Save current progress to backend (fire-and-forget)
+  const saveDraft = () => {
+    const draft: Record<string, unknown> = {};
+    if (businessType) draft.business_type = businessType;
+    if (companyName) draft.company_name = companyName;
+    if (companyNameAr) draft.company_name_ar = companyNameAr;
+    if (fiscalStartMonth) draft.fiscal_year_start_month = fiscalStartMonth;
+    if (thousandSep) draft.thousand_separator = thousandSep;
+    if (decimalSep) draft.decimal_separator = decimalSep;
+    if (decimalPlaces >= 0) draft.decimal_places = decimalPlaces;
+    if (dateFormat) draft.date_format = dateFormat;
+    if (Object.keys(draft).length > 0) {
+      onboardingService.saveDraft(draft).catch(() => {});
+    }
+  };
+
   const handleNext = () => {
     if (step === submitStepIndex) {
       handleSubmit();
     } else if (step < lastStepIndex) {
+      saveDraft();
       setStep(step + 1);
     }
   };
@@ -244,8 +263,8 @@ export default function OnboardingSetupPage() {
   };
 
   const handleSkip = () => {
-    // Don't mark onboarding as completed — just go to dashboard
-    // User can return to /onboarding/setup later
+    // Save progress before leaving — don't mark onboarding as completed
+    saveDraft();
     router.push("/dashboard")
       .catch(() => {
         window.location.href = "/dashboard";

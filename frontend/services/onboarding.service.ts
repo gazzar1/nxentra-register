@@ -12,6 +12,7 @@ export interface CoaTemplate {
 export interface OnboardingStatus {
   onboarding_completed: boolean;
   coa_template: string;
+  business_type: string;
   company: {
     name: string;
     name_ar: string;
@@ -52,4 +53,7 @@ export const onboardingService = {
 
   complete: (payload: OnboardingSetupPayload) =>
     apiClient.post('/onboarding/setup/', payload).then((r) => r.data),
+
+  saveDraft: (payload: Partial<OnboardingSetupPayload>) =>
+    apiClient.patch('/onboarding/setup/', payload).then((r) => r.data),
 };

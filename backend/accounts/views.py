@@ -1260,6 +1260,7 @@ class OnboardingSetupView(APIView):
             {
                 "onboarding_completed": company.onboarding_completed,
                 "coa_template": company.coa_template,
+                "business_type": company.business_type,
                 "company": {
                     "name": company.name,
                     "name_ar": company.name_ar,
@@ -1273,6 +1274,38 @@ class OnboardingSetupView(APIView):
                 "templates": templates,
             }
         )
+
+    def patch(self, request):
+        """Save partial onboarding progress without completing."""
+        actor = resolve_actor(request)
+        company = actor.company
+
+        from projections.write_barrier import command_writes_allowed
+
+        updates = {}
+        field_map = {
+            "business_type": "business_type",
+            "company_name": "name",
+            "company_name_ar": "name_ar",
+            "fiscal_year_start_month": "fiscal_year_start_month",
+            "thousand_separator": "thousand_separator",
+            "decimal_separator": "decimal_separator",
+            "decimal_places": "decimal_places",
+            "date_format": "date_format",
+        }
+
+        for payload_key, model_field in field_map.items():
+            if payload_key in request.data:
+                val = request.data[payload_key]
+                if val is not None and val != "":
+                    setattr(company, model_field, val)
+                    updates[model_field] = val
+
+        if updates:
+            with command_writes_allowed():
+                company.save(update_fields=list(updates.keys()))
+
+        return Response({"saved": list(updates.keys())})
 
     def post(self, request):
         from accounts.commands import complete_onboarding
