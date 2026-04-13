@@ -3464,14 +3464,14 @@ def _setup_shopify_accounts(company):
     from projections.write_barrier import projection_writes_allowed
 
     SHOPIFY_ACCOUNTS = [
-        ("SALES_REVENUE", "4100", "Sales Revenue", "REVENUE", "SALES"),
-        ("SHOPIFY_CLEARING", "1150", "Shopify Clearing", "ASSET", "LIQUIDITY"),
-        ("PAYMENT_PROCESSING_FEES", "5200", "Payment Processing Fees", "EXPENSE", "OPERATING_EXPENSE"),
-        ("SALES_TAX_PAYABLE", "2200", "Sales Tax Payable", "LIABILITY", "TAX_PAYABLE"),
-        ("SHIPPING_REVENUE", "4200", "Shipping Revenue", "REVENUE", "SALES"),
-        ("SALES_DISCOUNTS", "4110", "Sales Discounts", "REVENUE", "CONTRA_REVENUE"),
-        ("CASH_BANK", "1100", "Cash and Bank", "ASSET", "LIQUIDITY"),
-        ("CHARGEBACK_EXPENSE", "5210", "Chargeback Expense", "EXPENSE", "OTHER_EXPENSE"),
+        ("SALES_REVENUE", "41000", "Sales Revenue", "REVENUE", "SALES"),
+        ("SHOPIFY_CLEARING", "11500", "Shopify Clearing", "ASSET", "LIQUIDITY"),
+        ("PAYMENT_PROCESSING_FEES", "52000", "Payment Processing Fees", "EXPENSE", "OPERATING_EXPENSE"),
+        ("SALES_TAX_PAYABLE", "22000", "Sales Tax Payable", "LIABILITY", "TAX_PAYABLE"),
+        ("SHIPPING_REVENUE", "42000", "Shipping Revenue", "REVENUE", "SALES"),
+        ("SALES_DISCOUNTS", "41100", "Sales Discounts", "REVENUE", "CONTRA_REVENUE"),
+        ("CASH_BANK", "11000", "Cash and Bank", "ASSET", "LIQUIDITY"),
+        ("CHARGEBACK_EXPENSE", "52100", "Chargeback Expense", "EXPENSE", "OTHER_EXPENSE"),
     ]
 
     with projection_writes_allowed():

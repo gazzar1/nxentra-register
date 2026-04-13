@@ -69,7 +69,7 @@ SEED_ACCOUNTS: list[SeedAccountTemplate] = [
     # AR/AP Control Accounts (Required for subledger tracking)
     # -------------------------------------------------------------------------
     SeedAccountTemplate(
-        default_code="1200",
+        default_code="12000",
         name="Accounts Receivable",
         name_ar="الذمم المدينة",
         account_type="ASSET",
@@ -79,7 +79,7 @@ SEED_ACCOUNTS: list[SeedAccountTemplate] = [
         description_ar="حساب رقابة الذمم المدينة للعملاء",
     ),
     SeedAccountTemplate(
-        default_code="2100",
+        default_code="21000",
         name="Accounts Payable",
         name_ar="الذمم الدائنة",
         account_type="LIABILITY",
@@ -92,7 +92,7 @@ SEED_ACCOUNTS: list[SeedAccountTemplate] = [
     # Liquidity Accounts (Cash/Bank)
     # -------------------------------------------------------------------------
     SeedAccountTemplate(
-        default_code="1100",
+        default_code="11000",
         name="Cash and Bank",
         name_ar="النقدية والبنوك",
         account_type="ASSET",
@@ -105,7 +105,7 @@ SEED_ACCOUNTS: list[SeedAccountTemplate] = [
     # Equity Accounts (Required for year-end closing)
     # -------------------------------------------------------------------------
     SeedAccountTemplate(
-        default_code="3200",
+        default_code="32000",
         name="Retained Earnings",
         name_ar="الأرباح المحتجزة",
         account_type="EQUITY",
@@ -115,7 +115,7 @@ SEED_ACCOUNTS: list[SeedAccountTemplate] = [
         description_ar="الأرباح المتراكمة المحتجزة في الشركة",
     ),
     SeedAccountTemplate(
-        default_code="3300",
+        default_code="33000",
         name="Current Year Earnings",
         name_ar="أرباح السنة الحالية",
         account_type="EQUITY",
@@ -128,7 +128,7 @@ SEED_ACCOUNTS: list[SeedAccountTemplate] = [
     # FX Gain/Loss (Required for multi-currency accounting)
     # -------------------------------------------------------------------------
     SeedAccountTemplate(
-        default_code="4900",
+        default_code="49000",
         name="Foreign Exchange Gain",
         name_ar="أرباح فروقات العملة",
         account_type="REVENUE",
@@ -138,7 +138,7 @@ SEED_ACCOUNTS: list[SeedAccountTemplate] = [
         description_ar="الأرباح الناتجة عن تقلبات أسعار صرف العملات",
     ),
     SeedAccountTemplate(
-        default_code="5900",
+        default_code="59000",
         name="Foreign Exchange Loss",
         name_ar="خسائر فروقات العملة",
         account_type="EXPENSE",
@@ -148,7 +148,7 @@ SEED_ACCOUNTS: list[SeedAccountTemplate] = [
         description_ar="الخسائر الناتجة عن تقلبات أسعار صرف العملات",
     ),
     SeedAccountTemplate(
-        default_code="5950",
+        default_code="59500",
         name="FX Rounding Differences",
         name_ar="فروقات تقريب العملة",
         account_type="EXPENSE",
@@ -168,58 +168,58 @@ SEED_ACCOUNTS: list[SeedAccountTemplate] = [
 
 RETAIL_TEMPLATE: list[SeedAccountTemplate] = [
     # -- Assets --
-    SeedAccountTemplate("1300", "Inventory", "المخزون", "ASSET", "INVENTORY_VALUE", "FINANCIAL"),
-    SeedAccountTemplate("1400", "Prepaid Expenses", "مصاريف مدفوعة مقدماً", "ASSET", "PREPAID", "FINANCIAL"),
+    SeedAccountTemplate("13000", "Inventory", "المخزون", "ASSET", "INVENTORY_VALUE", "FINANCIAL"),
+    SeedAccountTemplate("14000", "Prepaid Expenses", "مصاريف مدفوعة مقدماً", "ASSET", "PREPAID", "FINANCIAL"),
     # -- Liabilities --
     SeedAccountTemplate(
-        "2200", "VAT Payable", "ضريبة القيمة المضافة المستحقة", "LIABILITY", "TAX_PAYABLE", "FINANCIAL"
+        "22000", "VAT Payable", "ضريبة القيمة المضافة المستحقة", "LIABILITY", "TAX_PAYABLE", "FINANCIAL"
     ),
-    SeedAccountTemplate("2300", "Accrued Expenses", "مصاريف مستحقة", "LIABILITY", "ACCRUED_EXPENSE", "FINANCIAL"),
+    SeedAccountTemplate("23000", "Accrued Expenses", "مصاريف مستحقة", "LIABILITY", "ACCRUED_EXPENSE", "FINANCIAL"),
     # -- Equity --
-    SeedAccountTemplate("3100", "Owner's Capital", "رأس مال المالك", "EQUITY", "CAPITAL", "FINANCIAL"),
+    SeedAccountTemplate("31000", "Owner's Capital", "رأس مال المالك", "EQUITY", "CAPITAL", "FINANCIAL"),
     # -- Revenue --
-    SeedAccountTemplate("4100", "Sales Revenue", "إيرادات المبيعات", "REVENUE", "SALES", "FINANCIAL"),
-    SeedAccountTemplate("4200", "Shipping Revenue", "إيرادات الشحن", "REVENUE", "OTHER_INCOME", "FINANCIAL"),
+    SeedAccountTemplate("41000", "Sales Revenue", "إيرادات المبيعات", "REVENUE", "SALES", "FINANCIAL"),
+    SeedAccountTemplate("42000", "Shipping Revenue", "إيرادات الشحن", "REVENUE", "OTHER_INCOME", "FINANCIAL"),
     # -- Expenses --
-    SeedAccountTemplate("5100", "Cost of Goods Sold", "تكلفة البضاعة المباعة", "EXPENSE", "COGS", "FINANCIAL"),
-    SeedAccountTemplate("5200", "Shipping Expense", "مصاريف الشحن", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
+    SeedAccountTemplate("51000", "Cost of Goods Sold", "تكلفة البضاعة المباعة", "EXPENSE", "COGS", "FINANCIAL"),
+    SeedAccountTemplate("52000", "Shipping Expense", "مصاريف الشحن", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
     SeedAccountTemplate(
-        "5300", "Payment Processing Fees", "رسوم معالجة الدفع", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"
+        "53000", "Payment Processing Fees", "رسوم معالجة الدفع", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"
     ),
     SeedAccountTemplate(
-        "5400", "Advertising & Marketing", "الإعلان والتسويق", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"
+        "54000", "Advertising & Marketing", "الإعلان والتسويق", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"
     ),
-    SeedAccountTemplate("5500", "Rent Expense", "مصاريف الإيجار", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
-    SeedAccountTemplate("5600", "Salaries & Wages", "الرواتب والأجور", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
-    SeedAccountTemplate("5700", "Office & General", "مصاريف مكتبية وعمومية", "EXPENSE", "ADMIN_EXPENSE", "FINANCIAL"),
-    SeedAccountTemplate("5800", "Discounts Given", "خصومات ممنوحة", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
+    SeedAccountTemplate("55000", "Rent Expense", "مصاريف الإيجار", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
+    SeedAccountTemplate("56000", "Salaries & Wages", "الرواتب والأجور", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
+    SeedAccountTemplate("57000", "Office & General", "مصاريف مكتبية وعمومية", "EXPENSE", "ADMIN_EXPENSE", "FINANCIAL"),
+    SeedAccountTemplate("58000", "Discounts Given", "خصومات ممنوحة", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
 ]
 
 SERVICES_TEMPLATE: list[SeedAccountTemplate] = [
     # -- Assets --
-    SeedAccountTemplate("1400", "Prepaid Expenses", "مصاريف مدفوعة مقدماً", "ASSET", "PREPAID", "FINANCIAL"),
+    SeedAccountTemplate("14000", "Prepaid Expenses", "مصاريف مدفوعة مقدماً", "ASSET", "PREPAID", "FINANCIAL"),
     # -- Liabilities --
     SeedAccountTemplate(
-        "2200", "VAT Payable", "ضريبة القيمة المضافة المستحقة", "LIABILITY", "TAX_PAYABLE", "FINANCIAL"
+        "22000", "VAT Payable", "ضريبة القيمة المضافة المستحقة", "LIABILITY", "TAX_PAYABLE", "FINANCIAL"
     ),
-    SeedAccountTemplate("2300", "Deferred Revenue", "إيرادات مؤجلة", "LIABILITY", "DEFERRED_REVENUE", "FINANCIAL"),
-    SeedAccountTemplate("2400", "Accrued Expenses", "مصاريف مستحقة", "LIABILITY", "ACCRUED_EXPENSE", "FINANCIAL"),
+    SeedAccountTemplate("23000", "Deferred Revenue", "إيرادات مؤجلة", "LIABILITY", "DEFERRED_REVENUE", "FINANCIAL"),
+    SeedAccountTemplate("24000", "Accrued Expenses", "مصاريف مستحقة", "LIABILITY", "ACCRUED_EXPENSE", "FINANCIAL"),
     # -- Equity --
-    SeedAccountTemplate("3100", "Owner's Capital", "رأس مال المالك", "EQUITY", "CAPITAL", "FINANCIAL"),
+    SeedAccountTemplate("31000", "Owner's Capital", "رأس مال المالك", "EQUITY", "CAPITAL", "FINANCIAL"),
     # -- Revenue --
-    SeedAccountTemplate("4100", "Service Revenue", "إيرادات الخدمات", "REVENUE", "SERVICE", "FINANCIAL"),
-    SeedAccountTemplate("4200", "Consulting Revenue", "إيرادات الاستشارات", "REVENUE", "SERVICE", "FINANCIAL"),
+    SeedAccountTemplate("41000", "Service Revenue", "إيرادات الخدمات", "REVENUE", "SERVICE", "FINANCIAL"),
+    SeedAccountTemplate("42000", "Consulting Revenue", "إيرادات الاستشارات", "REVENUE", "SERVICE", "FINANCIAL"),
     # -- Expenses --
-    SeedAccountTemplate("5100", "Subcontractor Costs", "تكاليف المقاولين من الباطن", "EXPENSE", "COGS", "FINANCIAL"),
-    SeedAccountTemplate("5200", "Professional Fees", "أتعاب مهنية", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
-    SeedAccountTemplate("5300", "Software & Tools", "البرمجيات والأدوات", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
+    SeedAccountTemplate("51000", "Subcontractor Costs", "تكاليف المقاولين من الباطن", "EXPENSE", "COGS", "FINANCIAL"),
+    SeedAccountTemplate("52000", "Professional Fees", "أتعاب مهنية", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
+    SeedAccountTemplate("53000", "Software & Tools", "البرمجيات والأدوات", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
     SeedAccountTemplate(
-        "5400", "Travel & Entertainment", "السفر والترفيه", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"
+        "54000", "Travel & Entertainment", "السفر والترفيه", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"
     ),
-    SeedAccountTemplate("5500", "Rent Expense", "مصاريف الإيجار", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
-    SeedAccountTemplate("5600", "Salaries & Wages", "الرواتب والأجور", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
-    SeedAccountTemplate("5700", "Office & General", "مصاريف مكتبية وعمومية", "EXPENSE", "ADMIN_EXPENSE", "FINANCIAL"),
-    SeedAccountTemplate("5800", "Insurance", "التأمين", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
+    SeedAccountTemplate("55000", "Rent Expense", "مصاريف الإيجار", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
+    SeedAccountTemplate("56000", "Salaries & Wages", "الرواتب والأجور", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
+    SeedAccountTemplate("57000", "Office & General", "مصاريف مكتبية وعمومية", "EXPENSE", "ADMIN_EXPENSE", "FINANCIAL"),
+    SeedAccountTemplate("58000", "Insurance", "التأمين", "EXPENSE", "OPERATING_EXPENSE", "FINANCIAL"),
 ]
 
 # Template registry: name -> (description, extra accounts list)

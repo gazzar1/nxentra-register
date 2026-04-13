@@ -82,13 +82,15 @@ from .serializers import (
 # Account Views
 # =============================================================================
 
+
 class AccountListCreateView(APIView):
     """
     GET /api/accounting/accounts/ -> list accounts for active company
     POST /api/accounting/accounts/ -> create account in active company
-    
+
     POST goes through the command layer to emit events.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -99,25 +101,34 @@ class AccountListCreateView(APIView):
 
         from .models import JournalLine
 
-        accounts = Account.objects.filter(
-            company=actor.company,
-        ).annotate(
-            _has_transactions=Exists(
-                JournalLine.objects.filter(account=OuterRef("pk"))
-            ),
-        ).select_related("parent")
+        accounts = (
+            Account.objects.filter(
+                company=actor.company,
+            )
+            .annotate(
+                _has_transactions=Exists(JournalLine.objects.filter(account=OuterRef("pk"))),
+            )
+            .select_related("parent")
+        )
+
+        # Filter by status (default: exclude INACTIVE / "deleted" accounts)
+        status_filter = request.query_params.get("status", "")
+        if status_filter:
+            accounts = accounts.filter(status=status_filter)
+        else:
+            accounts = accounts.exclude(status="INACTIVE")
 
         # Client-side search (optional server-side filtering)
         search = request.query_params.get("search", "")
         if search:
             accounts = accounts.filter(
-                Q(code__icontains=search)
-                | Q(name__icontains=search)
-                | Q(name_ar__icontains=search)
+                Q(code__icontains=search) | Q(name__icontains=search) | Q(name_ar__icontains=search)
             )
 
         return paginate_queryset(
-            request, accounts, AccountSerializer,
+            request,
+            accounts,
+            AccountSerializer,
             default_ordering="code",
             allowed_sort_fields=["code", "name", "name_ar", "account_type"],
         )
@@ -149,23 +160,29 @@ class AccountDetailView(APIView):
     GET /api/accounting/accounts/<code>/ -> retrieve account
     PATCH /api/accounting/accounts/<code>/ -> update account
     DELETE /api/accounting/accounts/<code>/ -> delete account
-    
+
     PATCH and DELETE go through the command layer to emit events.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get_object(self, actor, code):
         from .models import JournalLine
-        qs = Account.objects.filter(
-            company=actor.company, code=code,
-        ).annotate(
-            _has_transactions=Exists(
-                JournalLine.objects.filter(account=OuterRef("pk"))
-            ),
-        ).select_related("parent")
+
+        qs = (
+            Account.objects.filter(
+                company=actor.company,
+                code=code,
+            )
+            .annotate(
+                _has_transactions=Exists(JournalLine.objects.filter(account=OuterRef("pk"))),
+            )
+            .select_related("parent")
+        )
         account = qs.first()
         if not account:
             from django.http import Http404
+
             raise Http404
         return account
 
@@ -222,13 +239,15 @@ class AccountDetailView(APIView):
 # Journal Entry Views
 # =============================================================================
 
+
 class JournalEntryListCreateView(APIView):
     """
     GET /api/accounting/journal-entries/ -> list journal entries
     POST /api/accounting/journal-entries/ -> create journal entry (autosave)
-    
+
     POST goes through the command layer to emit events.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -237,9 +256,7 @@ class JournalEntryListCreateView(APIView):
 
         from nxentra_backend.pagination import paginate_queryset
 
-        entries = JournalEntry.objects.filter(
-            company=actor.company
-        ).prefetch_related("lines", "lines__account")
+        entries = JournalEntry.objects.filter(company=actor.company).prefetch_related("lines", "lines__account")
 
         # Optional filters
         status_filter = request.query_params.get("status")
@@ -248,13 +265,12 @@ class JournalEntryListCreateView(APIView):
 
         search = request.query_params.get("search", "")
         if search:
-            entries = entries.filter(
-                Q(entry_number__icontains=search)
-                | Q(memo__icontains=search)
-            )
+            entries = entries.filter(Q(entry_number__icontains=search) | Q(memo__icontains=search))
 
         return paginate_queryset(
-            request, entries, JournalEntrySerializer,
+            request,
+            entries,
+            JournalEntrySerializer,
             default_ordering="-entry_number",
             allowed_sort_fields=["entry_number", "date", "status", "memo", "currency"],
         )
@@ -282,17 +298,19 @@ class JournalEntryListCreateView(APIView):
             if debit == 0 and credit == 0:
                 continue  # Skip placeholders
 
-            command_lines.append({
-                "account_id": line.get("account_id"),
-                "description": line.get("description", ""),
-                "description_ar": line.get("description_ar", ""),
-                "debit": debit,
-                "credit": credit,
-                "amount_currency": line.get("amount_currency"),
-                "currency": line.get("currency"),
-                "exchange_rate": line.get("exchange_rate"),
-                "analysis_tags": line.get("analysis_tags", []),
-            })
+            command_lines.append(
+                {
+                    "account_id": line.get("account_id"),
+                    "description": line.get("description", ""),
+                    "description_ar": line.get("description_ar", ""),
+                    "debit": debit,
+                    "credit": credit,
+                    "amount_currency": line.get("amount_currency"),
+                    "currency": line.get("currency"),
+                    "exchange_rate": line.get("exchange_rate"),
+                    "analysis_tags": line.get("analysis_tags", []),
+                }
+            )
 
         # Execute command (this emits the event)
         result = create_journal_entry(
@@ -322,9 +340,10 @@ class JournalEntryDetailView(APIView):
     GET /api/accounting/journal-entries/<pk>/ -> retrieve
     PATCH /api/accounting/journal-entries/<pk>/ -> update (autosave)
     DELETE /api/accounting/journal-entries/<pk>/ -> delete
-    
+
     PATCH and DELETE go through the command layer to emit events.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get_object(self, actor, pk):
@@ -397,17 +416,19 @@ class JournalEntryDetailView(APIView):
                 if debit == 0 and credit == 0:
                     continue
 
-                command_lines.append({
-                    "account_id": line.get("account_id"),
-                    "description": line.get("description", ""),
-                    "description_ar": line.get("description_ar", ""),
-                    "debit": debit,
-                    "credit": credit,
-                    "amount_currency": line.get("amount_currency"),
-                    "currency": line.get("currency"),
-                    "exchange_rate": line.get("exchange_rate"),
-                    "analysis_tags": line.get("analysis_tags", []),
-                })
+                command_lines.append(
+                    {
+                        "account_id": line.get("account_id"),
+                        "description": line.get("description", ""),
+                        "description_ar": line.get("description_ar", ""),
+                        "debit": debit,
+                        "credit": credit,
+                        "amount_currency": line.get("amount_currency"),
+                        "currency": line.get("currency"),
+                        "exchange_rate": line.get("exchange_rate"),
+                        "analysis_tags": line.get("analysis_tags", []),
+                    }
+                )
             kwargs["lines"] = command_lines
 
         # Execute command (this emits the event)
@@ -444,9 +465,10 @@ class JournalEntryDetailView(APIView):
 class JournalSaveCompleteView(APIView):
     """
     PUT /api/accounting/journal-entries/<pk>/complete/ -> mark as complete (DRAFT)
-    
+
     Goes through the command layer to emit events.
     """
+
     permission_classes = [IsAuthenticated]
 
     def put(self, request, pk):
@@ -498,17 +520,19 @@ class JournalSaveCompleteView(APIView):
 
                 analysis_tags = line.get("analysis_tags", [])
                 print(f"[DEBUG] JournalSaveCompleteView - Line analysis_tags: {analysis_tags}")
-                command_lines.append({
-                    "account_id": line.get("account_id"),
-                    "description": line.get("description", ""),
-                    "description_ar": line.get("description_ar", ""),
-                    "debit": debit,
-                    "credit": credit,
-                    "amount_currency": line.get("amount_currency"),
-                    "currency": line.get("currency"),
-                    "exchange_rate": line.get("exchange_rate"),
-                    "analysis_tags": analysis_tags,
-                })
+                command_lines.append(
+                    {
+                        "account_id": line.get("account_id"),
+                        "description": line.get("description", ""),
+                        "description_ar": line.get("description_ar", ""),
+                        "debit": debit,
+                        "credit": credit,
+                        "amount_currency": line.get("amount_currency"),
+                        "currency": line.get("currency"),
+                        "exchange_rate": line.get("exchange_rate"),
+                        "analysis_tags": analysis_tags,
+                    }
+                )
             kwargs["lines"] = command_lines
             print(f"[DEBUG] JournalSaveCompleteView - Total command_lines: {len(command_lines)}")
 
@@ -521,18 +545,21 @@ class JournalSaveCompleteView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response({
-            "id": result.data.id,
-            "status": result.data.status,
-        })
+        return Response(
+            {
+                "id": result.data.id,
+                "status": result.data.status,
+            }
+        )
 
 
 class JournalPostView(APIView):
     """
     POST /api/accounting/journal-entries/<pk>/post/ -> post entry
-    
+
     Goes through the command layer to emit events.
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
@@ -548,22 +575,25 @@ class JournalPostView(APIView):
             )
 
         entry = result.data
-        return Response({
-            "id": entry.id,
-            "status": entry.status,
-            "kind": entry.kind,
-            "entry_number": entry.entry_number,
-            "posted_at": entry.posted_at,
-            "posted_by": entry.posted_by_id,
-        })
+        return Response(
+            {
+                "id": entry.id,
+                "status": entry.status,
+                "kind": entry.kind,
+                "entry_number": entry.entry_number,
+                "posted_at": entry.posted_at,
+                "posted_by": entry.posted_by_id,
+            }
+        )
 
 
 class JournalReverseView(APIView):
     """
     POST /api/accounting/journal-entries/<pk>/reverse/ -> reverse entry
-    
+
     Goes through the command layer to emit events.
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
@@ -598,22 +628,26 @@ class JournalReverseView(APIView):
 # Analysis Dimension Views
 # =============================================================================
 
+
 class AnalysisDimensionListCreateView(APIView):
     """
     GET /api/accounting/dimensions/ -> list dimensions
     POST /api/accounting/dimensions/ -> create dimension
-    
+
     POST goes through the command layer to emit events.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         actor = resolve_actor(request)
         require(actor, "accounts.view")
 
-        dimensions = AnalysisDimension.objects.filter(
-            company=actor.company
-        ).order_by("display_order", "code").prefetch_related("values")
+        dimensions = (
+            AnalysisDimension.objects.filter(company=actor.company)
+            .order_by("display_order", "code")
+            .prefetch_related("values")
+        )
 
         serializer = AnalysisDimensionSerializer(dimensions, many=True)
         return Response(serializer.data)
@@ -642,9 +676,10 @@ class AnalysisDimensionDetailView(APIView):
     GET /api/accounting/dimensions/<pk>/ -> retrieve
     PATCH /api/accounting/dimensions/<pk>/ -> update
     DELETE /api/accounting/dimensions/<pk>/ -> delete
-    
+
     PATCH and DELETE go through the command layer to emit events.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get_object(self, actor, pk):
@@ -665,9 +700,15 @@ class AnalysisDimensionDetailView(APIView):
 
         # Only allow specific fields to be updated
         allowed_fields = {
-            "name", "name_ar", "description", "description_ar",
-            "dimension_kind", "is_required_on_posting", "applies_to_account_types",
-            "display_order", "is_active",
+            "name",
+            "name_ar",
+            "description",
+            "description_ar",
+            "dimension_kind",
+            "is_required_on_posting",
+            "applies_to_account_types",
+            "display_order",
+            "is_active",
         }
         updates = {k: v for k, v in request.data.items() if k in allowed_fields}
 
@@ -702,9 +743,10 @@ class DimensionValueListCreateView(APIView):
     """
     GET /api/accounting/dimensions/<dim_pk>/values/ -> list values
     POST /api/accounting/dimensions/<dim_pk>/values/ -> create value
-    
+
     POST goes through the command layer to emit events.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get_dimension(self, actor, dim_pk):
@@ -749,9 +791,10 @@ class DimensionValueDetailView(APIView):
     GET /api/accounting/dimensions/<dim_pk>/values/<pk>/ -> retrieve
     PATCH /api/accounting/dimensions/<dim_pk>/values/<pk>/ -> update
     DELETE /api/accounting/dimensions/<dim_pk>/values/<pk>/ -> delete
-    
+
     PATCH and DELETE go through the command layer to emit events.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get_object(self, actor, dim_pk, pk):
@@ -805,14 +848,16 @@ class DimensionValueDetailView(APIView):
 # Account Analysis Default Views
 # =============================================================================
 
+
 class AccountAnalysisDefaultView(APIView):
     """
     GET /api/accounting/accounts/<code>/analysis-defaults/ -> list defaults
     POST /api/accounting/accounts/<code>/analysis-defaults/ -> set default
     DELETE /api/accounting/accounts/<code>/analysis-defaults/<dim_pk>/ -> remove default
-    
+
     POST and DELETE go through the command layer to emit events.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get_account(self, actor, code):
@@ -865,6 +910,7 @@ class AccountAnalysisDefaultDeleteView(APIView):
 
     Goes through the command layer to emit events.
     """
+
     permission_classes = [IsAuthenticated]
 
     def delete(self, request, code, dim_pk):
@@ -891,6 +937,7 @@ class AccountAnalysisDefaultDeleteView(APIView):
 # Export Views
 # =============================================================================
 
+
 class AccountExportView(APIView):
     """
     GET /api/accounting/accounts/export/ -> export accounts
@@ -900,6 +947,7 @@ class AccountExportView(APIView):
         include_balance: true/false (default: true)
         simple: true/false (default: false) - use simplified columns
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -942,6 +990,7 @@ class AccountExportView(APIView):
 
         # Generate filename with timestamp
         from datetime import datetime
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"chart_of_accounts_{timestamp}"
 
@@ -965,6 +1014,7 @@ class JournalEntryExportView(APIView):
         date_from: filter start date (optional, YYYY-MM-DD)
         date_to: filter end date (optional, YYYY-MM-DD)
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -1004,9 +1054,7 @@ class JournalEntryExportView(APIView):
             )
 
         # Build queryset
-        entries = JournalEntry.objects.filter(
-            company=actor.company
-        ).select_related("created_by")
+        entries = JournalEntry.objects.filter(company=actor.company).select_related("created_by")
 
         if status_filter:
             entries = entries.filter(status=status_filter)
@@ -1063,6 +1111,7 @@ class JournalEntryExportView(APIView):
 # Customer Views (AR Subledger)
 # =============================================================================
 
+
 class CustomerListCreateView(APIView):
     """
     GET /api/accounting/customers/ -> list customers
@@ -1070,6 +1119,7 @@ class CustomerListCreateView(APIView):
 
     Customers are counterparties for AR (not COA entries).
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -1078,9 +1128,7 @@ class CustomerListCreateView(APIView):
 
         from nxentra_backend.pagination import paginate_queryset
 
-        customers = Customer.objects.filter(
-            company=actor.company
-        ).select_related("default_ar_account")
+        customers = Customer.objects.filter(company=actor.company).select_related("default_ar_account")
 
         search = request.query_params.get("search", "")
         if search:
@@ -1092,7 +1140,9 @@ class CustomerListCreateView(APIView):
             )
 
         return paginate_queryset(
-            request, customers, CustomerSerializer,
+            request,
+            customers,
+            CustomerSerializer,
             default_ordering="code",
             allowed_sort_fields=["code", "name", "name_ar", "email"],
         )
@@ -1106,6 +1156,7 @@ class CustomerListCreateView(APIView):
 
         # For now, create directly (will add command layer later)
         from projections.write_barrier import projection_writes_allowed
+
         with projection_writes_allowed():
             data = input_serializer.validated_data
             default_ar_account = None
@@ -1130,6 +1181,7 @@ class CustomerDetailView(APIView):
     PATCH /api/accounting/customers/<code>/ -> update
     DELETE /api/accounting/customers/<code>/ -> delete
     """
+
     permission_classes = [IsAuthenticated]
 
     def get_object(self, actor, code):
@@ -1153,14 +1205,13 @@ class CustomerDetailView(APIView):
         input_serializer.is_valid(raise_exception=True)
 
         from projections.write_barrier import projection_writes_allowed
+
         with projection_writes_allowed():
             data = input_serializer.validated_data
             if "default_ar_account_id" in data:
                 ar_id = data.pop("default_ar_account_id")
                 if ar_id:
-                    customer.default_ar_account = get_object_or_404(
-                        Account, company=actor.company, pk=ar_id
-                    )
+                    customer.default_ar_account = get_object_or_404(Account, company=actor.company, pk=ar_id)
                 else:
                     customer.default_ar_account = None
 
@@ -1186,6 +1237,7 @@ class CustomerDetailView(APIView):
             )
 
         from projections.write_barrier import projection_writes_allowed
+
         with projection_writes_allowed():
             customer.delete()
 
@@ -1196,6 +1248,7 @@ class CustomerDetailView(APIView):
 # Vendor Views (AP Subledger)
 # =============================================================================
 
+
 class VendorListCreateView(APIView):
     """
     GET /api/accounting/vendors/ -> list vendors
@@ -1203,6 +1256,7 @@ class VendorListCreateView(APIView):
 
     Vendors are counterparties for AP (not COA entries).
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -1211,9 +1265,7 @@ class VendorListCreateView(APIView):
 
         from nxentra_backend.pagination import paginate_queryset
 
-        vendors = Vendor.objects.filter(
-            company=actor.company
-        ).select_related("default_ap_account")
+        vendors = Vendor.objects.filter(company=actor.company).select_related("default_ap_account")
 
         search = request.query_params.get("search", "")
         if search:
@@ -1225,7 +1277,9 @@ class VendorListCreateView(APIView):
             )
 
         return paginate_queryset(
-            request, vendors, VendorSerializer,
+            request,
+            vendors,
+            VendorSerializer,
             default_ordering="code",
             allowed_sort_fields=["code", "name", "name_ar", "email"],
         )
@@ -1238,6 +1292,7 @@ class VendorListCreateView(APIView):
         input_serializer.is_valid(raise_exception=True)
 
         from projections.write_barrier import projection_writes_allowed
+
         with projection_writes_allowed():
             data = input_serializer.validated_data
             default_ap_account = None
@@ -1262,6 +1317,7 @@ class VendorDetailView(APIView):
     PATCH /api/accounting/vendors/<code>/ -> update
     DELETE /api/accounting/vendors/<code>/ -> delete
     """
+
     permission_classes = [IsAuthenticated]
 
     def get_object(self, actor, code):
@@ -1285,14 +1341,13 @@ class VendorDetailView(APIView):
         input_serializer.is_valid(raise_exception=True)
 
         from projections.write_barrier import projection_writes_allowed
+
         with projection_writes_allowed():
             data = input_serializer.validated_data
             if "default_ap_account_id" in data:
                 ap_id = data.pop("default_ap_account_id")
                 if ap_id:
-                    vendor.default_ap_account = get_object_or_404(
-                        Account, company=actor.company, pk=ap_id
-                    )
+                    vendor.default_ap_account = get_object_or_404(Account, company=actor.company, pk=ap_id)
                 else:
                     vendor.default_ap_account = None
 
@@ -1318,6 +1373,7 @@ class VendorDetailView(APIView):
             )
 
         from projections.write_barrier import projection_writes_allowed
+
         with projection_writes_allowed():
             vendor.delete()
 
@@ -1328,6 +1384,7 @@ class VendorDetailView(APIView):
 # Statistical Entry Views
 # =============================================================================
 
+
 class StatisticalEntryListCreateView(APIView):
     """
     GET /api/accounting/statistical-entries/ -> list statistical entries
@@ -1335,15 +1392,18 @@ class StatisticalEntryListCreateView(APIView):
 
     Statistical entries track quantities for statistical/off-balance accounts.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         actor = resolve_actor(request)
         require(actor, "journal.view")
 
-        entries = StatisticalEntry.objects.filter(
-            company=actor.company
-        ).select_related("account", "related_journal_entry").order_by("-date", "-id")
+        entries = (
+            StatisticalEntry.objects.filter(company=actor.company)
+            .select_related("account", "related_journal_entry")
+            .order_by("-date", "-id")
+        )
 
         # Optional filters
         account_id = request.query_params.get("account_id")
@@ -1404,6 +1464,7 @@ class StatisticalEntryDetailView(APIView):
     PATCH /api/accounting/statistical-entries/<pk>/ -> update
     DELETE /api/accounting/statistical-entries/<pk>/ -> delete
     """
+
     permission_classes = [IsAuthenticated]
 
     def get_object(self, actor, pk):
@@ -1490,6 +1551,7 @@ class StatisticalEntryPostView(APIView):
     """
     POST /api/accounting/statistical-entries/<pk>/post/ -> post entry
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
@@ -1513,17 +1575,20 @@ class StatisticalEntryPostView(APIView):
         # Refresh the entry
         entry.refresh_from_db()
 
-        return Response({
-            "id": entry.id,
-            "public_id": str(entry.public_id),
-            "status": entry.status,
-            "posted_at": entry.posted_at,
-        })
+        return Response(
+            {
+                "id": entry.id,
+                "public_id": str(entry.public_id),
+                "status": entry.status,
+                "posted_at": entry.posted_at,
+            }
+        )
 
 
 # =============================================================================
 # Admin: Chart of Accounts Seeding
 # =============================================================================
+
 
 class SeedStatusView(APIView):
     """
@@ -1531,6 +1596,7 @@ class SeedStatusView(APIView):
 
     Super-admin only. Shows which required accounts exist and which are missing.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -1547,13 +1613,15 @@ class SeedStatusView(APIView):
 
         seed_status = get_seed_status(actor.company)
 
-        return Response({
-            "company_id": actor.company.id,
-            "company_name": actor.company.name,
-            "is_complete": seed_status["is_complete"],
-            "existing_accounts": seed_status["existing"],
-            "missing_roles": seed_status["missing"],
-        })
+        return Response(
+            {
+                "company_id": actor.company.id,
+                "company_name": actor.company.name,
+                "is_complete": seed_status["is_complete"],
+                "existing_accounts": seed_status["existing"],
+                "missing_roles": seed_status["missing"],
+            }
+        )
 
 
 class SeedAccountsView(APIView):
@@ -1563,6 +1631,7 @@ class SeedAccountsView(APIView):
     Super-admin only. Creates missing accounts only - no deletion, no overwrite.
     This is idempotent: running twice creates zero duplicates.
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -1580,27 +1649,33 @@ class SeedAccountsView(APIView):
         # Get status before seeding
         before_status = get_seed_status(actor.company)
         if before_status["is_complete"]:
-            return Response({
-                "message": "All required accounts already exist.",
-                "created": [],
-                "skipped": list(before_status["existing"].keys()),
-                "errors": [],
-            })
+            return Response(
+                {
+                    "message": "All required accounts already exist.",
+                    "created": [],
+                    "skipped": list(before_status["existing"].keys()),
+                    "errors": [],
+                }
+            )
 
         # Perform seeding
         result = seed_chart_of_accounts(actor.company)
 
-        return Response({
-            "message": "Seeding complete.",
-            "created": result.created,
-            "skipped": result.skipped,
-            "errors": result.errors,
-        }, status=status.HTTP_201_CREATED if result.created else status.HTTP_200_OK)
+        return Response(
+            {
+                "message": "Seeding complete.",
+                "created": result.created,
+                "skipped": result.skipped,
+                "errors": result.errors,
+            },
+            status=status.HTTP_201_CREATED if result.created else status.HTTP_200_OK,
+        )
 
 
 # =============================================================================
 # Cash Application Views
 # =============================================================================
+
 
 class CustomerReceiptCreateView(APIView):
     """
@@ -1627,6 +1702,7 @@ class CustomerReceiptCreateView(APIView):
         ]
     }
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -1635,19 +1711,14 @@ class CustomerReceiptCreateView(APIView):
         actor = resolve_actor(request)
         require(actor, "journal.view")
 
-        events = (
-            BusinessEvent.objects
-            .filter(
-                company=actor.company,
-                event_type="cash.customer_receipt_recorded",
-            )
-            .order_by("-occurred_at")
-        )
+        events = BusinessEvent.objects.filter(
+            company=actor.company,
+            event_type="cash.customer_receipt_recorded",
+        ).order_by("-occurred_at")
 
         # Pre-fetch JEs for all receipt events
         je_public_ids = [
-            ev.data.get("journal_entry_public_id", "")
-            for ev in events if ev.data.get("journal_entry_public_id")
+            ev.data.get("journal_entry_public_id", "") for ev in events if ev.data.get("journal_entry_public_id")
         ]
         je_map = {}
         if je_public_ids:
@@ -1662,24 +1733,26 @@ class CustomerReceiptCreateView(APIView):
             d = ev.data
             je_pid = d.get("journal_entry_public_id", "")
             je = je_map.get(je_pid)
-            results.append({
-                "receipt_public_id": d.get("receipt_public_id", ""),
-                "customer_code": d.get("customer_code", ""),
-                "receipt_date": d.get("receipt_date", ""),
-                "amount": d.get("amount", "0"),
-                "reference": d.get("reference", ""),
-                "memo": d.get("memo", ""),
-                "currency": d.get("currency", ""),
-                "exchange_rate": d.get("exchange_rate", ""),
-                "journal_entry_public_id": je_pid,
-                "journal_entry_id": je.id if je else None,
-                "journal_entry_number": je.entry_number if je else None,
-                "journal_entry_status": je.status if je else None,
-                "bank_account_code": d.get("bank_account_code", ""),
-                "recorded_at": d.get("recorded_at", ""),
-                "recorded_by_email": d.get("recorded_by_email", ""),
-                "allocations": d.get("allocations") or [],
-            })
+            results.append(
+                {
+                    "receipt_public_id": d.get("receipt_public_id", ""),
+                    "customer_code": d.get("customer_code", ""),
+                    "receipt_date": d.get("receipt_date", ""),
+                    "amount": d.get("amount", "0"),
+                    "reference": d.get("reference", ""),
+                    "memo": d.get("memo", ""),
+                    "currency": d.get("currency", ""),
+                    "exchange_rate": d.get("exchange_rate", ""),
+                    "journal_entry_public_id": je_pid,
+                    "journal_entry_id": je.id if je else None,
+                    "journal_entry_number": je.entry_number if je else None,
+                    "journal_entry_status": je.status if je else None,
+                    "bank_account_code": d.get("bank_account_code", ""),
+                    "recorded_at": d.get("recorded_at", ""),
+                    "recorded_by_email": d.get("recorded_by_email", ""),
+                    "allocations": d.get("allocations") or [],
+                }
+            )
 
         return Response(results)
 
@@ -1745,6 +1818,7 @@ class CustomerReceiptCreateView(APIView):
             )
         except Exception as e:
             import traceback
+
             logger.error("record_customer_receipt failed: %s\n%s", e, traceback.format_exc())
             return Response(
                 {"detail": f"Internal error: {e}"},
@@ -1757,13 +1831,16 @@ class CustomerReceiptCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response({
-            "receipt_public_id": result.data["receipt_public_id"],
-            "journal_entry_id": result.data["journal_entry"].id,
-            "amount": result.data["amount"],
-            "customer_code": result.data["customer_code"],
-            "allocations": result.data.get("allocations", []),
-        }, status=status.HTTP_201_CREATED)
+        return Response(
+            {
+                "receipt_public_id": result.data["receipt_public_id"],
+                "journal_entry_id": result.data["journal_entry"].id,
+                "amount": result.data["amount"],
+                "customer_code": result.data["customer_code"],
+                "allocations": result.data.get("allocations", []),
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class VendorPaymentCreateView(APIView):
@@ -1792,6 +1869,7 @@ class VendorPaymentCreateView(APIView):
         ]
     }
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -1800,33 +1878,31 @@ class VendorPaymentCreateView(APIView):
         actor = resolve_actor(request)
         require(actor, "journal.view")
 
-        events = (
-            BusinessEvent.objects
-            .filter(
-                company=actor.company,
-                event_type="cash.vendor_payment_recorded",
-            )
-            .order_by("-occurred_at")
-        )
+        events = BusinessEvent.objects.filter(
+            company=actor.company,
+            event_type="cash.vendor_payment_recorded",
+        ).order_by("-occurred_at")
 
         results = []
         for ev in events:
             d = ev.data
-            results.append({
-                "payment_public_id": d.get("payment_public_id", ""),
-                "vendor_code": d.get("vendor_code", ""),
-                "payment_date": d.get("payment_date", ""),
-                "amount": d.get("amount", "0"),
-                "reference": d.get("reference", ""),
-                "memo": d.get("memo", ""),
-                "currency": d.get("currency", ""),
-                "exchange_rate": d.get("exchange_rate", ""),
-                "journal_entry_public_id": d.get("journal_entry_public_id", ""),
-                "bank_account_code": d.get("bank_account_code", ""),
-                "recorded_at": d.get("recorded_at", ""),
-                "recorded_by_email": d.get("recorded_by_email", ""),
-                "allocations": d.get("allocations") or [],
-            })
+            results.append(
+                {
+                    "payment_public_id": d.get("payment_public_id", ""),
+                    "vendor_code": d.get("vendor_code", ""),
+                    "payment_date": d.get("payment_date", ""),
+                    "amount": d.get("amount", "0"),
+                    "reference": d.get("reference", ""),
+                    "memo": d.get("memo", ""),
+                    "currency": d.get("currency", ""),
+                    "exchange_rate": d.get("exchange_rate", ""),
+                    "journal_entry_public_id": d.get("journal_entry_public_id", ""),
+                    "bank_account_code": d.get("bank_account_code", ""),
+                    "recorded_at": d.get("recorded_at", ""),
+                    "recorded_by_email": d.get("recorded_by_email", ""),
+                    "allocations": d.get("allocations") or [],
+                }
+            )
 
         return Response(results)
 
@@ -1892,6 +1968,7 @@ class VendorPaymentCreateView(APIView):
             )
         except Exception as e:
             import traceback
+
             logger.error("record_vendor_payment failed: %s\n%s", e, traceback.format_exc())
             return Response(
                 {"detail": f"Internal error: {e}"},
@@ -1904,18 +1981,22 @@ class VendorPaymentCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response({
-            "payment_public_id": result.data["payment_public_id"],
-            "journal_entry_id": result.data["journal_entry"].id,
-            "amount": result.data["amount"],
-            "vendor_code": result.data["vendor_code"],
-            "allocations": result.data.get("allocations", []),
-        }, status=status.HTTP_201_CREATED)
+        return Response(
+            {
+                "payment_public_id": result.data["payment_public_id"],
+                "journal_entry_id": result.data["journal_entry"].id,
+                "amount": result.data["amount"],
+                "vendor_code": result.data["vendor_code"],
+                "allocations": result.data.get("allocations", []),
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 # =============================================================================
 # Exchange Rates
 # =============================================================================
+
 
 class ExchangeRateListCreateView(APIView):
     """
@@ -1929,6 +2010,7 @@ class ExchangeRateListCreateView(APIView):
     - to_currency: Filter by target currency
     - rate_type: Filter by rate type (SPOT, AVERAGE, CLOSING)
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -1952,21 +2034,23 @@ class ExchangeRateListCreateView(APIView):
 
         qs = qs.order_by("-effective_date", "from_currency", "to_currency")[:200]
 
-        return Response([
-            {
-                "id": rate.id,
-                "public_id": str(rate.public_id),
-                "from_currency": rate.from_currency,
-                "to_currency": rate.to_currency,
-                "rate": str(rate.rate),
-                "effective_date": rate.effective_date.isoformat(),
-                "rate_type": rate.rate_type,
-                "source": rate.source,
-                "created_at": rate.created_at.isoformat(),
-                "updated_at": rate.updated_at.isoformat(),
-            }
-            for rate in qs
-        ])
+        return Response(
+            [
+                {
+                    "id": rate.id,
+                    "public_id": str(rate.public_id),
+                    "from_currency": rate.from_currency,
+                    "to_currency": rate.to_currency,
+                    "rate": str(rate.rate),
+                    "effective_date": rate.effective_date.isoformat(),
+                    "rate_type": rate.rate_type,
+                    "source": rate.source,
+                    "created_at": rate.created_at.isoformat(),
+                    "updated_at": rate.updated_at.isoformat(),
+                }
+                for rate in qs
+            ]
+        )
 
     def post(self, request):
         from decimal import Decimal, InvalidOperation
@@ -1984,11 +2068,15 @@ class ExchangeRateListCreateView(APIView):
         source = request.data.get("source", "Manual")
 
         if not from_currency or len(from_currency) != 3:
-            return Response({"detail": "from_currency must be a 3-letter ISO code."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "from_currency must be a 3-letter ISO code."}, status=status.HTTP_400_BAD_REQUEST
+            )
         if not to_currency or len(to_currency) != 3:
             return Response({"detail": "to_currency must be a 3-letter ISO code."}, status=status.HTTP_400_BAD_REQUEST)
         if from_currency == to_currency:
-            return Response({"detail": "from_currency and to_currency must be different."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "from_currency and to_currency must be different."}, status=status.HTTP_400_BAD_REQUEST
+            )
         if not rate_str:
             return Response({"detail": "rate is required."}, status=status.HTTP_400_BAD_REQUEST)
         if not effective_date:
@@ -2002,7 +2090,9 @@ class ExchangeRateListCreateView(APIView):
             return Response({"detail": "rate must be a positive number."}, status=status.HTTP_400_BAD_REQUEST)
 
         if rate_type not in ("SPOT", "AVERAGE", "CLOSING"):
-            return Response({"detail": "rate_type must be SPOT, AVERAGE, or CLOSING."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "rate_type must be SPOT, AVERAGE, or CLOSING."}, status=status.HTTP_400_BAD_REQUEST
+            )
 
         rate_obj, created = ExchangeRate.objects.update_or_create(
             company=actor.company,
@@ -2016,17 +2106,20 @@ class ExchangeRateListCreateView(APIView):
             },
         )
 
-        return Response({
-            "id": rate_obj.id,
-            "public_id": str(rate_obj.public_id),
-            "from_currency": rate_obj.from_currency,
-            "to_currency": rate_obj.to_currency,
-            "rate": str(rate_obj.rate),
-            "effective_date": str(rate_obj.effective_date),
-            "rate_type": rate_obj.rate_type,
-            "source": rate_obj.source,
-            "created": created,
-        }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+        return Response(
+            {
+                "id": rate_obj.id,
+                "public_id": str(rate_obj.public_id),
+                "from_currency": rate_obj.from_currency,
+                "to_currency": rate_obj.to_currency,
+                "rate": str(rate_obj.rate),
+                "effective_date": str(rate_obj.effective_date),
+                "rate_type": rate_obj.rate_type,
+                "source": rate_obj.source,
+                "created": created,
+            },
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
 
 
 class ExchangeRateDetailView(APIView):
@@ -2035,6 +2128,7 @@ class ExchangeRateDetailView(APIView):
     PUT    /api/accounting/exchange-rates/<id>/
     DELETE /api/accounting/exchange-rates/<id>/
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
@@ -2044,16 +2138,18 @@ class ExchangeRateDetailView(APIView):
         require(actor, "settings.view")
 
         rate = get_object_or_404(ExchangeRate, pk=pk, company=actor.company)
-        return Response({
-            "id": rate.id,
-            "public_id": str(rate.public_id),
-            "from_currency": rate.from_currency,
-            "to_currency": rate.to_currency,
-            "rate": str(rate.rate),
-            "effective_date": str(rate.effective_date),
-            "rate_type": rate.rate_type,
-            "source": rate.source,
-        })
+        return Response(
+            {
+                "id": rate.id,
+                "public_id": str(rate.public_id),
+                "from_currency": rate.from_currency,
+                "to_currency": rate.to_currency,
+                "rate": str(rate.rate),
+                "effective_date": str(rate.effective_date),
+                "rate_type": rate.rate_type,
+                "source": rate.source,
+            }
+        )
 
     def put(self, request, pk):
         from decimal import Decimal, InvalidOperation
@@ -2086,16 +2182,18 @@ class ExchangeRateDetailView(APIView):
 
         rate_obj.save()
 
-        return Response({
-            "id": rate_obj.id,
-            "public_id": str(rate_obj.public_id),
-            "from_currency": rate_obj.from_currency,
-            "to_currency": rate_obj.to_currency,
-            "rate": str(rate_obj.rate),
-            "effective_date": str(rate_obj.effective_date),
-            "rate_type": rate_obj.rate_type,
-            "source": rate_obj.source,
-        })
+        return Response(
+            {
+                "id": rate_obj.id,
+                "public_id": str(rate_obj.public_id),
+                "from_currency": rate_obj.from_currency,
+                "to_currency": rate_obj.to_currency,
+                "rate": str(rate_obj.rate),
+                "effective_date": str(rate_obj.effective_date),
+                "rate_type": rate_obj.rate_type,
+                "source": rate_obj.source,
+            }
+        )
 
     def delete(self, request, pk):
         from accounting.models import ExchangeRate
@@ -2121,6 +2219,7 @@ class ExchangeRateLookupView(APIView):
     - date (required, ISO format)
     - rate_type (optional, default: SPOT)
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -2140,6 +2239,7 @@ class ExchangeRateLookupView(APIView):
             )
 
         from datetime import date as date_type
+
         try:
             lookup_date = date_type.fromisoformat(date_str)
         except ValueError:
@@ -2148,18 +2248,22 @@ class ExchangeRateLookupView(APIView):
         rate = ExchangeRate.get_rate(actor.company, from_currency, to_currency, lookup_date, rate_type)
 
         if rate is None:
-            return Response({
-                "rate": None,
-                "message": f"No exchange rate found for {from_currency}/{to_currency} on or before {date_str}.",
-            })
+            return Response(
+                {
+                    "rate": None,
+                    "message": f"No exchange rate found for {from_currency}/{to_currency} on or before {date_str}.",
+                }
+            )
 
-        return Response({
-            "from_currency": from_currency,
-            "to_currency": to_currency,
-            "date": date_str,
-            "rate_type": rate_type,
-            "rate": str(rate),
-        })
+        return Response(
+            {
+                "from_currency": from_currency,
+                "to_currency": to_currency,
+                "date": date_str,
+                "rate_type": rate_type,
+                "rate": str(rate),
+            }
+        )
 
 
 # =============================================================================
@@ -2191,6 +2295,7 @@ class CoreAccountMappingView(APIView):
 
     If no mapping exists yet, auto-initializes from seeded accounts by role.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -2217,12 +2322,14 @@ class CoreAccountMappingView(APIView):
         result = []
         for role in CORE_ACCOUNT_ROLES:
             account = mapping.get(role)
-            result.append({
-                "role": role,
-                "account_id": account.id if account else None,
-                "account_code": account.code if account else "",
-                "account_name": account.name if account else "",
-            })
+            result.append(
+                {
+                    "role": role,
+                    "account_id": account.id if account else None,
+                    "account_code": account.code if account else "",
+                    "account_name": account.name if account else "",
+                }
+            )
         return Response(result)
 
     def put(self, request):
@@ -2252,7 +2359,8 @@ class CoreAccountMappingView(APIView):
                 if account_id:
                     try:
                         account = Account.objects.get(
-                            company=actor.company, pk=account_id,
+                            company=actor.company,
+                            pk=account_id,
                         )
                     except Account.DoesNotExist:
                         return Response(
