@@ -2779,12 +2779,14 @@ def accept_invitation(
     # Set password
     with auth_writes_allowed():
         user.set_password(password)
-        # Mark as verified since they came through invitation link
+        user.save(update_fields=["password"])
+    # Mark as verified and approved (these are command-writable fields)
+    with command_writes_allowed():
         user.email_verified = True
         user.email_verified_at = timezone.now()
         user.is_approved = True
         user.approved_at = timezone.now()
-        user.save(update_fields=["password", "email_verified", "email_verified_at", "is_approved", "approved_at"])
+        user.save(update_fields=["email_verified", "email_verified_at", "is_approved", "approved_at"])
 
     # Emit password changed event
     emit_event_no_actor(
