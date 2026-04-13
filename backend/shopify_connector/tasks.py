@@ -10,13 +10,13 @@ Tasks:
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import requests
 from celery import shared_task
+from django.db import transaction
 from django.utils import timezone as tz
 
-from accounts.models import Company
 from accounts.rls import rls_bypass
 
 logger = logging.getLogger(__name__)
@@ -48,11 +48,7 @@ def sync_shopify_all(self, lookback_hours: int = 48) -> dict:
     from .models import ShopifyStore
 
     with rls_bypass():
-        stores = list(
-            ShopifyStore.objects
-            .filter(status=ShopifyStore.Status.ACTIVE)
-            .select_related("company")
-        )
+        stores = list(ShopifyStore.objects.filter(status=ShopifyStore.Status.ACTIVE).select_related("company"))
 
     results = {}
     for store in stores:
@@ -174,9 +170,7 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
     created = 0
     skipped = 0
     errors = 0
-    page_url = (
-        f"https://{store.shop_domain}/admin/api/2025-01/orders.json"
-    )
+    page_url = f"https://{store.shop_domain}/admin/api/2025-01/orders.json"
     params = {
         "status": "any",
         "financial_status": "paid",
@@ -193,7 +187,9 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
             logger.error("Failed to fetch orders from Shopify %s: %s", store.shop_domain, e)
             return {
                 "status": "partial" if fetched > 0 else "error",
-                "fetched": fetched, "created": created, "skipped": skipped,
+                "fetched": fetched,
+                "created": created,
+                "skipped": skipped,
                 "error": str(e),
             }
 
@@ -206,31 +202,35 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
                 continue
 
             # Quick check: skip if already exists (avoid full command overhead)
-            if ShopifyOrder.objects.filter(
-                company=store.company, shopify_order_id=shopify_order_id
-            ).exists():
+            if ShopifyOrder.objects.filter(company=store.company, shopify_order_id=shopify_order_id).exists():
                 skipped += 1
                 continue
 
-            # Process through the standard webhook handler (handles event emission)
+            # Process each order in its own transaction so one failure
+            # doesn't break the entire batch
             try:
-                result = process_order_paid(store, order_payload)
-                if result.success:
-                    if result.data and result.data.get("skipped"):
-                        skipped += 1
+                with transaction.atomic():
+                    result = process_order_paid(store, order_payload)
+                    if result.success:
+                        if result.data and result.data.get("skipped"):
+                            skipped += 1
+                        else:
+                            created += 1
                     else:
-                        created += 1
-                else:
-                    errors += 1
-                    logger.warning(
-                        "Failed to process order %s from %s: %s",
-                        shopify_order_id, store.shop_domain, result.error,
-                    )
+                        errors += 1
+                        logger.warning(
+                            "Failed to process order %s from %s: %s",
+                            shopify_order_id,
+                            store.shop_domain,
+                            result.error,
+                        )
             except Exception as e:
                 errors += 1
                 logger.error(
                     "Error processing order %s from %s: %s",
-                    shopify_order_id, store.shop_domain, e,
+                    shopify_order_id,
+                    store.shop_domain,
+                    e,
                 )
 
         # Pagination: follow Link header for next page
