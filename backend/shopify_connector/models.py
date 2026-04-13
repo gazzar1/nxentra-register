@@ -67,13 +67,19 @@ class ShopifyStore(models.Model):
 
     # Default accounts for auto-creating Items from Shopify products
     default_inventory_account = models.ForeignKey(
-        "accounting.Account", on_delete=models.SET_NULL,
-        null=True, blank=True, related_name="+",
+        "accounting.Account",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
         help_text="Default inventory asset account for auto-created Items",
     )
     default_cogs_account = models.ForeignKey(
-        "accounting.Account", on_delete=models.SET_NULL,
-        null=True, blank=True, related_name="+",
+        "accounting.Account",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
         help_text="Default COGS expense account for auto-created Items",
     )
     product_sync_enabled = models.BooleanField(
@@ -92,6 +98,13 @@ class ShopifyStore(models.Model):
             models.UniqueConstraint(
                 fields=["company", "shop_domain"],
                 name="uniq_company_shop_domain",
+            ),
+            # A Shopify store can only be active in one company at a time.
+            # Prevents duplicate financial data and unauthorized access.
+            models.UniqueConstraint(
+                fields=["shop_domain"],
+                condition=models.Q(status="ACTIVE"),
+                name="uniq_active_shop_domain",
             ),
         ]
 
@@ -127,7 +140,8 @@ class ShopifyOrder(models.Model):
     shopify_order_id = models.BigIntegerField(db_index=True)
     shopify_order_number = models.CharField(max_length=50)
     shopify_order_name = models.CharField(
-        max_length=50, blank=True,
+        max_length=50,
+        blank=True,
         help_text="Display name like #1001",
     )
 
@@ -153,11 +167,13 @@ class ShopifyOrder(models.Model):
         default=Status.RECEIVED,
     )
     event_id = models.UUIDField(
-        null=True, blank=True,
+        null=True,
+        blank=True,
         help_text="BusinessEvent ID created for this order.",
     )
     journal_entry_id = models.UUIDField(
-        null=True, blank=True,
+        null=True,
+        blank=True,
         help_text="JournalEntry public_id created by projection.",
     )
     error_message = models.TextField(blank=True)
@@ -252,15 +268,19 @@ class ShopifyPayout(models.Model):
 
     # Financial data
     gross_amount = models.DecimalField(
-        max_digits=18, decimal_places=2,
+        max_digits=18,
+        decimal_places=2,
         help_text="Total amount before fees",
     )
     fees = models.DecimalField(
-        max_digits=18, decimal_places=2, default=0,
+        max_digits=18,
+        decimal_places=2,
+        default=0,
         help_text="Processing fees deducted by Shopify",
     )
     net_amount = models.DecimalField(
-        max_digits=18, decimal_places=2,
+        max_digits=18,
+        decimal_places=2,
         help_text="Amount deposited to bank (gross - fees)",
     )
     currency = models.CharField(max_length=3)
@@ -286,11 +306,13 @@ class ShopifyPayout(models.Model):
         default=Status.RECEIVED,
     )
     event_id = models.UUIDField(
-        null=True, blank=True,
+        null=True,
+        blank=True,
         help_text="BusinessEvent ID created for this payout.",
     )
     journal_entry_id = models.UUIDField(
-        null=True, blank=True,
+        null=True,
+        blank=True,
         help_text="JournalEntry public_id created by projection.",
     )
     error_message = models.TextField(blank=True)
@@ -341,14 +363,17 @@ class ShopifyFulfillment(models.Model):
     tracking_number = models.CharField(max_length=255, blank=True)
     tracking_company = models.CharField(max_length=255, blank=True)
     shopify_status = models.CharField(
-        max_length=30, blank=True,
+        max_length=30,
+        blank=True,
         help_text="Shopify fulfillment status (success, cancelled, error)",
     )
     shopify_created_at = models.DateTimeField()
 
     # COGS data (computed during processing)
     total_cogs = models.DecimalField(
-        max_digits=18, decimal_places=2, default=0,
+        max_digits=18,
+        decimal_places=2,
+        default=0,
         help_text="Total cost of goods for this fulfillment",
     )
     currency = models.CharField(max_length=3)
@@ -368,11 +393,13 @@ class ShopifyFulfillment(models.Model):
         default=Status.RECEIVED,
     )
     event_id = models.UUIDField(
-        null=True, blank=True,
+        null=True,
+        blank=True,
         help_text="BusinessEvent ID created for this fulfillment.",
     )
     journal_entry_id = models.UUIDField(
-        null=True, blank=True,
+        null=True,
+        blank=True,
         help_text="COGS JournalEntry public_id created by projection.",
     )
     error_message = models.TextField(blank=True)
@@ -427,26 +454,32 @@ class ShopifyPayoutTransaction(models.Model):
 
     # Financial data
     amount = models.DecimalField(
-        max_digits=18, decimal_places=2,
+        max_digits=18,
+        decimal_places=2,
         help_text="Gross amount of the transaction",
     )
     fee = models.DecimalField(
-        max_digits=18, decimal_places=2, default=0,
+        max_digits=18,
+        decimal_places=2,
+        default=0,
         help_text="Fee charged on this transaction",
     )
     net = models.DecimalField(
-        max_digits=18, decimal_places=2,
+        max_digits=18,
+        decimal_places=2,
         help_text="Net amount (amount - fee)",
     )
     currency = models.CharField(max_length=3)
 
     # Link to local order/refund if applicable
     source_order_id = models.BigIntegerField(
-        null=True, blank=True,
+        null=True,
+        blank=True,
         help_text="Shopify order ID this transaction relates to",
     )
     source_type = models.CharField(
-        max_length=30, blank=True,
+        max_length=30,
+        blank=True,
         help_text="Source type from Shopify (e.g. 'order', 'refund', 'adjustment')",
     )
 
@@ -458,12 +491,14 @@ class ShopifyPayoutTransaction(models.Model):
     local_order = models.ForeignKey(
         ShopifyOrder,
         on_delete=models.SET_NULL,
-        null=True, blank=True,
+        null=True,
+        blank=True,
         related_name="payout_transactions",
     )
 
     processed_at = models.DateTimeField(
-        null=True, blank=True,
+        null=True,
+        blank=True,
         help_text="When this transaction was processed by Shopify",
     )
     raw_data = models.JSONField(default=dict)
@@ -496,6 +531,7 @@ class ShopifyDispute(models.Model):
 
     class DisputeStatus(models.TextChoices):
         """Shopify dispute statuses."""
+
         NEEDS_RESPONSE = "needs_response", "Needs Response"
         UNDER_REVIEW = "under_review", "Under Review"
         CHARGE_REFUNDED = "charge_refunded", "Charge Refunded"
@@ -517,7 +553,8 @@ class ShopifyDispute(models.Model):
         ShopifyOrder,
         on_delete=models.CASCADE,
         related_name="disputes",
-        null=True, blank=True,
+        null=True,
+        blank=True,
     )
     public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
 
@@ -527,19 +564,23 @@ class ShopifyDispute(models.Model):
 
     # Financial data
     amount = models.DecimalField(
-        max_digits=18, decimal_places=2,
+        max_digits=18,
+        decimal_places=2,
         help_text="Disputed amount",
     )
     currency = models.CharField(max_length=3)
     fee = models.DecimalField(
-        max_digits=18, decimal_places=2, default=0,
+        max_digits=18,
+        decimal_places=2,
+        default=0,
         help_text="Chargeback fee charged by payment processor",
     )
 
     # Dispute details
     reason = models.CharField(max_length=100, blank=True)
     shopify_dispute_status = models.CharField(
-        max_length=30, choices=DisputeStatus.choices,
+        max_length=30,
+        choices=DisputeStatus.choices,
         blank=True,
     )
     evidence_due_by = models.DateTimeField(null=True, blank=True)
@@ -577,10 +618,14 @@ class ShopifyProduct(models.Model):
     """
 
     company = models.ForeignKey(
-        Company, on_delete=models.CASCADE, related_name="shopify_products",
+        Company,
+        on_delete=models.CASCADE,
+        related_name="shopify_products",
     )
     store = models.ForeignKey(
-        ShopifyStore, on_delete=models.CASCADE, related_name="products",
+        ShopifyStore,
+        on_delete=models.CASCADE,
+        related_name="products",
     )
 
     # Shopify identifiers
@@ -594,14 +639,18 @@ class ShopifyProduct(models.Model):
     barcode = models.CharField(max_length=255, blank=True, default="")
     shopify_price = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     shopify_inventory_item_id = models.BigIntegerField(
-        null=True, blank=True,
+        null=True,
+        blank=True,
         help_text="Shopify inventory_item_id for future inventory level sync",
     )
 
     # Link to Nxentra Item
     item = models.ForeignKey(
-        "sales.Item", on_delete=models.SET_NULL,
-        null=True, blank=True, related_name="shopify_variants",
+        "sales.Item",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="shopify_variants",
     )
 
     # Sync state
