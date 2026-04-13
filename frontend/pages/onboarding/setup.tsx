@@ -158,6 +158,8 @@ export default function OnboardingSetupPage() {
             if (draft.numPeriods) setNumPeriods(draft.numPeriods);
             if (draft.currentPeriod) setCurrentPeriod(draft.currentPeriod);
             if (draft.coaTemplate) setCoaTemplate(draft.coaTemplate);
+            if (draft.shopifyConnected) setShopifyConnected(true);
+            if (draft.shopifyStoreName) setShopifyStoreName(draft.shopifyStoreName);
           }
         } catch { /* sessionStorage unavailable */ }
         setLoading(false);
@@ -166,15 +168,14 @@ export default function OnboardingSetupPage() {
         setLoading(false);
       });
 
-    // Check if Shopify store is already connected (e.g. returning from OAuth)
+    // Check if Shopify store is already connected (e.g. returning from OAuth or page reload)
     shopifyService.getStore().then(({ data }) => {
-      if (data && "connected" in data && !data.connected) return;
-      if (data && "shop_domain" in data) {
-        const store = data as { shop_domain: string; status: string };
-        if (store.status === "ACTIVE") {
-          setShopifyConnected(true);
-          setShopifyStoreName(store.shop_domain);
-        }
+      // API returns { connected: false } when no store, or full store object when connected
+      if (!data || ("connected" in data && !data.connected)) return;
+      const store = data as Record<string, unknown>;
+      if (store.status === "ACTIVE" || store.shop_domain) {
+        setShopifyConnected(true);
+        setShopifyStoreName(String(store.shop_domain || ""));
       }
     }).catch(() => { /* no store yet */ });
 
@@ -263,6 +264,8 @@ export default function OnboardingSetupPage() {
         numPeriods,
         currentPeriod,
         coaTemplate,
+        shopifyConnected,
+        shopifyStoreName,
       }));
     } catch { /* sessionStorage unavailable */ }
   };
