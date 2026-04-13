@@ -201,15 +201,15 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
             if not shopify_order_id:
                 continue
 
-            # Quick check: skip if already exists (avoid full command overhead)
-            if ShopifyOrder.objects.filter(company=store.company, shopify_order_id=shopify_order_id).exists():
-                skipped += 1
-                continue
-
-            # Process each order in its own transaction so one failure
+            # Process each order in its own savepoint so one failure
             # doesn't break the entire batch
             try:
                 with transaction.atomic():
+                    # Quick check: skip if already exists
+                    if ShopifyOrder.objects.filter(company=store.company, shopify_order_id=shopify_order_id).exists():
+                        skipped += 1
+                        continue
+
                     result = process_order_paid(store, order_payload)
                     if result.success:
                         if result.data and result.data.get("skipped"):
