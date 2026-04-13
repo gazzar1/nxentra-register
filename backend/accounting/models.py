@@ -29,10 +29,13 @@ Models:
 - AccountAnalysisDefault: Default analysis values for accounts (read model)
 """
 
+import logging
 import uuid
 from decimal import Decimal
 
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.db.models import Q, Sum
@@ -2510,7 +2513,64 @@ class ExchangeRate(models.Model):
         if reverse_rate and reverse_rate.rate != 0:
             return (Decimal("1.0") / reverse_rate.rate).quantize(Decimal("0.000001"))
 
+        # Auto-fetch from external API as last resort
+        fetched = cls._auto_fetch_rate(company, from_currency, to_currency, date, rate_type)
+        if fetched is not None:
+            return fetched
+
         return None
+
+    @classmethod
+    def _auto_fetch_rate(cls, company, from_currency: str, to_currency: str, date, rate_type: str):
+        """
+        Fetch exchange rate from Frankfurter API (ECB data, free, no key).
+        Saves the rate with source='ECB (auto)' so users can review/override.
+        Returns the rate Decimal or None if fetch fails.
+        """
+        import requests
+
+        try:
+            # Frankfurter API: free, based on ECB reference rates
+            url = f"https://api.frankfurter.dev/{date}"
+            resp = requests.get(url, params={"from": from_currency, "to": to_currency}, timeout=5)
+            if resp.status_code != 200:
+                return None
+
+            data = resp.json()
+            rate_value = data.get("rates", {}).get(to_currency)
+            if rate_value is None:
+                return None
+
+            rate_decimal = Decimal(str(rate_value))
+
+            # Save for future lookups so we don't hit the API again
+            from projections.write_barrier import command_writes_allowed
+
+            with command_writes_allowed():
+                cls.objects.update_or_create(
+                    company=company,
+                    from_currency=from_currency,
+                    to_currency=to_currency,
+                    effective_date=date,
+                    rate_type=rate_type,
+                    defaults={
+                        "rate": rate_decimal,
+                        "source": "ECB (auto-fetched)",
+                    },
+                )
+
+            logger.info(
+                "Auto-fetched exchange rate %s→%s = %s for %s from ECB",
+                from_currency,
+                to_currency,
+                rate_decimal,
+                date,
+            )
+            return rate_decimal
+
+        except Exception as e:
+            logger.warning("Failed to auto-fetch exchange rate %s→%s for %s: %s", from_currency, to_currency, date, e)
+            return None
 
 
 # =============================================================================
