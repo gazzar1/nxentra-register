@@ -1349,29 +1349,30 @@ def _auto_create_item_from_line(store, sku: str, line_item: dict):
     product_id = line_item.get("product_id")
 
     try:
-        with command_writes_allowed():
-            item = Item.objects.create(
-                company=store.company,
-                code=sku,
-                name=title,
-                item_type="INVENTORY",
-                default_unit_price=price,
-                is_active=True,
-            )
+        with transaction.atomic():
+            with command_writes_allowed():
+                item = Item.objects.create(
+                    company=store.company,
+                    code=sku,
+                    name=title,
+                    item_type="INVENTORY",
+                    default_unit_price=price,
+                    is_active=True,
+                )
 
-            # Create ShopifyProduct mapping
-            ShopifyProduct.objects.create(
-                company=store.company,
-                store=store,
-                shopify_product_id=product_id or 0,
-                shopify_variant_id=variant_id or 0,
-                sku=sku,
-                title=title,
-                variant_title=line_item.get("variant_title", ""),
-                item=item,
-                auto_created=True,
-            )
-        logger.info("Auto-created Item %s (%s) from Shopify order line", sku, title)
+                # Create ShopifyProduct mapping
+                ShopifyProduct.objects.create(
+                    company=store.company,
+                    store=store,
+                    shopify_product_id=product_id or 0,
+                    shopify_variant_id=variant_id or 0,
+                    sku=sku,
+                    title=title,
+                    variant_title=line_item.get("variant_title") or "",
+                    item=item,
+                    auto_created=True,
+                )
+            logger.info("Auto-created Item %s (%s) from Shopify order line", sku, title)
     except Exception as exc:
         logger.warning("Failed to auto-create Item for SKU %s: %s", sku, exc)
 
