@@ -316,12 +316,24 @@ def verify_webhook_hmac(body: bytes, hmac_header: str) -> bool:
     return hmac.compare_digest(computed_b64, hmac_header)
 
 
-@transaction.atomic
 def process_order_paid(store: ShopifyStore, payload: dict) -> CommandResult:
     """
     Process an orders/paid webhook.
     Creates local ShopifyOrder record and emits event for projection.
+
+    Wrapped in transaction.atomic internally so callers can handle
+    failures without breaking their own transaction.
     """
+    try:
+        return _process_order_paid_inner(store, payload)
+    except Exception as e:
+        logger.error("process_order_paid failed for store %s: %s", store.shop_domain, e)
+        return CommandResult.fail(str(e))
+
+
+@transaction.atomic
+def _process_order_paid_inner(store: ShopifyStore, payload: dict) -> CommandResult:
+    """Inner implementation — runs inside transaction.atomic."""
     shopify_order_id = payload.get("id")
     if not shopify_order_id:
         return CommandResult.fail("Missing order ID in payload.")
