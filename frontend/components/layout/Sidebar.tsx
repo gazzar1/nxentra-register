@@ -78,7 +78,7 @@ function getIcon(name: string, className: string) {
 export function Sidebar() {
   const { t } = useTranslation("common");
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const { isOpen, close } = useSidebar();
   const { data: sidebarData } = useSidebarNav();
   const [activeTab, setActiveTab] = useState<SidebarTab>(_savedTab);
@@ -296,6 +296,26 @@ export function Sidebar() {
             )}
           </div>
         </nav>
+
+        {/* User info + Logout — always visible at bottom */}
+        <div className="border-t px-4 py-3">
+          <div className="flex items-center gap-3 px-3 py-2">
+            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-muted shrink-0">
+              <UserCircle className="h-4 w-4 text-muted-foreground" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium truncate">{user?.name || user?.email}</p>
+              {user?.name && <p className="text-xs text-muted-foreground truncate">{user.email}</p>}
+            </div>
+          </div>
+          <button
+            onClick={async () => { close(); await logout(); }}
+            className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-red-400 transition-colors hover:bg-red-500/10"
+          >
+            <DoorOpen className="h-4 w-4" />
+            <span>Logout</span>
+          </button>
+        </div>
       </aside>
     </>
   );

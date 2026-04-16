@@ -46,15 +46,21 @@ export function Header() {
       </div>
 
       {/* Right side */}
-      <div className="flex items-center gap-4">
-        {/* Theme Toggle */}
-        <ThemeToggle />
+      <div className="flex items-center gap-2 md:gap-4">
+        {/* Theme Toggle - hidden on mobile, accessible from settings */}
+        <div className="hidden md:block">
+          <ThemeToggle />
+        </div>
 
-        {/* Language Switcher */}
-        <LanguageSwitcher />
+        {/* Language Switcher - hidden on mobile, accessible from settings */}
+        <div className="hidden md:block">
+          <LanguageSwitcher />
+        </div>
 
-        {/* Help */}
-        <HelpButton />
+        {/* Help - hidden on mobile */}
+        <div className="hidden md:block">
+          <HelpButton />
+        </div>
 
         {/* Notifications */}
         <NotificationBell />
