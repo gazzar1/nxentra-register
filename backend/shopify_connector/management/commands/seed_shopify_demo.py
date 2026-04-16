@@ -94,6 +94,7 @@ OPERATING_ACCOUNTS = [
     ("ar", "1200", "Accounts Receivable", "المدينون", "ASSET"),
     ("ap", "2100", "Accounts Payable", "الدائنون", "LIABILITY"),
     ("retained", "3200", "Retained Earnings", "الأرباح المحتجزة", "EQUITY"),
+    ("owner_capital", "3100", "Owner's Capital", "رأس مال المالك", "EQUITY"),
     ("rent", "6100", "Rent Expense", "مصروف الإيجار", "EXPENSE"),
     ("salaries", "6200", "Salaries & Wages", "الرواتب والأجور", "EXPENSE"),
     ("utilities", "6300", "Utilities", "المرافق", "EXPENSE"),
@@ -166,6 +167,7 @@ class Command(BaseCommand):
                 unsettled_orders = self._create_unsettled_orders(company, store, len(orders))
                 dispute = self._create_dispute(company, store, orders)
                 self._emit_events(company, store, orders, refunds, settled_payouts, unsettled_orders, dispute)
+                self._create_opening_balance(actor, company, accounts)
                 self._create_operating_expenses(actor, company, accounts)
                 self._create_bank_statements(company, accounts, settled_payouts)
 
@@ -861,6 +863,76 @@ class Command(BaseCommand):
             f"({matched_count} matched, {unmatched_count} unmatched) + "
             f"{len([t for t in misc_transactions if period_start <= t[0] <= period_end])} misc transactions"
         )
+
+    # -----------------------------------------------------------------------
+    # Opening balance (so Assets = Liabilities + Equity balances)
+    # -----------------------------------------------------------------------
+
+    def _create_opening_balance(self, actor, company, accounts):
+        """Create an opening balance entry: DR Cash/Bank, CR Owner's Capital.
+
+        Without this, the balance sheet won't balance because revenue/expense
+        accounts don't automatically flow into equity until a period close.
+        This represents the owner's initial investment in the business.
+        """
+        from accounting.commands import (
+            create_journal_entry,
+            post_journal_entry,
+            save_journal_entry_complete,
+        )
+        from accounting.models import JournalEntry
+
+        # Skip if opening entry already exists
+        if JournalEntry.objects.filter(
+            company=company,
+            kind="OPENING",
+            status="POSTED",
+        ).exists():
+            self.stdout.write("  Opening balance already exists — skipping.")
+            return
+
+        bank = accounts.get("bank") or accounts.get("CASH_BANK")
+        capital = accounts.get("owner_capital")
+        if not bank or not capital:
+            self.stdout.write("  Missing bank or capital account — skipping opening balance.")
+            return
+
+        # Opening investment: $50,000
+        amount = Decimal("50000.00")
+        year = date.today().year
+        entry_date = date(year, 1, 1)
+
+        result = create_journal_entry(
+            actor=actor,
+            date=entry_date,
+            memo="Opening balance — owner's initial capital investment",
+            lines=[
+                {
+                    "account_id": bank.id,
+                    "debit": str(amount),
+                    "credit": "0",
+                    "description": "Initial capital deposit",
+                },
+                {
+                    "account_id": capital.id,
+                    "debit": "0",
+                    "credit": str(amount),
+                    "description": "Owner's capital contribution",
+                },
+            ],
+            kind="OPENING",
+        )
+        if result.success:
+            entry = result.data
+            save = save_journal_entry_complete(actor, entry.id)
+            if save.success:
+                entry.refresh_from_db()
+                post_journal_entry(actor, entry.id)
+                self.stdout.write(f"  Created opening balance: ${amount} (DR Bank / CR Owner's Capital)")
+            else:
+                self.stdout.write(f"  Opening balance save failed: {save.error}")
+        else:
+            self.stdout.write(f"  Opening balance creation failed: {result.error}")
 
     def _create_operating_expenses(self, actor, company, accounts):
         """Create monthly operating expenses so the P&L isn't Shopify-only."""

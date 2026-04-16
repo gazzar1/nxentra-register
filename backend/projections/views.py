@@ -38,6 +38,7 @@ class DimensionFilterMixin:
     def _parse_dimension_filters(self, request):
         """Parse dimension_filters JSON from query params."""
         import json
+
         raw = request.query_params.get("dimension_filters", "")
         if not raw:
             return []
@@ -71,8 +72,7 @@ class DimensionFilterMixin:
         return dim_filter_map, dim_public_id_to_code, value_public_id_to_code
 
     def _line_matches_dimension_filters(
-        self, analysis_tags, dim_filter_map,
-        dim_public_id_to_code, value_public_id_to_code
+        self, analysis_tags, dim_filter_map, dim_public_id_to_code, value_public_id_to_code
     ):
         """Check if a journal line's analysis tags match dimension filters."""
         if not dim_filter_map:
@@ -130,6 +130,7 @@ class TrialBalanceView(DimensionFilterMixin, APIView):
 
     If no period params, returns current balances from projection.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -162,14 +163,13 @@ class TrialBalanceView(DimensionFilterMixin, APIView):
         result["lag_warning"] = lag > 0
 
         if lag > 0:
-            result["warning_message"] = (
-                f"{lag} events pending. Run projections to update balances."
-            )
+            result["warning_message"] = f"{lag} events pending. Run projections to update balances."
 
         return Response(result)
 
-    def _get_period_trial_balance(self, actor, fiscal_year: int, period_from: int, period_to: int,
-                                   dimension_filters=None):
+    def _get_period_trial_balance(
+        self, actor, fiscal_year: int, period_from: int, period_to: int, dimension_filters=None
+    ):
         """
         Compute trial balance for a specific period range.
 
@@ -227,10 +227,9 @@ class TrialBalanceView(DimensionFilterMixin, APIView):
             }
 
         # Build dimension filter context
-        dim_filter_map, dim_pid_to_code, val_pid_to_code = (
-            self._build_dimension_filter_context(
-                actor.company, dimension_filters or [],
-            )
+        dim_filter_map, dim_pid_to_code, val_pid_to_code = self._build_dimension_filter_context(
+            actor.company,
+            dimension_filters or [],
         )
 
         # Query all posted events
@@ -246,6 +245,7 @@ class TrialBalanceView(DimensionFilterMixin, APIView):
                 continue
 
             from datetime import datetime
+
             entry_date = datetime.fromisoformat(entry_date_str).date()
 
             lines = event.get_data().get("lines", [])
@@ -313,46 +313,51 @@ class TrialBalanceView(DimensionFilterMixin, APIView):
             if opening_balance == 0 and period_debit == 0 and period_credit == 0:
                 continue
 
-            result_accounts.append({
-                "code": acc["code"],
-                "name": acc["name"],
-                "name_ar": acc["name_ar"],
-                "account_type": acc["account_type"],
-                "opening_balance": str(opening_balance),
-                "period_debit": str(period_debit),
-                "period_credit": str(period_credit),
-                "closing_balance": str(closing_balance),
-            })
+            result_accounts.append(
+                {
+                    "code": acc["code"],
+                    "name": acc["name"],
+                    "name_ar": acc["name_ar"],
+                    "account_type": acc["account_type"],
+                    "opening_balance": str(opening_balance),
+                    "period_debit": str(period_debit),
+                    "period_credit": str(period_credit),
+                    "closing_balance": str(closing_balance),
+                }
+            )
 
             total_opening_balance += opening_balance
             total_period_debit += period_debit
             total_period_credit += period_credit
             total_closing_balance += closing_balance
 
-        return Response({
-            "fiscal_year": fiscal_year,
-            "period_from": period_from,
-            "period_to": period_to,
-            "period_start_date": period_start_date.isoformat(),
-            "period_end_date": period_end_date.isoformat(),
-            "dimension_filters": dimension_filters or [],
-            "accounts": result_accounts,
-            "totals": {
-                "opening_balance": str(total_opening_balance),
-                "period_debit": str(total_period_debit),
-                "period_credit": str(total_period_credit),
-                "closing_balance": str(total_closing_balance),
-            },
-            "is_balanced": total_period_debit == total_period_credit,
-        })
+        return Response(
+            {
+                "fiscal_year": fiscal_year,
+                "period_from": period_from,
+                "period_to": period_to,
+                "period_start_date": period_start_date.isoformat(),
+                "period_end_date": period_end_date.isoformat(),
+                "dimension_filters": dimension_filters or [],
+                "accounts": result_accounts,
+                "totals": {
+                    "opening_balance": str(total_opening_balance),
+                    "period_debit": str(total_period_debit),
+                    "period_credit": str(total_period_credit),
+                    "closing_balance": str(total_closing_balance),
+                },
+                "is_balanced": total_period_debit == total_period_credit,
+            }
+        )
 
 
 class AccountBalanceListView(APIView):
     """
     GET /api/reports/account-balances/
-    
+
     Returns all account balances with filtering options.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -360,9 +365,13 @@ class AccountBalanceListView(APIView):
         require(actor, "reports.view")
 
         # Get balances
-        balances = AccountBalance.objects.filter(
-            company=actor.company,
-        ).select_related("account").order_by("account__code")
+        balances = (
+            AccountBalance.objects.filter(
+                company=actor.company,
+            )
+            .select_related("account")
+            .order_by("account__code")
+        )
 
         # Optional filtering
         account_type = request.query_params.get("type")
@@ -402,9 +411,10 @@ class AccountBalanceListView(APIView):
 class AccountBalanceDetailView(APIView):
     """
     GET /api/reports/account-balances/<code>/
-    
+
     Returns balance details for a specific account.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request, code):
@@ -412,60 +422,64 @@ class AccountBalanceDetailView(APIView):
         require(actor, "reports.view")
 
         try:
-            balance = AccountBalance.objects.select_related(
-                "account", "last_event"
-            ).get(
+            balance = AccountBalance.objects.select_related("account", "last_event").get(
                 company=actor.company,
                 account__code=code,
             )
         except AccountBalance.DoesNotExist:
             # Account exists but no balance yet
             from accounting.models import Account
+
             try:
                 account = Account.objects.get(
                     company=actor.company,
                     code=code,
                 )
-                return Response({
-                    "account_id": account.id,
-                    "account_code": account.code,
-                    "account_name": account.name,
-                    "account_type": account.account_type,
-                    "balance": "0.00",
-                    "debit_total": "0.00",
-                    "credit_total": "0.00",
-                    "entry_count": 0,
-                    "last_entry_date": None,
-                    "note": "No posted entries yet",
-                })
+                return Response(
+                    {
+                        "account_id": account.id,
+                        "account_code": account.code,
+                        "account_name": account.name,
+                        "account_type": account.account_type,
+                        "balance": "0.00",
+                        "debit_total": "0.00",
+                        "credit_total": "0.00",
+                        "entry_count": 0,
+                        "last_entry_date": None,
+                        "note": "No posted entries yet",
+                    }
+                )
             except Account.DoesNotExist:
                 return Response(
                     {"detail": "Account not found."},
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
-        return Response({
-            "account_id": balance.account_id,
-            "account_code": balance.account.code,
-            "account_name": balance.account.name,
-            "account_type": balance.account.account_type,
-            "normal_balance": balance.account.normal_balance,
-            "balance": str(balance.balance),
-            "debit_total": str(balance.debit_total),
-            "credit_total": str(balance.credit_total),
-            "entry_count": balance.entry_count,
-            "last_entry_date": balance.last_entry_date.isoformat() if balance.last_entry_date else None,
-            "last_event_id": str(balance.last_event_id) if balance.last_event else None,
-            "updated_at": balance.updated_at.isoformat(),
-        })
+        return Response(
+            {
+                "account_id": balance.account_id,
+                "account_code": balance.account.code,
+                "account_name": balance.account.name,
+                "account_type": balance.account.account_type,
+                "normal_balance": balance.account.normal_balance,
+                "balance": str(balance.balance),
+                "debit_total": str(balance.debit_total),
+                "credit_total": str(balance.credit_total),
+                "entry_count": balance.entry_count,
+                "last_entry_date": balance.last_entry_date.isoformat() if balance.last_entry_date else None,
+                "last_event_id": str(balance.last_event_id) if balance.last_event else None,
+                "updated_at": balance.updated_at.isoformat(),
+            }
+        )
 
 
 class ProjectionStatusView(APIView):
     """
     GET /api/reports/projection-status/
-    
+
     Returns status of all projections for monitoring.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -480,32 +494,34 @@ class ProjectionStatusView(APIView):
             bookmark = projection.get_bookmark(actor.company)
             lag = projection.get_lag(actor.company)
 
-            projections.append({
-                "projection_name": projection.name,
-                "company_id": actor.company.id,
-                "consumes": projection.consumes,
-                "lag": lag,
-                "pending_events": lag,
-                "is_healthy": lag == 0,
-                "is_paused": bookmark.is_paused if bookmark else False,
-                "error_count": bookmark.error_count if bookmark else 0,
-                "last_error": bookmark.last_error if bookmark else "",
-                "last_event_sequence": bookmark.last_event_sequence if bookmark else None,
-                "last_processed_at": (
-                    bookmark.last_processed_at.isoformat()
-                    if bookmark and bookmark.last_processed_at
-                    else None
-                ),
-            })
+            projections.append(
+                {
+                    "projection_name": projection.name,
+                    "company_id": actor.company.id,
+                    "consumes": projection.consumes,
+                    "lag": lag,
+                    "pending_events": lag,
+                    "is_healthy": lag == 0,
+                    "is_paused": bookmark.is_paused if bookmark else False,
+                    "error_count": bookmark.error_count if bookmark else 0,
+                    "last_error": bookmark.last_error if bookmark else "",
+                    "last_event_sequence": bookmark.last_event_sequence if bookmark else None,
+                    "last_processed_at": (
+                        bookmark.last_processed_at.isoformat() if bookmark and bookmark.last_processed_at else None
+                    ),
+                }
+            )
 
         total_lag = sum(p["lag"] for p in projections)
         all_healthy = all(p["is_healthy"] for p in projections)
 
-        return Response({
-            "projections": projections,
-            "total_lag": total_lag,
-            "all_healthy": all_healthy,
-        })
+        return Response(
+            {
+                "projections": projections,
+                "total_lag": total_lag,
+                "all_healthy": all_healthy,
+            }
+        )
 
 
 class BalanceSheetView(DimensionFilterMixin, APIView):
@@ -524,6 +540,7 @@ class BalanceSheetView(DimensionFilterMixin, APIView):
 
     Assets = Liabilities + Equity
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -554,16 +571,19 @@ class BalanceSheetView(DimensionFilterMixin, APIView):
         """Get balance sheet from current projected balances."""
         from datetime import date
 
-        balances = AccountBalance.objects.filter(
-            company=actor.company,
-        ).select_related("account").order_by("account__code")
-
-        return self._build_balance_sheet_response(
-            actor, balances, date.today().isoformat()
+        balances = (
+            AccountBalance.objects.filter(
+                company=actor.company,
+            )
+            .select_related("account")
+            .order_by("account__code")
         )
 
-    def _get_period_balance_sheet(self, actor, fiscal_year: int, period_from: int, period_to: int,
-                                  dimension_filters=None):
+        return self._build_balance_sheet_response(actor, balances, date.today().isoformat())
+
+    def _get_period_balance_sheet(
+        self, actor, fiscal_year: int, period_from: int, period_to: int, dimension_filters=None
+    ):
         """
         Compute balance sheet as of the end of a specific period range.
 
@@ -618,10 +638,9 @@ class BalanceSheetView(DimensionFilterMixin, APIView):
             }
 
         # Build dimension filter context
-        dim_filter_map, dim_pid_to_code, val_pid_to_code = (
-            self._build_dimension_filter_context(
-                actor.company, dimension_filters or [],
-            )
+        dim_filter_map, dim_pid_to_code, val_pid_to_code = self._build_dimension_filter_context(
+            actor.company,
+            dimension_filters or [],
         )
 
         # Query all posted events up to as_of_date
@@ -745,35 +764,37 @@ class BalanceSheetView(DimensionFilterMixin, APIView):
         # Verify accounting equation
         is_balanced = total_assets == total_liabilities_and_equity
 
-        return Response({
-            "as_of_date": as_of_date.isoformat(),
-            "fiscal_year": fiscal_year,
-            "period_from": period_from,
-            "period_to": period_to,
-            "assets": {
-                "title": "Total Assets",
-                "title_ar": "إجمالي الأصول",
-                "accounts": assets,
-                "total": str(total_assets),
-            },
-            "liabilities": {
-                "title": "Total Liabilities",
-                "title_ar": "إجمالي الالتزامات",
-                "accounts": liabilities,
-                "total": str(total_liabilities),
-            },
-            "equity": {
-                "title": "Total Equity",
-                "title_ar": "إجمالي حقوق الملكية",
-                "accounts": equity,
-                "total": str(total_equity),
-            },
-            "total_assets": str(total_assets),
-            "total_liabilities": str(total_liabilities),
-            "total_equity": str(total_equity),
-            "total_liabilities_and_equity": str(total_liabilities_and_equity),
-            "is_balanced": is_balanced,
-        })
+        return Response(
+            {
+                "as_of_date": as_of_date.isoformat(),
+                "fiscal_year": fiscal_year,
+                "period_from": period_from,
+                "period_to": period_to,
+                "assets": {
+                    "title": "Total Assets",
+                    "title_ar": "إجمالي الأصول",
+                    "accounts": assets,
+                    "total": str(total_assets),
+                },
+                "liabilities": {
+                    "title": "Total Liabilities",
+                    "title_ar": "إجمالي الالتزامات",
+                    "accounts": liabilities,
+                    "total": str(total_liabilities),
+                },
+                "equity": {
+                    "title": "Total Equity",
+                    "title_ar": "إجمالي حقوق الملكية",
+                    "accounts": equity,
+                    "total": str(total_equity),
+                },
+                "total_assets": str(total_assets),
+                "total_liabilities": str(total_liabilities),
+                "total_equity": str(total_equity),
+                "total_liabilities_and_equity": str(total_liabilities_and_equity),
+                "is_balanced": is_balanced,
+            }
+        )
 
     def _build_balance_sheet_response(self, actor, balances, as_of_date: str):
         """Build balance sheet response from balance queryset."""
@@ -840,32 +861,34 @@ class BalanceSheetView(DimensionFilterMixin, APIView):
         # Verify accounting equation
         is_balanced = total_assets == total_liabilities_and_equity
 
-        return Response({
-            "as_of_date": as_of_date,
-            "assets": {
-                "title": "Total Assets",
-                "title_ar": "إجمالي الأصول",
-                "accounts": assets,
-                "total": str(total_assets),
-            },
-            "liabilities": {
-                "title": "Total Liabilities",
-                "title_ar": "إجمالي الالتزامات",
-                "accounts": liabilities,
-                "total": str(total_liabilities),
-            },
-            "equity": {
-                "title": "Total Equity",
-                "title_ar": "إجمالي حقوق الملكية",
-                "accounts": equity,
-                "total": str(total_equity),
-            },
-            "total_assets": str(total_assets),
-            "total_liabilities": str(total_liabilities),
-            "total_equity": str(total_equity),
-            "total_liabilities_and_equity": str(total_liabilities_and_equity),
-            "is_balanced": is_balanced,
-        })
+        return Response(
+            {
+                "as_of_date": as_of_date,
+                "assets": {
+                    "title": "Total Assets",
+                    "title_ar": "إجمالي الأصول",
+                    "accounts": assets,
+                    "total": str(total_assets),
+                },
+                "liabilities": {
+                    "title": "Total Liabilities",
+                    "title_ar": "إجمالي الالتزامات",
+                    "accounts": liabilities,
+                    "total": str(total_liabilities),
+                },
+                "equity": {
+                    "title": "Total Equity",
+                    "title_ar": "إجمالي حقوق الملكية",
+                    "accounts": equity,
+                    "total": str(total_equity),
+                },
+                "total_assets": str(total_assets),
+                "total_liabilities": str(total_liabilities),
+                "total_equity": str(total_equity),
+                "total_liabilities_and_equity": str(total_liabilities_and_equity),
+                "is_balanced": is_balanced,
+            }
+        )
 
 
 class IncomeStatementView(DimensionFilterMixin, APIView):
@@ -883,6 +906,7 @@ class IncomeStatementView(DimensionFilterMixin, APIView):
 
     Net Income = Revenue - Expenses
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -896,6 +920,7 @@ class IncomeStatementView(DimensionFilterMixin, APIView):
 
         # Check for dimension filters (JSON array)
         import json
+
         dimension_filters_str = request.query_params.get("dimension_filters")
         dimension_filters = []
         if dimension_filters_str:
@@ -907,11 +932,7 @@ class IncomeStatementView(DimensionFilterMixin, APIView):
         if period_from_param and period_to_param and fiscal_year:
             # Period-filtered income statement
             return self._get_period_income_statement(
-                actor,
-                int(fiscal_year),
-                int(period_from_param),
-                int(period_to_param),
-                dimension_filters
+                actor, int(fiscal_year), int(period_from_param), int(period_to_param), dimension_filters
             )
 
         # Default: current balances from projection
@@ -923,9 +944,13 @@ class IncomeStatementView(DimensionFilterMixin, APIView):
 
         from accounting.models import Account
 
-        balances = AccountBalance.objects.filter(
-            company=actor.company,
-        ).select_related("account").order_by("account__code")
+        balances = (
+            AccountBalance.objects.filter(
+                company=actor.company,
+            )
+            .select_related("account")
+            .order_by("account__code")
+        )
 
         revenue = []
         expenses = []
@@ -963,30 +988,31 @@ class IncomeStatementView(DimensionFilterMixin, APIView):
         period_from = date(today.year, 1, 1).isoformat()
         period_to = today.isoformat()
 
-        return Response({
-            "period_from": period_from,
-            "period_to": period_to,
-            "revenue": {
-                "title": "Total Revenue",
-                "title_ar": "إجمالي الإيرادات",
-                "accounts": revenue,
-                "total": str(total_revenue),
-            },
-            "expenses": {
-                "title": "Total Expenses",
-                "title_ar": "إجمالي المصروفات",
-                "accounts": expenses,
-                "total": str(total_expenses),
-            },
-            "total_revenue": str(total_revenue),
-            "total_expenses": str(total_expenses),
-            "net_income": str(net_income),
-            "is_profit": net_income > 0,
-        })
+        return Response(
+            {
+                "period_from": period_from,
+                "period_to": period_to,
+                "revenue": {
+                    "title": "Total Revenue",
+                    "title_ar": "إجمالي الإيرادات",
+                    "accounts": revenue,
+                    "total": str(total_revenue),
+                },
+                "expenses": {
+                    "title": "Total Expenses",
+                    "title_ar": "إجمالي المصروفات",
+                    "accounts": expenses,
+                    "total": str(total_expenses),
+                },
+                "total_revenue": str(total_revenue),
+                "total_expenses": str(total_expenses),
+                "net_income": str(net_income),
+                "is_profit": net_income > 0,
+            }
+        )
 
     def _get_period_income_statement(
-        self, actor, fiscal_year: int, period_from: int, period_to: int,
-        dimension_filters: list
+        self, actor, fiscal_year: int, period_from: int, period_to: int, dimension_filters: list
     ):
         """
         Compute income statement for a specific period range with optional
@@ -1062,9 +1088,7 @@ class IncomeStatementView(DimensionFilterMixin, APIView):
                 dim_public_id_to_code[str(dim.public_id)] = dim.code
 
             # Fetch dimension values for this company
-            values = AnalysisDimensionValue.objects.filter(
-                company=actor.company
-            )
+            values = AnalysisDimensionValue.objects.filter(company=actor.company)
             for val in values:
                 value_public_id_to_code[str(val.public_id)] = val.code
 
@@ -1114,8 +1138,7 @@ class IncomeStatementView(DimensionFilterMixin, APIView):
                 # Check dimension filters
                 if dim_filter_map:
                     if not self._line_matches_dimension_filters(
-                        analysis_tags, dim_filter_map,
-                        dim_public_id_to_code, value_public_id_to_code
+                        analysis_tags, dim_filter_map, dim_public_id_to_code, value_public_id_to_code
                     ):
                         continue
 
@@ -1237,10 +1260,10 @@ class DimensionAnalysisView(APIView):
 
     Returns rows grouped by dimension value, each with revenue, expenses, and net income.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-
         from accounting.models import (
             Account,
             AnalysisDimension,
@@ -1262,7 +1285,9 @@ class DimensionAnalysisView(APIView):
         # Resolve the dimension
         try:
             dimension = AnalysisDimension.objects.get(
-                company=company, code=dimension_code, is_active=True,
+                company=company,
+                code=dimension_code,
+                is_active=True,
             )
         except AnalysisDimension.DoesNotExist:
             return Response(
@@ -1411,31 +1436,36 @@ class DimensionAnalysisView(APIView):
             total_revenue += row["revenue"]
             total_expenses += row["expenses"]
 
-            rows.append({
-                "value_code": row["value_code"],
-                "value_name": row["value_name"],
-                "value_name_ar": row["value_name_ar"],
-                "revenue": str(row["revenue"]),
-                "expenses": str(row["expenses"]),
-                "net_income": str(net_income),
-            })
+            rows.append(
+                {
+                    "value_code": row["value_code"],
+                    "value_name": row["value_name"],
+                    "value_name_ar": row["value_name_ar"],
+                    "revenue": str(row["revenue"]),
+                    "expenses": str(row["expenses"]),
+                    "net_income": str(net_income),
+                }
+            )
 
         total_net = total_revenue - total_expenses
 
-        return Response({
-            "dimension_code": dimension.code,
-            "dimension_name": dimension.name,
-            "dimension_name_ar": dimension.name_ar or dimension.name,
-            "date_from": date_from.isoformat() if date_from else None,
-            "date_to": date_to.isoformat() if date_to else None,
-            "currency": getattr(company, "functional_currency", None) or getattr(company, "default_currency", "USD"),
-            "rows": rows,
-            "totals": {
-                "revenue": str(total_revenue),
-                "expenses": str(total_expenses),
-                "net_income": str(total_net),
-            },
-        })
+        return Response(
+            {
+                "dimension_code": dimension.code,
+                "dimension_name": dimension.name,
+                "dimension_name_ar": dimension.name_ar or dimension.name,
+                "date_from": date_from.isoformat() if date_from else None,
+                "date_to": date_to.isoformat() if date_to else None,
+                "currency": getattr(company, "functional_currency", None)
+                or getattr(company, "default_currency", "USD"),
+                "rows": rows,
+                "totals": {
+                    "revenue": str(total_revenue),
+                    "expenses": str(total_expenses),
+                    "net_income": str(total_net),
+                },
+            }
+        )
 
 
 class DimensionDrilldownView(APIView):
@@ -1453,6 +1483,7 @@ class DimensionDrilldownView(APIView):
     - period_from: Starting period number
     - period_to: Ending period number
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -1479,7 +1510,9 @@ class DimensionDrilldownView(APIView):
         # Resolve dimension and value
         try:
             dimension = AnalysisDimension.objects.get(
-                company=company, code=dimension_code, is_active=True,
+                company=company,
+                code=dimension_code,
+                is_active=True,
             )
         except AnalysisDimension.DoesNotExist:
             return Response(
@@ -1489,7 +1522,9 @@ class DimensionDrilldownView(APIView):
 
         try:
             dim_value = AnalysisDimensionValue.objects.get(
-                company=company, dimension=dimension, code=value_code,
+                company=company,
+                dimension=dimension,
+                code=value_code,
             )
         except AnalysisDimensionValue.DoesNotExist:
             return Response(
@@ -1524,15 +1559,19 @@ class DimensionDrilldownView(APIView):
             date_to = date_type.fromisoformat(direct_to)
 
         # Find all journal lines tagged with this dimension value
-        qs = JournalLineAnalysis.objects.filter(
-            company=company,
-            dimension=dimension,
-            dimension_value=dim_value,
-            journal_line__entry__status=JournalEntry.Status.POSTED,
-        ).select_related(
-            "journal_line__entry",
-            "journal_line__account",
-        ).order_by("journal_line__entry__date", "journal_line__entry__id")
+        qs = (
+            JournalLineAnalysis.objects.filter(
+                company=company,
+                dimension=dimension,
+                dimension_value=dim_value,
+                journal_line__entry__status=JournalEntry.Status.POSTED,
+            )
+            .select_related(
+                "journal_line__entry",
+                "journal_line__account",
+            )
+            .order_by("journal_line__entry__date", "journal_line__entry__id")
+        )
 
         if date_from:
             qs = qs.filter(journal_line__entry__date__gte=date_from)
@@ -1548,36 +1587,41 @@ class DimensionDrilldownView(APIView):
             entry = line.entry
             account = line.account
 
-            entries.append({
-                "entry_date": entry.date.isoformat(),
-                "entry_public_id": str(entry.public_id),
-                "entry_memo": entry.memo,
-                "line_no": line.line_no,
-                "account_code": account.code,
-                "account_name": account.name,
-                "account_name_ar": account.name_ar or account.name,
-                "description": line.description,
-                "debit": str(line.debit),
-                "credit": str(line.credit),
-            })
+            entries.append(
+                {
+                    "entry_date": entry.date.isoformat(),
+                    "entry_public_id": str(entry.public_id),
+                    "entry_memo": entry.memo,
+                    "line_no": line.line_no,
+                    "account_code": account.code,
+                    "account_name": account.name,
+                    "account_name_ar": account.name_ar or account.name,
+                    "description": line.description,
+                    "debit": str(line.debit),
+                    "credit": str(line.credit),
+                }
+            )
 
             total_debit += line.debit
             total_credit += line.credit
 
-        return Response({
-            "dimension_code": dimension.code,
-            "dimension_name": dimension.name,
-            "dimension_name_ar": dimension.name_ar or dimension.name,
-            "value_code": dim_value.code,
-            "value_name": dim_value.name,
-            "value_name_ar": dim_value.name_ar or dim_value.name,
-            "date_from": date_from.isoformat() if date_from else None,
-            "date_to": date_to.isoformat() if date_to else None,
-            "currency": getattr(company, "functional_currency", None) or getattr(company, "default_currency", "USD"),
-            "entries": entries,
-            "total_debit": str(total_debit),
-            "total_credit": str(total_credit),
-        })
+        return Response(
+            {
+                "dimension_code": dimension.code,
+                "dimension_name": dimension.name,
+                "dimension_name_ar": dimension.name_ar or dimension.name,
+                "value_code": dim_value.code,
+                "value_name": dim_value.name,
+                "value_name_ar": dim_value.name_ar or dim_value.name,
+                "date_from": date_from.isoformat() if date_from else None,
+                "date_to": date_to.isoformat() if date_to else None,
+                "currency": getattr(company, "functional_currency", None)
+                or getattr(company, "default_currency", "USD"),
+                "entries": entries,
+                "total_debit": str(total_debit),
+                "total_credit": str(total_credit),
+            }
+        )
 
 
 class DimensionCrossTabView(APIView):
@@ -1592,6 +1636,7 @@ class DimensionCrossTabView(APIView):
     - metric: "net_income" (default), "revenue", or "expenses"
     - fiscal_year / period_from / period_to: Period filter
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -1627,7 +1672,9 @@ class DimensionCrossTabView(APIView):
         # Resolve dimensions
         try:
             row_dim = AnalysisDimension.objects.get(
-                company=company, code=row_dim_code, is_active=True,
+                company=company,
+                code=row_dim_code,
+                is_active=True,
             )
         except AnalysisDimension.DoesNotExist:
             return Response(
@@ -1637,7 +1684,9 @@ class DimensionCrossTabView(APIView):
 
         try:
             col_dim = AnalysisDimension.objects.get(
-                company=company, code=col_dim_code, is_active=True,
+                company=company,
+                code=col_dim_code,
+                is_active=True,
             )
         except AnalysisDimension.DoesNotExist:
             return Response(
@@ -1796,34 +1845,39 @@ class DimensionCrossTabView(APIView):
 
             grand_total += row_total
 
-            rows.append({
-                "code": row_code,
-                "name": row_meta[row_code]["name"],
-                "name_ar": row_meta[row_code]["name_ar"],
-                "values": row_values,
-                "total": str(row_total),
-            })
+            rows.append(
+                {
+                    "code": row_code,
+                    "name": row_meta[row_code]["name"],
+                    "name_ar": row_meta[row_code]["name_ar"],
+                    "values": row_values,
+                    "total": str(row_total),
+                }
+            )
 
-        return Response({
-            "row_dimension": {
-                "code": row_dim.code,
-                "name": row_dim.name,
-                "name_ar": row_dim.name_ar or row_dim.name,
-            },
-            "col_dimension": {
-                "code": col_dim.code,
-                "name": col_dim.name,
-                "name_ar": col_dim.name_ar or col_dim.name,
-            },
-            "metric": metric,
-            "date_from": date_from.isoformat() if date_from else None,
-            "date_to": date_to.isoformat() if date_to else None,
-            "currency": getattr(company, "functional_currency", None) or getattr(company, "default_currency", "USD"),
-            "columns": columns,
-            "rows": rows,
-            "column_totals": [str(col_totals[c]) for c in sorted_col_codes],
-            "grand_total": str(grand_total),
-        })
+        return Response(
+            {
+                "row_dimension": {
+                    "code": row_dim.code,
+                    "name": row_dim.name,
+                    "name_ar": row_dim.name_ar or row_dim.name,
+                },
+                "col_dimension": {
+                    "code": col_dim.code,
+                    "name": col_dim.name,
+                    "name_ar": col_dim.name_ar or col_dim.name,
+                },
+                "metric": metric,
+                "date_from": date_from.isoformat() if date_from else None,
+                "date_to": date_to.isoformat() if date_to else None,
+                "currency": getattr(company, "functional_currency", None)
+                or getattr(company, "default_currency", "USD"),
+                "columns": columns,
+                "rows": rows,
+                "column_totals": [str(col_totals[c]) for c in sorted_col_codes],
+                "grand_total": str(grand_total),
+            }
+        )
 
 
 class DimensionPLComparisonView(DimensionFilterMixin, APIView):
@@ -1838,6 +1892,7 @@ class DimensionPLComparisonView(DimensionFilterMixin, APIView):
     - value_b: Second dimension value code
     - fiscal_year / period_from / period_to: Period filter (required)
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -1877,7 +1932,9 @@ class DimensionPLComparisonView(DimensionFilterMixin, APIView):
         # Resolve dimension
         try:
             dimension = AnalysisDimension.objects.get(
-                company=company, code=dimension_code, is_active=True,
+                company=company,
+                code=dimension_code,
+                is_active=True,
             )
         except AnalysisDimension.DoesNotExist:
             return Response(
@@ -1888,7 +1945,8 @@ class DimensionPLComparisonView(DimensionFilterMixin, APIView):
         # Resolve dimension values
         try:
             val_a = AnalysisDimensionValue.objects.get(
-                dimension=dimension, code=value_a_code,
+                dimension=dimension,
+                code=value_a_code,
             )
         except AnalysisDimensionValue.DoesNotExist:
             return Response(
@@ -1898,7 +1956,8 @@ class DimensionPLComparisonView(DimensionFilterMixin, APIView):
 
         try:
             val_b = AnalysisDimensionValue.objects.get(
-                dimension=dimension, code=value_b_code,
+                dimension=dimension,
+                code=value_b_code,
             )
         except AnalysisDimensionValue.DoesNotExist:
             return Response(
@@ -2086,60 +2145,67 @@ class DimensionPLComparisonView(DimensionFilterMixin, APIView):
         revenue_variance = total_revenue_a - total_revenue_b
         revenue_variance_pct = None
         if total_revenue_b != 0:
-            revenue_variance_pct = str(((total_revenue_a - total_revenue_b) / abs(total_revenue_b) * 100).quantize(Decimal("0.01")))
+            revenue_variance_pct = str(
+                ((total_revenue_a - total_revenue_b) / abs(total_revenue_b) * 100).quantize(Decimal("0.01"))
+            )
 
         expenses_variance = total_expenses_a - total_expenses_b
         expenses_variance_pct = None
         if total_expenses_b != 0:
-            expenses_variance_pct = str(((total_expenses_a - total_expenses_b) / abs(total_expenses_b) * 100).quantize(Decimal("0.01")))
+            expenses_variance_pct = str(
+                ((total_expenses_a - total_expenses_b) / abs(total_expenses_b) * 100).quantize(Decimal("0.01"))
+            )
 
-        return Response({
-            "dimension": {
-                "code": dimension.code,
-                "name": dimension.name,
-                "name_ar": dimension.name_ar or dimension.name,
-            },
-            "value_a": {
-                "code": val_a.code,
-                "name": val_a.name,
-                "name_ar": val_a.name_ar or val_a.name,
-            },
-            "value_b": {
-                "code": val_b.code,
-                "name": val_b.name,
-                "name_ar": val_b.name_ar or val_b.name,
-            },
-            "fiscal_year": fiscal_year,
-            "period_from": period_from,
-            "period_to": period_to,
-            "period_start_date": period_start_date.isoformat(),
-            "period_end_date": period_end_date.isoformat(),
-            "currency": getattr(company, "functional_currency", None) or getattr(company, "default_currency", "USD"),
-            "revenue": {
-                "title": "Total Revenue",
-                "title_ar": "إجمالي الإيرادات",
-                "accounts": revenue_accounts,
-                "total_a": str(total_revenue_a),
-                "total_b": str(total_revenue_b),
-                "variance": str(revenue_variance),
-                "variance_pct": revenue_variance_pct,
-            },
-            "expenses": {
-                "title": "Total Expenses",
-                "title_ar": "إجمالي المصروفات",
-                "accounts": expense_accounts,
-                "total_a": str(total_expenses_a),
-                "total_b": str(total_expenses_b),
-                "variance": str(expenses_variance),
-                "variance_pct": expenses_variance_pct,
-            },
-            "net_income_a": str(net_income_a),
-            "net_income_b": str(net_income_b),
-            "net_variance": str(net_variance),
-            "net_variance_pct": net_variance_pct,
-            "is_profit_a": net_income_a > 0,
-            "is_profit_b": net_income_b > 0,
-        })
+        return Response(
+            {
+                "dimension": {
+                    "code": dimension.code,
+                    "name": dimension.name,
+                    "name_ar": dimension.name_ar or dimension.name,
+                },
+                "value_a": {
+                    "code": val_a.code,
+                    "name": val_a.name,
+                    "name_ar": val_a.name_ar or val_a.name,
+                },
+                "value_b": {
+                    "code": val_b.code,
+                    "name": val_b.name,
+                    "name_ar": val_b.name_ar or val_b.name,
+                },
+                "fiscal_year": fiscal_year,
+                "period_from": period_from,
+                "period_to": period_to,
+                "period_start_date": period_start_date.isoformat(),
+                "period_end_date": period_end_date.isoformat(),
+                "currency": getattr(company, "functional_currency", None)
+                or getattr(company, "default_currency", "USD"),
+                "revenue": {
+                    "title": "Total Revenue",
+                    "title_ar": "إجمالي الإيرادات",
+                    "accounts": revenue_accounts,
+                    "total_a": str(total_revenue_a),
+                    "total_b": str(total_revenue_b),
+                    "variance": str(revenue_variance),
+                    "variance_pct": revenue_variance_pct,
+                },
+                "expenses": {
+                    "title": "Total Expenses",
+                    "title_ar": "إجمالي المصروفات",
+                    "accounts": expense_accounts,
+                    "total_a": str(total_expenses_a),
+                    "total_b": str(total_expenses_b),
+                    "variance": str(expenses_variance),
+                    "variance_pct": expenses_variance_pct,
+                },
+                "net_income_a": str(net_income_a),
+                "net_income_b": str(net_income_b),
+                "net_variance": str(net_variance),
+                "net_variance_pct": net_variance_pct,
+                "is_profit_a": net_income_a > 0,
+                "is_profit_b": net_income_b > 0,
+            }
+        )
 
 
 class FiscalPeriodListView(APIView):
@@ -2149,6 +2215,7 @@ class FiscalPeriodListView(APIView):
     List fiscal periods + config for the active company.
     Optional query param: ?fiscal_year=2026
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -2162,15 +2229,17 @@ class FiscalPeriodListView(APIView):
 
         periods_data = []
         for p in periods_qs:
-            periods_data.append({
-                "fiscal_year": p.fiscal_year,
-                "period": p.period,
-                "period_type": p.period_type,
-                "start_date": p.start_date.isoformat(),
-                "end_date": p.end_date.isoformat(),
-                "status": p.status,
-                "is_current": p.is_current,
-            })
+            periods_data.append(
+                {
+                    "fiscal_year": p.fiscal_year,
+                    "period": p.period,
+                    "period_type": p.period_type,
+                    "start_date": p.start_date.isoformat(),
+                    "end_date": p.end_date.isoformat(),
+                    "status": p.status,
+                    "is_current": p.is_current,
+                }
+            )
 
         # Get config
         config_qs = FiscalPeriodConfig.objects.filter(company=actor.company)
@@ -2210,12 +2279,14 @@ class FiscalPeriodListView(APIView):
             .order_by("-fiscal_year")
         )
 
-        return Response({
-            "config": config_data,
-            "periods": periods_data,
-            "fiscal_year_status": fy_status,
-            "available_years": available_years,
-        })
+        return Response(
+            {
+                "config": config_data,
+                "periods": periods_data,
+                "fiscal_year_status": fy_status,
+                "available_years": available_years,
+            }
+        )
 
 
 class FiscalPeriodCloseView(APIView):
@@ -2224,6 +2295,7 @@ class FiscalPeriodCloseView(APIView):
 
     Close a fiscal period.
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, fiscal_year, period):
@@ -2239,13 +2311,15 @@ class FiscalPeriodCloseView(APIView):
             )
 
         fp = result.data
-        return Response({
-            "fiscal_year": fp.fiscal_year,
-            "period": fp.period,
-            "start_date": fp.start_date.isoformat(),
-            "end_date": fp.end_date.isoformat(),
-            "status": fp.status,
-        })
+        return Response(
+            {
+                "fiscal_year": fp.fiscal_year,
+                "period": fp.period,
+                "start_date": fp.start_date.isoformat(),
+                "end_date": fp.end_date.isoformat(),
+                "status": fp.status,
+            }
+        )
 
 
 class FiscalPeriodOpenView(APIView):
@@ -2254,6 +2328,7 @@ class FiscalPeriodOpenView(APIView):
 
     Reopen a closed fiscal period.
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, fiscal_year, period):
@@ -2269,13 +2344,15 @@ class FiscalPeriodOpenView(APIView):
             )
 
         fp = result.data
-        return Response({
-            "fiscal_year": fp.fiscal_year,
-            "period": fp.period,
-            "start_date": fp.start_date.isoformat(),
-            "end_date": fp.end_date.isoformat(),
-            "status": fp.status,
-        })
+        return Response(
+            {
+                "fiscal_year": fp.fiscal_year,
+                "period": fp.period,
+                "start_date": fp.start_date.isoformat(),
+                "end_date": fp.end_date.isoformat(),
+                "status": fp.status,
+            }
+        )
 
 
 class FiscalPeriodsConfigureView(APIView):
@@ -2285,6 +2362,7 @@ class FiscalPeriodsConfigureView(APIView):
     Set the number of periods for a fiscal year.
     Body: {"fiscal_year": 2026, "period_count": 4}
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -2318,6 +2396,7 @@ class FiscalPeriodRangeView(APIView):
     Set open period range.
     Body: {"fiscal_year": 2026, "open_from_period": 1, "open_to_period": 3}
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -2352,6 +2431,7 @@ class FiscalPeriodCurrentView(APIView):
     Set the current period.
     Body: {"fiscal_year": 2026, "period": 2}
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -2385,6 +2465,7 @@ class FiscalPeriodDatesView(APIView):
     Update the start and end dates of a fiscal period.
     Body: {"start_date": "2026-01-01", "end_date": "2026-01-31"}
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, fiscal_year, period):
@@ -2400,9 +2481,7 @@ class FiscalPeriodDatesView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        result = update_period_dates(
-            actor, int(fiscal_year), int(period), start_date, end_date
-        )
+        result = update_period_dates(actor, int(fiscal_year), int(period), start_date, end_date)
 
         if not result.success:
             return Response(
@@ -2411,13 +2490,15 @@ class FiscalPeriodDatesView(APIView):
             )
 
         fp = result.data
-        return Response({
-            "fiscal_year": fp.fiscal_year,
-            "period": fp.period,
-            "start_date": fp.start_date.isoformat(),
-            "end_date": fp.end_date.isoformat(),
-            "status": fp.status,
-        })
+        return Response(
+            {
+                "fiscal_year": fp.fiscal_year,
+                "period": fp.period,
+                "start_date": fp.start_date.isoformat(),
+                "end_date": fp.end_date.isoformat(),
+                "status": fp.status,
+            }
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2432,6 +2513,7 @@ class FiscalYearCloseReadinessView(APIView):
     Check if a fiscal year is ready to be closed. Returns a readiness
     report with any blocking issues.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request, year):
@@ -2439,6 +2521,7 @@ class FiscalYearCloseReadinessView(APIView):
         require(actor, "periods.configure")
 
         from accounting.commands import check_close_readiness
+
         result = check_close_readiness(actor, int(year))
 
         if not result.success:
@@ -2459,6 +2542,7 @@ class FiscalYearCloseView(APIView):
 
     Body: {"retained_earnings_account_code": "3100"}
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, year):
@@ -2472,6 +2556,7 @@ class FiscalYearCloseView(APIView):
             )
 
         from accounting.commands import close_fiscal_year
+
         result = close_fiscal_year(actor, int(year), re_account_code)
 
         if not result.success:
@@ -2491,6 +2576,7 @@ class FiscalYearReopenView(APIView):
 
     Body: {"reason": "Auditor requested adjustments"}
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, year):
@@ -2504,6 +2590,7 @@ class FiscalYearReopenView(APIView):
             )
 
         from accounting.commands import reopen_fiscal_year
+
         result = reopen_fiscal_year(actor, int(year), reason)
 
         if not result.success:
@@ -2521,6 +2608,7 @@ class FiscalYearClosingEntriesView(APIView):
 
     View closing journal entries for a fiscal year (preview or review).
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request, year):
@@ -2543,37 +2631,41 @@ class FiscalYearClosingEntriesView(APIView):
         if fy_periods.exists():
             fy_start = fy_periods.order_by("period").first().start_date
             fy_end = fy_periods.order_by("-period").first().end_date
-            closing_entries = closing_entries.filter(
-                date__gte=fy_start, date__lte=fy_end
-            )
+            closing_entries = closing_entries.filter(date__gte=fy_start, date__lte=fy_end)
 
         entries_data = []
         for entry in closing_entries:
             lines = []
             for line in entry.lines.all().select_related("account"):
-                lines.append({
-                    "account_code": line.account.code,
-                    "account_name": line.account.name,
-                    "debit": str(line.debit),
-                    "credit": str(line.credit),
-                    "memo": line.memo or "",
-                })
-            entries_data.append({
-                "entry_public_id": str(entry.public_id),
-                "entry_number": entry.entry_number,
-                "date": entry.date.isoformat(),
-                "memo": entry.memo,
-                "kind": entry.kind,
-                "status": entry.status,
-                "period": entry.period,
-                "lines": lines,
-            })
+                lines.append(
+                    {
+                        "account_code": line.account.code,
+                        "account_name": line.account.name,
+                        "debit": str(line.debit),
+                        "credit": str(line.credit),
+                        "memo": line.memo or "",
+                    }
+                )
+            entries_data.append(
+                {
+                    "entry_public_id": str(entry.public_id),
+                    "entry_number": entry.entry_number,
+                    "date": entry.date.isoformat(),
+                    "memo": entry.memo,
+                    "kind": entry.kind,
+                    "status": entry.status,
+                    "period": entry.period,
+                    "lines": lines,
+                }
+            )
 
-        return Response({
-            "fiscal_year": int(year),
-            "closing_entries": entries_data,
-            "count": len(entries_data),
-        })
+        return Response(
+            {
+                "fiscal_year": int(year),
+                "closing_entries": entries_data,
+                "count": len(entries_data),
+            }
+        )
 
 
 class ReconciliationCheckView(APIView):
@@ -2583,6 +2675,7 @@ class ReconciliationCheckView(APIView):
     Run AR/AP subledger tie-out reconciliation check.
     Returns structured report with GL vs subledger balances.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -2590,6 +2683,7 @@ class ReconciliationCheckView(APIView):
         require(actor, "reports.view")
 
         from accounting.commands import run_reconciliation_check
+
         result = run_reconciliation_check(actor)
 
         if not result.success:
@@ -2618,6 +2712,7 @@ class AdminProjectionListView(APIView):
         - total_lag: Total unprocessed events across all projections
         - all_healthy: True if all projections have 0 lag
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -2657,47 +2752,49 @@ class AdminProjectionListView(APIView):
                 "bookmark_error_count": bookmark.error_count if bookmark else 0,
                 "bookmark_last_error": bookmark.last_error if bookmark else "",
                 "last_processed_at": (
-                    bookmark.last_processed_at.isoformat()
-                    if bookmark and bookmark.last_processed_at
-                    else None
+                    bookmark.last_processed_at.isoformat() if bookmark and bookmark.last_processed_at else None
                 ),
             }
 
             # Add rebuild status info if available
             if proj_status:
-                proj_info.update({
-                    "rebuild_status": proj_status.status,
-                    "is_rebuilding": proj_status.is_rebuilding,
-                    "rebuild_progress_percent": proj_status.progress_percent,
-                    "events_total": proj_status.events_total,
-                    "events_processed": proj_status.events_processed,
-                    "last_rebuild_started_at": (
-                        proj_status.last_rebuild_started_at.isoformat()
-                        if proj_status.last_rebuild_started_at
-                        else None
-                    ),
-                    "last_rebuild_completed_at": (
-                        proj_status.last_rebuild_completed_at.isoformat()
-                        if proj_status.last_rebuild_completed_at
-                        else None
-                    ),
-                    "last_rebuild_duration_seconds": proj_status.last_rebuild_duration_seconds,
-                    "error_message": proj_status.error_message,
-                    "error_count": proj_status.error_count,
-                })
+                proj_info.update(
+                    {
+                        "rebuild_status": proj_status.status,
+                        "is_rebuilding": proj_status.is_rebuilding,
+                        "rebuild_progress_percent": proj_status.progress_percent,
+                        "events_total": proj_status.events_total,
+                        "events_processed": proj_status.events_processed,
+                        "last_rebuild_started_at": (
+                            proj_status.last_rebuild_started_at.isoformat()
+                            if proj_status.last_rebuild_started_at
+                            else None
+                        ),
+                        "last_rebuild_completed_at": (
+                            proj_status.last_rebuild_completed_at.isoformat()
+                            if proj_status.last_rebuild_completed_at
+                            else None
+                        ),
+                        "last_rebuild_duration_seconds": proj_status.last_rebuild_duration_seconds,
+                        "error_message": proj_status.error_message,
+                        "error_count": proj_status.error_count,
+                    }
+                )
             else:
-                proj_info.update({
-                    "rebuild_status": "NEVER_RUN",
-                    "is_rebuilding": False,
-                    "rebuild_progress_percent": 0,
-                    "events_total": 0,
-                    "events_processed": 0,
-                    "last_rebuild_started_at": None,
-                    "last_rebuild_completed_at": None,
-                    "last_rebuild_duration_seconds": None,
-                    "error_message": "",
-                    "error_count": 0,
-                })
+                proj_info.update(
+                    {
+                        "rebuild_status": "NEVER_RUN",
+                        "is_rebuilding": False,
+                        "rebuild_progress_percent": 0,
+                        "events_total": 0,
+                        "events_processed": 0,
+                        "last_rebuild_started_at": None,
+                        "last_rebuild_completed_at": None,
+                        "last_rebuild_duration_seconds": None,
+                        "error_message": "",
+                        "error_count": 0,
+                    }
+                )
 
             projections_data.append(proj_info)
 
@@ -2705,17 +2802,19 @@ class AdminProjectionListView(APIView):
         all_healthy = all(p["is_healthy"] for p in projections_data)
         any_rebuilding = any(p["is_rebuilding"] for p in projections_data)
 
-        return Response({
-            "company": {
-                "id": company.id,
-                "name": company.name,
-                "slug": company.slug,
-            },
-            "projections": projections_data,
-            "total_lag": total_lag,
-            "all_healthy": all_healthy,
-            "any_rebuilding": any_rebuilding,
-        })
+        return Response(
+            {
+                "company": {
+                    "id": company.id,
+                    "name": company.name,
+                    "slug": company.slug,
+                },
+                "projections": projections_data,
+                "total_lag": total_lag,
+                "all_healthy": all_healthy,
+                "any_rebuilding": any_rebuilding,
+            }
+        )
 
 
 class AdminProjectionDetailView(APIView):
@@ -2725,6 +2824,7 @@ class AdminProjectionDetailView(APIView):
     Get detailed status of a specific projection.
     Admin only.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request, name):
@@ -2761,10 +2861,14 @@ class AdminProjectionDetailView(APIView):
         lag = projection.get_lag(company)
 
         # Count total events for this projection's event types
-        total_events = BusinessEvent.objects.filter(
-            company=company,
-            event_type__in=projection.consumes,
-        ).count() if projection.consumes else 0
+        total_events = (
+            BusinessEvent.objects.filter(
+                company=company,
+                event_type__in=projection.consumes,
+            ).count()
+            if projection.consumes
+            else 0
+        )
 
         response_data = {
             "name": projection.name,
@@ -2779,14 +2883,10 @@ class AdminProjectionDetailView(APIView):
                 "error_count": bookmark.error_count if bookmark else 0,
                 "last_error": bookmark.last_error if bookmark else "",
                 "last_processed_at": (
-                    bookmark.last_processed_at.isoformat()
-                    if bookmark and bookmark.last_processed_at
-                    else None
+                    bookmark.last_processed_at.isoformat() if bookmark and bookmark.last_processed_at else None
                 ),
                 "last_event_sequence": (
-                    bookmark.last_event.company_sequence
-                    if bookmark and bookmark.last_event
-                    else None
+                    bookmark.last_event.company_sequence if bookmark and bookmark.last_event else None
                 ),
             },
         }
@@ -2800,22 +2900,16 @@ class AdminProjectionDetailView(APIView):
                 "events_total": proj_status.events_total,
                 "events_processed": proj_status.events_processed,
                 "last_rebuild_started_at": (
-                    proj_status.last_rebuild_started_at.isoformat()
-                    if proj_status.last_rebuild_started_at
-                    else None
+                    proj_status.last_rebuild_started_at.isoformat() if proj_status.last_rebuild_started_at else None
                 ),
                 "last_rebuild_completed_at": (
-                    proj_status.last_rebuild_completed_at.isoformat()
-                    if proj_status.last_rebuild_completed_at
-                    else None
+                    proj_status.last_rebuild_completed_at.isoformat() if proj_status.last_rebuild_completed_at else None
                 ),
                 "last_rebuild_duration_seconds": proj_status.last_rebuild_duration_seconds,
                 "error_message": proj_status.error_message,
                 "error_count": proj_status.error_count,
                 "rebuild_requested_by": (
-                    proj_status.rebuild_requested_by.email
-                    if proj_status.rebuild_requested_by
-                    else None
+                    proj_status.rebuild_requested_by.email if proj_status.rebuild_requested_by else None
                 ),
             }
         else:
@@ -2849,6 +2943,7 @@ class AdminProjectionRebuildView(APIView):
     Request body:
         - force: bool (optional) - Force rebuild even if already rebuilding
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, name):
@@ -2903,17 +2998,23 @@ class AdminProjectionRebuildView(APIView):
 
             # Count events
             event_types = projection.consumes
-            total_events = BusinessEvent.objects.filter(
-                company=company,
-                event_type__in=event_types,
-            ).count() if event_types else 0
+            total_events = (
+                BusinessEvent.objects.filter(
+                    company=company,
+                    event_type__in=event_types,
+                ).count()
+                if event_types
+                else 0
+            )
 
             if total_events == 0:
-                return Response({
-                    "detail": "No events to process.",
-                    "events_processed": 0,
-                    "duration_seconds": 0,
-                })
+                return Response(
+                    {
+                        "detail": "No events to process.",
+                        "events_processed": 0,
+                        "duration_seconds": 0,
+                    }
+                )
 
             # Mark as rebuilding
             proj_status.mark_rebuild_started(total_events, requested_by=request.user)
@@ -2939,12 +3040,14 @@ class AdminProjectionRebuildView(APIView):
                 ).delete()
 
                 # Step 2: Replay events
-                events = BusinessEvent.objects.filter(
-                    company=company,
-                    event_type__in=event_types,
-                ).order_by("company_sequence") if event_types else BusinessEvent.objects.filter(
-                    company=company
-                ).order_by("company_sequence")
+                events = (
+                    BusinessEvent.objects.filter(
+                        company=company,
+                        event_type__in=event_types,
+                    ).order_by("company_sequence")
+                    if event_types
+                    else BusinessEvent.objects.filter(company=company).order_by("company_sequence")
+                )
 
                 processed = 0
                 last_sequence = None
@@ -2966,12 +3069,14 @@ class AdminProjectionRebuildView(APIView):
 
                 elapsed = time.time() - start_time
 
-                return Response({
-                    "detail": "Rebuild completed successfully.",
-                    "events_processed": processed,
-                    "duration_seconds": round(elapsed, 2),
-                    "rate_per_second": round(processed / elapsed, 0) if elapsed > 0 else 0,
-                })
+                return Response(
+                    {
+                        "detail": "Rebuild completed successfully.",
+                        "events_processed": processed,
+                        "duration_seconds": round(elapsed, 2),
+                        "rate_per_second": round(processed / elapsed, 0) if elapsed > 0 else 0,
+                    }
+                )
 
             except Exception as e:
                 proj_status.mark_rebuild_error(str(e))
@@ -2992,6 +3097,7 @@ class AdminProjectionPauseView(APIView):
     Request body:
         - paused: bool - True to pause, False to unpause
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, name):
@@ -3028,10 +3134,12 @@ class AdminProjectionPauseView(APIView):
             bookmark.save(update_fields=["is_paused"])
 
         action = "paused" if paused else "resumed"
-        return Response({
-            "detail": f"Projection {name} has been {action}.",
-            "is_paused": paused,
-        })
+        return Response(
+            {
+                "detail": f"Projection {name} has been {action}.",
+                "is_paused": paused,
+            }
+        )
 
 
 class AdminProjectionClearErrorView(APIView):
@@ -3041,6 +3149,7 @@ class AdminProjectionClearErrorView(APIView):
     Clear error state for a projection.
     Admin only.
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, name):
@@ -3091,9 +3200,11 @@ class AdminProjectionClearErrorView(APIView):
                 proj_status.error_count = 0
                 proj_status.save(update_fields=["status", "error_message", "error_count", "updated_at"])
 
-        return Response({
-            "detail": f"Errors cleared for projection {name}.",
-        })
+        return Response(
+            {
+                "detail": f"Errors cleared for projection {name}.",
+            }
+        )
 
 
 class AdminProjectionProcessView(APIView):
@@ -3106,6 +3217,7 @@ class AdminProjectionProcessView(APIView):
     Request body:
         - limit: int (optional) - Maximum events to process (default 1000)
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, name):
@@ -3136,12 +3248,14 @@ class AdminProjectionProcessView(APIView):
         # Get updated lag
         lag = projection.get_lag(company)
 
-        return Response({
-            "detail": f"Processed {processed} events for projection {name}.",
-            "events_processed": processed,
-            "remaining_lag": lag,
-            "is_caught_up": lag == 0,
-        })
+        return Response(
+            {
+                "detail": f"Processed {processed} events for projection {name}.",
+                "events_processed": processed,
+                "remaining_lag": lag,
+                "is_caught_up": lag == 0,
+            }
+        )
 
 
 class DashboardChartsView(APIView):
@@ -3154,6 +3268,7 @@ class DashboardChartsView(APIView):
     - monthly_net_income: Line chart data for net income trend
     - top_accounts: Horizontal bar chart for most active accounts
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -3233,12 +3348,14 @@ class DashboardChartsView(APIView):
             month_key = month_date.strftime("%Y-%m")
             month_label = month_date.strftime("%b")
             data = monthly_data.get(month_key, {"revenue": Decimal("0.00"), "expenses": Decimal("0.00")})
-            monthly_revenue_expenses.append({
-                "month": month_label,
-                "month_key": month_key,
-                "revenue": float(data["revenue"]),
-                "expenses": float(data["expenses"]),
-            })
+            monthly_revenue_expenses.append(
+                {
+                    "month": month_label,
+                    "month_key": month_key,
+                    "revenue": float(data["revenue"]),
+                    "expenses": float(data["expenses"]),
+                }
+            )
 
         # ═══════════════════════════════════════════════════════════════════
         # 2. Account Type Distribution (Pie Chart)
@@ -3263,9 +3380,7 @@ class DashboardChartsView(APIView):
                 type_totals["Expenses"] += abs(bal.balance)
 
         account_type_distribution = [
-            {"name": name, "value": float(value)}
-            for name, value in type_totals.items()
-            if value > 0
+            {"name": name, "value": float(value)} for name, value in type_totals.items() if value > 0
         ]
 
         # ═══════════════════════════════════════════════════════════════════
@@ -3284,9 +3399,7 @@ class DashboardChartsView(APIView):
         # 4. Top Accounts by Activity
         # ═══════════════════════════════════════════════════════════════════
         sorted_accounts = sorted(
-            account_activity.items(),
-            key=lambda x: x[1]["debits"] + x[1]["credits"],
-            reverse=True
+            account_activity.items(), key=lambda x: x[1]["debits"] + x[1]["credits"], reverse=True
         )[:10]
 
         top_accounts = [
@@ -3299,12 +3412,14 @@ class DashboardChartsView(APIView):
             for acc_id, data in sorted_accounts
         ]
 
-        return Response({
-            "monthly_revenue_expenses": monthly_revenue_expenses,
-            "account_type_distribution": account_type_distribution,
-            "monthly_net_income": monthly_net_income,
-            "top_accounts": top_accounts,
-        })
+        return Response(
+            {
+                "monthly_revenue_expenses": monthly_revenue_expenses,
+                "account_type_distribution": account_type_distribution,
+                "monthly_net_income": monthly_net_income,
+                "top_accounts": top_accounts,
+            }
+        )
 
 
 class DashboardWidgetsView(APIView):
@@ -3316,10 +3431,12 @@ class DashboardWidgetsView(APIView):
     - ar_overdue: Overdue accounts receivable summary
     - recent_activity: Recent posted journal entries with context
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         import logging
+
         logger = logging.getLogger(__name__)
 
         from accounting.models import Account
@@ -3350,11 +3467,13 @@ class DashboardWidgetsView(APIView):
             cash_total = Decimal("0.00")
             for bal in cash_balances:
                 acct = liquidity_ids[bal.account_id]
-                cash_accounts.append({
-                    "code": acct.code,
-                    "name": acct.name,
-                    "balance": str(bal.balance),
-                })
+                cash_accounts.append(
+                    {
+                        "code": acct.code,
+                        "name": acct.name,
+                        "balance": str(bal.balance),
+                    }
+                )
                 cash_total += bal.balance
 
             cash_accounts.sort(key=lambda x: Decimal(x["balance"]), reverse=True)
@@ -3378,9 +3497,7 @@ class DashboardWidgetsView(APIView):
                         + Decimal(str(totals.get("over_90", "0.00")))
                     ),
                     "customer_count": sum(
-                        len(entries)
-                        for bucket, entries in aging_data.get("buckets", {}).items()
-                        if bucket != "current"
+                        len(entries) for bucket, entries in aging_data.get("buckets", {}).items() if bucket != "current"
                     ),
                 }
             except Exception:
@@ -3410,20 +3527,18 @@ class DashboardWidgetsView(APIView):
                 entry_number = ev_data.get("entry_number", "")
                 source = ev_data.get("source", "manual")
                 lines = ev_data.get("lines", [])
-                total_debit = sum(
-                    Decimal(l.get("debit", "0"))
-                    for l in lines
-                    if not l.get("is_memo_line")
-                )
+                total_debit = sum(Decimal(l.get("debit", "0")) for l in lines if not l.get("is_memo_line"))
 
-                recent_activity.append({
-                    "date": entry_date,
-                    "entry_number": entry_number,
-                    "memo": memo,
-                    "source": source,
-                    "amount": str(total_debit),
-                    "created_at": event.recorded_at.isoformat() if event.recorded_at else "",
-                })
+                recent_activity.append(
+                    {
+                        "date": entry_date,
+                        "entry_number": entry_number,
+                        "memo": memo,
+                        "source": source,
+                        "amount": str(total_debit),
+                        "created_at": event.recorded_at.isoformat() if event.recorded_at else "",
+                    }
+                )
 
             # ═══════════════════════════════════════════════════════════════
             # 4. Reconciliation Health — exception + match summary
@@ -3431,9 +3546,21 @@ class DashboardWidgetsView(APIView):
             try:
                 from bank_connector.models import BankTransaction as BankTx
                 from bank_connector.models import ReconciliationException
+
                 bank_qs = BankTx.objects.filter(company=actor.company)
                 total_bank = bank_qs.count()
                 matched_bank = bank_qs.filter(status="MATCHED").count()
+
+                # Fallback: if no bank_connector transactions, use
+                # accounting.BankStatementLine (the standard reconciliation path)
+                if total_bank == 0:
+                    from accounting.models import BankStatementLine
+
+                    bsl_qs = BankStatementLine.objects.filter(company=actor.company)
+                    total_bank = bsl_qs.count()
+                    matched_bank = bsl_qs.filter(
+                        match_status__in=["AUTO_MATCHED", "MANUAL_MATCHED"],
+                    ).count()
 
                 open_statuses = [
                     ReconciliationException.Status.OPEN,
@@ -3441,30 +3568,32 @@ class DashboardWidgetsView(APIView):
                     ReconciliationException.Status.ESCALATED,
                 ]
                 open_exc = ReconciliationException.objects.filter(
-                    company=actor.company, status__in=open_statuses,
+                    company=actor.company,
+                    status__in=open_statuses,
                 )
+                unmatched_bank = total_bank - matched_bank
                 recon_health = {
                     "match_rate": round(matched_bank / total_bank * 100, 1) if total_bank else 0,
                     "total_transactions": total_bank,
                     "matched": matched_bank,
-                    "unmatched": bank_qs.filter(status="UNMATCHED").count(),
+                    "unmatched": unmatched_bank,
                     "open_exceptions": open_exc.count(),
-                    "critical_exceptions": open_exc.filter(
-                        severity=ReconciliationException.Severity.CRITICAL
-                    ).count(),
+                    "critical_exceptions": open_exc.filter(severity=ReconciliationException.Severity.CRITICAL).count(),
                 }
             except Exception:
                 recon_health = None
 
-            return Response({
-                "cash_position": {
-                    "accounts": cash_accounts,
-                    "total": str(cash_total),
-                },
-                "ar_overdue": ar_overdue,
-                "recent_activity": recent_activity,
-                "recon_health": recon_health,
-            })
+            return Response(
+                {
+                    "cash_position": {
+                        "accounts": cash_accounts,
+                        "total": str(cash_total),
+                    },
+                    "ar_overdue": ar_overdue,
+                    "recent_activity": recent_activity,
+                    "recon_health": recon_health,
+                }
+            )
         except Exception as e:
             logger.exception("DashboardWidgetsView error")
             return Response(
@@ -3485,6 +3614,7 @@ class SubledgerTieOutView(APIView):
 
     Returns details of any discrepancies for investigation.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -3526,11 +3656,13 @@ class SubledgerTieOutView(APIView):
             except AccountBalance.DoesNotExist:
                 gl_balance = Decimal("0.00")
 
-            ar_tieout["control_accounts"].append({
-                "code": ar_account.code,
-                "name": ar_account.name,
-                "balance": str(gl_balance),
-            })
+            ar_tieout["control_accounts"].append(
+                {
+                    "code": ar_account.code,
+                    "name": ar_account.name,
+                    "balance": str(gl_balance),
+                }
+            )
             ar_tieout["gl_total"] += gl_balance
 
         # Compute customer subledger balances from journal lines
@@ -3561,11 +3693,13 @@ class SubledgerTieOutView(APIView):
         # Calculate customer balances (AR is debit-normal)
         for _code, data in customer_balances.items():
             balance = data["debit_total"] - data["credit_total"]
-            ar_tieout["customer_balances"].append({
-                "code": data["code"],
-                "name": data["name"],
-                "balance": str(balance),
-            })
+            ar_tieout["customer_balances"].append(
+                {
+                    "code": data["code"],
+                    "name": data["name"],
+                    "balance": str(balance),
+                }
+            )
             ar_tieout["subledger_total"] += balance
 
         ar_tieout["discrepancy"] = ar_tieout["gl_total"] - ar_tieout["subledger_total"]
@@ -3607,11 +3741,13 @@ class SubledgerTieOutView(APIView):
             except AccountBalance.DoesNotExist:
                 gl_balance = Decimal("0.00")
 
-            ap_tieout["control_accounts"].append({
-                "code": ap_account.code,
-                "name": ap_account.name,
-                "balance": str(gl_balance),
-            })
+            ap_tieout["control_accounts"].append(
+                {
+                    "code": ap_account.code,
+                    "name": ap_account.name,
+                    "balance": str(gl_balance),
+                }
+            )
             ap_tieout["gl_total"] += gl_balance
 
         # Compute vendor subledger balances from journal lines
@@ -3641,11 +3777,13 @@ class SubledgerTieOutView(APIView):
         # Calculate vendor balances (AP is credit-normal)
         for _code, data in vendor_balances.items():
             balance = data["credit_total"] - data["debit_total"]
-            ap_tieout["vendor_balances"].append({
-                "code": data["code"],
-                "name": data["name"],
-                "balance": str(balance),
-            })
+            ap_tieout["vendor_balances"].append(
+                {
+                    "code": data["code"],
+                    "name": data["name"],
+                    "balance": str(balance),
+                }
+            )
             ap_tieout["subledger_total"] += balance
 
         ap_tieout["discrepancy"] = ap_tieout["gl_total"] - ap_tieout["subledger_total"]
@@ -3662,12 +3800,14 @@ class SubledgerTieOutView(APIView):
 
         overall_balanced = ar_tieout["is_balanced"] and ap_tieout["is_balanced"]
 
-        return Response({
-            "ar_tieout": ar_tieout,
-            "ap_tieout": ap_tieout,
-            "overall_balanced": overall_balanced,
-            "report_date": date_type.today().isoformat(),
-        })
+        return Response(
+            {
+                "ar_tieout": ar_tieout,
+                "ap_tieout": ap_tieout,
+                "overall_balanced": overall_balanced,
+                "report_date": date_type.today().isoformat(),
+            }
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3689,6 +3829,7 @@ class ARAgingReportView(APIView):
     Query params:
     - as_of: Optional date (YYYY-MM-DD), defaults to today
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -3716,21 +3857,24 @@ class ARAgingReportView(APIView):
 
         # Add validation status from tie-out
         from accounting.policies import validate_subledger_tieout
+
         is_valid, _ = validate_subledger_tieout(actor.company)
 
-        return Response({
-            "as_of": as_of.isoformat(),
-            "bucket_names": ["current", "days_31_60", "days_61_90", "over_90"],
-            "bucket_labels": {
-                "current": "Current (0-30 days)",
-                "days_31_60": "31-60 days",
-                "days_61_90": "61-90 days",
-                "over_90": "Over 90 days",
-            },
-            "buckets": aging_data["buckets"],
-            "totals": aging_data["totals"],
-            "subledger_tied_out": is_valid,
-        })
+        return Response(
+            {
+                "as_of": as_of.isoformat(),
+                "bucket_names": ["current", "days_31_60", "days_61_90", "over_90"],
+                "bucket_labels": {
+                    "current": "Current (0-30 days)",
+                    "days_31_60": "31-60 days",
+                    "days_61_90": "61-90 days",
+                    "over_90": "Over 90 days",
+                },
+                "buckets": aging_data["buckets"],
+                "totals": aging_data["totals"],
+                "subledger_tied_out": is_valid,
+            }
+        )
 
 
 class APAgingReportView(APIView):
@@ -3747,6 +3891,7 @@ class APAgingReportView(APIView):
     Query params:
     - as_of: Optional date (YYYY-MM-DD), defaults to today
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -3774,21 +3919,24 @@ class APAgingReportView(APIView):
 
         # Add validation status from tie-out
         from accounting.policies import validate_subledger_tieout
+
         is_valid, _ = validate_subledger_tieout(actor.company)
 
-        return Response({
-            "as_of": as_of.isoformat(),
-            "bucket_names": ["current", "days_31_60", "days_61_90", "over_90"],
-            "bucket_labels": {
-                "current": "Current (0-30 days)",
-                "days_31_60": "31-60 days",
-                "days_61_90": "61-90 days",
-                "over_90": "Over 90 days",
-            },
-            "buckets": aging_data["buckets"],
-            "totals": aging_data["totals"],
-            "subledger_tied_out": is_valid,
-        })
+        return Response(
+            {
+                "as_of": as_of.isoformat(),
+                "bucket_names": ["current", "days_31_60", "days_61_90", "over_90"],
+                "bucket_labels": {
+                    "current": "Current (0-30 days)",
+                    "days_31_60": "31-60 days",
+                    "days_61_90": "61-90 days",
+                    "over_90": "Over 90 days",
+                },
+                "buckets": aging_data["buckets"],
+                "totals": aging_data["totals"],
+                "subledger_tied_out": is_valid,
+            }
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3808,6 +3956,7 @@ class TaxSummaryReportView(APIView):
     - date_from: Start date (YYYY-MM-DD), defaults to first day of current month
     - date_to: End date (YYYY-MM-DD), defaults to today
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -3848,8 +3997,7 @@ class TaxSummaryReportView(APIView):
 
         # --- Output Tax (Sales Invoices) ---
         output_lines = (
-            SalesInvoiceLine.objects
-            .filter(
+            SalesInvoiceLine.objects.filter(
                 invoice__company=actor.company,
                 invoice__status=SalesInvoice.Status.POSTED,
                 invoice__invoice_date__gte=date_from,
@@ -3881,37 +4029,35 @@ class TaxSummaryReportView(APIView):
             tax = row["total_tax"] or Decimal("0")
             output_taxable_total += taxable
             output_tax_total += tax
-            output_tax_rows.append({
-                "tax_code": row["tax_code__code"],
-                "tax_name": row["tax_code__name"],
-                "rate": str(row["tax_code__rate"]),
-                "tax_account_code": row["tax_code__tax_account__code"],
-                "tax_account_name": row["tax_code__tax_account__name"],
-                "taxable_amount": str(taxable),
-                "tax_amount": str(tax),
-                "invoice_count": row["invoice_count"],
-                "source": "sales_invoice",
-            })
+            output_tax_rows.append(
+                {
+                    "tax_code": row["tax_code__code"],
+                    "tax_name": row["tax_code__name"],
+                    "rate": str(row["tax_code__rate"]),
+                    "tax_account_code": row["tax_code__tax_account__code"],
+                    "tax_account_name": row["tax_code__tax_account__name"],
+                    "taxable_amount": str(taxable),
+                    "tax_amount": str(tax),
+                    "invoice_count": row["invoice_count"],
+                    "source": "sales_invoice",
+                }
+            )
 
         # --- Output Tax (Shopify Orders) ---
         try:
             from accounting.mappings import ModuleAccountMapping
             from shopify_connector.models import ShopifyOrder
 
-            shopify_tax_data = (
-                ShopifyOrder.objects
-                .filter(
-                    company=actor.company,
-                    status=ShopifyOrder.Status.PROCESSED,
-                    order_date__gte=date_from,
-                    order_date__lte=date_to,
-                    total_tax__gt=0,
-                )
-                .aggregate(
-                    taxable_amount=Sum("subtotal_price"),
-                    total_tax=Sum("total_tax"),
-                    order_count=Count("id"),
-                )
+            shopify_tax_data = ShopifyOrder.objects.filter(
+                company=actor.company,
+                status=ShopifyOrder.Status.PROCESSED,
+                order_date__gte=date_from,
+                order_date__lte=date_to,
+                total_tax__gt=0,
+            ).aggregate(
+                taxable_amount=Sum("subtotal_price"),
+                total_tax=Sum("total_tax"),
+                order_count=Count("id"),
             )
 
             shopify_tax = shopify_tax_data["total_tax"] or Decimal("0")
@@ -3930,24 +4076,25 @@ class TaxSummaryReportView(APIView):
 
                 output_taxable_total += shopify_taxable
                 output_tax_total += shopify_tax
-                output_tax_rows.append({
-                    "tax_code": "SHOPIFY",
-                    "tax_name": "Shopify Sales Tax",
-                    "rate": str(effective_rate.quantize(Decimal("0.0001"))),
-                    "tax_account_code": tax_account_code,
-                    "tax_account_name": tax_account_name,
-                    "taxable_amount": str(shopify_taxable),
-                    "tax_amount": str(shopify_tax),
-                    "invoice_count": shopify_count,
-                    "source": "shopify",
-                })
+                output_tax_rows.append(
+                    {
+                        "tax_code": "SHOPIFY",
+                        "tax_name": "Shopify Sales Tax",
+                        "rate": str(effective_rate.quantize(Decimal("0.0001"))),
+                        "tax_account_code": tax_account_code,
+                        "tax_account_name": tax_account_name,
+                        "taxable_amount": str(shopify_taxable),
+                        "tax_amount": str(shopify_tax),
+                        "invoice_count": shopify_count,
+                        "source": "shopify",
+                    }
+                )
         except ImportError:
             pass  # Shopify module not installed
 
         # --- Input Tax (Purchases) ---
         input_lines = (
-            PurchaseBillLine.objects
-            .filter(
+            PurchaseBillLine.objects.filter(
                 bill__company=actor.company,
                 bill__status=PurchaseBill.Status.POSTED,
                 bill__bill_date__gte=date_from,
@@ -3987,37 +4134,41 @@ class TaxSummaryReportView(APIView):
                 input_recoverable_total += tax
             else:
                 input_non_recoverable_total += tax
-            input_tax_rows.append({
-                "tax_code": row["tax_code__code"],
-                "tax_name": row["tax_code__name"],
-                "rate": str(row["tax_code__rate"]),
-                "recoverable": recoverable,
-                "tax_account_code": row["tax_code__tax_account__code"],
-                "tax_account_name": row["tax_code__tax_account__name"],
-                "taxable_amount": str(taxable),
-                "tax_amount": str(tax),
-                "bill_count": row["bill_count"],
-            })
+            input_tax_rows.append(
+                {
+                    "tax_code": row["tax_code__code"],
+                    "tax_name": row["tax_code__name"],
+                    "rate": str(row["tax_code__rate"]),
+                    "recoverable": recoverable,
+                    "tax_account_code": row["tax_code__tax_account__code"],
+                    "tax_account_name": row["tax_code__tax_account__name"],
+                    "taxable_amount": str(taxable),
+                    "tax_amount": str(tax),
+                    "bill_count": row["bill_count"],
+                }
+            )
 
         net_tax = output_tax_total - input_recoverable_total
 
-        return Response({
-            "date_from": date_from.isoformat(),
-            "date_to": date_to.isoformat(),
-            "output_tax": {
-                "rows": output_tax_rows,
-                "taxable_total": str(output_taxable_total),
-                "tax_total": str(output_tax_total),
-            },
-            "input_tax": {
-                "rows": input_tax_rows,
-                "taxable_total": str(input_taxable_total),
-                "tax_total": str(input_tax_total),
-                "recoverable_total": str(input_recoverable_total),
-                "non_recoverable_total": str(input_non_recoverable_total),
-            },
-            "net_tax": str(net_tax),
-        })
+        return Response(
+            {
+                "date_from": date_from.isoformat(),
+                "date_to": date_to.isoformat(),
+                "output_tax": {
+                    "rows": output_tax_rows,
+                    "taxable_total": str(output_taxable_total),
+                    "tax_total": str(output_tax_total),
+                },
+                "input_tax": {
+                    "rows": input_tax_rows,
+                    "taxable_total": str(input_taxable_total),
+                    "tax_total": str(input_tax_total),
+                    "recoverable_total": str(input_recoverable_total),
+                    "non_recoverable_total": str(input_non_recoverable_total),
+                },
+                "net_tax": str(net_tax),
+            }
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -4032,6 +4183,7 @@ class CustomerBalanceListView(APIView):
     List all customer balances (AR subledger).
     Returns projected balances from CustomerBalance model.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -4040,9 +4192,13 @@ class CustomerBalanceListView(APIView):
         actor = resolve_actor(request)
         require(actor, "reports.view")
 
-        balances = CustomerBalance.objects.filter(
-            company=actor.company,
-        ).select_related("customer").order_by("customer__code")
+        balances = (
+            CustomerBalance.objects.filter(
+                company=actor.company,
+            )
+            .select_related("customer")
+            .order_by("customer__code")
+        )
 
         # Optional filtering
         has_balance = request.query_params.get("has_balance")
@@ -4070,15 +4226,17 @@ class CustomerBalanceListView(APIView):
         total_debit = sum(bal.debit_total for bal in balances)
         total_credit = sum(bal.credit_total for bal in balances)
 
-        return Response({
-            "balances": data,
-            "count": len(data),
-            "totals": {
-                "balance": str(total_balance),
-                "debit_total": str(total_debit),
-                "credit_total": str(total_credit),
-            },
-        })
+        return Response(
+            {
+                "balances": data,
+                "count": len(data),
+                "totals": {
+                    "balance": str(total_balance),
+                    "debit_total": str(total_debit),
+                    "credit_total": str(total_credit),
+                },
+            }
+        )
 
 
 class CustomerBalanceDetailView(APIView):
@@ -4087,6 +4245,7 @@ class CustomerBalanceDetailView(APIView):
 
     Get balance details for a specific customer.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request, code):
@@ -4112,35 +4271,39 @@ class CustomerBalanceDetailView(APIView):
                 company=actor.company,
                 customer=customer,
             )
-            return Response({
-                "customer_code": customer.code,
-                "customer_name": customer.name,
-                "customer_name_ar": customer.name_ar,
-                "balance": str(balance.balance),
-                "debit_total": str(balance.debit_total),
-                "credit_total": str(balance.credit_total),
-                "transaction_count": balance.transaction_count,
-                "last_invoice_date": balance.last_invoice_date.isoformat() if balance.last_invoice_date else None,
-                "last_payment_date": balance.last_payment_date.isoformat() if balance.last_payment_date else None,
-                "oldest_open_date": balance.oldest_open_date.isoformat() if balance.oldest_open_date else None,
-                "updated_at": balance.updated_at.isoformat(),
-            })
+            return Response(
+                {
+                    "customer_code": customer.code,
+                    "customer_name": customer.name,
+                    "customer_name_ar": customer.name_ar,
+                    "balance": str(balance.balance),
+                    "debit_total": str(balance.debit_total),
+                    "credit_total": str(balance.credit_total),
+                    "transaction_count": balance.transaction_count,
+                    "last_invoice_date": balance.last_invoice_date.isoformat() if balance.last_invoice_date else None,
+                    "last_payment_date": balance.last_payment_date.isoformat() if balance.last_payment_date else None,
+                    "oldest_open_date": balance.oldest_open_date.isoformat() if balance.oldest_open_date else None,
+                    "updated_at": balance.updated_at.isoformat(),
+                }
+            )
         except CustomerBalance.DoesNotExist:
             # Customer exists but no balance yet
-            return Response({
-                "customer_code": customer.code,
-                "customer_name": customer.name,
-                "customer_name_ar": customer.name_ar,
-                "balance": "0.00",
-                "debit_total": "0.00",
-                "credit_total": "0.00",
-                "transaction_count": 0,
-                "last_invoice_date": None,
-                "last_payment_date": None,
-                "oldest_open_date": None,
-                "updated_at": None,
-                "note": "No posted entries yet",
-            })
+            return Response(
+                {
+                    "customer_code": customer.code,
+                    "customer_name": customer.name,
+                    "customer_name_ar": customer.name_ar,
+                    "balance": "0.00",
+                    "debit_total": "0.00",
+                    "credit_total": "0.00",
+                    "transaction_count": 0,
+                    "last_invoice_date": None,
+                    "last_payment_date": None,
+                    "oldest_open_date": None,
+                    "updated_at": None,
+                    "note": "No posted entries yet",
+                }
+            )
 
 
 class VendorBalanceListView(APIView):
@@ -4150,6 +4313,7 @@ class VendorBalanceListView(APIView):
     List all vendor balances (AP subledger).
     Returns projected balances from VendorBalance model.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -4158,9 +4322,13 @@ class VendorBalanceListView(APIView):
         actor = resolve_actor(request)
         require(actor, "reports.view")
 
-        balances = VendorBalance.objects.filter(
-            company=actor.company,
-        ).select_related("vendor").order_by("vendor__code")
+        balances = (
+            VendorBalance.objects.filter(
+                company=actor.company,
+            )
+            .select_related("vendor")
+            .order_by("vendor__code")
+        )
 
         # Optional filtering
         has_balance = request.query_params.get("has_balance")
@@ -4188,15 +4356,17 @@ class VendorBalanceListView(APIView):
         total_debit = sum(bal.debit_total for bal in balances)
         total_credit = sum(bal.credit_total for bal in balances)
 
-        return Response({
-            "balances": data,
-            "count": len(data),
-            "totals": {
-                "balance": str(total_balance),
-                "debit_total": str(total_debit),
-                "credit_total": str(total_credit),
-            },
-        })
+        return Response(
+            {
+                "balances": data,
+                "count": len(data),
+                "totals": {
+                    "balance": str(total_balance),
+                    "debit_total": str(total_debit),
+                    "credit_total": str(total_credit),
+                },
+            }
+        )
 
 
 class VendorBalanceDetailView(APIView):
@@ -4205,6 +4375,7 @@ class VendorBalanceDetailView(APIView):
 
     Get balance details for a specific vendor.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request, code):
@@ -4230,35 +4401,39 @@ class VendorBalanceDetailView(APIView):
                 company=actor.company,
                 vendor=vendor,
             )
-            return Response({
-                "vendor_code": vendor.code,
-                "vendor_name": vendor.name,
-                "vendor_name_ar": vendor.name_ar,
-                "balance": str(balance.balance),
-                "debit_total": str(balance.debit_total),
-                "credit_total": str(balance.credit_total),
-                "transaction_count": balance.transaction_count,
-                "last_bill_date": balance.last_bill_date.isoformat() if balance.last_bill_date else None,
-                "last_payment_date": balance.last_payment_date.isoformat() if balance.last_payment_date else None,
-                "oldest_open_date": balance.oldest_open_date.isoformat() if balance.oldest_open_date else None,
-                "updated_at": balance.updated_at.isoformat(),
-            })
+            return Response(
+                {
+                    "vendor_code": vendor.code,
+                    "vendor_name": vendor.name,
+                    "vendor_name_ar": vendor.name_ar,
+                    "balance": str(balance.balance),
+                    "debit_total": str(balance.debit_total),
+                    "credit_total": str(balance.credit_total),
+                    "transaction_count": balance.transaction_count,
+                    "last_bill_date": balance.last_bill_date.isoformat() if balance.last_bill_date else None,
+                    "last_payment_date": balance.last_payment_date.isoformat() if balance.last_payment_date else None,
+                    "oldest_open_date": balance.oldest_open_date.isoformat() if balance.oldest_open_date else None,
+                    "updated_at": balance.updated_at.isoformat(),
+                }
+            )
         except VendorBalance.DoesNotExist:
             # Vendor exists but no balance yet
-            return Response({
-                "vendor_code": vendor.code,
-                "vendor_name": vendor.name,
-                "vendor_name_ar": vendor.name_ar,
-                "balance": "0.00",
-                "debit_total": "0.00",
-                "credit_total": "0.00",
-                "transaction_count": 0,
-                "last_bill_date": None,
-                "last_payment_date": None,
-                "oldest_open_date": None,
-                "updated_at": None,
-                "note": "No posted entries yet",
-            })
+            return Response(
+                {
+                    "vendor_code": vendor.code,
+                    "vendor_name": vendor.name,
+                    "vendor_name_ar": vendor.name_ar,
+                    "balance": "0.00",
+                    "debit_total": "0.00",
+                    "credit_total": "0.00",
+                    "transaction_count": 0,
+                    "last_bill_date": None,
+                    "last_payment_date": None,
+                    "oldest_open_date": None,
+                    "updated_at": None,
+                    "note": "No posted entries yet",
+                }
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -4289,6 +4464,7 @@ class AccountInquiryView(APIView):
     - page: Page number (default: 1)
     - page_size: Results per page (default: 50, max: 500)
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -4319,14 +4495,15 @@ class AccountInquiryView(APIView):
         page_size = min(int(request.query_params.get("page_size", 50)), 500)
 
         # Build queryset
-        lines = JournalLine.objects.filter(
-            company=actor.company,
-            entry__status=JournalEntry.Status.POSTED,
-        ).select_related(
-            "entry", "account", "customer", "vendor"
-        ).prefetch_related(
-            "analysis_tags", "analysis_tags__dimension", "analysis_tags__dimension_value"
-        ).order_by("-entry__date", "-entry__id", "line_no")
+        lines = (
+            JournalLine.objects.filter(
+                company=actor.company,
+                entry__status=JournalEntry.Status.POSTED,
+            )
+            .select_related("entry", "account", "customer", "vendor")
+            .prefetch_related("analysis_tags", "analysis_tags__dimension", "analysis_tags__dimension_value")
+            .order_by("-entry__date", "-entry__id", "line_no")
+        )
 
         # Filter by account
         if account_code:
@@ -4372,15 +4549,11 @@ class AccountInquiryView(APIView):
         # Filter by amount range
         if amount_min:
             min_val = Decimal(amount_min)
-            lines = lines.filter(
-                Q(debit__gte=min_val) | Q(credit__gte=min_val)
-            )
+            lines = lines.filter(Q(debit__gte=min_val) | Q(credit__gte=min_val))
 
         if amount_max:
             max_val = Decimal(amount_max)
-            lines = lines.filter(
-                Q(debit__lte=max_val) | Q(credit__lte=max_val)
-            )
+            lines = lines.filter(Q(debit__lte=max_val) | Q(credit__lte=max_val))
 
         # Filter by entry type
         if entry_type == "debit":
@@ -4400,9 +4573,9 @@ class AccountInquiryView(APIView):
         # Filter by reference
         if reference:
             lines = lines.filter(
-                Q(entry__reference__icontains=reference) |
-                Q(entry__memo__icontains=reference) |
-                Q(description__icontains=reference)
+                Q(entry__reference__icontains=reference)
+                | Q(entry__memo__icontains=reference)
+                | Q(description__icontains=reference)
             )
 
         # Filter by currency
@@ -4419,6 +4592,7 @@ class AccountInquiryView(APIView):
 
         # Calculate running totals for the entire result set
         from django.db.models import Sum
+
         totals = lines.aggregate(
             total_debit=Sum("debit"),
             total_credit=Sum("credit"),
@@ -4437,44 +4611,50 @@ class AccountInquiryView(APIView):
                 for tag in line.analysis_tags.all()
             ]
 
-            data.append({
-                "line_id": line.id,
-                "entry_id": line.entry.id,
-                "entry_number": line.entry.entry_number,
-                "entry_date": line.entry.date.isoformat(),
-                "entry_reference": line.entry.source_document or "",
-                "entry_memo": line.entry.memo or "",
-                "line_no": line.line_no,
-                "account_code": line.account.code,
-                "account_name": line.account.name,
-                "account_name_ar": line.account.name_ar,
-                "description": line.description,
-                "debit": str(line.debit),
-                "credit": str(line.credit),
-                "currency": line.currency if line.currency else None,
-                "amount_currency": str(line.amount_currency) if line.amount_currency else None,
-                "exchange_rate": str(line.exchange_rate) if line.exchange_rate else None,
-                "customer_code": line.customer.code if line.customer else None,
-                "customer_name": line.customer.name if line.customer else None,
-                "vendor_code": line.vendor.code if line.vendor else None,
-                "vendor_name": line.vendor.name if line.vendor else None,
-                "analysis": analysis,
-            })
+            data.append(
+                {
+                    "line_id": line.id,
+                    "entry_id": line.entry.id,
+                    "entry_number": line.entry.entry_number,
+                    "entry_date": line.entry.date.isoformat(),
+                    "entry_reference": line.entry.source_document or "",
+                    "entry_memo": line.entry.memo or "",
+                    "line_no": line.line_no,
+                    "account_code": line.account.code,
+                    "account_name": line.account.name,
+                    "account_name_ar": line.account.name_ar,
+                    "description": line.description,
+                    "debit": str(line.debit),
+                    "credit": str(line.credit),
+                    "currency": line.currency if line.currency else None,
+                    "amount_currency": str(line.amount_currency) if line.amount_currency else None,
+                    "exchange_rate": str(line.exchange_rate) if line.exchange_rate else None,
+                    "customer_code": line.customer.code if line.customer else None,
+                    "customer_name": line.customer.name if line.customer else None,
+                    "vendor_code": line.vendor.code if line.vendor else None,
+                    "vendor_name": line.vendor.name if line.vendor else None,
+                    "analysis": analysis,
+                }
+            )
 
-        return Response({
-            "lines": data,
-            "pagination": {
-                "page": page,
-                "page_size": page_size,
-                "total_count": total_count,
-                "total_pages": (total_count + page_size - 1) // page_size,
-            },
-            "totals": {
-                "debit": str(totals["total_debit"] or Decimal("0.00")),
-                "credit": str(totals["total_credit"] or Decimal("0.00")),
-                "net": str((totals["total_debit"] or Decimal("0.00")) - (totals["total_credit"] or Decimal("0.00"))),
-            },
-        })
+        return Response(
+            {
+                "lines": data,
+                "pagination": {
+                    "page": page,
+                    "page_size": page_size,
+                    "total_count": total_count,
+                    "total_pages": (total_count + page_size - 1) // page_size,
+                },
+                "totals": {
+                    "debit": str(totals["total_debit"] or Decimal("0.00")),
+                    "credit": str(totals["total_credit"] or Decimal("0.00")),
+                    "net": str(
+                        (totals["total_debit"] or Decimal("0.00")) - (totals["total_credit"] or Decimal("0.00"))
+                    ),
+                },
+            }
+        )
 
 
 class CashFlowStatementView(APIView):
@@ -4493,13 +4673,14 @@ class CashFlowStatementView(APIView):
     - Investing Activities: Changes in fixed assets, investments
     - Financing Activities: Changes in equity, long-term debt
     """
+
     permission_classes = [IsAuthenticated]
 
     # Mapping of account roles to cash flow categories
     OPERATING_ADJUSTMENTS = [
         "RECEIVABLE_CONTROL",  # AR changes
-        "PAYABLE_CONTROL",     # AP changes
-        "INVENTORY",           # Inventory changes
+        "PAYABLE_CONTROL",  # AP changes
+        "INVENTORY",  # Inventory changes
     ]
     INVESTING_ROLES = [
         "FIXED_ASSET",
@@ -4523,6 +4704,7 @@ class CashFlowStatementView(APIView):
         if not (period_from and period_to and fiscal_year):
             # Default to current year YTD
             from datetime import date
+
             today = date.today()
             fiscal_year = today.year
             period_from = 1
@@ -4532,13 +4714,9 @@ class CashFlowStatementView(APIView):
             period_from = int(period_from)
             period_to = int(period_to)
 
-        return self._generate_cash_flow_statement(
-            actor, fiscal_year, period_from, period_to
-        )
+        return self._generate_cash_flow_statement(actor, fiscal_year, period_from, period_to)
 
-    def _generate_cash_flow_statement(
-        self, actor, fiscal_year: int, period_from: int, period_to: int
-    ):
+    def _generate_cash_flow_statement(self, actor, fiscal_year: int, period_from: int, period_to: int):
         """Generate cash flow statement using indirect method."""
 
         from accounting.models import Account
@@ -4622,16 +4800,18 @@ class CashFlowStatementView(APIView):
                     if role == "RECEIVABLE_CONTROL":
                         adjustment = -period_change  # Increase in AR is negative cash
                     elif role == "PAYABLE_CONTROL":
-                        adjustment = period_change   # Increase in AP is positive cash
+                        adjustment = period_change  # Increase in AP is positive cash
                     else:  # INVENTORY
                         adjustment = -period_change  # Increase in inventory is negative cash
 
-                    operating_adjustments.append({
-                        "code": account.code,
-                        "name": f"Change in {account.name}",
-                        "name_ar": account.name_ar or account.name,
-                        "amount": str(adjustment),
-                    })
+                    operating_adjustments.append(
+                        {
+                            "code": account.code,
+                            "name": f"Change in {account.name}",
+                            "name_ar": account.name_ar or account.name,
+                            "amount": str(adjustment),
+                        }
+                    )
                     total_operating_adjustments += adjustment
 
             elif role in self.INVESTING_ROLES:
@@ -4644,68 +4824,76 @@ class CashFlowStatementView(APIView):
                         adjustment = period_change  # Depreciation is non-cash (add back)
                         # Actually depreciation goes in operating, not investing
                         # Let me adjust this
-                        operating_adjustments.append({
-                            "code": account.code,
-                            "name": "Depreciation",
-                            "name_ar": "الإهلاك",
-                            "amount": str(-adjustment),
-                        })
+                        operating_adjustments.append(
+                            {
+                                "code": account.code,
+                                "name": "Depreciation",
+                                "name_ar": "الإهلاك",
+                                "amount": str(-adjustment),
+                            }
+                        )
                         total_operating_adjustments -= adjustment
                         continue
 
-                    investing_activities.append({
-                        "code": account.code,
-                        "name": account.name,
-                        "name_ar": account.name_ar or account.name,
-                        "amount": str(adjustment),
-                    })
+                    investing_activities.append(
+                        {
+                            "code": account.code,
+                            "name": account.name,
+                            "name_ar": account.name_ar or account.name,
+                            "amount": str(adjustment),
+                        }
+                    )
                     total_investing += adjustment
 
             elif role in self.FINANCING_ROLES:
                 period_change = self._get_account_period_change(actor, account, start_date, end_date)
                 if period_change != Decimal("0.00"):
-                    financing_activities.append({
-                        "code": account.code,
-                        "name": account.name,
-                        "name_ar": account.name_ar or account.name,
-                        "amount": str(period_change),
-                    })
+                    financing_activities.append(
+                        {
+                            "code": account.code,
+                            "name": account.name,
+                            "name_ar": account.name_ar or account.name,
+                            "amount": str(period_change),
+                        }
+                    )
                     total_financing += period_change
 
         # Calculate totals
         cash_from_operations = net_income + total_operating_adjustments
         net_change_in_cash = cash_from_operations + total_investing + total_financing
 
-        return Response({
-            "fiscal_year": fiscal_year,
-            "period_from": period_from,
-            "period_to": period_to,
-            "start_date": start_date.isoformat(),
-            "end_date": end_date.isoformat(),
-            "operating_activities": {
-                "title": "Cash Flows from Operating Activities",
-                "title_ar": "التدفقات النقدية من الأنشطة التشغيلية",
-                "net_income": str(net_income),
-                "adjustments": operating_adjustments,
-                "total_adjustments": str(total_operating_adjustments),
-                "net_cash": str(cash_from_operations),
-            },
-            "investing_activities": {
-                "title": "Cash Flows from Investing Activities",
-                "title_ar": "التدفقات النقدية من الأنشطة الاستثمارية",
-                "items": investing_activities,
-                "total": str(total_investing),
-            },
-            "financing_activities": {
-                "title": "Cash Flows from Financing Activities",
-                "title_ar": "التدفقات النقدية من الأنشطة التمويلية",
-                "items": financing_activities,
-                "total": str(total_financing),
-            },
-            "net_change_in_cash": str(net_change_in_cash),
-            "beginning_cash": str(beginning_cash),
-            "ending_cash": str(ending_cash),
-        })
+        return Response(
+            {
+                "fiscal_year": fiscal_year,
+                "period_from": period_from,
+                "period_to": period_to,
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+                "operating_activities": {
+                    "title": "Cash Flows from Operating Activities",
+                    "title_ar": "التدفقات النقدية من الأنشطة التشغيلية",
+                    "net_income": str(net_income),
+                    "adjustments": operating_adjustments,
+                    "total_adjustments": str(total_operating_adjustments),
+                    "net_cash": str(cash_from_operations),
+                },
+                "investing_activities": {
+                    "title": "Cash Flows from Investing Activities",
+                    "title_ar": "التدفقات النقدية من الأنشطة الاستثمارية",
+                    "items": investing_activities,
+                    "total": str(total_investing),
+                },
+                "financing_activities": {
+                    "title": "Cash Flows from Financing Activities",
+                    "title_ar": "التدفقات النقدية من الأنشطة التمويلية",
+                    "items": financing_activities,
+                    "total": str(total_financing),
+                },
+                "net_change_in_cash": str(net_change_in_cash),
+                "beginning_cash": str(beginning_cash),
+                "ending_cash": str(ending_cash),
+            }
+        )
 
     def _calculate_net_income(self, actor, start_date, end_date):
         """Calculate net income for the period from journal entries."""
@@ -4743,9 +4931,9 @@ class CashFlowStatementView(APIView):
                 elif account.account_type == Account.AccountType.CONTRA_REVENUE:
                     total_revenue -= net
                 elif account.account_type == Account.AccountType.EXPENSE:
-                    total_expenses += (line.debit - line.credit)
+                    total_expenses += line.debit - line.credit
                 elif account.account_type == Account.AccountType.CONTRA_EXPENSE:
-                    total_expenses -= (line.debit - line.credit)
+                    total_expenses -= line.debit - line.credit
 
         return total_revenue - total_expenses
 
@@ -4764,9 +4952,9 @@ class CashFlowStatementView(APIView):
         total_change = Decimal("0.00")
         for line in lines:
             if account.normal_balance == "DEBIT":
-                total_change += (line.debit - line.credit)
+                total_change += line.debit - line.credit
             else:
-                total_change += (line.credit - line.debit)
+                total_change += line.credit - line.debit
 
         return total_change
 
@@ -4774,6 +4962,7 @@ class CashFlowStatementView(APIView):
 # =============================================================================
 # Customer / Vendor Statement Views
 # =============================================================================
+
 
 class CustomerStatementView(APIView):
     """
@@ -4785,6 +4974,7 @@ class CustomerStatementView(APIView):
     - Open invoices and aging breakdown
     - Payment history
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request, code):
@@ -4836,11 +5026,15 @@ class CustomerStatementView(APIView):
             }
 
         # Get transactions (journal lines with customer counterparty)
-        transactions_query = JournalLine.objects.filter(
-            entry__company=actor.company,
-            entry__status="POSTED",
-            customer=customer,
-        ).select_related("entry", "account").order_by("-entry__date", "-entry__id")
+        transactions_query = (
+            JournalLine.objects.filter(
+                entry__company=actor.company,
+                entry__status="POSTED",
+                customer=customer,
+            )
+            .select_related("entry", "account")
+            .order_by("-entry__date", "-entry__id")
+        )
 
         if date_from:
             transactions_query = transactions_query.filter(entry__date__gte=date_from)
@@ -4851,14 +5045,16 @@ class CustomerStatementView(APIView):
         running_balance = Decimal("0.00")
         for line in transactions_query[:100]:  # Limit to 100 transactions
             running_balance += line.debit - line.credit
-            transactions.append({
-                "date": line.entry.date.isoformat(),
-                "entry_number": line.entry.entry_number,
-                "description": line.entry.memo or line.description,
-                "debit": str(line.debit),
-                "credit": str(line.credit),
-                "balance": str(running_balance),
-            })
+            transactions.append(
+                {
+                    "date": line.entry.date.isoformat(),
+                    "entry_number": line.entry.entry_number,
+                    "description": line.entry.memo or line.description,
+                    "debit": str(line.debit),
+                    "credit": str(line.credit),
+                    "balance": str(running_balance),
+                }
+            )
 
         # Reverse for chronological order
         transactions.reverse()
@@ -4874,14 +5070,16 @@ class CustomerStatementView(APIView):
         for inv in invoices:
             amount_due = inv.total_amount - inv.amount_paid
             if amount_due > Decimal("0"):
-                open_invoices.append({
-                    "invoice_number": inv.invoice_number,
-                    "invoice_date": inv.invoice_date.isoformat(),
-                    "due_date": inv.due_date.isoformat() if inv.due_date else None,
-                    "total_amount": str(inv.total_amount),
-                    "amount_paid": str(inv.amount_paid),
-                    "amount_due": str(amount_due),
-                })
+                open_invoices.append(
+                    {
+                        "invoice_number": inv.invoice_number,
+                        "invoice_date": inv.invoice_date.isoformat(),
+                        "due_date": inv.due_date.isoformat() if inv.due_date else None,
+                        "total_amount": str(inv.total_amount),
+                        "amount_paid": str(inv.amount_paid),
+                        "amount_due": str(amount_due),
+                    }
+                )
 
         # Calculate aging buckets
         today = date.today()
@@ -4906,28 +5104,30 @@ class CustomerStatementView(APIView):
             else:
                 aging["over_90"] += amount_due
 
-        return Response({
-            "customer": {
-                "code": customer.code,
-                "name": customer.name,
-                "name_ar": customer.name_ar,
-                "email": customer.email,
-                "phone": customer.phone,
-                "address": customer.address,
-                "credit_limit": str(customer.credit_limit) if customer.credit_limit else None,
-                "payment_terms_days": customer.payment_terms_days,
-            },
-            "balance": balance_data,
-            "transactions": transactions,
-            "open_invoices": open_invoices,
-            "aging": {
-                "current": str(aging["current"]),
-                "days_31_60": str(aging["days_31_60"]),
-                "days_61_90": str(aging["days_61_90"]),
-                "over_90": str(aging["over_90"]),
-                "total": str(sum(aging.values())),
-            },
-        })
+        return Response(
+            {
+                "customer": {
+                    "code": customer.code,
+                    "name": customer.name,
+                    "name_ar": customer.name_ar,
+                    "email": customer.email,
+                    "phone": customer.phone,
+                    "address": customer.address,
+                    "credit_limit": str(customer.credit_limit) if customer.credit_limit else None,
+                    "payment_terms_days": customer.payment_terms_days,
+                },
+                "balance": balance_data,
+                "transactions": transactions,
+                "open_invoices": open_invoices,
+                "aging": {
+                    "current": str(aging["current"]),
+                    "days_31_60": str(aging["days_31_60"]),
+                    "days_61_90": str(aging["days_61_90"]),
+                    "over_90": str(aging["over_90"]),
+                    "total": str(sum(aging.values())),
+                },
+            }
+        )
 
 
 class VendorStatementView(APIView):
@@ -4939,6 +5139,7 @@ class VendorStatementView(APIView):
     - Transaction history
     - Payment history
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request, code):
@@ -4990,11 +5191,15 @@ class VendorStatementView(APIView):
             }
 
         # Get transactions (journal lines with vendor counterparty)
-        transactions_query = JournalLine.objects.filter(
-            entry__company=actor.company,
-            entry__status="POSTED",
-            vendor=vendor,
-        ).select_related("entry", "account").order_by("-entry__date", "-entry__id")
+        transactions_query = (
+            JournalLine.objects.filter(
+                entry__company=actor.company,
+                entry__status="POSTED",
+                vendor=vendor,
+            )
+            .select_related("entry", "account")
+            .order_by("-entry__date", "-entry__id")
+        )
 
         if date_from:
             transactions_query = transactions_query.filter(entry__date__gte=date_from)
@@ -5005,14 +5210,16 @@ class VendorStatementView(APIView):
         running_balance = Decimal("0.00")
         for line in transactions_query[:100]:  # Limit to 100 transactions
             running_balance += line.credit - line.debit  # AP is credit normal
-            transactions.append({
-                "date": line.entry.date.isoformat(),
-                "entry_number": line.entry.entry_number,
-                "description": line.entry.memo or line.description,
-                "debit": str(line.debit),
-                "credit": str(line.credit),
-                "balance": str(running_balance),
-            })
+            transactions.append(
+                {
+                    "date": line.entry.date.isoformat(),
+                    "entry_number": line.entry.entry_number,
+                    "description": line.entry.memo or line.description,
+                    "debit": str(line.debit),
+                    "credit": str(line.credit),
+                    "balance": str(running_balance),
+                }
+            )
 
         # Reverse for chronological order
         transactions.reverse()
@@ -5057,29 +5264,31 @@ class VendorStatementView(APIView):
             else:
                 aging["over_90"] = balance_amount
 
-        return Response({
-            "vendor": {
-                "code": vendor.code,
-                "name": vendor.name,
-                "name_ar": vendor.name_ar,
-                "email": vendor.email,
-                "phone": vendor.phone,
-                "address": vendor.address,
-                "payment_terms_days": vendor.payment_terms_days,
-                "bank_name": vendor.bank_name,
-                "bank_account": vendor.bank_account,
-            },
-            "balance": balance_data,
-            "transactions": transactions,
-            "payment_allocations": payments,
-            "aging": {
-                "current": str(aging["current"]),
-                "days_31_60": str(aging["days_31_60"]),
-                "days_61_90": str(aging["days_61_90"]),
-                "over_90": str(aging["over_90"]),
-                "total": str(sum(aging.values())),
-            },
-        })
+        return Response(
+            {
+                "vendor": {
+                    "code": vendor.code,
+                    "name": vendor.name,
+                    "name_ar": vendor.name_ar,
+                    "email": vendor.email,
+                    "phone": vendor.phone,
+                    "address": vendor.address,
+                    "payment_terms_days": vendor.payment_terms_days,
+                    "bank_name": vendor.bank_name,
+                    "bank_account": vendor.bank_account,
+                },
+                "balance": balance_data,
+                "transactions": transactions,
+                "payment_allocations": payments,
+                "aging": {
+                    "current": str(aging["current"]),
+                    "days_31_60": str(aging["days_31_60"]),
+                    "days_61_90": str(aging["days_61_90"]),
+                    "over_90": str(aging["over_90"]),
+                    "total": str(sum(aging.values())),
+                },
+            }
+        )
 
 
 class CurrencyRevaluationView(APIView):
@@ -5092,6 +5301,7 @@ class CurrencyRevaluationView(APIView):
         Create an adjustment journal entry for the unrealized FX gains/losses.
         Body: { "revaluation_date": "YYYY-MM-DD" }
     """
+
     permission_classes = [IsAuthenticated]
 
     def _calculate_revaluation(self, company, revaluation_date):
@@ -5114,6 +5324,7 @@ class CurrencyRevaluationView(APIView):
 
         # Get FX gain/loss/rounding account IDs to exclude from revaluation
         from accounting.mappings import ModuleAccountMapping
+
         core_mapping = ModuleAccountMapping.get_mapping(company, "core")
         exclude_account_ids = set()
         for role in ("FX_GAIN", "FX_LOSS", "FX_ROUNDING"):
@@ -5125,8 +5336,7 @@ class CurrencyRevaluationView(APIView):
         from django.db.models import Avg
 
         foreign_lines = (
-            JournalLine.objects
-            .filter(
+            JournalLine.objects.filter(
                 company=company,
                 entry__status="POSTED",
                 entry__date__lte=revaluation_date,
@@ -5168,23 +5378,25 @@ class CurrencyRevaluationView(APIView):
                 if avg_rate and avg_rate != Decimal("0"):
                     foreign_amount = (current_functional_balance / avg_rate).quantize(Decimal("0.01"))
                 else:
-                    skipped.append({
-                        "account_code": account_code,
-                        "currency": line_currency,
-                        "reason": "No exchange rate on lines to back-calculate foreign amount",
-                    })
+                    skipped.append(
+                        {
+                            "account_code": account_code,
+                            "currency": line_currency,
+                            "reason": "No exchange rate on lines to back-calculate foreign amount",
+                        }
+                    )
                     continue
 
             # Look up current exchange rate
-            current_rate = ExchangeRate.get_rate(
-                company, line_currency, functional_currency, revaluation_date
-            )
+            current_rate = ExchangeRate.get_rate(company, line_currency, functional_currency, revaluation_date)
             if not current_rate:
-                skipped.append({
-                    "account_code": account_code,
-                    "currency": line_currency,
-                    "reason": f"No {line_currency}→{functional_currency} rate found on or before {revaluation_date}",
-                })
+                skipped.append(
+                    {
+                        "account_code": account_code,
+                        "currency": line_currency,
+                        "reason": f"No {line_currency}→{functional_currency} rate found on or before {revaluation_date}",
+                    }
+                )
                 continue
 
             # Calculate what the balance should be at current rate
@@ -5196,17 +5408,19 @@ class CurrencyRevaluationView(APIView):
             if abs(unrealized) < Decimal("0.01"):
                 continue
 
-            adjustments.append({
-                "account_id": account_id,
-                "account_code": account_code,
-                "account_name": account_name,
-                "currency": line_currency,
-                "foreign_balance": str(foreign_amount),
-                "current_functional_balance": str(current_functional_balance),
-                "current_rate": str(current_rate),
-                "revalued_balance": str(revalued_balance),
-                "unrealized_gain_loss": str(unrealized),
-            })
+            adjustments.append(
+                {
+                    "account_id": account_id,
+                    "account_code": account_code,
+                    "account_name": account_name,
+                    "currency": line_currency,
+                    "foreign_balance": str(foreign_amount),
+                    "current_functional_balance": str(current_functional_balance),
+                    "current_rate": str(current_rate),
+                    "revalued_balance": str(revalued_balance),
+                    "unrealized_gain_loss": str(unrealized),
+                }
+            )
 
             total_gain_loss += unrealized
 
@@ -5221,24 +5435,25 @@ class CurrencyRevaluationView(APIView):
             revaluation_date = date_type.today()
 
         try:
-            adjustments, total_gain_loss, skipped = self._calculate_revaluation(
-                actor.company, revaluation_date
-            )
+            adjustments, total_gain_loss, skipped = self._calculate_revaluation(actor.company, revaluation_date)
         except Exception as e:
             import traceback
+
             return Response(
                 {"error": str(e), "detail": traceback.format_exc()},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        return Response({
-            "revaluation_date": revaluation_date.isoformat(),
-            "functional_currency": actor.company.functional_currency or actor.company.default_currency,
-            "adjustments": adjustments,
-            "total_gain_loss": str(total_gain_loss),
-            "has_adjustments": len(adjustments) > 0,
-            "skipped": skipped,
-        })
+        return Response(
+            {
+                "revaluation_date": revaluation_date.isoformat(),
+                "functional_currency": actor.company.functional_currency or actor.company.default_currency,
+                "adjustments": adjustments,
+                "total_gain_loss": str(total_gain_loss),
+                "has_adjustments": len(adjustments) > 0,
+                "skipped": skipped,
+            }
+        )
 
     def post(self, request):
         """Create a revaluation adjustment journal entry."""
@@ -5251,9 +5466,7 @@ class CurrencyRevaluationView(APIView):
         else:
             revaluation_date = date_type.today()
 
-        adjustments, total_gain_loss, _skipped = self._calculate_revaluation(
-            actor.company, revaluation_date
-        )
+        adjustments, total_gain_loss, _skipped = self._calculate_revaluation(actor.company, revaluation_date)
 
         if not adjustments:
             return Response(
@@ -5263,6 +5476,7 @@ class CurrencyRevaluationView(APIView):
 
         # Idempotency: check if a revaluation entry already exists for this date
         from accounting.models import JournalEntry
+
         reval_memo = f"Currency revaluation as of {revaluation_date.isoformat()}"
         existing = JournalEntry.objects.filter(
             company=actor.company,
@@ -5271,12 +5485,15 @@ class CurrencyRevaluationView(APIView):
         ).first()
         if existing:
             return Response(
-                {"error": f"A revaluation entry for {revaluation_date.isoformat()} already exists (#{existing.id}). Delete it first to re-run."},
+                {
+                    "error": f"A revaluation entry for {revaluation_date.isoformat()} already exists (#{existing.id}). Delete it first to re-run."
+                },
                 status=status.HTTP_409_CONFLICT,
             )
 
         # Clean up any leftover INCOMPLETE revaluation entries from failed attempts
         from accounting.commands import delete_journal_entry
+
         stale = JournalEntry.objects.filter(
             company=actor.company,
             memo=reval_memo,
@@ -5293,17 +5510,23 @@ class CurrencyRevaluationView(APIView):
         from accounting.models import Account
 
         core_mapping = ModuleAccountMapping.get_mapping(actor.company, "core")
-        fx_gain_account = core_mapping.get("FX_GAIN") or Account.objects.filter(
-            company=actor.company,
-            role="FINANCIAL_INCOME",
-            is_postable=True,
-        ).first()
+        fx_gain_account = (
+            core_mapping.get("FX_GAIN")
+            or Account.objects.filter(
+                company=actor.company,
+                role="FINANCIAL_INCOME",
+                is_postable=True,
+            ).first()
+        )
 
-        fx_loss_account = core_mapping.get("FX_LOSS") or Account.objects.filter(
-            company=actor.company,
-            role="FINANCIAL_EXPENSE",
-            is_postable=True,
-        ).first()
+        fx_loss_account = (
+            core_mapping.get("FX_LOSS")
+            or Account.objects.filter(
+                company=actor.company,
+                role="FINANCIAL_EXPENSE",
+                is_postable=True,
+            ).first()
+        )
 
         fx_rounding_account = core_mapping.get("FX_ROUNDING")
 
@@ -5315,6 +5538,7 @@ class CurrencyRevaluationView(APIView):
 
         # Build journal entry lines
         from accounting.commands import create_journal_entry, post_journal_entry, save_journal_entry_complete
+
         functional_currency = actor.company.functional_currency or actor.company.default_currency
 
         # Revaluation lines: amounts are in functional currency but tagged with the
@@ -5327,24 +5551,29 @@ class CurrencyRevaluationView(APIView):
             adj_currency = adj["currency"]
 
             if unrealized > 0:
-                lines.append({
-                    "account_id": account_id,
-                    "description": f"FX revaluation {adj_currency} @ {adj['current_rate']}",
-                    "debit": str(unrealized),
-                    "credit": "0",
-                    "currency": adj_currency,
-                })
+                lines.append(
+                    {
+                        "account_id": account_id,
+                        "description": f"FX revaluation {adj_currency} @ {adj['current_rate']}",
+                        "debit": str(unrealized),
+                        "credit": "0",
+                        "currency": adj_currency,
+                    }
+                )
             else:
-                lines.append({
-                    "account_id": account_id,
-                    "description": f"FX revaluation {adj_currency} @ {adj['current_rate']}",
-                    "debit": "0",
-                    "credit": str(abs(unrealized)),
-                    "currency": adj_currency,
-                })
+                lines.append(
+                    {
+                        "account_id": account_id,
+                        "description": f"FX revaluation {adj_currency} @ {adj['current_rate']}",
+                        "debit": "0",
+                        "credit": str(abs(unrealized)),
+                        "currency": adj_currency,
+                    }
+                )
 
         # Add offsetting FX gain/loss entries per currency
         from collections import defaultdict
+
         gains_by_currency = defaultdict(Decimal)
         losses_by_currency = defaultdict(Decimal)
         for a in adjustments:
@@ -5355,22 +5584,26 @@ class CurrencyRevaluationView(APIView):
                 losses_by_currency[a["currency"]] += abs(amt)
 
         for curr, gain in gains_by_currency.items():
-            lines.append({
-                "account_id": fx_gain_account.id,
-                "description": f"Unrealized FX gain ({curr})",
-                "debit": "0",
-                "credit": str(gain),
-                "currency": curr,
-            })
+            lines.append(
+                {
+                    "account_id": fx_gain_account.id,
+                    "description": f"Unrealized FX gain ({curr})",
+                    "debit": "0",
+                    "credit": str(gain),
+                    "currency": curr,
+                }
+            )
 
         for curr, loss in losses_by_currency.items():
-            lines.append({
-                "account_id": fx_loss_account.id,
-                "description": f"Unrealized FX loss ({curr})",
-                "debit": str(loss),
-                "credit": "0",
-                "currency": curr,
-            })
+            lines.append(
+                {
+                    "account_id": fx_loss_account.id,
+                    "description": f"Unrealized FX loss ({curr})",
+                    "debit": str(loss),
+                    "credit": "0",
+                    "currency": curr,
+                }
+            )
 
         # Add rounding line if entry doesn't balance (penny differences from per-line FX conversion)
         total_debit = sum(Decimal(l["debit"]) for l in lines)
@@ -5380,23 +5613,28 @@ class CurrencyRevaluationView(APIView):
             rounding_account = fx_rounding_account or fx_loss_account
             if diff > 0:
                 # More debits than credits — add credit to rounding
-                lines.append({
-                    "account_id": rounding_account.id,
-                    "description": "FX rounding difference",
-                    "debit": "0",
-                    "credit": str(abs(diff)),
-                })
+                lines.append(
+                    {
+                        "account_id": rounding_account.id,
+                        "description": "FX rounding difference",
+                        "debit": "0",
+                        "credit": str(abs(diff)),
+                    }
+                )
             else:
                 # More credits than debits — add debit to rounding
-                lines.append({
-                    "account_id": rounding_account.id,
-                    "description": "FX rounding difference",
-                    "debit": str(abs(diff)),
-                    "credit": "0",
-                })
+                lines.append(
+                    {
+                        "account_id": rounding_account.id,
+                        "description": "FX rounding difference",
+                        "debit": str(abs(diff)),
+                        "credit": "0",
+                    }
+                )
 
         # Resolve period for the revaluation date
         from projections.models import FiscalPeriod
+
         fp = FiscalPeriod.objects.filter(
             company=actor.company,
             start_date__lte=revaluation_date,
@@ -5408,6 +5646,7 @@ class CurrencyRevaluationView(APIView):
         # Create the JE (include timestamp nonce in memo_ar to avoid event idempotency collision
         # when re-creating after a failed attempt with the same lines)
         import uuid as _uuid
+
         nonce = str(_uuid.uuid4())[:8]
         result = create_journal_entry(
             actor=actor,
@@ -5431,15 +5670,18 @@ class CurrencyRevaluationView(APIView):
         save_result = save_journal_entry_complete(actor=actor, entry_id=entry.id)
         if not save_result.success:
             entry.refresh_from_db()
-            return Response({
-                "message": "Revaluation entry created but could not be finalized.",
-                "entry_id": entry.id,
-                "entry_number": entry.entry_number or "",
-                "total_gain_loss": str(total_gain_loss),
-                "adjustments_count": len(adjustments),
-                "posted": False,
-                "post_error": save_result.error,
-            }, status=status.HTTP_201_CREATED)
+            return Response(
+                {
+                    "message": "Revaluation entry created but could not be finalized.",
+                    "entry_id": entry.id,
+                    "entry_number": entry.entry_number or "",
+                    "total_gain_loss": str(total_gain_loss),
+                    "adjustments_count": len(adjustments),
+                    "posted": False,
+                    "post_error": save_result.error,
+                },
+                status=status.HTTP_201_CREATED,
+            )
 
         entry.refresh_from_db()
         post_result = post_journal_entry(actor=actor, entry_id=entry.id)
@@ -5447,15 +5689,18 @@ class CurrencyRevaluationView(APIView):
         if not post_result.success:
             # Entry was created but could not be auto-posted
             entry.refresh_from_db()
-            return Response({
-                "message": "Revaluation entry created but auto-post failed.",
-                "entry_id": entry.id,
-                "entry_number": entry.entry_number or "",
-                "total_gain_loss": str(total_gain_loss),
-                "adjustments_count": len(adjustments),
-                "posted": False,
-                "post_error": post_result.error,
-            }, status=status.HTTP_201_CREATED)
+            return Response(
+                {
+                    "message": "Revaluation entry created but auto-post failed.",
+                    "entry_id": entry.id,
+                    "entry_number": entry.entry_number or "",
+                    "total_gain_loss": str(total_gain_loss),
+                    "adjustments_count": len(adjustments),
+                    "posted": False,
+                    "post_error": post_result.error,
+                },
+                status=status.HTTP_201_CREATED,
+            )
 
         entry.refresh_from_db()
 
@@ -5484,13 +5729,15 @@ class CurrencyRevaluationView(APIView):
                     # Build reversed lines (swap debit/credit)
                     reversal_lines = []
                     for line in lines:
-                        reversal_lines.append({
-                            "account_id": line["account_id"],
-                            "description": f"Reversal: {line['description']}",
-                            "debit": line["credit"],
-                            "credit": line["debit"],
-                            "currency": line.get("currency"),
-                        })
+                        reversal_lines.append(
+                            {
+                                "account_id": line["account_id"],
+                                "description": f"Reversal: {line['description']}",
+                                "debit": line["credit"],
+                                "credit": line["debit"],
+                                "currency": line.get("currency"),
+                            }
+                        )
 
                     rev_result = create_journal_entry(
                         actor=actor,
@@ -5518,15 +5765,18 @@ class CurrencyRevaluationView(APIView):
                 except Exception as e:
                     logger.warning("Auto-reverse failed for revaluation entry %s: %s", entry.id, e)
 
-        return Response({
-            "message": "Currency revaluation journal entry created and posted.",
-            "entry_id": entry.id,
-            "entry_number": entry.entry_number,
-            "total_gain_loss": str(total_gain_loss),
-            "adjustments_count": len(adjustments),
-            "posted": True,
-            **reversal_info,
-        }, status=status.HTTP_201_CREATED)
+        return Response(
+            {
+                "message": "Currency revaluation journal entry created and posted.",
+                "entry_id": entry.id,
+                "entry_number": entry.entry_number,
+                "total_gain_loss": str(total_gain_loss),
+                "adjustments_count": len(adjustments),
+                "posted": True,
+                **reversal_info,
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class TrialBalanceByCurrencyView(APIView):
@@ -5543,6 +5793,7 @@ class TrialBalanceByCurrencyView(APIView):
     Query params:
     - as_of_date: Optional date cutoff (default: today)
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -5564,16 +5815,18 @@ class TrialBalanceByCurrencyView(APIView):
 
         # Query all posted journal lines grouped by account + currency
         lines_qs = (
-            JournalLine.objects
-            .filter(
+            JournalLine.objects.filter(
                 company=actor.company,
                 entry__status="POSTED",
                 entry__date__lte=as_of_date,
             )
             .exclude(account__ledger_domain__in=["STATISTICAL", "OFF_BALANCE"])
             .values(
-                "account__id", "account__code", "account__name",
-                "account__account_type", "account__normal_balance",
+                "account__id",
+                "account__code",
+                "account__name",
+                "account__account_type",
+                "account__normal_balance",
                 "currency",
             )
             .annotate(
@@ -5609,9 +5862,7 @@ class TrialBalanceByCurrencyView(APIView):
             current_rate = None
             revalued_balance = None
             if is_foreign:
-                current_rate = ExchangeRate.get_rate(
-                    actor.company, line_currency, functional_currency, as_of_date
-                )
+                current_rate = ExchangeRate.get_rate(actor.company, line_currency, functional_currency, as_of_date)
                 if current_rate and foreign_amount != Decimal("0"):
                     revalued_balance = (foreign_amount * current_rate).quantize(Decimal("0.01"))
 
@@ -5620,32 +5871,38 @@ class TrialBalanceByCurrencyView(APIView):
             total_functional_debit += func_debit
             total_functional_credit += func_credit
 
-            rows.append({
-                "account_code": account_code,
-                "account_name": account_name,
-                "account_type": account_type,
-                "normal_balance": normal_balance,
-                "currency": line_currency,
-                "is_foreign": is_foreign,
-                "foreign_debit": str(foreign_amount) if is_foreign and foreign_amount > 0 else "0",
-                "foreign_credit": str(abs(foreign_amount)) if is_foreign and foreign_amount < 0 else "0",
-                "foreign_balance": str(foreign_amount) if is_foreign else None,
-                "functional_debit": str(func_debit),
-                "functional_credit": str(func_credit),
-                "functional_balance": str(functional_balance),
-                "current_rate": str(current_rate) if current_rate else None,
-                "revalued_balance": str(revalued_balance) if revalued_balance is not None else None,
-                "unrealized_gain_loss": str(revalued_balance - functional_balance) if revalued_balance is not None else None,
-            })
+            rows.append(
+                {
+                    "account_code": account_code,
+                    "account_name": account_name,
+                    "account_type": account_type,
+                    "normal_balance": normal_balance,
+                    "currency": line_currency,
+                    "is_foreign": is_foreign,
+                    "foreign_debit": str(foreign_amount) if is_foreign and foreign_amount > 0 else "0",
+                    "foreign_credit": str(abs(foreign_amount)) if is_foreign and foreign_amount < 0 else "0",
+                    "foreign_balance": str(foreign_amount) if is_foreign else None,
+                    "functional_debit": str(func_debit),
+                    "functional_credit": str(func_credit),
+                    "functional_balance": str(functional_balance),
+                    "current_rate": str(current_rate) if current_rate else None,
+                    "revalued_balance": str(revalued_balance) if revalued_balance is not None else None,
+                    "unrealized_gain_loss": str(revalued_balance - functional_balance)
+                    if revalued_balance is not None
+                    else None,
+                }
+            )
 
-        return Response({
-            "as_of_date": as_of_date.isoformat(),
-            "functional_currency": functional_currency,
-            "rows": rows,
-            "total_functional_debit": str(total_functional_debit),
-            "total_functional_credit": str(total_functional_credit),
-            "is_balanced": total_functional_debit == total_functional_credit,
-        })
+        return Response(
+            {
+                "as_of_date": as_of_date.isoformat(),
+                "functional_currency": functional_currency,
+                "rows": rows,
+                "total_functional_debit": str(total_functional_debit),
+                "total_functional_credit": str(total_functional_credit),
+                "is_balanced": total_functional_debit == total_functional_credit,
+            }
+        )
 
 
 class ItemProfitabilityView(APIView):
@@ -5659,12 +5916,13 @@ class ItemProfitabilityView(APIView):
         date_from: Start date (YYYY-MM-DD)
         date_to: End date (YYYY-MM-DD)
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         from decimal import Decimal
 
-        from django.db.models import Q, Sum
+        from django.db.models import Q
 
         from accounting.models import Account, JournalEntry, JournalLine
         from sales.models import Item
@@ -5756,8 +6014,7 @@ class ItemProfitabilityView(APIView):
         total_orders = orders.count()
         gross_profit = total_revenue - total_cogs
         gross_margin = (
-            (gross_profit / total_revenue * 100).quantize(Decimal("0.01"))
-            if total_revenue > 0 else Decimal("0")
+            (gross_profit / total_revenue * 100).quantize(Decimal("0.01")) if total_revenue > 0 else Decimal("0")
         )
 
         # Per-item breakdown from items table
@@ -5765,44 +6022,53 @@ class ItemProfitabilityView(APIView):
         for item in items:
             # Match orders containing this item via ShopifyProduct SKU
             from shopify_connector.models import ShopifyProduct
+
             product_links = ShopifyProduct.objects.filter(
-                company=company, item=item,
+                company=company,
+                item=item,
             ).values_list("shopify_order_id", flat=True)
 
             # Simple revenue estimation from item price × order count
             item_revenue = item.default_unit_price * Decimal(str(len(product_links))) if product_links else Decimal("0")
-            item_cost = item.default_cost * Decimal(str(len(product_links))) if product_links and item.default_cost else Decimal("0")
+            item_cost = (
+                item.default_cost * Decimal(str(len(product_links)))
+                if product_links and item.default_cost
+                else Decimal("0")
+            )
             item_profit = item_revenue - item_cost
             item_margin = (
-                (item_profit / item_revenue * 100).quantize(Decimal("0.01"))
-                if item_revenue > 0 else Decimal("0")
+                (item_profit / item_revenue * 100).quantize(Decimal("0.01")) if item_revenue > 0 else Decimal("0")
             )
 
-            item_rows.append({
-                "code": item.code,
-                "name": item.name,
-                "unit_price": str(item.default_unit_price or 0),
-                "unit_cost": str(item.default_cost or 0),
-                "revenue": str(item_revenue),
-                "cogs": str(item_cost),
-                "gross_profit": str(item_profit),
-                "margin_pct": str(item_margin),
-            })
+            item_rows.append(
+                {
+                    "code": item.code,
+                    "name": item.name,
+                    "unit_price": str(item.default_unit_price or 0),
+                    "unit_cost": str(item.default_cost or 0),
+                    "revenue": str(item_revenue),
+                    "cogs": str(item_cost),
+                    "gross_profit": str(item_profit),
+                    "margin_pct": str(item_margin),
+                }
+            )
 
-        return Response({
-            "date_from": date_from,
-            "date_to": date_to,
-            "summary": {
-                "total_revenue": str(total_revenue),
-                "total_cogs": str(total_cogs),
-                "total_fees": str(fees_total),
-                "gross_profit": str(gross_profit),
-                "gross_margin_pct": str(gross_margin),
-                "net_profit": str(gross_profit - fees_total),
-                "total_orders": total_orders,
-            },
-            "items": item_rows,
-        })
+        return Response(
+            {
+                "date_from": date_from,
+                "date_to": date_to,
+                "summary": {
+                    "total_revenue": str(total_revenue),
+                    "total_cogs": str(total_cogs),
+                    "total_fees": str(fees_total),
+                    "gross_profit": str(gross_profit),
+                    "gross_margin_pct": str(gross_margin),
+                    "net_profit": str(gross_profit - fees_total),
+                    "total_orders": total_orders,
+                },
+                "items": item_rows,
+            }
+        )
 
 
 def _extract_order_ref(memo: str) -> str:
@@ -5820,6 +6086,7 @@ def _extract_order_ref(memo: str) -> str:
 # System Health Diagnostics
 # =============================================================================
 
+
 class SystemHealthView(APIView):
     """
     GET /api/reports/system-health/
@@ -5833,6 +6100,7 @@ class SystemHealthView(APIView):
 
     Returns actionable information with resolution hints.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -5858,83 +6126,120 @@ class SystemHealthView(APIView):
                 pass
 
         total_lag = sum(l["lag"] for l in lagging)
-        checks.append({
-            "check": "projection_lag",
-            "title": "Event Processing",
-            "status": "FAIL" if total_lag > 0 else "PASS",
-            "message": f"{len(lagging)} projection(s) behind ({total_lag} events pending)" if lagging else f"All {len(projections)} projections up to date",
-            "action": "Go to Admin > Projections to trigger processing" if lagging else None,
-            "detail": {"lagging": lagging, "total": len(projections)},
-        })
+        checks.append(
+            {
+                "check": "projection_lag",
+                "title": "Event Processing",
+                "status": "FAIL" if total_lag > 0 else "PASS",
+                "message": f"{len(lagging)} projection(s) behind ({total_lag} events pending)"
+                if lagging
+                else f"All {len(projections)} projections up to date",
+                "action": "Go to Admin > Projections to trigger processing" if lagging else None,
+                "detail": {"lagging": lagging, "total": len(projections)},
+            }
+        )
 
         # 2. INCOMPLETE / DRAFT entries
         incomplete = JournalEntry.objects.filter(
-            company=company, status=JournalEntry.Status.INCOMPLETE,
+            company=company,
+            status=JournalEntry.Status.INCOMPLETE,
         ).count()
         draft = JournalEntry.objects.filter(
-            company=company, status=JournalEntry.Status.DRAFT,
+            company=company,
+            status=JournalEntry.Status.DRAFT,
         ).count()
-        checks.append({
-            "check": "pending_entries",
-            "title": "Entries Needing Attention",
-            "status": "FAIL" if incomplete > 0 else ("WARN" if draft > 0 else "PASS"),
-            "message": f"{incomplete} incomplete, {draft} draft entries" if (incomplete + draft) > 0 else "No pending entries",
-            "action": "Review incomplete entries — they may have failed validation (closed period, inactive account)" if incomplete > 0 else ("Post or delete draft entries before closing the period" if draft > 0 else None),
-            "detail": {"incomplete": incomplete, "draft": draft},
-        })
+        checks.append(
+            {
+                "check": "pending_entries",
+                "title": "Entries Needing Attention",
+                "status": "FAIL" if incomplete > 0 else ("WARN" if draft > 0 else "PASS"),
+                "message": f"{incomplete} incomplete, {draft} draft entries"
+                if (incomplete + draft) > 0
+                else "No pending entries",
+                "action": "Review incomplete entries — they may have failed validation (closed period, inactive account)"
+                if incomplete > 0
+                else ("Post or delete draft entries before closing the period" if draft > 0 else None),
+                "detail": {"incomplete": incomplete, "draft": draft},
+            }
+        )
 
         # 3. Trial balance
         agg = JournalLine.objects.filter(
-            company=company, entry__status=JournalEntry.Status.POSTED,
+            company=company,
+            entry__status=JournalEntry.Status.POSTED,
         ).aggregate(total_debit=Sum("debit"), total_credit=Sum("credit"))
         total_debit = agg["total_debit"] or Decimal("0")
         total_credit = agg["total_credit"] or Decimal("0")
         tb_diff = total_debit - total_credit
-        checks.append({
-            "check": "trial_balance",
-            "title": "Trial Balance",
-            "status": "FAIL" if tb_diff != Decimal("0") else "PASS",
-            "message": f"Balanced: DR=CR={total_debit}" if tb_diff == Decimal("0") else f"Out of balance by {tb_diff}",
-            "action": "Trial balance imbalance indicates a system error. Contact support." if tb_diff != Decimal("0") else None,
-            "detail": {"total_debit": str(total_debit), "total_credit": str(total_credit), "difference": str(tb_diff)},
-        })
+        checks.append(
+            {
+                "check": "trial_balance",
+                "title": "Trial Balance",
+                "status": "FAIL" if tb_diff != Decimal("0") else "PASS",
+                "message": f"Balanced: DR=CR={total_debit}"
+                if tb_diff == Decimal("0")
+                else f"Out of balance by {tb_diff}",
+                "action": "Trial balance imbalance indicates a system error. Contact support."
+                if tb_diff != Decimal("0")
+                else None,
+                "detail": {
+                    "total_debit": str(total_debit),
+                    "total_credit": str(total_credit),
+                    "difference": str(tb_diff),
+                },
+            }
+        )
 
         # 4. Subledger tie-out
         try:
             from accounting.policies import validate_subledger_tieout
+
             is_valid, errors = validate_subledger_tieout(company)
-            checks.append({
-                "check": "subledger_tieout",
-                "title": "AR/AP Subledger",
-                "status": "PASS" if is_valid else "WARN",
-                "message": "AR/AP subledgers tie out to GL" if is_valid else f"Imbalance: {'; '.join(errors[:2])}",
-                "action": "Review customer/vendor balances and compare to AR/AP control accounts" if not is_valid else None,
-                "detail": {"balanced": is_valid, "errors": errors},
-            })
+            checks.append(
+                {
+                    "check": "subledger_tieout",
+                    "title": "AR/AP Subledger",
+                    "status": "PASS" if is_valid else "WARN",
+                    "message": "AR/AP subledgers tie out to GL" if is_valid else f"Imbalance: {'; '.join(errors[:2])}",
+                    "action": "Review customer/vendor balances and compare to AR/AP control accounts"
+                    if not is_valid
+                    else None,
+                    "detail": {"balanced": is_valid, "errors": errors},
+                }
+            )
         except Exception:
-            checks.append({
-                "check": "subledger_tieout",
-                "title": "AR/AP Subledger",
-                "status": "WARN",
-                "message": "Could not verify subledger tie-out",
-                "action": None,
-                "detail": {},
-            })
+            checks.append(
+                {
+                    "check": "subledger_tieout",
+                    "title": "AR/AP Subledger",
+                    "status": "WARN",
+                    "message": "Could not verify subledger tie-out",
+                    "action": None,
+                    "detail": {},
+                }
+            )
 
         # 5. Shopify clearing balance (if module active)
         try:
             from shopify_connector.management.commands.check_clearing_balance import compute_clearing_balance
+
             clearing_data = compute_clearing_balance(company)
             if clearing_data:
                 balance = Decimal(clearing_data["balance"])
-                checks.append({
-                    "check": "shopify_clearing",
-                    "title": "Shopify Clearing Balance",
-                    "status": "PASS" if balance == Decimal("0") else "WARN",
-                    "message": f"Clearing balance: {balance}" if balance != Decimal("0") else "Clearing balance is zero",
-                    "action": "Non-zero clearing balance may indicate unsettled orders or pending payouts. Check Shopify > Reconciliation." if balance != Decimal("0") else None,
-                    "detail": clearing_data,
-                })
+                checks.append(
+                    {
+                        "check": "shopify_clearing",
+                        "title": "Shopify Clearing Balance",
+                        "status": "PASS" if balance == Decimal("0") else "WARN",
+                        "message": f"Clearing balance: {balance}"
+                        if balance != Decimal("0")
+                        else "Clearing balance is zero",
+                        "action": "Non-zero clearing balance may indicate unsettled orders or pending payouts. Check Shopify > Reconciliation."
+                        if balance != Decimal("0")
+                        else None,
+                        "detail": clearing_data,
+                    }
+                )
         except Exception:
             pass  # Shopify module not active — skip silently
 
@@ -5942,21 +6247,26 @@ class SystemHealthView(APIView):
         warned = sum(1 for c in checks if c["status"] == "WARN")
         failed = sum(1 for c in checks if c["status"] == "FAIL")
 
-        return Response({
-            "checks": checks,
-            "summary": {
-                "passed": passed,
-                "warned": warned,
-                "failed": failed,
-                "total": len(checks),
-                "overall": "healthy" if failed == 0 and warned == 0 else ("attention" if failed == 0 else "unhealthy"),
-            },
-        })
+        return Response(
+            {
+                "checks": checks,
+                "summary": {
+                    "passed": passed,
+                    "warned": warned,
+                    "failed": failed,
+                    "total": len(checks),
+                    "overall": "healthy"
+                    if failed == 0 and warned == 0
+                    else ("attention" if failed == 0 else "unhealthy"),
+                },
+            }
+        )
 
 
 # =============================================================================
 # Month-End Close Wizard
 # =============================================================================
+
 
 class MonthEndCloseView(APIView):
     """
@@ -5968,6 +6278,7 @@ class MonthEndCloseView(APIView):
     Returns structured check results with actionable resolution hints
     for each failure, so operators can self-serve without engineering.
     """
+
     permission_classes = [IsAuthenticated]
 
     # Resolution hints per check type
@@ -6056,6 +6367,7 @@ class MonthEndCloseView(APIView):
 
         # Find the current fiscal period for this month
         from projections.models import FiscalPeriod
+
         fiscal_period = FiscalPeriod.objects.filter(
             company=company,
             start_date__lte=date_to,
@@ -6063,55 +6375,86 @@ class MonthEndCloseView(APIView):
             period_type=FiscalPeriod.PeriodType.NORMAL,
         ).first()
 
-        return Response({
-            "company": company.slug,
-            "period": f"{year}-{month:02d}",
-            "date_from": str(date_from),
-            "date_to": str(date_to),
-            "fiscal_period": {
-                "fiscal_year": fiscal_period.fiscal_year,
-                "period": fiscal_period.period,
-                "status": fiscal_period.status,
-            } if fiscal_period else None,
-            "passed": passed,
-            "warned": warned,
-            "failed": failed,
-            "ready_to_close": failed == 0,
-            "checks": checks,
-        })
+        return Response(
+            {
+                "company": company.slug,
+                "period": f"{year}-{month:02d}",
+                "date_from": str(date_from),
+                "date_to": str(date_to),
+                "fiscal_period": {
+                    "fiscal_year": fiscal_period.fiscal_year,
+                    "period": fiscal_period.period,
+                    "status": fiscal_period.status,
+                }
+                if fiscal_period
+                else None,
+                "passed": passed,
+                "warned": warned,
+                "failed": failed,
+                "ready_to_close": failed == 0,
+                "checks": checks,
+            }
+        )
 
     # ── Check methods (adapted from pilot_readiness.py) ──
 
     def _check_store(self, company):
         try:
             from shopify_connector.models import ShopifyStore
+
             stores = list(ShopifyStore.objects.filter(company=company, status=ShopifyStore.Status.ACTIVE))
             if not stores:
                 return self._result("shopify_store", "Shopify Connection", "FAIL", "No active Shopify store connected.")
             issues = [f"{s.shop_domain}: webhooks not registered" for s in stores if not s.webhooks_registered]
             if issues:
-                return self._result("shopify_store", "Shopify Connection", "WARN", f"Store connected but: {'; '.join(issues)}", {"stores": len(stores)})
-            return self._result("shopify_store", "Shopify Connection", "PASS", f"{len(stores)} store(s) connected, webhooks OK.", {"stores": len(stores)})
+                return self._result(
+                    "shopify_store",
+                    "Shopify Connection",
+                    "WARN",
+                    f"Store connected but: {'; '.join(issues)}",
+                    {"stores": len(stores)},
+                )
+            return self._result(
+                "shopify_store",
+                "Shopify Connection",
+                "PASS",
+                f"{len(stores)} store(s) connected, webhooks OK.",
+                {"stores": len(stores)},
+            )
         except Exception:
             return self._result("shopify_store", "Shopify Connection", "PASS", "Shopify module not active (skipped).")
 
     def _check_account_mapping(self, company):
         try:
             from accounting.mappings import ModuleAccountMapping
+
             required = ["SALES_REVENUE", "SHOPIFY_CLEARING", "CASH_BANK", "PAYMENT_PROCESSING_FEES"]
             optional = ["SALES_TAX_PAYABLE", "SALES_DISCOUNTS", "SHIPPING_REVENUE", "CHARGEBACK_EXPENSE"]
             missing_req = [r for r in required if not ModuleAccountMapping.get_account(company, "shopify_connector", r)]
             missing_opt = [r for r in optional if not ModuleAccountMapping.get_account(company, "shopify_connector", r)]
             if missing_req:
-                return self._result("account_mapping", "Account Mapping", "FAIL", f"Missing required: {', '.join(missing_req)}", {"missing_required": missing_req})
+                return self._result(
+                    "account_mapping",
+                    "Account Mapping",
+                    "FAIL",
+                    f"Missing required: {', '.join(missing_req)}",
+                    {"missing_required": missing_req},
+                )
             if missing_opt:
-                return self._result("account_mapping", "Account Mapping", "WARN", f"Optional missing: {', '.join(missing_opt)}", {"missing_optional": missing_opt})
+                return self._result(
+                    "account_mapping",
+                    "Account Mapping",
+                    "WARN",
+                    f"Optional missing: {', '.join(missing_opt)}",
+                    {"missing_optional": missing_opt},
+                )
             return self._result("account_mapping", "Account Mapping", "PASS", "All account roles mapped.")
         except Exception:
             return self._result("account_mapping", "Account Mapping", "PASS", "Shopify module not active (skipped).")
 
     def _check_projection_lag(self, company):
         from projections.base import projection_registry
+
         projections = projection_registry.all()
         lagging = []
         for proj in projections:
@@ -6122,27 +6465,67 @@ class MonthEndCloseView(APIView):
             except Exception:
                 pass
         if lagging:
-            return self._result("projection_lag", "Event Processing", "FAIL", f"{len(lagging)} projection(s) behind", {"lagging": lagging})
-        return self._result("projection_lag", "Event Processing", "PASS", f"All {len(projections)} projections caught up.")
+            return self._result(
+                "projection_lag",
+                "Event Processing",
+                "FAIL",
+                f"{len(lagging)} projection(s) behind",
+                {"lagging": lagging},
+            )
+        return self._result(
+            "projection_lag", "Event Processing", "PASS", f"All {len(projections)} projections caught up."
+        )
 
     def _check_reconciliation(self, company, date_from, date_to):
         try:
             from shopify_connector.reconciliation import reconciliation_summary
+
             summary = reconciliation_summary(company, date_from, date_to)
             if summary.total_payouts == 0:
-                return self._result("reconciliation", "Shopify Reconciliation", "WARN", "No payouts found in period.", {"total_payouts": 0})
-            detail = {"total_payouts": summary.total_payouts, "verified": summary.verified_payouts, "match_rate": str(summary.match_rate)}
+                return self._result(
+                    "reconciliation",
+                    "Shopify Reconciliation",
+                    "WARN",
+                    "No payouts found in period.",
+                    {"total_payouts": 0},
+                )
+            detail = {
+                "total_payouts": summary.total_payouts,
+                "verified": summary.verified_payouts,
+                "match_rate": str(summary.match_rate),
+            }
             if summary.discrepancy_payouts > 0:
-                return self._result("reconciliation", "Shopify Reconciliation", "FAIL", f"{summary.discrepancy_payouts} payout(s) with discrepancies", detail)
+                return self._result(
+                    "reconciliation",
+                    "Shopify Reconciliation",
+                    "FAIL",
+                    f"{summary.discrepancy_payouts} payout(s) with discrepancies",
+                    detail,
+                )
             if summary.unverified_payouts > 0 or summary.match_rate < Decimal("90"):
-                return self._result("reconciliation", "Shopify Reconciliation", "WARN", f"{summary.verified_payouts}/{summary.total_payouts} verified, match rate {summary.match_rate}%", detail)
-            return self._result("reconciliation", "Shopify Reconciliation", "PASS", f"All {summary.total_payouts} payouts verified, {summary.match_rate}% match rate.", detail)
+                return self._result(
+                    "reconciliation",
+                    "Shopify Reconciliation",
+                    "WARN",
+                    f"{summary.verified_payouts}/{summary.total_payouts} verified, match rate {summary.match_rate}%",
+                    detail,
+                )
+            return self._result(
+                "reconciliation",
+                "Shopify Reconciliation",
+                "PASS",
+                f"All {summary.total_payouts} payouts verified, {summary.match_rate}% match rate.",
+                detail,
+            )
         except Exception:
-            return self._result("reconciliation", "Shopify Reconciliation", "PASS", "Shopify module not active (skipped).")
+            return self._result(
+                "reconciliation", "Shopify Reconciliation", "PASS", "Shopify module not active (skipped)."
+            )
 
     def _check_clearing_balance(self, company):
         try:
             from shopify_connector.management.commands.check_clearing_balance import compute_clearing_balance
+
             data = compute_clearing_balance(company)
             if data is None:
                 return self._result("clearing_balance", "Clearing Balance", "WARN", "No clearing account mapped.")
@@ -6156,31 +6539,70 @@ class MonthEndCloseView(APIView):
     def _check_subledger_tieout(self, company):
         try:
             from accounting.policies import validate_subledger_tieout
+
             is_valid, errors = validate_subledger_tieout(company)
             if not is_valid:
-                return self._result("subledger_tieout", "AR/AP Tie-Out", "WARN", f"Imbalance: {'; '.join(errors[:2])}", {"errors": errors})
+                return self._result(
+                    "subledger_tieout",
+                    "AR/AP Tie-Out",
+                    "WARN",
+                    f"Imbalance: {'; '.join(errors[:2])}",
+                    {"errors": errors},
+                )
             return self._result("subledger_tieout", "AR/AP Tie-Out", "PASS", "AR/AP subledgers tie out to GL.")
         except Exception as e:
             return self._result("subledger_tieout", "AR/AP Tie-Out", "WARN", f"Check failed: {e}")
 
     def _check_trial_balance(self, company, as_of_date):
         from django.db.models import Sum
+
         from accounting.models import JournalEntry, JournalLine
-        agg = JournalLine.objects.filter(company=company, entry__status=JournalEntry.Status.POSTED, entry__date__lte=as_of_date).aggregate(total_debit=Sum("debit"), total_credit=Sum("credit"))
+
+        agg = JournalLine.objects.filter(
+            company=company, entry__status=JournalEntry.Status.POSTED, entry__date__lte=as_of_date
+        ).aggregate(total_debit=Sum("debit"), total_credit=Sum("credit"))
         total_debit = agg["total_debit"] or Decimal("0")
         total_credit = agg["total_credit"] or Decimal("0")
         diff = total_debit - total_credit
         if diff != Decimal("0"):
-            return self._result("trial_balance", "Trial Balance", "FAIL", f"Out of balance by {diff}", {"total_debit": str(total_debit), "total_credit": str(total_credit)})
-        return self._result("trial_balance", "Trial Balance", "PASS", f"Balanced: DR=CR={total_debit}", {"total_debit": str(total_debit), "total_credit": str(total_credit)})
+            return self._result(
+                "trial_balance",
+                "Trial Balance",
+                "FAIL",
+                f"Out of balance by {diff}",
+                {"total_debit": str(total_debit), "total_credit": str(total_credit)},
+            )
+        return self._result(
+            "trial_balance",
+            "Trial Balance",
+            "PASS",
+            f"Balanced: DR=CR={total_debit}",
+            {"total_debit": str(total_debit), "total_credit": str(total_credit)},
+        )
 
     def _check_draft_entries(self, company, date_from, date_to):
         from accounting.models import JournalEntry
-        drafts = JournalEntry.objects.filter(company=company, date__gte=date_from, date__lte=date_to, status__in=[JournalEntry.Status.DRAFT, JournalEntry.Status.INCOMPLETE]).count()
-        posted = JournalEntry.objects.filter(company=company, date__gte=date_from, date__lte=date_to, status=JournalEntry.Status.POSTED).count()
+
+        drafts = JournalEntry.objects.filter(
+            company=company,
+            date__gte=date_from,
+            date__lte=date_to,
+            status__in=[JournalEntry.Status.DRAFT, JournalEntry.Status.INCOMPLETE],
+        ).count()
+        posted = JournalEntry.objects.filter(
+            company=company, date__gte=date_from, date__lte=date_to, status=JournalEntry.Status.POSTED
+        ).count()
         if drafts > 0:
-            return self._result("draft_entries", "Pending Entries", "FAIL", f"{drafts} draft/incomplete entries need attention", {"drafts": drafts, "posted": posted})
-        return self._result("draft_entries", "Pending Entries", "PASS", f"All {posted} entries posted.", {"posted": posted})
+            return self._result(
+                "draft_entries",
+                "Pending Entries",
+                "FAIL",
+                f"{drafts} draft/incomplete entries need attention",
+                {"drafts": drafts, "posted": posted},
+            )
+        return self._result(
+            "draft_entries", "Pending Entries", "PASS", f"All {posted} entries posted.", {"posted": posted}
+        )
 
     def _result(self, check, title, check_status, message, detail=None):
         return {"check": check, "title": title, "status": check_status, "message": message, "detail": detail or {}}
