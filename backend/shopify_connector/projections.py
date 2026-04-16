@@ -71,9 +71,11 @@ def _resolve_store_domain(company, store_public_id):
     if not store_public_id:
         return None
     from shopify_connector.models import ShopifyStore
+
     try:
         return ShopifyStore.objects.values_list("shop_domain", flat=True).get(
-            company=company, public_id=store_public_id,
+            company=company,
+            public_id=store_public_id,
         )
     except ShopifyStore.DoesNotExist:
         return None
@@ -81,6 +83,7 @@ def _resolve_store_domain(company, store_public_id):
 
 class MissingExchangeRate(Exception):
     """Raised when a required exchange rate is not configured."""
+
     pass
 
 
@@ -170,33 +173,42 @@ def _fix_fx_rounding(lines, entry, company, currency, fx_rate):
     if diff > 0:
         # Debits exceed credits — add credit rounding line
         rounding_line = JournalLine(
-            entry=entry, company=company,
-            public_id=uuid.uuid4(), line_no=next_line_no,
+            entry=entry,
+            company=company,
+            public_id=uuid.uuid4(),
+            line_no=next_line_no,
             account=rounding_account,
             description="FX rounding adjustment",
-            debit=Decimal("0"), credit=diff,
-            currency=currency, exchange_rate=fx_rate,
+            debit=Decimal("0"),
+            credit=diff,
+            currency=currency,
+            exchange_rate=fx_rate,
         )
     else:
         # Credits exceed debits — add debit rounding line
         rounding_line = JournalLine(
-            entry=entry, company=company,
-            public_id=uuid.uuid4(), line_no=next_line_no,
+            entry=entry,
+            company=company,
+            public_id=uuid.uuid4(),
+            line_no=next_line_no,
             account=rounding_account,
             description="FX rounding adjustment",
-            debit=abs(diff), credit=Decimal("0"),
-            currency=currency, exchange_rate=fx_rate,
+            debit=abs(diff),
+            credit=Decimal("0"),
+            currency=currency,
+            exchange_rate=fx_rate,
         )
 
     lines.append(rounding_line)
     logger.info(
         "FX rounding line added: %s %s to account %s",
-        "CR" if diff > 0 else "DR", abs(diff), rounding_account.code,
+        "CR" if diff > 0 else "DR",
+        abs(diff),
+        rounding_account.code,
     )
 
 
-def _ensure_dimension_and_value(company, dim_code, dim_name, dim_name_ar, val_code, val_name,
-                                applies_to=None):
+def _ensure_dimension_and_value(company, dim_code, dim_name, dim_name_ar, val_code, val_name, applies_to=None):
     """
     Ensure an AnalysisDimension and AnalysisDimensionValue exist.
     Creates them if missing. Idempotent.
@@ -208,7 +220,8 @@ def _ensure_dimension_and_value(company, dim_code, dim_name, dim_name_ar, val_co
     from accounting.models import AnalysisDimension, AnalysisDimensionValue
 
     dim, _ = AnalysisDimension.objects.projection().get_or_create(
-        company=company, code=dim_code,
+        company=company,
+        code=dim_code,
         defaults={
             "name": dim_name,
             "name_ar": dim_name_ar,
@@ -220,7 +233,9 @@ def _ensure_dimension_and_value(company, dim_code, dim_name, dim_name_ar, val_co
     )
 
     AnalysisDimensionValue.objects.projection().get_or_create(
-        dimension=dim, code=val_code, company=company,
+        dimension=dim,
+        code=val_code,
+        company=company,
         defaults={
             "name": val_name,
             "is_active": True,
@@ -294,9 +309,9 @@ class ShopifyAccountingHandler(BaseProjection):
         mapping = ModuleAccountMapping.get_mapping(company, MODULE_NAME)
         if not mapping:
             logger.warning(
-                "No ModuleAccountMapping for shopify_connector module, "
-                "company %s — skipping %s",
-                company, event.event_type,
+                "No ModuleAccountMapping for shopify_connector module, company %s — skipping %s",
+                company,
+                event.event_type,
             )
             return
 
@@ -318,9 +333,12 @@ class ShopifyAccountingHandler(BaseProjection):
             except MissingExchangeRate as exc:
                 logger.error(
                     "Missing exchange rate for %s event %s: %s",
-                    event.event_type, event.id, exc,
+                    event.event_type,
+                    event.id,
+                    exc,
                 )
                 from accounts.models import Notification
+
                 Notification.notify_company_admins(
                     company=company,
                     title="Missing exchange rate — Shopify entry skipped",
@@ -328,6 +346,7 @@ class ShopifyAccountingHandler(BaseProjection):
                     level=Notification.Level.ERROR,
                     source_module="shopify_connector",
                 )
+                raise
 
     def _resolve_dimensions(self, company, data):
         """
@@ -356,14 +375,18 @@ class ShopifyAccountingHandler(BaseProjection):
         shopify_order_id = data.get("shopify_order_id")
         if shopify_order_id:
             from shopify_connector.models import ShopifyOrder
+
             order_record = ShopifyOrder.objects.filter(
-                company=company, shopify_order_id=shopify_order_id,
+                company=company,
+                shopify_order_id=shopify_order_id,
             ).first()
             if order_record and order_record.raw_payload:
                 raw = order_record.raw_payload
 
         # 1. CHANNEL — always Shopify (relevant on Revenue + COGS)
-        _ensure_dimension_and_value(company, "CHANNEL", "Sales Channel", "قناة البيع", "SHOPIFY", "Shopify", _REVENUE_COGS)
+        _ensure_dimension_and_value(
+            company, "CHANNEL", "Sales Channel", "قناة البيع", "SHOPIFY", "Shopify", _REVENUE_COGS
+        )
         context["CHANNEL"] = "SHOPIFY"
 
         # 2. PRODUCT — SKU from first line item (Revenue + COGS + Inventory)
@@ -373,21 +396,27 @@ class ShopifyAccountingHandler(BaseProjection):
             sku = first_item.get("sku", "")
             title = first_item.get("title", "")
             if sku:
-                _ensure_dimension_and_value(company, "PRODUCT", "Product", "المنتج", sku, title or sku, _REVENUE_COGS_INV)
+                _ensure_dimension_and_value(
+                    company, "PRODUCT", "Product", "المنتج", sku, title or sku, _REVENUE_COGS_INV
+                )
                 context["PRODUCT"] = sku
 
             # 3. CATEGORY — product_type (Revenue + COGS)
             product_type = first_item.get("product_type", "")
             if product_type:
                 val_code = product_type.upper().replace(" ", "_")[:20]
-                _ensure_dimension_and_value(company, "CATEGORY", "Product Category", "فئة المنتج", val_code, product_type, _REVENUE_COGS)
+                _ensure_dimension_and_value(
+                    company, "CATEGORY", "Product Category", "فئة المنتج", val_code, product_type, _REVENUE_COGS
+                )
                 context["CATEGORY"] = val_code
 
             # 4. VENDOR — brand/supplier (Revenue + COGS + Inventory)
             vendor = first_item.get("vendor", "")
             if vendor:
                 val_code = vendor.upper().replace(" ", "_")[:20]
-                _ensure_dimension_and_value(company, "VENDOR", "Vendor / Brand", "المورد / العلامة", val_code, vendor, _REVENUE_COGS_INV)
+                _ensure_dimension_and_value(
+                    company, "VENDOR", "Vendor / Brand", "المورد / العلامة", val_code, vendor, _REVENUE_COGS_INV
+                )
                 context["VENDOR"] = val_code
 
         # 5. REGION — shipping country (Revenue + COGS)
@@ -396,7 +425,9 @@ class ShopifyAccountingHandler(BaseProjection):
         if country:
             val_code = country.upper()[:20]
             country_name = shipping.get("country", country)
-            _ensure_dimension_and_value(company, "REGION", "Region / Country", "المنطقة / الدولة", val_code, country_name, _REVENUE_COGS)
+            _ensure_dimension_and_value(
+                company, "REGION", "Region / Country", "المنطقة / الدولة", val_code, country_name, _REVENUE_COGS
+            )
             context["REGION"] = val_code
 
         # 6. CITY — shipping city (Revenue + COGS)
@@ -410,14 +441,18 @@ class ShopifyAccountingHandler(BaseProjection):
         source_name = raw.get("source_name", "")
         if source_name:
             val_code = source_name.upper()[:20]
-            _ensure_dimension_and_value(company, "SOURCE", "Order Source", "مصدر الطلب", val_code, source_name, _REVENUE_ONLY)
+            _ensure_dimension_and_value(
+                company, "SOURCE", "Order Source", "مصدر الطلب", val_code, source_name, _REVENUE_ONLY
+            )
             context["SOURCE"] = val_code
 
         # 8. PAY_METHOD — payment gateway (Fees + Clearing)
         gateway = data.get("gateway", "") or raw.get("gateway", "")
         if gateway:
             val_code = gateway.upper().replace(" ", "_")[:20]
-            _ensure_dimension_and_value(company, "PAY_METHOD", "Payment Method", "طريقة الدفع", val_code, gateway, _FEES_CLEARING)
+            _ensure_dimension_and_value(
+                company, "PAY_METHOD", "Payment Method", "طريقة الدفع", val_code, gateway, _FEES_CLEARING
+            )
             context["PAY_METHOD"] = val_code
 
         # 9. PROMOTION — discount codes (Revenue only)
@@ -426,7 +461,9 @@ class ShopifyAccountingHandler(BaseProjection):
             code = discount_codes[0].get("code", "")
             if code:
                 val_code = code.upper()[:20]
-                _ensure_dimension_and_value(company, "PROMOTION", "Promotion / Discount", "العرض / الخصم", val_code, code, _REVENUE_ONLY)
+                _ensure_dimension_and_value(
+                    company, "PROMOTION", "Promotion / Discount", "العرض / الخصم", val_code, code, _REVENUE_ONLY
+                )
                 context["PROMOTION"] = val_code
 
         # 10. CAMPAIGN — order tags (Revenue + COGS)
@@ -435,13 +472,16 @@ class ShopifyAccountingHandler(BaseProjection):
             first_tag = tags_str.split(",")[0].strip()
             if first_tag:
                 val_code = first_tag.upper().replace(" ", "_")[:20]
-                _ensure_dimension_and_value(company, "CAMPAIGN", "Campaign / Tag", "الحملة", val_code, first_tag, _REVENUE_COGS)
+                _ensure_dimension_and_value(
+                    company, "CAMPAIGN", "Campaign / Tag", "الحملة", val_code, first_tag, _REVENUE_COGS
+                )
                 context["CAMPAIGN"] = val_code
 
         # 11. REFERRER — referring site (Revenue only)
         referring_site = raw.get("referring_site", "")
         if referring_site:
             from urllib.parse import urlparse
+
             try:
                 domain = urlparse(referring_site).netloc or referring_site
             except Exception:
@@ -457,7 +497,9 @@ class ShopifyAccountingHandler(BaseProjection):
             first_tag = customer_tags.split(",")[0].strip()
             if first_tag:
                 val_code = first_tag.upper().replace(" ", "_")[:20]
-                _ensure_dimension_and_value(company, "CUST_SEGMENT", "Customer Segment", "شريحة العملاء", val_code, first_tag, _REVENUE_COGS)
+                _ensure_dimension_and_value(
+                    company, "CUST_SEGMENT", "Customer Segment", "شريحة العملاء", val_code, first_tag, _REVENUE_COGS
+                )
                 context["CUST_SEGMENT"] = val_code
 
         # Also include platform connector dimensions if available
@@ -465,6 +507,7 @@ class ShopifyAccountingHandler(BaseProjection):
         shop_domain = _resolve_store_domain(company, store_public_id)
         try:
             from platform_connectors.dimensions import resolve_platform_dimensions
+
             platform_dims = resolve_platform_dimensions(company, "shopify", shop_domain)
             context.update(platform_dims)
         except Exception:
@@ -478,6 +521,7 @@ class ShopifyAccountingHandler(BaseProjection):
             return
         try:
             from platform_connectors.je_builder import _attach_dimensions
+
             _attach_dimensions(company, lines, dimension_context)
         except Exception:
             logger.debug("Could not attach dimensions — platform_connectors not available")
@@ -511,18 +555,15 @@ class ShopifyAccountingHandler(BaseProjection):
         entry.save(update_fields=["status", "posted_at"])
 
         # Build actionable resolution message
-        error_str = '; '.join(errors)
+        error_str = "; ".join(errors)
         resolution = self._resolve_action(errors)
 
         from accounts.models import Notification
+
         Notification.notify_company_admins(
             company=entry.company,
             title=f"Shopify entry needs review: {memo}",
-            message=(
-                f"Journal entry '{memo}' was saved as INCOMPLETE. "
-                f"Reason: {error_str}. "
-                f"Action: {resolution}"
-            ),
+            message=(f"Journal entry '{memo}' was saved as INCOMPLETE. Reason: {error_str}. Action: {resolution}"),
             level=Notification.Level.ERROR,
             link=f"/accounting/journal-entries/{entry.id}",
             source_module="shopify_connector",
@@ -536,7 +577,9 @@ class ShopifyAccountingHandler(BaseProjection):
             if "period" in e and "closed" in e:
                 return "Go to Settings > Periods and reopen the period, then post this entry manually from Journal Entries."
             if "fiscal year" in e and "closed" in e:
-                return "The fiscal year is closed. Go to Settings > Periods to reopen the year if adjustments are needed."
+                return (
+                    "The fiscal year is closed. Go to Settings > Periods to reopen the year if adjustments are needed."
+                )
             if "inactive" in e:
                 return "One or more mapped accounts are inactive. Go to Settings > Shopify > Account Mapping and update to active accounts."
             if "header" in e:
@@ -561,9 +604,9 @@ class ShopifyAccountingHandler(BaseProjection):
         revenue = mapping.get(ROLE_SALES_REVENUE)
         if not ar or not revenue:
             logger.warning(
-                "Shopify account mapping missing SHOPIFY_CLEARING or SALES_REVENUE "
-                "for company %s — skipping order %s",
-                event.company, data.get("order_number"),
+                "Shopify account mapping missing SHOPIFY_CLEARING or SALES_REVENUE for company %s — skipping order %s",
+                event.company,
+                data.get("order_number"),
             )
             return
 
@@ -582,13 +625,15 @@ class ShopifyAccountingHandler(BaseProjection):
         if total_price <= 0:
             logger.warning(
                 "Skipping Shopify order %s — non-positive amount %s",
-                order_name, total_price,
+                order_name,
+                total_price,
             )
             return
 
         # Idempotency
         if JournalEntry.objects.filter(
-            company=event.company, memo=memo,
+            company=event.company,
+            memo=memo,
             status=JournalEntry.Status.POSTED,
         ).exists():
             logger.info("Journal entry already exists for '%s' — skipping", memo)
@@ -620,55 +665,79 @@ class ShopifyAccountingHandler(BaseProjection):
 
         # DR Accounts Receivable — total price
         line_no += 1
-        lines.append(JournalLine(
-            entry=entry, company=event.company,
-            public_id=uuid.uuid4(), line_no=line_no,
-            account=ar, description=memo,
-            debit=_convert_amount(total_price, fx_rate) if is_foreign else total_price,
-            credit=Decimal("0"),
-            amount_currency=total_price if is_foreign else None,
-            currency=currency, exchange_rate=fx_rate,
-        ))
+        lines.append(
+            JournalLine(
+                entry=entry,
+                company=event.company,
+                public_id=uuid.uuid4(),
+                line_no=line_no,
+                account=ar,
+                description=memo,
+                debit=_convert_amount(total_price, fx_rate) if is_foreign else total_price,
+                credit=Decimal("0"),
+                amount_currency=total_price if is_foreign else None,
+                currency=currency,
+                exchange_rate=fx_rate,
+            )
+        )
 
         # CR Sales Revenue — subtotal (after discounts)
         revenue_amount = subtotal if subtotal > 0 else total_price - total_tax
         line_no += 1
-        lines.append(JournalLine(
-            entry=entry, company=event.company,
-            public_id=uuid.uuid4(), line_no=line_no,
-            account=revenue, description=memo,
-            debit=Decimal("0"),
-            credit=_convert_amount(revenue_amount, fx_rate) if is_foreign else revenue_amount,
-            amount_currency=-revenue_amount if is_foreign else None,
-            currency=currency, exchange_rate=fx_rate,
-        ))
+        lines.append(
+            JournalLine(
+                entry=entry,
+                company=event.company,
+                public_id=uuid.uuid4(),
+                line_no=line_no,
+                account=revenue,
+                description=memo,
+                debit=Decimal("0"),
+                credit=_convert_amount(revenue_amount, fx_rate) if is_foreign else revenue_amount,
+                amount_currency=-revenue_amount if is_foreign else None,
+                currency=currency,
+                exchange_rate=fx_rate,
+            )
+        )
 
         # CR Sales Tax Payable — if applicable
         if total_tax > 0 and tax_account:
             line_no += 1
-            lines.append(JournalLine(
-                entry=entry, company=event.company,
-                public_id=uuid.uuid4(), line_no=line_no,
-                account=tax_account, description=f"Sales tax: {order_name}",
-                debit=Decimal("0"),
-                credit=_convert_amount(total_tax, fx_rate) if is_foreign else total_tax,
-                amount_currency=-total_tax if is_foreign else None,
-                currency=currency, exchange_rate=fx_rate,
-            ))
+            lines.append(
+                JournalLine(
+                    entry=entry,
+                    company=event.company,
+                    public_id=uuid.uuid4(),
+                    line_no=line_no,
+                    account=tax_account,
+                    description=f"Sales tax: {order_name}",
+                    debit=Decimal("0"),
+                    credit=_convert_amount(total_tax, fx_rate) if is_foreign else total_tax,
+                    amount_currency=-total_tax if is_foreign else None,
+                    currency=currency,
+                    exchange_rate=fx_rate,
+                )
+            )
 
         # CR Shipping Revenue — if applicable
         if total_shipping > 0:
             ship_acct = shipping_account or revenue  # fall back to sales revenue
             line_no += 1
-            lines.append(JournalLine(
-                entry=entry, company=event.company,
-                public_id=uuid.uuid4(), line_no=line_no,
-                account=ship_acct, description=f"Shipping: {order_name}",
-                debit=Decimal("0"),
-                credit=_convert_amount(total_shipping, fx_rate) if is_foreign else total_shipping,
-                amount_currency=-total_shipping if is_foreign else None,
-                currency=currency, exchange_rate=fx_rate,
-            ))
+            lines.append(
+                JournalLine(
+                    entry=entry,
+                    company=event.company,
+                    public_id=uuid.uuid4(),
+                    line_no=line_no,
+                    account=ship_acct,
+                    description=f"Shipping: {order_name}",
+                    debit=Decimal("0"),
+                    credit=_convert_amount(total_shipping, fx_rate) if is_foreign else total_shipping,
+                    amount_currency=-total_shipping if is_foreign else None,
+                    currency=currency,
+                    exchange_rate=fx_rate,
+                )
+            )
 
         # Fix FX rounding imbalance before saving
         if is_foreign:
@@ -706,17 +775,19 @@ class ShopifyAccountingHandler(BaseProjection):
         shopify_order_id = data.get("shopify_order_id", "")
         lines_data = []
         for line in lines:
-            lines_data.append({
-                "line_public_id": str(line.public_id),
-                "line_no": line.line_no,
-                "account_public_id": str(line.account.public_id),
-                "account_code": line.account.code,
-                "description": line.description,
-                "debit": str(line.debit),
-                "credit": str(line.credit),
-                "currency": currency,
-                "exchange_rate": str(fx_rate),
-            })
+            lines_data.append(
+                {
+                    "line_public_id": str(line.public_id),
+                    "line_no": line.line_no,
+                    "account_public_id": str(line.account.public_id),
+                    "account_code": line.account.code,
+                    "description": line.description,
+                    "debit": str(line.debit),
+                    "credit": str(line.credit),
+                    "currency": currency,
+                    "exchange_rate": str(fx_rate),
+                }
+            )
 
         emit_event_no_actor(
             company=event.company,
@@ -746,6 +817,7 @@ class ShopifyAccountingHandler(BaseProjection):
 
         # Update local order record
         from shopify_connector.models import ShopifyOrder
+
         ShopifyOrder.objects.filter(
             company=event.company,
             shopify_order_id=data.get("shopify_order_id"),
@@ -756,7 +828,9 @@ class ShopifyAccountingHandler(BaseProjection):
 
         logger.info(
             "Created journal entry %s for Shopify order %s (event %s)",
-            entry.public_id, order_name, event.id,
+            entry.public_id,
+            order_name,
+            event.id,
         )
 
     def _handle_refund_created(self, event, data, mapping, dimension_context=None):
@@ -767,9 +841,7 @@ class ShopifyAccountingHandler(BaseProjection):
         ar = mapping.get(ROLE_SHOPIFY_CLEARING)
         revenue = mapping.get(ROLE_SALES_REVENUE)
         if not ar or not revenue:
-            logger.warning(
-                "Shopify account mapping missing for refund — skipping"
-            )
+            logger.warning("Shopify account mapping missing for refund — skipping")
             return
 
         amount = Decimal(str(data.get("amount", "0")))
@@ -783,7 +855,8 @@ class ShopifyAccountingHandler(BaseProjection):
             return
 
         if JournalEntry.objects.filter(
-            company=event.company, memo=memo,
+            company=event.company,
+            memo=memo,
             status=JournalEntry.Status.POSTED,
         ).exists():
             return
@@ -812,20 +885,30 @@ class ShopifyAccountingHandler(BaseProjection):
         )
 
         debit_line = JournalLine(
-            entry=entry, company=event.company,
-            public_id=uuid.uuid4(), line_no=1,
-            account=revenue, description=memo,
-            debit=converted_amount, credit=Decimal("0"),
+            entry=entry,
+            company=event.company,
+            public_id=uuid.uuid4(),
+            line_no=1,
+            account=revenue,
+            description=memo,
+            debit=converted_amount,
+            credit=Decimal("0"),
             amount_currency=amount if is_foreign else None,
-            currency=currency, exchange_rate=fx_rate,
+            currency=currency,
+            exchange_rate=fx_rate,
         )
         credit_line = JournalLine(
-            entry=entry, company=event.company,
-            public_id=uuid.uuid4(), line_no=2,
-            account=ar, description=memo,
-            debit=Decimal("0"), credit=converted_amount,
+            entry=entry,
+            company=event.company,
+            public_id=uuid.uuid4(),
+            line_no=2,
+            account=ar,
+            description=memo,
+            debit=Decimal("0"),
+            credit=converted_amount,
             amount_currency=-amount if is_foreign else None,
-            currency=currency, exchange_rate=fx_rate,
+            currency=currency,
+            exchange_rate=fx_rate,
         )
 
         lines = [debit_line, credit_line]
@@ -910,6 +993,7 @@ class ShopifyAccountingHandler(BaseProjection):
         )
 
         from shopify_connector.models import ShopifyRefund
+
         refund_record = ShopifyRefund.objects.filter(
             company=event.company,
             shopify_refund_id=data.get("shopify_refund_id"),
@@ -922,17 +1006,25 @@ class ShopifyAccountingHandler(BaseProjection):
 
             # Create inventory restock JE if items were restocked
             self._handle_refund_restock(
-                event, refund_record, mapping, entry_date, currency,
-                fx_rate, is_foreign, dimension_context,
+                event,
+                refund_record,
+                mapping,
+                entry_date,
+                currency,
+                fx_rate,
+                is_foreign,
+                dimension_context,
             )
 
         logger.info(
             "Created refund journal entry %s for order %s",
-            entry.public_id, order_number,
+            entry.public_id,
+            order_number,
         )
 
-    def _handle_refund_restock(self, event, refund_record, mapping, entry_date,
-                               currency, fx_rate, is_foreign, dimension_context):
+    def _handle_refund_restock(
+        self, event, refund_record, mapping, entry_date, currency, fx_rate, is_foreign, dimension_context
+    ):
         """
         Reverse COGS for restocked items in a refund.
 
@@ -946,7 +1038,6 @@ class ShopifyAccountingHandler(BaseProjection):
             return
 
         from sales.models import Item
-        from shopify_connector.models import ShopifyProduct
 
         restock_lines = []
         for rli in refund_line_items:
@@ -975,15 +1066,17 @@ class ShopifyAccountingHandler(BaseProjection):
                 continue
 
             total_cost = unit_cost * Decimal(str(quantity))
-            restock_lines.append({
-                "sku": sku,
-                "title": line_item.get("title", sku),
-                "quantity": quantity,
-                "unit_cost": unit_cost,
-                "total_cost": total_cost,
-                "inventory_account": item.inventory_account,
-                "cogs_account": item.cogs_account,
-            })
+            restock_lines.append(
+                {
+                    "sku": sku,
+                    "title": line_item.get("title", sku),
+                    "quantity": quantity,
+                    "unit_cost": unit_cost,
+                    "total_cost": total_cost,
+                    "inventory_account": item.inventory_account,
+                    "cogs_account": item.cogs_account,
+                }
+            )
 
         if not restock_lines:
             return
@@ -993,7 +1086,8 @@ class ShopifyAccountingHandler(BaseProjection):
         memo = f"Shopify restock: Order {order_number} (Refund {refund_record.shopify_refund_id})"
 
         if JournalEntry.objects.filter(
-            company=event.company, memo=memo,
+            company=event.company,
+            memo=memo,
             status=JournalEntry.Status.POSTED,
         ).exists():
             return
@@ -1023,25 +1117,37 @@ class ShopifyAccountingHandler(BaseProjection):
 
             # DR Inventory (return to stock)
             line_no += 1
-            lines.append(JournalLine(
-                entry=entry, company=event.company,
-                public_id=uuid.uuid4(), line_no=line_no,
-                account=rl["inventory_account"],
-                description=f"Restock: {rl['title']} x{rl['quantity']}",
-                debit=converted, credit=Decimal("0"),
-                currency=currency, exchange_rate=fx_rate,
-            ))
+            lines.append(
+                JournalLine(
+                    entry=entry,
+                    company=event.company,
+                    public_id=uuid.uuid4(),
+                    line_no=line_no,
+                    account=rl["inventory_account"],
+                    description=f"Restock: {rl['title']} x{rl['quantity']}",
+                    debit=converted,
+                    credit=Decimal("0"),
+                    currency=currency,
+                    exchange_rate=fx_rate,
+                )
+            )
 
             # CR COGS (reverse cost)
             line_no += 1
-            lines.append(JournalLine(
-                entry=entry, company=event.company,
-                public_id=uuid.uuid4(), line_no=line_no,
-                account=rl["cogs_account"],
-                description=f"COGS reversal: {rl['title']} x{rl['quantity']}",
-                debit=Decimal("0"), credit=converted,
-                currency=currency, exchange_rate=fx_rate,
-            ))
+            lines.append(
+                JournalLine(
+                    entry=entry,
+                    company=event.company,
+                    public_id=uuid.uuid4(),
+                    line_no=line_no,
+                    account=rl["cogs_account"],
+                    description=f"COGS reversal: {rl['title']} x{rl['quantity']}",
+                    debit=Decimal("0"),
+                    credit=converted,
+                    currency=currency,
+                    exchange_rate=fx_rate,
+                )
+            )
 
         # Shared validation: period, account postability
         force_incomplete, validation_errors = self._validate_entry(event.company, entry_date, lines)
@@ -1072,23 +1178,24 @@ class ShopifyAccountingHandler(BaseProjection):
         entry.save(update_fields=["entry_number"])
 
         total = sum(
-            _convert_amount(rl["total_cost"], fx_rate) if is_foreign else rl["total_cost"]
-            for rl in restock_lines
+            _convert_amount(rl["total_cost"], fx_rate) if is_foreign else rl["total_cost"] for rl in restock_lines
         )
 
         lines_data = []
         for line in lines:
-            lines_data.append({
-                "line_public_id": str(line.public_id),
-                "line_no": line.line_no,
-                "account_public_id": str(line.account.public_id),
-                "account_code": line.account.code,
-                "description": line.description,
-                "debit": str(line.debit),
-                "credit": str(line.credit),
-                "currency": currency,
-                "exchange_rate": str(fx_rate),
-            })
+            lines_data.append(
+                {
+                    "line_public_id": str(line.public_id),
+                    "line_no": line.line_no,
+                    "account_public_id": str(line.account.public_id),
+                    "account_code": line.account.code,
+                    "description": line.description,
+                    "debit": str(line.debit),
+                    "credit": str(line.credit),
+                    "currency": currency,
+                    "exchange_rate": str(fx_rate),
+                }
+            )
 
         emit_event_no_actor(
             company=event.company,
@@ -1118,7 +1225,9 @@ class ShopifyAccountingHandler(BaseProjection):
 
         logger.info(
             "Created restock journal entry %s for refund on order %s (%d items)",
-            entry.public_id, order_number, len(restock_lines),
+            entry.public_id,
+            order_number,
+            len(restock_lines),
         )
 
     def _handle_payout_settled(self, event, data, mapping, dimension_context=None):
@@ -1133,9 +1242,9 @@ class ShopifyAccountingHandler(BaseProjection):
         bank = mapping.get(ROLE_CASH_BANK)
         if not clearing or not bank:
             logger.warning(
-                "Shopify account mapping missing SHOPIFY_CLEARING or CASH_BANK "
-                "for company %s — skipping payout %s",
-                event.company, data.get("shopify_payout_id"),
+                "Shopify account mapping missing SHOPIFY_CLEARING or CASH_BANK for company %s — skipping payout %s",
+                event.company,
+                data.get("shopify_payout_id"),
             )
             return
 
@@ -1160,7 +1269,8 @@ class ShopifyAccountingHandler(BaseProjection):
 
         # Idempotency
         if JournalEntry.objects.filter(
-            company=event.company, memo=memo,
+            company=event.company,
+            memo=memo,
             status=JournalEntry.Status.POSTED,
         ).exists():
             logger.info("Journal entry already exists for '%s' — skipping", memo)
@@ -1195,13 +1305,17 @@ class ShopifyAccountingHandler(BaseProjection):
         def _make_line(account, description, debit_amt, credit_amt):
             """Helper to create a JournalLine with FX conversion."""
             return JournalLine(
-                entry=entry, company=event.company,
-                public_id=uuid.uuid4(), line_no=0,  # set below
-                account=account, description=description,
+                entry=entry,
+                company=event.company,
+                public_id=uuid.uuid4(),
+                line_no=0,  # set below
+                account=account,
+                description=description,
                 debit=_convert_amount(debit_amt, fx_rate) if is_foreign else debit_amt,
                 credit=_convert_amount(credit_amt, fx_rate) if is_foreign else credit_amt,
                 amount_currency=(debit_amt if debit_amt > 0 else -credit_amt) if is_foreign else None,
-                currency=currency, exchange_rate=fx_rate,
+                currency=currency,
+                exchange_rate=fx_rate,
             )
 
         if is_negative_payout:
@@ -1218,7 +1332,8 @@ class ShopifyAccountingHandler(BaseProjection):
             elif fees > 0 and not fees_account:
                 logger.warning(
                     "No PROCESSING_FEES account mapped — fees of %s absorbed into clearing for payout %s",
-                    fees, payout_id,
+                    fees,
+                    payout_id,
                 )
                 converted_abs_net = _convert_amount(abs_net, fx_rate) if is_foreign else abs_net
                 lines[0].debit = converted_abs_net
@@ -1243,7 +1358,8 @@ class ShopifyAccountingHandler(BaseProjection):
             elif fees > 0 and not fees_account:
                 logger.warning(
                     "No PROCESSING_FEES account mapped — fees of %s included in bank deposit for payout %s",
-                    fees, payout_id,
+                    fees,
+                    payout_id,
                 )
                 converted_gross = _convert_amount(gross_amount, fx_rate) if is_foreign else gross_amount
                 lines[0].debit = converted_gross
@@ -1290,17 +1406,19 @@ class ShopifyAccountingHandler(BaseProjection):
         # Emit JOURNAL_ENTRY_POSTED
         lines_data = []
         for line in lines:
-            lines_data.append({
-                "line_public_id": str(line.public_id),
-                "line_no": line.line_no,
-                "account_public_id": str(line.account.public_id),
-                "account_code": line.account.code,
-                "description": line.description,
-                "debit": str(line.debit),
-                "credit": str(line.credit),
-                "currency": currency,
-                "exchange_rate": str(fx_rate),
-            })
+            lines_data.append(
+                {
+                    "line_public_id": str(line.public_id),
+                    "line_no": line.line_no,
+                    "account_public_id": str(line.account.public_id),
+                    "account_code": line.account.code,
+                    "description": line.description,
+                    "debit": str(line.debit),
+                    "credit": str(line.credit),
+                    "currency": currency,
+                    "exchange_rate": str(fx_rate),
+                }
+            )
 
         emit_event_no_actor(
             company=event.company,
@@ -1330,6 +1448,7 @@ class ShopifyAccountingHandler(BaseProjection):
 
         # Update local payout record
         from shopify_connector.models import ShopifyPayout
+
         ShopifyPayout.objects.filter(
             company=event.company,
             shopify_payout_id=data.get("shopify_payout_id"),
@@ -1340,7 +1459,9 @@ class ShopifyAccountingHandler(BaseProjection):
 
         logger.info(
             "Created payout journal entry %s for Shopify payout %s (event %s)",
-            entry.public_id, payout_id, event.id,
+            entry.public_id,
+            payout_id,
+            event.id,
         )
 
     def _handle_order_fulfilled(self, event, data, mapping, dimension_context=None):
@@ -1366,21 +1487,23 @@ class ShopifyAccountingHandler(BaseProjection):
         total_cogs = Decimal(str(data.get("total_cogs", "0")))
         fulfillment_id = data.get("shopify_fulfillment_id", "")
         order_name = data.get("order_name", "")
-        entry_date = _parse_date(
-            data.get("fulfillment_date") or data.get("transaction_date")
-        ) or event.created_at.date()
+        entry_date = (
+            _parse_date(data.get("fulfillment_date") or data.get("transaction_date")) or event.created_at.date()
+        )
         currency = data.get("currency") or getattr(event.company, "default_currency", "USD")
         memo = f"Shopify COGS: {order_name} (Fulfillment {fulfillment_id})"
 
         if total_cogs <= 0:
             logger.warning(
-                "Skipping COGS for fulfillment %s — zero total COGS", fulfillment_id,
+                "Skipping COGS for fulfillment %s — zero total COGS",
+                fulfillment_id,
             )
             return
 
         # Idempotency
         if JournalEntry.objects.filter(
-            company=event.company, memo=memo,
+            company=event.company,
+            memo=memo,
             status=JournalEntry.Status.POSTED,
         ).exists():
             logger.info("COGS journal entry already exists for '%s' — skipping", memo)
@@ -1424,10 +1547,12 @@ class ShopifyAccountingHandler(BaseProjection):
 
             try:
                 cogs_account = Account.objects.get(
-                    id=cogs_account_id, company=event.company,
+                    id=cogs_account_id,
+                    company=event.company,
                 )
                 inventory_account = Account.objects.get(
-                    id=inventory_account_id, company=event.company,
+                    id=inventory_account_id,
+                    company=event.company,
                 )
             except Account.DoesNotExist:
                 logger.warning(
@@ -1442,38 +1567,52 @@ class ShopifyAccountingHandler(BaseProjection):
 
             # DR Cost of Goods Sold
             line_no += 1
-            lines.append(JournalLine(
-                entry=entry, company=event.company,
-                public_id=uuid.uuid4(), line_no=line_no,
-                account=cogs_account,
-                description=f"COGS: {item_code} × {qty}",
-                debit=converted_cogs, credit=Decimal("0"),
-                amount_currency=cogs_value if is_foreign else None,
-                currency=currency, exchange_rate=fx_rate,
-            ))
+            lines.append(
+                JournalLine(
+                    entry=entry,
+                    company=event.company,
+                    public_id=uuid.uuid4(),
+                    line_no=line_no,
+                    account=cogs_account,
+                    description=f"COGS: {item_code} × {qty}",
+                    debit=converted_cogs,
+                    credit=Decimal("0"),
+                    amount_currency=cogs_value if is_foreign else None,
+                    currency=currency,
+                    exchange_rate=fx_rate,
+                )
+            )
 
             # CR Inventory
             line_no += 1
-            lines.append(JournalLine(
-                entry=entry, company=event.company,
-                public_id=uuid.uuid4(), line_no=line_no,
-                account=inventory_account,
-                description=f"Inventory issued: {item_code} × {qty}",
-                debit=Decimal("0"), credit=converted_cogs,
-                amount_currency=-cogs_value if is_foreign else None,
-                currency=currency, exchange_rate=fx_rate,
-            ))
+            lines.append(
+                JournalLine(
+                    entry=entry,
+                    company=event.company,
+                    public_id=uuid.uuid4(),
+                    line_no=line_no,
+                    account=inventory_account,
+                    description=f"Inventory issued: {item_code} × {qty}",
+                    debit=Decimal("0"),
+                    credit=converted_cogs,
+                    amount_currency=-cogs_value if is_foreign else None,
+                    currency=currency,
+                    exchange_rate=fx_rate,
+                )
+            )
 
             # Build stock entry for INVENTORY_STOCK_ISSUED event
             if cl.get("item_public_id") and cl.get("warehouse_public_id"):
-                stock_entries.append({
-                    "item_public_id": cl["item_public_id"],
-                    "warehouse_public_id": cl["warehouse_public_id"],
-                    "qty_delta": str(-Decimal(str(qty))),
-                    "unit_cost": str(cl.get("unit_cost", "0")),
-                    "value_delta": str(-cogs_value),
-                    "costing_method_snapshot": "WEIGHTED_AVERAGE",
-                })
+                stock_entries.append(
+                    {
+                        "item_public_id": cl["item_public_id"],
+                        "warehouse_public_id": cl["warehouse_public_id"],
+                        "qty_delta": str(-Decimal(str(qty))),
+                        "unit_cost": str(cl.get("unit_cost", "0")),
+                        "value_delta": str(-cogs_value),
+                        "costing_method_snapshot": "WEIGHTED_AVERAGE",
+                    }
+                )
 
         if not lines:
             # No valid lines — clean up
@@ -1515,17 +1654,19 @@ class ShopifyAccountingHandler(BaseProjection):
         # Emit JOURNAL_ENTRY_POSTED
         lines_data = []
         for line in lines:
-            lines_data.append({
-                "line_public_id": str(line.public_id),
-                "line_no": line.line_no,
-                "account_public_id": str(line.account.public_id),
-                "account_code": line.account.code,
-                "description": line.description,
-                "debit": str(line.debit),
-                "credit": str(line.credit),
-                "currency": currency,
-                "exchange_rate": str(fx_rate),
-            })
+            lines_data.append(
+                {
+                    "line_public_id": str(line.public_id),
+                    "line_no": line.line_no,
+                    "account_public_id": str(line.account.public_id),
+                    "account_code": line.account.code,
+                    "description": line.description,
+                    "debit": str(line.debit),
+                    "credit": str(line.credit),
+                    "currency": currency,
+                    "exchange_rate": str(fx_rate),
+                }
+            )
 
         emit_event_no_actor(
             company=event.company,
@@ -1575,6 +1716,7 @@ class ShopifyAccountingHandler(BaseProjection):
 
         # Update local fulfillment record
         from shopify_connector.models import ShopifyFulfillment
+
         ShopifyFulfillment.objects.filter(
             company=event.company,
             shopify_fulfillment_id=data.get("shopify_fulfillment_id"),
@@ -1585,7 +1727,11 @@ class ShopifyAccountingHandler(BaseProjection):
 
         logger.info(
             "Created COGS journal entry %s for fulfillment %s (%s lines, COGS %s %s)",
-            entry.public_id, fulfillment_id, len(cogs_lines), currency, total_cogs,
+            entry.public_id,
+            fulfillment_id,
+            len(cogs_lines),
+            currency,
+            total_cogs,
         )
 
     def _handle_dispute_created(self, event, data, mapping, dimension_context=None):
@@ -1608,7 +1754,8 @@ class ShopifyAccountingHandler(BaseProjection):
             logger.warning(
                 "Shopify account mapping missing SHOPIFY_CLEARING or CHARGEBACK_EXPENSE "
                 "for company %s — skipping dispute %s",
-                event.company, data.get("shopify_dispute_id"),
+                event.company,
+                data.get("shopify_dispute_id"),
             )
             return
 
@@ -1623,13 +1770,15 @@ class ShopifyAccountingHandler(BaseProjection):
         if dispute_amount <= 0:
             logger.warning(
                 "Skipping dispute %s — non-positive amount %s",
-                dispute_id, dispute_amount,
+                dispute_id,
+                dispute_amount,
             )
             return
 
         # Idempotency
         if JournalEntry.objects.filter(
-            company=event.company, memo=memo,
+            company=event.company,
+            memo=memo,
             status=JournalEntry.Status.POSTED,
         ).exists():
             logger.info("Journal entry already exists for '%s' — skipping", memo)
@@ -1662,43 +1811,61 @@ class ShopifyAccountingHandler(BaseProjection):
         # DR Chargeback Expense — disputed amount
         line_no += 1
         converted_dispute = _convert_amount(dispute_amount, fx_rate) if is_foreign else dispute_amount
-        lines.append(JournalLine(
-            entry=entry, company=event.company,
-            public_id=uuid.uuid4(), line_no=line_no,
-            account=chargeback_account,
-            description=f"Chargeback: {order_name} (Dispute {dispute_id})",
-            debit=converted_dispute, credit=Decimal("0"),
-            amount_currency=dispute_amount if is_foreign else None,
-            currency=currency, exchange_rate=fx_rate,
-        ))
+        lines.append(
+            JournalLine(
+                entry=entry,
+                company=event.company,
+                public_id=uuid.uuid4(),
+                line_no=line_no,
+                account=chargeback_account,
+                description=f"Chargeback: {order_name} (Dispute {dispute_id})",
+                debit=converted_dispute,
+                credit=Decimal("0"),
+                amount_currency=dispute_amount if is_foreign else None,
+                currency=currency,
+                exchange_rate=fx_rate,
+            )
+        )
 
         # DR Processing Fees — chargeback fee
         if chargeback_fee > 0 and fees_account:
             line_no += 1
             converted_fee = _convert_amount(chargeback_fee, fx_rate) if is_foreign else chargeback_fee
-            lines.append(JournalLine(
-                entry=entry, company=event.company,
-                public_id=uuid.uuid4(), line_no=line_no,
-                account=fees_account,
-                description=f"Chargeback fee: Dispute {dispute_id}",
-                debit=converted_fee, credit=Decimal("0"),
-                amount_currency=chargeback_fee if is_foreign else None,
-                currency=currency, exchange_rate=fx_rate,
-            ))
+            lines.append(
+                JournalLine(
+                    entry=entry,
+                    company=event.company,
+                    public_id=uuid.uuid4(),
+                    line_no=line_no,
+                    account=fees_account,
+                    description=f"Chargeback fee: Dispute {dispute_id}",
+                    debit=converted_fee,
+                    credit=Decimal("0"),
+                    amount_currency=chargeback_fee if is_foreign else None,
+                    currency=currency,
+                    exchange_rate=fx_rate,
+                )
+            )
 
         # CR Shopify Clearing — total pulled back
         total_credit_foreign = dispute_amount + chargeback_fee
         total_credit = _convert_amount(total_credit_foreign, fx_rate) if is_foreign else total_credit_foreign
         line_no += 1
-        lines.append(JournalLine(
-            entry=entry, company=event.company,
-            public_id=uuid.uuid4(), line_no=line_no,
-            account=clearing,
-            description=f"Chargeback clearing: Dispute {dispute_id}",
-            debit=Decimal("0"), credit=total_credit,
-            amount_currency=-total_credit_foreign if is_foreign else None,
-            currency=currency, exchange_rate=fx_rate,
-        ))
+        lines.append(
+            JournalLine(
+                entry=entry,
+                company=event.company,
+                public_id=uuid.uuid4(),
+                line_no=line_no,
+                account=clearing,
+                description=f"Chargeback clearing: Dispute {dispute_id}",
+                debit=Decimal("0"),
+                credit=total_credit,
+                amount_currency=-total_credit_foreign if is_foreign else None,
+                currency=currency,
+                exchange_rate=fx_rate,
+            )
+        )
 
         # Fix FX rounding imbalance before saving
         if is_foreign:
@@ -1735,17 +1902,19 @@ class ShopifyAccountingHandler(BaseProjection):
         # Emit JOURNAL_ENTRY_POSTED
         lines_data = []
         for line in lines:
-            lines_data.append({
-                "line_public_id": str(line.public_id),
-                "line_no": line.line_no,
-                "account_public_id": str(line.account.public_id),
-                "account_code": line.account.code,
-                "description": line.description,
-                "debit": str(line.debit),
-                "credit": str(line.credit),
-                "currency": currency,
-                "exchange_rate": str(fx_rate),
-            })
+            lines_data.append(
+                {
+                    "line_public_id": str(line.public_id),
+                    "line_no": line.line_no,
+                    "account_public_id": str(line.account.public_id),
+                    "account_code": line.account.code,
+                    "description": line.description,
+                    "debit": str(line.debit),
+                    "credit": str(line.credit),
+                    "currency": currency,
+                    "exchange_rate": str(fx_rate),
+                }
+            )
 
         emit_event_no_actor(
             company=event.company,
@@ -1775,6 +1944,7 @@ class ShopifyAccountingHandler(BaseProjection):
 
         # Update local dispute record
         from shopify_connector.models import ShopifyDispute
+
         ShopifyDispute.objects.filter(
             company=event.company,
             shopify_dispute_id=data.get("shopify_dispute_id"),
@@ -1785,7 +1955,10 @@ class ShopifyAccountingHandler(BaseProjection):
 
         logger.info(
             "Created chargeback journal entry %s for dispute %s (%s %s)",
-            entry.public_id, dispute_id, currency, dispute_amount,
+            entry.public_id,
+            dispute_id,
+            currency,
+            dispute_amount,
         )
 
     def _handle_dispute_won(self, event, data, mapping, dimension_context=None):
@@ -1803,9 +1976,9 @@ class ShopifyAccountingHandler(BaseProjection):
 
         if not clearing or not chargeback_account:
             logger.warning(
-                "Shopify account mapping missing for dispute won reversal, "
-                "company %s — skipping dispute %s",
-                event.company, data.get("shopify_dispute_id"),
+                "Shopify account mapping missing for dispute won reversal, company %s — skipping dispute %s",
+                event.company,
+                data.get("shopify_dispute_id"),
             )
             return
 
@@ -1822,7 +1995,8 @@ class ShopifyAccountingHandler(BaseProjection):
 
         # Idempotency
         if JournalEntry.objects.filter(
-            company=event.company, memo=memo,
+            company=event.company,
+            memo=memo,
             status=JournalEntry.Status.POSTED,
         ).exists():
             logger.info("Reversal JE already exists for '%s' — skipping", memo)
@@ -1854,42 +2028,60 @@ class ShopifyAccountingHandler(BaseProjection):
         total_debit_foreign = dispute_amount + chargeback_fee
         total_debit_converted = _convert_amount(total_debit_foreign, fx_rate) if is_foreign else total_debit_foreign
         line_no += 1
-        lines.append(JournalLine(
-            entry=entry, company=event.company,
-            public_id=uuid.uuid4(), line_no=line_no,
-            account=clearing,
-            description=f"Chargeback reversal (won): Dispute {dispute_id}",
-            debit=total_debit_converted, credit=Decimal("0"),
-            amount_currency=total_debit_foreign if is_foreign else None,
-            currency=currency, exchange_rate=fx_rate,
-        ))
+        lines.append(
+            JournalLine(
+                entry=entry,
+                company=event.company,
+                public_id=uuid.uuid4(),
+                line_no=line_no,
+                account=clearing,
+                description=f"Chargeback reversal (won): Dispute {dispute_id}",
+                debit=total_debit_converted,
+                credit=Decimal("0"),
+                amount_currency=total_debit_foreign if is_foreign else None,
+                currency=currency,
+                exchange_rate=fx_rate,
+            )
+        )
 
         # CR Chargeback Expense — recover disputed amount
         converted_dispute = _convert_amount(dispute_amount, fx_rate) if is_foreign else dispute_amount
         line_no += 1
-        lines.append(JournalLine(
-            entry=entry, company=event.company,
-            public_id=uuid.uuid4(), line_no=line_no,
-            account=chargeback_account,
-            description=f"Chargeback recovered (won): {order_name} (Dispute {dispute_id})",
-            debit=Decimal("0"), credit=converted_dispute,
-            amount_currency=-dispute_amount if is_foreign else None,
-            currency=currency, exchange_rate=fx_rate,
-        ))
+        lines.append(
+            JournalLine(
+                entry=entry,
+                company=event.company,
+                public_id=uuid.uuid4(),
+                line_no=line_no,
+                account=chargeback_account,
+                description=f"Chargeback recovered (won): {order_name} (Dispute {dispute_id})",
+                debit=Decimal("0"),
+                credit=converted_dispute,
+                amount_currency=-dispute_amount if is_foreign else None,
+                currency=currency,
+                exchange_rate=fx_rate,
+            )
+        )
 
         # CR Processing Fees — recover chargeback fee
         if chargeback_fee > 0 and fees_account:
             converted_fee = _convert_amount(chargeback_fee, fx_rate) if is_foreign else chargeback_fee
             line_no += 1
-            lines.append(JournalLine(
-                entry=entry, company=event.company,
-                public_id=uuid.uuid4(), line_no=line_no,
-                account=fees_account,
-                description=f"Chargeback fee recovered: Dispute {dispute_id}",
-                debit=Decimal("0"), credit=converted_fee,
-                amount_currency=-chargeback_fee if is_foreign else None,
-                currency=currency, exchange_rate=fx_rate,
-            ))
+            lines.append(
+                JournalLine(
+                    entry=entry,
+                    company=event.company,
+                    public_id=uuid.uuid4(),
+                    line_no=line_no,
+                    account=fees_account,
+                    description=f"Chargeback fee recovered: Dispute {dispute_id}",
+                    debit=Decimal("0"),
+                    credit=converted_fee,
+                    amount_currency=-chargeback_fee if is_foreign else None,
+                    currency=currency,
+                    exchange_rate=fx_rate,
+                )
+            )
 
         # Fix FX rounding
         if is_foreign:
@@ -1925,17 +2117,19 @@ class ShopifyAccountingHandler(BaseProjection):
         # Emit JOURNAL_ENTRY_POSTED
         lines_data = []
         for line in lines:
-            lines_data.append({
-                "line_public_id": str(line.public_id),
-                "line_no": line.line_no,
-                "account_public_id": str(line.account.public_id),
-                "account_code": line.account.code,
-                "description": line.description,
-                "debit": str(line.debit),
-                "credit": str(line.credit),
-                "currency": currency,
-                "exchange_rate": str(fx_rate),
-            })
+            lines_data.append(
+                {
+                    "line_public_id": str(line.public_id),
+                    "line_no": line.line_no,
+                    "account_public_id": str(line.account.public_id),
+                    "account_code": line.account.code,
+                    "description": line.description,
+                    "debit": str(line.debit),
+                    "credit": str(line.credit),
+                    "currency": currency,
+                    "exchange_rate": str(fx_rate),
+                }
+            )
 
         emit_event_no_actor(
             company=event.company,
@@ -1965,7 +2159,10 @@ class ShopifyAccountingHandler(BaseProjection):
 
         logger.info(
             "Created dispute-won reversal JE %s for dispute %s (%s %s)",
-            entry.public_id, dispute_id, currency, dispute_amount,
+            entry.public_id,
+            dispute_id,
+            currency,
+            dispute_amount,
         )
 
     def _clear_projected_data(self, company) -> None:

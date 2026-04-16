@@ -25,11 +25,9 @@ import random
 from calendar import monthrange
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from uuid import uuid4
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
 
 from accounting.mappings import ModuleAccountMapping
 from accounting.models import Account
@@ -117,11 +115,13 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument(
-            "--company-slug", required=True,
+            "--company-slug",
+            required=True,
             help="Company slug to seed data for",
         )
         parser.add_argument(
-            "--flush", action="store_true",
+            "--flush",
+            action="store_true",
             help="Delete existing Shopify demo data before seeding",
         )
 
@@ -134,17 +134,22 @@ class Command(BaseCommand):
             except Company.DoesNotExist:
                 raise CommandError(f"Company with slug '{slug}' not found.")
 
-            membership = CompanyMembership.objects.filter(
-                company=company, role="OWNER", is_active=True
-            ).select_related("user").first()
+            membership = (
+                CompanyMembership.objects.filter(company=company, role="OWNER", is_active=True)
+                .select_related("user")
+                .first()
+            )
             if not membership:
                 raise CommandError("No active OWNER found for this company.")
 
             user = membership.user
             from accounts.authz import ActorContext
+
             actor = ActorContext(
-                user=user, company=company,
-                membership=membership, perms=frozenset(),
+                user=user,
+                company=company,
+                membership=membership,
+                perms=frozenset(),
             )
 
             self.stdout.write(f"Seeding Shopify demo for: {company.name} ({slug})")
@@ -162,32 +167,47 @@ class Command(BaseCommand):
                 dispute = self._create_dispute(company, store, orders)
                 self._emit_events(company, store, orders, refunds, settled_payouts, unsettled_orders, dispute)
                 self._create_operating_expenses(actor, company, accounts)
+                self._create_bank_statements(company, accounts, settled_payouts)
 
-            self.stdout.write(self.style.SUCCESS(
-                f"\nDone! Shopify demo seeded for {company.name}.\n"
-                f"  Orders: {len(orders) + len(unsettled_orders)} "
-                f"({len(unsettled_orders)} awaiting payout)\n"
-                f"  Refunds: {len(refunds)}\n"
-                f"  Payouts: {len(settled_payouts)}\n"
-                f"  Disputes: {'1' if dispute else '0'}\n"
-                f"  Visit /shopify/reconciliation to see the dashboard."
-            ))
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"\nDone! Shopify demo seeded for {company.name}.\n"
+                    f"  Orders: {len(orders) + len(unsettled_orders)} "
+                    f"({len(unsettled_orders)} awaiting payout)\n"
+                    f"  Refunds: {len(refunds)}\n"
+                    f"  Payouts: {len(settled_payouts)}\n"
+                    f"  Disputes: {'1' if dispute else '0'}\n"
+                    f"  Visit /accounting/bank-reconciliation/commerce to see "
+                    f"the three-column reconciliation."
+                )
+            )
 
     def _flush(self, company):
         """Delete existing Shopify demo data."""
+        from accounting.models import BankStatement, BankStatementLine
         from events.models import BusinessEvent
 
+        # Delete bank statement lines and statements (for reconciliation demo)
+        bsl_count, _ = BankStatementLine.objects.filter(company=company).delete()
+        bs_count, _ = BankStatement.objects.filter(company=company).delete()
+        if bsl_count or bs_count:
+            self.stdout.write(f"  Deleted {bs_count} BankStatements, {bsl_count} BankStatementLines")
+
         # Delete Shopify models (dependency order)
-        for model in [ShopifyPayoutTransaction, ShopifyPayout, ShopifyDispute,
-                      ShopifyRefund, ShopifyOrder, ShopifyStore]:
+        for model in [
+            ShopifyPayoutTransaction,
+            ShopifyPayout,
+            ShopifyDispute,
+            ShopifyRefund,
+            ShopifyOrder,
+            ShopifyStore,
+        ]:
             count, _ = model.objects.filter(company=company).delete()
             self.stdout.write(f"  Deleted {count} {model.__name__}")
 
         # Delete Shopify events (JEs created by projection are left as orphans;
         # they'll be recreated via idempotent event emission on next seed)
-        event_count, _ = BusinessEvent.objects.filter(
-            company=company, event_type__startswith="shopify."
-        ).delete()
+        event_count, _ = BusinessEvent.objects.filter(company=company, event_type__startswith="shopify.").delete()
         self.stdout.write(f"  Deleted {event_count} Shopify events")
 
     # -----------------------------------------------------------------------
@@ -240,27 +260,36 @@ class Command(BaseCommand):
 
         for role, code, name, name_ar, acct_type, acct_role in SHOPIFY_ACCOUNTS:
             account, created = Account.objects.get_or_create(
-                company=company, code=code,
+                company=company,
+                code=code,
                 defaults={
-                    "name": name, "name_ar": name_ar,
-                    "account_type": acct_type, "role": acct_role,
-                    "ledger_domain": "FINANCIAL", "status": "ACTIVE",
+                    "name": name,
+                    "name_ar": name_ar,
+                    "account_type": acct_type,
+                    "role": acct_role,
+                    "ledger_domain": "FINANCIAL",
+                    "status": "ACTIVE",
                     "normal_balance": "DEBIT" if acct_type in ("ASSET", "EXPENSE") else "CREDIT",
                 },
             )
             accounts[role] = account
             ModuleAccountMapping.objects.update_or_create(
-                company=company, module="shopify_connector", role=role,
+                company=company,
+                module="shopify_connector",
+                role=role,
                 defaults={"account": account},
             )
 
         for key, code, name, name_ar, acct_type in OPERATING_ACCOUNTS:
             account, _ = Account.objects.get_or_create(
-                company=company, code=code,
+                company=company,
+                code=code,
                 defaults={
-                    "name": name, "name_ar": name_ar,
+                    "name": name,
+                    "name_ar": name_ar,
                     "account_type": acct_type,
-                    "ledger_domain": "FINANCIAL", "status": "ACTIVE",
+                    "ledger_domain": "FINANCIAL",
+                    "status": "ACTIVE",
                     "normal_balance": "DEBIT" if acct_type in ("ASSET", "EXPENSE") else "CREDIT",
                 },
             )
@@ -275,7 +304,8 @@ class Command(BaseCommand):
 
     def _create_store(self, company):
         store, created = ShopifyStore.objects.get_or_create(
-            company=company, shop_domain=STORE_DOMAIN,
+            company=company,
+            shop_domain=STORE_DOMAIN,
             defaults={
                 "access_token": "demo-token-not-real",
                 "status": "ACTIVE",
@@ -308,7 +338,8 @@ class Command(BaseCommand):
             total = subtotal + tax
 
             order, created = ShopifyOrder.objects.get_or_create(
-                company=company, shopify_order_id=base_id + i,
+                company=company,
+                shopify_order_id=base_id + i,
                 defaults={
                     "store": store,
                     "shopify_order_number": str(base_num + i),
@@ -356,7 +387,8 @@ class Command(BaseCommand):
             total = subtotal + tax
 
             order, created = ShopifyOrder.objects.get_or_create(
-                company=company, shopify_order_id=base_id + i,
+                company=company,
+                shopify_order_id=base_id + i,
                 defaults={
                     "store": store,
                     "shopify_order_number": str(base_num + i),
@@ -392,7 +424,8 @@ class Command(BaseCommand):
         # Full refund on order #5
         full_refund_order = orders[4]
         refund, created = ShopifyRefund.objects.get_or_create(
-            company=company, shopify_refund_id=8000000001,
+            company=company,
+            shopify_refund_id=8000000001,
             defaults={
                 "order": full_refund_order,
                 "amount": full_refund_order.total_price,
@@ -400,7 +433,8 @@ class Command(BaseCommand):
                 "reason": "Customer request — wrong size",
                 "shopify_created_at": datetime.combine(
                     full_refund_order.order_date + timedelta(days=2),
-                    datetime.min.time(), tzinfo=UTC,
+                    datetime.min.time(),
+                    tzinfo=UTC,
                 ),
                 "status": "RECEIVED",
             },
@@ -412,7 +446,8 @@ class Command(BaseCommand):
         partial_refund_order = orders[11]
         partial_amount = (partial_refund_order.total_price * Decimal("0.40")).quantize(Decimal("0.01"))
         refund2, created = ShopifyRefund.objects.get_or_create(
-            company=company, shopify_refund_id=8000000002,
+            company=company,
+            shopify_refund_id=8000000002,
             defaults={
                 "order": partial_refund_order,
                 "amount": partial_amount,
@@ -420,7 +455,8 @@ class Command(BaseCommand):
                 "reason": "Partial refund — damaged item in shipment",
                 "shopify_created_at": datetime.combine(
                     partial_refund_order.order_date + timedelta(days=4),
-                    datetime.min.time(), tzinfo=UTC,
+                    datetime.min.time(),
+                    tzinfo=UTC,
                 ),
                 "status": "RECEIVED",
             },
@@ -458,16 +494,12 @@ class Command(BaseCommand):
 
             gross = sum(o.total_price for o in bucket_orders)
             fees = sum(
-                (o.total_price * Decimal("0.029") + Decimal("0.30")).quantize(Decimal("0.01"))
-                for o in bucket_orders
+                (o.total_price * Decimal("0.029") + Decimal("0.30")).quantize(Decimal("0.01")) for o in bucket_orders
             )
 
             # Subtract refunds in this bucket
             refund_total = Decimal("0")
-            bucket_refunds = [
-                r for r in refunds
-                if r.order_id in {o.id for o in bucket_orders}
-            ]
+            bucket_refunds = [r for r in refunds if r.order_id in {o.id for o in bucket_orders}]
             for r in bucket_refunds:
                 refund_total += r.amount
             gross -= refund_total
@@ -475,7 +507,8 @@ class Command(BaseCommand):
             net = gross - fees
 
             payout, created = ShopifyPayout.objects.get_or_create(
-                company=company, shopify_payout_id=shopify_payout_id,
+                company=company,
+                shopify_payout_id=shopify_payout_id,
                 defaults={
                     "store": store,
                     "gross_amount": gross,
@@ -551,7 +584,8 @@ class Command(BaseCommand):
 
         disputed_order = orders[18]
         dispute, created = ShopifyDispute.objects.get_or_create(
-            company=company, shopify_dispute_id=6000000001,
+            company=company,
+            shopify_dispute_id=6000000001,
             defaults={
                 "store": store,
                 "order": disputed_order,
@@ -625,7 +659,11 @@ class Command(BaseCommand):
                 data=ShopifyRefundCreatedData(
                     amount=str(refund.amount),
                     currency=refund.currency,
-                    transaction_date=str(refund.shopify_created_at.date() if hasattr(refund.shopify_created_at, 'date') else refund.shopify_created_at),
+                    transaction_date=str(
+                        refund.shopify_created_at.date()
+                        if hasattr(refund.shopify_created_at, "date")
+                        else refund.shopify_created_at
+                    ),
                     document_ref=refund.order.shopify_order_name,
                     store_public_id=str(store.public_id),
                     shopify_refund_id=str(refund.shopify_refund_id),
@@ -691,6 +729,7 @@ class Command(BaseCommand):
         if not getattr(settings, "PROJECTIONS_SYNC", False):
             self.stdout.write("  Running projections...")
             from projections.base import ProjectionRegistry
+
             registry = ProjectionRegistry()
             for projection in registry.all():
                 projection.process_pending(company=company, limit=10000)
@@ -700,6 +739,128 @@ class Command(BaseCommand):
     # -----------------------------------------------------------------------
     # Operating expenses (makes P&L realistic)
     # -----------------------------------------------------------------------
+
+    # -----------------------------------------------------------------------
+    # Bank statements (enables three-column reconciliation)
+    # -----------------------------------------------------------------------
+
+    def _create_bank_statements(self, company, accounts, payouts):
+        """Create bank statement with lines matched to payout journal entries.
+
+        The three-column commerce reconciliation view matches bank lines to
+        payout JEs via: matched_journal_line__entry__memo == "Shopify payout: {id}"
+        This method creates a bank statement with deposit lines for each payout,
+        then finds the corresponding journal lines and matches them.
+        """
+        from accounting.models import BankStatement, BankStatementLine, JournalEntry, JournalLine
+
+        if not payouts:
+            return
+
+        bank_account = accounts.get("CASH_BANK") or accounts.get("bank")
+        if not bank_account:
+            self.stdout.write("  No bank account found — skipping bank statements.")
+            return
+
+        # Check if bank statement already exists for this period
+        sorted_payouts = sorted(payouts, key=lambda p: p.payout_date)
+        period_start = sorted_payouts[0].payout_date - timedelta(days=7)
+        period_end = sorted_payouts[-1].payout_date + timedelta(days=1)
+
+        existing = BankStatement.objects.filter(
+            company=company,
+            account=bank_account,
+            period_start=period_start,
+            period_end=period_end,
+        ).first()
+        if existing:
+            self.stdout.write("  Bank statement already exists — skipping.")
+            return
+
+        # Calculate running balance from payouts
+        opening = Decimal("12500.00")  # Realistic starting balance
+        total_deposits = sum(p.net_amount for p in sorted_payouts)
+        closing = opening + total_deposits
+
+        statement = BankStatement.objects.create(
+            company=company,
+            account=bank_account,
+            statement_date=period_end,
+            period_start=period_start,
+            period_end=period_end,
+            opening_balance=opening,
+            closing_balance=closing,
+            currency="USD",
+            source="CSV",
+            status="IN_PROGRESS",
+            reference="Shopify demo bank statement",
+            notes="Auto-generated by seed_shopify_demo for three-column reconciliation demo.",
+        )
+
+        matched_count = 0
+        unmatched_count = 0
+
+        for payout in sorted_payouts:
+            # Find the journal entry created by the Shopify payout projection
+            memo = f"Shopify payout: {payout.shopify_payout_id}"
+            payout_je = JournalEntry.objects.filter(
+                company=company,
+                memo=memo,
+                status="POSTED",
+            ).first()
+
+            # Find the Cash/Bank debit line (the bank deposit side)
+            matched_jl = None
+            if payout_je:
+                matched_jl = JournalLine.objects.filter(
+                    entry=payout_je,
+                    account=bank_account,
+                    debit__gt=0,
+                ).first()
+
+            bank_line = BankStatementLine.objects.create(
+                statement=statement,
+                company=company,
+                line_date=payout.payout_date,
+                description=f"SHOPIFY PAYOUT *{str(payout.shopify_payout_id)[-4:]}",
+                reference=f"SPY-{payout.shopify_payout_id}",
+                amount=payout.net_amount,  # Positive = deposit
+                transaction_type="DEPOSIT",
+                match_status="AUTO_MATCHED" if matched_jl else "UNMATCHED",
+                matched_journal_line=matched_jl,
+                match_confidence=Decimal("100.00") if matched_jl else None,
+            )
+
+            if matched_jl:
+                matched_count += 1
+            else:
+                unmatched_count += 1
+
+        # Add a few non-Shopify transactions for realism
+        misc_transactions = [
+            (period_start + timedelta(days=3), "STRIPE PAYOUT", Decimal("847.50"), "DEPOSIT"),
+            (period_start + timedelta(days=10), "RENT PAYMENT - OFFICE", Decimal("-3500.00"), "WITHDRAWAL"),
+            (period_start + timedelta(days=15), "PAYROLL BATCH 04/2026", Decimal("-8500.00"), "WITHDRAWAL"),
+            (period_start + timedelta(days=20), "GOOGLE ADS", Decimal("-450.00"), "WITHDRAWAL"),
+        ]
+        for txn_date, desc, amount, txn_type in misc_transactions:
+            if period_start <= txn_date <= period_end:
+                BankStatementLine.objects.create(
+                    statement=statement,
+                    company=company,
+                    line_date=txn_date,
+                    description=desc,
+                    reference="",
+                    amount=amount,
+                    transaction_type=txn_type,
+                    match_status="UNMATCHED",
+                )
+
+        self.stdout.write(
+            f"  Created bank statement with {matched_count + unmatched_count} payout lines "
+            f"({matched_count} matched, {unmatched_count} unmatched) + "
+            f"{len([t for t in misc_transactions if period_start <= t[0] <= period_end])} misc transactions"
+        )
 
     def _create_operating_expenses(self, actor, company, accounts):
         """Create monthly operating expenses so the P&L isn't Shopify-only."""
@@ -711,9 +872,9 @@ class Command(BaseCommand):
         from accounting.models import JournalEntry
 
         # Skip if JEs already exist (beyond Shopify-generated ones)
-        non_shopify_jes = JournalEntry.objects.filter(company=company).exclude(
-            source_module="shopify_connector"
-        ).count()
+        non_shopify_jes = (
+            JournalEntry.objects.filter(company=company).exclude(source_module="shopify_connector").count()
+        )
         if non_shopify_jes > 5:
             self.stdout.write("  Operating expenses already exist — skipping.")
             return
@@ -744,10 +905,13 @@ class Command(BaseCommand):
                     date=entry_date,
                     memo=f"{memo} — {entry_date.strftime('%B %Y')}",
                     lines=[
-                        {"account_id": expense_account.id, "debit": str(varied), "credit": "0",
-                         "description": memo},
-                        {"account_id": bank.id, "debit": "0", "credit": str(varied),
-                         "description": f"Bank payment — {memo}"},
+                        {"account_id": expense_account.id, "debit": str(varied), "credit": "0", "description": memo},
+                        {
+                            "account_id": bank.id,
+                            "debit": "0",
+                            "credit": str(varied),
+                            "description": f"Bank payment — {memo}",
+                        },
                     ],
                     kind="NORMAL",
                 )

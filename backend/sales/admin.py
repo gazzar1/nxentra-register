@@ -1,6 +1,7 @@
 # sales/admin.py
 from django.contrib import admin
-from .models import Item, TaxCode, PostingProfile, SalesInvoice, SalesInvoiceLine
+
+from .models import Item, PostingProfile, SalesInvoice, SalesInvoiceLine, TaxCode
 
 
 @admin.register(Item)
