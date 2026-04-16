@@ -167,23 +167,26 @@ export default function EditItemPage() {
     if (!item) return;
 
     try {
+      // Only include account fields if they have a value — sending null
+      // would wipe accounts that were set by Shopify auto-import or backfill.
+      const payload: Record<string, unknown> = {
+        code: data.code,
+        name: data.name,
+        name_ar: data.name_ar || undefined,
+        item_type: data.item_type,
+        default_unit_price: data.default_unit_price || "0",
+        uom: data.uom || undefined,
+        costing_method: data.costing_method || undefined,
+      };
+      if (data.sales_account_id) payload.sales_account_id = parseInt(data.sales_account_id);
+      if (data.purchase_account_id) payload.purchase_account_id = parseInt(data.purchase_account_id);
+      if (data.default_tax_code_id) payload.default_tax_code_id = parseInt(data.default_tax_code_id);
+      if (data.inventory_account_id) payload.inventory_account_id = parseInt(data.inventory_account_id);
+      if (data.cogs_account_id) payload.cogs_account_id = parseInt(data.cogs_account_id);
+
       await updateItem.mutateAsync({
         id: item.id,
-        data: {
-          code: data.code,
-          name: data.name,
-          name_ar: data.name_ar || undefined,
-          item_type: data.item_type,
-          sales_account_id: data.sales_account_id ? parseInt(data.sales_account_id) : null,
-          purchase_account_id: data.purchase_account_id ? parseInt(data.purchase_account_id) : null,
-          default_unit_price: data.default_unit_price || "0",
-          default_tax_code_id: data.default_tax_code_id ? parseInt(data.default_tax_code_id) : null,
-          uom: data.uom || undefined,
-          // Inventory-specific fields
-          inventory_account_id: data.inventory_account_id ? parseInt(data.inventory_account_id) : null,
-          cogs_account_id: data.cogs_account_id ? parseInt(data.cogs_account_id) : null,
-          costing_method: data.costing_method || undefined,
-        },
+        data: payload,
       });
       // Upload new image if selected
       if (selectedImage) {

@@ -50,7 +50,7 @@ SHOPIFY_API_SECRET = getattr(settings, "SHOPIFY_API_SECRET", "")
 SHOPIFY_SCOPES = getattr(
     settings,
     "SHOPIFY_SCOPES",
-    "read_orders,read_products,read_inventory",
+    "read_customers,read_discounts,read_fulfillments,read_inventory,read_locations,read_orders,read_products,read_returns,read_shopify_payments_payouts",
 )
 SHOPIFY_APP_URL = getattr(settings, "SHOPIFY_APP_URL", "")
 
