@@ -110,7 +110,6 @@ class Command(BaseCommand):
                                     ]
                                     if f
                                 ],
-                                _projection_write=True,
                             )
                             self.stdout.write(f"  {company.slug}/{item.code}: set {', '.join(changes)}")
                         count += 1
