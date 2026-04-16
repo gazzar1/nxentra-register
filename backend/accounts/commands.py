@@ -3472,6 +3472,8 @@ def _setup_shopify_accounts(company):
         ("SALES_DISCOUNTS", "41100", "Sales Discounts", "REVENUE", "CONTRA_REVENUE"),
         ("CASH_BANK", "11000", "Cash and Bank", "ASSET", "LIQUIDITY"),
         ("CHARGEBACK_EXPENSE", "52100", "Chargeback Expense", "EXPENSE", "OTHER_EXPENSE"),
+        ("COGS", "51000", "Cost of Goods Sold", "EXPENSE", "COGS"),
+        ("INVENTORY", "13000", "Inventory", "ASSET", "INVENTORY"),
     ]
 
     with projection_writes_allowed():

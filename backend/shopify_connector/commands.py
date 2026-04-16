@@ -1348,6 +1348,11 @@ def _auto_create_item_from_line(store, sku: str, line_item: dict):
     variant_id = line_item.get("variant_id")
     product_id = line_item.get("product_id")
 
+    # Resolve default accounts (COGS, Inventory, Sales) so fulfillment
+    # can generate COGS journal entries later.
+    _ensure_inventory_accounts(store.company)
+    defaults = _resolve_default_item_accounts(store.company)
+
     try:
         with transaction.atomic():
             with command_writes_allowed():
@@ -1358,6 +1363,11 @@ def _auto_create_item_from_line(store, sku: str, line_item: dict):
                     item_type="INVENTORY",
                     default_unit_price=price,
                     is_active=True,
+                    sales_account=defaults.get("sales"),
+                    purchase_account=defaults.get("purchase"),
+                    inventory_account=defaults.get("inventory"),
+                    cogs_account=defaults.get("cogs"),
+                    costing_method="WEIGHTED_AVERAGE",
                 )
 
                 # Create ShopifyProduct mapping
@@ -1372,7 +1382,13 @@ def _auto_create_item_from_line(store, sku: str, line_item: dict):
                     item=item,
                     auto_created=True,
                 )
-            logger.info("Auto-created Item %s (%s) from Shopify order line", sku, title)
+            logger.info(
+                "Auto-created Item %s (%s) from Shopify order line (inventory=%s, cogs=%s)",
+                sku,
+                title,
+                defaults.get("inventory"),
+                defaults.get("cogs"),
+            )
     except Exception as exc:
         logger.warning("Failed to auto-create Item for SKU %s: %s", sku, exc)
 
