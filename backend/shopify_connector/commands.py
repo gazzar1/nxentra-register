@@ -1130,6 +1130,18 @@ def process_fulfillment(store: ShopifyStore, payload: dict) -> CommandResult:
             fulfillment.event_id = event.id if event else None
             fulfillment.save(update_fields=["event_id"])
 
+    # Create COGS journal entry + stock ledger entries via commands
+    # (moved from projection to command layer — events come from commands)
+    if cogs_lines and total_cogs > 0:
+        _create_cogs_for_fulfillment(
+            company=store.company,
+            cogs_lines=cogs_lines,
+            total_cogs=total_cogs,
+            fulfillment=fulfillment,
+            order=order,
+            fulfillment_date=fulfillment_date,
+        )
+
     if unmatched_skus:
         logger.warning(
             "Fulfillment %s: %d/%d SKUs unmatched: %s",
@@ -1146,6 +1158,179 @@ def process_fulfillment(store: ShopifyStore, payload: dict) -> CommandResult:
             "unmatched": len(unmatched_skus),
             "total_cogs": total_cogs,
         }
+    )
+
+
+def _create_cogs_for_fulfillment(company, cogs_lines, total_cogs, fulfillment, order, fulfillment_date):
+    """
+    Create COGS journal entry + stock ledger entries for a Shopify fulfillment.
+
+    Called from process_fulfillment (command layer, not projection).
+
+    Creates:
+    1. JE: DR COGS / CR Inventory per item
+    2. StockLedgerEntry via record_stock_issue (updates InventoryBalance)
+
+    The stock issue uses the item's default_cost or average_cost.
+    If no InventoryBalance exists, one is created with qty=0 to allow
+    the stock issue (Shopify merchants don't manage stock in Nxentra).
+    """
+    from accounting.commands import create_journal_entry, post_journal_entry, save_journal_entry_complete
+    from accounting.models import Account
+    from accounts.authz import system_actor_for_company
+    from inventory.commands import record_stock_issue
+    from inventory.models import Warehouse
+    from projections.models import InventoryBalance
+    from sales.models import Item
+
+    actor = system_actor_for_company(company)
+
+    # Build JE lines
+    je_lines = []
+    stock_lines = []
+    fulfillment_id = fulfillment.shopify_fulfillment_id
+    order_name = order.shopify_order_name
+
+    for cl in cogs_lines:
+        cogs_value = Decimal(str(cl.get("cogs_value", "0")))
+        if cogs_value <= 0:
+            continue
+
+        cogs_account_id = cl.get("cogs_account_id")
+        inventory_account_id = cl.get("inventory_account_id")
+        item_code = cl.get("item_code", "")
+        qty = Decimal(str(cl.get("qty", "0")))
+
+        try:
+            cogs_account = Account.objects.get(id=cogs_account_id, company=company)
+            inventory_account = Account.objects.get(id=inventory_account_id, company=company)
+        except Account.DoesNotExist:
+            logger.warning("COGS/Inventory account not found for %s — skipping", item_code)
+            continue
+
+        # JE: DR COGS
+        je_lines.append(
+            {
+                "account_id": cogs_account.id,
+                "description": f"COGS: {item_code} x {qty}",
+                "debit": str(cogs_value),
+                "credit": "0",
+            }
+        )
+
+        # JE: CR Inventory
+        je_lines.append(
+            {
+                "account_id": inventory_account.id,
+                "description": f"Inventory issued: {item_code} x {qty}",
+                "debit": "0",
+                "credit": str(cogs_value),
+            }
+        )
+
+        # Stock ledger line
+        item = Item.objects.filter(company=company, code=item_code).first()
+        if item:
+            # Find the correct warehouse (Shopify location or default)
+            warehouse = None
+            wh_public_id = cl.get("warehouse_public_id")
+            if wh_public_id:
+                warehouse = Warehouse.objects.filter(
+                    company=company,
+                    public_id=wh_public_id,
+                ).first()
+            if not warehouse:
+                warehouse = _get_shopify_warehouse(company)
+            if not warehouse:
+                warehouse = Warehouse.objects.filter(
+                    company=company,
+                    is_default=True,
+                ).first()
+
+            if warehouse:
+                # Ensure InventoryBalance exists (Shopify merchants may not have one)
+                InventoryBalance.objects.get_or_create(
+                    company=company,
+                    item=item,
+                    warehouse=warehouse,
+                    defaults={
+                        "qty_on_hand": Decimal("0"),
+                        "avg_cost": item.default_cost or Decimal("0"),
+                        "stock_value": Decimal("0"),
+                    },
+                )
+
+                stock_lines.append(
+                    {
+                        "item": item,
+                        "warehouse": warehouse,
+                        "qty": qty,
+                        "source_line_id": str(fulfillment.public_id),
+                    }
+                )
+
+    if not je_lines:
+        return
+
+    # Create and post the COGS JE
+    memo = f"Shopify COGS: {order_name} (Fulfillment {fulfillment_id})"
+    result = create_journal_entry(
+        actor=actor,
+        date=fulfillment_date,
+        memo=memo,
+        lines=je_lines,
+        kind="NORMAL",
+    )
+
+    if not result.success:
+        logger.error("Failed to create COGS JE for fulfillment %s: %s", fulfillment_id, result.error)
+        return
+
+    entry = result.data
+    save_result = save_journal_entry_complete(actor, entry.id)
+    if not save_result.success:
+        logger.error("Failed to save COGS JE for fulfillment %s: %s", fulfillment_id, save_result.error)
+        return
+
+    entry = save_result.data
+    post_result = post_journal_entry(actor, entry.id)
+    if not post_result.success:
+        logger.error("Failed to post COGS JE for fulfillment %s: %s", fulfillment_id, post_result.error)
+        return
+
+    journal_entry = post_result.data
+
+    # Record stock issue (creates StockLedgerEntry + updates InventoryBalance)
+    if stock_lines:
+        from inventory.models import StockLedgerEntry as SLE
+
+        # Allow negative inventory for Shopify (merchants don't manage stock in Nxentra)
+        orig_allow = company.allow_negative_inventory
+        try:
+            company.allow_negative_inventory = True
+            stock_result = record_stock_issue(
+                actor=actor,
+                source_type=SLE.SourceType.SALES_INVOICE,
+                source_id=str(fulfillment.public_id),
+                lines=stock_lines,
+                journal_entry=journal_entry,
+            )
+            if not stock_result.success:
+                logger.warning("Stock issue failed for fulfillment %s: %s", fulfillment_id, stock_result.error)
+        finally:
+            company.allow_negative_inventory = orig_allow
+
+    # Update fulfillment record with JE
+    with command_writes_allowed():
+        fulfillment.journal_entry_id = journal_entry.public_id if journal_entry else None
+        fulfillment.status = "PROCESSED"
+        fulfillment.save(update_fields=["journal_entry_id", "status"])
+
+    logger.info(
+        "Created COGS JE %s + stock issue for fulfillment %s (%s)",
+        journal_entry.public_id if journal_entry else "?",
+        fulfillment_id,
+        order_name,
     )
 
 
