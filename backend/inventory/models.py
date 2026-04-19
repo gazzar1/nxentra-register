@@ -67,6 +67,36 @@ class Warehouse(ProjectionWriteGuard):
         help_text="Default warehouse for new transactions",
     )
 
+    # ── Platform-managed location fields ──────────────────────────
+    # When a warehouse is synced from a platform (Shopify, Amazon, etc.),
+    # these fields track the source. Platform-managed locations are
+    # read-only in the UI — stock quantities are synced, not entered.
+
+    platform = models.CharField(
+        max_length=50,
+        blank=True,
+        default="",
+        help_text="Platform connector that manages this location (e.g., shopify, amazon). Empty = manual.",
+    )
+
+    platform_location_id = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        help_text="External location ID from the platform (e.g., Shopify location_id).",
+    )
+
+    is_platform_managed = models.BooleanField(
+        default=False,
+        help_text="If True, stock is synced from the platform. Manual edits are blocked.",
+    )
+
+    last_synced_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Last time stock levels were synced from the platform.",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -79,10 +109,16 @@ class Warehouse(ProjectionWriteGuard):
                 fields=["company", "code"],
                 name="uniq_warehouse_code_per_company",
             ),
+            models.UniqueConstraint(
+                fields=["company", "platform", "platform_location_id"],
+                condition=models.Q(is_platform_managed=True),
+                name="uniq_platform_location_per_company",
+            ),
         ]
         indexes = [
             models.Index(fields=["company", "is_active"]),
             models.Index(fields=["company", "is_default"]),
+            models.Index(fields=["company", "platform", "is_platform_managed"]),
         ]
 
     def __str__(self):
@@ -347,7 +383,9 @@ class FifoLayer(ProjectionWriteGuard):
         verbose_name_plural = "FIFO Layers"
 
     def __str__(self):
-        return f"FIFO Layer #{self.sequence}: {self.item.code} {self.qty_remaining}/{self.qty_original} @ {self.unit_cost}"
+        return (
+            f"FIFO Layer #{self.sequence}: {self.item.code} {self.qty_remaining}/{self.qty_original} @ {self.unit_cost}"
+        )
 
     @property
     def is_exhausted(self):

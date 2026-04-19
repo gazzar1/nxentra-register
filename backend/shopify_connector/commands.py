@@ -9,7 +9,7 @@ import hashlib
 import hmac
 import logging
 import secrets
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import requests
@@ -972,11 +972,23 @@ def process_fulfillment(store: ShopifyStore, payload: dict) -> CommandResult:
     unmatched_skus = []
     total_cogs = Decimal("0")
 
-    # Get default warehouse for cost lookups
-    try:
-        warehouse = Warehouse.objects.get(company=store.company, is_default=True)
-    except Warehouse.DoesNotExist:
-        warehouse = Warehouse.objects.filter(company=store.company, is_active=True).first()
+    # Get warehouse for cost lookups — prefer the specific Shopify location
+    shopify_location_id = str(payload.get("location_id", ""))
+    warehouse = None
+    if shopify_location_id:
+        warehouse = Warehouse.objects.filter(
+            company=store.company,
+            platform="shopify",
+            platform_location_id=shopify_location_id,
+            is_platform_managed=True,
+        ).first()
+    if not warehouse:
+        warehouse = _get_shopify_warehouse(store.company)
+    if not warehouse:
+        try:
+            warehouse = Warehouse.objects.get(company=store.company, is_default=True)
+        except Warehouse.DoesNotExist:
+            warehouse = Warehouse.objects.filter(company=store.company, is_active=True).first()
 
     for li in line_items:
         sku = li.get("sku", "").strip()
@@ -1300,34 +1312,117 @@ def process_dispute(store: ShopifyStore, payload: dict) -> CommandResult:
 
 
 def _ensure_shopify_warehouse(store):
-    """Create a Shopify warehouse for the store if one doesn't exist."""
+    """Sync Shopify locations into platform-managed warehouses.
+
+    Fetches all locations from the Shopify API and creates/updates
+    a Warehouse for each one. Each warehouse is marked as platform-managed
+    so the UI shows it as read-only (synced from Shopify).
+
+    Falls back to creating a single generic "SHOPIFY" warehouse if the
+    API call fails (e.g., during demo seeding with fake tokens).
+    """
+    from datetime import datetime as dt
+
     from inventory.models import Warehouse
 
-    code = "SHOPIFY"
-    if Warehouse.objects.filter(company=store.company, code=code).exists():
+    # Skip if platform-managed warehouses already exist for this store
+    if Warehouse.objects.filter(
+        company=store.company,
+        platform="shopify",
+        is_platform_managed=True,
+    ).exists():
         return
 
-    # Extract short store name from domain (e.g. "nxentra-store" from "nxentra-store.myshopify.com")
-    store_label = store.shop_domain.replace(".myshopify.com", "")
+    headers = {
+        "X-Shopify-Access-Token": store.access_token,
+        "Content-Type": "application/json",
+    }
 
+    locations = []
     try:
-        with command_writes_allowed():
-            Warehouse.objects.create(
-                company=store.company,
-                code=code,
-                name=f"Shopify — {store_label}",
-                is_active=True,
-                is_default=False,
-            )
-        logger.info("Created Shopify warehouse for %s", store.shop_domain)
+        resp = requests.get(
+            f"https://{store.shop_domain}/admin/api/2025-01/locations.json",
+            headers=headers,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        locations = resp.json().get("locations", [])
     except Exception as exc:
-        logger.warning("Failed to create Shopify warehouse: %s", exc)
+        logger.warning("Failed to fetch Shopify locations for %s: %s", store.shop_domain, exc)
+
+    with command_writes_allowed():
+        if locations:
+            for loc in locations:
+                loc_id = str(loc["id"])
+                loc_name = loc.get("name", f"Location {loc_id}")
+                code = f"SHOP-{loc_id[-6:]}"
+                address_parts = [
+                    loc.get("address1", ""),
+                    loc.get("city", ""),
+                    loc.get("country_name", ""),
+                ]
+                address = ", ".join(p for p in address_parts if p)
+
+                Warehouse.objects.get_or_create(
+                    company=store.company,
+                    platform="shopify",
+                    platform_location_id=loc_id,
+                    is_platform_managed=True,
+                    defaults={
+                        "code": code,
+                        "name": f"Shopify: {loc_name}",
+                        "address": address,
+                        "is_active": loc.get("active", True),
+                        "last_synced_at": dt.now(UTC),
+                    },
+                )
+            logger.info(
+                "Synced %d Shopify locations for %s",
+                len(locations),
+                store.shop_domain,
+            )
+        else:
+            # Fallback: create a single generic warehouse (demo/offline mode)
+            store_label = store.shop_domain.replace(".myshopify.com", "")
+            Warehouse.objects.get_or_create(
+                company=store.company,
+                code="SHOPIFY",
+                defaults={
+                    "name": f"Shopify — {store_label}",
+                    "platform": "shopify",
+                    "is_platform_managed": True,
+                    "is_active": True,
+                },
+            )
+            logger.info("Created fallback Shopify warehouse for %s", store.shop_domain)
+
+    # Ensure at least one default warehouse exists
+    if not Warehouse.objects.filter(company=store.company, is_default=True).exists():
+        first = Warehouse.objects.filter(company=store.company, is_active=True).first()
+        if first:
+            first.is_default = True
+            first.save(update_fields=["is_default"])
 
 
 def _get_shopify_warehouse(company):
-    """Get the Shopify warehouse for a company, or None."""
+    """Get the primary Shopify warehouse for a company.
+
+    Prefers platform-managed Shopify warehouses. Falls back to legacy
+    code='SHOPIFY' warehouse or any active warehouse.
+    """
     from inventory.models import Warehouse
 
+    # Try platform-managed Shopify location first
+    wh = Warehouse.objects.filter(
+        company=company,
+        platform="shopify",
+        is_platform_managed=True,
+        is_active=True,
+    ).first()
+    if wh:
+        return wh
+
+    # Fallback to legacy code-based lookup
     return Warehouse.objects.filter(company=company, code="SHOPIFY").first()
 
 

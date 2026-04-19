@@ -81,8 +81,10 @@ Shopify sales should never be manually invoiced in Nxentra.
 
 - **Physical stock** (quantities, locations, adjustments): Shopify
 - **Financial valuation** (inventory account balance, COGS): Nxentra
-- Merchants should not do stock adjustments in Nxentra for Shopify products
-- Nxentra's Inventory module (warehouses, stock balances) is hidden for Shopify-only merchants unless they have non-Shopify inventory
+- **Location model:** Every connected platform auto-syncs its locations as platform-managed warehouses in Nxentra. Platform-managed warehouses are read-only -- stock flows in via webhooks, not manual entry.
+- Merchants can create additional manual warehouses for non-platform inventory (raw materials, wholesale stock, etc.)
+- Fulfillment webhooks route to the correct Shopify location automatically (via `location_id` in payload)
+- This pattern is platform-agnostic: future connectors (Amazon FBA, WooCommerce) sync their locations the same way
 
 ### 6. Customers
 

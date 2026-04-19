@@ -3,7 +3,6 @@
 Serializers for inventory API endpoints.
 """
 
-
 from rest_framework import serializers
 
 from projections.models import InventoryBalance
@@ -25,10 +24,23 @@ class WarehouseSerializer(serializers.ModelSerializer):
             "address",
             "is_active",
             "is_default",
+            "platform",
+            "platform_location_id",
+            "is_platform_managed",
+            "last_synced_at",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "public_id", "created_at", "updated_at"]
+        read_only_fields = [
+            "id",
+            "public_id",
+            "platform",
+            "platform_location_id",
+            "is_platform_managed",
+            "last_synced_at",
+            "created_at",
+            "updated_at",
+        ]
 
 
 class WarehouseCreateSerializer(serializers.Serializer):
@@ -91,9 +103,7 @@ class StockLedgerEntrySerializer(serializers.ModelSerializer):
     warehouse_name = serializers.CharField(source="warehouse.name", read_only=True)
     warehouse_public_id = serializers.UUIDField(source="warehouse.public_id", read_only=True)
     posted_by_email = serializers.CharField(source="posted_by.email", read_only=True)
-    journal_entry_public_id = serializers.UUIDField(
-        source="journal_entry.public_id", read_only=True, allow_null=True
-    )
+    journal_entry_public_id = serializers.UUIDField(source="journal_entry.public_id", read_only=True, allow_null=True)
 
     class Meta:
         model = StockLedgerEntry
@@ -142,9 +152,7 @@ class AdjustmentLineSerializer(serializers.Serializer):
     item_id = serializers.IntegerField()
     warehouse_id = serializers.IntegerField(required=False, allow_null=True)
     qty_delta = serializers.DecimalField(max_digits=18, decimal_places=4)
-    unit_cost = serializers.DecimalField(
-        max_digits=18, decimal_places=6, required=False, allow_null=True
-    )
+    unit_cost = serializers.DecimalField(max_digits=18, decimal_places=6, required=False, allow_null=True)
 
 
 class InventoryAdjustmentSerializer(serializers.Serializer):
