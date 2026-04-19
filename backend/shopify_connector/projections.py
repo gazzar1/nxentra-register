@@ -1075,237 +1075,55 @@ class ShopifyAccountingHandler(BaseProjection):
 
     def _handle_payout_settled(self, event, data, mapping, dimension_context=None):
         """
-        Settlement entry when Shopify sends a payout to bank.
+        Create a PlatformSettlement for a Shopify payout.
 
-        DR Cash/Bank             net_amount
-        DR Processing Fees       fees (if > 0)
-        CR Shopify Clearing      gross_amount
+        Routes through platform_connectors.commands which creates the
+        settlement record + JE via accounting commands.
         """
-        clearing = mapping.get(ROLE_SHOPIFY_CLEARING)
-        bank = mapping.get(ROLE_CASH_BANK)
-        if not clearing or not bank:
-            logger.warning(
-                "Shopify account mapping missing SHOPIFY_CLEARING or CASH_BANK for company %s — skipping payout %s",
-                event.company,
-                data.get("shopify_payout_id"),
-            )
-            return
-
-        fees_account = mapping.get(ROLE_PROCESSING_FEES)
+        from platform_connectors.commands import create_and_post_settlement
+        from platform_connectors.models import PlatformSettlement
+        from shopify_connector.models import ShopifyPayout
 
         gross_amount = Decimal(str(data.get("gross_amount", "0")))
         fees = Decimal(str(data.get("fees", "0")))
         net_amount = Decimal(str(data.get("net_amount", "0")))
-        payout_id = data.get("shopify_payout_id", "")
+        payout_id = str(data.get("shopify_payout_id", ""))
         entry_date = _parse_date(data.get("payout_date") or data.get("transaction_date")) or event.created_at.date()
         currency = data.get("currency") or getattr(event.company, "default_currency", "USD")
-        memo = f"Shopify payout: {payout_id}"
 
         if gross_amount == 0:
-            logger.warning(
-                "Skipping Shopify payout %s — zero gross amount",
-                payout_id,
-            )
+            logger.warning("Skipping Shopify payout %s — zero gross amount", payout_id)
             return
 
-        is_negative_payout = gross_amount < 0
-
-        # Idempotency
-        if JournalEntry.objects.filter(
+        result = create_and_post_settlement(
             company=event.company,
-            memo=memo,
-            status=JournalEntry.Status.POSTED,
-        ).exists():
-            logger.info("Journal entry already exists for '%s' — skipping", memo)
-            return
-
-        # Multi-currency: resolve exchange rate
-        fx_rate, is_foreign = _resolve_exchange_rate(event.company, currency, entry_date)
-
-        period = _resolve_period(event.company, entry_date)
-        now = timezone.now()
-
-        entry = JournalEntry.objects.projection().create(
-            company=event.company,
-            public_id=uuid.uuid4(),
-            date=entry_date,
-            period=period,
-            memo=memo,
-            kind=JournalEntry.Kind.NORMAL,
-            status=JournalEntry.Status.POSTED,
-            posted_at=now,
+            platform="shopify",
+            platform_document_id=payout_id,
+            settlement_type=PlatformSettlement.SettlementType.PAYOUT,
+            gross_amount=abs(gross_amount),
+            fees=abs(fees),
+            net_amount=abs(net_amount),
             currency=currency,
-            exchange_rate=fx_rate,
-            source_module="shopify_connector",
-            source_document=str(payout_id),
+            settlement_date=entry_date,
+            reference=f"Payout {payout_id}",
         )
 
-        lines = []
-        line_no = 0
-        abs_gross = abs(gross_amount)
-        abs_net = abs(net_amount)
-
-        def _make_line(account, description, debit_amt, credit_amt):
-            """Helper to create a JournalLine with FX conversion."""
-            return JournalLine(
-                entry=entry,
-                company=event.company,
-                public_id=uuid.uuid4(),
-                line_no=0,  # set below
-                account=account,
-                description=description,
-                debit=_convert_amount(debit_amt, fx_rate) if is_foreign else debit_amt,
-                credit=_convert_amount(credit_amt, fx_rate) if is_foreign else credit_amt,
-                amount_currency=(debit_amt if debit_amt > 0 else -credit_amt) if is_foreign else None,
-                currency=currency,
-                exchange_rate=fx_rate,
-            )
-
-        if is_negative_payout:
-            line_no += 1
-            ln = _make_line(clearing, f"Negative payout reversal: {payout_id}", abs_gross, Decimal("0"))
-            ln.line_no = line_no
-            lines.append(ln)
-
-            if fees > 0 and fees_account:
-                line_no += 1
-                ln = _make_line(fees_account, f"Processing fees: Payout {payout_id}", fees, Decimal("0"))
-                ln.line_no = line_no
-                lines.append(ln)
-            elif fees > 0 and not fees_account:
-                logger.warning(
-                    "No PROCESSING_FEES account mapped — fees of %s absorbed into clearing for payout %s",
-                    fees,
-                    payout_id,
-                )
-                converted_abs_net = _convert_amount(abs_net, fx_rate) if is_foreign else abs_net
-                lines[0].debit = converted_abs_net
-                if is_foreign:
-                    lines[0].amount_currency = abs_net
-
-            line_no += 1
-            ln = _make_line(bank, f"Negative payout: {payout_id}", Decimal("0"), abs_net)
-            ln.line_no = line_no
-            lines.append(ln)
-        else:
-            line_no += 1
-            ln = _make_line(bank, memo, net_amount, Decimal("0"))
-            ln.line_no = line_no
-            lines.append(ln)
-
-            if fees > 0 and fees_account:
-                line_no += 1
-                ln = _make_line(fees_account, f"Processing fees: Payout {payout_id}", fees, Decimal("0"))
-                ln.line_no = line_no
-                lines.append(ln)
-            elif fees > 0 and not fees_account:
-                logger.warning(
-                    "No PROCESSING_FEES account mapped — fees of %s included in bank deposit for payout %s",
-                    fees,
-                    payout_id,
-                )
-                converted_gross = _convert_amount(gross_amount, fx_rate) if is_foreign else gross_amount
-                lines[0].debit = converted_gross
-                if is_foreign:
-                    lines[0].amount_currency = gross_amount
-
-            line_no += 1
-            ln = _make_line(clearing, memo, Decimal("0"), gross_amount)
-            ln.line_no = line_no
-            lines.append(ln)
-
-        # Fix FX rounding imbalance before saving
-        if is_foreign:
-            _fix_fx_rounding(lines, entry, event.company, currency, fx_rate)
-
-        # Shared validation: period, account postability
-        force_incomplete, validation_errors = self._validate_entry(event.company, entry_date, lines)
-
-        # Balance validation
-        total_debit = sum(l.debit for l in lines)
-        total_credit = sum(l.credit for l in lines)
-        if total_debit != total_credit:
-            force_incomplete = True
-            validation_errors.append(f"Unbalanced: debit={total_debit} credit={total_credit}")
-
-        if force_incomplete:
-            entry.status = JournalEntry.Status.INCOMPLETE
-            entry.posted_at = None
-            entry.save(update_fields=["status", "posted_at"])
-
-        JournalLine.objects.projection().bulk_create(lines)
-        self._attach_dimensions(event.company, lines, dimension_context)
-
-        if force_incomplete:
-            self._mark_incomplete(entry, validation_errors, memo)
+        if not result.success:
+            logger.error("Failed to create settlement for payout %s: %s", payout_id, result.error)
             return
 
-        # Assign entry number
-        seq = _next_company_sequence(event.company, "journal_entry_number")
-        entry_number = f"JE-{event.company_id}-{seq:06d}"
-        entry.entry_number = entry_number
-        entry.save(update_fields=["entry_number"])
-
-        # Emit JOURNAL_ENTRY_POSTED
-        lines_data = []
-        for line in lines:
-            lines_data.append(
-                {
-                    "line_public_id": str(line.public_id),
-                    "line_no": line.line_no,
-                    "account_public_id": str(line.account.public_id),
-                    "account_code": line.account.code,
-                    "description": line.description,
-                    "debit": str(line.debit),
-                    "credit": str(line.credit),
-                    "currency": currency,
-                    "exchange_rate": str(fx_rate),
-                }
-            )
-
-        emit_event_no_actor(
-            company=event.company,
-            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
-            aggregate_type="JournalEntry",
-            aggregate_id=str(entry.public_id),
-            idempotency_key=f"shopify.payout.je:{payout_id}",
-            metadata={"source_projection": PROJECTION_NAME},
-            data=JournalEntryPostedData(
-                entry_public_id=str(entry.public_id),
-                entry_number=entry_number,
-                date=str(entry_date),
-                memo=memo,
-                kind="NORMAL",
-                posted_at=str(now),
-                posted_by_id=0,
-                posted_by_email="system@shopify",
-                total_debit=str(total_debit),
-                total_credit=str(total_credit),
-                lines=lines_data,
-                period=period,
-                currency=currency,
-                exchange_rate=str(fx_rate),
-            ),
-            caused_by_event=event,
-        )
-
-        # Update local payout record
-        from shopify_connector.models import ShopifyPayout
+        journal_entry = result.data.get("journal_entry")
+        je_public_id = journal_entry.public_id if journal_entry else None
 
         ShopifyPayout.objects.filter(
             company=event.company,
             shopify_payout_id=data.get("shopify_payout_id"),
         ).update(
             status=ShopifyPayout.Status.PROCESSED,
-            journal_entry_id=entry.public_id,
+            journal_entry_id=je_public_id,
         )
 
-        logger.info(
-            "Created payout journal entry %s for Shopify payout %s (event %s)",
-            entry.public_id,
-            payout_id,
-            event.id,
-        )
+        logger.info("Created payout settlement %s → JE %s", payout_id, je_public_id)
 
     def _handle_order_fulfilled(self, event, data, mapping, dimension_context=None):
         """
@@ -1323,434 +1141,87 @@ class ShopifyAccountingHandler(BaseProjection):
 
     def _handle_dispute_created(self, event, data, mapping, dimension_context=None):
         """
-        Create a chargeback journal entry when a Shopify dispute is received.
-
-        Journal entry:
-        DR Chargeback Expense   (dispute amount)
-        DR Processing Fees      (chargeback fee, if any)
-        CR Shopify Clearing     (total = amount + fee)
-
-        The clearing account is credited because the disputed funds are
-        being pulled back by the payment processor.
+        Create a PlatformSettlement for a Shopify dispute/chargeback.
         """
-        clearing = mapping.get(ROLE_SHOPIFY_CLEARING)
-        chargeback_account = mapping.get(ROLE_CHARGEBACK_EXPENSE)
-        fees_account = mapping.get(ROLE_PROCESSING_FEES)
-
-        if not clearing or not chargeback_account:
-            logger.warning(
-                "Shopify account mapping missing SHOPIFY_CLEARING or CHARGEBACK_EXPENSE "
-                "for company %s — skipping dispute %s",
-                event.company,
-                data.get("shopify_dispute_id"),
-            )
-            return
+        from platform_connectors.commands import create_and_post_settlement
+        from platform_connectors.models import PlatformSettlement
+        from shopify_connector.models import ShopifyDispute
 
         dispute_amount = Decimal(str(data.get("dispute_amount", "0")))
         chargeback_fee = Decimal(str(data.get("chargeback_fee", "0")))
-        dispute_id = data.get("shopify_dispute_id", "")
+        dispute_id = str(data.get("shopify_dispute_id", ""))
         order_name = data.get("order_name", "")
         currency = data.get("currency") or getattr(event.company, "default_currency", "USD")
         entry_date = _parse_date(data.get("transaction_date")) or event.created_at.date()
-        memo = f"Shopify chargeback: Dispute {dispute_id} ({order_name})"
 
         if dispute_amount <= 0:
-            logger.warning(
-                "Skipping dispute %s — non-positive amount %s",
-                dispute_id,
-                dispute_amount,
-            )
             return
 
-        # Idempotency
-        if JournalEntry.objects.filter(
+        result = create_and_post_settlement(
             company=event.company,
-            memo=memo,
-            status=JournalEntry.Status.POSTED,
-        ).exists():
-            logger.info("Journal entry already exists for '%s' — skipping", memo)
-            return
-
-        # Multi-currency: resolve exchange rate
-        fx_rate, is_foreign = _resolve_exchange_rate(event.company, currency, entry_date)
-
-        period = _resolve_period(event.company, entry_date)
-        now = timezone.now()
-
-        entry = JournalEntry.objects.projection().create(
-            company=event.company,
-            public_id=uuid.uuid4(),
-            date=entry_date,
-            period=period,
-            memo=memo,
-            kind=JournalEntry.Kind.NORMAL,
-            status=JournalEntry.Status.POSTED,
-            posted_at=now,
+            platform="shopify",
+            platform_document_id=dispute_id,
+            settlement_type=PlatformSettlement.SettlementType.DISPUTE,
+            gross_amount=dispute_amount,
+            fees=chargeback_fee,
+            net_amount=dispute_amount + chargeback_fee,
             currency=currency,
-            exchange_rate=fx_rate,
-            source_module="shopify_connector",
-            source_document=str(dispute_id),
+            settlement_date=entry_date,
+            reference=f"Dispute {dispute_id} ({order_name})",
         )
 
-        lines = []
-        line_no = 0
-
-        # DR Chargeback Expense — disputed amount
-        line_no += 1
-        converted_dispute = _convert_amount(dispute_amount, fx_rate) if is_foreign else dispute_amount
-        lines.append(
-            JournalLine(
-                entry=entry,
-                company=event.company,
-                public_id=uuid.uuid4(),
-                line_no=line_no,
-                account=chargeback_account,
-                description=f"Chargeback: {order_name} (Dispute {dispute_id})",
-                debit=converted_dispute,
-                credit=Decimal("0"),
-                amount_currency=dispute_amount if is_foreign else None,
-                currency=currency,
-                exchange_rate=fx_rate,
-            )
-        )
-
-        # DR Processing Fees — chargeback fee
-        if chargeback_fee > 0 and fees_account:
-            line_no += 1
-            converted_fee = _convert_amount(chargeback_fee, fx_rate) if is_foreign else chargeback_fee
-            lines.append(
-                JournalLine(
-                    entry=entry,
-                    company=event.company,
-                    public_id=uuid.uuid4(),
-                    line_no=line_no,
-                    account=fees_account,
-                    description=f"Chargeback fee: Dispute {dispute_id}",
-                    debit=converted_fee,
-                    credit=Decimal("0"),
-                    amount_currency=chargeback_fee if is_foreign else None,
-                    currency=currency,
-                    exchange_rate=fx_rate,
-                )
-            )
-
-        # CR Shopify Clearing — total pulled back
-        total_credit_foreign = dispute_amount + chargeback_fee
-        total_credit = _convert_amount(total_credit_foreign, fx_rate) if is_foreign else total_credit_foreign
-        line_no += 1
-        lines.append(
-            JournalLine(
-                entry=entry,
-                company=event.company,
-                public_id=uuid.uuid4(),
-                line_no=line_no,
-                account=clearing,
-                description=f"Chargeback clearing: Dispute {dispute_id}",
-                debit=Decimal("0"),
-                credit=total_credit,
-                amount_currency=-total_credit_foreign if is_foreign else None,
-                currency=currency,
-                exchange_rate=fx_rate,
-            )
-        )
-
-        # Fix FX rounding imbalance before saving
-        if is_foreign:
-            _fix_fx_rounding(lines, entry, event.company, currency, fx_rate)
-
-        # Shared validation: period, account postability
-        force_incomplete, validation_errors = self._validate_entry(event.company, entry_date, lines)
-
-        # Balance validation
-        total_debit = sum(l.debit for l in lines)
-        total_credit_check = sum(l.credit for l in lines)
-        if total_debit != total_credit_check:
-            force_incomplete = True
-            validation_errors.append(f"Unbalanced: debit={total_debit} credit={total_credit_check}")
-
-        if force_incomplete:
-            entry.status = JournalEntry.Status.INCOMPLETE
-            entry.posted_at = None
-            entry.save(update_fields=["status", "posted_at"])
-
-        JournalLine.objects.projection().bulk_create(lines)
-        self._attach_dimensions(event.company, lines, dimension_context)
-
-        if force_incomplete:
-            self._mark_incomplete(entry, validation_errors, memo)
+        if not result.success:
+            logger.error("Failed to create settlement for dispute %s: %s", dispute_id, result.error)
             return
 
-        # Assign entry number
-        seq = _next_company_sequence(event.company, "journal_entry_number")
-        entry_number = f"JE-{event.company_id}-{seq:06d}"
-        entry.entry_number = entry_number
-        entry.save(update_fields=["entry_number"])
-
-        # Emit JOURNAL_ENTRY_POSTED
-        lines_data = []
-        for line in lines:
-            lines_data.append(
-                {
-                    "line_public_id": str(line.public_id),
-                    "line_no": line.line_no,
-                    "account_public_id": str(line.account.public_id),
-                    "account_code": line.account.code,
-                    "description": line.description,
-                    "debit": str(line.debit),
-                    "credit": str(line.credit),
-                    "currency": currency,
-                    "exchange_rate": str(fx_rate),
-                }
-            )
-
-        emit_event_no_actor(
-            company=event.company,
-            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
-            aggregate_type="JournalEntry",
-            aggregate_id=str(entry.public_id),
-            idempotency_key=f"shopify.dispute.je:{dispute_id}",
-            metadata={"source_projection": PROJECTION_NAME},
-            data=JournalEntryPostedData(
-                entry_public_id=str(entry.public_id),
-                entry_number=entry_number,
-                date=str(entry_date),
-                memo=memo,
-                kind="NORMAL",
-                posted_at=str(now),
-                posted_by_id=0,
-                posted_by_email="system@shopify",
-                total_debit=str(total_debit),
-                total_credit=str(total_credit_check),
-                lines=lines_data,
-                period=period,
-                currency=currency,
-                exchange_rate=str(fx_rate),
-            ),
-            caused_by_event=event,
-        )
-
-        # Update local dispute record
-        from shopify_connector.models import ShopifyDispute
+        journal_entry = result.data.get("journal_entry")
+        je_public_id = journal_entry.public_id if journal_entry else None
 
         ShopifyDispute.objects.filter(
             company=event.company,
             shopify_dispute_id=data.get("shopify_dispute_id"),
         ).update(
             status=ShopifyDispute.Status.PROCESSED,
-            journal_entry_id=entry.public_id,
+            journal_entry_id=je_public_id,
         )
 
-        logger.info(
-            "Created chargeback journal entry %s for dispute %s (%s %s)",
-            entry.public_id,
-            dispute_id,
-            currency,
-            dispute_amount,
-        )
+        logger.info("Created dispute settlement %s → JE %s", dispute_id, je_public_id)
 
     def _handle_dispute_won(self, event, data, mapping, dimension_context=None):
         """
-        Reverse the chargeback journal entry when a dispute is won.
-
-        Journal entry (mirrors the original chargeback entry):
-        DR Shopify Clearing     (amount + fee)
-        CR Chargeback Expense   (amount)
-        CR Processing Fees      (chargeback fee)
+        Create a PlatformSettlement reversal when a dispute is won.
         """
-        clearing = mapping.get(ROLE_SHOPIFY_CLEARING)
-        chargeback_account = mapping.get(ROLE_CHARGEBACK_EXPENSE)
-        fees_account = mapping.get(ROLE_PROCESSING_FEES)
-
-        if not clearing or not chargeback_account:
-            logger.warning(
-                "Shopify account mapping missing for dispute won reversal, company %s — skipping dispute %s",
-                event.company,
-                data.get("shopify_dispute_id"),
-            )
-            return
+        from platform_connectors.commands import create_and_post_settlement
+        from platform_connectors.models import PlatformSettlement
 
         dispute_amount = Decimal(str(data.get("dispute_amount", "0")))
         chargeback_fee = Decimal(str(data.get("chargeback_fee", "0")))
-        dispute_id = data.get("shopify_dispute_id", "")
+        dispute_id = str(data.get("shopify_dispute_id", ""))
         order_name = data.get("order_name", "")
         currency = data.get("currency") or getattr(event.company, "default_currency", "USD")
         entry_date = _parse_date(data.get("transaction_date")) or event.created_at.date()
-        memo = f"Shopify chargeback reversal (won): Dispute {dispute_id} ({order_name})"
 
         if dispute_amount <= 0:
             return
 
-        # Idempotency
-        if JournalEntry.objects.filter(
+        result = create_and_post_settlement(
             company=event.company,
-            memo=memo,
-            status=JournalEntry.Status.POSTED,
-        ).exists():
-            logger.info("Reversal JE already exists for '%s' — skipping", memo)
-            return
-
-        fx_rate, is_foreign = _resolve_exchange_rate(event.company, currency, entry_date)
-        period = _resolve_period(event.company, entry_date)
-        now = timezone.now()
-
-        entry = JournalEntry.objects.projection().create(
-            company=event.company,
-            public_id=uuid.uuid4(),
-            date=entry_date,
-            period=period,
-            memo=memo,
-            kind=JournalEntry.Kind.NORMAL,
-            status=JournalEntry.Status.POSTED,
-            posted_at=now,
+            platform="shopify",
+            platform_document_id=f"{dispute_id}-won",
+            settlement_type=PlatformSettlement.SettlementType.DISPUTE_WON,
+            gross_amount=dispute_amount,
+            fees=chargeback_fee,
+            net_amount=dispute_amount + chargeback_fee,
             currency=currency,
-            exchange_rate=fx_rate,
-            source_module="shopify_connector",
-            source_document=str(dispute_id),
+            settlement_date=entry_date,
+            reference=f"Dispute won {dispute_id} ({order_name})",
         )
 
-        lines = []
-        line_no = 0
-
-        # DR Shopify Clearing — funds returned
-        total_debit_foreign = dispute_amount + chargeback_fee
-        total_debit_converted = _convert_amount(total_debit_foreign, fx_rate) if is_foreign else total_debit_foreign
-        line_no += 1
-        lines.append(
-            JournalLine(
-                entry=entry,
-                company=event.company,
-                public_id=uuid.uuid4(),
-                line_no=line_no,
-                account=clearing,
-                description=f"Chargeback reversal (won): Dispute {dispute_id}",
-                debit=total_debit_converted,
-                credit=Decimal("0"),
-                amount_currency=total_debit_foreign if is_foreign else None,
-                currency=currency,
-                exchange_rate=fx_rate,
-            )
-        )
-
-        # CR Chargeback Expense — recover disputed amount
-        converted_dispute = _convert_amount(dispute_amount, fx_rate) if is_foreign else dispute_amount
-        line_no += 1
-        lines.append(
-            JournalLine(
-                entry=entry,
-                company=event.company,
-                public_id=uuid.uuid4(),
-                line_no=line_no,
-                account=chargeback_account,
-                description=f"Chargeback recovered (won): {order_name} (Dispute {dispute_id})",
-                debit=Decimal("0"),
-                credit=converted_dispute,
-                amount_currency=-dispute_amount if is_foreign else None,
-                currency=currency,
-                exchange_rate=fx_rate,
-            )
-        )
-
-        # CR Processing Fees — recover chargeback fee
-        if chargeback_fee > 0 and fees_account:
-            converted_fee = _convert_amount(chargeback_fee, fx_rate) if is_foreign else chargeback_fee
-            line_no += 1
-            lines.append(
-                JournalLine(
-                    entry=entry,
-                    company=event.company,
-                    public_id=uuid.uuid4(),
-                    line_no=line_no,
-                    account=fees_account,
-                    description=f"Chargeback fee recovered: Dispute {dispute_id}",
-                    debit=Decimal("0"),
-                    credit=converted_fee,
-                    amount_currency=-chargeback_fee if is_foreign else None,
-                    currency=currency,
-                    exchange_rate=fx_rate,
-                )
-            )
-
-        # Fix FX rounding
-        if is_foreign:
-            _fix_fx_rounding(lines, entry, event.company, currency, fx_rate)
-
-        # Shared validation: period, account postability
-        force_incomplete, validation_errors = self._validate_entry(event.company, entry_date, lines)
-
-        # Balance validation
-        total_debit_check = sum(l.debit for l in lines)
-        total_credit_check = sum(l.credit for l in lines)
-        if total_debit_check != total_credit_check:
-            force_incomplete = True
-            validation_errors.append(f"Unbalanced: debit={total_debit_check} credit={total_credit_check}")
-
-        if force_incomplete:
-            entry.status = JournalEntry.Status.INCOMPLETE
-            entry.posted_at = None
-            entry.save(update_fields=["status", "posted_at"])
-
-        JournalLine.objects.projection().bulk_create(lines)
-        self._attach_dimensions(event.company, lines, dimension_context)
-
-        if force_incomplete:
-            self._mark_incomplete(entry, validation_errors, memo)
+        if not result.success:
+            logger.error("Failed to create dispute-won settlement for %s: %s", dispute_id, result.error)
             return
 
-        seq = _next_company_sequence(event.company, "journal_entry_number")
-        entry_number = f"JE-{event.company_id}-{seq:06d}"
-        entry.entry_number = entry_number
-        entry.save(update_fields=["entry_number"])
-
-        # Emit JOURNAL_ENTRY_POSTED
-        lines_data = []
-        for line in lines:
-            lines_data.append(
-                {
-                    "line_public_id": str(line.public_id),
-                    "line_no": line.line_no,
-                    "account_public_id": str(line.account.public_id),
-                    "account_code": line.account.code,
-                    "description": line.description,
-                    "debit": str(line.debit),
-                    "credit": str(line.credit),
-                    "currency": currency,
-                    "exchange_rate": str(fx_rate),
-                }
-            )
-
-        emit_event_no_actor(
-            company=event.company,
-            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
-            aggregate_type="JournalEntry",
-            aggregate_id=str(entry.public_id),
-            idempotency_key=f"shopify.dispute.won.je:{dispute_id}",
-            metadata={"source_projection": PROJECTION_NAME},
-            data=JournalEntryPostedData(
-                entry_public_id=str(entry.public_id),
-                entry_number=entry_number,
-                date=str(entry_date),
-                memo=memo,
-                kind="NORMAL",
-                posted_at=str(now),
-                posted_by_id=0,
-                posted_by_email="system@shopify",
-                total_debit=str(total_debit_check),
-                total_credit=str(total_credit_check),
-                lines=lines_data,
-                period=period,
-                currency=currency,
-                exchange_rate=str(fx_rate),
-            ),
-            caused_by_event=event,
-        )
-
-        logger.info(
-            "Created dispute-won reversal JE %s for dispute %s (%s %s)",
-            entry.public_id,
-            dispute_id,
-            currency,
-            dispute_amount,
-        )
+        logger.info("Created dispute-won settlement %s", dispute_id)
 
     def _clear_projected_data(self, company) -> None:
         """Clear Shopify-generated journal entries for rebuild."""
