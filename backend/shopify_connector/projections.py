@@ -755,176 +755,98 @@ class ShopifyAccountingHandler(BaseProjection):
 
     def _handle_refund_created(self, event, data, mapping, dimension_context=None):
         """
-        Reversal entry for a refund.
-        DR Sales Revenue / CR Accounts Receivable
+        Create a CreditNote from a Shopify refund.
+
+        Routes through the Sales module. The CreditNote → post_credit_note
+        flow handles JE creation (DR Revenue / CR Clearing).
+
+        If items were restocked, the restock COGS reversal is handled
+        separately (kept as direct JE until Phase 6 moves it to StockLedger).
         """
-        ar = mapping.get(ROLE_SHOPIFY_CLEARING)
-        revenue = mapping.get(ROLE_SALES_REVENUE)
-        if not ar or not revenue:
-            logger.warning("Shopify account mapping missing for refund — skipping")
+        from sales.commands import create_and_post_credit_note_for_platform
+        from sales.models import SalesInvoice
+        from shopify_connector.models import ShopifyRefund
+
+        revenue_account = mapping.get(ROLE_SALES_REVENUE)
+        if not revenue_account:
+            logger.warning("Shopify SALES_REVENUE mapping missing for refund — skipping")
             return
 
         amount = Decimal(str(data.get("amount", "0")))
         order_number = data.get("order_number", "")
-        refund_id = data.get("shopify_refund_id", "")
+        shopify_order_id = str(data.get("shopify_order_id", ""))
+        refund_id = str(data.get("shopify_refund_id", ""))
         entry_date = _parse_date(data.get("transaction_date")) or event.created_at.date()
         currency = data.get("currency") or getattr(event.company, "default_currency", "USD")
-        memo = f"Shopify refund: Order {order_number} (Ref {refund_id})"
 
         if amount <= 0:
             return
 
-        if JournalEntry.objects.filter(
+        # Find the original SalesInvoice for this Shopify order
+        original_invoice = SalesInvoice.objects.filter(
             company=event.company,
-            memo=memo,
-            status=JournalEntry.Status.POSTED,
-        ).exists():
+            source="shopify",
+            source_document_id=shopify_order_id,
+            status=SalesInvoice.Status.POSTED,
+        ).first()
+
+        if not original_invoice:
+            logger.warning(
+                "Cannot create CreditNote for Shopify refund %s — original invoice not found "
+                "for order %s. The order may predate the module-routing refactor.",
+                refund_id,
+                shopify_order_id,
+            )
             return
 
-        # Multi-currency: resolve exchange rate
-        fx_rate, is_foreign = _resolve_exchange_rate(event.company, currency, entry_date)
-
-        period = _resolve_period(event.company, entry_date)
-        now = timezone.now()
-
-        converted_amount = _convert_amount(amount, fx_rate) if is_foreign else amount
-
-        entry = JournalEntry.objects.projection().create(
-            company=event.company,
-            public_id=uuid.uuid4(),
-            date=entry_date,
-            period=period,
-            memo=memo,
-            kind=JournalEntry.Kind.NORMAL,
-            status=JournalEntry.Status.POSTED,
-            posted_at=now,
-            currency=currency,
-            exchange_rate=fx_rate,
-            source_module="shopify_connector",
-            source_document=str(refund_id),
-        )
-
-        debit_line = JournalLine(
-            entry=entry,
-            company=event.company,
-            public_id=uuid.uuid4(),
-            line_no=1,
-            account=revenue,
-            description=memo,
-            debit=converted_amount,
-            credit=Decimal("0"),
-            amount_currency=amount if is_foreign else None,
-            currency=currency,
-            exchange_rate=fx_rate,
-        )
-        credit_line = JournalLine(
-            entry=entry,
-            company=event.company,
-            public_id=uuid.uuid4(),
-            line_no=2,
-            account=ar,
-            description=memo,
-            debit=Decimal("0"),
-            credit=converted_amount,
-            amount_currency=-amount if is_foreign else None,
-            currency=currency,
-            exchange_rate=fx_rate,
-        )
-
-        lines = [debit_line, credit_line]
-
-        # Shared validation: period, account postability
-        force_incomplete, validation_errors = self._validate_entry(event.company, entry_date, lines)
-
-        # Balance validation
-        total_debit = sum(l.debit for l in lines)
-        total_credit = sum(l.credit for l in lines)
-        if total_debit != total_credit:
-            force_incomplete = True
-            validation_errors.append(f"Unbalanced: debit={total_debit} credit={total_credit}")
-
-        if force_incomplete:
-            entry.status = JournalEntry.Status.INCOMPLETE
-            entry.posted_at = None
-            entry.save(update_fields=["status", "posted_at"])
-
-        JournalLine.objects.projection().bulk_create(lines)
-        self._attach_dimensions(event.company, lines, dimension_context)
-
-        if force_incomplete:
-            self._mark_incomplete(entry, validation_errors, memo)
-            return
-
-        # Assign proper entry number
-        seq = _next_company_sequence(event.company, "journal_entry_number")
-        entry_number = f"JE-{event.company_id}-{seq:06d}"
-        entry.entry_number = entry_number
-        entry.save(update_fields=["entry_number"])
-
-        lines_data = [
+        # Build credit note lines — single revenue reversal line
+        cn_lines = [
             {
-                "line_public_id": str(debit_line.public_id),
-                "line_no": 1,
-                "account_public_id": str(revenue.public_id),
-                "account_code": revenue.code,
-                "description": memo,
-                "debit": str(converted_amount),
-                "credit": "0",
-                "currency": currency,
-                "exchange_rate": str(fx_rate),
-            },
-            {
-                "line_public_id": str(credit_line.public_id),
-                "line_no": 2,
-                "account_public_id": str(ar.public_id),
-                "account_code": ar.code,
-                "description": memo,
-                "debit": "0",
-                "credit": str(converted_amount),
-                "currency": currency,
-                "exchange_rate": str(fx_rate),
-            },
+                "account_id": revenue_account.id,
+                "description": f"Shopify refund: Order {order_number}",
+                "quantity": "1",
+                "unit_price": str(amount),
+                "discount_amount": "0",
+            }
         ]
 
-        emit_event_no_actor(
+        result = create_and_post_credit_note_for_platform(
             company=event.company,
-            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
-            aggregate_type="JournalEntry",
-            aggregate_id=str(entry.public_id),
-            idempotency_key=f"shopify.refund.je:{refund_id}",
-            metadata={"source_projection": PROJECTION_NAME},
-            data=JournalEntryPostedData(
-                entry_public_id=str(entry.public_id),
-                entry_number=entry_number,
-                date=str(entry_date),
-                memo=memo,
-                kind="NORMAL",
-                posted_at=str(now),
-                posted_by_id=0,
-                posted_by_email="system@shopify",
-                total_debit=str(converted_amount),
-                total_credit=str(converted_amount),
-                lines=lines_data,
-                period=period,
-                currency=currency,
-                exchange_rate=str(fx_rate),
-            ),
-            caused_by_event=event,
+            invoice_id=original_invoice.id,
+            lines=cn_lines,
+            credit_note_date=entry_date,
+            source="shopify",
+            source_document_id=refund_id,
+            reason="RETURN",
+            reason_notes=data.get("reason", ""),
+            reference=f"Order {order_number}",
         )
 
-        from shopify_connector.models import ShopifyRefund
+        if not result.success:
+            logger.error(
+                "Failed to create CreditNote for Shopify refund %s: %s",
+                refund_id,
+                result.error,
+            )
+            return
 
+        credit_note = result.data.get("credit_note")
+        journal_entry = result.data.get("journal_entry")
+
+        # Update ShopifyRefund record
         refund_record = ShopifyRefund.objects.filter(
             company=event.company,
             shopify_refund_id=data.get("shopify_refund_id"),
         ).first()
 
         if refund_record:
+            je_public_id = journal_entry.public_id if journal_entry else None
             refund_record.status = ShopifyRefund.Status.PROCESSED
-            refund_record.journal_entry_id = entry.public_id
+            refund_record.journal_entry_id = je_public_id
             refund_record.save(update_fields=["status", "journal_entry_id"])
 
-            # Create inventory restock JE if items were restocked
+            # Handle inventory restock (kept as direct JE for now)
+            fx_rate, is_foreign = _resolve_exchange_rate(event.company, currency, entry_date)
             self._handle_refund_restock(
                 event,
                 refund_record,
@@ -937,8 +859,9 @@ class ShopifyAccountingHandler(BaseProjection):
             )
 
         logger.info(
-            "Created refund journal entry %s for order %s",
-            entry.public_id,
+            "Created CreditNote %s + JE for Shopify refund %s on order %s",
+            credit_note.credit_note_number if credit_note else "?",
+            refund_id,
             order_number,
         )
 
