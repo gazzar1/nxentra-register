@@ -38,6 +38,7 @@ interface ItemFormData {
   inventory_account_id: string;
   cogs_account_id: string;
   costing_method: CostingMethod;
+  default_cost: string;
   // External link
   external_url: string;
 }
@@ -133,6 +134,7 @@ export default function EditItemPage() {
       inventory_account_id: "",
       cogs_account_id: "",
       costing_method: "WEIGHTED_AVERAGE",
+      default_cost: "0",
     },
   });
 
@@ -154,6 +156,7 @@ export default function EditItemPage() {
         inventory_account_id: item.inventory_account?.toString() || "",
         cogs_account_id: item.cogs_account?.toString() || "",
         costing_method: item.costing_method || "WEIGHTED_AVERAGE",
+        default_cost: item.default_cost?.toString() || "0",
         external_url: item.external_url || "",
       });
       // Set existing image
@@ -175,6 +178,7 @@ export default function EditItemPage() {
         name_ar: data.name_ar || undefined,
         item_type: data.item_type,
         default_unit_price: data.default_unit_price || "0",
+        default_cost: data.default_cost || "0",
         uom: data.uom || undefined,
         costing_method: data.costing_method || undefined,
       };
@@ -582,6 +586,21 @@ export default function EditItemPage() {
                     </Select>
                   )}
                 />
+              </div>
+
+              {/* Default cost - editable, used for COGS when no purchase history */}
+              <div className="space-y-2">
+                <Label htmlFor="default_cost">Default Cost</Label>
+                <Input
+                  {...register("default_cost")}
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  placeholder="0.00"
+                />
+                <p className="text-sm text-muted-foreground">
+                  Used for COGS when no purchase history exists
+                </p>
               </div>
 
               {/* Read-only cost values */}
