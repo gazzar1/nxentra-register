@@ -60,6 +60,7 @@ from .models import (
 # Item Commands
 # =============================================================================
 
+
 @transaction.atomic
 def create_item(
     actor: ActorContext,
@@ -191,9 +192,18 @@ def update_item(actor: ActorContext, item_id: int, **updates) -> CommandResult:
     changes = {}
 
     # Handle simple fields
-    simple_fields = ["name", "name_ar", "description", "description_ar", "item_type",
-                     "default_unit_price", "default_cost", "is_active",
-                     "costing_method", "uom"]
+    simple_fields = [
+        "name",
+        "name_ar",
+        "description",
+        "description_ar",
+        "item_type",
+        "default_unit_price",
+        "default_cost",
+        "is_active",
+        "costing_method",
+        "uom",
+    ]
     for field in simple_fields:
         if field in updates:
             old_value = getattr(item, field)
@@ -300,6 +310,7 @@ def update_item(actor: ActorContext, item_id: int, **updates) -> CommandResult:
 # =============================================================================
 # Tax Code Commands
 # =============================================================================
+
 
 @transaction.atomic
 def create_tax_code(
@@ -460,6 +471,7 @@ def update_tax_code(
 # Posting Profile Commands
 # =============================================================================
 
+
 @transaction.atomic
 def create_posting_profile(
     actor: ActorContext,
@@ -615,6 +627,7 @@ def update_posting_profile(
 # Sales Invoice Commands
 # =============================================================================
 
+
 def _calculate_line(line_data: dict) -> dict:
     """Calculate line amounts from inputs."""
     quantity = Decimal(str(line_data.get("quantity", "1")))
@@ -649,6 +662,9 @@ def create_sales_invoice(
     notes: str = "",
     currency: str = "",
     exchange_rate=None,
+    source: str = "",
+    source_document_id: str = "",
+    auto_created: bool = False,
 ) -> CommandResult:
     """
     Create a new sales invoice with lines.
@@ -742,19 +758,21 @@ def create_sales_invoice(
             return CommandResult.fail(f"Line {idx}: Discount cannot exceed gross amount.")
 
         # Calculate line amounts
-        calculated = _calculate_line({
-            "line_number": idx,
-            "account": account,
-            "item": item,
-            "description": line.get("description", ""),
-            "description_ar": line.get("description_ar", ""),
-            "quantity": quantity,
-            "unit_price": unit_price,
-            "discount_amount": discount_amount,
-            "tax_code": tax_code,
-            "tax_rate": tax_rate,
-            "dimension_value_ids": line.get("dimension_value_ids", []),
-        })
+        calculated = _calculate_line(
+            {
+                "line_number": idx,
+                "account": account,
+                "item": item,
+                "description": line.get("description", ""),
+                "description_ar": line.get("description_ar", ""),
+                "quantity": quantity,
+                "unit_price": unit_price,
+                "discount_amount": discount_amount,
+                "tax_code": tax_code,
+                "tax_rate": tax_rate,
+                "dimension_value_ids": line.get("dimension_value_ids", []),
+            }
+        )
         calculated_lines.append(calculated)
 
     # Calculate totals
@@ -772,6 +790,7 @@ def create_sales_invoice(
             invoice_exchange_rate = Decimal(str(exchange_rate))
         elif invoice_currency != functional_currency:
             from accounting.models import ExchangeRate
+
             looked_up = ExchangeRate.get_rate(actor.company, invoice_currency, functional_currency, invoice_date)
             invoice_exchange_rate = looked_up if looked_up else Decimal("1")
         else:
@@ -794,6 +813,9 @@ def create_sales_invoice(
             reference=reference,
             notes=notes,
             created_by=actor.user,
+            source=source,
+            source_document_id=source_document_id,
+            auto_created=auto_created,
         )
 
         # Create lines
@@ -823,24 +845,26 @@ def create_sales_invoice(
     # Build event line data
     event_lines = []
     for line in invoice.lines.all():
-        event_lines.append(SalesInvoiceLineData(
-            line_no=line.line_number,
-            item_public_id=str(line.item.public_id) if line.item else None,
-            description=line.description,
-            description_ar=line.description_ar,
-            quantity=str(line.quantity),
-            unit_price=str(line.unit_price),
-            discount_amount=str(line.discount_amount),
-            tax_code_public_id=str(line.tax_code.public_id) if line.tax_code else None,
-            tax_rate=str(line.tax_rate),
-            gross_amount=str(line.gross_amount),
-            net_amount=str(line.net_amount),
-            tax_amount=str(line.tax_amount),
-            line_total=str(line.line_total),
-            account_public_id=str(line.account.public_id),
-            account_code=line.account.code,
-            dimension_value_public_ids=[str(dv.public_id) for dv in line.dimension_values.all()],
-        ).to_dict())
+        event_lines.append(
+            SalesInvoiceLineData(
+                line_no=line.line_number,
+                item_public_id=str(line.item.public_id) if line.item else None,
+                description=line.description,
+                description_ar=line.description_ar,
+                quantity=str(line.quantity),
+                unit_price=str(line.unit_price),
+                discount_amount=str(line.discount_amount),
+                tax_code_public_id=str(line.tax_code.public_id) if line.tax_code else None,
+                tax_rate=str(line.tax_rate),
+                gross_amount=str(line.gross_amount),
+                net_amount=str(line.net_amount),
+                tax_amount=str(line.tax_amount),
+                line_total=str(line.line_total),
+                account_public_id=str(line.account.public_id),
+                account_code=line.account.code,
+                dimension_value_public_ids=[str(dv.public_id) for dv in line.dimension_values.all()],
+            ).to_dict()
+        )
 
     event = emit_event(
         actor=actor,
@@ -894,9 +918,7 @@ def update_sales_invoice(
     require(actor, "sales.invoice.update")
 
     try:
-        invoice = SalesInvoice.objects.select_for_update().get(
-            company=actor.company, pk=invoice_id
-        )
+        invoice = SalesInvoice.objects.select_for_update().get(company=actor.company, pk=invoice_id)
     except SalesInvoice.DoesNotExist:
         return CommandResult.fail("Invoice not found.")
 
@@ -907,7 +929,11 @@ def update_sales_invoice(
 
     # Validate and update invoice number
     if invoice_number is not None and invoice_number != invoice.invoice_number:
-        if SalesInvoice.objects.filter(company=actor.company, invoice_number=invoice_number).exclude(pk=invoice_id).exists():
+        if (
+            SalesInvoice.objects.filter(company=actor.company, invoice_number=invoice_number)
+            .exclude(pk=invoice_id)
+            .exists()
+        ):
             return CommandResult.fail(f"Invoice number '{invoice_number}' already exists.")
         changes["invoice_number"] = {"old": invoice.invoice_number, "new": invoice_number}
         invoice.invoice_number = invoice_number
@@ -918,7 +944,10 @@ def update_sales_invoice(
         invoice.invoice_date = invoice_date
 
     if due_date is not None and due_date != invoice.due_date:
-        changes["due_date"] = {"old": str(invoice.due_date) if invoice.due_date else None, "new": str(due_date) if due_date else None}
+        changes["due_date"] = {
+            "old": str(invoice.due_date) if invoice.due_date else None,
+            "new": str(due_date) if due_date else None,
+        }
         invoice.due_date = due_date
 
     # Update customer
@@ -1010,19 +1039,21 @@ def update_sales_invoice(
                 return CommandResult.fail(f"Line {idx}: Discount cannot exceed gross amount.")
 
             # Calculate line amounts
-            calculated = _calculate_line({
-                "line_number": idx,
-                "account": account,
-                "item": item,
-                "description": line.get("description", ""),
-                "description_ar": line.get("description_ar", ""),
-                "quantity": quantity,
-                "unit_price": unit_price,
-                "discount_amount": discount_amount,
-                "tax_code": tax_code,
-                "tax_rate": tax_rate,
-                "dimension_value_ids": line.get("dimension_value_ids", []),
-            })
+            calculated = _calculate_line(
+                {
+                    "line_number": idx,
+                    "account": account,
+                    "item": item,
+                    "description": line.get("description", ""),
+                    "description_ar": line.get("description_ar", ""),
+                    "quantity": quantity,
+                    "unit_price": unit_price,
+                    "discount_amount": discount_amount,
+                    "tax_code": tax_code,
+                    "tax_rate": tax_rate,
+                    "dimension_value_ids": line.get("dimension_value_ids", []),
+                }
+            )
             calculated_lines.append(calculated)
 
         # Delete old lines and create new ones
@@ -1069,24 +1100,26 @@ def update_sales_invoice(
     # Build event line data
     event_lines = []
     for line in invoice.lines.all():
-        event_lines.append(SalesInvoiceLineData(
-            line_no=line.line_number,
-            item_public_id=str(line.item.public_id) if line.item else None,
-            description=line.description,
-            description_ar=line.description_ar,
-            quantity=str(line.quantity),
-            unit_price=str(line.unit_price),
-            discount_amount=str(line.discount_amount),
-            tax_code_public_id=str(line.tax_code.public_id) if line.tax_code else None,
-            tax_rate=str(line.tax_rate),
-            gross_amount=str(line.gross_amount),
-            net_amount=str(line.net_amount),
-            tax_amount=str(line.tax_amount),
-            line_total=str(line.line_total),
-            account_public_id=str(line.account.public_id),
-            account_code=line.account.code,
-            dimension_value_public_ids=[str(dv.public_id) for dv in line.dimension_values.all()],
-        ).to_dict())
+        event_lines.append(
+            SalesInvoiceLineData(
+                line_no=line.line_number,
+                item_public_id=str(line.item.public_id) if line.item else None,
+                description=line.description,
+                description_ar=line.description_ar,
+                quantity=str(line.quantity),
+                unit_price=str(line.unit_price),
+                discount_amount=str(line.discount_amount),
+                tax_code_public_id=str(line.tax_code.public_id) if line.tax_code else None,
+                tax_rate=str(line.tax_rate),
+                gross_amount=str(line.gross_amount),
+                net_amount=str(line.net_amount),
+                tax_amount=str(line.tax_amount),
+                line_total=str(line.line_total),
+                account_public_id=str(line.account.public_id),
+                account_code=line.account.code,
+                dimension_value_public_ids=[str(dv.public_id) for dv in line.dimension_values.all()],
+            ).to_dict()
+        )
 
     event = emit_event(
         actor=actor,
@@ -1106,7 +1139,11 @@ def update_sales_invoice(
 
 
 @transaction.atomic
-def post_sales_invoice(actor: ActorContext, invoice_id: int) -> CommandResult:
+def post_sales_invoice(
+    actor: ActorContext,
+    invoice_id: int,
+    skip_cogs: bool = False,
+) -> CommandResult:
     """
     Post a sales invoice, creating a journal entry and stock issues.
 
@@ -1121,13 +1158,16 @@ def post_sales_invoice(actor: ActorContext, invoice_id: int) -> CommandResult:
     - Stock availability is checked (unless allow_negative_inventory is True)
     - Stock is issued at current weighted average cost
     - COGS journal entries are created automatically
+
+    Args:
+        skip_cogs: If True, skip COGS/inventory processing. Used for
+            platform-originated invoices (Shopify) where COGS is handled
+            separately at fulfillment time.
     """
     require(actor, "sales.invoice.post")
 
     try:
-        invoice = SalesInvoice.objects.select_for_update().get(
-            company=actor.company, pk=invoice_id
-        )
+        invoice = SalesInvoice.objects.select_for_update().get(company=actor.company, pk=invoice_id)
     except SalesInvoice.DoesNotExist:
         return CommandResult.fail("Invoice not found.")
 
@@ -1154,6 +1194,7 @@ def post_sales_invoice(actor: ActorContext, invoice_id: int) -> CommandResult:
                 )
 
     # Check stock availability and calculate COGS for inventory items
+    # (skipped for platform-originated invoices where COGS happens at fulfillment)
     from inventory.commands import check_stock_availability
     from inventory.models import Warehouse
     from projections.models import InventoryBalance
@@ -1162,29 +1203,27 @@ def post_sales_invoice(actor: ActorContext, invoice_id: int) -> CommandResult:
     cogs_by_account = {}  # {cogs_account_id: total_cogs}
     inventory_credit_by_account = {}  # {inventory_account_id: total}
 
-    # Get default warehouse
-    default_warehouse = None
-    try:
-        default_warehouse = Warehouse.objects.get(company=actor.company, is_default=True)
-    except Warehouse.DoesNotExist:
-        default_warehouse = Warehouse.objects.filter(company=actor.company, is_active=True).first()
+    if not skip_cogs:
+        # Get default warehouse
+        default_warehouse = None
+        try:
+            default_warehouse = Warehouse.objects.get(company=actor.company, is_default=True)
+        except Warehouse.DoesNotExist:
+            default_warehouse = Warehouse.objects.filter(company=actor.company, is_active=True).first()
 
     for inv_line in invoice.lines.all():
-        if inv_line.item and inv_line.item.is_inventory_item:
+        if not skip_cogs and inv_line.item and inv_line.item.is_inventory_item:
             item = inv_line.item
             warehouse = default_warehouse  # TODO: Support line-level warehouse selection
 
             if not warehouse:
                 return CommandResult.fail(
-                    f"No warehouse available for inventory item {item.code}. "
-                    f"Create a warehouse first."
+                    f"No warehouse available for inventory item {item.code}. Create a warehouse first."
                 )
 
             # Check stock availability (unless company allows negative inventory)
             if not actor.company.allow_negative_inventory:
-                is_available, error = check_stock_availability(
-                    actor.company, item, warehouse, inv_line.quantity
-                )
+                is_available, error = check_stock_availability(actor.company, item, warehouse, inv_line.quantity)
                 if not is_available:
                     return CommandResult.fail(error)
 
@@ -1201,9 +1240,7 @@ def post_sales_invoice(actor: ActorContext, invoice_id: int) -> CommandResult:
                 if actor.company.allow_negative_inventory:
                     issue_cost = item.average_cost or Decimal("0")
                 else:
-                    return CommandResult.fail(
-                        f"No inventory record for {item.code} in {warehouse.code}."
-                    )
+                    return CommandResult.fail(f"No inventory record for {item.code} in {warehouse.code}.")
 
             cogs_value = inv_line.quantity * issue_cost
 
@@ -1220,39 +1257,45 @@ def post_sales_invoice(actor: ActorContext, invoice_id: int) -> CommandResult:
             inventory_credit_by_account[inv_account_id] += cogs_value
 
             # Add to inventory lines for stock issue
-            inventory_lines.append({
-                "item": item,
-                "warehouse": warehouse,
-                "qty": inv_line.quantity,
-                "source_line_id": str(inv_line.public_id),
-            })
+            inventory_lines.append(
+                {
+                    "item": item,
+                    "warehouse": warehouse,
+                    "qty": inv_line.quantity,
+                    "source_line_id": str(inv_line.public_id),
+                }
+            )
 
     # Build journal entry lines
     je_lines = []
     line_no = 1
 
     # Debit AR Control (total amount with customer counterparty)
-    je_lines.append({
-        "account_id": invoice.posting_profile.control_account_id,
-        "description": f"Invoice {invoice.invoice_number} - {invoice.customer.name}",
-        "debit": invoice.total_amount,
-        "credit": Decimal("0"),
-        "customer_public_id": str(invoice.customer.public_id),
-    })
+    je_lines.append(
+        {
+            "account_id": invoice.posting_profile.control_account_id,
+            "description": f"Invoice {invoice.invoice_number} - {invoice.customer.name}",
+            "debit": invoice.total_amount,
+            "credit": Decimal("0"),
+            "customer_public_id": str(invoice.customer.public_id),
+        }
+    )
     line_no += 1
 
     # Credit Revenue accounts (net amounts per line)
     for inv_line in invoice.lines.all():
-        je_lines.append({
-            "account_id": inv_line.account_id,
-            "description": inv_line.description,
-            "debit": Decimal("0"),
-            "credit": inv_line.net_amount,
-            "analysis_tags": [
-                {"dimension_public_id": str(dv.dimension.public_id), "value_public_id": str(dv.public_id)}
-                for dv in inv_line.dimension_values.all()
-            ],
-        })
+        je_lines.append(
+            {
+                "account_id": inv_line.account_id,
+                "description": inv_line.description,
+                "debit": Decimal("0"),
+                "credit": inv_line.net_amount,
+                "analysis_tags": [
+                    {"dimension_public_id": str(dv.dimension.public_id), "value_public_id": str(dv.public_id)}
+                    for dv in inv_line.dimension_values.all()
+                ],
+            }
+        )
         line_no += 1
 
     # Credit VAT Payable (grouped by tax code)
@@ -1264,37 +1307,45 @@ def post_sales_invoice(actor: ActorContext, invoice_id: int) -> CommandResult:
         tax_by_account[tax_account_id] += inv_line.tax_amount
 
     for tax_account_id, tax_amount in tax_by_account.items():
-        je_lines.append({
-            "account_id": tax_account_id,
-            "description": f"VAT on Invoice {invoice.invoice_number}",
-            "debit": Decimal("0"),
-            "credit": tax_amount,
-        })
+        je_lines.append(
+            {
+                "account_id": tax_account_id,
+                "description": f"VAT on Invoice {invoice.invoice_number}",
+                "debit": Decimal("0"),
+                "credit": tax_amount,
+            }
+        )
         line_no += 1
 
     # COGS journal entries (Debit COGS, Credit Inventory)
     for cogs_account_id, cogs_value in cogs_by_account.items():
-        je_lines.append({
-            "account_id": cogs_account_id,
-            "description": f"COGS on Invoice {invoice.invoice_number}",
-            "debit": cogs_value,
-            "credit": Decimal("0"),
-        })
+        je_lines.append(
+            {
+                "account_id": cogs_account_id,
+                "description": f"COGS on Invoice {invoice.invoice_number}",
+                "debit": cogs_value,
+                "credit": Decimal("0"),
+            }
+        )
         line_no += 1
 
     for inv_account_id, inv_value in inventory_credit_by_account.items():
-        je_lines.append({
-            "account_id": inv_account_id,
-            "description": f"Inventory on Invoice {invoice.invoice_number}",
-            "debit": Decimal("0"),
-            "credit": inv_value,
-        })
+        je_lines.append(
+            {
+                "account_id": inv_account_id,
+                "description": f"Inventory on Invoice {invoice.invoice_number}",
+                "debit": Decimal("0"),
+                "credit": inv_value,
+            }
+        )
         line_no += 1
 
     # Create journal entry (with currency if foreign)
     functional_currency = actor.company.functional_currency or actor.company.default_currency
     inv_currency = invoice.currency or functional_currency
-    inv_rate = invoice.exchange_rate if invoice.exchange_rate and invoice.exchange_rate != Decimal("0") else Decimal("1")
+    inv_rate = (
+        invoice.exchange_rate if invoice.exchange_rate and invoice.exchange_rate != Decimal("0") else Decimal("1")
+    )
     is_foreign = inv_currency != functional_currency
 
     # Populate amount_currency on each JE line for foreign invoices
@@ -1307,6 +1358,7 @@ def post_sales_invoice(actor: ActorContext, invoice_id: int) -> CommandResult:
     # Fix any FX rounding imbalance before creating JE
     if is_foreign:
         from accounting.commands import _fix_fx_rounding_dicts
+
         _fix_fx_rounding_dicts(je_lines, actor.company, currency=inv_currency)
 
     je_kwargs = dict(
@@ -1342,8 +1394,8 @@ def post_sales_invoice(actor: ActorContext, invoice_id: int) -> CommandResult:
 
     posted_at = timezone.now()
 
-    # Record stock issue for inventory items
-    if inventory_lines:
+    # Record stock issue for inventory items (skipped when COGS deferred to fulfillment)
+    if inventory_lines and not skip_cogs:
         from inventory.commands import record_stock_issue
         from inventory.models import StockLedgerEntry
 
@@ -1370,23 +1422,25 @@ def post_sales_invoice(actor: ActorContext, invoice_id: int) -> CommandResult:
     # Build event line data
     event_lines = []
     for line in invoice.lines.all():
-        event_lines.append(SalesInvoiceLineData(
-            line_no=line.line_number,
-            item_public_id=str(line.item.public_id) if line.item else None,
-            description=line.description,
-            description_ar=line.description_ar,
-            quantity=str(line.quantity),
-            unit_price=str(line.unit_price),
-            discount_amount=str(line.discount_amount),
-            tax_code_public_id=str(line.tax_code.public_id) if line.tax_code else None,
-            tax_rate=str(line.tax_rate),
-            gross_amount=str(line.gross_amount),
-            net_amount=str(line.net_amount),
-            tax_amount=str(line.tax_amount),
-            line_total=str(line.line_total),
-            account_public_id=str(line.account.public_id),
-            account_code=line.account.code,
-        ).to_dict())
+        event_lines.append(
+            SalesInvoiceLineData(
+                line_no=line.line_number,
+                item_public_id=str(line.item.public_id) if line.item else None,
+                description=line.description,
+                description_ar=line.description_ar,
+                quantity=str(line.quantity),
+                unit_price=str(line.unit_price),
+                discount_amount=str(line.discount_amount),
+                tax_code_public_id=str(line.tax_code.public_id) if line.tax_code else None,
+                tax_rate=str(line.tax_rate),
+                gross_amount=str(line.gross_amount),
+                net_amount=str(line.net_amount),
+                tax_amount=str(line.tax_amount),
+                line_total=str(line.line_total),
+                account_public_id=str(line.account.public_id),
+                account_code=line.account.code,
+            ).to_dict()
+        )
 
     event = emit_event(
         actor=actor,
@@ -1414,10 +1468,7 @@ def post_sales_invoice(actor: ActorContext, invoice_id: int) -> CommandResult:
         ).to_dict(),
     )
 
-    return CommandResult.ok(
-        data={"invoice": invoice, "journal_entry": journal_entry},
-        event=event
-    )
+    return CommandResult.ok(data={"invoice": invoice, "journal_entry": journal_entry}, event=event)
 
 
 @transaction.atomic
@@ -1432,9 +1483,7 @@ def void_sales_invoice(
     require(actor, "sales.invoice.void")
 
     try:
-        invoice = SalesInvoice.objects.select_for_update().get(
-            company=actor.company, pk=invoice_id
-        )
+        invoice = SalesInvoice.objects.select_for_update().get(company=actor.company, pk=invoice_id)
     except SalesInvoice.DoesNotExist:
         return CommandResult.fail("Invoice not found.")
 
@@ -1450,14 +1499,16 @@ def void_sales_invoice(
     je_lines = []
 
     for original_line in original_je.lines.all():
-        je_lines.append({
-            "account_id": original_line.account_id,
-            "description": f"Reversal: {original_line.description}",
-            "debit": original_line.credit,  # Swap
-            "credit": original_line.debit,  # Swap
-            "customer_public_id": str(original_line.customer.public_id) if original_line.customer else None,
-            "vendor_public_id": str(original_line.vendor.public_id) if original_line.vendor else None,
-        })
+        je_lines.append(
+            {
+                "account_id": original_line.account_id,
+                "description": f"Reversal: {original_line.description}",
+                "debit": original_line.credit,  # Swap
+                "credit": original_line.debit,  # Swap
+                "customer_public_id": str(original_line.customer.public_id) if original_line.customer else None,
+                "vendor_public_id": str(original_line.vendor.public_id) if original_line.vendor else None,
+            }
+        )
 
     # Create reversal entry
     je_result = create_journal_entry(
@@ -1511,15 +1562,13 @@ def void_sales_invoice(
         ).to_dict(),
     )
 
-    return CommandResult.ok(
-        data={"invoice": invoice, "reversing_entry": reversal_je},
-        event=event
-    )
+    return CommandResult.ok(data={"invoice": invoice, "reversing_entry": reversal_je}, event=event)
 
 
 # =============================================================================
 # Credit Note Commands
 # =============================================================================
+
 
 @transaction.atomic
 def create_credit_note(
@@ -1531,6 +1580,9 @@ def create_credit_note(
     reason_notes: str = "",
     reference: str = "",
     notes: str = "",
+    source: str = "",
+    source_document_id: str = "",
+    auto_created: bool = False,
 ) -> CommandResult:
     """
     Create a DRAFT credit note against a posted invoice.
@@ -1553,6 +1605,7 @@ def create_credit_note(
         return CommandResult.fail("Credit note must have at least one line.")
 
     from datetime import date as date_type
+
     cn_date = credit_note_date or date_type.today()
     if isinstance(cn_date, str):
         cn_date = date_type.fromisoformat(cn_date)
@@ -1576,6 +1629,9 @@ def create_credit_note(
             reference=reference,
             notes=notes,
             created_by=actor.user,
+            source=source,
+            source_document_id=source_document_id,
+            auto_created=auto_created,
         )
         credit_note.save()
 
@@ -1608,9 +1664,7 @@ def create_credit_note(
             invoice_line = None
             if line_data.get("invoice_line_id"):
                 try:
-                    invoice_line = SalesInvoiceLine.objects.get(
-                        invoice=invoice, pk=line_data["invoice_line_id"]
-                    )
+                    invoice_line = SalesInvoiceLine.objects.get(invoice=invoice, pk=line_data["invoice_line_id"])
                 except SalesInvoiceLine.DoesNotExist:
                     pass
 
@@ -1638,8 +1692,7 @@ def create_credit_note(
     # Validate total doesn't exceed invoice amount
     if credit_note.total_amount > invoice.total_amount:
         return CommandResult.fail(
-            f"Credit note total ({credit_note.total_amount}) exceeds "
-            f"invoice total ({invoice.total_amount})."
+            f"Credit note total ({credit_note.total_amount}) exceeds invoice total ({invoice.total_amount})."
         )
 
     event = emit_event(
@@ -1678,9 +1731,7 @@ def post_credit_note(actor: ActorContext, credit_note_id: int) -> CommandResult:
     require(actor, "sales.invoice.post")
 
     try:
-        cn = SalesCreditNote.objects.select_for_update().get(
-            company=actor.company, pk=credit_note_id
-        )
+        cn = SalesCreditNote.objects.select_for_update().get(company=actor.company, pk=credit_note_id)
     except SalesCreditNote.DoesNotExist:
         return CommandResult.fail("Credit note not found.")
 
@@ -1694,22 +1745,26 @@ def post_credit_note(actor: ActorContext, credit_note_id: int) -> CommandResult:
     je_lines = []
 
     # Credit AR Control (reduces customer receivable)
-    je_lines.append({
-        "account_id": cn.posting_profile.control_account_id,
-        "description": f"Credit Note {cn.credit_note_number} - {cn.customer.name}",
-        "debit": Decimal("0"),
-        "credit": cn.total_amount,
-        "customer_public_id": str(cn.customer.public_id),
-    })
+    je_lines.append(
+        {
+            "account_id": cn.posting_profile.control_account_id,
+            "description": f"Credit Note {cn.credit_note_number} - {cn.customer.name}",
+            "debit": Decimal("0"),
+            "credit": cn.total_amount,
+            "customer_public_id": str(cn.customer.public_id),
+        }
+    )
 
     # Debit Revenue accounts (reverses revenue recognition)
     for line in cn.lines.all():
-        je_lines.append({
-            "account_id": line.account_id,
-            "description": line.description,
-            "debit": line.net_amount,
-            "credit": Decimal("0"),
-        })
+        je_lines.append(
+            {
+                "account_id": line.account_id,
+                "description": line.description,
+                "debit": line.net_amount,
+                "credit": Decimal("0"),
+            }
+        )
 
     # Debit VAT Payable (reverses tax)
     tax_by_account = {}
@@ -1720,12 +1775,14 @@ def post_credit_note(actor: ActorContext, credit_note_id: int) -> CommandResult:
         tax_by_account[tax_account_id] += line.tax_amount
 
     for tax_account_id, tax_amount in tax_by_account.items():
-        je_lines.append({
-            "account_id": tax_account_id,
-            "description": f"VAT on Credit Note {cn.credit_note_number}",
-            "debit": tax_amount,
-            "credit": Decimal("0"),
-        })
+        je_lines.append(
+            {
+                "account_id": tax_account_id,
+                "description": f"VAT on Credit Note {cn.credit_note_number}",
+                "debit": tax_amount,
+                "credit": Decimal("0"),
+            }
+        )
 
     # Handle foreign currency
     functional_currency = actor.company.functional_currency or actor.company.default_currency
@@ -1739,6 +1796,7 @@ def post_credit_note(actor: ActorContext, credit_note_id: int) -> CommandResult:
             jl["amount_currency"] = str(foreign_amount)
             jl["currency"] = cn_currency
         from accounting.commands import _fix_fx_rounding_dicts
+
         _fix_fx_rounding_dicts(je_lines, actor.company, currency=cn_currency)
 
     je_kwargs = dict(
@@ -1828,9 +1886,7 @@ def void_credit_note(
     require(actor, "sales.invoice.post")
 
     try:
-        cn = SalesCreditNote.objects.select_for_update().get(
-            company=actor.company, pk=credit_note_id
-        )
+        cn = SalesCreditNote.objects.select_for_update().get(company=actor.company, pk=credit_note_id)
     except SalesCreditNote.DoesNotExist:
         return CommandResult.fail("Credit note not found.")
 
@@ -1842,6 +1898,7 @@ def void_credit_note(
 
     # Create reversing entry
     from accounting.commands import reverse_journal_entry
+
     reverse_result = reverse_journal_entry(actor, cn.posted_journal_entry.id)
     if not reverse_result.success:
         return CommandResult.fail(f"Failed to reverse journal entry: {reverse_result.error}")
@@ -1880,3 +1937,155 @@ def void_credit_note(
         data={"credit_note": cn, "reversing_entry": reversal_je},
         event=event,
     )
+
+
+# =============================================================================
+# System-Level Commands (for platform integrations — no user session)
+# =============================================================================
+
+
+@transaction.atomic
+def create_and_post_invoice_for_platform(
+    company,
+    customer_id: int,
+    posting_profile_id: int,
+    lines: list,
+    invoice_date,
+    source: str,
+    source_document_id: str,
+    reference: str = "",
+    notes: str = "",
+    currency: str = "",
+    exchange_rate=None,
+    skip_cogs: bool = True,
+) -> CommandResult:
+    """
+    Create and immediately post a SalesInvoice for a platform integration.
+
+    This is the entry point for Shopify, Stripe, and other connectors.
+    Uses system_actor_for_company() so no user session is required.
+
+    The invoice is created as DRAFT, then posted in one transaction.
+    COGS is skipped by default (handled at fulfillment for Shopify).
+
+    Args:
+        company: Company instance
+        customer_id: Platform customer record ID
+        posting_profile_id: PostingProfile with platform clearing account
+        lines: Invoice lines (account_id, description, quantity, unit_price, etc.)
+        invoice_date: Date of the transaction
+        source: Platform identifier ("shopify", "stripe", etc.)
+        source_document_id: External ID for idempotency (Shopify order ID, etc.)
+        skip_cogs: If True, defer COGS to fulfillment (default for platforms)
+
+    Returns:
+        CommandResult with {"invoice": SalesInvoice, "journal_entry": JournalEntry}
+    """
+    from accounts.authz import system_actor_for_company
+
+    # Idempotency: check if invoice already exists for this source document
+    existing = SalesInvoice.objects.filter(
+        company=company,
+        source=source,
+        source_document_id=source_document_id,
+    ).first()
+    if existing:
+        return CommandResult.ok(
+            data={"invoice": existing, "journal_entry": existing.posted_journal_entry},
+        )
+
+    actor = system_actor_for_company(company)
+
+    # Create DRAFT invoice
+    create_result = create_sales_invoice(
+        actor=actor,
+        customer_id=customer_id,
+        posting_profile_id=posting_profile_id,
+        lines=lines,
+        invoice_date=invoice_date,
+        reference=reference,
+        notes=notes,
+        currency=currency,
+        exchange_rate=exchange_rate,
+        source=source,
+        source_document_id=source_document_id,
+        auto_created=True,
+    )
+    if not create_result.success:
+        return create_result
+
+    invoice = create_result.data["invoice"]
+
+    # Post immediately (creates JE, skips COGS if requested)
+    post_result = post_sales_invoice(actor, invoice.id, skip_cogs=skip_cogs)
+    if not post_result.success:
+        return post_result
+
+    return post_result
+
+
+@transaction.atomic
+def create_and_post_credit_note_for_platform(
+    company,
+    invoice_id: int,
+    lines: list,
+    credit_note_date,
+    source: str,
+    source_document_id: str,
+    reason: str = "RETURN",
+    reason_notes: str = "",
+    reference: str = "",
+) -> CommandResult:
+    """
+    Create and immediately post a CreditNote for a platform refund.
+
+    Args:
+        company: Company instance
+        invoice_id: The original SalesInvoice ID to credit against
+        lines: Credit note lines (account_id, description, quantity, unit_price, etc.)
+        credit_note_date: Date of the refund
+        source: Platform identifier ("shopify", etc.)
+        source_document_id: External refund ID for idempotency
+
+    Returns:
+        CommandResult with {"credit_note": SalesCreditNote, "journal_entry": JournalEntry}
+    """
+    from accounts.authz import system_actor_for_company
+
+    # Idempotency
+    existing = SalesCreditNote.objects.filter(
+        company=company,
+        source=source,
+        source_document_id=source_document_id,
+    ).first()
+    if existing:
+        return CommandResult.ok(
+            data={"credit_note": existing, "journal_entry": existing.posted_journal_entry},
+        )
+
+    actor = system_actor_for_company(company)
+
+    # Create DRAFT credit note
+    create_result = create_credit_note(
+        actor=actor,
+        invoice_id=invoice_id,
+        lines=lines,
+        credit_note_date=credit_note_date,
+        reason=reason,
+        reason_notes=reason_notes,
+        reference=reference,
+        source=source,
+        source_document_id=source_document_id,
+        auto_created=True,
+    )
+    if not create_result.success:
+        return create_result
+
+    credit_note = create_result.data["credit_note"]
+
+    # Post immediately
+    post_result = post_credit_note(actor, credit_note.id)
+    if not post_result.success:
+        return post_result
+
+    return post_result

@@ -26,16 +26,17 @@ from accounts.models import Company, CompanyMembership
 class ActorContext:
     """
     Immutable context for the current actor (user + company).
-    
+
     This is passed to commands and policies to provide context
     about who is performing an action and in which company.
-    
+
     Attributes:
         user: The authenticated user
         company: The active company (tenant)
         membership: The user's membership in the company
         perms: Set of explicit permission codes the user has
     """
+
     user: object  # User model
     company: Company
     membership: CompanyMembership
@@ -54,7 +55,7 @@ class ActorContext:
             return False
 
         # Superusers have all permissions
-        if getattr(self.user, 'is_superuser', False):
+        if getattr(self.user, "is_superuser", False):
             return True
 
         if self.membership.role == CompanyMembership.Role.OWNER:
@@ -91,6 +92,48 @@ class ActorContext:
     def role(self) -> str:
         """Get the user's role in this company."""
         return self.membership.role
+
+
+def system_actor_for_company(company) -> ActorContext:
+    """
+    Create an ActorContext for system-level operations (webhooks, integrations).
+
+    Uses the company's OWNER membership so all existing permission checks
+    pass without modification. No real user session is involved.
+
+    Args:
+        company: The Company instance
+
+    Returns:
+        ActorContext with OWNER permissions
+
+    Raises:
+        ValueError: If no active OWNER membership exists
+    """
+    from accounts.rls import rls_bypass
+
+    with rls_bypass():
+        membership = (
+            CompanyMembership.objects.filter(
+                company=company,
+                role=CompanyMembership.Role.OWNER,
+                is_active=True,
+            )
+            .select_related("user")
+            .first()
+        )
+
+        if not membership:
+            raise ValueError(f"No active OWNER found for company {company.slug}")
+
+        perms = frozenset(membership.permissions.values_list("code", flat=True))
+
+    return ActorContext(
+        user=membership.user,
+        company=company,
+        membership=membership,
+        perms=perms,
+    )
 
 
 def resolve_actor(request) -> ActorContext:
@@ -130,22 +173,20 @@ def resolve_actor(request) -> ActorContext:
 
         # Fresh membership lookup EVERY request (not cached)
         try:
-            membership = CompanyMembership.objects.select_related(
-                "company"
-            ).prefetch_related(
-                "permissions"
-            ).get(
-                user=user,
-                company=company,
-                is_active=True,
+            membership = (
+                CompanyMembership.objects.select_related("company")
+                .prefetch_related("permissions")
+                .get(
+                    user=user,
+                    company=company,
+                    is_active=True,
+                )
             )
         except CompanyMembership.DoesNotExist:
             raise PermissionDenied("You are not an active member of the selected company.")
 
         # Fresh permission lookup EVERY request
-        perms = frozenset(
-            membership.permissions.values_list("code", flat=True)
-        )
+        perms = frozenset(membership.permissions.values_list("code", flat=True))
 
     return ActorContext(
         user=user,
@@ -158,16 +199,16 @@ def resolve_actor(request) -> ActorContext:
 def require(actor: ActorContext, code: str) -> None:
     """
     Require that the actor has a specific permission.
-    
+
     Raises PermissionDenied if the permission is not granted.
-    
+
     Args:
         actor: The ActorContext
         code: Permission code to check (e.g., "journal.post")
-    
+
     Raises:
         PermissionDenied: If permission is not granted
-    
+
     Example:
         require(actor, "journal.post")
         # If we get here, permission is granted
@@ -179,14 +220,14 @@ def require(actor: ActorContext, code: str) -> None:
 def require_any(actor: ActorContext, *codes: str) -> None:
     """
     Require that the actor has AT LEAST ONE of the specified permissions.
-    
+
     Args:
         actor: The ActorContext
         *codes: One or more permission codes to check
-    
+
     Raises:
         PermissionDenied: If none of the permissions are granted
-    
+
     Example:
         require_any(actor, "journal.view", "journal.edit_draft")
     """
@@ -200,11 +241,11 @@ def require_any(actor: ActorContext, *codes: str) -> None:
 def check_permission(actor: ActorContext, code: str) -> bool:
     """
     Check if actor has a permission without raising.
-    
+
     Args:
         actor: The ActorContext
         code: Permission code to check
-    
+
     Returns:
         True if permission is granted, False otherwise
     """
@@ -214,7 +255,7 @@ def check_permission(actor: ActorContext, code: str) -> bool:
 def resolve_actor_optional(request):
     """
     Try to resolve ActorContext, return None if not possible.
-    
+
     Useful for views that work with or without authentication.
     """
     try:
