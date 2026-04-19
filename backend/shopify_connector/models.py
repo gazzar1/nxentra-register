@@ -87,6 +87,24 @@ class ShopifyStore(models.Model):
         help_text="Auto-create Items from Shopify product webhooks",
     )
 
+    # ── Module routing: Customer + PostingProfile for auto-invoices ──
+    default_customer = models.ForeignKey(
+        "accounting.Customer",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        help_text="Customer record used for auto-created SalesInvoices from this store",
+    )
+    default_posting_profile = models.ForeignKey(
+        "sales.PostingProfile",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        help_text="PostingProfile (Shopify Clearing as control account) for auto-invoices",
+    )
+
     last_sync_at = models.DateTimeField(null=True, blank=True)
     error_message = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

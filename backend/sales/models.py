@@ -577,6 +577,24 @@ class SalesInvoice(ProjectionWriteGuard):
         help_text="External reference (PO number, etc.)",
     )
 
+    # ── Source tracking (for auto-created invoices from integrations) ──
+    source = models.CharField(
+        max_length=50,
+        blank=True,
+        default="",
+        help_text="Origin of this invoice: empty=manual, shopify, api, etc.",
+    )
+    source_document_id = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        help_text="External document ID (e.g., Shopify order ID)",
+    )
+    auto_created = models.BooleanField(
+        default=False,
+        help_text="True if created automatically by a platform integration",
+    )
+
     # Audit
     created_at = models.DateTimeField(auto_now_add=True)
     created_by = models.ForeignKey(
@@ -595,11 +613,17 @@ class SalesInvoice(ProjectionWriteGuard):
                 fields=["company", "invoice_number"],
                 name="uniq_invoice_number_per_company",
             ),
+            models.UniqueConstraint(
+                fields=["company", "source", "source_document_id"],
+                condition=models.Q(source__gt=""),
+                name="uniq_source_doc_per_company_invoice",
+            ),
         ]
         indexes = [
             models.Index(fields=["company", "status"]),
             models.Index(fields=["company", "customer"]),
             models.Index(fields=["company", "invoice_date"]),
+            models.Index(fields=["company", "source"]),
         ]
         verbose_name = "Sales Invoice"
         verbose_name_plural = "Sales Invoices"
@@ -870,6 +894,7 @@ class ReceiptAllocation(ProjectionWriteGuard):
 # Sales Credit Note
 # =============================================================================
 
+
 class SalesCreditNote(ProjectionWriteGuard):
     """
     Sales Credit Note — partial or full reversal of a posted invoice.
@@ -978,6 +1003,11 @@ class SalesCreditNote(ProjectionWriteGuard):
     notes = models.TextField(blank=True, default="")
     reference = models.CharField(max_length=100, blank=True, default="")
 
+    # ── Source tracking (for auto-created credit notes from integrations) ──
+    source = models.CharField(max_length=50, blank=True, default="")
+    source_document_id = models.CharField(max_length=100, blank=True, default="")
+    auto_created = models.BooleanField(default=False)
+
     # Audit
     created_at = models.DateTimeField(auto_now_add=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
@@ -990,11 +1020,17 @@ class SalesCreditNote(ProjectionWriteGuard):
                 fields=["company", "credit_note_number"],
                 name="uniq_credit_note_number_per_company",
             ),
+            models.UniqueConstraint(
+                fields=["company", "source", "source_document_id"],
+                condition=models.Q(source__gt=""),
+                name="uniq_source_doc_per_company_credit_note",
+            ),
         ]
         indexes = [
             models.Index(fields=["company", "status"]),
             models.Index(fields=["company", "customer"]),
             models.Index(fields=["company", "invoice"]),
+            models.Index(fields=["company", "source"]),
         ]
 
     def __str__(self):
@@ -1002,6 +1038,7 @@ class SalesCreditNote(ProjectionWriteGuard):
 
     def recalculate_totals(self):
         from django.db.models import Sum
+
         totals = self.lines.aggregate(
             subtotal=Sum("gross_amount"),
             total_discount=Sum("discount_amount"),
