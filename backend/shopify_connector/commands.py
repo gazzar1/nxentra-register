@@ -1331,6 +1331,36 @@ def _get_shopify_warehouse(company):
     return Warehouse.objects.filter(company=company, code="SHOPIFY").first()
 
 
+def _fetch_variant_cost(store, variant_id) -> Decimal:
+    """Fetch cost_per_item for a single variant from Shopify API."""
+    if not variant_id or not store.access_token:
+        return Decimal("0")
+
+    headers = {
+        "X-Shopify-Access-Token": store.access_token,
+        "Content-Type": "application/json",
+    }
+
+    try:
+        # Get the variant to find its inventory_item_id
+        resp = requests.get(
+            f"https://{store.shop_domain}/admin/api/2025-01/variants/{variant_id}.json",
+            headers=headers,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        inv_item_id = resp.json().get("variant", {}).get("inventory_item_id")
+        if not inv_item_id:
+            return Decimal("0")
+
+        # Fetch cost from inventory item
+        cost_map = _fetch_inventory_item_costs(store, [inv_item_id], headers)
+        return cost_map.get(inv_item_id, Decimal("0"))
+    except Exception as exc:
+        logger.warning("Failed to fetch variant cost for %s: %s", variant_id, exc)
+        return Decimal("0")
+
+
 def _auto_create_item_from_line(store, sku: str, line_item: dict):
     """Auto-create a Nxentra Item from a Shopify order line item if no match exists."""
     from sales.models import Item
@@ -1353,6 +1383,9 @@ def _auto_create_item_from_line(store, sku: str, line_item: dict):
     _ensure_inventory_accounts(store.company)
     defaults = _resolve_default_item_accounts(store.company)
 
+    # Fetch cost from Shopify's product data (cost_per_item on variant)
+    cost = _fetch_variant_cost(store, variant_id)
+
     try:
         with transaction.atomic():
             with command_writes_allowed():
@@ -1362,6 +1395,7 @@ def _auto_create_item_from_line(store, sku: str, line_item: dict):
                     name=title,
                     item_type="INVENTORY",
                     default_unit_price=price,
+                    default_cost=cost,
                     is_active=True,
                     sales_account=defaults.get("sales"),
                     purchase_account=defaults.get("purchase"),
@@ -1383,9 +1417,10 @@ def _auto_create_item_from_line(store, sku: str, line_item: dict):
                     auto_created=True,
                 )
             logger.info(
-                "Auto-created Item %s (%s) from Shopify order line (inventory=%s, cogs=%s)",
+                "Auto-created Item %s (%s) cost=%s (inventory=%s, cogs=%s)",
                 sku,
                 title,
+                cost,
                 defaults.get("inventory"),
                 defaults.get("cogs"),
             )
