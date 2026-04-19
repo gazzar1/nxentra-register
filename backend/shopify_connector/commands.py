@@ -1667,7 +1667,6 @@ def _ensure_shopify_sales_setup(store):
             defaults={
                 "name": f"Shopify: {store_label}",
                 "name_ar": f"شوبيفاي: {store_label}",
-                "default_ar_account": clearing_account,
                 "currency": company.default_currency,
                 "payment_terms_days": 0,
                 "notes": f"Auto-created for Shopify store {store.shop_domain}",
