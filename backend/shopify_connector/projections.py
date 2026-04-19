@@ -29,6 +29,7 @@ from events.models import BusinessEvent
 from events.types import EventTypes, JournalEntryPostedData
 from projections.base import BaseProjection
 from projections.models import FiscalPeriod
+from projections.write_barrier import command_writes_allowed, projection_writes_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -590,245 +591,164 @@ class ShopifyAccountingHandler(BaseProjection):
 
     def _handle_order_paid(self, event, data, mapping, dimension_context=None):
         """
-        Multi-line journal entry for a paid order.
+        Create a SalesInvoice from a paid Shopify order.
 
-        DR Accounts Receivable   total_price
-        CR Sales Revenue         subtotal (net of discounts)
-        CR Sales Tax Payable     total_tax (if > 0)
+        Routes through the Sales module instead of creating JEs directly.
+        The SalesInvoice → post_sales_invoice flow handles:
+        - JE creation (DR Clearing / CR Revenue / CR Tax / CR Shipping)
+        - FX conversion and rounding
+        - Period resolution and validation
+        - Event emission (SALES_INVOICE_POSTED, not JOURNAL_ENTRY_POSTED)
 
-        If there are discounts, they reduce the subtotal that becomes revenue.
-        Shopify's subtotal_price already excludes discounts, so:
-          total_price = subtotal_price + total_tax
+        COGS is skipped here (skip_cogs=True) and handled separately
+        at fulfillment time via StockLedgerEntry (Phase 6).
         """
-        ar = mapping.get(ROLE_SHOPIFY_CLEARING)
-        revenue = mapping.get(ROLE_SALES_REVENUE)
-        if not ar or not revenue:
+        from sales.commands import create_and_post_invoice_for_platform
+        from sales.models import TaxCode
+        from shopify_connector.models import ShopifyOrder, ShopifyStore
+
+        revenue_account = mapping.get(ROLE_SALES_REVENUE)
+        if not revenue_account:
             logger.warning(
-                "Shopify account mapping missing SHOPIFY_CLEARING or SALES_REVENUE for company %s — skipping order %s",
+                "Shopify SALES_REVENUE mapping missing for company %s — skipping order %s",
                 event.company,
                 data.get("order_number"),
             )
             return
 
+        shipping_account = mapping.get(ROLE_SHIPPING_REVENUE) or revenue_account
         tax_account = mapping.get(ROLE_SALES_TAX_PAYABLE)
-        shipping_account = mapping.get(ROLE_SHIPPING_REVENUE)
 
         total_price = Decimal(str(data.get("amount", "0")))
         subtotal = Decimal(str(data.get("subtotal", "0")))
         total_tax = Decimal(str(data.get("total_tax", "0")))
         total_shipping = Decimal(str(data.get("total_shipping", "0")))
         order_name = data.get("order_name", data.get("order_number", ""))
+        shopify_order_id = str(data.get("shopify_order_id", ""))
         entry_date = _parse_date(data.get("transaction_date")) or event.created_at.date()
         currency = data.get("currency") or getattr(event.company, "default_currency", "USD")
-        memo = f"Shopify order: {order_name}"
 
         if total_price <= 0:
+            logger.warning("Skipping Shopify order %s — non-positive amount %s", order_name, total_price)
+            return
+
+        # Get the store's Customer and PostingProfile (created during connect)
+        store = (
+            ShopifyStore.objects.filter(
+                company=event.company,
+                status="ACTIVE",
+            )
+            .select_related("default_customer", "default_posting_profile")
+            .first()
+        )
+
+        if not store or not store.default_customer_id or not store.default_posting_profile_id:
             logger.warning(
-                "Skipping Shopify order %s — non-positive amount %s",
-                order_name,
-                total_price,
+                "Shopify store missing Customer/PostingProfile for company %s — "
+                "run _ensure_shopify_sales_setup() or reconnect the store",
+                event.company,
             )
             return
 
-        # Idempotency
-        if JournalEntry.objects.filter(
-            company=event.company,
-            memo=memo,
-            status=JournalEntry.Status.POSTED,
-        ).exists():
-            logger.info("Journal entry already exists for '%s' — skipping", memo)
-            return
-
-        # Multi-currency: resolve exchange rate
-        fx_rate, is_foreign = _resolve_exchange_rate(event.company, currency, entry_date)
-
-        period = _resolve_period(event.company, entry_date)
-        now = timezone.now()
-
-        entry = JournalEntry.objects.projection().create(
-            company=event.company,
-            public_id=uuid.uuid4(),
-            date=entry_date,
-            period=period,
-            memo=memo,
-            kind=JournalEntry.Kind.NORMAL,
-            status=JournalEntry.Status.POSTED,
-            posted_at=now,
-            currency=currency,
-            exchange_rate=fx_rate,
-            source_module="shopify_connector",
-            source_document=str(data.get("shopify_order_id", "")),
-        )
-
-        lines = []
-        line_no = 0
-
-        # DR Accounts Receivable — total price
-        line_no += 1
-        lines.append(
-            JournalLine(
-                entry=entry,
-                company=event.company,
-                public_id=uuid.uuid4(),
-                line_no=line_no,
-                account=ar,
-                description=memo,
-                debit=_convert_amount(total_price, fx_rate) if is_foreign else total_price,
-                credit=Decimal("0"),
-                amount_currency=total_price if is_foreign else None,
-                currency=currency,
-                exchange_rate=fx_rate,
-            )
-        )
-
-        # CR Sales Revenue — subtotal (after discounts)
-        revenue_amount = subtotal if subtotal > 0 else total_price - total_tax
-        line_no += 1
-        lines.append(
-            JournalLine(
-                entry=entry,
-                company=event.company,
-                public_id=uuid.uuid4(),
-                line_no=line_no,
-                account=revenue,
-                description=memo,
-                debit=Decimal("0"),
-                credit=_convert_amount(revenue_amount, fx_rate) if is_foreign else revenue_amount,
-                amount_currency=-revenue_amount if is_foreign else None,
-                currency=currency,
-                exchange_rate=fx_rate,
-            )
-        )
-
-        # CR Sales Tax Payable — if applicable
+        # Resolve or create OUTPUT TaxCode for this tax rate
+        tax_code = None
         if total_tax > 0 and tax_account:
-            line_no += 1
-            lines.append(
-                JournalLine(
-                    entry=entry,
-                    company=event.company,
-                    public_id=uuid.uuid4(),
-                    line_no=line_no,
-                    account=tax_account,
-                    description=f"Sales tax: {order_name}",
-                    debit=Decimal("0"),
-                    credit=_convert_amount(total_tax, fx_rate) if is_foreign else total_tax,
-                    amount_currency=-total_tax if is_foreign else None,
-                    currency=currency,
-                    exchange_rate=fx_rate,
-                )
-            )
+            revenue_amount = subtotal if subtotal > 0 else total_price - total_tax
+            if revenue_amount > 0:
+                tax_rate = (total_tax / revenue_amount).quantize(Decimal("0.0001"))
+            else:
+                tax_rate = Decimal("0")
 
-        # CR Shipping Revenue — if applicable
+            if tax_rate > 0:
+                tax_pct = int(tax_rate * 100)
+                tax_code_str = f"VAT{tax_pct}"
+                with command_writes_allowed(), projection_writes_allowed():
+                    tax_code, _ = TaxCode.objects.get_or_create(
+                        company=event.company,
+                        code=tax_code_str,
+                        defaults={
+                            "name": f"VAT {tax_pct}%",
+                            "name_ar": f"ضريبة {tax_pct}%",
+                            "rate": tax_rate,
+                            "direction": TaxCode.TaxDirection.OUTPUT,
+                            "tax_account": tax_account,
+                            "is_active": True,
+                        },
+                    )
+
+        # Build invoice lines
+        invoice_lines = []
+
+        # Line 1: Revenue (subtotal after discounts)
+        revenue_amount = subtotal if subtotal > 0 else total_price - total_tax - total_shipping
+        if revenue_amount > 0:
+            line = {
+                "account_id": revenue_account.id,
+                "description": f"Shopify order {order_name}",
+                "quantity": "1",
+                "unit_price": str(revenue_amount),
+                "discount_amount": "0",
+            }
+            if tax_code:
+                line["tax_code_id"] = tax_code.id
+            invoice_lines.append(line)
+
+        # Line 2: Shipping revenue (if any)
         if total_shipping > 0:
-            ship_acct = shipping_account or revenue  # fall back to sales revenue
-            line_no += 1
-            lines.append(
-                JournalLine(
-                    entry=entry,
-                    company=event.company,
-                    public_id=uuid.uuid4(),
-                    line_no=line_no,
-                    account=ship_acct,
-                    description=f"Shipping: {order_name}",
-                    debit=Decimal("0"),
-                    credit=_convert_amount(total_shipping, fx_rate) if is_foreign else total_shipping,
-                    amount_currency=-total_shipping if is_foreign else None,
-                    currency=currency,
-                    exchange_rate=fx_rate,
-                )
-            )
-
-        # Fix FX rounding imbalance before saving
-        if is_foreign:
-            _fix_fx_rounding(lines, entry, event.company, currency, fx_rate)
-
-        # Shared validation: period, account postability
-        force_incomplete, validation_errors = self._validate_entry(event.company, entry_date, lines)
-
-        # Balance validation
-        total_debit = sum(l.debit for l in lines)
-        total_credit = sum(l.credit for l in lines)
-        if total_debit != total_credit:
-            force_incomplete = True
-            validation_errors.append(f"Unbalanced: debit={total_debit} credit={total_credit}")
-
-        if force_incomplete:
-            entry.status = JournalEntry.Status.INCOMPLETE
-            entry.posted_at = None
-            entry.save(update_fields=["status", "posted_at"])
-
-        JournalLine.objects.projection().bulk_create(lines)
-        self._attach_dimensions(event.company, lines, dimension_context)
-
-        if force_incomplete:
-            self._mark_incomplete(entry, validation_errors, memo)
-            return
-
-        # Assign proper entry number (only for balanced/posted entries)
-        seq = _next_company_sequence(event.company, "journal_entry_number")
-        entry_number = f"JE-{event.company_id}-{seq:06d}"
-        entry.entry_number = entry_number
-        entry.save(update_fields=["entry_number"])
-
-        # Emit JOURNAL_ENTRY_POSTED for balance projection
-        shopify_order_id = data.get("shopify_order_id", "")
-        lines_data = []
-        for line in lines:
-            lines_data.append(
+            invoice_lines.append(
                 {
-                    "line_public_id": str(line.public_id),
-                    "line_no": line.line_no,
-                    "account_public_id": str(line.account.public_id),
-                    "account_code": line.account.code,
-                    "description": line.description,
-                    "debit": str(line.debit),
-                    "credit": str(line.credit),
-                    "currency": currency,
-                    "exchange_rate": str(fx_rate),
+                    "account_id": shipping_account.id,
+                    "description": f"Shipping: {order_name}",
+                    "quantity": "1",
+                    "unit_price": str(total_shipping),
+                    "discount_amount": "0",
                 }
             )
 
-        emit_event_no_actor(
+        if not invoice_lines:
+            logger.warning("No invoice lines for Shopify order %s — skipping", order_name)
+            return
+
+        # Create and post the SalesInvoice (skip COGS — handled at fulfillment)
+        result = create_and_post_invoice_for_platform(
             company=event.company,
-            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
-            aggregate_type="JournalEntry",
-            aggregate_id=str(entry.public_id),
-            idempotency_key=f"shopify.order.paid.je:{shopify_order_id}",
-            metadata={"source_projection": PROJECTION_NAME},
-            data=JournalEntryPostedData(
-                entry_public_id=str(entry.public_id),
-                entry_number=entry_number,
-                date=str(entry_date),
-                memo=memo,
-                kind="NORMAL",
-                posted_at=str(now),
-                posted_by_id=0,
-                posted_by_email="system@shopify",
-                total_debit=str(total_debit),
-                total_credit=str(total_credit),
-                lines=lines_data,
-                period=period,
-                currency=currency,
-                exchange_rate=str(fx_rate),
-            ),
-            caused_by_event=event,
+            customer_id=store.default_customer_id,
+            posting_profile_id=store.default_posting_profile_id,
+            lines=invoice_lines,
+            invoice_date=entry_date,
+            source="shopify",
+            source_document_id=shopify_order_id,
+            reference=order_name,
+            notes=f"Shopify order: {order_name}",
+            currency=currency,
+            skip_cogs=True,
         )
 
-        # Update local order record
-        from shopify_connector.models import ShopifyOrder
+        if not result.success:
+            logger.error(
+                "Failed to create SalesInvoice for Shopify order %s: %s",
+                order_name,
+                result.error,
+            )
+            return
 
+        invoice = result.data.get("invoice")
+        journal_entry = result.data.get("journal_entry")
+
+        # Update local order record
+        je_public_id = journal_entry.public_id if journal_entry else None
         ShopifyOrder.objects.filter(
             company=event.company,
             shopify_order_id=data.get("shopify_order_id"),
         ).update(
             status=ShopifyOrder.Status.PROCESSED,
-            journal_entry_id=entry.public_id,
+            journal_entry_id=je_public_id,
         )
 
         logger.info(
-            "Created journal entry %s for Shopify order %s (event %s)",
-            entry.public_id,
+            "Created SalesInvoice %s + JE %s for Shopify order %s (event %s)",
+            invoice.invoice_number if invoice else "?",
+            je_public_id,
             order_name,
             event.id,
         )
