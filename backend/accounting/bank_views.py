@@ -28,41 +28,49 @@ logger = logging.getLogger(__name__)
 # Bank Statements
 # =============================================================================
 
+
 class BankStatementListCreateView(APIView):
     """
     GET  /api/accounting/bank-statements/
     POST /api/accounting/bank-statements/
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         actor = resolve_actor(request)
         require(actor, "accounting.view")
 
-        statements = BankStatement.objects.filter(
-            company=actor.company,
-        ).select_related("account").order_by("-statement_date")[:50]
+        statements = (
+            BankStatement.objects.filter(
+                company=actor.company,
+            )
+            .select_related("account")
+            .order_by("-statement_date")[:50]
+        )
 
         data = []
         for s in statements:
-            data.append({
-                "id": s.id,
-                "public_id": str(s.public_id),
-                "account_id": s.account_id,
-                "account_code": s.account.code,
-                "account_name": s.account.name,
-                "statement_date": str(s.statement_date),
-                "period_start": str(s.period_start),
-                "period_end": str(s.period_end),
-                "opening_balance": str(s.opening_balance),
-                "closing_balance": str(s.closing_balance),
-                "currency": s.currency,
-                "source": s.source,
-                "status": s.status,
-                "line_count": s.line_count,
-                "matched_count": s.matched_count,
-                "created_at": s.created_at.isoformat(),
-            })
+            data.append(
+                {
+                    "id": s.id,
+                    "public_id": str(s.public_id),
+                    "account_id": s.account_id,
+                    "account_code": s.account.code,
+                    "account_name": s.account.name,
+                    "statement_date": str(s.statement_date),
+                    "period_start": str(s.period_start),
+                    "period_end": str(s.period_end),
+                    "opening_balance": str(s.opening_balance),
+                    "closing_balance": str(s.closing_balance),
+                    "currency": s.currency,
+                    "source": s.source,
+                    "status": s.status,
+                    "line_count": s.line_count,
+                    "matched_count": s.matched_count,
+                    "created_at": s.created_at.isoformat(),
+                }
+            )
 
         return Response(data)
 
@@ -112,11 +120,14 @@ class BankStatementListCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response({
-            "id": result.data["statement"].id,
-            "public_id": str(result.data["statement"].public_id),
-            "lines_created": result.data["lines_created"],
-        }, status=status.HTTP_201_CREATED)
+        return Response(
+            {
+                "id": result.data["statement"].id,
+                "public_id": str(result.data["statement"].public_id),
+                "lines_created": result.data["lines_created"],
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class BankStatementCSVImportView(APIView):
@@ -127,6 +138,7 @@ class BankStatementCSVImportView(APIView):
     Does NOT create a statement — the frontend sends the lines
     back via BankStatementListCreateView.post().
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -158,20 +170,24 @@ class BankStatementCSVImportView(APIView):
 
         lines = recon.parse_csv_statement(csv_content, **column_map)
 
-        return Response({
-            "lines": lines,
-            "count": len(lines),
-        })
+        return Response(
+            {
+                "lines": lines,
+                "count": len(lines),
+            }
+        )
 
 
 # =============================================================================
 # Statement Detail & Lines
 # =============================================================================
 
+
 class BankStatementDetailView(APIView):
     """
     GET /api/accounting/bank-statements/<id>/
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
@@ -180,7 +196,8 @@ class BankStatementDetailView(APIView):
 
         try:
             statement = BankStatement.objects.select_related("account").get(
-                id=pk, company=actor.company,
+                id=pk,
+                company=actor.company,
             )
         except BankStatement.DoesNotExist:
             return Response(
@@ -188,9 +205,13 @@ class BankStatementDetailView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        lines = BankStatementLine.objects.filter(
-            statement=statement,
-        ).select_related("matched_journal_line__entry").order_by("line_date", "id")
+        lines = (
+            BankStatementLine.objects.filter(
+                statement=statement,
+            )
+            .select_related("matched_journal_line__entry")
+            .order_by("line_date", "id")
+        )
 
         lines_data = []
         for l in lines:
@@ -224,32 +245,36 @@ class BankStatementDetailView(APIView):
         # Compute summary
         summary = recon.compute_reconciliation_summary(actor.company, statement)
 
-        return Response({
-            "id": statement.id,
-            "public_id": str(statement.public_id),
-            "account_id": statement.account_id,
-            "account_code": statement.account.code,
-            "account_name": statement.account.name,
-            "statement_date": str(statement.statement_date),
-            "period_start": str(statement.period_start),
-            "period_end": str(statement.period_end),
-            "opening_balance": str(statement.opening_balance),
-            "closing_balance": str(statement.closing_balance),
-            "currency": statement.currency,
-            "status": statement.status,
-            "lines": lines_data,
-            "summary": summary,
-        })
+        return Response(
+            {
+                "id": statement.id,
+                "public_id": str(statement.public_id),
+                "account_id": statement.account_id,
+                "account_code": statement.account.code,
+                "account_name": statement.account.name,
+                "statement_date": str(statement.statement_date),
+                "period_start": str(statement.period_start),
+                "period_end": str(statement.period_end),
+                "opening_balance": str(statement.opening_balance),
+                "closing_balance": str(statement.closing_balance),
+                "currency": statement.currency,
+                "status": statement.status,
+                "lines": lines_data,
+                "summary": summary,
+            }
+        )
 
 
 # =============================================================================
 # Matching Actions
 # =============================================================================
 
+
 class BankAutoMatchView(APIView):
     """
     POST /api/accounting/bank-statements/<id>/auto-match/
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
@@ -270,6 +295,7 @@ class BankManualMatchView(APIView):
     POST /api/accounting/bank-statements/match/
     Body: {"bank_line_id": 123, "journal_line_id": 456}
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -299,6 +325,7 @@ class BankUnmatchView(APIView):
     POST /api/accounting/bank-statements/unmatch/
     Body: {"bank_line_id": 123}
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -326,6 +353,7 @@ class BankExcludeLineView(APIView):
     POST /api/accounting/bank-statements/exclude/
     Body: {"bank_line_id": 123}
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -352,17 +380,21 @@ class BankExcludeLineView(APIView):
 # Reconciliation Completion
 # =============================================================================
 
+
 class BankReconcileView(APIView):
     """
     POST /api/accounting/bank-statements/<id>/reconcile/
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
         actor = resolve_actor(request)
 
         result = recon.complete_reconciliation(
-            actor, pk, notes=request.data.get("notes", ""),
+            actor,
+            pk,
+            notes=request.data.get("notes", ""),
         )
         if not result.success:
             return Response(
@@ -371,13 +403,15 @@ class BankReconcileView(APIView):
             )
 
         r = result.data["reconciliation"]
-        return Response({
-            "id": r.id,
-            "public_id": str(r.public_id),
-            "status": r.status,
-            "difference": str(r.difference),
-            "summary": result.data["summary"],
-        })
+        return Response(
+            {
+                "id": r.id,
+                "public_id": str(r.public_id),
+                "status": r.status,
+                "difference": str(r.difference),
+                "summary": result.data["summary"],
+            }
+        )
 
 
 class BankUnreconciledLinesView(APIView):
@@ -387,6 +421,7 @@ class BankUnreconciledLinesView(APIView):
     Returns unreconciled journal lines for a bank account.
     Used by the frontend for manual matching.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -418,22 +453,26 @@ class BankUnreconciledLinesView(APIView):
                 pass
 
         lines = recon.get_unreconciled_journal_lines(
-            actor.company, account, as_of_date,
+            actor.company,
+            account,
+            as_of_date,
         )[:200]
 
         data = []
         for jl in lines:
-            data.append({
-                "id": jl.id,
-                "entry_id": jl.entry_id,
-                "entry_date": str(jl.entry.date),
-                "entry_number": jl.entry.entry_number,
-                "entry_memo": jl.entry.memo,
-                "description": jl.description,
-                "debit": str(jl.debit),
-                "credit": str(jl.credit),
-                "net_amount": str(jl.debit - jl.credit),
-            })
+            data.append(
+                {
+                    "id": jl.id,
+                    "entry_id": jl.entry_id,
+                    "entry_date": str(jl.entry.date),
+                    "entry_number": jl.entry.entry_number,
+                    "entry_memo": jl.entry.memo,
+                    "description": jl.description,
+                    "debit": str(jl.debit),
+                    "credit": str(jl.credit),
+                    "net_amount": str(jl.debit - jl.credit),
+                }
+            )
 
         return Response(data)
 
@@ -449,6 +488,7 @@ class CommerceReconciliationView(APIView):
 
     Grouped by payout for easy cross-referencing.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -466,6 +506,7 @@ class CommerceReconciliationView(APIView):
 
         try:
             from datetime import datetime as dt
+
             start = dt.strptime(period_start, "%Y-%m-%d").date()
             end = dt.strptime(period_end, "%Y-%m-%d").date()
         except ValueError:
@@ -489,37 +530,75 @@ class CommerceReconciliationView(APIView):
         company = actor.company
 
         # Column 1: Orders and refunds in the period
-        orders = list(ShopifyOrder.objects.filter(
-            company=company,
-            order_date__gte=start,
-            order_date__lte=end,
-        ).order_by("order_date"))
+        orders = list(
+            ShopifyOrder.objects.filter(
+                company=company,
+                order_date__gte=start,
+                order_date__lte=end,
+            ).order_by("order_date")
+        )
 
-        refunds = list(ShopifyRefund.objects.filter(
-            company=company,
-            shopify_created_at__date__gte=start,
-            shopify_created_at__date__lte=end,
-        ).select_related("order").order_by("shopify_created_at"))
+        refunds = list(
+            ShopifyRefund.objects.filter(
+                company=company,
+                shopify_created_at__date__gte=start,
+                shopify_created_at__date__lte=end,
+            )
+            .select_related("order")
+            .order_by("shopify_created_at")
+        )
 
         # Column 2: Payouts in the period
-        payouts = list(ShopifyPayout.objects.filter(
-            company=company,
-            payout_date__gte=start,
-            payout_date__lte=end,
-        ).order_by("payout_date"))
+        payouts = list(
+            ShopifyPayout.objects.filter(
+                company=company,
+                payout_date__gte=start,
+                payout_date__lte=end,
+            ).order_by("payout_date")
+        )
 
         # Column 3: Bank statement lines matched to payout JEs
+        # Try PlatformSettlement FK first, fall back to JE memo matching
         payout_matched_bank_lines = {}
         for p in payouts:
-            memo = f"Shopify payout: {p.shopify_payout_id}"
-            bank_line = BankStatementLine.objects.filter(
-                company=company,
-                matched_journal_line__entry__memo=memo,
-                match_status__in=[
-                    BankStatementLine.MatchStatus.AUTO_MATCHED,
-                    BankStatementLine.MatchStatus.MANUAL_MATCHED,
-                ],
-            ).first()
+            bank_line = None
+
+            # Method 1: PlatformSettlement with matched_bank_line FK
+            try:
+                from platform_connectors.models import PlatformSettlement
+
+                settlement = (
+                    PlatformSettlement.objects.filter(
+                        company=company,
+                        platform="shopify",
+                        platform_document_id=str(p.shopify_payout_id),
+                        settlement_type="PAYOUT",
+                    )
+                    .select_related("matched_bank_line", "posted_journal_entry")
+                    .first()
+                )
+                if settlement and settlement.matched_bank_line:
+                    bank_line = settlement.matched_bank_line
+            except Exception:
+                pass
+
+            # Method 2: Fall back to JE memo matching (legacy + backward compat)
+            if not bank_line:
+                for memo_pattern in [
+                    f"Shopify payout: {p.shopify_payout_id}",
+                    f"Shopify Payout: Payout {p.shopify_payout_id}",
+                ]:
+                    bank_line = BankStatementLine.objects.filter(
+                        company=company,
+                        matched_journal_line__entry__memo=memo_pattern,
+                        match_status__in=[
+                            BankStatementLine.MatchStatus.AUTO_MATCHED,
+                            BankStatementLine.MatchStatus.MANUAL_MATCHED,
+                        ],
+                    ).first()
+                    if bank_line:
+                        break
+
             if bank_line:
                 payout_matched_bank_lines[p.shopify_payout_id] = {
                     "id": bank_line.id,
@@ -532,6 +611,7 @@ class CommerceReconciliationView(APIView):
 
         # Build response grouped by payout
         from decimal import Decimal as D
+
         payout_groups = []
         prev_payout_date = start
 
@@ -567,23 +647,25 @@ class CommerceReconciliationView(APIView):
 
             bank_deposit = payout_matched_bank_lines.get(p.shopify_payout_id)
 
-            payout_groups.append({
-                "payout": {
-                    "id": p.id,
-                    "shopify_payout_id": p.shopify_payout_id,
-                    "payout_date": str(p.payout_date),
-                    "gross_amount": str(p.gross_amount),
-                    "fees": str(p.fees),
-                    "net_amount": str(p.net_amount),
-                    "currency": p.currency,
-                    "shopify_status": p.shopify_status,
-                    "status": p.status,
-                },
-                "orders": payout_orders,
-                "refunds": payout_refunds,
-                "bank_deposit": bank_deposit,
-                "reconciliation_status": "matched" if bank_deposit else "unmatched",
-            })
+            payout_groups.append(
+                {
+                    "payout": {
+                        "id": p.id,
+                        "shopify_payout_id": p.shopify_payout_id,
+                        "payout_date": str(p.payout_date),
+                        "gross_amount": str(p.gross_amount),
+                        "fees": str(p.fees),
+                        "net_amount": str(p.net_amount),
+                        "currency": p.currency,
+                        "shopify_status": p.shopify_status,
+                        "status": p.status,
+                    },
+                    "orders": payout_orders,
+                    "refunds": payout_refunds,
+                    "bank_deposit": bank_deposit,
+                    "reconciliation_status": "matched" if bank_deposit else "unmatched",
+                }
+            )
             prev_payout_date = p.payout_date
 
         # Summary totals
@@ -593,20 +675,22 @@ class CommerceReconciliationView(APIView):
         total_fees = sum((p.fees for p in payouts), D("0"))
         total_net = sum((p.net_amount for p in payouts), D("0"))
 
-        return Response({
-            "period_start": period_start,
-            "period_end": period_end,
-            "summary": {
-                "total_orders": str(total_orders),
-                "total_refunds": str(total_refunds),
-                "total_gross_payouts": str(total_gross),
-                "total_fees": str(total_fees),
-                "total_net_payouts": str(total_net),
-                "order_count": len(orders),
-                "refund_count": len(refunds),
-                "payout_count": len(payouts),
-                "bank_matched_count": len(payout_matched_bank_lines),
-                "commerce_vs_payout_diff": str(total_orders - total_refunds - total_gross),
-            },
-            "payout_groups": payout_groups,
-        })
+        return Response(
+            {
+                "period_start": period_start,
+                "period_end": period_end,
+                "summary": {
+                    "total_orders": str(total_orders),
+                    "total_refunds": str(total_refunds),
+                    "total_gross_payouts": str(total_gross),
+                    "total_fees": str(total_fees),
+                    "total_net_payouts": str(total_net),
+                    "order_count": len(orders),
+                    "refund_count": len(refunds),
+                    "payout_count": len(payouts),
+                    "bank_matched_count": len(payout_matched_bank_lines),
+                    "commerce_vs_payout_diff": str(total_orders - total_refunds - total_gross),
+                },
+                "payout_groups": payout_groups,
+            }
+        )
