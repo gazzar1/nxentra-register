@@ -20,7 +20,7 @@ from accounting.commands import CommandResult
 from accounts.authz import ActorContext, require
 from events.emitter import emit_event
 from events.types import EventTypes
-from projections.write_barrier import command_writes_allowed
+from projections.write_barrier import command_writes_allowed, projection_writes_allowed
 
 from .event_types import (
     ShopifyDisputeCreatedData,
@@ -156,6 +156,9 @@ def complete_oauth(company, shop_domain: str, code: str, nonce: str) -> CommandR
 
     # Auto-create a Shopify warehouse for inventory tracking
     _ensure_shopify_warehouse(store)
+
+    # Auto-create Customer + PostingProfile for Sales Invoice routing
+    _ensure_shopify_sales_setup(store)
 
     return CommandResult.ok(data={"store": store})
 
@@ -1424,6 +1427,97 @@ def _get_shopify_warehouse(company):
 
     # Fallback to legacy code-based lookup
     return Warehouse.objects.filter(company=company, code="SHOPIFY").first()
+
+
+def _ensure_shopify_sales_setup(store):
+    """Create Customer + PostingProfile for Shopify Sales Invoice routing.
+
+    Called on Shopify store connection. Creates:
+    1. A Customer record representing "Shopify Customers" (aggregate customer)
+    2. A PostingProfile with the Shopify Clearing account as the control account
+       (Shopify Clearing acts as the receivable — Shopify owes the merchant
+       until payout is settled)
+
+    These are stored on the ShopifyStore model for use by the Shopify
+    accounting handler when creating SalesInvoices from order webhooks.
+    """
+    from accounting.mappings import ModuleAccountMapping
+    from accounting.models import Account, Customer
+    from sales.models import PostingProfile
+
+    company = store.company
+
+    # Skip if already set up
+    if store.default_customer_id and store.default_posting_profile_id:
+        return
+
+    store_label = store.shop_domain.replace(".myshopify.com", "")
+
+    with command_writes_allowed(), projection_writes_allowed():
+        # 1. Find or create the Shopify Clearing account
+        mapping = ModuleAccountMapping.get_mapping(company, "shopify_connector")
+        clearing_account = None
+        if mapping:
+            clearing_account = mapping.get("SHOPIFY_CLEARING")
+
+        if not clearing_account:
+            # Fallback: look by code convention
+            clearing_account = Account.objects.filter(
+                company=company,
+                code__in=["1150", "11500"],
+                status="ACTIVE",
+            ).first()
+
+        if not clearing_account:
+            logger.warning(
+                "Cannot set up Shopify sales routing for %s: no clearing account found",
+                store.shop_domain,
+            )
+            return
+
+        # 2. Create or get Customer
+        customer, _ = Customer.objects.get_or_create(
+            company=company,
+            code=f"SHOPIFY-{store_label.upper()[:10]}",
+            defaults={
+                "name": f"Shopify: {store_label}",
+                "name_ar": f"شوبيفاي: {store_label}",
+                "default_ar_account": clearing_account,
+                "currency": company.default_currency,
+                "payment_terms_days": 0,
+                "notes": f"Auto-created for Shopify store {store.shop_domain}",
+                "status": Customer.Status.ACTIVE,
+            },
+        )
+
+        # 3. Create or get PostingProfile (using Clearing as control account)
+        profile, _ = PostingProfile.objects.get_or_create(
+            company=company,
+            code=f"SHOPIFY-{store_label.upper()[:10]}",
+            defaults={
+                "name": f"Shopify: {store_label}",
+                "name_ar": f"شوبيفاي: {store_label}",
+                "profile_type": PostingProfile.ProfileType.CUSTOMER,
+                "control_account": clearing_account,
+                "is_active": True,
+                "description": (
+                    f"Auto-created for Shopify store {store.shop_domain}. "
+                    f"Uses Shopify Clearing as control account (funds held by Shopify until payout)."
+                ),
+            },
+        )
+
+        # 4. Link to store
+        store.default_customer = customer
+        store.default_posting_profile = profile
+        store.save(update_fields=["default_customer", "default_posting_profile"])
+
+    logger.info(
+        "Set up Shopify sales routing for %s: customer=%s, profile=%s",
+        store.shop_domain,
+        customer.code,
+        profile.code,
+    )
 
 
 def _fetch_variant_cost(store, variant_id) -> Decimal:
