@@ -1249,16 +1249,17 @@ def _create_cogs_for_fulfillment(company, cogs_lines, total_cogs, fulfillment, o
 
             if warehouse:
                 # Ensure InventoryBalance exists (Shopify merchants may not have one)
-                InventoryBalance.objects.get_or_create(
-                    company=company,
-                    item=item,
-                    warehouse=warehouse,
-                    defaults={
-                        "qty_on_hand": Decimal("0"),
-                        "avg_cost": item.default_cost or Decimal("0"),
-                        "stock_value": Decimal("0"),
-                    },
-                )
+                with projection_writes_allowed():
+                    InventoryBalance.objects.get_or_create(
+                        company=company,
+                        item=item,
+                        warehouse=warehouse,
+                        defaults={
+                            "qty_on_hand": Decimal("0"),
+                            "avg_cost": item.default_cost or Decimal("0"),
+                            "stock_value": Decimal("0"),
+                        },
+                    )
 
                 stock_lines.append(
                     {
