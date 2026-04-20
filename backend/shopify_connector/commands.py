@@ -1705,8 +1705,22 @@ def _ensure_shopify_sales_setup(store):
     )
 
 
-def _fetch_variant_cost(store, variant_id) -> Decimal:
-    """Fetch cost_per_item for a single variant from Shopify API."""
+def _fetch_variant_cost(store, variant_id, convert_to_currency: str = "") -> Decimal:
+    """Fetch cost_per_item for a single variant from Shopify API.
+
+    Shopify returns cost in the store's currency. If convert_to_currency
+    is provided and differs from the store currency, the cost is converted
+    using the current exchange rate.
+
+    Args:
+        store: ShopifyStore instance
+        variant_id: Shopify variant ID
+        convert_to_currency: Target currency (e.g., company's functional currency).
+            If empty, returns cost in store currency as-is.
+
+    Returns:
+        Cost in target currency (or store currency if no conversion needed).
+    """
     if not variant_id or not store.access_token:
         return Decimal("0")
 
@@ -1716,7 +1730,7 @@ def _fetch_variant_cost(store, variant_id) -> Decimal:
     }
 
     try:
-        # Get the variant to find its inventory_item_id
+        # Get the variant to find its inventory_item_id and the store currency
         resp = requests.get(
             f"https://{store.shop_domain}/admin/api/2025-01/variants/{variant_id}.json",
             headers=headers,
@@ -1727,12 +1741,94 @@ def _fetch_variant_cost(store, variant_id) -> Decimal:
         if not inv_item_id:
             return Decimal("0")
 
-        # Fetch cost from inventory item
+        # Fetch cost from inventory item (returns cost in store currency)
         cost_map = _fetch_inventory_item_costs(store, [inv_item_id], headers)
-        return cost_map.get(inv_item_id, Decimal("0"))
+        cost = cost_map.get(inv_item_id, Decimal("0"))
+
+        if cost <= 0 or not convert_to_currency:
+            return cost
+
+        # Determine the store's currency from the inventory item
+        # The cost_per_item currency comes from the shop's currency setting
+        store_currency = _get_shopify_store_currency(store, headers)
+
+        if not store_currency or store_currency == convert_to_currency:
+            return cost
+
+        # Convert cost to company's functional currency
+        from datetime import date as date_type
+
+        from accounting.models import ExchangeRate
+
+        rate = ExchangeRate.get_rate(
+            store.company,
+            store_currency,
+            convert_to_currency,
+            date_type.today(),
+        )
+        if rate and rate > 0:
+            converted = (cost * rate).quantize(Decimal("0.01"))
+            logger.info(
+                "Converted item cost %s %s → %s %s (rate %s) for variant %s",
+                store_currency,
+                cost,
+                convert_to_currency,
+                converted,
+                rate,
+                variant_id,
+            )
+            return converted
+        else:
+            logger.warning(
+                "No exchange rate for %s→%s — storing cost as-is (%s). Set up exchange rates to enable conversion.",
+                store_currency,
+                convert_to_currency,
+                cost,
+            )
+            return cost
+
     except Exception as exc:
         logger.warning("Failed to fetch variant cost for %s: %s", variant_id, exc)
         return Decimal("0")
+
+
+def _get_shopify_store_currency(store, headers=None) -> str:
+    """Fetch the store's currency from Shopify's shop endpoint.
+
+    Caches the result on the store instance to avoid repeated API calls.
+    """
+    # Check if we already know the currency from a recent order
+    from shopify_connector.models import ShopifyOrder
+
+    recent_order = (
+        ShopifyOrder.objects.filter(
+            company=store.company,
+            store=store,
+            currency__gt="",
+        )
+        .values_list("currency", flat=True)
+        .first()
+    )
+    if recent_order:
+        return recent_order
+
+    # Fall back to Shopify shop API
+    if not headers:
+        headers = {
+            "X-Shopify-Access-Token": store.access_token,
+            "Content-Type": "application/json",
+        }
+    try:
+        resp = requests.get(
+            f"https://{store.shop_domain}/admin/api/2025-01/shop.json",
+            headers=headers,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json().get("shop", {}).get("currency", "")
+    except Exception as exc:
+        logger.warning("Failed to fetch store currency for %s: %s", store.shop_domain, exc)
+        return ""
 
 
 def _auto_create_item_from_line(store, sku: str, line_item: dict):
@@ -1758,7 +1854,9 @@ def _auto_create_item_from_line(store, sku: str, line_item: dict):
     defaults = _resolve_default_item_accounts(store.company)
 
     # Fetch cost from Shopify's product data (cost_per_item on variant)
-    cost = _fetch_variant_cost(store, variant_id)
+    # Convert to company's functional currency if different from store currency
+    functional_currency = getattr(store.company, "functional_currency", "") or store.company.default_currency
+    cost = _fetch_variant_cost(store, variant_id, convert_to_currency=functional_currency)
 
     try:
         with transaction.atomic():
