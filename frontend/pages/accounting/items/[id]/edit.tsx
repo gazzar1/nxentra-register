@@ -201,8 +201,9 @@ export default function EditItemPage() {
           await apiClient.post(`/sales/items/${item.id}/image/`, formData, {
             headers: { "Content-Type": "multipart/form-data" },
           });
-        } catch {
-          toast({ title: "Item updated", description: "Saved but photo upload failed.", variant: "default" });
+        } catch (imgErr: any) {
+          const detail = imgErr?.response?.data?.detail || "Photo upload failed. Check file type (PNG, JPG, WEBP) and size (max 5MB).";
+          toast({ title: "Item updated", description: detail, variant: "destructive" });
           router.push("/accounting/items");
           return;
         }
