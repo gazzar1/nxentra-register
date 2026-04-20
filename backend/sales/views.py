@@ -46,8 +46,10 @@ from .serializers import (
 # Item Views
 # =============================================================================
 
+
 class ItemListCreateView(APIView):
     """List all items or create a new item."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -79,14 +81,12 @@ class ItemListCreateView(APIView):
         if not result.success:
             return Response({"detail": result.error}, status=400)
 
-        return Response(
-            ItemSerializer(result.data["item"]).data,
-            status=status.HTTP_201_CREATED
-        )
+        return Response(ItemSerializer(result.data["item"]).data, status=status.HTTP_201_CREATED)
 
 
 class ItemDetailView(APIView):
     """Retrieve, update or delete an item."""
+
     permission_classes = [IsAuthenticated]
 
     def get_object(self, actor, pk):
@@ -131,6 +131,7 @@ class ItemImageUploadView(APIView):
     POST /api/sales/items/<pk>/image/ — Upload item photo
     DELETE /api/sales/items/<pk>/image/ — Remove item photo
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
@@ -152,18 +153,33 @@ class ItemImageUploadView(APIView):
 
         image_file = request.FILES["image"]
 
-        # Validate file type
-        allowed_extensions = {".png", ".jpg", ".jpeg", ".webp"}
+        # Validate file type by extension OR content type
+        allowed_extensions = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+        allowed_mimes = {"image/png", "image/jpeg", "image/webp", "image/gif"}
         ext = os.path.splitext(image_file.name)[1].lower()
-        if ext not in allowed_extensions:
+        content_type = getattr(image_file, "content_type", "")
+
+        if ext not in allowed_extensions and content_type not in allowed_mimes:
             return Response(
-                {"detail": f"Invalid file type. Allowed: {', '.join(allowed_extensions)}"},
+                {"detail": f"Invalid file type '{ext or content_type}'. Allowed: PNG, JPG, WEBP, GIF."},
                 status=400,
             )
 
-        # Validate size (5MB)
-        if image_file.size > 5 * 1024 * 1024:
-            return Response({"detail": "File too large. Maximum size is 5MB."}, status=400)
+        # If file has no extension, add one based on content type
+        if not ext and content_type:
+            mime_to_ext = {
+                "image/png": ".png",
+                "image/jpeg": ".jpg",
+                "image/webp": ".webp",
+                "image/gif": ".gif",
+            }
+            inferred_ext = mime_to_ext.get(content_type, "")
+            if inferred_ext:
+                image_file.name = image_file.name + inferred_ext
+
+        # Validate size (10MB — matches UI label)
+        if image_file.size > 10 * 1024 * 1024:
+            return Response({"detail": "File too large. Maximum size is 10MB."}, status=400)
 
         # Delete old image if exists
         if item.image:
@@ -173,6 +189,7 @@ class ItemImageUploadView(APIView):
                 pass
 
         from projections.write_barrier import command_writes_allowed
+
         with command_writes_allowed():
             item.image = image_file
             item.save(update_fields=["image"])
@@ -199,6 +216,7 @@ class ItemImageUploadView(APIView):
                 pass
 
             from projections.write_barrier import command_writes_allowed
+
             with command_writes_allowed():
                 item.image = None
                 item.save(update_fields=["image"])
@@ -210,8 +228,10 @@ class ItemImageUploadView(APIView):
 # Tax Code Views
 # =============================================================================
 
+
 class TaxCodeListCreateView(APIView):
     """List all tax codes or create a new one."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -243,14 +263,12 @@ class TaxCodeListCreateView(APIView):
         if not result.success:
             return Response({"detail": result.error}, status=400)
 
-        return Response(
-            TaxCodeSerializer(result.data["tax_code"]).data,
-            status=status.HTTP_201_CREATED
-        )
+        return Response(TaxCodeSerializer(result.data["tax_code"]).data, status=status.HTTP_201_CREATED)
 
 
 class TaxCodeDetailView(APIView):
     """Retrieve or update a tax code."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
@@ -285,8 +303,10 @@ class TaxCodeDetailView(APIView):
 # Posting Profile Views
 # =============================================================================
 
+
 class PostingProfileListCreateView(APIView):
     """List all posting profiles or create a new one."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -318,14 +338,12 @@ class PostingProfileListCreateView(APIView):
         if not result.success:
             return Response({"detail": result.error}, status=400)
 
-        return Response(
-            PostingProfileSerializer(result.data["posting_profile"]).data,
-            status=status.HTTP_201_CREATED
-        )
+        return Response(PostingProfileSerializer(result.data["posting_profile"]).data, status=status.HTTP_201_CREATED)
 
 
 class PostingProfileDetailView(APIView):
     """Retrieve or update a posting profile."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
@@ -360,8 +378,10 @@ class PostingProfileDetailView(APIView):
 # Sales Invoice Views
 # =============================================================================
 
+
 class SalesInvoiceListCreateView(APIView):
     """List all sales invoices or create a new one."""
+
     module_key = "sales"
     permission_classes = [IsAuthenticated, ModuleEnabled]
 
@@ -374,9 +394,7 @@ class SalesInvoiceListCreateView(APIView):
 
         from nxentra_backend.pagination import paginate_queryset
 
-        invoices = SalesInvoice.objects.filter(company=actor.company).select_related(
-            "customer"
-        )
+        invoices = SalesInvoice.objects.filter(company=actor.company).select_related("customer")
 
         # Optional filters
         if "status" in request.query_params:
@@ -393,7 +411,9 @@ class SalesInvoiceListCreateView(APIView):
             )
 
         return paginate_queryset(
-            request, invoices, SalesInvoiceListSerializer,
+            request,
+            invoices,
+            SalesInvoiceListSerializer,
             default_ordering="-invoice_date",
             allowed_sort_fields=["invoice_number", "invoice_date", "due_date", "total_amount", "status"],
         )
@@ -410,14 +430,12 @@ class SalesInvoiceListCreateView(APIView):
         if not result.success:
             return Response({"detail": result.error}, status=400)
 
-        return Response(
-            SalesInvoiceSerializer(result.data["invoice"]).data,
-            status=status.HTTP_201_CREATED
-        )
+        return Response(SalesInvoiceSerializer(result.data["invoice"]).data, status=status.HTTP_201_CREATED)
 
 
 class SalesInvoiceDetailView(APIView):
     """Retrieve, update or delete a sales invoice."""
+
     module_key = "sales"
     permission_classes = [IsAuthenticated, ModuleEnabled]
 
@@ -427,11 +445,11 @@ class SalesInvoiceDetailView(APIView):
             return Response({"detail": "No active company."}, status=400)
 
         try:
-            invoice = SalesInvoice.objects.select_related(
-                "customer", "posting_profile", "posted_by", "posted_journal_entry"
-            ).prefetch_related(
-                "lines__item", "lines__account", "lines__tax_code"
-            ).get(company=actor.company, pk=pk)
+            invoice = (
+                SalesInvoice.objects.select_related("customer", "posting_profile", "posted_by", "posted_journal_entry")
+                .prefetch_related("lines__item", "lines__account", "lines__tax_code")
+                .get(company=actor.company, pk=pk)
+            )
         except SalesInvoice.DoesNotExist:
             return Response({"detail": "Invoice not found."}, status=404)
 
@@ -451,17 +469,18 @@ class SalesInvoiceDetailView(APIView):
             return Response({"detail": result.error}, status=400)
 
         # Refresh the invoice with related data
-        invoice = SalesInvoice.objects.select_related(
-            "customer", "posting_profile", "posted_by", "posted_journal_entry"
-        ).prefetch_related(
-            "lines__item", "lines__account", "lines__tax_code"
-        ).get(pk=pk)
+        invoice = (
+            SalesInvoice.objects.select_related("customer", "posting_profile", "posted_by", "posted_journal_entry")
+            .prefetch_related("lines__item", "lines__account", "lines__tax_code")
+            .get(pk=pk)
+        )
 
         return Response(SalesInvoiceSerializer(invoice).data)
 
 
 class SalesInvoicePostView(APIView):
     """Post a sales invoice."""
+
     module_key = "sales"
     permission_classes = [IsAuthenticated, ModuleEnabled]
 
@@ -474,16 +493,19 @@ class SalesInvoicePostView(APIView):
         if not result.success:
             return Response({"detail": result.error}, status=400)
 
-        return Response({
-            "detail": "Invoice posted successfully.",
-            "invoice": SalesInvoiceSerializer(result.data["invoice"]).data,
-            "journal_entry_id": result.data["journal_entry"].id,
-            "journal_entry_number": result.data["journal_entry"].entry_number,
-        })
+        return Response(
+            {
+                "detail": "Invoice posted successfully.",
+                "invoice": SalesInvoiceSerializer(result.data["invoice"]).data,
+                "journal_entry_id": result.data["journal_entry"].id,
+                "journal_entry_number": result.data["journal_entry"].entry_number,
+            }
+        )
 
 
 class SalesInvoiceVoidView(APIView):
     """Void a sales invoice."""
+
     module_key = "sales"
     permission_classes = [IsAuthenticated, ModuleEnabled]
 
@@ -497,16 +519,19 @@ class SalesInvoiceVoidView(APIView):
         if not result.success:
             return Response({"detail": result.error}, status=400)
 
-        return Response({
-            "detail": "Invoice voided successfully.",
-            "invoice": SalesInvoiceSerializer(result.data["invoice"]).data,
-            "reversing_entry_id": result.data["reversing_entry"].id,
-        })
+        return Response(
+            {
+                "detail": "Invoice voided successfully.",
+                "invoice": SalesInvoiceSerializer(result.data["invoice"]).data,
+                "reversing_entry_id": result.data["reversing_entry"].id,
+            }
+        )
 
 
 # =============================================================================
 # PDF Generation
 # =============================================================================
+
 
 class SalesInvoicePDFView(APIView):
     """
@@ -516,6 +541,7 @@ class SalesInvoicePDFView(APIView):
     Query params:
     - inline: if "1", display in browser instead of downloading
     """
+
     module_key = "sales"
     permission_classes = [IsAuthenticated, ModuleEnabled]
 
@@ -531,11 +557,11 @@ class SalesInvoicePDFView(APIView):
             return Response({"detail": "No active company."}, status=400)
 
         try:
-            invoice = SalesInvoice.objects.select_related(
-                "customer", "posting_profile", "posted_by", "posted_journal_entry"
-            ).prefetch_related(
-                "lines__item", "lines__account", "lines__tax_code"
-            ).get(company=actor.company, pk=pk)
+            invoice = (
+                SalesInvoice.objects.select_related("customer", "posting_profile", "posted_by", "posted_journal_entry")
+                .prefetch_related("lines__item", "lines__account", "lines__tax_code")
+                .get(company=actor.company, pk=pk)
+            )
         except SalesInvoice.DoesNotExist:
             return Response({"detail": "Invoice not found."}, status=404)
 
@@ -548,7 +574,13 @@ class SalesInvoicePDFView(APIView):
                 if logo_path.exists():
                     logo_data = logo_path.read_bytes()
                     ext = logo_path.suffix.lower().lstrip(".")
-                    mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "gif": "image/gif", "svg": "image/svg+xml"}.get(ext, "image/png")
+                    mime = {
+                        "png": "image/png",
+                        "jpg": "image/jpeg",
+                        "jpeg": "image/jpeg",
+                        "gif": "image/gif",
+                        "svg": "image/svg+xml",
+                    }.get(ext, "image/png")
                     company_logo_uri = f"data:{mime};base64,{base64.b64encode(logo_data).decode()}"
             except Exception:
                 pass
@@ -565,6 +597,7 @@ class SalesInvoicePDFView(APIView):
         html_string = render_to_string("pdf/sales_invoice.html", context)
 
         import weasyprint
+
         pdf_bytes = weasyprint.HTML(string=html_string).write_pdf()
 
         disposition = "inline" if request.query_params.get("inline") == "1" else "attachment"
@@ -579,6 +612,7 @@ class SalesInvoicePDFView(APIView):
 # Email Invoice
 # =============================================================================
 
+
 class SalesInvoiceEmailView(APIView):
     """
     POST /api/sales/invoices/<pk>/email/
@@ -589,6 +623,7 @@ class SalesInvoiceEmailView(APIView):
     - recipient_email: Email address to send to (defaults to customer email)
     - message: Optional custom message to include in the email body
     """
+
     module_key = "sales"
     permission_classes = [IsAuthenticated, ModuleEnabled]
 
@@ -608,11 +643,11 @@ class SalesInvoiceEmailView(APIView):
             return Response({"detail": "No active company."}, status=400)
 
         try:
-            invoice = SalesInvoice.objects.select_related(
-                "customer", "posting_profile", "posted_journal_entry"
-            ).prefetch_related(
-                "lines__item", "lines__account", "lines__tax_code"
-            ).get(company=actor.company, pk=pk)
+            invoice = (
+                SalesInvoice.objects.select_related("customer", "posting_profile", "posted_journal_entry")
+                .prefetch_related("lines__item", "lines__account", "lines__tax_code")
+                .get(company=actor.company, pk=pk)
+            )
         except SalesInvoice.DoesNotExist:
             return Response({"detail": "Invoice not found."}, status=404)
 
@@ -669,8 +704,10 @@ class SalesInvoiceEmailView(APIView):
                     logo_data = logo_path.read_bytes()
                     ext = logo_path.suffix.lower().lstrip(".")
                     mime = {
-                        "png": "image/png", "jpg": "image/jpeg",
-                        "jpeg": "image/jpeg", "gif": "image/gif",
+                        "png": "image/png",
+                        "jpg": "image/jpeg",
+                        "jpeg": "image/jpeg",
+                        "gif": "image/gif",
                         "svg": "image/svg+xml",
                     }.get(ext, "image/png")
                     company_logo_uri = f"data:{mime};base64,{base64.b64encode(logo_data).decode()}"
@@ -686,6 +723,7 @@ class SalesInvoiceEmailView(APIView):
         pdf_html = render_to_string("pdf/sales_invoice.html", pdf_context)
 
         import weasyprint
+
         pdf_bytes = weasyprint.HTML(string=pdf_html).write_pdf()
 
         # Send email with PDF attachment
@@ -709,18 +747,24 @@ class SalesInvoiceEmailView(APIView):
 
             logger.info(
                 "Invoice %s emailed to %s by user %s",
-                invoice.invoice_number, recipient_email, actor.user.email,
+                invoice.invoice_number,
+                recipient_email,
+                actor.user.email,
             )
 
-            return Response({
-                "detail": f"Invoice emailed to {recipient_email}",
-                "recipient_email": recipient_email,
-            })
+            return Response(
+                {
+                    "detail": f"Invoice emailed to {recipient_email}",
+                    "recipient_email": recipient_email,
+                }
+            )
 
         except Exception as e:
             logger.error(
                 "Failed to email invoice %s to %s: %s",
-                invoice.invoice_number, recipient_email, e,
+                invoice.invoice_number,
+                recipient_email,
+                e,
             )
             return Response(
                 {"detail": f"Failed to send email: {e!s}"},
@@ -732,6 +776,7 @@ class SalesInvoiceEmailView(APIView):
 # Open Invoices View (for receipt allocation)
 # =============================================================================
 
+
 class CustomerOpenInvoicesView(APIView):
     """
     GET /api/sales/customers/<customer_id>/open-invoices/
@@ -739,6 +784,7 @@ class CustomerOpenInvoicesView(APIView):
     Returns all posted invoices for a customer that have an outstanding balance.
     Used by the receipt form to show invoices available for allocation.
     """
+
     module_key = "sales"
     permission_classes = [IsAuthenticated, ModuleEnabled]
 
@@ -768,37 +814,45 @@ class CustomerOpenInvoicesView(APIView):
         for inv in invoices:
             amount_due = inv.total_amount - inv.amount_paid
             if amount_due > Decimal("0"):
-                open_invoices.append({
-                    "id": inv.id,
-                    "public_id": str(inv.public_id),
-                    "invoice_number": inv.invoice_number,
-                    "invoice_date": inv.invoice_date.isoformat(),
-                    "due_date": inv.due_date.isoformat() if inv.due_date else None,
-                    "total_amount": str(inv.total_amount),
-                    "amount_paid": str(inv.amount_paid),
-                    "amount_due": str(amount_due),
-                    "reference": inv.reference,
-                })
+                open_invoices.append(
+                    {
+                        "id": inv.id,
+                        "public_id": str(inv.public_id),
+                        "invoice_number": inv.invoice_number,
+                        "invoice_date": inv.invoice_date.isoformat(),
+                        "due_date": inv.due_date.isoformat() if inv.due_date else None,
+                        "total_amount": str(inv.total_amount),
+                        "amount_paid": str(inv.amount_paid),
+                        "amount_due": str(amount_due),
+                        "reference": inv.reference,
+                    }
+                )
 
-        return Response({
-            "customer_id": customer_id,
-            "customer_code": customer.code,
-            "customer_name": customer.name,
-            "open_invoices": open_invoices,
-            "total_outstanding": str(sum(
-                inv.total_amount - inv.amount_paid
-                for inv in invoices
-                if (inv.total_amount - inv.amount_paid) > Decimal("0")
-            )),
-        })
+        return Response(
+            {
+                "customer_id": customer_id,
+                "customer_code": customer.code,
+                "customer_name": customer.name,
+                "open_invoices": open_invoices,
+                "total_outstanding": str(
+                    sum(
+                        inv.total_amount - inv.amount_paid
+                        for inv in invoices
+                        if (inv.total_amount - inv.amount_paid) > Decimal("0")
+                    )
+                ),
+            }
+        )
 
 
 # =============================================================================
 # Credit Note Views
 # =============================================================================
 
+
 class CreditNoteListCreateView(APIView):
     """List credit notes or create a new one."""
+
     module_key = "sales"
     permission_classes = [IsAuthenticated, ModuleEnabled]
 
@@ -812,9 +866,7 @@ class CreditNoteListCreateView(APIView):
         from .models import SalesCreditNote
         from .serializers import CreditNoteListSerializer
 
-        credit_notes = SalesCreditNote.objects.filter(
-            company=actor.company
-        ).select_related("customer", "invoice")
+        credit_notes = SalesCreditNote.objects.filter(company=actor.company).select_related("customer", "invoice")
 
         if "status" in request.query_params:
             credit_notes = credit_notes.filter(status=request.query_params["status"])
@@ -822,7 +874,9 @@ class CreditNoteListCreateView(APIView):
             credit_notes = credit_notes.filter(invoice_id=request.query_params["invoice_id"])
 
         return paginate_queryset(
-            request, credit_notes, CreditNoteListSerializer,
+            request,
+            credit_notes,
+            CreditNoteListSerializer,
             default_ordering="-credit_note_date",
             allowed_sort_fields=["credit_note_number", "credit_note_date", "total_amount", "status"],
         )
@@ -850,6 +904,7 @@ class CreditNoteListCreateView(APIView):
 
 class CreditNoteDetailView(APIView):
     """Retrieve a credit note."""
+
     module_key = "sales"
     permission_classes = [IsAuthenticated, ModuleEnabled]
 
@@ -862,10 +917,10 @@ class CreditNoteDetailView(APIView):
         from .serializers import CreditNoteSerializer
 
         try:
-            cn = SalesCreditNote.objects.select_related(
-                "customer", "invoice", "posting_profile"
-            ).prefetch_related("lines", "lines__account", "lines__tax_code").get(
-                company=actor.company, pk=pk
+            cn = (
+                SalesCreditNote.objects.select_related("customer", "invoice", "posting_profile")
+                .prefetch_related("lines", "lines__account", "lines__tax_code")
+                .get(company=actor.company, pk=pk)
             )
         except SalesCreditNote.DoesNotExist:
             return Response({"detail": "Credit note not found."}, status=404)
@@ -875,6 +930,7 @@ class CreditNoteDetailView(APIView):
 
 class CreditNotePostView(APIView):
     """Post a credit note."""
+
     module_key = "sales"
     permission_classes = [IsAuthenticated, ModuleEnabled]
 
@@ -895,6 +951,7 @@ class CreditNotePostView(APIView):
 
 class CreditNoteVoidView(APIView):
     """Void a posted credit note."""
+
     module_key = "sales"
     permission_classes = [IsAuthenticated, ModuleEnabled]
 
