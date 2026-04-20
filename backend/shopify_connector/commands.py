@@ -1858,6 +1858,22 @@ def _auto_create_item_from_line(store, sku: str, line_item: dict):
     functional_currency = getattr(store.company, "functional_currency", "") or store.company.default_currency
     cost = _fetch_variant_cost(store, variant_id, convert_to_currency=functional_currency)
 
+    # Convert selling price to functional currency if store currency differs
+    store_currency = _get_shopify_store_currency(store)
+    if store_currency and store_currency != functional_currency and price > 0:
+        from datetime import date as date_type
+
+        from accounting.models import ExchangeRate
+
+        rate = ExchangeRate.get_rate(
+            store.company,
+            store_currency,
+            functional_currency,
+            date_type.today(),
+        )
+        if rate and rate > 0:
+            price = (price * rate).quantize(Decimal("0.01"))
+
     try:
         with transaction.atomic():
             with command_writes_allowed():
