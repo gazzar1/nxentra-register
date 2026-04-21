@@ -205,8 +205,8 @@ export function Sidebar() {
 
       <aside
         className={cn(
-          "fixed inset-y-0 start-0 z-50 flex w-64 flex-col border-e bg-card transition-transform duration-300 ease-in-out lg:static lg:h-full lg:translate-x-0",
-          isOpen ? "translate-x-0" : "-translate-x-full rtl:translate-x-full"
+          "fixed inset-y-0 start-0 z-50 flex w-64 flex-col border-e bg-card transition-transform duration-300 ease-in-out lg:static lg:h-full lg:!translate-x-0",
+          isOpen ? "translate-x-0" : "-translate-x-full rtl:translate-x-full lg:!translate-x-0"
         )}
       >
         {/* Logo */}
