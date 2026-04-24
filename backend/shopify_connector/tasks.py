@@ -152,11 +152,15 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
     Fetch orders from Shopify REST Admin API and process any that are missing locally.
 
     Uses the orders.json endpoint with date filtering to catch missed webhooks.
-    Each order is processed through process_order_paid() which handles idempotency
-    via the unique (company, shopify_order_id) constraint.
+    Orders are routed by financial_status / cancelled_at:
+      - paid / authorized / partially_paid -> process_order_paid (books invoice)
+      - pending                             -> process_order_pending (metadata only)
+      - cancelled (with cancelled_at set)   -> process_order_cancelled
+      - anything else                       -> skipped
+
+    All downstream handlers are idempotent.
     """
-    from .commands import process_order_paid
-    from .models import ShopifyOrder
+    from .commands import process_order_cancelled, process_order_paid, process_order_pending
 
     if not store.access_token:
         return {"status": "error", "error": "No access token"}
@@ -173,7 +177,6 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
     page_url = f"https://{store.shop_domain}/admin/api/2025-01/orders.json"
     params = {
         "status": "any",
-        "financial_status": "paid",
         "created_at_min": created_at_min,
         "created_at_max": created_at_max,
         "limit": 250,
@@ -201,16 +204,22 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
             if not shopify_order_id:
                 continue
 
+            # Route to the right handler based on current order state.
+            handler = _pick_order_handler(
+                order_payload,
+                process_order_paid,
+                process_order_pending,
+                process_order_cancelled,
+            )
+            if handler is None:
+                skipped += 1
+                continue
+
             # Process each order in its own savepoint so one failure
             # doesn't break the entire batch
             try:
                 with transaction.atomic():
-                    # Quick check: skip if already exists
-                    if ShopifyOrder.objects.filter(company=store.company, shopify_order_id=shopify_order_id).exists():
-                        skipped += 1
-                        continue
-
-                    result = process_order_paid(store, order_payload)
+                    result = handler(store, order_payload)
                     if result.success:
                         if result.data and result.data.get("skipped"):
                             skipped += 1
@@ -250,6 +259,23 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
         "skipped": skipped,
         "errors": errors,
     }
+
+
+def _pick_order_handler(order_payload, paid_handler, pending_handler, cancelled_handler):
+    """
+    Decide which handler to call for a Shopify order based on its state.
+
+    Returns None for orders we deliberately skip (e.g. voided / refunded-only).
+    """
+    if order_payload.get("cancelled_at"):
+        return cancelled_handler
+
+    financial_status = (order_payload.get("financial_status") or "").lower()
+    if financial_status in ("paid", "authorized", "partially_paid"):
+        return paid_handler
+    if financial_status == "pending":
+        return pending_handler
+    return None
 
 
 def _get_next_page_url(response) -> str | None:

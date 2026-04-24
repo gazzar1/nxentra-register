@@ -139,7 +139,9 @@ class ShopifyOrder(models.Model):
 
     class Status(models.TextChoices):
         RECEIVED = "RECEIVED", "Received"
+        PENDING_CAPTURE = "PENDING_CAPTURE", "Pending Capture"
         PROCESSED = "PROCESSED", "Processed"
+        CANCELLED = "CANCELLED", "Cancelled"
         ERROR = "ERROR", "Error"
 
     company = models.ForeignKey(

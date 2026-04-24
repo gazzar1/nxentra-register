@@ -56,7 +56,9 @@ SHOPIFY_APP_URL = getattr(settings, "SHOPIFY_APP_URL", "")
 
 # Required webhooks to register
 SHOPIFY_WEBHOOK_TOPICS = [
+    "orders/create",
     "orders/paid",
+    "orders/cancelled",
     "refunds/create",
     "fulfillments/create",
     "disputes/create",
@@ -341,12 +343,15 @@ def _process_order_paid_inner(store: ShopifyStore, payload: dict) -> CommandResu
     if not shopify_order_id:
         return CommandResult.fail("Missing order ID in payload.")
 
-    # Idempotency: skip if already processed
-    if ShopifyOrder.objects.filter(
+    # Idempotency: skip if a record already exists AND has been posted to
+    # accounting (event emitted). A PENDING_CAPTURE metadata stub from
+    # orders/create is upgraded below rather than blocking processing.
+    existing_order = ShopifyOrder.objects.filter(
         company=store.company,
         shopify_order_id=shopify_order_id,
-    ).exists():
-        logger.info("Order %s already exists — skipping", shopify_order_id)
+    ).first()
+    if existing_order and existing_order.event_id:
+        logger.info("Order %s already processed — skipping", shopify_order_id)
         return CommandResult.ok(data={"skipped": True})
 
     # Parse order data
@@ -394,23 +399,34 @@ def _process_order_paid_inner(store: ShopifyStore, payload: dict) -> CommandResu
         total_shipping += Decimal(str(sl.get("price", "0")))
 
     with command_writes_allowed():
-        order = ShopifyOrder.objects.create(
-            company=store.company,
-            store=store,
-            shopify_order_id=shopify_order_id,
-            shopify_order_number=str(payload.get("order_number", "")),
-            shopify_order_name=payload.get("name", ""),
-            total_price=total_price,
-            subtotal_price=subtotal_price,
-            total_tax=total_tax,
-            total_discounts=total_discounts,
-            currency=currency,
-            financial_status=payload.get("financial_status", ""),
-            gateway=_extract_gateway(payload),
-            shopify_created_at=order_date_str or datetime.now().isoformat(),
-            order_date=order_date,
-            raw_payload=payload,
-        )
+        order_fields = {
+            "store": store,
+            "shopify_order_number": str(payload.get("order_number", "")),
+            "shopify_order_name": payload.get("name", ""),
+            "total_price": total_price,
+            "subtotal_price": subtotal_price,
+            "total_tax": total_tax,
+            "total_discounts": total_discounts,
+            "currency": currency,
+            "financial_status": payload.get("financial_status", ""),
+            "gateway": _extract_gateway(payload),
+            "shopify_created_at": order_date_str or datetime.now().isoformat(),
+            "order_date": order_date,
+            "raw_payload": payload,
+            "status": ShopifyOrder.Status.RECEIVED,
+        }
+        if existing_order:
+            # Upgrade a PENDING_CAPTURE stub from orders/create
+            for field, value in order_fields.items():
+                setattr(existing_order, field, value)
+            existing_order.save()
+            order = existing_order
+        else:
+            order = ShopifyOrder.objects.create(
+                company=store.company,
+                shopify_order_id=shopify_order_id,
+                **order_fields,
+            )
 
     # Build line items summary + auto-create Items for unknown SKUs
     line_items = []
@@ -552,6 +568,107 @@ def process_refund(store: ShopifyStore, payload: dict) -> CommandResult:
         refund.save(update_fields=["event_id"])
 
     return CommandResult.ok(data={"refund": refund, "event": event})
+
+
+@transaction.atomic
+def process_order_pending(store: ShopifyStore, payload: dict) -> CommandResult:
+    """
+    Process an orders/create webhook.
+
+    Captures the order as metadata-only (no SalesInvoice, no JE). The order
+    will be promoted by process_order_paid once Shopify marks it paid.
+
+    If the order is already paid at creation time (e.g. Paymob/PayPal where
+    payment clears before the webhook), route directly to process_order_paid.
+    """
+    shopify_order_id = payload.get("id")
+    if not shopify_order_id:
+        return CommandResult.fail("Missing order ID in payload.")
+
+    financial_status = (payload.get("financial_status") or "").lower()
+    if financial_status in ("paid", "authorized", "partially_paid"):
+        return process_order_paid(store, payload)
+
+    # Skip if we already have any record (idempotent — orders/create can fire twice)
+    if ShopifyOrder.objects.filter(
+        company=store.company,
+        shopify_order_id=shopify_order_id,
+    ).exists():
+        return CommandResult.ok(data={"skipped": True})
+
+    order_date_str = payload.get("created_at", "")
+    try:
+        order_date = datetime.fromisoformat(order_date_str.replace("Z", "+00:00")).date()
+    except (ValueError, AttributeError):
+        order_date = datetime.now().date()
+
+    total_price = Decimal(str(payload.get("total_price", "0")))
+    subtotal_price = Decimal(str(payload.get("subtotal_price", "0")))
+    total_tax = Decimal(str(payload.get("total_tax", "0")))
+    total_discounts = Decimal(str(payload.get("total_discounts", "0")))
+    currency = payload.get("currency", "USD")
+
+    with command_writes_allowed():
+        order = ShopifyOrder.objects.create(
+            company=store.company,
+            store=store,
+            shopify_order_id=shopify_order_id,
+            shopify_order_number=str(payload.get("order_number", "")),
+            shopify_order_name=payload.get("name", ""),
+            total_price=total_price,
+            subtotal_price=subtotal_price,
+            total_tax=total_tax,
+            total_discounts=total_discounts,
+            currency=currency,
+            financial_status=payload.get("financial_status", ""),
+            gateway=_extract_gateway(payload),
+            shopify_created_at=order_date_str or datetime.now().isoformat(),
+            order_date=order_date,
+            raw_payload=payload,
+            status=ShopifyOrder.Status.PENDING_CAPTURE,
+        )
+
+    return CommandResult.ok(data={"order": order, "captured_pending": True})
+
+
+@transaction.atomic
+def process_order_cancelled(store: ShopifyStore, payload: dict) -> CommandResult:
+    """
+    Process an orders/cancelled webhook.
+
+    For pending orders never posted to accounting, mark the local record
+    CANCELLED (no JE impact — nothing was booked).
+
+    For already-posted orders, Shopify will also fire refunds/create if the
+    cancellation included a refund; we let the existing refund handler do
+    the accounting reversal. Here we just update the local status for audit.
+    """
+    shopify_order_id = payload.get("id")
+    if not shopify_order_id:
+        return CommandResult.fail("Missing order ID in payload.")
+
+    order = ShopifyOrder.objects.filter(
+        company=store.company,
+        shopify_order_id=shopify_order_id,
+    ).first()
+    if not order:
+        return CommandResult.ok(data={"skipped": True, "reason": "not_captured"})
+
+    with command_writes_allowed():
+        if order.status == ShopifyOrder.Status.PENDING_CAPTURE:
+            order.status = ShopifyOrder.Status.CANCELLED
+            order.save(update_fields=["status"])
+            return CommandResult.ok(data={"order": order, "cancelled_pending": True})
+
+        # Order was already posted — just note the cancellation on the raw payload.
+        # The refund webhook (if any) handles the accounting reversal.
+        order.raw_payload = {**(order.raw_payload or {}), "cancelled_at": payload.get("cancelled_at")}
+        order.save(update_fields=["raw_payload"])
+        logger.info(
+            "Shopify order %s cancelled after posting — refund webhook will handle any reversal",
+            shopify_order_id,
+        )
+        return CommandResult.ok(data={"order": order, "cancelled_after_post": True})
 
 
 @transaction.atomic

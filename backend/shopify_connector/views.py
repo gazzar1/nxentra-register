@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 # OAuth Flow
 # =============================================================================
 
+
 class ShopifyInstallView(APIView):
     """
     POST /api/shopify/install/
@@ -40,6 +41,7 @@ class ShopifyInstallView(APIView):
 
     Returns the Shopify OAuth authorization URL for the merchant to visit.
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -70,6 +72,7 @@ class ShopifyCallbackView(APIView):
     Shopify redirects here after the merchant authorizes the app.
     Exchanges the code for an access token, then redirects to the frontend.
     """
+
     permission_classes = [AllowAny]
 
     def get(self, request):
@@ -100,9 +103,7 @@ class ShopifyCallbackView(APIView):
 
         if not result.success:
             # Redirect to frontend with error
-            return HttpResponseRedirect(
-                f"/shopify/settings?error={result.error}"
-            )
+            return HttpResponseRedirect(f"/shopify/settings?error={result.error}")
 
         # Redirect to frontend settings page on success
         return HttpResponseRedirect("/shopify/settings?connected=true")
@@ -112,6 +113,7 @@ class ShopifyCallbackView(APIView):
 # Webhook Receiver
 # =============================================================================
 
+
 @method_decorator(csrf_exempt, name="dispatch")
 class ShopifyWebhookView(APIView):
     """
@@ -120,6 +122,7 @@ class ShopifyWebhookView(APIView):
     Receives all Shopify webhooks. Verifies HMAC, routes by topic.
     No authentication (Shopify sends these directly).
     """
+
     permission_classes = [AllowAny]
     authentication_classes = []
 
@@ -169,7 +172,9 @@ class ShopifyWebhookView(APIView):
 
         # Route by topic
         handler = {
+            "orders/create": commands.process_order_pending,
             "orders/paid": commands.process_order_paid,
+            "orders/cancelled": commands.process_order_cancelled,
             "refunds/create": commands.process_refund,
             "fulfillments/create": commands.process_fulfillment,
             "disputes/create": commands.process_dispute,
@@ -185,12 +190,15 @@ class ShopifyWebhookView(APIView):
                 if not result.success:
                     logger.error(
                         "Shopify webhook %s failed for %s: %s",
-                        topic, shop_domain, result.error,
+                        topic,
+                        shop_domain,
+                        result.error,
                     )
             except Exception:
                 logger.exception(
                     "Error processing Shopify webhook %s for %s",
-                    topic, shop_domain,
+                    topic,
+                    shop_domain,
                 )
         else:
             logger.info("Unhandled Shopify webhook topic: %s", topic)
@@ -203,12 +211,14 @@ class ShopifyWebhookView(APIView):
 # Store Management API
 # =============================================================================
 
+
 class ShopifyStoreView(APIView):
     """
     GET /api/shopify/store/
     Returns connected store(s) for the current company.
     Supports ?store_id=<public_id> for a specific store.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -219,7 +229,8 @@ class ShopifyStoreView(APIView):
         if store_id:
             try:
                 store = ShopifyStore.objects.get(
-                    company=actor.company, public_id=store_id,
+                    company=actor.company,
+                    public_id=store_id,
                 )
                 return Response(ShopifyStoreSerializer(store).data)
             except ShopifyStore.DoesNotExist:
@@ -231,10 +242,12 @@ class ShopifyStoreView(APIView):
         stores = ShopifyStore.objects.filter(company=actor.company)
         if not stores.exists():
             return Response({"connected": False, "stores": []}, status=status.HTTP_200_OK)
-        return Response({
-            "connected": True,
-            "stores": ShopifyStoreSerializer(stores, many=True).data,
-        })
+        return Response(
+            {
+                "connected": True,
+                "stores": ShopifyStoreSerializer(stores, many=True).data,
+            }
+        )
 
 
 class ShopifyRegisterWebhooksView(APIView):
@@ -242,6 +255,7 @@ class ShopifyRegisterWebhooksView(APIView):
     POST /api/shopify/register-webhooks/
     Registers webhooks with Shopify for the connected store.
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -251,12 +265,17 @@ class ShopifyRegisterWebhooksView(APIView):
         try:
             if store_id:
                 store = ShopifyStore.objects.get(
-                    company=actor.company, public_id=store_id,
+                    company=actor.company,
+                    public_id=store_id,
                 )
             else:
-                store = ShopifyStore.objects.filter(
-                    company=actor.company,
-                ).exclude(status=ShopifyStore.Status.DISCONNECTED).first()
+                store = (
+                    ShopifyStore.objects.filter(
+                        company=actor.company,
+                    )
+                    .exclude(status=ShopifyStore.Status.DISCONNECTED)
+                    .first()
+                )
                 if not store:
                     raise ShopifyStore.DoesNotExist
         except ShopifyStore.DoesNotExist:
@@ -272,11 +291,13 @@ class ShopifyRegisterWebhooksView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response({
-            "registered": result.data.get("registered", []),
-            "errors": result.data.get("errors", []),
-            "webhooks_registered": store.webhooks_registered,
-        })
+        return Response(
+            {
+                "registered": result.data.get("registered", []),
+                "errors": result.data.get("errors", []),
+                "webhooks_registered": store.webhooks_registered,
+            }
+        )
 
 
 class ShopifyDisconnectView(APIView):
@@ -284,6 +305,7 @@ class ShopifyDisconnectView(APIView):
     POST /api/shopify/disconnect/
     Disconnects the Shopify store.
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -302,6 +324,7 @@ class ShopifySyncPayoutsView(APIView):
     POST /api/shopify/sync-payouts/
     Fetches recent payouts from Shopify Payments and creates settlement events.
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -326,10 +349,12 @@ class ShopifySyncPayoutsView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response({
-            "created": result.data.get("created", 0),
-            "skipped": result.data.get("skipped", 0),
-        })
+        return Response(
+            {
+                "created": result.data.get("created", 0),
+                "skipped": result.data.get("skipped", 0),
+            }
+        )
 
 
 class ShopifySyncProductsView(APIView):
@@ -337,6 +362,7 @@ class ShopifySyncProductsView(APIView):
     POST /api/shopify/sync-products/
     Pull products from Shopify and create/link Nxentra Items.
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -377,6 +403,7 @@ class ShopifyResyncOrdersView(APIView):
     Re-sync missed orders by polling the Shopify Orders API.
     Catches webhooks that were missed due to downtime.
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -414,6 +441,7 @@ class ShopifyOrdersView(APIView):
     GET /api/shopify/orders/
     List Shopify orders for the current company.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -448,6 +476,7 @@ class ShopifyAccountMappingView(APIView):
     GET /api/shopify/account-mapping/
     PUT /api/shopify/account-mapping/
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -458,12 +487,14 @@ class ShopifyAccountMappingView(APIView):
         result = []
         for role in ACCOUNT_ROLES:
             account = mapping.get(role)
-            result.append({
-                "role": role,
-                "account_id": account.id if account else None,
-                "account_code": account.code if account else "",
-                "account_name": account.name if account else "",
-            })
+            result.append(
+                {
+                    "role": role,
+                    "account_id": account.id if account else None,
+                    "account_code": account.code if account else "",
+                    "account_name": account.name if account else "",
+                }
+            )
         return Response(result)
 
     def put(self, request):
@@ -489,7 +520,8 @@ class ShopifyAccountMappingView(APIView):
                 if account_id:
                     try:
                         account = Account.objects.get(
-                            company=actor.company, pk=account_id,
+                            company=actor.company,
+                            pk=account_id,
                         )
                     except Account.DoesNotExist:
                         return Response(
@@ -542,10 +574,10 @@ class ShopifyPayoutTransactionsView(APIView):
         actor = resolve_actor(request)
         require(actor, "reports.view")
 
-
         try:
             payout = ShopifyPayout.objects.get(
-                company=actor.company, shopify_payout_id=payout_id,
+                company=actor.company,
+                shopify_payout_id=payout_id,
             )
         except ShopifyPayout.DoesNotExist:
             return Response(
@@ -556,36 +588,39 @@ class ShopifyPayoutTransactionsView(APIView):
         transactions = payout.transactions.all().order_by("-processed_at")
         # Compute variance for each transaction
         from .reconciliation import _match_transaction
+
         data = []
         for t in transactions:
             match = _match_transaction(actor.company, t)
-            data.append({
-                "id": t.id,
-                "shopify_transaction_id": t.shopify_transaction_id,
-                "transaction_type": t.transaction_type,
-                "amount": str(t.amount),
-                "fee": str(t.fee),
-                "net": str(t.net),
-                "currency": t.currency,
-                "source_order_id": t.source_order_id,
-                "source_type": t.source_type,
-                "verified": t.verified,
-                "local_order_name": (
-                    t.local_order.shopify_order_name if t.local_order else None
-                ),
-                "matched": match.matched,
-                "matched_to": match.matched_to,
-                "variance": str(match.variance),
-                "processed_at": t.processed_at.isoformat() if t.processed_at else None,
-            })
-        return Response({
-            "payout_id": payout.shopify_payout_id,
-            "payout_net": str(payout.net_amount),
-            "payout_fees": str(payout.fees),
-            "payout_gross": str(payout.gross_amount),
-            "transactions": data,
-            "count": len(data),
-        })
+            data.append(
+                {
+                    "id": t.id,
+                    "shopify_transaction_id": t.shopify_transaction_id,
+                    "transaction_type": t.transaction_type,
+                    "amount": str(t.amount),
+                    "fee": str(t.fee),
+                    "net": str(t.net),
+                    "currency": t.currency,
+                    "source_order_id": t.source_order_id,
+                    "source_type": t.source_type,
+                    "verified": t.verified,
+                    "local_order_name": (t.local_order.shopify_order_name if t.local_order else None),
+                    "matched": match.matched,
+                    "matched_to": match.matched_to,
+                    "variance": str(match.variance),
+                    "processed_at": t.processed_at.isoformat() if t.processed_at else None,
+                }
+            )
+        return Response(
+            {
+                "payout_id": payout.shopify_payout_id,
+                "payout_net": str(payout.net_amount),
+                "payout_fees": str(payout.fees),
+                "payout_gross": str(payout.gross_amount),
+                "transactions": data,
+                "count": len(data),
+            }
+        )
 
 
 class ShopifyClearingBalanceView(APIView):
@@ -598,6 +633,7 @@ class ShopifyClearingBalanceView(APIView):
         require(actor, "reports.view")
 
         from .management.commands.check_clearing_balance import compute_clearing_balance
+
         data = compute_clearing_balance(actor.company)
 
         if data is None:
@@ -613,6 +649,7 @@ class ShopifyClearingBalanceView(APIView):
 # Payout Reconciliation
 # =============================================================================
 
+
 class ShopifyReconciliationSummaryView(APIView):
     """
     GET /api/shopify/reconciliation/
@@ -623,6 +660,7 @@ class ShopifyReconciliationSummaryView(APIView):
         date_to (required): YYYY-MM-DD
         store_id: optional store public_id to filter
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -655,7 +693,8 @@ class ShopifyReconciliationSummaryView(APIView):
         store_id = request.query_params.get("store_id")
         if store_id:
             store = ShopifyStore.objects.filter(
-                company=actor.company, public_id=store_id,
+                company=actor.company,
+                public_id=store_id,
             ).first()
 
         summary = reconciliation_summary(actor.company, date_from, date_to, store)
@@ -667,6 +706,7 @@ class ShopifyPayoutReconciliationView(APIView):
     GET /api/shopify/reconciliation/<payout_id>/
     Returns detailed reconciliation for a single payout.
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request, payout_id):
@@ -678,7 +718,8 @@ class ShopifyPayoutReconciliationView(APIView):
 
         try:
             payout = ShopifyPayout.objects.get(
-                company=actor.company, shopify_payout_id=payout_id,
+                company=actor.company,
+                shopify_payout_id=payout_id,
             )
         except ShopifyPayout.DoesNotExist:
             return Response(
@@ -699,6 +740,7 @@ class ShopifyPayoutsListView(APIView):
         page: page number (default 1)
         status: filter by recon status (verified|discrepancy|unverified|no_transactions)
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -709,15 +751,19 @@ class ShopifyPayoutsListView(APIView):
         actor = resolve_actor(request)
         require(actor, "reports.view")
 
-        payouts = ShopifyPayout.objects.filter(
-            company=actor.company,
-        ).select_related("store").order_by("-payout_date")
+        payouts = (
+            ShopifyPayout.objects.filter(
+                company=actor.company,
+            )
+            .select_related("store")
+            .order_by("-payout_date")
+        )
 
         page = int(request.query_params.get("page", 1))
         page_size = 25
         offset = (page - 1) * page_size
         total = payouts.count()
-        payouts_page = payouts[offset:offset + page_size]
+        payouts_page = payouts[offset : offset + page_size]
 
         results = []
         for payout in payouts_page:
@@ -733,29 +779,33 @@ class ShopifyPayoutsListView(APIView):
                 recon = reconcile_payout(actor.company, payout)
                 recon_status = recon.status
 
-            results.append({
-                "shopify_payout_id": payout.shopify_payout_id,
-                "payout_date": str(payout.payout_date),
-                "gross_amount": str(payout.gross_amount),
-                "fees": str(payout.fees),
-                "net_amount": str(payout.net_amount),
-                "currency": payout.currency,
-                "shopify_status": payout.shopify_status,
-                "store_domain": payout.store.shop_domain,
-                "reconciliation_status": recon_status,
-                "transactions_total": txn_stats["total"],
-                "transactions_verified": txn_stats["verified"],
-                "journal_entry_id": str(payout.journal_entry_id) if payout.journal_entry_id else None,
-            })
+            results.append(
+                {
+                    "shopify_payout_id": payout.shopify_payout_id,
+                    "payout_date": str(payout.payout_date),
+                    "gross_amount": str(payout.gross_amount),
+                    "fees": str(payout.fees),
+                    "net_amount": str(payout.net_amount),
+                    "currency": payout.currency,
+                    "shopify_status": payout.shopify_status,
+                    "store_domain": payout.store.shop_domain,
+                    "reconciliation_status": recon_status,
+                    "transactions_total": txn_stats["total"],
+                    "transactions_verified": txn_stats["verified"],
+                    "journal_entry_id": str(payout.journal_entry_id) if payout.journal_entry_id else None,
+                }
+            )
 
         # Filter by recon status if requested
         status_filter = request.query_params.get("status")
         if status_filter:
             results = [r for r in results if r["reconciliation_status"] == status_filter]
 
-        return Response({
-            "results": results,
-            "total": total,
-            "page": page,
-            "page_size": page_size,
-        })
+        return Response(
+            {
+                "results": results,
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+            }
+        )
