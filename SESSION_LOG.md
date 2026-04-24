@@ -145,11 +145,106 @@ Cumulative record of work done across sessions. Updated after each session.
 
 ---
 
+## Session: April 22-24, 2026
+
+**Context:** First real Nxentra user acquired on 2026-04-22 — a Shopify merchant using Paymob, PayPal, and COD via Bosta. Most of his sales are COD. This session's scope: make the onboarding + import flow work correctly for his setup.
+
+### 1. Onboarding Wizard: Historical Order Import Step
+
+Added a new "Import Orders" step to the Shopify onboarding path (between `shopify` and `ready`). Three options:
+- **Import all historical orders** (default — recommended for low-volume merchants)
+- **Import from a specific date** (date picker defaults to fiscal year start)
+- **Start fresh — only sync new orders from today**
+
+The choice fires `sync_shopify_store_orders.delay(...)` on wizard completion, running the import as a background Celery task. A user-facing banner on the step explains that paid orders book immediately and pending COD orders are captured for visibility and post to accounting once paid.
+
+**Files:** `backend/accounts/{commands,serializers,views}.py`, `frontend/pages/onboarding/setup.tsx`, `frontend/services/onboarding.service.ts`. Commit `ea45c2f`.
+
+### 2. Phase 1 COD Visibility: Pending Order Capture
+
+The historical import previously hardcoded `financial_status=paid`, which would skip most of the first user's orders (COD via Bosta = `financial_status=pending` until delivered). Phase 1 addresses visibility without touching accounting policy:
+
+- **Removed** the `financial_status=paid` filter from `_sync_orders`. Orders are now routed by `financial_status` / `cancelled_at`:
+  - `paid` / `authorized` / `partially_paid` → `process_order_paid` (books SalesInvoice)
+  - `pending` → `process_order_pending` (new — metadata-only, no JE)
+  - `cancelled_at` set → `process_order_cancelled` (new)
+- **Added two webhook topics** to `SHOPIFY_WEBHOOK_TOPICS`: `orders/create` and `orders/cancelled`.
+- **Added two new ShopifyOrder.Status choices**: `PENDING_CAPTURE` and `CANCELLED`.
+- **Fixed `process_order_paid` idempotency** — now checks `event_id` instead of mere existence, so a PENDING_CAPTURE stub from `orders/create` is upgraded in-place when `orders/paid` fires later (the sequence real COD orders follow).
+
+Phase 2 (proper AR accrual at order time via a COD posting profile) was scoped but deferred to a separate ticket after the architecture proved deeper than expected (would require PostingProfile schema changes + ReceiptAllocation helper + credit note flow for cancellations).
+
+**Files:** `backend/shopify_connector/{commands,models,tasks,views}.py`, `backend/shopify_connector/migrations/0011_alter_shopifyorder_status.py`. Commit `400ed42`.
+
+### 3. Droplet Infrastructure
+
+Discovered the droplet was missing critical infrastructure for the new Celery-based import flow:
+
+- **No Celery worker was running** — pm2 had only `nxentra-web` and `nxentra-api`. Without a worker, `.delay()` just enqueued and nothing processed.
+- **Redis wasn't installed.**
+
+Installed and configured:
+- `apt install redis-server` + `systemctl enable --now redis-server`. Settings default to `redis://127.0.0.1:6379/0` when `REDIS_URL` env var is unset, so no config change needed.
+- Added `nxentra-celery` (worker) and `nxentra-celery-beat` (scheduler) to pm2, using the venv's Python as interpreter (pm2 kept defaulting to Node which broke with SyntaxError on the celery script). Final working form:
+  ```
+  pm2 start /var/www/nxentra_app/backend/venv/bin/celery \
+    --name nxentra-celery \
+    --cwd /var/www/nxentra_app/backend \
+    --interpreter /var/www/nxentra_app/backend/venv/bin/python \
+    -- -A nxentra_backend worker -l INFO
+  ```
+- Verified with `celery -A nxentra_backend inspect ping` → `celery@nxentra-app: OK | pong | 1 node online`. Tasks `shopify.sync_all_stores` and `shopify.sync_store_orders` registered correctly.
+- `pm2 save` persisted the config.
+
+### 4. Ghost Store Cleanup
+
+Two active ShopifyStore records existed from earlier testing (id=21 demo, id=18 ABB). Both Shopify dev stores were frozen/deleted on Shopify's side — `GET /admin/api/2025-01/shop.json` returned 404 on both. Webhook re-registration also failed with 404 on every topic. Marked both as `DISCONNECTED` locally so the first user connects into a clean state.
+
+### 5. Local DB State Note
+
+Local Windows dev DB (`nxentra` on localhost:5432) is stuck at migration 0008 with unapplied 0009 (unique_active_shop_domain) due to duplicate active shop_domain rows from old testing. Droplet DB is fine (at 0010, now 0011 after today). Not fixing local since user only works on the droplet.
+
+---
+
+## Files Created / Modified This Session
+
+| File | Purpose |
+|---|---|
+| `backend/shopify_connector/migrations/0011_alter_shopifyorder_status.py` | New PENDING_CAPTURE + CANCELLED status choices |
+| `backend/accounts/commands.py` | `complete_onboarding` now enqueues Shopify import based on user's choice |
+| `backend/accounts/serializers.py` | `import_mode` + `import_from_date` fields on onboarding input |
+| `backend/accounts/views.py` | OnboardingSetupView forwards new fields |
+| `backend/shopify_connector/commands.py` | `process_order_pending`, `process_order_cancelled`, idempotency fix on `process_order_paid`, new webhook topics |
+| `backend/shopify_connector/models.py` | Two new Status choices |
+| `backend/shopify_connector/tasks.py` | `_sync_orders` no longer filters paid-only; routes by financial_status |
+| `backend/shopify_connector/views.py` | Router wired for orders/create + orders/cancelled |
+| `frontend/pages/onboarding/setup.tsx` | StepHistoricalImport component + draft persistence |
+| `frontend/services/onboarding.service.ts` | Extended OnboardingSetupPayload type |
+
+## Commits This Session
+
+- `ea45c2f` — Add Shopify historical order import step to onboarding wizard
+- `400ed42` — Capture pending Shopify orders for COD visibility; book on payment
+
+---
+
 ## Pending Work (Next Session)
 
-1. **ABB currency/FX configuration** -- verify new orders convert correctly
-2. **Onboarding wizard: inventory opening balance** -- optional step after Shopify connect to recognize existing inventory on balance sheet
-3. **Refund restock via StockLedger** -- `_handle_refund_restock` still creates JEs directly in projection
-4. **Frontend: Platform Settlements page** -- show payouts, disputes, fees under Finance
-5. **Frontend rebuild on server** -- `npm run build` needed for error message updates
-6. **Test payout flow** -- verify PlatformSettlement created when Shopify sends a payout
+**Blockers before first user connects:**
+
+1. **Dry-run Phase 1 on a fresh Shopify dev store** — DEFERRED by user 2026-04-24. Before handing off to the first real user, verify end-to-end: (a) paid order books invoice, (b) pending COD lands as PENDING_CAPTURE with no JE, (c) pending→paid transition upgrades stub + books invoice, (d) cancel pending order flips to CANCELLED with no JE, (e) historical import via onboarding wizard works.
+2. **PaymentGateway mapping table** — architectural debt. Without this, Paymob, PayPal, and COD all hit the same GL bucket and are unreconcilable separately. Should be done before the first user imports real orders (re-posting after the fact is painful).
+
+**Next features:**
+
+3. **Phase 2: proper AR accrual on pending COD orders** — new `SHOPIFY_AR_COD` account + COD PostingProfile + `SHOPIFY_ORDER_PENDING` event that creates an unpaid invoice against AR-COD. `SHOPIFY_ORDER_PAID_FROM_PENDING` records a receipt-allocation clearing AR-COD. Cancellation via CreditNote. Needs full test matrix.
+4. **Bosta reconciliation** — CSV upload first (simple), API connector later. Matches Bosta payout records against AR-COD balance.
+5. **Pre-connection checklist doc for merchants** — short "what to prep in your Shopify admin before clicking Connect" guide.
+
+**Carried over from previous session:**
+
+6. **ABB currency/FX configuration** — verify new orders convert correctly (note: ABB store is now disconnected; may need to reconnect to test)
+7. **Onboarding wizard: inventory opening balance** — optional step after Shopify connect to recognize existing inventory on balance sheet
+8. **Refund restock via StockLedger** — `_handle_refund_restock` still creates JEs directly in projection
+9. **Frontend: Platform Settlements page** — show payouts, disputes, fees under Finance
+10. **Test payout flow** — verify PlatformSettlement created when Shopify sends a payout
