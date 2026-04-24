@@ -245,8 +245,8 @@ jobs:
           CSRF_TRUSTED_ORIGINS: "https://ci.nxentra.com"
         run: python manage.py check --deploy --fail-level WARNING
 
-      - name: Django migration check (no pending migrations)
-        run: python manage.py migrate --check --no-input
+      - name: Django migration check (no uncommitted model changes)
+        run: python manage.py makemigrations --check --dry-run
         env:
           DATABASE_URL: "sqlite:///ci_check.sqlite3"
 
