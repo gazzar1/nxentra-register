@@ -1,66 +1,111 @@
 # Next Tasks
 
-Strategic roadmap drafted 2026-04-25 following an architectural audit of Nxentra against the long-term vision of a cutting-edge event-sourced CQRS accounting truth engine with first-class API/MCP/AI surface and universal reconciliation.
+Strategic roadmap drafted 2026-04-25 and updated the same day after incorporating an independent architectural review. Follows the discipline in [ENGINEERING_PROTOCOL.md](ENGINEERING_PROTOCOL.md): finance work is event-first, projections are derived, auditability beats convenience, and every change type carries its required tests.
 
-Foundation assessment: **B+ / A-**. Hard parts (event sourcing, CQRS, write barriers, RLS, invariant tests) are genuinely strong. Gaps are on the surface layer: canonical models across connectors, generic reconciliation, agent-ready command surface, and extensibility tooling.
+**Foundation assessment:** **B+ / A-** on the accounting core, roughly **6/10** on the full integration-grade, AI/MCP-ready operating core. Hard parts (event sourcing primitives, CQRS, write barriers, RLS, invariant tests) are genuinely strong. Gaps are on the perimeter: ingestion resilience, schema evolution, module governance consistency outside accounting, CI-enforced invariants, and agent-ready command surface.
 
-The plan below is the path from "good Shopify accounting app" to "defensible accounting truth engine for commerce." Estimated 3-4 months focused work for Phases A-D; Phase E is ongoing.
+**Framing:** Nxentra is a canonical financial event and reconciliation engine. Shopify is the first proof. Every canonical abstraction must be justified by a real concrete integration need — not speculative.
+
+**Estimated budget:** Phases A-D ≈ 3-4 months focused work. Phase E is ongoing.
 
 ---
 
-## Phase A — First-user unblock (this week)
+## Phase A — First-user unblock + foundation hardening (this week to 2 weeks)
 
-Ship these before the first real user (acquired 2026-04-22) starts imports.
+Ship these before the first real user (acquired 2026-04-22) imports real orders, and before any large refactor.
+
+### A0. Invariant suites mandatory in CI on Postgres — **2-3d**
+Foundation before foundation. Fix the pytest/Django settings bootstrap issue (currently fails on CORS production guard in `settings.py:235`). Run `tests/test_truth_invariants.py` on a Postgres container in CI, not SQLite. Merge blocks on invariant failure.
+
+Until CI is green on Postgres invariants, the "truth engine" is not actually proven — it's just asserted.
 
 ### A1. Phase 1 dry-run on fresh Shopify dev store — **0.5d**
-Validate end-to-end with actual Shopify webhooks:
-- Paid order books invoice correctly
-- Pending COD order lands as `PENDING_CAPTURE`, no JE
-- Pending → paid transition upgrades stub and books invoice
-- Cancel pending order flips to `CANCELLED`, no JE
-- Historical import via onboarding wizard imports paid orders
+Validate end-to-end with actual Shopify webhooks: paid order books invoice; pending COD lands as `PENDING_CAPTURE` with no JE; pending→paid upgrades stub + books invoice; cancel pending flips to `CANCELLED`; historical import via wizard works.
 
-Exit: first user can connect without fear of books being wrong.
+Exit: first user can connect without fear of corrupted books.
 
 ### A2. PaymentGateway mapping (tactical slice) — **1d**
-Single table `PaymentGateway(source_code, clearing_account_id, display_name)`. Invoice posting reads it to route orders from different payment methods (Paymob, PayPal, Manual/COD) to per-gateway clearing accounts instead of a single bucket.
+Single table `PaymentGateway(source_code, clearing_account_id, display_name)`. Invoice posting reads it to route Paymob / PayPal / Manual (COD) to per-gateway clearing accounts.
 
-This is a small sliver of the Phase B canonical work — build it now because the alternative is re-posting every invoice later.
+Tactical precursor to Phase B canonical work — build now because the alternative is re-posting every invoice later.
 
-### A3. Extract 3 projection-emits-event cases to commands — **~3d total**
-Close the "documented exceptions" policy hole before more verticals cite the precedent:
-- `clinic/projections.py:320` (rent.due_posted → JE)
-- `shopify_connector/projections.py:1043` (payout settlement)
-- `projections/property.py:671` (property-specific event)
+### A3. Introduce Reactor concept; migrate 3 projection-emits-event cases — **~4-5d**
+**Reframed per review:** this isn't "move 3 files." It's introducing a distinct architectural concept — **reactors** (aka process managers) as separate from projections — because conflating them muddies CQRS and replay semantics.
 
-Tighten `FINANCE_EVENT_FIRST_POLICY.md` to "zero exceptions" afterward.
+- Create `reactors/` layer with a base class (or explicit registry) distinct from projections.
+- Move these three cases to reactors:
+  - `clinic/projections.py:320` (rent.due_posted → JE)
+  - `shopify_connector/projections.py:1043` (payout settlement)
+  - `projections/property.py:671` (property-specific event)
+- Document the rule: projections are **pure read-model builders**; reactors are event-to-command orchestrators with explicit idempotency + replay rules.
+- Update [FINANCE_EVENT_FIRST_POLICY.md](FINANCE_EVENT_FIRST_POLICY.md) with the reactor concept and drop "acceptable exceptions."
+
+### A4. Architecture tests — **1-2d**
+Small, tight rule set (5-10 rules max, all enforced):
+- No direct model mutation in `accounts/views.py`, `accounting/views.py`, `bank_connector/views.py`, `shopify_connector/views.py` — must route through a command.
+- No `emit_event` call inside a file under `projections/` — only from `commands/` or `reactors/`.
+- No `rls_bypass()` outside `accounts/rls.py`, `tests/`, or an explicit allowlist.
+- Every finance-impacting command must have an event test in its test file.
+
+Wire into the CI matrix. Start tight — tests that fail and get `# noqa`'d everywhere are worse than no tests.
+
+### A5. Bank connector + FX direct-writes cleanup — **3-5d**
+`bank_connector/views.py:71` and `:247` create and mutate operational records directly. `accounting/views.py:2097` writes exchange rates directly. These are the same pattern as A3 — extract to commands, emit events, update projection/balance flow.
+
+Run A3's reactor pattern across these after the base layer is in place.
+
+**Phase A exit criteria:**
+- CI green, invariants mandatory, architecture tests enforcing event-first discipline.
+- First user can import orders safely.
+- Zero projection-emits-event cases; zero direct-write cases in views.
+- Foundation is ready for the bigger refactor.
 
 ---
 
-## Phase B — Canonical platform models (4-6 weeks)
+## Phase B — Ingestion resilience + canonical platform models (5-7 weeks)
 
-**The lynchpin refactor.** Every feature above this layer becomes generic once done. Every new connector becomes a one-week job instead of two.
+The lynchpin refactor, split into two independent foundations (inbox + schema evolution) plus the canonical model migration that builds on them.
 
-### B1. Design + ADR — **2-3d**
-Canonical models: `PlatformOrder`, `PlatformPayment`, `PlatformRefund`, `PlatformSettlement`, `PlatformDispute`. Attribution via `source_type`, `source_id`, `raw_payload` JSONB. Write decision record.
+### B1. Ingest Inbox pattern — **1 week**
+Every external delivery (Shopify webhook, Stripe webhook, bank CSV row, Paymob notification) writes first to an immutable `IngestRecord`, keyed by `(provider, delivery_id, payload_hash)`. A worker normalizes + emits a canonical business event. Processing state (received / normalized / emitted / failed / poison) is explicit.
 
-Depends: Phase A complete (first user stable).
+Gains:
+- Resilience against double-delivery without breaking idempotency.
+- Replay without asking Shopify to redeliver.
+- Poison-message handling: bad payloads queue in a dead-letter state visible to operators.
+- Partial postings surface visibly (per [ENGINEERING_PROTOCOL.md](ENGINEERING_PROTOCOL.md) §2.4).
 
-### B2. Build canonical models + migrations — **3-5d**
-New app `commerce` (or extend `platform_connectors`). ORM, RLS, write barriers, indices, unit tests.
+Can be implemented with existing per-platform models — doesn't depend on canonical models. Do this first because it improves production resilience immediately.
 
-### B3. Migrate Shopify to canonical models — **2 weeks**
-Rewrite `process_order_paid/pending/cancelled`, `process_refund` commands to target canonical models. Projections consume canonical events. Use **shadow-write pattern**: write both old `ShopifyOrder` and new canonical rows for 1 week, then cutover + drop old tables. All Shopify tests updated.
+### B2. Schema evolution infrastructure — **1 week** (can parallel B1)
+Make `events.schema_version` real:
+- Upcaster registry: functions that transform old event payloads into current shape on read.
+- Versioned deserializer in `events/emitter.py` and projection event handlers.
+- CI compat test: fixture set of historical events per event type, replayed after every migration, asserting projections still converge to expected state.
 
-**Critical risk.** Plan a 2-hour off-peak cutover window with rollback script ready.
+Without this, you can't evolve event schemas without hazard. For a system meant to live years, this is non-negotiable.
 
-### B4. Migrate Stripe to canonical models — **3-5d**
+### B3. Canonical platform models — design + ADR — **2-3d**
+`PlatformOrder`, `PlatformPayment`, `PlatformRefund`, `PlatformSettlement`, `PlatformDispute`. Attribution via `source_type`, `source_id`, `raw_payload` JSONB. Decision record.
+
+### B4. Canonical platform models — build — **3-5d**
+Models, migrations, RLS, write barriers, indices, unit tests. New app `commerce` (or extend `platform_connectors`).
+
+### B5. Migrate Shopify to canonical models — **2 weeks**
+Rewrite `process_order_paid / pending / cancelled / refund` commands to target canonical models (via the inbox layer from B1). Projections consume canonical events. **Shadow-write for 1 week** (both `ShopifyOrder` + canonical rows), then cutover + drop. Plan a 2-hour off-peak cutover window with rollback script.
+
+All Shopify tests rewritten.
+
+### B6. Migrate Stripe to canonical models — **3-5d**
 Thin (Stripe connector is skeletal today).
 
-### B5. Build Paymob connector on canonical models — **1 week**
-Proof the pattern works with a real new integration. Webhook verification, canonical mapping, sandbox testing.
+### B7. Build Paymob connector on canonical models — **1 week**
+Proof the pattern works with a real new integration. Webhook verifier, canonical mapping, Paymob sandbox testing.
 
-**Exit criteria for Phase B:** adding Paymob required touching fewer than 5 files outside its own folder. That's the test of "not bitter."
+**Phase B exit criteria:**
+- Adding Paymob required touching fewer than 5 files outside its own folder. That's the "not bitter" test.
+- Inbox is the single ingestion gate. No more webhook-to-event directly.
+- Schema evolution: historical event fixtures replay green in CI.
 
 ---
 
@@ -68,86 +113,114 @@ Proof the pattern works with a real new integration. Webhook verification, canon
 
 Can parallel with Phase D.
 
-### C1. Design reconciliation contracts — **2-3d**
-`ReconciliationSource`, `Matcher` interfaces. `ReconciliationRun` model. Proposed-JE generator.
+### C1. Reconciliation contracts design — **2-3d**
+`ReconciliationSource`, `Matcher` interfaces. `ReconciliationRun` model. Proposed-JE generator via commands (not direct writes — per protocol §1.1).
 
 ### C2. Engine core — **1 week**
-Runner, three built-in matchers (exact, amount+date, fuzzy-confidence), unmatched report, proposed-JE creation via commands.
+Runner, three built-in matchers (exact, amount+date, fuzzy-confidence), unmatched report, proposed-JE creation.
 
-### C3. Three-way UI: Bank ↔ GL ↔ Platform(s) — **1 week**
+### C3. Three-way UI — Bank ↔ GL ↔ Platform(s) — **1 week**
 Single React view, all sides side-by-side, filter / match / unmatch / bulk actions.
 
-**Exit criteria:** from the UI, reconcile Bank CSV + Shopify payouts + Stripe payouts + Paymob payouts in a single view without any reconciliation code being platform-specific.
+**Phase C exit criteria:** from the UI, reconcile Bank CSV + Shopify payouts + Stripe payouts + Paymob payouts in a single view with zero platform-specific reconciliation code.
 
 ---
 
 ## Phase D — Agent-ready command surface (2-3 weeks, can parallel C)
 
-The goal isn't MCP itself — it's making commands self-describing. Once they are, every surface (OpenAPI, MCP, CLI, debug) becomes trivial.
+The trick isn't MCP — it's making commands self-describing. Once they are, every surface becomes trivial.
 
 ### D1. OpenAPI via drf-spectacular — **2-3d**
-Install, configure, annotate endpoints, expose at `/api/schema/` and `/api/docs/`. Unblocks external integrators.
+Install, configure, annotate endpoints, expose at `/api/schema/` and `/api/docs/`.
 
 ### D2. Declarative command schemas — **1-1.5 weeks**
-Pydantic or dataclass schemas for every command input + output. Pre-command validator. Permission declarations. Side-effect declarations. Command registry with reflection endpoint `/api/commands/`.
+Pydantic or dataclass schemas for every command's input + output. Pre-command validator. Permission + side-effect declarations. Command registry with reflection endpoint `/api/commands/`.
 
 ### D3. MCP server wrapping command registry — **3-5d**
-Safety envelope: dry-run mode, permission checks, allowlist. Read-only operations first, write operations opt-in.
+Safety envelope: dry-run, permission checks, allowlist. Read-only first, write opt-in.
 
-**Exit criteria:** an LLM agent can discover available commands, preview their effect, and execute them — all schema-validated, all audit-logged.
+**Phase D exit criteria:** an LLM agent discovers commands, previews effects, executes — all schema-validated, all audit-logged.
 
 ---
 
-## Phase E — Proliferation (ongoing, after A-D)
+## Phase E — Proliferation + durability (ongoing, after A-D)
 
 | # | Ticket | Estimate |
 |---|---|---|
 | E1 | Connector scaffolder (`manage.py new_connector`) | 2-3d |
 | E2 | Connector contract doc + vertical module guide | 2d |
 | E3 | Bosta connector (CSV first, API later) | 2d CSV / 1wk API |
-| E4 | Inventory Opening Balance step in onboarding wizard (pull stock + costs from Shopify, post OB JE) | 3-5d |
+| E4 | Inventory Opening Balance step in onboarding wizard | 3-5d |
 | E5 | Platform Settlements page under Finance (unified payouts / disputes / fees UI) | 1 week |
-| E6 | Concurrent-write / deadlock tests | 3-5d |
+| E6 | Concurrent-write / deadlock / Postgres isolation-level tests | 3-5d |
 | E7 | Cross-source reconciliation edge-case tests | 3-5d |
 | E8 | Restock handler via StockLedger (move `_handle_refund_restock` out of projection into command) | 2-3d |
+| E9 | Snapshotting infrastructure for long-lived aggregates | 1-2 weeks (trigger: when aggregates exceed ~1k events) |
+| E10 | Tenant backup/restore integrity tests | 3-5d |
+
+---
+
+## Watch items (monitor, don't build yet)
+
+Things the review flagged as real concerns but not blocking today. Set a threshold and revisit when crossed.
+
+- **Event-write throughput bottleneck.** `BusinessEvent.save()` serializes per-company via `select_for_update()` on `CompanyEventCounter` (`events/models.py:356`). Correctness-first, but caps write throughput at ~1 TX per company per round-trip. **Revisit when:** >20 merchants live OR >10k events/day/company OR multi-agent AI writing commands in parallel. Likely fix: sharded counters, partitioned event tables, or move sequencing to append-only log with periodic consistency checks.
+- **Projection orchestration is coarse-grained** (`projections/tasks.py:65` loops every projection per company). Wasted work at scale. **Revisit when:** projection count >20 per company OR projection-lag alerts fire regularly. Likely fix: event-type-to-projection routing table, targeted dispatch.
+- **SQLite test DB in git** (`backend/test_db.sqlite3`). Minor Postgres-divergence risk. Acceptable but remove once CI runs on Postgres (A0).
 
 ---
 
 ## Critical path and parallelism
 
 ```
-A1 ─┐
-A2 ─┼──► B1 ──► B2 ──► B3 ──► B4 ──► B5 ──► C1 ─► C2 ─► C3
-A3 ─┘                                                 ║
-                                                      ╚═► E1, E2, E3
+A0 (CI/invariants) ─┐
+A1 (dry-run)        ─┤
+A2 (PaymentGateway) ─┼─► A3 (reactors) ─► A5 (bank/FX cleanup) ─┐
+A4 (arch tests)     ─┘                                          │
+                                                                 ▼
+                    B1 (inbox)    ──────────────────┐
+                    B2 (schema evo, parallel B1) ───┤
+                                                    ▼
+                    B3 (canonical design) ─► B4 (build) ─► B5 (Shopify) ─► B6 (Stripe) ─► B7 (Paymob)
+                                                                                              │
+                                                                                              ▼
+                                                                       C1 ─► C2 ─► C3 (reconciliation UI)
+                                                                                              │
+                                                                                              ▼
+                                                                                        E1, E2, E3 …
 
-                                    D1 ─► D2 ─► D3   (can start at B2, runs in parallel)
+                    D1 ─► D2 ─► D3 (can start at B4, run parallel to B-tail and C)
 ```
 
-**Longest pole:** B3 (Shopify-to-canonical migration). Everything downstream waits on this.
+**Longest pole:** B5 (Shopify-to-canonical migration). Everything downstream waits.
 
 ---
 
-## Decision points (revisit before starting Phase B)
+## Decision points (revisit before Phase B starts)
 
-1. **Paymob timing.** If the first user needs Paymob within 2-3 months, consider a throwaway Paymob integration in Phase A that gets rewritten in B5.
-2. **Phase C vs D ordering.** Investor/demo pressure → flip to D first. Operational correctness pressure → keep current order.
-3. **Shadow-write vs clean cutover for B3.** Shadow-write is safer but doubles write load briefly. Clean cutover is faster but riskier.
+1. **Paymob timing.** If the first user needs Paymob within 2-3 months, consider a throwaway Paymob integration in Phase A that gets rewritten in B7.
+2. **Phase C vs D ordering.** Investor/demo pressure → D first. Operational correctness → keep current order.
+3. **Shadow-write vs clean cutover for B5.** Shadow-write safer, doubles write load briefly. Clean cutover faster, riskier if anything slips.
+4. **Inbox scope in B1.** Minimal (write raw + normalize + emit), or full (retries + DLQ + operator UI)? I'd ship minimal first, add operator UI in Phase E if real incidents demand it.
 
 ---
 
 ## What to do right now, today
 
-Nothing from Phases B-E yet. Finish Phase A (dry-run + first-user support + payment gateway mapping), get 2-3 weeks of real production feedback, *then* start Phase B informed by one real user's actual pain points rather than hypothetical future connectors.
+Phase A in its entirety. Specifically:
+- **A0 first** — invariant tests in CI on Postgres. Until this exists, no further refactor is safe.
+- **A1 + A2** in parallel (small).
+- **A3 + A4 + A5** in sequence after A0 lands.
 
-Premature refactoring is worse than refactoring informed by production reality.
+**Do not start Phase B** until all of Phase A is merged and green. Phase B on an unverified foundation is where accounting systems die.
 
 ---
 
 ## References
 
-- Session history and context: [SESSION_LOG.md](SESSION_LOG.md)
-- Event sourcing policy: [FINANCE_EVENT_FIRST_POLICY.md](FINANCE_EVENT_FIRST_POLICY.md)
-- Engineering protocol: [ENGINEERING_PROTOCOL.md](ENGINEERING_PROTOCOL.md)
-- Data ownership: [SHOPIFY_DATA_OWNERSHIP.md](SHOPIFY_DATA_OWNERSHIP.md)
-- Architecture map: [NXENTRA_SYSTEM_MAP.md](NXENTRA_SYSTEM_MAP.md)
+- [SESSION_LOG.md](SESSION_LOG.md) — cumulative session history and context
+- [ENGINEERING_PROTOCOL.md](ENGINEERING_PROTOCOL.md) — change discipline, test requirements, incident protocol
+- [FINANCE_EVENT_FIRST_POLICY.md](FINANCE_EVENT_FIRST_POLICY.md) — event-first policy; update after A3 lands
+- [SHOPIFY_DATA_OWNERSHIP.md](SHOPIFY_DATA_OWNERSHIP.md) — authority boundaries with external systems
+- [NXENTRA_SYSTEM_MAP.md](NXENTRA_SYSTEM_MAP.md) — architecture map
+- `backend/core-assurance-baseline.md` — referenced by external reviewer; items in §76-78 inform Phase A scope
