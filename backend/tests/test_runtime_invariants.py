@@ -34,6 +34,7 @@ from projections.models import AccountBalance, ProjectionAppliedEvent
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _emit_posted(company, user, lines, memo="Runtime test", entry_id=None):
     """Emit a JOURNAL_ENTRY_POSTED event."""
     entry_id = entry_id or uuid4()
@@ -97,6 +98,7 @@ def _is_sqlite():
 # INVARIANT 1: Concurrent posting
 # ═════════════════════════════════════════════════════════════════════════════
 
+
 @pytest.mark.django_db(transaction=True)
 class TestConcurrentPosting:
     """
@@ -109,23 +111,24 @@ class TestConcurrentPosting:
     Skipped on SQLite because it serializes all writes.
     """
 
-    @pytest.mark.skipif(
-        _is_sqlite(),
-        reason="SQLite serializes writes; concurrency test requires Postgres"
-    )
-    def test_concurrent_posts_preserve_correctness(
-        self, company, user, owner_membership
-    ):
+    @pytest.mark.skipif(_is_sqlite(), reason="SQLite serializes writes; concurrency test requires Postgres")
+    def test_concurrent_posts_preserve_correctness(self, company, user, owner_membership):
         # Create accounts
         cash = Account.objects.create(
-            public_id=uuid4(), company=company, code="1001",
-            name="Cash", account_type=Account.AccountType.ASSET,
+            public_id=uuid4(),
+            company=company,
+            code="1001",
+            name="Cash",
+            account_type=Account.AccountType.ASSET,
             normal_balance=Account.NormalBalance.DEBIT,
             status=Account.Status.ACTIVE,
         )
         revenue = Account.objects.create(
-            public_id=uuid4(), company=company, code="4001",
-            name="Revenue", account_type=Account.AccountType.REVENUE,
+            public_id=uuid4(),
+            company=company,
+            code="4001",
+            name="Revenue",
+            account_type=Account.AccountType.REVENUE,
             normal_balance=Account.NormalBalance.CREDIT,
             status=Account.Status.ACTIVE,
         )
@@ -138,6 +141,7 @@ class TestConcurrentPosting:
             """Post a single entry in its own thread."""
             try:
                 from django.db import connection as thread_conn
+
                 entry_id = uuid4()
                 emit_event(
                     company=company,
@@ -195,9 +199,7 @@ class TestConcurrentPosting:
             company=company,
             event_type=EventTypes.JOURNAL_ENTRY_POSTED,
         ).count()
-        assert event_count == num_entries, (
-            f"Expected {num_entries} events, got {event_count}"
-        )
+        assert event_count == num_entries, f"Expected {num_entries} events, got {event_count}"
 
         # Verify no sequence gaps
         sequences = list(
@@ -206,9 +208,7 @@ class TestConcurrentPosting:
             .values_list("company_sequence", flat=True)
         )
         for i in range(1, len(sequences)):
-            assert sequences[i] == sequences[i - 1] + 1, (
-                f"Sequence gap: {sequences[i - 1]} -> {sequences[i]}"
-            )
+            assert sequences[i] == sequences[i - 1] + 1, f"Sequence gap: {sequences[i - 1]} -> {sequences[i]}"
 
         # Process projections and verify
         projection = AccountBalanceProjection()
@@ -233,6 +233,7 @@ class TestConcurrentPosting:
 # INVARIANT 2: Projection crash recovery
 # ═════════════════════════════════════════════════════════════════════════════
 
+
 @pytest.mark.django_db
 class TestProjectionCrashRecovery:
     """
@@ -251,10 +252,15 @@ class TestProjectionCrashRecovery:
     ):
         # Emit 5 events
         for i in range(5):
-            _emit_posted(company, user, [
-                _line(cash_account, debit=f"{100 + i * 10}.00", line_no=1),
-                _line(revenue_account, credit=f"{100 + i * 10}.00", line_no=2),
-            ], memo=f"Crash recovery entry {i}")
+            _emit_posted(
+                company,
+                user,
+                [
+                    _line(cash_account, debit=f"{100 + i * 10}.00", line_no=1),
+                    _line(revenue_account, credit=f"{100 + i * 10}.00", line_no=2),
+                ],
+                memo=f"Crash recovery entry {i}",
+            )
 
         projection = AccountBalanceProjection()
 
@@ -275,12 +281,8 @@ class TestProjectionCrashRecovery:
         # but leave ProjectionAppliedEvent records intact (as they would be
         # in a real crash where the transaction committed but the process died
         # before processing more events)
-        bookmark = EventBookmark.objects.get(
-            consumer_name="account_balance", company=company
-        )
-        first_event = BusinessEvent.objects.filter(
-            company=company
-        ).order_by("company_sequence").first()
+        bookmark = EventBookmark.objects.get(consumer_name="account_balance", company=company)
+        first_event = BusinessEvent.objects.filter(company=company).order_by("company_sequence").first()
 
         # Set bookmark back to first event (simulating partial progress loss)
         bookmark.last_event = first_event
@@ -299,27 +301,28 @@ class TestProjectionCrashRecovery:
         # Verify final state
         expected_debit = sum(Decimal(f"{100 + i * 10}.00") for i in range(5))
         cash_bal = AccountBalance.objects.get(company=company, account=cash_account)
-        assert cash_bal.debit_total == expected_debit, (
-            f"Expected {expected_debit}, got {cash_bal.debit_total}"
-        )
+        assert cash_bal.debit_total == expected_debit, f"Expected {expected_debit}, got {cash_bal.debit_total}"
 
         tb = projection.get_trial_balance(company)
         assert tb["is_balanced"]
 
-    def test_bookmark_error_state_clears_on_successful_processing(
-        self, company, user, cash_account, revenue_account
-    ):
+    def test_bookmark_error_state_clears_on_successful_processing(self, company, user, cash_account, revenue_account):
         """After a crash that left error_count > 0, successful processing resets it."""
-        _emit_posted(company, user, [
-            _line(cash_account, debit="500.00", line_no=1),
-            _line(revenue_account, credit="500.00", line_no=2),
-        ])
+        _emit_posted(
+            company,
+            user,
+            [
+                _line(cash_account, debit="500.00", line_no=1),
+                _line(revenue_account, credit="500.00", line_no=2),
+            ],
+        )
 
         projection = AccountBalanceProjection()
 
         # Manually create a bookmark with error state
         bookmark, _ = EventBookmark.objects.get_or_create(
-            consumer_name="account_balance", company=company,
+            consumer_name="account_balance",
+            company=company,
         )
         bookmark.error_count = 3
         bookmark.last_error = "Simulated crash error"
@@ -329,15 +332,14 @@ class TestProjectionCrashRecovery:
         projection.process_pending(company)
 
         bookmark.refresh_from_db()
-        assert bookmark.error_count == 0, (
-            f"Error count should be 0 after success, got {bookmark.error_count}"
-        )
+        assert bookmark.error_count == 0, f"Error count should be 0 after success, got {bookmark.error_count}"
         assert bookmark.last_error == ""
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 # INVARIANT 3: Out-of-order event replay via rebuild
 # ═════════════════════════════════════════════════════════════════════════════
+
 
 @pytest.mark.django_db
 class TestOutOfOrderReplay:
@@ -361,35 +363,60 @@ class TestOutOfOrderReplay:
         # (possible if events from different systems arrive out of order)
 
         # Event 1: First sale
-        _emit_posted(company, user, [
-            _line(cash_account, debit="1000.00", line_no=1),
-            _line(revenue_account, credit="1000.00", line_no=2),
-        ], memo="First sale")
+        _emit_posted(
+            company,
+            user,
+            [
+                _line(cash_account, debit="1000.00", line_no=1),
+                _line(revenue_account, credit="1000.00", line_no=2),
+            ],
+            memo="First sale",
+        )
 
         # Event 2: Expense (unrelated)
-        _emit_posted(company, user, [
-            _line(expense_account, debit="200.00", line_no=1),
-            _line(cash_account, credit="200.00", line_no=2),
-        ], memo="Expense payment")
+        _emit_posted(
+            company,
+            user,
+            [
+                _line(expense_account, debit="200.00", line_no=1),
+                _line(cash_account, credit="200.00", line_no=2),
+            ],
+            memo="Expense payment",
+        )
 
         # Event 3: Refund against first sale
-        _emit_posted(company, user, [
-            _line(revenue_account, debit="300.00", line_no=1),
-            _line(cash_account, credit="300.00", line_no=2),
-        ], memo="Refund")
+        _emit_posted(
+            company,
+            user,
+            [
+                _line(revenue_account, debit="300.00", line_no=1),
+                _line(cash_account, credit="300.00", line_no=2),
+            ],
+            memo="Refund",
+        )
 
         # Event 4: Second sale
-        _emit_posted(company, user, [
-            _line(cash_account, debit="500.00", line_no=1),
-            _line(revenue_account, credit="500.00", line_no=2),
-        ], memo="Second sale")
+        _emit_posted(
+            company,
+            user,
+            [
+                _line(cash_account, debit="500.00", line_no=1),
+                _line(revenue_account, credit="500.00", line_no=2),
+            ],
+            memo="Second sale",
+        )
 
         # Event 5: Multi-line to same account
-        _emit_posted(company, user, [
-            _line(expense_account, debit="150.00", line_no=1),
-            _line(expense_account, debit="50.00", line_no=2),
-            _line(cash_account, credit="200.00", line_no=3),
-        ], memo="Split expense")
+        _emit_posted(
+            company,
+            user,
+            [
+                _line(expense_account, debit="150.00", line_no=1),
+                _line(expense_account, debit="50.00", line_no=2),
+                _line(cash_account, credit="200.00", line_no=3),
+            ],
+            memo="Split expense",
+        )
 
         # Process incrementally
         projection = AccountBalanceProjection()
@@ -413,9 +440,7 @@ class TestOutOfOrderReplay:
         tb_rebuilt = projection.get_trial_balance(company)
 
         assert incremental == rebuilt, (
-            f"Rebuild diverged from incremental.\n"
-            f"Incremental: {incremental}\n"
-            f"Rebuilt: {rebuilt}"
+            f"Rebuild diverged from incremental.\nIncremental: {incremental}\nRebuilt: {rebuilt}"
         )
         assert tb_rebuilt["is_balanced"]
         assert tb_inc["total_debit"] == tb_rebuilt["total_debit"]
@@ -429,6 +454,7 @@ class TestOutOfOrderReplay:
 # INVARIANT 4: Projection lag reporting
 # ═════════════════════════════════════════════════════════════════════════════
 
+
 @pytest.mark.django_db
 class TestProjectionLagReporting:
     """
@@ -441,9 +467,7 @@ class TestProjectionLagReporting:
     4. After new events arrive: lag increases correctly
     """
 
-    def test_lag_tracks_unprocessed_events_accurately(
-        self, company, user, cash_account, revenue_account
-    ):
+    def test_lag_tracks_unprocessed_events_accurately(self, company, user, cash_account, revenue_account):
         projection = AccountBalanceProjection()
 
         # Initially no events, lag should be 0
@@ -452,10 +476,15 @@ class TestProjectionLagReporting:
 
         # Emit 3 events
         for i in range(3):
-            _emit_posted(company, user, [
-                _line(cash_account, debit=f"{100 * (i + 1)}.00", line_no=1),
-                _line(revenue_account, credit=f"{100 * (i + 1)}.00", line_no=2),
-            ], memo=f"Lag test {i}")
+            _emit_posted(
+                company,
+                user,
+                [
+                    _line(cash_account, debit=f"{100 * (i + 1)}.00", line_no=1),
+                    _line(revenue_account, credit=f"{100 * (i + 1)}.00", line_no=2),
+                ],
+                memo=f"Lag test {i}",
+            )
 
         # Before processing: lag = 3
         lag_before = projection.get_lag(company)
@@ -475,10 +504,15 @@ class TestProjectionLagReporting:
 
         # Emit 2 more events
         for i in range(2):
-            _emit_posted(company, user, [
-                _line(cash_account, debit="50.00", line_no=1),
-                _line(revenue_account, credit="50.00", line_no=2),
-            ], memo=f"Lag test extra {i}")
+            _emit_posted(
+                company,
+                user,
+                [
+                    _line(cash_account, debit="50.00", line_no=1),
+                    _line(revenue_account, credit="50.00", line_no=2),
+                ],
+                memo=f"Lag test extra {i}",
+            )
 
         lag_new = projection.get_lag(company)
         assert lag_new == 2, f"Expected lag=2 after new events, got {lag_new}"
@@ -487,20 +521,23 @@ class TestProjectionLagReporting:
         projection.process_pending(company)
         assert projection.get_lag(company) == 0
 
-    def test_paused_projection_reports_lag_but_does_not_process(
-        self, company, user, cash_account, revenue_account
-    ):
+    def test_paused_projection_reports_lag_but_does_not_process(self, company, user, cash_account, revenue_account):
         """A paused projection should still report lag but not process events."""
-        _emit_posted(company, user, [
-            _line(cash_account, debit="100.00", line_no=1),
-            _line(revenue_account, credit="100.00", line_no=2),
-        ])
+        _emit_posted(
+            company,
+            user,
+            [
+                _line(cash_account, debit="100.00", line_no=1),
+                _line(revenue_account, credit="100.00", line_no=2),
+            ],
+        )
 
         projection = AccountBalanceProjection()
 
         # Create bookmark and pause it
         bookmark, _ = EventBookmark.objects.get_or_create(
-            consumer_name="account_balance", company=company,
+            consumer_name="account_balance",
+            company=company,
         )
         bookmark.is_paused = True
         bookmark.save()
@@ -525,6 +562,7 @@ class TestProjectionLagReporting:
 # ═════════════════════════════════════════════════════════════════════════════
 # INVARIANT 5: Idempotent event emission
 # ═════════════════════════════════════════════════════════════════════════════
+
 
 @pytest.mark.django_db
 class TestIdempotentEventEmission:
@@ -586,9 +624,7 @@ class TestIdempotentEventEmission:
         )
 
         # Should return same event (not a new one)
-        assert event1.id == event2.id, (
-            f"Duplicate idempotency key created new event: {event1.id} != {event2.id}"
-        )
+        assert event1.id == event2.id, f"Duplicate idempotency key created new event: {event1.id} != {event2.id}"
 
         # Only one event should exist
         count = BusinessEvent.objects.filter(
@@ -597,23 +633,31 @@ class TestIdempotentEventEmission:
         ).count()
         assert count == 1, f"Expected 1 event, got {count}"
 
-    def test_duplicate_emission_does_not_corrupt_projection(
-        self, company, user, cash_account, revenue_account
-    ):
+    def test_duplicate_emission_does_not_corrupt_projection(self, company, user, cash_account, revenue_account):
         """
         Even if somehow two events with different keys but identical content
         get emitted and processed, ProjectionAppliedEvent prevents double-counting.
         """
         # Emit two distinct events (different keys, same amounts)
-        _emit_posted(company, user, [
-            _line(cash_account, debit="500.00", line_no=1),
-            _line(revenue_account, credit="500.00", line_no=2),
-        ], memo="Entry A")
+        _emit_posted(
+            company,
+            user,
+            [
+                _line(cash_account, debit="500.00", line_no=1),
+                _line(revenue_account, credit="500.00", line_no=2),
+            ],
+            memo="Entry A",
+        )
 
-        _emit_posted(company, user, [
-            _line(cash_account, debit="500.00", line_no=1),
-            _line(revenue_account, credit="500.00", line_no=2),
-        ], memo="Entry B")
+        _emit_posted(
+            company,
+            user,
+            [
+                _line(cash_account, debit="500.00", line_no=1),
+                _line(revenue_account, credit="500.00", line_no=2),
+            ],
+            memo="Entry B",
+        )
 
         projection = AccountBalanceProjection()
 
@@ -635,9 +679,7 @@ class TestIdempotentEventEmission:
         tb = projection.get_trial_balance(company)
         assert tb["is_balanced"]
 
-    def test_sequence_continuity_after_idempotent_emission(
-        self, company, user, cash_account, revenue_account
-    ):
+    def test_sequence_continuity_after_idempotent_emission(self, company, user, cash_account, revenue_account):
         """
         After a duplicate emission is rejected, the company_sequence
         must remain gap-free for subsequent events.
@@ -684,10 +726,15 @@ class TestIdempotentEventEmission:
         )
 
         # Emit a new event
-        _emit_posted(company, user, [
-            _line(cash_account, debit="200.00", line_no=1),
-            _line(revenue_account, credit="200.00", line_no=2),
-        ], memo="After duplicate")
+        _emit_posted(
+            company,
+            user,
+            [
+                _line(cash_account, debit="200.00", line_no=1),
+                _line(revenue_account, credit="200.00", line_no=2),
+            ],
+            memo="After duplicate",
+        )
 
         # Check sequence continuity
         sequences = list(
@@ -696,6 +743,4 @@ class TestIdempotentEventEmission:
             .values_list("company_sequence", flat=True)
         )
         assert len(sequences) == 2, f"Expected 2 events, got {len(sequences)}"
-        assert sequences[1] == sequences[0] + 1, (
-            f"Sequence gap after idempotent rejection: {sequences}"
-        )
+        assert sequences[1] == sequences[0] + 1, f"Sequence gap after idempotent rejection: {sequences}"

@@ -21,6 +21,7 @@ Why contextvars instead of threading.local()?
 - Automatic cleanup: Token-based reset prevents context leakage
 - No explicit thread management needed
 """
+
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import NamedTuple

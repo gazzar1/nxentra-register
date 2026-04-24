@@ -4,6 +4,7 @@ Management command: Restore a company from a backup ZIP file.
 Usage:
     python manage.py company_restore --company acme-corp --file /path/to/backup.zip
 """
+
 import sys
 from pathlib import Path
 
@@ -52,8 +53,7 @@ class Command(BaseCommand):
         if not options["yes"]:
             self.stdout.write(
                 self.style.WARNING(
-                    f"\nThis will REPLACE ALL DATA for '{company.name}' ({slug}).\n"
-                    "This action cannot be undone.\n"
+                    f"\nThis will REPLACE ALL DATA for '{company.name}' ({slug}).\nThis action cannot be undone.\n"
                 )
             )
             confirm = input("Type 'RESTORE' to continue: ")

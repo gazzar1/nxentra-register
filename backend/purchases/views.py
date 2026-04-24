@@ -35,8 +35,10 @@ from .serializers import (
 # Purchase Bill Views
 # =============================================================================
 
+
 class PurchaseBillListCreateView(APIView):
     """List all purchase bills or create a new one."""
+
     module_key = "purchases"
     permission_classes = [IsAuthenticated, ModuleEnabled]
 
@@ -49,9 +51,7 @@ class PurchaseBillListCreateView(APIView):
 
         from nxentra_backend.pagination import paginate_queryset
 
-        bills = PurchaseBill.objects.filter(company=actor.company).select_related(
-            "vendor"
-        )
+        bills = PurchaseBill.objects.filter(company=actor.company).select_related("vendor")
 
         # Optional filters
         if "status" in request.query_params:
@@ -62,13 +62,13 @@ class PurchaseBillListCreateView(APIView):
         search = request.query_params.get("search", "")
         if search:
             bills = bills.filter(
-                Q(bill_number__icontains=search)
-                | Q(vendor__name__icontains=search)
-                | Q(vendor__code__icontains=search)
+                Q(bill_number__icontains=search) | Q(vendor__name__icontains=search) | Q(vendor__code__icontains=search)
             )
 
         return paginate_queryset(
-            request, bills, PurchaseBillListSerializer,
+            request,
+            bills,
+            PurchaseBillListSerializer,
             default_ordering="-bill_date",
             allowed_sort_fields=["bill_number", "bill_date", "due_date", "total_amount", "status"],
         )
@@ -85,14 +85,12 @@ class PurchaseBillListCreateView(APIView):
         if not result.success:
             return Response({"detail": result.error}, status=400)
 
-        return Response(
-            PurchaseBillSerializer(result.data["bill"]).data,
-            status=status.HTTP_201_CREATED
-        )
+        return Response(PurchaseBillSerializer(result.data["bill"]).data, status=status.HTTP_201_CREATED)
 
 
 class PurchaseBillDetailView(APIView):
     """Retrieve, update or delete a purchase bill."""
+
     module_key = "purchases"
     permission_classes = [IsAuthenticated, ModuleEnabled]
 
@@ -102,11 +100,11 @@ class PurchaseBillDetailView(APIView):
             return Response({"detail": "No active company."}, status=400)
 
         try:
-            bill = PurchaseBill.objects.select_related(
-                "vendor", "posting_profile", "posted_by", "posted_journal_entry"
-            ).prefetch_related(
-                "lines__item", "lines__account", "lines__tax_code"
-            ).get(company=actor.company, pk=pk)
+            bill = (
+                PurchaseBill.objects.select_related("vendor", "posting_profile", "posted_by", "posted_journal_entry")
+                .prefetch_related("lines__item", "lines__account", "lines__tax_code")
+                .get(company=actor.company, pk=pk)
+            )
         except PurchaseBill.DoesNotExist:
             return Response({"detail": "Bill not found."}, status=404)
 
@@ -116,11 +114,13 @@ class PurchaseBillDetailView(APIView):
 
 class PurchaseBillPostView(APIView):
     """Post a purchase bill."""
+
     module_key = "purchases"
     permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def post(self, request, pk):
         import traceback
+
         actor = resolve_actor(request)
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
@@ -130,12 +130,14 @@ class PurchaseBillPostView(APIView):
             if not result.success:
                 return Response({"detail": result.error}, status=400)
 
-            return Response({
-                "detail": "Bill posted successfully.",
-                "bill": PurchaseBillSerializer(result.data["bill"]).data,
-                "journal_entry_id": result.data["journal_entry"].id,
-                "journal_entry_number": result.data["journal_entry"].entry_number,
-            })
+            return Response(
+                {
+                    "detail": "Bill posted successfully.",
+                    "bill": PurchaseBillSerializer(result.data["bill"]).data,
+                    "journal_entry_id": result.data["journal_entry"].id,
+                    "journal_entry_number": result.data["journal_entry"].entry_number,
+                }
+            )
         except Exception as e:
             traceback.print_exc()
             return Response({"detail": f"Internal error: {e!s}"}, status=500)
@@ -143,6 +145,7 @@ class PurchaseBillPostView(APIView):
 
 class PurchaseBillVoidView(APIView):
     """Void a purchase bill."""
+
     module_key = "purchases"
     permission_classes = [IsAuthenticated, ModuleEnabled]
 
@@ -156,19 +159,23 @@ class PurchaseBillVoidView(APIView):
         if not result.success:
             return Response({"detail": result.error}, status=400)
 
-        return Response({
-            "detail": "Bill voided successfully.",
-            "bill": PurchaseBillSerializer(result.data["bill"]).data,
-            "reversing_entry_id": result.data["reversing_entry"].id,
-        })
+        return Response(
+            {
+                "detail": "Bill voided successfully.",
+                "bill": PurchaseBillSerializer(result.data["bill"]).data,
+                "reversing_entry_id": result.data["reversing_entry"].id,
+            }
+        )
 
 
 # =============================================================================
 # Purchase Order Views
 # =============================================================================
 
+
 class PurchaseOrderListCreateView(APIView):
     """List purchase orders or create a new one."""
+
     module_key = "purchases"
     permission_classes = [IsAuthenticated, ModuleEnabled]
 
@@ -182,9 +189,7 @@ class PurchaseOrderListCreateView(APIView):
         from .models import PurchaseOrder
         from .serializers import PurchaseOrderListSerializer
 
-        orders = PurchaseOrder.objects.filter(
-            company=actor.company
-        ).select_related("vendor")
+        orders = PurchaseOrder.objects.filter(company=actor.company).select_related("vendor")
 
         if "status" in request.query_params:
             orders = orders.filter(status=request.query_params["status"])
@@ -192,7 +197,9 @@ class PurchaseOrderListCreateView(APIView):
             orders = orders.filter(vendor_id=request.query_params["vendor_id"])
 
         return paginate_queryset(
-            request, orders, PurchaseOrderListSerializer,
+            request,
+            orders,
+            PurchaseOrderListSerializer,
             default_ordering="-order_date",
             allowed_sort_fields=["order_number", "order_date", "expected_delivery_date", "total_amount", "status"],
         )
@@ -220,6 +227,7 @@ class PurchaseOrderListCreateView(APIView):
 
 class PurchaseOrderDetailView(APIView):
     """Retrieve a purchase order."""
+
     module_key = "purchases"
     permission_classes = [IsAuthenticated, ModuleEnabled]
 
@@ -232,11 +240,11 @@ class PurchaseOrderDetailView(APIView):
         from .serializers import PurchaseOrderSerializer
 
         try:
-            order = PurchaseOrder.objects.select_related(
-                "vendor", "posting_profile"
-            ).prefetch_related(
-                "lines", "lines__account", "lines__tax_code"
-            ).get(company=actor.company, pk=pk)
+            order = (
+                PurchaseOrder.objects.select_related("vendor", "posting_profile")
+                .prefetch_related("lines", "lines__account", "lines__tax_code")
+                .get(company=actor.company, pk=pk)
+            )
         except PurchaseOrder.DoesNotExist:
             return Response({"detail": "Purchase order not found."}, status=404)
 
@@ -300,6 +308,7 @@ class PurchaseOrderCloseView(APIView):
 
 class PurchaseOrderCreateBillView(APIView):
     """Create a vendor bill from a PO's unbilled lines."""
+
     module_key = "purchases"
     permission_classes = [IsAuthenticated, ModuleEnabled]
 
@@ -328,8 +337,10 @@ class PurchaseOrderCreateBillView(APIView):
 # Goods Receipt Views
 # =============================================================================
 
+
 class GoodsReceiptListCreateView(APIView):
     """List goods receipts or create a new one."""
+
     module_key = "purchases"
     permission_classes = [IsAuthenticated, ModuleEnabled]
 
@@ -343,9 +354,9 @@ class GoodsReceiptListCreateView(APIView):
         from .models import GoodsReceipt
         from .serializers import GoodsReceiptListSerializer
 
-        receipts = GoodsReceipt.objects.filter(
-            company=actor.company
-        ).select_related("purchase_order", "vendor", "warehouse")
+        receipts = GoodsReceipt.objects.filter(company=actor.company).select_related(
+            "purchase_order", "vendor", "warehouse"
+        )
 
         if "status" in request.query_params:
             receipts = receipts.filter(status=request.query_params["status"])
@@ -353,7 +364,9 @@ class GoodsReceiptListCreateView(APIView):
             receipts = receipts.filter(purchase_order_id=request.query_params["purchase_order_id"])
 
         return paginate_queryset(
-            request, receipts, GoodsReceiptListSerializer,
+            request,
+            receipts,
+            GoodsReceiptListSerializer,
             default_ordering="-receipt_date",
             allowed_sort_fields=["receipt_number", "receipt_date", "status"],
         )
@@ -392,11 +405,11 @@ class GoodsReceiptDetailView(APIView):
         from .serializers import GoodsReceiptSerializer
 
         try:
-            receipt = GoodsReceipt.objects.select_related(
-                "purchase_order", "vendor", "warehouse"
-            ).prefetch_related(
-                "lines", "lines__po_line", "lines__item"
-            ).get(company=actor.company, pk=pk)
+            receipt = (
+                GoodsReceipt.objects.select_related("purchase_order", "vendor", "warehouse")
+                .prefetch_related("lines", "lines__po_line", "lines__item")
+                .get(company=actor.company, pk=pk)
+            )
         except GoodsReceipt.DoesNotExist:
             return Response({"detail": "Goods receipt not found."}, status=404)
 
@@ -444,8 +457,10 @@ class GoodsReceiptVoidView(APIView):
 # Purchase Credit Note Views
 # =============================================================================
 
+
 class PurchaseCreditNoteListCreateView(APIView):
     """List purchase credit notes or create a new one."""
+
     module_key = "purchases"
     permission_classes = [IsAuthenticated, ModuleEnabled]
 
@@ -458,9 +473,7 @@ class PurchaseCreditNoteListCreateView(APIView):
 
         from nxentra_backend.pagination import paginate_queryset
 
-        notes = PurchaseCreditNote.objects.filter(
-            company=actor.company
-        ).select_related("vendor", "bill")
+        notes = PurchaseCreditNote.objects.filter(company=actor.company).select_related("vendor", "bill")
 
         if "status" in request.query_params:
             notes = notes.filter(status=request.query_params["status"])
@@ -478,7 +491,9 @@ class PurchaseCreditNoteListCreateView(APIView):
             )
 
         return paginate_queryset(
-            request, notes, PurchaseCreditNoteListSerializer,
+            request,
+            notes,
+            PurchaseCreditNoteListSerializer,
             default_ordering="-credit_note_date",
             allowed_sort_fields=["credit_note_number", "credit_note_date", "total_amount", "status"],
         )
@@ -503,6 +518,7 @@ class PurchaseCreditNoteListCreateView(APIView):
 
 class PurchaseCreditNoteDetailView(APIView):
     """Retrieve a purchase credit note."""
+
     module_key = "purchases"
     permission_classes = [IsAuthenticated, ModuleEnabled]
 
@@ -512,11 +528,13 @@ class PurchaseCreditNoteDetailView(APIView):
             return Response({"detail": "No active company."}, status=400)
 
         try:
-            cn = PurchaseCreditNote.objects.select_related(
-                "vendor", "bill", "posting_profile", "posted_by", "posted_journal_entry"
-            ).prefetch_related(
-                "lines__item", "lines__account", "lines__tax_code"
-            ).get(company=actor.company, pk=pk)
+            cn = (
+                PurchaseCreditNote.objects.select_related(
+                    "vendor", "bill", "posting_profile", "posted_by", "posted_journal_entry"
+                )
+                .prefetch_related("lines__item", "lines__account", "lines__tax_code")
+                .get(company=actor.company, pk=pk)
+            )
         except PurchaseCreditNote.DoesNotExist:
             return Response({"detail": "Credit note not found."}, status=404)
 
@@ -525,6 +543,7 @@ class PurchaseCreditNoteDetailView(APIView):
 
 class PurchaseCreditNotePostView(APIView):
     """Post a purchase credit note."""
+
     module_key = "purchases"
     permission_classes = [IsAuthenticated, ModuleEnabled]
 
@@ -537,16 +556,19 @@ class PurchaseCreditNotePostView(APIView):
         if not result.success:
             return Response({"detail": result.error}, status=400)
 
-        return Response({
-            "detail": "Credit note posted successfully.",
-            "credit_note": PurchaseCreditNoteSerializer(result.data["credit_note"]).data,
-            "journal_entry_id": result.data["journal_entry"].id,
-            "journal_entry_number": result.data["journal_entry"].entry_number,
-        })
+        return Response(
+            {
+                "detail": "Credit note posted successfully.",
+                "credit_note": PurchaseCreditNoteSerializer(result.data["credit_note"]).data,
+                "journal_entry_id": result.data["journal_entry"].id,
+                "journal_entry_number": result.data["journal_entry"].entry_number,
+            }
+        )
 
 
 class PurchaseCreditNoteVoidView(APIView):
     """Void a purchase credit note."""
+
     module_key = "purchases"
     permission_classes = [IsAuthenticated, ModuleEnabled]
 
@@ -560,8 +582,10 @@ class PurchaseCreditNoteVoidView(APIView):
         if not result.success:
             return Response({"detail": result.error}, status=400)
 
-        return Response({
-            "detail": "Credit note voided successfully.",
-            "credit_note": PurchaseCreditNoteSerializer(result.data["credit_note"]).data,
-            "reversing_entry_id": result.data["reversing_entry"].id,
-        })
+        return Response(
+            {
+                "detail": "Credit note voided successfully.",
+                "credit_note": PurchaseCreditNoteSerializer(result.data["credit_note"]).data,
+                "reversing_entry_id": result.data["reversing_entry"].id,
+            }
+        )

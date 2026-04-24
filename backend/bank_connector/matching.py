@@ -24,16 +24,17 @@ from .models import BankTransaction
 logger = logging.getLogger(__name__)
 
 # Confidence thresholds
-CONFIDENCE_EXACT = 100       # Amount + date + reference all match
-CONFIDENCE_HIGH = 90         # Amount + date match (within 1 day)
-CONFIDENCE_MEDIUM = 75       # Amount + date proximity (within 5 days)
-CONFIDENCE_LOW = 55          # Amount match only
-AUTO_MATCH_THRESHOLD = 75    # Minimum confidence for auto-match
+CONFIDENCE_EXACT = 100  # Amount + date + reference all match
+CONFIDENCE_HIGH = 90  # Amount + date match (within 1 day)
+CONFIDENCE_MEDIUM = 75  # Amount + date proximity (within 5 days)
+CONFIDENCE_LOW = 55  # Amount match only
+AUTO_MATCH_THRESHOLD = 75  # Minimum confidence for auto-match
 
 
 # =============================================================================
 # Payout Discovery
 # =============================================================================
+
 
 def _get_stripe_payouts(company, date_from=None, date_to=None):
     """Get Stripe payouts for matching."""
@@ -112,6 +113,7 @@ def get_all_payouts(company, date_from=None, date_to=None):
 # Matching Algorithm
 # =============================================================================
 
+
 def _compute_confidence(bank_tx, payout):
     """
     Compute match confidence between a bank transaction and a platform payout.
@@ -184,11 +186,13 @@ def get_match_suggestions(company, bank_transaction_id):
 
         confidence = _compute_confidence(tx, payout)
         if confidence > 0:
-            suggestions.append({
-                **payout,
-                "confidence": confidence,
-                "payout_date": str(payout["payout_date"]),
-            })
+            suggestions.append(
+                {
+                    **payout,
+                    "confidence": confidence,
+                    "payout_date": str(payout["payout_date"]),
+                }
+            )
 
     suggestions.sort(key=lambda x: x["confidence"], reverse=True)
     return suggestions
@@ -208,6 +212,7 @@ def _is_payout_already_matched(company, payout):
 # =============================================================================
 # Journal Entry Reconciliation
 # =============================================================================
+
 
 def _reconcile_payout_je(company, platform, payout_obj, bank_tx):
     """
@@ -233,7 +238,8 @@ def _reconcile_payout_je(company, platform, payout_obj, bank_tx):
         except JournalEntry.DoesNotExist:
             logger.warning(
                 "Payout %s has journal_entry_id %s but JE not found or not POSTED",
-                payout_obj.pk, je_public_id,
+                payout_obj.pk,
+                je_public_id,
             )
 
     if not je:
@@ -242,7 +248,8 @@ def _reconcile_payout_je(company, platform, payout_obj, bank_tx):
         if not je:
             logger.warning(
                 "Could not create JE for %s payout %s — account mapping may be missing",
-                platform, payout_obj.pk,
+                platform,
+                payout_obj.pk,
             )
             return {"je_status": "no_je", "je_id": None, "reconciled": False}
 
@@ -253,7 +260,8 @@ def _reconcile_payout_je(company, platform, payout_obj, bank_tx):
     all_lines = list(je.lines.select_related("account").all())
     logger.info(
         "JE %s has %d lines: %s",
-        je.entry_number, len(all_lines),
+        je.entry_number,
+        len(all_lines),
         [(l.line_no, l.account.code, l.account.role, l.reconciled) for l in all_lines],
     )
 
@@ -273,7 +281,9 @@ def _reconcile_payout_je(company, platform, payout_obj, bank_tx):
     if cash_line:
         logger.info(
             "Marking line %d (account %s) as reconciled for bank tx %s",
-            cash_line.line_no, cash_line.account.code, bank_tx.id,
+            cash_line.line_no,
+            cash_line.account.code,
+            bank_tx.id,
         )
         with projection_writes_allowed():
             cash_line.reconciled = True
@@ -283,12 +293,18 @@ def _reconcile_payout_je(company, platform, payout_obj, bank_tx):
         cash_line.refresh_from_db()
         logger.info(
             "After save: line %d reconciled=%s reconciled_date=%s",
-            cash_line.line_no, cash_line.reconciled, cash_line.reconciled_date,
+            cash_line.line_no,
+            cash_line.reconciled,
+            cash_line.reconciled_date,
         )
 
         logger.info(
             "Reconciled JE %s line %s for %s payout %s ↔ bank tx %s",
-            je.entry_number, cash_line.line_no, platform, payout_obj.pk, bank_tx.id,
+            je.entry_number,
+            cash_line.line_no,
+            platform,
+            payout_obj.pk,
+            bank_tx.id,
         )
         return {
             "je_status": "reconciled",
@@ -299,7 +315,8 @@ def _reconcile_payout_je(company, platform, payout_obj, bank_tx):
 
     logger.warning(
         "JE %s has no unreconciled Cash/Bank line for payout %s",
-        je.entry_number, payout_obj.pk,
+        je.entry_number,
+        payout_obj.pk,
     )
     return {
         "je_status": "no_cash_line",
@@ -336,7 +353,9 @@ def _create_payout_je(company, platform, payout_obj):
     if not clearing or not cash_bank:
         logger.warning(
             "Missing account mapping for %s: CLEARING=%s, CASH_BANK=%s",
-            module_key, clearing, cash_bank,
+            module_key,
+            clearing,
+            cash_bank,
         )
         return None
 
@@ -357,52 +376,66 @@ def _create_payout_je(company, platform, payout_obj):
     lines = []
     if net_amount >= 0:
         # Normal payout: DR Cash, DR Fees, CR Clearing
-        lines.append(JELine(
-            account=cash_bank,
-            description=f"Payout deposit: {payout_id_str}",
-            debit=net_amount,
-        ))
+        lines.append(
+            JELine(
+                account=cash_bank,
+                description=f"Payout deposit: {payout_id_str}",
+                debit=net_amount,
+            )
+        )
         if fees > 0 and fees_account:
-            lines.append(JELine(
-                account=fees_account,
-                description=f"Processing fees: {payout_id_str}",
-                debit=fees,
-            ))
-        lines.append(JELine(
-            account=clearing,
-            description=f"Payout settlement: {payout_id_str}",
-            credit=gross_amount,
-        ))
+            lines.append(
+                JELine(
+                    account=fees_account,
+                    description=f"Processing fees: {payout_id_str}",
+                    debit=fees,
+                )
+            )
+        lines.append(
+            JELine(
+                account=clearing,
+                description=f"Payout settlement: {payout_id_str}",
+                credit=gross_amount,
+            )
+        )
     else:
         # Negative payout: DR Clearing, CR Cash
-        lines.append(JELine(
-            account=clearing,
-            description=f"Negative payout: {payout_id_str}",
-            debit=abs(gross_amount),
-        ))
+        lines.append(
+            JELine(
+                account=clearing,
+                description=f"Negative payout: {payout_id_str}",
+                debit=abs(gross_amount),
+            )
+        )
         if fees > 0 and fees_account:
-            lines.append(JELine(
-                account=fees_account,
-                description=f"Processing fees: {payout_id_str}",
-                debit=fees,
-            ))
-        lines.append(JELine(
-            account=cash_bank,
-            description=f"Payout withdrawal: {payout_id_str}",
-            credit=abs(net_amount),
-        ))
+            lines.append(
+                JELine(
+                    account=fees_account,
+                    description=f"Processing fees: {payout_id_str}",
+                    debit=fees,
+                )
+            )
+        lines.append(
+            JELine(
+                account=cash_bank,
+                description=f"Payout withdrawal: {payout_id_str}",
+                credit=abs(net_amount),
+            )
+        )
 
-    je = build_journal_entry(JERequest(
-        company=company,
-        entry_date=payout_obj.payout_date,
-        memo=memo,
-        source_module=f"{platform}_connector",
-        source_document=payout_id_str,
-        currency=payout_obj.currency,
-        lines=lines,
-        projection_name="bank_reconciliation",
-        posted_by_email="system@reconciliation",
-    ))
+    je = build_journal_entry(
+        JERequest(
+            company=company,
+            entry_date=payout_obj.payout_date,
+            memo=memo,
+            source_module=f"{platform}_connector",
+            source_document=payout_id_str,
+            currency=payout_obj.currency,
+            lines=lines,
+            projection_name="bank_reconciliation",
+            posted_by_email="system@reconciliation",
+        )
+    )
 
     if je:
         # Store JE reference on the payout
@@ -410,7 +443,9 @@ def _create_payout_je(company, platform, payout_obj):
         payout_obj.save(update_fields=["journal_entry_id"])
         logger.info(
             "Created JE %s for %s payout %s",
-            je.entry_number, platform, payout_id_str,
+            je.entry_number,
+            platform,
+            payout_id_str,
         )
 
     return je
@@ -419,6 +454,7 @@ def _create_payout_je(company, platform, payout_obj):
 # =============================================================================
 # Auto-Matching
 # =============================================================================
+
 
 def auto_match_transactions(company, bank_account_id=None):
     """
@@ -472,23 +508,21 @@ def auto_match_transactions(company, bank_account_id=None):
             tx.save()
 
             # Reconcile the payout's journal entry
-            payout_obj = _get_payout_object(
-                company, best_payout["platform"], best_payout["id"]
-            )
+            payout_obj = _get_payout_object(company, best_payout["platform"], best_payout["id"])
             je_result = {}
             if payout_obj:
-                je_result = _reconcile_payout_je(
-                    company, best_payout["platform"], payout_obj, tx
-                )
+                je_result = _reconcile_payout_je(company, best_payout["platform"], payout_obj, tx)
 
-            matches.append({
-                "bank_transaction_id": tx.id,
-                "payout_platform": best_payout["platform"],
-                "payout_id": best_payout["payout_id"],
-                "confidence": best_confidence,
-                "amount": str(tx.amount),
-                "je_reconciled": je_result.get("reconciled", False),
-            })
+            matches.append(
+                {
+                    "bank_transaction_id": tx.id,
+                    "payout_platform": best_payout["platform"],
+                    "payout_id": best_payout["payout_id"],
+                    "confidence": best_confidence,
+                    "amount": str(tx.amount),
+                    "je_reconciled": je_result.get("reconciled", False),
+                }
+            )
 
             # Remove from available payouts to prevent double-matching
             payouts.remove(best_payout)
@@ -496,13 +530,16 @@ def auto_match_transactions(company, bank_account_id=None):
 
     logger.info(
         "Auto-matched %d/%d bank transactions for company %s",
-        matched_count, len(unmatched), company.id,
+        matched_count,
+        len(unmatched),
+        company.id,
     )
 
     # Auto-resolve any exceptions for newly matched items
     if matched_count > 0:
         try:
             from .exceptions import auto_resolve_matched
+
             auto_resolve_matched(company)
         except Exception:
             logger.exception("Failed to auto-resolve exceptions after matching")
@@ -544,6 +581,7 @@ def manual_match(company, bank_transaction_id, platform, payout_id):
     # Auto-resolve any exceptions for this match
     try:
         from .exceptions import auto_resolve_matched
+
         auto_resolve_matched(company)
     except Exception:
         logger.exception("Failed to auto-resolve exceptions after manual match")
@@ -559,17 +597,20 @@ def manual_match(company, bank_transaction_id, platform, payout_id):
 # Payout Explainer
 # =============================================================================
 
+
 def _get_payout_object(company, platform, payout_id):
     """Get the actual payout model instance."""
     if platform == "stripe":
         try:
             from stripe_connector.models import StripePayout
+
             return StripePayout.objects.get(pk=payout_id, company=company)
         except Exception:
             return None
     elif platform == "shopify":
         try:
             from shopify_connector.models import ShopifyPayout
+
             return ShopifyPayout.objects.get(pk=payout_id, company=company)
         except Exception:
             return None
@@ -767,6 +808,7 @@ def _explain_shopify_payout(company, payout):
 # Reconciliation Overview
 # =============================================================================
 
+
 def get_reconciliation_overview(company):
     """
     Get a high-level reconciliation overview.
@@ -785,14 +827,14 @@ def get_reconciliation_overview(company):
     excluded_bank = bank_qs.filter(status="EXCLUDED").count()
 
     # Unmatched deposit total (potential payout matches)
-    unmatched_deposits = bank_qs.filter(
-        status="UNMATCHED", amount__gt=0
-    ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+    unmatched_deposits = bank_qs.filter(status="UNMATCHED", amount__gt=0).aggregate(total=Sum("amount"))[
+        "total"
+    ] or Decimal("0")
 
     # Unmatched withdrawal total
-    unmatched_withdrawals = bank_qs.filter(
-        status="UNMATCHED", amount__lt=0
-    ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+    unmatched_withdrawals = bank_qs.filter(status="UNMATCHED", amount__lt=0).aggregate(total=Sum("amount"))[
+        "total"
+    ] or Decimal("0")
 
     # Platform payout stats
     stripe_payouts = _get_stripe_payouts(company)
@@ -814,18 +856,18 @@ def get_reconciliation_overview(company):
 
     # Exception queue summary
     from .models import ReconciliationException
+
     open_statuses = [
         ReconciliationException.Status.OPEN,
         ReconciliationException.Status.IN_PROGRESS,
         ReconciliationException.Status.ESCALATED,
     ]
     open_exceptions = ReconciliationException.objects.filter(
-        company=company, status__in=open_statuses,
+        company=company,
+        status__in=open_statuses,
     )
     open_count = open_exceptions.count()
-    critical_count = open_exceptions.filter(
-        severity=ReconciliationException.Severity.CRITICAL
-    ).count()
+    critical_count = open_exceptions.filter(severity=ReconciliationException.Severity.CRITICAL).count()
 
     return {
         "bank": {

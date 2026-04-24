@@ -41,9 +41,7 @@ class ConnectorRegistry:
     def register(self, connector: "BasePlatformConnector") -> None:
         slug = connector.platform_slug
         if slug in self._connectors:
-            logger.warning(
-                "Connector '%s' already registered — overwriting", slug
-            )
+            logger.warning("Connector '%s' already registered — overwriting", slug)
         self._connectors[slug] = connector
         logger.info("Registered platform connector: %s", slug)
 

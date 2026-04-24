@@ -56,7 +56,6 @@ urlpatterns = [
         PropertyDetailView.as_view(),
         name="property-detail",
     ),
-
     # Units
     path(
         "units/",
@@ -68,7 +67,6 @@ urlpatterns = [
         UnitDetailView.as_view(),
         name="unit-detail",
     ),
-
     # Lessees
     path(
         "lessees/",
@@ -80,7 +78,6 @@ urlpatterns = [
         LesseeDetailView.as_view(),
         name="lessee-detail",
     ),
-
     # Leases
     path(
         "leases/",
@@ -112,14 +109,12 @@ urlpatterns = [
         LeaseScheduleView.as_view(),
         name="lease-schedule",
     ),
-
     # Schedule Line Actions
     path(
         "schedule-lines/<int:pk>/waive/",
         WaiveScheduleLineView.as_view(),
         name="schedule-line-waive",
     ),
-
     # Payments
     path(
         "payments/",
@@ -146,14 +141,12 @@ urlpatterns = [
         PaymentVoidView.as_view(),
         name="payment-void",
     ),
-
     # Deposits
     path(
         "deposits/",
         DepositListCreateView.as_view(),
         name="deposit-list-create",
     ),
-
     # Expenses
     path(
         "expenses/",
@@ -165,14 +158,12 @@ urlpatterns = [
         ExpenseDetailView.as_view(),
         name="expense-detail",
     ),
-
     # Account Mapping
     path(
         "account-mapping/",
         PropertyAccountMappingView.as_view(),
         name="account-mapping",
     ),
-
     # Reports
     path(
         "reports/rent-roll/",
@@ -214,14 +205,12 @@ urlpatterns = [
         DepositLiabilityView.as_view(),
         name="report-deposits",
     ),
-
     # Dashboard
     path(
         "dashboard/",
         PropertyDashboardView.as_view(),
         name="dashboard",
     ),
-
     # Alerts
     path(
         "alerts/",

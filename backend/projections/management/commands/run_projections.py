@@ -149,9 +149,7 @@ class Command(BaseCommand):
             projection = projection_registry.get(name)
             if not projection:
                 available = ", ".join(projection_registry.names())
-                raise CommandError(
-                    f"Unknown projection: {name}. Available: {available}"
-                )
+                raise CommandError(f"Unknown projection: {name}. Available: {available}")
             return [projection]
 
         projections = projection_registry.all()
@@ -188,21 +186,15 @@ class Command(BaseCommand):
                 total_processed += processed
 
                 if processed > 0:
-                    self.stdout.write(
-                        self.style.SUCCESS(f"    Processed {processed} events")
-                    )
+                    self.stdout.write(self.style.SUCCESS(f"    Processed {processed} events"))
                 else:
                     self.stdout.write("    No pending events")
 
-        self.stdout.write(
-            self.style.SUCCESS(f"\nTotal events processed: {total_processed}")
-        )
+        self.stdout.write(self.style.SUCCESS(f"\nTotal events processed: {total_processed}"))
 
     def _run_daemon(self, projections, companies, limit, interval):
         """Run projections continuously."""
-        self.stdout.write(
-            f"Starting daemon mode (interval: {interval}s, Ctrl+C to stop)"
-        )
+        self.stdout.write(f"Starting daemon mode (interval: {interval}s, Ctrl+C to stop)")
 
         try:
             while True:
@@ -237,9 +229,7 @@ class Command(BaseCommand):
 
                 processed = projection.rebuild(company)
 
-                self.stdout.write(
-                    self.style.SUCCESS(f"    Replayed {processed} events")
-                )
+                self.stdout.write(self.style.SUCCESS(f"    Replayed {processed} events"))
 
         self.stdout.write(self.style.SUCCESS("\nRebuild complete."))
 
@@ -258,9 +248,7 @@ class Command(BaseCommand):
                 # Check lag
                 lag = projection.get_lag(company)
                 if lag > 0:
-                    self.stdout.write(
-                        self.style.WARNING(f"    Lag: {lag} unprocessed events")
-                    )
+                    self.stdout.write(self.style.WARNING(f"    Lag: {lag} unprocessed events"))
                     all_ok = False
                 else:
                     self.stdout.write("    Lag: 0 (caught up)")
@@ -270,15 +258,13 @@ class Command(BaseCommand):
                     result = projection.verify_all_balances(company)
 
                     if result["mismatches"]:
-                        self.stdout.write(
-                            self.style.ERROR(
-                                f"    MISMATCHES: {len(result['mismatches'])}"
-                            )
-                        )
+                        self.stdout.write(self.style.ERROR(f"    MISMATCHES: {len(result['mismatches'])}"))
                         for m in result["mismatches"]:
-                            self.stdout.write(f"      {m['account_code']}: "
+                            self.stdout.write(
+                                f"      {m['account_code']}: "
                                 f"projected D={m['projected_debit']} C={m['projected_credit']}, "
-                                f"expected D={m['expected_debit']} C={m['expected_credit']}")
+                                f"expected D={m['expected_debit']} C={m['expected_credit']}"
+                            )
                         all_ok = False
                     else:
                         self.stdout.write(
@@ -307,10 +293,10 @@ class Command(BaseCommand):
         self.stdout.write("Checking payload hashes and sequence continuity...\n")
 
         diagnostics = {
-            'timestamp': timezone.now().isoformat(),
-            'companies': {},
-            'errors': [],
-            'success': True,
+            "timestamp": timezone.now().isoformat(),
+            "companies": {},
+            "errors": [],
+            "success": True,
         }
 
         all_valid = True
@@ -320,9 +306,9 @@ class Command(BaseCommand):
 
             # Full integrity check
             result = full_integrity_check(company, verbose=True)
-            diagnostics['companies'][str(company.public_id)] = {
-                'name': company.name,
-                'slug': company.slug,
+            diagnostics["companies"][str(company.public_id)] = {
+                "name": company.name,
+                "slug": company.slug,
                 **result,
             }
 
@@ -334,66 +320,45 @@ class Command(BaseCommand):
             self.stdout.write(f"  Chunked: {result['chunked_event_count']}")
             self.stdout.write(f"  Total payload bytes: {result['total_payload_bytes']:,}")
 
-            if result['payload_errors']:
+            if result["payload_errors"]:
                 all_valid = False
-                diagnostics['success'] = False
+                diagnostics["success"] = False
 
-                self.stdout.write(
-                    self.style.ERROR(f"  PAYLOAD ERRORS: {len(result['payload_errors'])}")
-                )
-                for error in result['payload_errors']:
+                self.stdout.write(self.style.ERROR(f"  PAYLOAD ERRORS: {len(result['payload_errors'])}"))
+                for error in result["payload_errors"]:
+                    self.stdout.write(self.style.ERROR(f"    [{error['error_type']}] {error['message']}"))
+                    diagnostics["errors"].append(error)
+
+            if result["sequence_gaps"]:
+                all_valid = False
+                diagnostics["success"] = False
+
+                self.stdout.write(self.style.ERROR(f"  SEQUENCE GAPS: {len(result['sequence_gaps'])}"))
+                for gap in result["sequence_gaps"]:
                     self.stdout.write(
                         self.style.ERROR(
-                            f"    [{error['error_type']}] {error['message']}"
-                        )
-                    )
-                    diagnostics['errors'].append(error)
-
-            if result['sequence_gaps']:
-                all_valid = False
-                diagnostics['success'] = False
-
-                self.stdout.write(
-                    self.style.ERROR(f"  SEQUENCE GAPS: {len(result['sequence_gaps'])}")
-                )
-                for gap in result['sequence_gaps']:
-                    self.stdout.write(
-                        self.style.ERROR(
-                            f"    Gap: {gap['start']}-{gap['end']} "
-                            f"({gap['missing_count']} events missing)"
+                            f"    Gap: {gap['start']}-{gap['end']} ({gap['missing_count']} events missing)"
                         )
                     )
 
-            if result['is_valid']:
-                self.stdout.write(
-                    self.style.SUCCESS("  PASSED: All events verified")
-                )
+            if result["is_valid"]:
+                self.stdout.write(self.style.SUCCESS("  PASSED: All events verified"))
 
         # Write diagnostics file
-        if options.get('diagnostics'):
-            diagnostics_path = options['diagnostics']
-            with open(diagnostics_path, 'w') as f:
+        if options.get("diagnostics"):
+            diagnostics_path = options["diagnostics"]
+            with open(diagnostics_path, "w") as f:
                 json.dump(diagnostics, f, indent=2, default=str)
             self.stdout.write(f"\nDiagnostics written to: {diagnostics_path}")
 
         # Handle strict mode
-        if options.get('strict') and not all_valid:
-            self.stdout.write(
-                self.style.ERROR(
-                    "\nABORTED: Integrity violations detected in strict mode."
-                )
-            )
-            self.stdout.write(
-                self.style.ERROR(
-                    "System should be marked UNSAFE until issues are resolved."
-                )
-            )
+        if options.get("strict") and not all_valid:
+            self.stdout.write(self.style.ERROR("\nABORTED: Integrity violations detected in strict mode."))
+            self.stdout.write(self.style.ERROR("System should be marked UNSAFE until issues are resolved."))
             raise CommandError("Integrity verification failed in strict mode")
 
         # Summary
         if all_valid:
             self.stdout.write(self.style.SUCCESS("\nEvent integrity verified OK."))
         else:
-            self.stdout.write(
-                self.style.ERROR("\nIntegrity verification found issues.")
-            )
+            self.stdout.write(self.style.ERROR("\nIntegrity verification found issues."))

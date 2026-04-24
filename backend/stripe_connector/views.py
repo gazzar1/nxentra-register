@@ -48,26 +48,26 @@ class StripeAccountView(APIView):
         if not actor:
             return Response(status=status.HTTP_403_FORBIDDEN)
 
-        account = StripeAccount.objects.filter(
-            company=actor.company
-        ).first()
+        account = StripeAccount.objects.filter(company=actor.company).first()
 
         if not account:
             return Response({"connected": False})
 
-        return Response({
-            "id": account.id,
-            "public_id": str(account.public_id),
-            "stripe_account_id": account.stripe_account_id,
-            "display_name": account.display_name,
-            "status": account.status,
-            "livemode": account.livemode,
-            "last_sync_at": account.last_sync_at,
-            "error_message": account.error_message,
-            "connected": account.status == StripeAccount.Status.ACTIVE,
-            "created_at": account.created_at.isoformat(),
-            "updated_at": account.updated_at.isoformat(),
-        })
+        return Response(
+            {
+                "id": account.id,
+                "public_id": str(account.public_id),
+                "stripe_account_id": account.stripe_account_id,
+                "display_name": account.display_name,
+                "status": account.status,
+                "livemode": account.livemode,
+                "last_sync_at": account.last_sync_at,
+                "error_message": account.error_message,
+                "connected": account.status == StripeAccount.Status.ACTIVE,
+                "created_at": account.created_at.isoformat(),
+                "updated_at": account.updated_at.isoformat(),
+            }
+        )
 
 
 class StripeChargesView(APIView):
@@ -78,29 +78,29 @@ class StripeChargesView(APIView):
         if not actor:
             return Response(status=status.HTTP_403_FORBIDDEN)
 
-        charges = StripeCharge.objects.filter(
-            company=actor.company
-        ).order_by("-stripe_created_at")[:100]
+        charges = StripeCharge.objects.filter(company=actor.company).order_by("-stripe_created_at")[:100]
 
-        return Response([
-            {
-                "id": c.id,
-                "public_id": str(c.public_id),
-                "stripe_charge_id": c.stripe_charge_id,
-                "amount": str(c.amount),
-                "fee": str(c.fee),
-                "net": str(c.net),
-                "currency": c.currency,
-                "description": c.description,
-                "customer_email": c.customer_email,
-                "customer_name": c.customer_name,
-                "charge_date": c.charge_date.isoformat(),
-                "status": c.status,
-                "journal_entry_id": str(c.journal_entry_id) if c.journal_entry_id else None,
-                "created_at": c.created_at.isoformat(),
-            }
-            for c in charges
-        ])
+        return Response(
+            [
+                {
+                    "id": c.id,
+                    "public_id": str(c.public_id),
+                    "stripe_charge_id": c.stripe_charge_id,
+                    "amount": str(c.amount),
+                    "fee": str(c.fee),
+                    "net": str(c.net),
+                    "currency": c.currency,
+                    "description": c.description,
+                    "customer_email": c.customer_email,
+                    "customer_name": c.customer_name,
+                    "charge_date": c.charge_date.isoformat(),
+                    "status": c.status,
+                    "journal_entry_id": str(c.journal_entry_id) if c.journal_entry_id else None,
+                    "created_at": c.created_at.isoformat(),
+                }
+                for c in charges
+            ]
+        )
 
 
 class StripePayoutsListView(APIView):
@@ -115,15 +115,17 @@ class StripePayoutsListView(APIView):
         page_size = 25
         offset = (page - 1) * page_size
 
-        qs = StripePayout.objects.filter(
-            company=actor.company
-        ).annotate(
-            transactions_total=Count("transactions"),
-            transactions_verified=Count("transactions", filter=Q(transactions__verified=True)),
-        ).order_by("-payout_date")
+        qs = (
+            StripePayout.objects.filter(company=actor.company)
+            .annotate(
+                transactions_total=Count("transactions"),
+                transactions_verified=Count("transactions", filter=Q(transactions__verified=True)),
+            )
+            .order_by("-payout_date")
+        )
 
         total = qs.count()
-        payouts = qs[offset:offset + page_size]
+        payouts = qs[offset : offset + page_size]
 
         results = []
         for p in payouts:
@@ -139,27 +141,31 @@ class StripePayoutsListView(APIView):
             else:
                 recon_status = "unverified"
 
-            results.append({
-                "stripe_payout_id": p.stripe_payout_id,
-                "payout_date": p.payout_date.isoformat(),
-                "gross_amount": str(p.gross_amount),
-                "fees": str(p.fees),
-                "net_amount": str(p.net_amount),
-                "currency": p.currency,
-                "stripe_status": p.stripe_status,
-                "account_name": p.account.display_name if hasattr(p, "account") else "",
-                "reconciliation_status": recon_status,
-                "transactions_total": t_total,
-                "transactions_verified": t_verified,
-                "journal_entry_id": str(p.journal_entry_id) if p.journal_entry_id else None,
-            })
+            results.append(
+                {
+                    "stripe_payout_id": p.stripe_payout_id,
+                    "payout_date": p.payout_date.isoformat(),
+                    "gross_amount": str(p.gross_amount),
+                    "fees": str(p.fees),
+                    "net_amount": str(p.net_amount),
+                    "currency": p.currency,
+                    "stripe_status": p.stripe_status,
+                    "account_name": p.account.display_name if hasattr(p, "account") else "",
+                    "reconciliation_status": recon_status,
+                    "transactions_total": t_total,
+                    "transactions_verified": t_verified,
+                    "journal_entry_id": str(p.journal_entry_id) if p.journal_entry_id else None,
+                }
+            )
 
-        return Response({
-            "results": results,
-            "total": total,
-            "page": page,
-            "page_size": page_size,
-        })
+        return Response(
+            {
+                "results": results,
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+            }
+        )
 
 
 class StripeReconciliationSummaryView(APIView):
@@ -179,14 +185,18 @@ class StripeReconciliationSummaryView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        payouts = StripePayout.objects.filter(
-            company=actor.company,
-            payout_date__gte=date_from,
-            payout_date__lte=date_to,
-        ).annotate(
-            t_total=Count("transactions"),
-            t_verified=Count("transactions", filter=Q(transactions__verified=True)),
-        ).order_by("payout_date")
+        payouts = (
+            StripePayout.objects.filter(
+                company=actor.company,
+                payout_date__gte=date_from,
+                payout_date__lte=date_to,
+            )
+            .annotate(
+                t_total=Count("transactions"),
+                t_verified=Count("transactions", filter=Q(transactions__verified=True)),
+            )
+            .order_by("payout_date")
+        )
 
         totals = payouts.aggregate(
             total_gross=Sum("gross_amount"),
@@ -201,38 +211,38 @@ class StripeReconciliationSummaryView(APIView):
         discrepancy = sum(1 for p in payouts if p.t_total > 0 and 0 < p.t_verified < p.t_total)
         unverified = sum(1 for p in payouts if p.t_total > 0 and p.t_verified == 0)
 
-        match_rate = (
-            f"{(matched_txns / total_txns * 100):.1f}" if total_txns > 0 else "0.0"
-        )
+        match_rate = f"{(matched_txns / total_txns * 100):.1f}" if total_txns > 0 else "0.0"
 
-        return Response({
-            "date_from": date_from,
-            "date_to": date_to,
-            "total_payouts": payouts.count(),
-            "verified_payouts": verified,
-            "discrepancy_payouts": discrepancy,
-            "unverified_payouts": unverified,
-            "total_gross": str(totals["total_gross"] or Decimal("0.00")),
-            "total_fees": str(totals["total_fees"] or Decimal("0.00")),
-            "total_net": str(totals["total_net"] or Decimal("0.00")),
-            "total_transactions": total_txns,
-            "matched_transactions": matched_txns,
-            "unmatched_transactions": total_txns - matched_txns,
-            "match_rate": match_rate,
-            "unmatched_order_total": "0.00",
-            "payouts": [
-                {
-                    "stripe_payout_id": p.stripe_payout_id,
-                    "payout_date": p.payout_date.isoformat(),
-                    "net_amount": str(p.net_amount),
-                    "fees": str(p.fees),
-                    "status": p.stripe_status,
-                    "matched": p.t_verified,
-                    "total": p.t_total,
-                }
-                for p in payouts
-            ],
-        })
+        return Response(
+            {
+                "date_from": date_from,
+                "date_to": date_to,
+                "total_payouts": payouts.count(),
+                "verified_payouts": verified,
+                "discrepancy_payouts": discrepancy,
+                "unverified_payouts": unverified,
+                "total_gross": str(totals["total_gross"] or Decimal("0.00")),
+                "total_fees": str(totals["total_fees"] or Decimal("0.00")),
+                "total_net": str(totals["total_net"] or Decimal("0.00")),
+                "total_transactions": total_txns,
+                "matched_transactions": matched_txns,
+                "unmatched_transactions": total_txns - matched_txns,
+                "match_rate": match_rate,
+                "unmatched_order_total": "0.00",
+                "payouts": [
+                    {
+                        "stripe_payout_id": p.stripe_payout_id,
+                        "payout_date": p.payout_date.isoformat(),
+                        "net_amount": str(p.net_amount),
+                        "fees": str(p.fees),
+                        "status": p.stripe_status,
+                        "matched": p.t_verified,
+                        "total": p.t_total,
+                    }
+                    for p in payouts
+                ],
+            }
+        )
 
 
 class StripePayoutReconciliationView(APIView):
@@ -252,41 +262,45 @@ class StripePayoutReconciliationView(APIView):
             return Response(status=status.HTTP_404_NOT_FOUND)
 
         from .reconciliation import reconcile_payout
+
         recon = reconcile_payout(actor.company, payout)
 
-        return Response({
-            "stripe_payout_id": payout.stripe_payout_id,
-            "payout_date": payout.payout_date.isoformat(),
-            "gross_amount": str(payout.gross_amount),
-            "fees": str(payout.fees),
-            "net_amount": str(payout.net_amount),
-            "currency": payout.currency,
-            "status": recon.status,
-            "total_transactions": recon.total_transactions,
-            "matched_transactions": recon.matched_transactions,
-            "unmatched_transactions": recon.unmatched_transactions,
-            "gross_variance": str(recon.gross_variance),
-            "fee_variance": str(recon.fee_variance),
-            "net_variance": str(recon.net_variance),
-            "discrepancies": recon.discrepancies,
-            "transactions": [
-                {
-                    "stripe_balance_txn_id": m.stripe_balance_txn_id,
-                    "transaction_type": m.transaction_type,
-                    "amount": str(m.amount),
-                    "fee": str(m.fee),
-                    "net": str(m.net),
-                    "matched": m.matched,
-                    "matched_to": m.matched_to,
-                    "variance": str(m.variance),
-                }
-                for m in recon.transaction_matches
-            ],
-        })
+        return Response(
+            {
+                "stripe_payout_id": payout.stripe_payout_id,
+                "payout_date": payout.payout_date.isoformat(),
+                "gross_amount": str(payout.gross_amount),
+                "fees": str(payout.fees),
+                "net_amount": str(payout.net_amount),
+                "currency": payout.currency,
+                "status": recon.status,
+                "total_transactions": recon.total_transactions,
+                "matched_transactions": recon.matched_transactions,
+                "unmatched_transactions": recon.unmatched_transactions,
+                "gross_variance": str(recon.gross_variance),
+                "fee_variance": str(recon.fee_variance),
+                "net_variance": str(recon.net_variance),
+                "discrepancies": recon.discrepancies,
+                "transactions": [
+                    {
+                        "stripe_balance_txn_id": m.stripe_balance_txn_id,
+                        "transaction_type": m.transaction_type,
+                        "amount": str(m.amount),
+                        "fee": str(m.fee),
+                        "net": str(m.net),
+                        "matched": m.matched,
+                        "matched_to": m.matched_to,
+                        "variance": str(m.variance),
+                    }
+                    for m in recon.transaction_matches
+                ],
+            }
+        )
 
 
 class StripePayoutVerifyView(APIView):
     """POST /api/stripe/payouts/<payout_id>/verify/ — match transactions to local charges."""
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, payout_id):
@@ -321,6 +335,7 @@ class StripePayoutVerifyView(APIView):
             elif txn.transaction_type == "refund" and txn.source_id:
                 # Try to match refund to a charge
                 from .models import StripeRefund
+
                 if StripeRefund.objects.filter(
                     company=actor.company,
                     stripe_refund_id=txn.source_id,
@@ -337,15 +352,18 @@ class StripePayoutVerifyView(APIView):
             else:
                 unmatched += 1
 
-        return Response({
-            "status": "verified",
-            "matched": matched,
-            "unmatched": unmatched,
-        })
+        return Response(
+            {
+                "status": "verified",
+                "matched": matched,
+                "unmatched": unmatched,
+            }
+        )
 
 
 class StripeAccountMappingView(APIView):
     """GET/PUT /api/stripe/account-mapping/"""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -356,12 +374,14 @@ class StripeAccountMappingView(APIView):
         result = []
         for role in STRIPE_ACCOUNT_ROLES:
             account = mapping.get(role)
-            result.append({
-                "role": role,
-                "account_id": account.id if account else None,
-                "account_code": account.code if account else "",
-                "account_name": account.name if account else "",
-            })
+            result.append(
+                {
+                    "role": role,
+                    "account_id": account.id if account else None,
+                    "account_code": account.code if account else "",
+                    "account_name": account.name if account else "",
+                }
+            )
         return Response(result)
 
     def put(self, request):
@@ -387,7 +407,8 @@ class StripeAccountMappingView(APIView):
                 if account_id:
                     try:
                         account = Account.objects.get(
-                            company=actor.company, pk=account_id,
+                            company=actor.company,
+                            pk=account_id,
                         )
                     except Account.DoesNotExist:
                         return Response(

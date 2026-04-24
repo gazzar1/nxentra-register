@@ -7,12 +7,13 @@ Run this on the server to diagnose email issues:
     source venv/bin/activate
     python test_email_debug.py
 """
+
 import os
 
 import django
 
 # Setup Django
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'nxentra_backend.settings')
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "nxentra_backend.settings")
 django.setup()
 
 from django.conf import settings
@@ -70,6 +71,7 @@ def main():
     except Exception as e:
         print(f"FAILED: {type(e).__name__}: {e}")
         import traceback
+
         traceback.print_exc()
     print()
 
@@ -98,6 +100,7 @@ def main():
     except Exception as e:
         print(f"FAILED: {type(e).__name__}: {e}")
         import traceback
+
         traceback.print_exc()
     print()
 
@@ -120,6 +123,7 @@ def main():
     except Exception as e:
         print(f"FAILED: {type(e).__name__}: {e}")
         import traceback
+
         traceback.print_exc()
     print()
 

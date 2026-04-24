@@ -77,9 +77,7 @@ class Command(BaseCommand):
                     f"    {entry.entry_number or '#' + str(entry.id):>16} → {new_number}  "
                     f"{entry.date}  {entry.memo[:50]}{changed}"
                 )
-            self.stdout.write(self.style.SUCCESS(
-                f"  Would resequence {len(entries)} entries (dry run)."
-            ))
+            self.stdout.write(self.style.SUCCESS(f"  Would resequence {len(entries)} entries (dry run)."))
             return
 
         with transaction.atomic():
@@ -102,6 +100,6 @@ class Command(BaseCommand):
                 seq.next_value = next_value
                 seq.save(update_fields=["next_value"])
 
-        self.stdout.write(self.style.SUCCESS(
-            f"  Resequenced {len(entries)} entries. Next number: JE-{company.id}-{next_value:06d}"
-        ))
+        self.stdout.write(
+            self.style.SUCCESS(f"  Resequenced {len(entries)} entries. Next number: JE-{company.id}-{next_value:06d}")
+        )

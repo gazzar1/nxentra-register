@@ -18,6 +18,7 @@ Usage:
     # Check specific company
     python manage.py check_clearing_balance --company my-company
 """
+
 import json
 import logging
 import sys
@@ -38,23 +39,21 @@ def compute_clearing_balance(company):
     from accounting.models import JournalEntry, JournalLine
 
     clearing_account = ModuleAccountMapping.get_account(
-        company, "shopify_connector", "SHOPIFY_CLEARING",
+        company,
+        "shopify_connector",
+        "SHOPIFY_CLEARING",
     )
     if not clearing_account:
         return None
 
     # Sum all posted journal lines against the clearing account
-    aggregation = (
-        JournalLine.objects
-        .filter(
-            company=company,
-            account=clearing_account,
-            entry__status=JournalEntry.Status.POSTED,
-        )
-        .aggregate(
-            total_debit=models_Sum("debit"),
-            total_credit=models_Sum("credit"),
-        )
+    aggregation = JournalLine.objects.filter(
+        company=company,
+        account=clearing_account,
+        entry__status=JournalEntry.Status.POSTED,
+    ).aggregate(
+        total_debit=models_Sum("debit"),
+        total_credit=models_Sum("credit"),
     )
     total_debit = aggregation["total_debit"] or Decimal("0")
     total_credit = aggregation["total_credit"] or Decimal("0")
@@ -62,6 +61,7 @@ def compute_clearing_balance(company):
 
     # Count pending payouts (settled but not yet deposited)
     from shopify_connector.models import ShopifyPayout
+
     pending_payouts = ShopifyPayout.objects.filter(
         company=company,
         shopify_status__in=["scheduled", "in_transit"],
@@ -128,11 +128,13 @@ class Command(BaseCommand):
                 data = compute_clearing_balance(company)
 
             if data is None:
-                results.append({
-                    "company": company.slug,
-                    "status": "skipped",
-                    "reason": "No SHOPIFY_CLEARING account mapped.",
-                })
+                results.append(
+                    {
+                        "company": company.slug,
+                        "status": "skipped",
+                        "reason": "No SHOPIFY_CLEARING account mapped.",
+                    }
+                )
                 continue
 
             # Alert if balance is non-zero AND no payouts are pending
@@ -140,11 +142,13 @@ class Command(BaseCommand):
             if is_alert:
                 any_alert = True
 
-            results.append({
-                "company": company.slug,
-                "status": "ALERT" if is_alert else "ok",
-                **data,
-            })
+            results.append(
+                {
+                    "company": company.slug,
+                    "status": "ALERT" if is_alert else "ok",
+                    **data,
+                }
+            )
 
             if is_alert:
                 logger.warning(
@@ -162,9 +166,7 @@ class Command(BaseCommand):
             self._print_table(results)
 
         if strict and any_alert:
-            self.stderr.write(
-                self.style.ERROR("STRICT: Non-zero clearing balance with no pending payouts.")
-            )
+            self.stderr.write(self.style.ERROR("STRICT: Non-zero clearing balance with no pending payouts."))
             sys.exit(1)
 
     def _print_table(self, results):
@@ -179,18 +181,12 @@ class Command(BaseCommand):
             if status == "ok":
                 balance = r.get("balance", "0")
                 pending = r.get("pending_payouts", 0)
-                label = self.style.SUCCESS(
-                    f"  {company}: OK (balance={balance}, pending_payouts={pending})"
-                )
+                label = self.style.SUCCESS(f"  {company}: OK (balance={balance}, pending_payouts={pending})")
             elif status == "skipped":
-                label = self.style.WARNING(
-                    f"  {company}: SKIPPED ({r.get('reason', '')})"
-                )
+                label = self.style.WARNING(f"  {company}: SKIPPED ({r.get('reason', '')})")
             else:
                 balance = r.get("balance", "?")
-                label = self.style.ERROR(
-                    f"  {company}: ALERT — non-zero balance {balance} with no pending payouts"
-                )
+                label = self.style.ERROR(f"  {company}: ALERT — non-zero balance {balance} with no pending payouts")
 
             self.stdout.write(label)
 

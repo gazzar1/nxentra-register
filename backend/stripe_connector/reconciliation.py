@@ -30,9 +30,11 @@ logger = logging.getLogger(__name__)
 
 # ── Data structures ──────────────────────────────────────────────
 
+
 @dataclass
 class TransactionMatch:
     """Result of matching a single payout transaction."""
+
     stripe_balance_txn_id: str
     transaction_type: str
     amount: Decimal
@@ -46,6 +48,7 @@ class TransactionMatch:
 @dataclass
 class PayoutReconciliation:
     """Reconciliation result for a single Stripe payout."""
+
     stripe_payout_id: str
     payout_date: date
     gross_amount: Decimal
@@ -73,6 +76,7 @@ class PayoutReconciliation:
 
 
 # ── Core reconciliation ─────────────────────────────────────────
+
 
 def reconcile_payout(company, payout):
     """
@@ -177,9 +181,7 @@ def reconcile_payout(company, payout):
     if recon.net_variance != 0:
         discrepancies.append(f"Net variance: {recon.net_variance}")
     if recon.unmatched_transactions > 0:
-        discrepancies.append(
-            f"{recon.unmatched_transactions} unmatched transaction(s)"
-        )
+        discrepancies.append(f"{recon.unmatched_transactions} unmatched transaction(s)")
 
     recon.discrepancies = discrepancies
 

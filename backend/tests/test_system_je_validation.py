@@ -21,7 +21,6 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
-from django.test import TestCase
 
 from accounting.validation import ValidationResult, validate_system_journal_postable
 
@@ -50,22 +49,30 @@ def accounts(company, db):
 
     with projection_writes_allowed():
         cash = Account.objects.projection().create(
-            company=company, code="1000", name="Cash",
+            company=company,
+            code="1000",
+            name="Cash",
             account_type=Account.AccountType.ASSET,
             status=Account.Status.ACTIVE,
         )
         revenue = Account.objects.projection().create(
-            company=company, code="4000", name="Revenue",
+            company=company,
+            code="4000",
+            name="Revenue",
             account_type=Account.AccountType.REVENUE,
             status=Account.Status.ACTIVE,
         )
         inactive = Account.objects.projection().create(
-            company=company, code="9999", name="Inactive Account",
+            company=company,
+            code="9999",
+            name="Inactive Account",
             account_type=Account.AccountType.EXPENSE,
             status=Account.Status.INACTIVE,
         )
         header = Account.objects.projection().create(
-            company=company, code="1XXX", name="Header Account",
+            company=company,
+            code="1XXX",
+            name="Header Account",
             account_type=Account.AccountType.ASSET,
             status=Account.Status.ACTIVE,
             is_header=True,
@@ -259,15 +266,17 @@ class TestValidateSystemJournalPostable:
 # Replay / Idempotency Tests
 # =============================================================================
 
+
 @pytest.fixture
 def shopify_company(db):
     """Create a company with Shopify account mappings for end-to-end tests."""
     from uuid import uuid4
 
+    from django.contrib.auth import get_user_model
+
     from accounting.mappings import ModuleAccountMapping
     from accounting.models import Account
     from accounts.models import Company, CompanyMembership
-    from django.contrib.auth import get_user_model
     from projections.write_barrier import projection_writes_allowed
 
     User = get_user_model()
@@ -302,27 +311,37 @@ def shopify_company(db):
     # Create GL accounts needed by Shopify projection
     with projection_writes_allowed():
         clearing = Account.objects.projection().create(
-            company=company, code="2200", name="Shopify Clearing",
+            company=company,
+            code="2200",
+            name="Shopify Clearing",
             account_type=Account.AccountType.LIABILITY,
             status=Account.Status.ACTIVE,
         )
         revenue = Account.objects.projection().create(
-            company=company, code="4000", name="Sales Revenue",
+            company=company,
+            code="4000",
+            name="Sales Revenue",
             account_type=Account.AccountType.REVENUE,
             status=Account.Status.ACTIVE,
         )
         tax = Account.objects.projection().create(
-            company=company, code="2300", name="Sales Tax Payable",
+            company=company,
+            code="2300",
+            name="Sales Tax Payable",
             account_type=Account.AccountType.LIABILITY,
             status=Account.Status.ACTIVE,
         )
         bank = Account.objects.projection().create(
-            company=company, code="1010", name="Bank",
+            company=company,
+            code="1010",
+            name="Bank",
             account_type=Account.AccountType.ASSET,
             status=Account.Status.ACTIVE,
         )
         fees = Account.objects.projection().create(
-            company=company, code="6100", name="Processing Fees",
+            company=company,
+            code="6100",
+            name="Processing Fees",
             account_type=Account.AccountType.EXPENSE,
             status=Account.Status.ACTIVE,
         )
@@ -337,8 +356,10 @@ def shopify_company(db):
     }
     for role, acct in role_to_account.items():
         ModuleAccountMapping.objects.create(
-            company=company, module="shopify_connector",
-            role=role, account=acct,
+            company=company,
+            module="shopify_connector",
+            role=role,
+            account=acct,
         )
 
     return company
@@ -356,6 +377,7 @@ def _make_shopify_order_event(company, shopify_order_id, amount="100.00", transa
 
     # Get next company_sequence
     from events.models import CompanyEventCounter
+
     counter, _ = CompanyEventCounter.objects.get_or_create(company=company)
     counter.last_sequence += 1
     counter.save()
@@ -440,8 +462,7 @@ class TestShopifyReplayIdempotency:
         ).count()
 
         assert posted_events_after == posted_events_first, (
-            f"Replay emitted duplicate JOURNAL_ENTRY_POSTED: "
-            f"{posted_events_first} → {posted_events_after}"
+            f"Replay emitted duplicate JOURNAL_ENTRY_POSTED: {posted_events_first} → {posted_events_after}"
         )
 
     def test_different_orders_create_separate_jes(self, shopify_company):
@@ -489,7 +510,9 @@ class TestShopifyReplayIdempotency:
 
         # Create event with a date in the closed period
         event = _make_shopify_order_event(
-            shopify_company, shopify_order_id=99005, amount="200.00",
+            shopify_company,
+            shopify_order_id=99005,
+            amount="200.00",
             transaction_date="2025-01-15",
         )
 
@@ -507,9 +530,7 @@ class TestShopifyReplayIdempotency:
             memo__contains="99005",
         ).first()
         assert je is not None, "JE should be created even for closed period"
-        assert je.status == JournalEntry.Status.INCOMPLETE, (
-            f"Expected INCOMPLETE for closed period, got {je.status}"
-        )
+        assert je.status == JournalEntry.Status.INCOMPLETE, f"Expected INCOMPLETE for closed period, got {je.status}"
         assert je.posted_at is None, "posted_at should be None for INCOMPLETE entry"
 
         # No new JOURNAL_ENTRY_POSTED event should have been emitted
@@ -518,6 +539,5 @@ class TestShopifyReplayIdempotency:
             event_type="journal_entry.posted",
         ).count()
         assert posted_after == posted_before, (
-            f"INCOMPLETE entry must NOT emit JOURNAL_ENTRY_POSTED: "
-            f"{posted_before} → {posted_after}"
+            f"INCOMPLETE entry must NOT emit JOURNAL_ENTRY_POSTED: {posted_before} → {posted_after}"
         )

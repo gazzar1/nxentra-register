@@ -60,9 +60,7 @@ class PropertyExpense(ProjectionWriteGuard):
     amount = models.DecimalField(max_digits=18, decimal_places=2)
     currency = models.CharField(max_length=3, default="SAR")
     payment_mode = models.CharField(max_length=20, choices=PaymentMode.choices)
-    paid_status = models.CharField(
-        max_length=20, choices=PaidStatus.choices, default=PaidStatus.UNPAID
-    )
+    paid_status = models.CharField(max_length=20, choices=PaidStatus.choices, default=PaidStatus.UNPAID)
     description = models.TextField(blank=True, null=True)
     document_ref = models.CharField(max_length=255, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)

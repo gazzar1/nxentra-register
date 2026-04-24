@@ -15,6 +15,7 @@ Features:
 - Validates export version and company matching
 - Computes import hash for verification against export hash
 """
+
 import hashlib
 import json
 from datetime import datetime
@@ -87,9 +88,7 @@ class Command(BaseCommand):
 
         # Validate export format
         if export_data.get("version") != "1.0":
-            raise CommandError(
-                f"Unsupported export version: {export_data.get('version')}. Expected: 1.0"
-            )
+            raise CommandError(f"Unsupported export version: {export_data.get('version')}. Expected: 1.0")
 
         company_data = export_data.get("company", {})
         events = export_data.get("events", [])
@@ -129,7 +128,7 @@ class Command(BaseCommand):
                 with transaction.atomic(using=db_alias):
                     # Get or create event counter for the company
                     if not options["dry_run"]:
-                        counter, created = CompanyEventCounter.objects.using(db_alias).get_or_create(
+                        counter, _created = CompanyEventCounter.objects.using(db_alias).get_or_create(
                             company_id=company.id,
                             defaults={"last_sequence": 0},
                         )
@@ -144,9 +143,7 @@ class Command(BaseCommand):
 
                         try:
                             # Update hash for verification
-                            hasher.update(
-                                json.dumps(event_data, sort_keys=True).encode()
-                            )
+                            hasher.update(json.dumps(event_data, sort_keys=True).encode())
 
                             if options["dry_run"]:
                                 imported += 1
@@ -154,10 +151,14 @@ class Command(BaseCommand):
 
                             # Check for existing event (idempotency)
                             if options["skip_existing"]:
-                                exists = BusinessEvent.objects.using(db_alias).filter(
-                                    company_id=company.id,
-                                    idempotency_key=event_data.get("idempotency_key"),
-                                ).exists()
+                                exists = (
+                                    BusinessEvent.objects.using(db_alias)
+                                    .filter(
+                                        company_id=company.id,
+                                        idempotency_key=event_data.get("idempotency_key"),
+                                    )
+                                    .exists()
+                                )
                                 if exists:
                                     skipped += 1
                                     continue
@@ -216,15 +217,15 @@ class Command(BaseCommand):
                             imported += 1
 
                         except Exception as e:
-                            errors.append({
-                                "event_id": event_data.get("id"),
-                                "event_type": event_data.get("event_type"),
-                                "error": str(e),
-                            })
+                            errors.append(
+                                {
+                                    "event_id": event_data.get("id"),
+                                    "event_type": event_data.get("event_type"),
+                                    "error": str(e),
+                                }
+                            )
                             if len(errors) >= 10:
-                                self.stdout.write(
-                                    self.style.ERROR("Too many errors, stopping import")
-                                )
+                                self.stdout.write(self.style.ERROR("Too many errors, stopping import"))
                                 raise
 
                     # Update event counter
@@ -240,9 +241,7 @@ class Command(BaseCommand):
                 if errors:
                     self.stdout.write(self.style.ERROR("\nImport failed with errors:"))
                     for err in errors:
-                        self.stdout.write(
-                            f"  Event {err['event_id']} ({err['event_type']}): {err['error']}"
-                        )
+                        self.stdout.write(f"  Event {err['event_id']} ({err['event_type']}): {err['error']}")
                 raise CommandError(f"Import failed: {e}")
 
             # Compute import hash
@@ -259,15 +258,11 @@ class Command(BaseCommand):
             # Verify hash
             if export_hash:
                 if import_hash == export_hash:
-                    self.stdout.write(
-                        self.style.SUCCESS("  Hash verification: PASSED (export matches import)")
-                    )
+                    self.stdout.write(self.style.SUCCESS("  Hash verification: PASSED (export matches import)"))
                 else:
                     self.stdout.write(
                         self.style.WARNING(
-                            f"  Hash verification: MISMATCH\n"
-                            f"    Export: {export_hash}\n"
-                            f"    Import: {import_hash}"
+                            f"  Hash verification: MISMATCH\n    Export: {export_hash}\n    Import: {import_hash}"
                         )
                     )
 
@@ -283,7 +278,5 @@ class Command(BaseCommand):
                 if tenant_entry:
                     tenant_entry.migration_import_hash = import_hash
                     tenant_entry.migration_import_count = imported
-                    tenant_entry.save(
-                        update_fields=["migration_import_hash", "migration_import_count", "updated_at"]
-                    )
+                    tenant_entry.save(update_fields=["migration_import_hash", "migration_import_count", "updated_at"])
                     self.stdout.write("Updated TenantDirectory with import metadata")

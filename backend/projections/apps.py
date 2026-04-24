@@ -49,8 +49,7 @@ class ProjectionsConfig(AppConfig):
                     cls = import_string(dotted_path)
                 except (ImportError, AttributeError) as exc:
                     raise RuntimeError(
-                        f"Cannot import projection '{dotted_path}' declared by "
-                        f"'{app_config.name}': {exc}"
+                        f"Cannot import projection '{dotted_path}' declared by '{app_config.name}': {exc}"
                     ) from exc
 
                 instance = cls()
@@ -58,7 +57,8 @@ class ProjectionsConfig(AppConfig):
                 projection_registry.register(instance)
                 logger.debug(
                     "Registered projection '%s' from %s",
-                    instance.name, app_config.name,
+                    instance.name,
+                    app_config.name,
                 )
 
         # -----------------------------------------------------------------
@@ -75,8 +75,7 @@ class ProjectionsConfig(AppConfig):
                 mod = importlib.import_module(event_module_path)
             except ImportError as exc:
                 raise RuntimeError(
-                    f"Cannot import event_types_module '{event_module_path}' "
-                    f"declared by '{app_config.name}': {exc}"
+                    f"Cannot import event_types_module '{event_module_path}' declared by '{app_config.name}': {exc}"
                 ) from exc
 
             registered_events = getattr(mod, "REGISTERED_EVENTS", None)
@@ -95,8 +94,7 @@ class ProjectionsConfig(AppConfig):
             for event_type, data_cls in registered_events.items():
                 if not isinstance(event_type, str):
                     raise RuntimeError(
-                        f"REGISTERED_EVENTS key {event_type!r} in "
-                        f"'{event_module_path}' must be a string."
+                        f"REGISTERED_EVENTS key {event_type!r} in '{event_module_path}' must be a string."
                     )
                 if not (isinstance(data_cls, type) and issubclass(data_cls, BaseEventData)):
                     raise RuntimeError(
@@ -120,7 +118,8 @@ class ProjectionsConfig(AppConfig):
 
             logger.debug(
                 "Registered %d event types from %s",
-                len(registered_events), app_config.name,
+                len(registered_events),
+                app_config.name,
             )
 
         # -----------------------------------------------------------------
@@ -138,9 +137,7 @@ def _assert_registration_integrity(apps, registry):
         for dotted_path in getattr(app_config, "projections", []):
             cls = import_string(dotted_path)
             # Find by class type in registry
-            found = any(
-                type(p) is cls for p in registry.all()
-            )
+            found = any(type(p) is cls for p in registry.all())
             if not found:
                 raise RuntimeError(
                     f"Projection '{dotted_path}' declared by '{app_config.name}' "

@@ -14,6 +14,7 @@ Options:
     --rebuild: Clear existing projection data and replay from scratch
     --projection: Only replay a specific projection
 """
+
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
@@ -74,9 +75,7 @@ class Command(BaseCommand):
             except Company.DoesNotExist:
                 raise CommandError(f"Company with ID {company_id} not found")
 
-        self.stdout.write(
-            f"Replaying projections for {company.name} (ID: {company.id}) on database '{db_alias}'"
-        )
+        self.stdout.write(f"Replaying projections for {company.name} (ID: {company.id}) on database '{db_alias}'")
 
         if options["dry_run"]:
             self.stdout.write(self.style.WARNING("DRY RUN - no changes will be made"))
@@ -88,10 +87,7 @@ class Command(BaseCommand):
             projection = projection_registry.get(options["projection"])
             if not projection:
                 available = [p.name for p in all_projections]
-                raise CommandError(
-                    f"Unknown projection: {options['projection']}. "
-                    f"Available: {available}"
-                )
+                raise CommandError(f"Unknown projection: {options['projection']}. Available: {available}")
             projections_to_run = [projection]
         else:
             projections_to_run = all_projections
@@ -110,24 +106,36 @@ class Command(BaseCommand):
                     # Count events that would be processed
                     from events.models import BusinessEvent, EventBookmark
 
-                    bookmark = EventBookmark.objects.using(db_alias).filter(
-                        consumer_name=projection.name,
-                        company_id=company_id,
-                    ).first()
+                    bookmark = (
+                        EventBookmark.objects.using(db_alias)
+                        .filter(
+                            consumer_name=projection.name,
+                            company_id=company_id,
+                        )
+                        .first()
+                    )
 
                     if options["rebuild"] or not bookmark:
                         # Would process all events
-                        count = BusinessEvent.objects.using(db_alias).filter(
-                            company_id=company_id,
-                            event_type__in=projection.consumes,
-                        ).count()
+                        count = (
+                            BusinessEvent.objects.using(db_alias)
+                            .filter(
+                                company_id=company_id,
+                                event_type__in=projection.consumes,
+                            )
+                            .count()
+                        )
                     else:
                         # Would process events after bookmark
-                        count = BusinessEvent.objects.using(db_alias).filter(
-                            company_id=company_id,
-                            event_type__in=projection.consumes,
-                            company_sequence__gt=bookmark.last_event.company_sequence if bookmark.last_event else 0,
-                        ).count()
+                        count = (
+                            BusinessEvent.objects.using(db_alias)
+                            .filter(
+                                company_id=company_id,
+                                event_type__in=projection.consumes,
+                                company_sequence__gt=bookmark.last_event.company_sequence if bookmark.last_event else 0,
+                            )
+                            .count()
+                        )
 
                     self.stdout.write(f"  Would process: {count} events")
                     total_processed += count
@@ -137,9 +145,7 @@ class Command(BaseCommand):
                 try:
                     if options["rebuild"]:
                         processed = projection.rebuild(company, using=db_alias)
-                        self.stdout.write(
-                            self.style.SUCCESS(f"  Rebuilt: {processed} events")
-                        )
+                        self.stdout.write(self.style.SUCCESS(f"  Rebuilt: {processed} events"))
                     else:
                         processed = projection.process_pending(company, using=db_alias)
                         self.stdout.write(f"  Processed: {processed} events")
@@ -147,12 +153,8 @@ class Command(BaseCommand):
                     total_processed += processed
 
                 except Exception as e:
-                    self.stdout.write(
-                        self.style.ERROR(f"  ERROR: {e}")
-                    )
+                    self.stdout.write(self.style.ERROR(f"  ERROR: {e}"))
                     raise CommandError(f"Projection {projection.name} failed: {e}")
 
             self.stdout.write("")
-            self.stdout.write(
-                self.style.SUCCESS(f"Total events processed: {total_processed}")
-            )
+            self.stdout.write(self.style.SUCCESS(f"Total events processed: {total_processed}"))

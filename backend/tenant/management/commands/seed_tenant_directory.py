@@ -15,6 +15,7 @@ All new entries are created with:
 
 This is idempotent - companies that already have entries are skipped.
 """
+
 from django.core.management.base import BaseCommand
 
 from accounts.models import Company
@@ -44,25 +45,19 @@ class Command(BaseCommand):
             total = companies.count()
 
             # Get companies that already have entries
-            existing_company_ids = set(
-                TenantDirectory.objects.values_list("company_id", flat=True)
-            )
+            existing_company_ids = set(TenantDirectory.objects.values_list("company_id", flat=True))
 
             created = 0
             skipped = 0
 
             for company in companies:
                 if company.id in existing_company_ids:
-                    self.stdout.write(
-                        f"  SKIP: {company.name} (ID: {company.id}) - already has entry"
-                    )
+                    self.stdout.write(f"  SKIP: {company.name} (ID: {company.id}) - already has entry")
                     skipped += 1
                     continue
 
                 if dry_run:
-                    self.stdout.write(
-                        f"  WOULD CREATE: {company.name} (ID: {company.id}) -> SHARED/default"
-                    )
+                    self.stdout.write(f"  WOULD CREATE: {company.name} (ID: {company.id}) -> SHARED/default")
                     created += 1
                 else:
                     TenantDirectory.objects.create(
@@ -72,9 +67,7 @@ class Command(BaseCommand):
                         status=TenantDirectory.Status.ACTIVE,
                     )
                     self.stdout.write(
-                        self.style.SUCCESS(
-                            f"  CREATED: {company.name} (ID: {company.id}) -> SHARED/default"
-                        )
+                        self.style.SUCCESS(f"  CREATED: {company.name} (ID: {company.id}) -> SHARED/default")
                     )
                     created += 1
 

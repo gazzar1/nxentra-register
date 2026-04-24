@@ -40,24 +40,28 @@ class TestLEPHExternalStorageRoundtrip:
         """
         lines = []
         for i in range(1, num_lines + 1):
-            lines.append({
-                "line_no": i,
-                "account_public_id": str(uuid4()),
-                "account_code": f"{1000 + i}",
-                "description": f"Test line {i} with padding " + ("x" * 150),
-                "debit": f"{Decimal('100.00')}",
-                "credit": "0.00",
-            })
+            lines.append(
+                {
+                    "line_no": i,
+                    "account_public_id": str(uuid4()),
+                    "account_code": f"{1000 + i}",
+                    "description": f"Test line {i} with padding " + ("x" * 150),
+                    "debit": f"{Decimal('100.00')}",
+                    "credit": "0.00",
+                }
+            )
         # Add one balancing credit line
         total_debit = Decimal("100.00") * num_lines
-        lines.append({
-            "line_no": num_lines + 1,
-            "account_public_id": str(uuid4()),
-            "account_code": "2000",
-            "description": "Balancing credit line",
-            "debit": "0.00",
-            "credit": str(total_debit),
-        })
+        lines.append(
+            {
+                "line_no": num_lines + 1,
+                "account_public_id": str(uuid4()),
+                "account_code": "2000",
+                "description": "Balancing credit line",
+                "debit": "0.00",
+                "credit": str(total_debit),
+            }
+        )
 
         return {
             "entry_public_id": str(entry_public_id),
@@ -88,8 +92,7 @@ class TestLEPHExternalStorageRoundtrip:
         # Sanity: confirm payload exceeds inline threshold
         payload_size = estimate_json_size(data)
         assert payload_size > INLINE_MAX_SIZE, (
-            f"Test payload {payload_size} bytes should exceed "
-            f"INLINE_MAX_SIZE {INLINE_MAX_SIZE} bytes"
+            f"Test payload {payload_size} bytes should exceed INLINE_MAX_SIZE {INLINE_MAX_SIZE} bytes"
         )
 
         event = emit_event_no_actor(
@@ -103,9 +106,7 @@ class TestLEPHExternalStorageRoundtrip:
         )
 
         # Verify external storage was used
-        assert event.payload_storage == "external", (
-            f"Expected external storage, got {event.payload_storage}"
-        )
+        assert event.payload_storage == "external", f"Expected external storage, got {event.payload_storage}"
         assert event.payload_ref is not None, "External event must have payload_ref"
         assert event.payload_hash, "External event must have payload_hash"
         assert event.data == {}, "Inline data should be empty for external events"
@@ -194,6 +195,7 @@ class TestLEPHExternalStorageRoundtrip:
 
         # get_data() should raise IntegrityError due to hash mismatch
         from django.db import IntegrityError
+
         with pytest.raises(IntegrityError, match="hash mismatch"):
             event.get_data()
 

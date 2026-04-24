@@ -8,6 +8,7 @@ Usage:
     python manage.py seed_demo_company --company-slug sony-egypt
     python manage.py seed_demo_company --company-slug sony-egypt --flush
 """
+
 import random
 from datetime import date, timedelta
 from decimal import Decimal
@@ -29,7 +30,6 @@ class Command(BaseCommand):
 
     @transaction.atomic
     def handle(self, *args, **options):
-
         slug = options["company_slug"]
 
         with rls_bypass():
@@ -39,9 +39,11 @@ class Command(BaseCommand):
                 raise CommandError(f"Company with slug '{slug}' not found.")
 
             # Find an owner user for the actor context
-            membership = CompanyMembership.objects.filter(
-                company=company, role="OWNER", is_active=True
-            ).select_related("user").first()
+            membership = (
+                CompanyMembership.objects.filter(company=company, role="OWNER", is_active=True)
+                .select_related("user")
+                .first()
+            )
             if not membership:
                 raise CommandError("No active OWNER found for this company.")
 
@@ -49,6 +51,7 @@ class Command(BaseCommand):
 
             # Build a fake actor context
             from accounts.authz import ActorContext
+
             actor = ActorContext(
                 user=user,
                 company=company,
@@ -81,9 +84,7 @@ class Command(BaseCommand):
                 # 6. Create journal entries spanning 6 months
                 self._create_journal_entries(actor, company, accounts, customers, vendors)
 
-            self.stdout.write(self.style.SUCCESS(
-                f"Demo data seeded successfully for {company.name}!"
-            ))
+            self.stdout.write(self.style.SUCCESS(f"Demo data seeded successfully for {company.name}!"))
 
     def _flush(self, company):
         """Remove demo-seeded data (keeps system accounts and COA)."""
@@ -211,7 +212,7 @@ class Command(BaseCommand):
 
         items_data = [
             ("ITEM-001", "Laptop Dell XPS 15", "لاب توب ديل", "3500.00", "2800.00", "INVENTORY"),
-            ("ITEM-002", "Monitor LG 27\"", "شاشة إل جي", "1200.00", "900.00", "INVENTORY"),
+            ("ITEM-002", 'Monitor LG 27"', "شاشة إل جي", "1200.00", "900.00", "INVENTORY"),
             ("ITEM-003", "Keyboard Logitech", "كيبورد لوجيتك", "350.00", "200.00", "INVENTORY"),
             ("ITEM-004", "Consulting Hour", "ساعة استشارة", "500.00", "0", "SERVICE"),
             ("ITEM-005", "Training Session", "جلسة تدريب", "2000.00", "0", "SERVICE"),
@@ -299,10 +300,19 @@ class Command(BaseCommand):
                     date=entry_date,
                     memo=f"Sales to {customer.name}",
                     lines=[
-                        {"account_id": accounts["ar"].id, "debit": str(amount), "credit": "0",
-                         "description": f"Invoice - {customer.name}", "customer_public_id": str(customer.public_id)},
-                        {"account_id": accounts["sales_revenue"].id, "debit": "0", "credit": str(amount),
-                         "description": f"Revenue - {customer.name}"},
+                        {
+                            "account_id": accounts["ar"].id,
+                            "debit": str(amount),
+                            "credit": "0",
+                            "description": f"Invoice - {customer.name}",
+                            "customer_public_id": str(customer.public_id),
+                        },
+                        {
+                            "account_id": accounts["sales_revenue"].id,
+                            "debit": "0",
+                            "credit": str(amount),
+                            "description": f"Revenue - {customer.name}",
+                        },
                     ],
                     kind="NORMAL",
                 )
@@ -318,7 +328,15 @@ class Command(BaseCommand):
             for _i in range(random.randint(2, 4)):
                 entry_date = month_start + timedelta(days=random.randint(1, 27))
                 vendor = random.choice(vendors)
-                expense_account = random.choice([accounts["rent"], accounts["salaries"], accounts["utilities"], accounts["marketing"], accounts["office"]])
+                expense_account = random.choice(
+                    [
+                        accounts["rent"],
+                        accounts["salaries"],
+                        accounts["utilities"],
+                        accounts["marketing"],
+                        accounts["office"],
+                    ]
+                )
                 amount = Decimal(str(random.randint(1000, 15000)))
 
                 result = create_journal_entry(
@@ -326,10 +344,18 @@ class Command(BaseCommand):
                     date=entry_date,
                     memo=f"Expense - {vendor.name}",
                     lines=[
-                        {"account_id": expense_account.id, "debit": str(amount), "credit": "0",
-                         "description": f"{expense_account.name} - {vendor.name}"},
-                        {"account_id": accounts["bank"].id, "debit": "0", "credit": str(amount),
-                         "description": f"Payment to {vendor.name}"},
+                        {
+                            "account_id": expense_account.id,
+                            "debit": str(amount),
+                            "credit": "0",
+                            "description": f"{expense_account.name} - {vendor.name}",
+                        },
+                        {
+                            "account_id": accounts["bank"].id,
+                            "debit": "0",
+                            "credit": str(amount),
+                            "description": f"Payment to {vendor.name}",
+                        },
                     ],
                     kind="NORMAL",
                 )
@@ -352,10 +378,19 @@ class Command(BaseCommand):
                     date=entry_date,
                     memo=f"Receipt from {customer.name}",
                     lines=[
-                        {"account_id": accounts["bank"].id, "debit": str(amount), "credit": "0",
-                         "description": f"Cash receipt - {customer.name}"},
-                        {"account_id": accounts["ar"].id, "debit": "0", "credit": str(amount),
-                         "description": f"AR payment - {customer.name}", "customer_public_id": str(customer.public_id)},
+                        {
+                            "account_id": accounts["bank"].id,
+                            "debit": str(amount),
+                            "credit": "0",
+                            "description": f"Cash receipt - {customer.name}",
+                        },
+                        {
+                            "account_id": accounts["ar"].id,
+                            "debit": "0",
+                            "credit": str(amount),
+                            "description": f"AR payment - {customer.name}",
+                            "customer_public_id": str(customer.public_id),
+                        },
                     ],
                     kind="NORMAL",
                 )

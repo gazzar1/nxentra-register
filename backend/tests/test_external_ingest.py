@@ -67,9 +67,9 @@ def _valid_rent_payload():
 # API Key Model Tests
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestExternalAPIKeyModel:
-
     def test_create_key_returns_raw_and_instance(self, company):
         key_obj, raw_key = ExternalAPIKey.create_key(
             company=company,
@@ -126,9 +126,9 @@ class TestExternalAPIKeyModel:
 # Ingest Endpoint Tests
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestEventIngestEndpoint:
-
     def test_happy_path(self, client, api_key):
         key_obj, raw_key = api_key
         payload = _valid_rent_payload()
@@ -200,7 +200,7 @@ class TestEventIngestEndpoint:
         assert "not authorized" in resp.json()["detail"]
 
     def test_unknown_event_type(self, client, company):
-        key_obj, raw_key = ExternalAPIKey.create_key(
+        _key_obj, raw_key = ExternalAPIKey.create_key(
             company=company,
             name="Broad",
             source_system="test",
@@ -308,6 +308,7 @@ class TestEventIngestEndpoint:
 # Downstream Projection Test
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestExternalEventDownstreamProjection:
     """
@@ -316,7 +317,10 @@ class TestExternalEventDownstreamProjection:
     """
 
     def test_ingested_rent_event_creates_journal_entry(
-        self, client, company, api_key,
+        self,
+        client,
+        company,
+        api_key,
     ):
         from accounting.models import Account, JournalEntry, JournalLine
         from projections.base import projection_registry
@@ -326,14 +330,20 @@ class TestExternalEventDownstreamProjection:
 
         # Create accounts
         ar_account = Account.objects.create(
-            company=company, public_id=uuid4(), code="1100",
-            name="AR", account_type=Account.AccountType.ASSET,
+            company=company,
+            public_id=uuid4(),
+            code="1100",
+            name="AR",
+            account_type=Account.AccountType.ASSET,
             normal_balance=Account.NormalBalance.DEBIT,
             status=Account.Status.ACTIVE,
         )
         rent_income = Account.objects.create(
-            company=company, public_id=uuid4(), code="4100",
-            name="Rental Income", account_type=Account.AccountType.REVENUE,
+            company=company,
+            public_id=uuid4(),
+            code="4100",
+            name="Rental Income",
+            account_type=Account.AccountType.REVENUE,
             normal_balance=Account.NormalBalance.CREDIT,
             status=Account.Status.ACTIVE,
         )
@@ -369,9 +379,7 @@ class TestExternalEventDownstreamProjection:
         )
         assert entries.count() == 1
 
-        lines = list(
-            JournalLine.objects.filter(entry=entries.first()).order_by("line_no")
-        )
+        lines = list(JournalLine.objects.filter(entry=entries.first()).order_by("line_no"))
         assert len(lines) == 2
         assert lines[0].debit == Decimal("5000.00")
         assert lines[1].credit == Decimal("5000.00")

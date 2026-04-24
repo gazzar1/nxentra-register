@@ -14,17 +14,34 @@ from .models import Doctor, Invoice, Patient, PatientDocument, Payment, Visit
 # Patient Serializers
 # =============================================================================
 
+
 class PatientSerializer(serializers.ModelSerializer):
     visit_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Patient
         fields = [
-            "id", "public_id", "code", "name", "name_ar",
-            "date_of_birth", "gender", "phone", "email", "national_id",
-            "blood_type", "allergies", "chronic_diseases", "current_medications",
-            "emergency_contact_name", "emergency_contact_phone",
-            "status", "notes", "visit_count", "created_at", "updated_at",
+            "id",
+            "public_id",
+            "code",
+            "name",
+            "name_ar",
+            "date_of_birth",
+            "gender",
+            "phone",
+            "email",
+            "national_id",
+            "blood_type",
+            "allergies",
+            "chronic_diseases",
+            "current_medications",
+            "emergency_contact_name",
+            "emergency_contact_phone",
+            "status",
+            "notes",
+            "visit_count",
+            "created_at",
+            "updated_at",
         ]
         read_only_fields = ["id", "public_id", "created_at", "updated_at"]
 
@@ -41,7 +58,9 @@ class PatientCreateSerializer(serializers.Serializer):
     phone = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
     email = serializers.EmailField(required=False, allow_blank=True, default="")
     national_id = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
-    blood_type = serializers.ChoiceField(choices=Patient.BloodType.choices, required=False, allow_blank=True, default="")
+    blood_type = serializers.ChoiceField(
+        choices=Patient.BloodType.choices, required=False, allow_blank=True, default=""
+    )
     allergies = serializers.ListField(child=serializers.CharField(), required=False, default=[])
     chronic_diseases = serializers.ListField(child=serializers.CharField(), required=False, default=[])
     current_medications = serializers.ListField(child=serializers.CharField(), required=False, default=[])
@@ -72,13 +91,24 @@ class PatientUpdateSerializer(serializers.Serializer):
 # Document Serializers
 # =============================================================================
 
+
 class PatientDocumentSerializer(serializers.ModelSerializer):
     class Meta:
         model = PatientDocument
         fields = [
-            "id", "public_id", "patient_id", "visit_id",
-            "document_type", "title", "file", "file_name", "file_size",
-            "mime_type", "uploaded_by_id", "notes", "uploaded_at",
+            "id",
+            "public_id",
+            "patient_id",
+            "visit_id",
+            "document_type",
+            "title",
+            "file",
+            "file_name",
+            "file_size",
+            "mime_type",
+            "uploaded_by_id",
+            "notes",
+            "uploaded_at",
         ]
         read_only_fields = ["id", "public_id", "file_name", "file_size", "mime_type", "uploaded_at"]
 
@@ -95,13 +125,21 @@ class DocumentUploadSerializer(serializers.Serializer):
 # Doctor Serializers
 # =============================================================================
 
+
 class DoctorSerializer(serializers.ModelSerializer):
     class Meta:
         model = Doctor
         fields = [
-            "id", "public_id", "code", "name", "name_ar",
-            "specialization", "phone", "is_active",
-            "created_at", "updated_at",
+            "id",
+            "public_id",
+            "code",
+            "name",
+            "name_ar",
+            "specialization",
+            "phone",
+            "is_active",
+            "created_at",
+            "updated_at",
         ]
         read_only_fields = ["id", "public_id", "created_at", "updated_at"]
 
@@ -118,6 +156,7 @@ class DoctorCreateSerializer(serializers.Serializer):
 # Visit Serializers
 # =============================================================================
 
+
 class VisitSerializer(serializers.ModelSerializer):
     patient_name = serializers.CharField(source="patient.name", read_only=True)
     patient_code = serializers.CharField(source="patient.code", read_only=True)
@@ -126,10 +165,21 @@ class VisitSerializer(serializers.ModelSerializer):
     class Meta:
         model = Visit
         fields = [
-            "id", "public_id", "patient_id", "patient_name", "patient_code",
-            "doctor_id", "doctor_name",
-            "visit_date", "visit_type", "chief_complaint", "diagnosis",
-            "notes", "status", "created_at", "updated_at",
+            "id",
+            "public_id",
+            "patient_id",
+            "patient_name",
+            "patient_code",
+            "doctor_id",
+            "doctor_name",
+            "visit_date",
+            "visit_type",
+            "chief_complaint",
+            "diagnosis",
+            "notes",
+            "status",
+            "created_at",
+            "updated_at",
         ]
         read_only_fields = ["id", "public_id", "created_at", "updated_at"]
 
@@ -152,6 +202,7 @@ class VisitCompleteSerializer(serializers.Serializer):
 # Invoice Serializers
 # =============================================================================
 
+
 class InvoiceLineItemSerializer(serializers.Serializer):
     description = serializers.CharField()
     amount = serializers.DecimalField(max_digits=18, decimal_places=2)
@@ -165,15 +216,37 @@ class InvoiceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Invoice
         fields = [
-            "id", "public_id", "patient_id", "patient_name", "patient_code",
-            "visit_id", "invoice_no", "date", "due_date",
-            "line_items", "subtotal", "discount", "tax", "total",
-            "amount_paid", "balance_due", "currency", "status", "notes",
-            "created_at", "updated_at",
+            "id",
+            "public_id",
+            "patient_id",
+            "patient_name",
+            "patient_code",
+            "visit_id",
+            "invoice_no",
+            "date",
+            "due_date",
+            "line_items",
+            "subtotal",
+            "discount",
+            "tax",
+            "total",
+            "amount_paid",
+            "balance_due",
+            "currency",
+            "status",
+            "notes",
+            "created_at",
+            "updated_at",
         ]
         read_only_fields = [
-            "id", "public_id", "invoice_no", "subtotal", "total",
-            "amount_paid", "created_at", "updated_at",
+            "id",
+            "public_id",
+            "invoice_no",
+            "subtotal",
+            "total",
+            "amount_paid",
+            "created_at",
+            "updated_at",
         ]
 
 
@@ -193,6 +266,7 @@ class InvoiceCreateSerializer(serializers.Serializer):
 # Payment Serializers
 # =============================================================================
 
+
 class PaymentSerializer(serializers.ModelSerializer):
     patient_name = serializers.CharField(source="patient.name", read_only=True)
     invoice_no = serializers.CharField(source="invoice.invoice_no", read_only=True)
@@ -200,10 +274,20 @@ class PaymentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Payment
         fields = [
-            "id", "public_id", "invoice_id", "invoice_no",
-            "patient_id", "patient_name",
-            "amount", "currency", "payment_method", "payment_date",
-            "reference", "notes", "status", "created_at",
+            "id",
+            "public_id",
+            "invoice_id",
+            "invoice_no",
+            "patient_id",
+            "patient_name",
+            "amount",
+            "currency",
+            "payment_method",
+            "payment_date",
+            "reference",
+            "notes",
+            "status",
+            "created_at",
         ]
         read_only_fields = ["id", "public_id", "created_at"]
 
@@ -225,8 +309,10 @@ class PaymentVoidSerializer(serializers.Serializer):
 # Account Mapping Serializer
 # =============================================================================
 
+
 class ClinicAccountMappingSerializer(serializers.Serializer):
     """For reading/updating clinic account role mappings."""
+
     role = serializers.CharField(read_only=True)
     account_id = serializers.IntegerField(allow_null=True, required=False)
     account_code = serializers.CharField(read_only=True, required=False)

@@ -18,4 +18,4 @@ events that use external storage strategy.
 # Re-export EventPayload from models for backward compatibility
 from events.models import EventPayload
 
-__all__ = ['EventPayload']
+__all__ = ["EventPayload"]

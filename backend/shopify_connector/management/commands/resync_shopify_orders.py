@@ -29,27 +29,39 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument(
-            "--company", type=str, default="",
+            "--company",
+            type=str,
+            default="",
             help="Company slug to sync (default: all active companies)",
         )
         parser.add_argument(
-            "--days", type=int, default=7,
+            "--days",
+            type=int,
+            default=7,
             help="Number of days to look back (default: 7). Ignored if --from is set.",
         )
         parser.add_argument(
-            "--from", dest="from_date", type=str, default="",
+            "--from",
+            dest="from_date",
+            type=str,
+            default="",
             help="Start date (ISO format, e.g. 2026-03-01)",
         )
         parser.add_argument(
-            "--to", dest="to_date", type=str, default="",
+            "--to",
+            dest="to_date",
+            type=str,
+            default="",
             help="End date (ISO format, e.g. 2026-03-31). Default: now.",
         )
         parser.add_argument(
-            "--include-payouts", action="store_true",
+            "--include-payouts",
+            action="store_true",
             help="Also sync payouts (default: orders only)",
         )
         parser.add_argument(
-            "--include-products", action="store_true",
+            "--include-products",
+            action="store_true",
             help="Also sync products (default: orders only)",
         )
 
@@ -74,9 +86,7 @@ class Command(BaseCommand):
 
         # Find stores
         with rls_bypass():
-            stores_qs = ShopifyStore.objects.filter(
-                status=ShopifyStore.Status.ACTIVE
-            ).select_related("company")
+            stores_qs = ShopifyStore.objects.filter(status=ShopifyStore.Status.ACTIVE).select_related("company")
 
             if options["company"]:
                 stores_qs = stores_qs.filter(company__slug=options["company"])
@@ -107,19 +117,18 @@ class Command(BaseCommand):
             # Optionally sync payouts
             if options["include_payouts"]:
                 from shopify_connector.commands import sync_payouts
+
                 payout_result = sync_payouts(store)
                 if payout_result.success:
                     data = payout_result.data or {}
-                    self.stdout.write(
-                        f"  Payouts: created={data.get('created', 0)}, "
-                        f"skipped={data.get('skipped', 0)}"
-                    )
+                    self.stdout.write(f"  Payouts: created={data.get('created', 0)}, skipped={data.get('skipped', 0)}")
                 else:
                     self.stdout.write(self.style.ERROR(f"  Payout error: {payout_result.error}"))
 
             # Optionally sync products
             if options["include_products"]:
                 from shopify_connector.commands import sync_products
+
                 product_result = sync_products(store)
                 if product_result.success:
                     data = product_result.data or {}

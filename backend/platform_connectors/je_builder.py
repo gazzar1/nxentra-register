@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class JELine:
     """A single journal entry line to be created."""
+
     account: object  # Account model instance
     description: str
     debit: Decimal = Decimal("0")
@@ -44,6 +45,7 @@ class JERequest:
     Pass this to build_journal_entry() instead of repeating the
     creation + validation + numbering + event-emission boilerplate.
     """
+
     company: object  # Company model instance
     entry_date: object  # date
     memo: str
@@ -125,25 +127,35 @@ def _fix_fx_rounding(lines, entry, company, currency, fx_rate):
     next_line_no = max(l.line_no for l in lines) + 1
     if diff > 0:
         rounding_line = JournalLine(
-            entry=entry, company=company,
-            public_id=uuid.uuid4(), line_no=next_line_no,
+            entry=entry,
+            company=company,
+            public_id=uuid.uuid4(),
+            line_no=next_line_no,
             account=rounding_account,
             description="FX rounding adjustment",
-            debit=Decimal("0"), credit=diff,
-            currency=currency, exchange_rate=fx_rate,
+            debit=Decimal("0"),
+            credit=diff,
+            currency=currency,
+            exchange_rate=fx_rate,
         )
     else:
         rounding_line = JournalLine(
-            entry=entry, company=company,
-            public_id=uuid.uuid4(), line_no=next_line_no,
+            entry=entry,
+            company=company,
+            public_id=uuid.uuid4(),
+            line_no=next_line_no,
             account=rounding_account,
             description="FX rounding adjustment",
-            debit=abs(diff), credit=Decimal("0"),
-            currency=currency, exchange_rate=fx_rate,
+            debit=abs(diff),
+            credit=Decimal("0"),
+            currency=currency,
+            exchange_rate=fx_rate,
         )
 
     lines.append(rounding_line)
-    logger.info("FX rounding line added: %s %s to account %s", "CR" if diff > 0 else "DR", abs(diff), rounding_account.code)
+    logger.info(
+        "FX rounding line added: %s %s to account %s", "CR" if diff > 0 else "DR", abs(diff), rounding_account.code
+    )
 
 
 def build_journal_entry(req: JERequest) -> JournalEntry | None:
@@ -161,7 +173,8 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
     """
     # Idempotency check
     if JournalEntry.objects.filter(
-        company=req.company, memo=req.memo,
+        company=req.company,
+        memo=req.memo,
         status=JournalEntry.Status.POSTED,
     ).exists():
         logger.info("Journal entry already exists for '%s' — skipping", req.memo)
@@ -185,14 +198,18 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
         # Hard validation failure (bad accounts, etc.) — create INCOMPLETE + notify
         logger.warning(
             "Validation failed for '%s' (%s): %s",
-            req.memo, req.source_module, "; ".join(validation.errors),
+            req.memo,
+            req.source_module,
+            "; ".join(validation.errors),
         )
         force_incomplete = True
     elif validation.errors:
         # Soft failure (closed period with on_closed_period="incomplete")
         logger.info(
             "Period closed for '%s' (%s) — creating as INCOMPLETE: %s",
-            req.memo, req.source_module, "; ".join(validation.errors),
+            req.memo,
+            req.source_module,
+            "; ".join(validation.errors),
         )
         force_incomplete = True
 
@@ -202,15 +219,16 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
     fx_rate = req.exchange_rate
 
     if is_foreign and fx_rate == Decimal("1.0"):
-        looked_up_rate = ExchangeRate.get_rate(
-            req.company, req.currency, functional_currency, req.entry_date
-        )
+        looked_up_rate = ExchangeRate.get_rate(req.company, req.currency, functional_currency, req.entry_date)
         if looked_up_rate:
             fx_rate = looked_up_rate
         else:
             logger.warning(
                 "No exchange rate found for %s→%s on %s (company %s) — using 1.0",
-                req.currency, functional_currency, req.entry_date, req.company,
+                req.currency,
+                functional_currency,
+                req.entry_date,
+                req.company,
             )
 
     period = _resolve_period(req.company, req.entry_date)
@@ -245,19 +263,21 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
             converted_credit = line.credit
             amount_currency = None
 
-        db_lines.append(JournalLine(
-            entry=entry,
-            company=req.company,
-            public_id=uuid.uuid4(),
-            line_no=i,
-            account=line.account,
-            description=line.description,
-            debit=converted_debit,
-            credit=converted_credit,
-            amount_currency=amount_currency,
-            currency=req.currency,
-            exchange_rate=fx_rate,
-        ))
+        db_lines.append(
+            JournalLine(
+                entry=entry,
+                company=req.company,
+                public_id=uuid.uuid4(),
+                line_no=i,
+                account=line.account,
+                description=line.description,
+                debit=converted_debit,
+                credit=converted_credit,
+                amount_currency=amount_currency,
+                currency=req.currency,
+                exchange_rate=fx_rate,
+            )
+        )
 
     # Fix FX rounding imbalance before saving
     if is_foreign and fx_rate != Decimal("1.0"):
@@ -276,7 +296,9 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
             validation_errors_str += "; " + "; ".join(validation.errors)
         logger.error(
             "Unbalanced JE for '%s': debit=%s credit=%s — saved as INCOMPLETE",
-            req.memo, total_debit, total_credit,
+            req.memo,
+            total_debit,
+            total_credit,
         )
 
     if force_incomplete and entry.status != JournalEntry.Status.INCOMPLETE:
@@ -287,7 +309,11 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
     if entry.status == JournalEntry.Status.INCOMPLETE:
         from accounts.models import Notification
 
-        error_detail = "; ".join(validation.errors) if validation.errors else f"Unbalanced: debit={total_debit} credit={total_credit}"
+        error_detail = (
+            "; ".join(validation.errors)
+            if validation.errors
+            else f"Unbalanced: debit={total_debit} credit={total_credit}"
+        )
         Notification.notify_company_admins(
             company=req.company,
             title=f"Entry needs review: {req.memo}",
@@ -311,17 +337,19 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
     # Build lines data for the posted event
     lines_data = []
     for db_line in db_lines:
-        lines_data.append({
-            "line_public_id": str(db_line.public_id),
-            "line_no": db_line.line_no,
-            "account_public_id": str(db_line.account.public_id),
-            "account_code": db_line.account.code,
-            "description": db_line.description,
-            "debit": str(db_line.debit),
-            "credit": str(db_line.credit),
-            "currency": req.currency,
-            "exchange_rate": str(fx_rate),
-        })
+        lines_data.append(
+            {
+                "line_public_id": str(db_line.public_id),
+                "line_no": db_line.line_no,
+                "account_public_id": str(db_line.account.public_id),
+                "account_code": db_line.account.code,
+                "description": db_line.description,
+                "debit": str(db_line.debit),
+                "credit": str(db_line.credit),
+                "currency": req.currency,
+                "exchange_rate": str(fx_rate),
+            }
+        )
 
     # Attach dimension tags if context provided
     if req.dimension_context:
@@ -380,8 +408,11 @@ def _attach_dimensions(company, lines, dimension_context):
 
     dim_codes = list(dimension_context.keys())
     dimensions = {
-        d.code: d for d in AnalysisDimension.objects.filter(
-            company=company, code__in=dim_codes, is_active=True,
+        d.code: d
+        for d in AnalysisDimension.objects.filter(
+            company=company,
+            code__in=dim_codes,
+            is_active=True,
         )
     }
 
@@ -389,6 +420,7 @@ def _attach_dimensions(company, lines, dimension_context):
         return
 
     from django.db.models import Q
+
     value_lookups = []
     for dim_code, val_code in dimension_context.items():
         dim = dimensions.get(dim_code)
@@ -403,8 +435,7 @@ def _attach_dimensions(company, lines, dimension_context):
         q |= Q(dimension_id=dim_id, code=val_code)
 
     values = {
-        (v.dimension_id, v.code): v
-        for v in AnalysisDimensionValue.objects.filter(q, company=company, is_active=True)
+        (v.dimension_id, v.code): v for v in AnalysisDimensionValue.objects.filter(q, company=company, is_active=True)
     }
 
     analysis_records = []
@@ -417,17 +448,22 @@ def _attach_dimensions(company, lines, dimension_context):
             if not val:
                 logger.debug(
                     "Dimension value %s=%s not found for company %s — skipping",
-                    dim_code, val_code, company,
+                    dim_code,
+                    val_code,
+                    company,
                 )
                 continue
-            analysis_records.append(JournalLineAnalysis(
-                journal_line=line,
-                company=company,
-                dimension=dim,
-                dimension_value=val,
-            ))
+            analysis_records.append(
+                JournalLineAnalysis(
+                    journal_line=line,
+                    company=company,
+                    dimension=dim,
+                    dimension_value=val,
+                )
+            )
 
     if analysis_records:
         JournalLineAnalysis.objects.projection().bulk_create(
-            analysis_records, ignore_conflicts=True,
+            analysis_records,
+            ignore_conflicts=True,
         )

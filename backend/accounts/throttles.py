@@ -18,7 +18,8 @@ class RegistrationThrottle(AnonRateThrottle):
     Default: 5 registrations per hour per IP.
     Configured via settings.REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']['registration']
     """
-    scope = 'registration'
+
+    scope = "registration"
 
 
 class ResendVerificationThrottle(AnonRateThrottle):
@@ -28,7 +29,8 @@ class ResendVerificationThrottle(AnonRateThrottle):
     Default: 3 resends per hour per IP.
     Configured via settings.REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']['resend_verification']
     """
-    scope = 'resend_verification'
+
+    scope = "resend_verification"
 
 
 class LoginThrottle(AnonRateThrottle):
@@ -38,4 +40,5 @@ class LoginThrottle(AnonRateThrottle):
     Default: 10 attempts per minute per IP.
     Configured via settings.REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']['login']
     """
-    scope = 'login'
+
+    scope = "login"

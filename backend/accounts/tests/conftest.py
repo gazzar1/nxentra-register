@@ -29,6 +29,7 @@ def _rls_bypass(db):
     from django.db import connection
 
     from accounts import rls
+
     rls.set_rls_bypass(True, conn=connection)
     yield
     rls.set_rls_bypass(True, conn=connection)

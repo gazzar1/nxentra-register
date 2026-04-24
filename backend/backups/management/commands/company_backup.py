@@ -5,6 +5,7 @@ Usage:
     python manage.py company_backup --company acme-corp --out /path/to/backup.zip
     python manage.py company_backup --company acme-corp  # auto-named
 """
+
 from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError

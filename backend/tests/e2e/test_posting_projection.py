@@ -82,9 +82,7 @@ class TestPostingProjection:
             status=Vendor.Status.ACTIVE,
         )
 
-    def test_post_journal_updates_account_balances(
-        self, actor_context, company, cash_account, revenue_account
-    ):
+    def test_post_journal_updates_account_balances(self, actor_context, company, cash_account, revenue_account):
         """Posting a journal entry should update account balances."""
         # Create entry with lines
         result = create_journal_entry(

@@ -12,6 +12,7 @@ Endpoints:
 - /_health/ready   - Kubernetes readiness probe (can we serve traffic?)
 - /_health/full    - Full health report (for debugging/dashboards)
 """
+
 import logging
 import time
 from typing import Any
@@ -79,6 +80,7 @@ class HealthCheck:
         start = time.time()
         try:
             import redis
+
             client = redis.from_url(redis_url)
             client.ping()
             duration_ms = (time.time() - start) * 1000
@@ -142,9 +144,7 @@ class HealthCheck:
                 consumers = []
 
                 for bookmark in bookmarks:
-                    total_events = BusinessEvent.objects.filter(
-                        company=bookmark.company
-                    ).count()
+                    total_events = BusinessEvent.objects.filter(company=bookmark.company).count()
 
                     if bookmark.last_event:
                         processed = BusinessEvent.objects.filter(
@@ -158,13 +158,15 @@ class HealthCheck:
                     total_lag += lag
 
                     if lag > 0 or bookmark.error_count > 0:
-                        consumers.append({
-                            "consumer": bookmark.consumer_name,
-                            "company": bookmark.company.slug,
-                            "lag": lag,
-                            "errors": bookmark.error_count,
-                            "paused": bookmark.is_paused,
-                        })
+                        consumers.append(
+                            {
+                                "consumer": bookmark.consumer_name,
+                                "company": bookmark.company.slug,
+                                "lag": lag,
+                                "errors": bookmark.error_count,
+                                "paused": bookmark.is_paused,
+                            }
+                        )
 
             # Consider healthy if total lag is under threshold
             lag_threshold = getattr(settings, "PROJECTION_LAG_THRESHOLD", 1000)
@@ -209,10 +211,12 @@ class HealthCheck:
                     with rls_bypass():
                         valid, errors = validate_subledger_tieout(company)
                     if not valid:
-                        imbalances.append({
-                            "company": company.slug,
-                            "errors": errors[:3],
-                        })
+                        imbalances.append(
+                            {
+                                "company": company.slug,
+                                "errors": errors[:3],
+                            }
+                        )
                 except Exception:
                     pass  # Skip companies that fail (e.g., no accounts)
 
@@ -282,15 +286,20 @@ class ReadinessView(View):
         db_check = HealthCheck.check_database("default")
 
         if db_check["status"] == "healthy":
-            return JsonResponse({
-                "status": "ready",
-                "database": db_check,
-            })
+            return JsonResponse(
+                {
+                    "status": "ready",
+                    "database": db_check,
+                }
+            )
         else:
-            return JsonResponse({
-                "status": "not_ready",
-                "database": db_check,
-            }, status=503)
+            return JsonResponse(
+                {
+                    "status": "not_ready",
+                    "database": db_check,
+                },
+                status=503,
+            )
 
 
 class FullHealthView(View):

@@ -38,17 +38,13 @@ class Command(BaseCommand):
 
         email = options.get("email")
         if not email:
-            self.stdout.write(
-                self.style.ERROR("Please provide --email or use --list")
-            )
+            self.stdout.write(self.style.ERROR("Please provide --email or use --list"))
             return
 
         try:
             user = User.objects.get(email=email.lower().strip())
         except User.DoesNotExist:
-            self.stdout.write(
-                self.style.ERROR(f"User with email '{email}' not found")
-            )
+            self.stdout.write(self.style.ERROR(f"User with email '{email}' not found"))
             self.stdout.write("\nAvailable users:")
             for u in User.objects.all()[:10]:
                 self.stdout.write(f"  - {u.email}")
@@ -58,16 +54,12 @@ class Command(BaseCommand):
             user.is_superuser = False
             user.is_staff = False
             user.save()
-            self.stdout.write(
-                self.style.SUCCESS(f"User '{email}' has been demoted from superuser")
-            )
+            self.stdout.write(self.style.SUCCESS(f"User '{email}' has been demoted from superuser"))
         else:
             user.is_superuser = True
             user.is_staff = True
             user.save()
-            self.stdout.write(
-                self.style.SUCCESS(f"User '{email}' is now a superuser!")
-            )
+            self.stdout.write(self.style.SUCCESS(f"User '{email}' is now a superuser!"))
 
     def list_superusers(self):
         superusers = User.objects.filter(is_superuser=True)

@@ -10,11 +10,9 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "nxentra_backend.settings")
 
 django_app = get_asgi_application()
 
-application = ProtocolTypeRouter({
-    "http": django_app,
-    "websocket": AuthMiddlewareStack(
-        URLRouter(
-            accounting.routing.websocket_urlpatterns
-        )
-    ),
-})
+application = ProtocolTypeRouter(
+    {
+        "http": django_app,
+        "websocket": AuthMiddlewareStack(URLRouter(accounting.routing.websocket_urlpatterns)),
+    }
+)

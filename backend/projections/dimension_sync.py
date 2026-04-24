@@ -82,7 +82,8 @@ class DimensionSyncProjection(BaseProjection):
         if not value_code:
             logger.debug(
                 "No value_code in %s event %s — skipping dimension sync",
-                event.event_type, event.id,
+                event.event_type,
+                event.id,
             )
             return
 
@@ -101,7 +102,9 @@ class DimensionSyncProjection(BaseProjection):
 
         # Check if value already exists
         if AnalysisDimensionValue.objects.filter(
-            dimension=dimension, company=company, code=value_code,
+            dimension=dimension,
+            company=company,
+            code=value_code,
         ).exists():
             return
 
@@ -117,7 +120,9 @@ class DimensionSyncProjection(BaseProjection):
 
         logger.info(
             "Auto-created dimension value %s=%s for company %s",
-            dim_code, value_code, company.name,
+            dim_code,
+            value_code,
+            company.name,
         )
 
     def _extract_unit(self, company, data):
@@ -129,9 +134,11 @@ class DimensionSyncProjection(BaseProjection):
         property_code = ""
         if property_public_id:
             from properties.models import Property
+
             try:
                 prop = Property.objects.get(
-                    company=company, public_id=property_public_id,
+                    company=company,
+                    public_id=property_public_id,
                 )
                 property_code = prop.code
             except Property.DoesNotExist:

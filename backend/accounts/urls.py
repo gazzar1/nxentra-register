@@ -11,8 +11,8 @@ Endpoints:
 """
 
 from django.urls import path
-# TokenBlacklistView replaced by custom LogoutView (supports cookies)
 
+# TokenBlacklistView replaced by custom LogoutView (supports cookies)
 from .views import (
     AcceptInvitationView,
     AdminAuditLogView,
@@ -89,13 +89,11 @@ urlpatterns = [
     path("auth/refresh/", NxentraTokenRefreshView.as_view(), name="token-refresh"),
     path("auth/me/", MeView.as_view(), name="me"),
     path("auth/switch-company/", SwitchCompanyView.as_view(), name="switch-company"),
-
     # ==========================================================================
     # Email Verification
     # ==========================================================================
     path("auth/verify-email/", VerifyEmailView.as_view(), name="verify-email"),
     path("auth/resend-verification/", ResendVerificationView.as_view(), name="resend-verification"),
-
     # ==========================================================================
     # Admin Approval (Beta Gate)
     # ==========================================================================
@@ -103,10 +101,11 @@ urlpatterns = [
     path("admin/approve/<int:pk>/", ApproveUserView.as_view(), name="approve-user"),
     path("admin/reject/<int:pk>/", RejectUserView.as_view(), name="reject-user"),
     path("admin/unverified-users/", UnverifiedUsersView.as_view(), name="unverified-users"),
-    path("admin/resend-verification/<int:pk>/", AdminResendVerificationView.as_view(), name="admin-resend-verification"),
+    path(
+        "admin/resend-verification/<int:pk>/", AdminResendVerificationView.as_view(), name="admin-resend-verification"
+    ),
     path("admin/delete-unverified/<int:pk>/", DeleteUnverifiedUserView.as_view(), name="delete-unverified-user"),
     path("admin/verify-user/<int:pk>/", AdminManualVerifyUserView.as_view(), name="admin-verify-user"),
-
     # ==========================================================================
     # Admin Panel (Superuser Only)
     # ==========================================================================
@@ -116,21 +115,22 @@ urlpatterns = [
     path("admin/audit-log/", AdminAuditLogView.as_view(), name="admin-audit-log"),
     path("admin/event-types/", AdminEventTypesView.as_view(), name="admin-event-types"),
     path("admin/reset-password/<int:pk>/", AdminResetPasswordView.as_view(), name="admin-reset-password"),
-
     # ==========================================================================
     # Users
     # ==========================================================================
     path("users/", UserListCreateView.as_view(), name="user-list"),
     path("users/<int:pk>/", UserDetailView.as_view(), name="user-detail"),
     path("users/<int:pk>/set-password/", UserSetPasswordView.as_view(), name="user-set-password"),
-
     # ==========================================================================
     # Memberships
     # ==========================================================================
     path("memberships/<int:pk>/role/", MembershipRoleView.as_view(), name="membership-role"),
     path("memberships/<int:pk>/permissions/", MembershipPermissionsView.as_view(), name="membership-permissions"),
-    path("memberships/<int:pk>/permissions/<str:code>/", MembershipPermissionDeleteView.as_view(), name="membership-permission-delete"),
-
+    path(
+        "memberships/<int:pk>/permissions/<str:code>/",
+        MembershipPermissionDeleteView.as_view(),
+        name="membership-permission-delete",
+    ),
     # ==========================================================================
     # Companies
     # ==========================================================================
@@ -138,12 +138,10 @@ urlpatterns = [
     path("companies/<int:pk>/", CompanyDetailView.as_view(), name="company-detail"),
     path("companies/settings/", CompanySettingsView.as_view(), name="company-settings"),
     path("companies/logo/", CompanyLogoUploadView.as_view(), name="company-logo"),
-
     # ==========================================================================
     # Permissions
     # ==========================================================================
     path("permissions/", PermissionListView.as_view(), name="permission-list"),
-
     # ==========================================================================
     # Invitations
     # ==========================================================================
@@ -152,7 +150,6 @@ urlpatterns = [
     path("invitations/info/", InvitationInfoView.as_view(), name="invitation-info"),
     path("invitations/<int:pk>/", InvitationDetailView.as_view(), name="invitation-detail"),
     path("invitations/<int:pk>/resend/", InvitationResendView.as_view(), name="invitation-resend"),
-
     # ==========================================================================
     # Voice Feature Management
     # ==========================================================================
@@ -162,18 +159,15 @@ urlpatterns = [
     path("voice/users/<int:membership_id>/grant/", VoiceGrantAccessView.as_view(), name="voice-grant"),
     path("voice/users/<int:membership_id>/revoke/", VoiceRevokeAccessView.as_view(), name="voice-revoke"),
     path("voice/users/<int:membership_id>/refill/", VoiceRefillQuotaView.as_view(), name="voice-refill"),
-
     # ==========================================================================
     # Module & Sidebar
     # ==========================================================================
     path("sidebar/", SidebarView.as_view(), name="sidebar"),
     path("modules/", CompanyModulesView.as_view(), name="modules"),
-
     # ==========================================================================
     # Onboarding
     # ==========================================================================
     path("onboarding/setup/", OnboardingSetupView.as_view(), name="onboarding-setup"),
-
     # ==========================================================================
     # Notifications
     # ==========================================================================

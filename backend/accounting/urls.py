@@ -93,7 +93,6 @@ urlpatterns = [
         AccountDetailView.as_view(),
         name="account-detail",
     ),
-
     # Account Analysis Defaults
     path(
         "accounts/<str:code>/analysis-defaults/",
@@ -105,7 +104,6 @@ urlpatterns = [
         AccountAnalysisDefaultDeleteView.as_view(),
         name="account-analysis-default-delete",
     ),
-
     # ==========================================================================
     # Journal Entries
     # ==========================================================================
@@ -124,7 +122,6 @@ urlpatterns = [
         JournalEntryDetailView.as_view(),
         name="journal-entry-detail",
     ),
-
     # Journal Entry Workflow Actions
     path(
         "journal-entries/<int:pk>/complete/",
@@ -141,7 +138,6 @@ urlpatterns = [
         JournalReverseView.as_view(),
         name="journal-entry-reverse",
     ),
-
     # ==========================================================================
     # Analysis Dimensions
     # ==========================================================================
@@ -155,7 +151,6 @@ urlpatterns = [
         AnalysisDimensionDetailView.as_view(),
         name="dimension-detail",
     ),
-
     # Dimension Values
     path(
         "dimensions/<int:dim_pk>/values/",
@@ -167,7 +162,6 @@ urlpatterns = [
         DimensionValueDetailView.as_view(),
         name="dimension-value-detail",
     ),
-
     # ==========================================================================
     # Customers (AR Subledger)
     # ==========================================================================
@@ -181,7 +175,6 @@ urlpatterns = [
         CustomerDetailView.as_view(),
         name="customer-detail",
     ),
-
     # ==========================================================================
     # Vendors (AP Subledger)
     # ==========================================================================
@@ -195,7 +188,6 @@ urlpatterns = [
         VendorDetailView.as_view(),
         name="vendor-detail",
     ),
-
     # ==========================================================================
     # Cash Application (Customer Receipts / Vendor Payments)
     # ==========================================================================
@@ -209,7 +201,6 @@ urlpatterns = [
         VendorPaymentCreateView.as_view(),
         name="vendor-payment-create",
     ),
-
     # ==========================================================================
     # Statistical Entries
     # ==========================================================================
@@ -228,7 +219,6 @@ urlpatterns = [
         StatisticalEntryPostView.as_view(),
         name="statistical-entry-post",
     ),
-
     # ==========================================================================
     # Exchange Rates
     # ==========================================================================
@@ -247,7 +237,6 @@ urlpatterns = [
         ExchangeRateDetailView.as_view(),
         name="exchange-rate-detail",
     ),
-
     # ==========================================================================
     # Admin: Chart of Accounts Seeding (super-admin only)
     # ==========================================================================
@@ -261,7 +250,6 @@ urlpatterns = [
         SeedAccountsView.as_view(),
         name="admin-seed-accounts",
     ),
-
     # ==========================================================================
     # Bank Reconciliation
     # ==========================================================================
@@ -310,7 +298,6 @@ urlpatterns = [
         BankUnreconciledLinesView.as_view(),
         name="bank-reconciliation-unreconciled",
     ),
-
     # ==========================================================================
     # Commerce Reconciliation (Three-Column View)
     # ==========================================================================
@@ -319,7 +306,6 @@ urlpatterns = [
         CommerceReconciliationView.as_view(),
         name="commerce-reconciliation",
     ),
-
     # ==========================================================================
     # Core Account Mapping (FX Gain/Loss/Rounding)
     # ==========================================================================

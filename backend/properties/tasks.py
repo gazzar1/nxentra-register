@@ -47,9 +47,7 @@ def post_rent_dues_and_detect_overdue():
         try:
             _process_company(company)
         except Exception:
-            logger.exception(
-                "Error processing rent dues for company %s", company.name
-            )
+            logger.exception("Error processing rent dues for company %s", company.name)
 
 
 def _process_projections(company):
@@ -71,26 +69,20 @@ def _process_company(company):
 
     with rls_bypass():
         # 1. UPCOMING → DUE  (due_date <= today)
-        upcoming_lines = (
-            RentScheduleLine.objects.filter(
-                company=company,
-                status=RentScheduleLine.ScheduleStatus.UPCOMING,
-                due_date__lte=today,
-            )
-            .select_related("lease")
-        )
+        upcoming_lines = RentScheduleLine.objects.filter(
+            company=company,
+            status=RentScheduleLine.ScheduleStatus.UPCOMING,
+            due_date__lte=today,
+        ).select_related("lease")
 
         for line in upcoming_lines:
             _post_due(company, line)
 
         # 2. DUE → OVERDUE  (due_date + grace_days < today)
-        due_lines = (
-            RentScheduleLine.objects.filter(
-                company=company,
-                status=RentScheduleLine.ScheduleStatus.DUE,
-            )
-            .select_related("lease")
-        )
+        due_lines = RentScheduleLine.objects.filter(
+            company=company,
+            status=RentScheduleLine.ScheduleStatus.DUE,
+        ).select_related("lease")
 
         for line in due_lines:
             grace_days = line.lease.grace_days or 0
@@ -190,9 +182,7 @@ def check_lease_expiry():
         try:
             _check_expiry_for_company(company)
         except Exception:
-            logger.exception(
-                "Error checking lease expiry for company %s", company.name
-            )
+            logger.exception("Error checking lease expiry for company %s", company.name)
 
 
 def _check_expiry_for_company(company):
@@ -212,15 +202,12 @@ def _check_expiry_for_company(company):
             else:
                 lower = today
 
-            leases = (
-                Lease.objects.filter(
-                    company=company,
-                    status=Lease.LeaseStatus.ACTIVE,
-                    end_date__gte=lower,
-                    end_date__lte=cutoff,
-                )
-                .select_related("property", "unit", "lessee")
-            )
+            leases = Lease.objects.filter(
+                company=company,
+                status=Lease.LeaseStatus.ACTIVE,
+                end_date__gte=lower,
+                end_date__lte=cutoff,
+            ).select_related("property", "unit", "lessee")
 
             for lease in leases:
                 _emit_expiry_alert(company, lease, today, threshold)

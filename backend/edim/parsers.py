@@ -23,10 +23,10 @@ def parse_csv(file) -> list[dict[str, Any]]:
         List of dicts, one per row
     """
     # Handle both binary and text modes
-    if hasattr(file, 'read'):
+    if hasattr(file, "read"):
         content = file.read()
         if isinstance(content, bytes):
-            content = content.decode('utf-8-sig')  # Handle BOM
+            content = content.decode("utf-8-sig")  # Handle BOM
         file = io.StringIO(content)
 
     reader = csv.DictReader(file)
@@ -34,9 +34,7 @@ def parse_csv(file) -> list[dict[str, Any]]:
     for row in reader:
         # Clean up keys (remove BOM, strip whitespace)
         cleaned_row = {
-            k.strip().lstrip('\ufeff'): v.strip() if isinstance(v, str) else v
-            for k, v in row.items()
-            if k is not None
+            k.strip().lstrip("\ufeff"): v.strip() if isinstance(v, str) else v for k, v in row.items() if k is not None
         }
         records.append(cleaned_row)
     return records
@@ -58,9 +56,9 @@ def parse_xlsx(file) -> list[dict[str, Any]]:
         raise ImportError("openpyxl is required for Excel file parsing. Install with: pip install openpyxl")
 
     # Read file content
-    if hasattr(file, 'read'):
+    if hasattr(file, "read"):
         content = file.read()
-        if hasattr(file, 'seek'):
+        if hasattr(file, "seek"):
             file.seek(0)
         workbook = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
     else:
@@ -87,7 +85,7 @@ def parse_xlsx(file) -> list[dict[str, Any]]:
                 # Convert Excel values to strings for consistency
                 if value is None:
                     record[headers[i]] = ""
-                elif isinstance(value, (int, float)):
+                elif isinstance(value, int | float):
                     # Preserve numeric precision
                     record[headers[i]] = str(value)
                 else:
@@ -107,10 +105,10 @@ def parse_json(file) -> list[dict[str, Any]]:
     Returns:
         List of dicts, one per record
     """
-    if hasattr(file, 'read'):
+    if hasattr(file, "read"):
         content = file.read()
         if isinstance(content, bytes):
-            content = content.decode('utf-8')
+            content = content.decode("utf-8")
     else:
         content = file
 
@@ -121,7 +119,7 @@ def parse_json(file) -> list[dict[str, Any]]:
         records = data
     elif isinstance(data, dict):
         # Look for common keys that contain the records
-        for key in ['records', 'data', 'items', 'rows', 'entries']:
+        for key in ["records", "data", "items", "rows", "entries"]:
             if key in data and isinstance(data[key], list):
                 records = data[key]
                 break

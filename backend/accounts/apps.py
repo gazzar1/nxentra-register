@@ -30,8 +30,12 @@ class AccountsConfig(AppConfig):
         # =====================================================================
         # Module registrations (for enablement tracking — keep existing)
         # =====================================================================
-        module_registry.register("dashboard", label="Dashboard", icon="LayoutDashboard", category=ModuleCategory.CORE, order=0)
-        module_registry.register("accounting", label="Accounting", icon="BookOpen", category=ModuleCategory.CORE, order=20)
+        module_registry.register(
+            "dashboard", label="Dashboard", icon="LayoutDashboard", category=ModuleCategory.CORE, order=0
+        )
+        module_registry.register(
+            "accounting", label="Accounting", icon="BookOpen", category=ModuleCategory.CORE, order=20
+        )
         module_registry.register("reports", label="Reports", icon="BarChart3", category=ModuleCategory.CORE, order=80)
         module_registry.register("settings", label="Settings", icon="Settings", category=ModuleCategory.CORE, order=90)
 

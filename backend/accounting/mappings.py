@@ -84,6 +84,7 @@ class ModuleAccountMapping(models.Model):
 
     def save(self, *args, **kwargs):
         from django.conf import settings
+
         if not write_context_allowed(self._ALLOWED_WRITE_CONTEXTS) and not getattr(settings, "TESTING", False):
             raise RuntimeError(
                 "ModuleAccountMapping is a configuration model. "
@@ -93,6 +94,7 @@ class ModuleAccountMapping(models.Model):
 
     def delete(self, *args, **kwargs):
         from django.conf import settings
+
         if not write_context_allowed(self._ALLOWED_WRITE_CONTEXTS) and not getattr(settings, "TESTING", False):
             raise RuntimeError(
                 "ModuleAccountMapping is a configuration model. "
@@ -114,7 +116,8 @@ class ModuleAccountMapping(models.Model):
             ar = mapping.get("ACCOUNTS_RECEIVABLE")
         """
         qs = cls.objects.filter(
-            company=company, module=module,
+            company=company,
+            module=module,
         ).select_related("account")
         return {m.role: m.account for m in qs}
 
@@ -122,9 +125,15 @@ class ModuleAccountMapping(models.Model):
     def get_account(cls, company: Company, module: str, role: str) -> Account | None:
         """Get a single account by module and role, or None if unmapped."""
         try:
-            return cls.objects.select_related("account").get(
-                company=company, module=module, role=role,
-            ).account
+            return (
+                cls.objects.select_related("account")
+                .get(
+                    company=company,
+                    module=module,
+                    role=role,
+                )
+                .account
+            )
         except cls.DoesNotExist:
             return None
 

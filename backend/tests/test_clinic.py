@@ -42,10 +42,12 @@ from events.types import EventTypes
 # Fixtures
 # =============================================================================
 
+
 @pytest.fixture(autouse=True)
 def clinic_module_enabled(db, company):
     """Enable the clinic module for the test company."""
     from accounts.models import CompanyModule
+
     return CompanyModule.objects.get_or_create(
         company=company,
         module_key="clinic",
@@ -56,8 +58,10 @@ def clinic_module_enabled(db, company):
 @pytest.fixture
 def ar_account(db, company):
     return Account.objects.create(
-        public_id=uuid4(), company=company,
-        code="1200", name="Accounts Receivable - Clinic",
+        public_id=uuid4(),
+        company=company,
+        code="1200",
+        name="Accounts Receivable - Clinic",
         account_type=Account.AccountType.RECEIVABLE,
         normal_balance=Account.NormalBalance.DEBIT,
         status=Account.Status.ACTIVE,
@@ -67,8 +71,10 @@ def ar_account(db, company):
 @pytest.fixture
 def clinic_revenue_account(db, company):
     return Account.objects.create(
-        public_id=uuid4(), company=company,
-        code="4100", name="Consultation Revenue",
+        public_id=uuid4(),
+        company=company,
+        code="4100",
+        name="Consultation Revenue",
         account_type=Account.AccountType.REVENUE,
         normal_balance=Account.NormalBalance.CREDIT,
         status=Account.Status.ACTIVE,
@@ -78,8 +84,10 @@ def clinic_revenue_account(db, company):
 @pytest.fixture
 def clinic_cash_account(db, company):
     return Account.objects.create(
-        public_id=uuid4(), company=company,
-        code="1010", name="Clinic Cash",
+        public_id=uuid4(),
+        company=company,
+        code="1010",
+        name="Clinic Cash",
         account_type=Account.AccountType.ASSET,
         normal_balance=Account.NormalBalance.DEBIT,
         status=Account.Status.ACTIVE,
@@ -90,24 +98,33 @@ def clinic_cash_account(db, company):
 def clinic_mapping(db, company, ar_account, clinic_revenue_account, clinic_cash_account):
     """Set up clinic account mappings."""
     ModuleAccountMapping.objects.create(
-        company=company, module="clinic",
-        role="ACCOUNTS_RECEIVABLE", account=ar_account,
+        company=company,
+        module="clinic",
+        role="ACCOUNTS_RECEIVABLE",
+        account=ar_account,
     )
     ModuleAccountMapping.objects.create(
-        company=company, module="clinic",
-        role="CONSULTATION_REVENUE", account=clinic_revenue_account,
+        company=company,
+        module="clinic",
+        role="CONSULTATION_REVENUE",
+        account=clinic_revenue_account,
     )
     ModuleAccountMapping.objects.create(
-        company=company, module="clinic",
-        role="CASH_BANK", account=clinic_cash_account,
+        company=company,
+        module="clinic",
+        role="CASH_BANK",
+        account=clinic_cash_account,
     )
 
 
 @pytest.fixture
 def patient(actor_context):
     result = create_patient(
-        actor_context, code="P001", name="Ahmad Ali",
-        phone="0501234567", gender="male",
+        actor_context,
+        code="P001",
+        name="Ahmad Ali",
+        phone="0501234567",
+        gender="male",
     )
     return result.data["patient"]
 
@@ -115,7 +132,9 @@ def patient(actor_context):
 @pytest.fixture
 def doctor(actor_context):
     result = create_doctor(
-        actor_context, code="D001", name="Dr. Sarah",
+        actor_context,
+        code="D001",
+        name="Dr. Sarah",
         specialization="General",
     )
     return result.data["doctor"]
@@ -152,14 +171,18 @@ def invoice(actor_context, patient, visit):
 # Patient Command Tests
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestPatientCommands:
-
     def test_create_patient(self, actor_context):
         result = create_patient(
-            actor_context, code="P001", name="Ahmad Ali",
-            phone="0501234567", gender="male",
-            allergies=["Penicillin"], chronic_diseases=["Diabetes"],
+            actor_context,
+            code="P001",
+            name="Ahmad Ali",
+            phone="0501234567",
+            gender="male",
+            allergies=["Penicillin"],
+            chronic_diseases=["Diabetes"],
         )
         assert result.success
         p = result.data["patient"]
@@ -182,8 +205,10 @@ class TestPatientCommands:
 
     def test_update_patient(self, actor_context, patient):
         result = update_patient(
-            actor_context, patient_id=patient.id,
-            phone="0559999999", allergies=["Aspirin"],
+            actor_context,
+            patient_id=patient.id,
+            phone="0559999999",
+            allergies=["Aspirin"],
         )
         assert result.success
         patient.refresh_from_db()
@@ -200,12 +225,14 @@ class TestPatientCommands:
 # Doctor Command Tests
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestDoctorCommands:
-
     def test_create_doctor(self, actor_context):
         result = create_doctor(
-            actor_context, code="D001", name="Dr. Sarah",
+            actor_context,
+            code="D001",
+            name="Dr. Sarah",
             specialization="General",
         )
         assert result.success
@@ -221,9 +248,9 @@ class TestDoctorCommands:
 # Visit Command Tests
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestVisitCommands:
-
     def test_create_visit(self, actor_context, patient, doctor):
         result = create_visit(
             actor_context,
@@ -241,8 +268,10 @@ class TestVisitCommands:
 
     def test_complete_visit(self, actor_context, visit):
         result = complete_visit(
-            actor_context, visit_id=visit.id,
-            diagnosis="Migraine", notes="Prescribed rest",
+            actor_context,
+            visit_id=visit.id,
+            diagnosis="Migraine",
+            notes="Prescribed rest",
         )
         assert result.success
         visit.refresh_from_db()
@@ -258,8 +287,11 @@ class TestVisitCommands:
 
     def test_visit_invalid_patient(self, actor_context, doctor):
         result = create_visit(
-            actor_context, patient_id=99999, doctor_id=doctor.id,
-            visit_date=str(date.today()), visit_type="consultation",
+            actor_context,
+            patient_id=99999,
+            doctor_id=doctor.id,
+            visit_date=str(date.today()),
+            visit_type="consultation",
         )
         assert not result.success
         assert "Patient not found" in result.error
@@ -269,17 +301,20 @@ class TestVisitCommands:
 # Document Upload Tests
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestDocumentUpload:
-
     def test_upload_document(self, actor_context, patient):
         file = SimpleUploadedFile(
-            "test_report.pdf", b"fake pdf content",
+            "test_report.pdf",
+            b"fake pdf content",
             content_type="application/pdf",
         )
         result = upload_document(
-            actor_context, patient_id=patient.id,
-            document_type="lab_result", title="Blood Test",
+            actor_context,
+            patient_id=patient.id,
+            document_type="lab_result",
+            title="Blood Test",
             file=file,
         )
         assert result.success
@@ -291,9 +326,12 @@ class TestDocumentUpload:
     def test_upload_with_visit(self, actor_context, patient, visit):
         file = SimpleUploadedFile("scan.jpg", b"image", content_type="image/jpeg")
         result = upload_document(
-            actor_context, patient_id=patient.id,
-            document_type="radiology", title="X-Ray",
-            file=file, visit_id=visit.id,
+            actor_context,
+            patient_id=patient.id,
+            document_type="radiology",
+            title="X-Ray",
+            file=file,
+            visit_id=visit.id,
         )
         assert result.success
         assert result.data["document"].visit_id == visit.id
@@ -303,9 +341,9 @@ class TestDocumentUpload:
 # Invoice Command Tests
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestInvoiceCommands:
-
     def test_create_invoice(self, actor_context, patient):
         result = create_invoice(
             actor_context,
@@ -354,12 +392,14 @@ class TestInvoiceCommands:
 
     def test_sequential_invoice_numbers(self, actor_context, patient):
         r1 = create_invoice(
-            actor_context, patient_id=patient.id,
+            actor_context,
+            patient_id=patient.id,
             date=str(date.today()),
             line_items=[{"description": "A", "amount": "100"}],
         )
         r2 = create_invoice(
-            actor_context, patient_id=patient.id,
+            actor_context,
+            patient_id=patient.id,
             date=str(date.today()),
             line_items=[{"description": "B", "amount": "100"}],
         )
@@ -371,9 +411,9 @@ class TestInvoiceCommands:
 # Payment Command Tests
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestPaymentCommands:
-
     def test_receive_payment(self, actor_context, invoice):
         issue_invoice(actor_context, invoice_id=invoice.id)
 
@@ -397,8 +437,10 @@ class TestPaymentCommands:
         issue_invoice(actor_context, invoice_id=invoice.id)
 
         receive_payment(
-            actor_context, invoice_id=invoice.id,
-            amount="100", payment_method="cash",
+            actor_context,
+            invoice_id=invoice.id,
+            amount="100",
+            payment_method="cash",
             payment_date=str(date.today()),
         )
         invoice.refresh_from_db()
@@ -408,8 +450,10 @@ class TestPaymentCommands:
 
     def test_payment_on_draft_invoice_fails(self, actor_context, invoice):
         result = receive_payment(
-            actor_context, invoice_id=invoice.id,
-            amount="100", payment_method="cash",
+            actor_context,
+            invoice_id=invoice.id,
+            amount="100",
+            payment_method="cash",
             payment_date=str(date.today()),
         )
         assert not result.success
@@ -418,13 +462,16 @@ class TestPaymentCommands:
     def test_void_payment(self, actor_context, invoice):
         issue_invoice(actor_context, invoice_id=invoice.id)
         pay_result = receive_payment(
-            actor_context, invoice_id=invoice.id,
-            amount="250", payment_method="card",
+            actor_context,
+            invoice_id=invoice.id,
+            amount="250",
+            payment_method="card",
             payment_date=str(date.today()),
         )
 
         result = void_payment(
-            actor_context, payment_id=pay_result.data["payment"].id,
+            actor_context,
+            payment_id=pay_result.data["payment"].id,
             reason="Duplicate",
         )
         assert result.success
@@ -437,8 +484,10 @@ class TestPaymentCommands:
     def test_void_already_voided(self, actor_context, invoice):
         issue_invoice(actor_context, invoice_id=invoice.id)
         pay_result = receive_payment(
-            actor_context, invoice_id=invoice.id,
-            amount="250", payment_method="cash",
+            actor_context,
+            invoice_id=invoice.id,
+            amount="250",
+            payment_method="cash",
             payment_date=str(date.today()),
         )
         void_payment(actor_context, payment_id=pay_result.data["payment"].id)
@@ -451,9 +500,9 @@ class TestPaymentCommands:
 # Accounting Projection Tests
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestClinicAccountingProjection:
-
     def test_invoice_issued_creates_je(self, actor_context, invoice, clinic_mapping):
         result = issue_invoice(actor_context, invoice_id=invoice.id)
         assert result.success
@@ -477,8 +526,10 @@ class TestClinicAccountingProjection:
     def test_payment_received_creates_je(self, actor_context, invoice, clinic_mapping):
         issue_invoice(actor_context, invoice_id=invoice.id)
         pay_result = receive_payment(
-            actor_context, invoice_id=invoice.id,
-            amount="250", payment_method="cash",
+            actor_context,
+            invoice_id=invoice.id,
+            amount="250",
+            payment_method="cash",
             payment_date=str(date.today()),
         )
 
@@ -498,12 +549,15 @@ class TestClinicAccountingProjection:
     def test_payment_voided_creates_reversal_je(self, actor_context, invoice, clinic_mapping):
         issue_invoice(actor_context, invoice_id=invoice.id)
         pay_result = receive_payment(
-            actor_context, invoice_id=invoice.id,
-            amount="250", payment_method="cash",
+            actor_context,
+            invoice_id=invoice.id,
+            amount="250",
+            payment_method="cash",
             payment_date=str(date.today()),
         )
         void_result = void_payment(
-            actor_context, payment_id=pay_result.data["payment"].id,
+            actor_context,
+            payment_id=pay_result.data["payment"].id,
             reason="Error",
         )
 
@@ -550,9 +604,9 @@ class TestClinicAccountingProjection:
 # API Endpoint Tests
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestClinicAPI:
-
     def test_list_patients(self, authenticated_client, patient):
         resp = authenticated_client.get("/api/clinic/patients/")
         assert resp.status_code == 200
@@ -560,10 +614,14 @@ class TestClinicAPI:
         assert resp.data[0]["code"] == "P001"
 
     def test_create_patient_api(self, authenticated_client, owner_membership):
-        resp = authenticated_client.post("/api/clinic/patients/", {
-            "code": "P100",
-            "name": "API Patient",
-        }, format="json")
+        resp = authenticated_client.post(
+            "/api/clinic/patients/",
+            {
+                "code": "P100",
+                "name": "API Patient",
+            },
+            format="json",
+        )
         assert resp.status_code == 201
         assert resp.data["code"] == "P100"
 
@@ -575,7 +633,8 @@ class TestClinicAPI:
     def test_update_patient_api(self, authenticated_client, patient):
         resp = authenticated_client.put(
             f"/api/clinic/patients/{patient.id}/",
-            {"phone": "0551111111"}, format="json",
+            {"phone": "0551111111"},
+            format="json",
         )
         assert resp.status_code == 200
         assert resp.data["phone"] == "0551111111"
@@ -586,37 +645,51 @@ class TestClinicAPI:
         assert len(resp.data) >= 1
 
     def test_create_doctor_api(self, authenticated_client, owner_membership):
-        resp = authenticated_client.post("/api/clinic/doctors/", {
-            "code": "D100", "name": "Dr. API",
-        }, format="json")
+        resp = authenticated_client.post(
+            "/api/clinic/doctors/",
+            {
+                "code": "D100",
+                "name": "Dr. API",
+            },
+            format="json",
+        )
         assert resp.status_code == 201
 
     def test_create_visit_api(self, authenticated_client, patient, doctor):
-        resp = authenticated_client.post("/api/clinic/visits/", {
-            "patient_id": patient.id,
-            "doctor_id": doctor.id,
-            "visit_date": str(date.today()),
-            "visit_type": "consultation",
-        }, format="json")
+        resp = authenticated_client.post(
+            "/api/clinic/visits/",
+            {
+                "patient_id": patient.id,
+                "doctor_id": doctor.id,
+                "visit_date": str(date.today()),
+                "visit_type": "consultation",
+            },
+            format="json",
+        )
         assert resp.status_code == 201
         assert resp.data["status"] == "scheduled"
 
     def test_complete_visit_api(self, authenticated_client, visit):
         resp = authenticated_client.post(
             f"/api/clinic/visits/{visit.id}/complete/",
-            {"diagnosis": "Flu"}, format="json",
+            {"diagnosis": "Flu"},
+            format="json",
         )
         assert resp.status_code == 200
         assert resp.data["status"] == "completed"
 
     def test_create_invoice_api(self, authenticated_client, patient):
-        resp = authenticated_client.post("/api/clinic/invoices/", {
-            "patient_id": patient.id,
-            "date": str(date.today()),
-            "line_items": [
-                {"description": "Consultation", "amount": "200"},
-            ],
-        }, format="json")
+        resp = authenticated_client.post(
+            "/api/clinic/invoices/",
+            {
+                "patient_id": patient.id,
+                "date": str(date.today()),
+                "line_items": [
+                    {"description": "Consultation", "amount": "200"},
+                ],
+            },
+            format="json",
+        )
         assert resp.status_code == 201
         assert resp.data["status"] == "draft"
         assert resp.data["total"] == "200.00"
@@ -631,41 +704,52 @@ class TestClinicAPI:
         authenticated_client.post(f"/api/clinic/invoices/{invoice.id}/issue/")
 
         # Create payment
-        resp = authenticated_client.post("/api/clinic/payments/", {
-            "invoice_id": invoice.id,
-            "amount": "250.00",
-            "payment_method": "cash",
-            "payment_date": str(date.today()),
-        }, format="json")
+        resp = authenticated_client.post(
+            "/api/clinic/payments/",
+            {
+                "invoice_id": invoice.id,
+                "amount": "250.00",
+                "payment_method": "cash",
+                "payment_date": str(date.today()),
+            },
+            format="json",
+        )
         assert resp.status_code == 201
         payment_id = resp.data["id"]
 
         # Void payment
         resp = authenticated_client.post(
             f"/api/clinic/payments/{payment_id}/void/",
-            {"reason": "Mistake"}, format="json",
+            {"reason": "Mistake"},
+            format="json",
         )
         assert resp.status_code == 200
         assert resp.data["status"] == "voided"
 
-    def test_account_mapping_api(self, authenticated_client, owner_membership,
-                                  ar_account, clinic_revenue_account, clinic_cash_account):
+    def test_account_mapping_api(
+        self, authenticated_client, owner_membership, ar_account, clinic_revenue_account, clinic_cash_account
+    ):
         # GET current mapping (empty)
         resp = authenticated_client.get("/api/clinic/account-mapping/")
         assert resp.status_code == 200
         assert len(resp.data) == 3
 
         # PUT new mapping
-        resp = authenticated_client.put("/api/clinic/account-mapping/", [
-            {"role": "ACCOUNTS_RECEIVABLE", "account_id": ar_account.id},
-            {"role": "CONSULTATION_REVENUE", "account_id": clinic_revenue_account.id},
-            {"role": "CASH_BANK", "account_id": clinic_cash_account.id},
-        ], format="json")
+        resp = authenticated_client.put(
+            "/api/clinic/account-mapping/",
+            [
+                {"role": "ACCOUNTS_RECEIVABLE", "account_id": ar_account.id},
+                {"role": "CONSULTATION_REVENUE", "account_id": clinic_revenue_account.id},
+                {"role": "CASH_BANK", "account_id": clinic_cash_account.id},
+            ],
+            format="json",
+        )
         assert resp.status_code == 200
 
         # Verify
         mapping = ModuleAccountMapping.get_mapping(
-            authenticated_client.handler._force_user.active_company, "clinic",
+            authenticated_client.handler._force_user.active_company,
+            "clinic",
         )
         assert mapping["ACCOUNTS_RECEIVABLE"].id == ar_account.id
 

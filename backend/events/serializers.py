@@ -20,11 +20,11 @@ class EventPayloadSerializer(serializers.ModelSerializer):
     class Meta:
         model = EventPayload
         fields = [
-            'id',
-            'content_hash',
-            'size_bytes',
-            'compression',
-            'created_at',
+            "id",
+            "content_hash",
+            "size_bytes",
+            "compression",
+            "created_at",
         ]
 
 
@@ -32,7 +32,7 @@ class BusinessEventListSerializer(serializers.ModelSerializer):
     """Lightweight serializer for event listing."""
 
     caused_by_user_email = serializers.CharField(
-        source='caused_by_user.email',
+        source="caused_by_user.email",
         read_only=True,
         default=None,
     )
@@ -40,18 +40,18 @@ class BusinessEventListSerializer(serializers.ModelSerializer):
     class Meta:
         model = BusinessEvent
         fields = [
-            'id',
-            'event_type',
-            'aggregate_type',
-            'aggregate_id',
-            'sequence',
-            'company_sequence',
-            'occurred_at',
-            'recorded_at',
-            'caused_by_user_email',
-            'origin',
-            'payload_storage',
-            'payload_hash',
+            "id",
+            "event_type",
+            "aggregate_type",
+            "aggregate_id",
+            "sequence",
+            "company_sequence",
+            "occurred_at",
+            "recorded_at",
+            "caused_by_user_email",
+            "origin",
+            "payload_storage",
+            "payload_hash",
         ]
 
 
@@ -59,12 +59,12 @@ class BusinessEventDetailSerializer(serializers.ModelSerializer):
     """Full serializer for single event detail."""
 
     caused_by_user_email = serializers.CharField(
-        source='caused_by_user.email',
+        source="caused_by_user.email",
         read_only=True,
         default=None,
     )
     caused_by_event_id = serializers.UUIDField(
-        source='caused_by_event.id',
+        source="caused_by_event.id",
         read_only=True,
         default=None,
     )
@@ -75,38 +75,36 @@ class BusinessEventDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = BusinessEvent
         fields = [
-            'id',
-            'event_type',
-            'aggregate_type',
-            'aggregate_id',
-            'sequence',
-            'company_sequence',
-            'idempotency_key',
-            'data',
-            'resolved_data',
-            'metadata',
-            'schema_version',
-            'caused_by_user',
-            'caused_by_user_email',
-            'caused_by_event',
-            'caused_by_event_id',
-            'child_event_ids',
-            'external_source',
-            'external_id',
-            'origin',
-            'payload_storage',
-            'payload_hash',
-            'payload_ref',
-            'payload_ref_info',
-            'occurred_at',
-            'recorded_at',
+            "id",
+            "event_type",
+            "aggregate_type",
+            "aggregate_id",
+            "sequence",
+            "company_sequence",
+            "idempotency_key",
+            "data",
+            "resolved_data",
+            "metadata",
+            "schema_version",
+            "caused_by_user",
+            "caused_by_user_email",
+            "caused_by_event",
+            "caused_by_event_id",
+            "child_event_ids",
+            "external_source",
+            "external_id",
+            "origin",
+            "payload_storage",
+            "payload_hash",
+            "payload_ref",
+            "payload_ref_info",
+            "occurred_at",
+            "recorded_at",
         ]
 
     def get_child_event_ids(self, obj):
         """Get IDs of events caused by this event."""
-        return list(
-            obj.child_events.values_list('id', flat=True)[:100]
-        )
+        return list(obj.child_events.values_list("id", flat=True)[:100])
 
     def get_payload_ref_info(self, obj):
         """Get external payload info if applicable."""
@@ -119,7 +117,7 @@ class BusinessEventDetailSerializer(serializers.ModelSerializer):
         try:
             return obj.get_data()
         except Exception as e:
-            return {'_error': str(e), '_error_type': type(e).__name__}
+            return {"_error": str(e), "_error_type": type(e).__name__}
 
 
 class EventCausationChainSerializer(serializers.Serializer):
@@ -172,12 +170,12 @@ class EventBookmarkSerializer(serializers.ModelSerializer):
     """Serializer for projection bookmarks."""
 
     last_event_id = serializers.UUIDField(
-        source='last_event.id',
+        source="last_event.id",
         read_only=True,
         default=None,
     )
     company_name = serializers.CharField(
-        source='company.name',
+        source="company.name",
         read_only=True,
         default=None,
     )
@@ -185,16 +183,16 @@ class EventBookmarkSerializer(serializers.ModelSerializer):
     class Meta:
         model = EventBookmark
         fields = [
-            'id',
-            'consumer_name',
-            'company',
-            'company_name',
-            'last_event',
-            'last_event_id',
-            'last_processed_at',
-            'is_paused',
-            'error_count',
-            'last_error',
-            'created_at',
-            'updated_at',
+            "id",
+            "consumer_name",
+            "company",
+            "company_name",
+            "last_event",
+            "last_event_id",
+            "last_processed_at",
+            "is_paused",
+            "error_count",
+            "last_error",
+            "created_at",
+            "updated_at",
         ]

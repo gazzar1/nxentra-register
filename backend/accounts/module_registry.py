@@ -67,15 +67,17 @@ class ModuleRegistry:
             module_key: Optional module key for enablement check (None = always show)
             nav_items: List of {label, href, icon, ?translation_key}
         """
-        self._sidebar_sections.append({
-            "key": key,
-            "label": label,
-            "icon": icon,
-            "tab": tab,
-            "order": order,
-            "module_key": module_key,
-            "nav_items": nav_items or [],
-        })
+        self._sidebar_sections.append(
+            {
+                "key": key,
+                "label": label,
+                "icon": icon,
+                "tab": tab,
+                "order": order,
+                "module_key": module_key,
+                "nav_items": nav_items or [],
+            }
+        )
 
     def get(self, key):
         return self._modules.get(key)

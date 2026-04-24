@@ -77,10 +77,7 @@ class StatisticalEntryProjection(BaseProjection):
         elif event.event_type == EventTypes.STATISTICAL_ENTRY_DELETED:
             self._handle_deleted(event, data)
         else:
-            logger.warning(
-                "Unhandled event type for StatisticalEntryProjection: %s",
-                event.event_type
-            )
+            logger.warning("Unhandled event type for StatisticalEntryProjection: %s", event.event_type)
 
     def _handle_created(self, event: BusinessEvent, data: dict) -> None:
         """Handle STATISTICAL_ENTRY_CREATED event."""
@@ -91,10 +88,7 @@ class StatisticalEntryProjection(BaseProjection):
         ).first()
 
         if not account:
-            logger.error(
-                "Account not found for statistical entry: %s",
-                data["account_public_id"]
-            )
+            logger.error("Account not found for statistical entry: %s", data["account_public_id"])
             return
 
         # Look up related journal entry if provided
@@ -109,6 +103,7 @@ class StatisticalEntryProjection(BaseProjection):
         created_by = None
         if data.get("created_by_id"):
             from django.contrib.auth import get_user_model
+
             User = get_user_model()
             created_by = User.objects.filter(pk=data["created_by_id"]).first()
 
@@ -140,10 +135,7 @@ class StatisticalEntryProjection(BaseProjection):
         ).first()
 
         if not entry:
-            logger.warning(
-                "Statistical entry not found for update: %s",
-                data["entry_public_id"]
-            )
+            logger.warning("Statistical entry not found for update: %s", data["entry_public_id"])
             return
 
         changes = data.get("changes", {})
@@ -168,16 +160,14 @@ class StatisticalEntryProjection(BaseProjection):
         ).first()
 
         if not entry:
-            logger.warning(
-                "Statistical entry not found for posting: %s",
-                data["entry_public_id"]
-            )
+            logger.warning("Statistical entry not found for posting: %s", data["entry_public_id"])
             return
 
         # Look up posted_by user
         posted_by = None
         if data.get("posted_by_id"):
             from django.contrib.auth import get_user_model
+
             User = get_user_model()
             posted_by = User.objects.filter(pk=data["posted_by_id"]).first()
 
@@ -195,16 +185,14 @@ class StatisticalEntryProjection(BaseProjection):
         ).first()
 
         if not original:
-            logger.warning(
-                "Original statistical entry not found for reversal: %s",
-                data["original_entry_public_id"]
-            )
+            logger.warning("Original statistical entry not found for reversal: %s", data["original_entry_public_id"])
             return
 
         # Look up reversed_by user
         reversed_by = None
         if data.get("reversed_by_id"):
             from django.contrib.auth import get_user_model
+
             User = get_user_model()
             reversed_by = User.objects.filter(pk=data["reversed_by_id"]).first()
 
@@ -216,7 +204,7 @@ class StatisticalEntryProjection(BaseProjection):
         )
 
         # Create the reversal entry
-        reversal, _ = StatisticalEntry.objects.projection().update_or_create(
+        _reversal, _ = StatisticalEntry.objects.projection().update_or_create(
             company=event.company,
             public_id=data["reversal_entry_public_id"],
             defaults={
@@ -253,8 +241,7 @@ class StatisticalEntryProjection(BaseProjection):
 
         if deleted_count == 0:
             logger.warning(
-                "Statistical entry not found for deletion (or not in DRAFT status): %s",
-                data["entry_public_id"]
+                "Statistical entry not found for deletion (or not in DRAFT status): %s", data["entry_public_id"]
             )
 
     def _clear_projected_data(self, company) -> None:

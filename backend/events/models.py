@@ -27,6 +27,7 @@ from accounts.models import Company
 # LEPH: EventPayload Model for External Storage
 # =============================================================================
 
+
 class EventPayload(models.Model):
     """
     External storage for large event payloads.
@@ -60,11 +61,11 @@ class EventPayload(models.Model):
 
     compression = models.CharField(
         max_length=20,
-        default='none',
+        default="none",
         choices=[
-            ('none', 'No compression'),
-            ('gzip', 'Gzip compression'),
-            ('zstd', 'Zstandard compression'),
+            ("none", "No compression"),
+            ("gzip", "Gzip compression"),
+            ("zstd", "Zstandard compression"),
         ],
         help_text="Compression algorithm used (for future use)",
     )
@@ -75,9 +76,9 @@ class EventPayload(models.Model):
     )
 
     class Meta:
-        db_table = 'events_payload'
-        verbose_name = 'Event Payload'
-        verbose_name_plural = 'Event Payloads'
+        db_table = "events_payload"
+        verbose_name = "Event Payload"
+        verbose_name_plural = "Event Payloads"
 
     def __str__(self):
         return f"EventPayload({self.content_hash[:12]}..., {self.size_bytes} bytes)"
@@ -100,8 +101,7 @@ class EventPayload(models.Model):
         Payloads are referenced by events and must remain for replay integrity.
         """
         raise ValueError(
-            "EventPayload records cannot be deleted. "
-            "They are required for event replay and audit purposes."
+            "EventPayload records cannot be deleted. They are required for event replay and audit purposes."
         )
 
     def verify_integrity(self) -> bool:
@@ -118,7 +118,7 @@ class EventPayload(models.Model):
             return False
 
     @classmethod
-    def store_payload(cls, payload: dict) -> 'EventPayload':
+    def store_payload(cls, payload: dict) -> "EventPayload":
         """
         Store a payload, reusing existing record if content matches.
         """
@@ -130,9 +130,9 @@ class EventPayload(models.Model):
         record, _ = cls.objects.get_or_create(
             content_hash=content_hash,
             defaults={
-                'payload': payload,
-                'size_bytes': size_bytes,
-            }
+                "payload": payload,
+                "size_bytes": size_bytes,
+            },
         )
         return record
 
@@ -259,11 +259,11 @@ class BusinessEvent(models.Model):
 
     payload_storage = models.CharField(
         max_length=20,
-        default='inline',
+        default="inline",
         choices=[
-            ('inline', 'Inline'),
-            ('external', 'External'),
-            ('chunked', 'Chunked'),
+            ("inline", "Inline"),
+            ("external", "External"),
+            ("chunked", "Chunked"),
         ],
         help_text="Storage strategy: inline (data field), external (EventPayload), or chunked (multi-event)",
     )
@@ -277,11 +277,11 @@ class BusinessEvent(models.Model):
     )
 
     payload_ref = models.ForeignKey(
-        'EventPayload',
+        "EventPayload",
         on_delete=models.PROTECT,
         null=True,
         blank=True,
-        related_name='events',
+        related_name="events",
         help_text="Reference to external payload (when payload_storage='external')",
     )
 
@@ -291,10 +291,11 @@ class BusinessEvent(models.Model):
 
     class EventOrigin(models.TextChoices):
         """Origin of the event - who/what initiated it."""
-        HUMAN = 'human', 'Human (Manual UI)'
-        SYSTEM_BATCH = 'batch', 'System Batch Import'
-        API = 'api', 'External API'
-        SYSTEM = 'system', 'Internal System Process'
+
+        HUMAN = "human", "Human (Manual UI)"
+        SYSTEM_BATCH = "batch", "System Batch Import"
+        API = "api", "External API"
+        SYSTEM = "system", "Internal System Process"
 
     origin = models.CharField(
         max_length=20,
@@ -366,9 +367,7 @@ class BusinessEvent(models.Model):
             # select_for_update) to prevent aggregate sequence collisions.
             # ──────────────────────────────────────────────────────────────
             try:
-                counter, _ = CompanyEventCounter.objects.select_for_update().get_or_create(
-                    company=self.company
-                )
+                counter, _ = CompanyEventCounter.objects.select_for_update().get_or_create(company=self.company)
             except IntegrityError:
                 # Race: someone created it between get_or_create attempts
                 counter = CompanyEventCounter.objects.select_for_update().get(company=self.company)
@@ -385,11 +384,15 @@ class BusinessEvent(models.Model):
             # safety net — collisions trigger IntegrityError, handled by
             # the retry loop in _emit_event_core().
             if self.sequence == 0:
-                last_event = BusinessEvent.objects.filter(
-                    company=self.company,
-                    aggregate_type=self.aggregate_type,
-                    aggregate_id=self.aggregate_id,
-                ).order_by("-sequence").first()
+                last_event = (
+                    BusinessEvent.objects.filter(
+                        company=self.company,
+                        aggregate_type=self.aggregate_type,
+                        aggregate_id=self.aggregate_id,
+                    )
+                    .order_by("-sequence")
+                    .first()
+                )
                 self.sequence = (last_event.sequence + 1) if last_event else 1
 
             super().save(*args, **kwargs)
@@ -421,20 +424,19 @@ class BusinessEvent(models.Model):
             data = event.get_data()
             lines = data.get('lines', [])
         """
-        if self.payload_storage == 'inline':
+        if self.payload_storage == "inline":
             return self.data
 
-        elif self.payload_storage == 'external':
+        elif self.payload_storage == "external":
             if not self.payload_ref_id:
-                raise IntegrityError(
-                    f"Event {self.id} has external storage but no payload_ref"
-                )
+                raise IntegrityError(f"Event {self.id} has external storage but no payload_ref")
 
             payload = self.payload_ref.payload
 
             # Verify integrity if hash is set
             if self.payload_hash:
                 from events.serialization import compute_payload_hash
+
                 computed_hash = compute_payload_hash(payload)
                 if computed_hash != self.payload_hash:
                     raise IntegrityError(
@@ -444,7 +446,7 @@ class BusinessEvent(models.Model):
 
             return payload
 
-        elif self.payload_storage == 'chunked':
+        elif self.payload_storage == "chunked":
             return self._assemble_chunks()
 
         # Fallback for unknown strategy (shouldn't happen)
@@ -467,37 +469,34 @@ class BusinessEvent(models.Model):
 
         # Chunked assembly only works for JOURNAL_CREATED events
         if self.event_type != EventTypes.JOURNAL_CREATED:
-            raise ValueError(
-                f"Can only assemble chunks from JOURNAL_CREATED event, "
-                f"got {self.event_type}"
-            )
+            raise ValueError(f"Can only assemble chunks from JOURNAL_CREATED event, got {self.event_type}")
 
         # Get all chunk events caused by this event, ordered by sequence
         chunk_events = BusinessEvent.objects.filter(
             caused_by_event=self,
             event_type=EventTypes.JOURNAL_LINES_CHUNK_ADDED,
-        ).order_by('sequence')
+        ).order_by("sequence")
 
         # Assemble lines from all chunks in order
         all_lines = []
         for chunk_event in chunk_events:
             chunk_data = chunk_event.get_data()
-            chunk_lines = chunk_data.get('lines', [])
+            chunk_lines = chunk_data.get("lines", [])
             all_lines.extend(chunk_lines)
 
         # Combine header data with assembled lines
         header = dict(self.data)  # Copy to avoid mutating
-        header['lines'] = all_lines
+        header["lines"] = all_lines
 
         return header
 
     def has_external_payload(self) -> bool:
         """Check if this event uses external payload storage."""
-        return self.payload_storage == 'external' and self.payload_ref_id is not None
+        return self.payload_storage == "external" and self.payload_ref_id is not None
 
     def has_chunked_payload(self) -> bool:
         """Check if this event uses chunked payload storage."""
-        return self.payload_storage == 'chunked'
+        return self.payload_storage == "chunked"
 
     def verify_payload_integrity(self) -> bool:
         """
@@ -512,9 +511,9 @@ class BusinessEvent(models.Model):
         from events.serialization import compute_payload_hash
 
         try:
-            if self.payload_storage == 'inline':
+            if self.payload_storage == "inline":
                 computed = compute_payload_hash(self.data)
-            elif self.payload_storage == 'external' and self.payload_ref:
+            elif self.payload_storage == "external" and self.payload_ref:
                 computed = compute_payload_hash(self.payload_ref.payload)
             else:
                 return True  # Chunked payloads verified differently
@@ -588,9 +587,7 @@ class EventBookmark(models.Model):
         self.last_processed_at = timezone.now()
         self.error_count = 0
         self.last_error = ""
-        self.save(update_fields=[
-            "last_event", "last_processed_at", "error_count", "last_error", "updated_at"
-        ])
+        self.save(update_fields=["last_event", "last_processed_at", "error_count", "last_error", "updated_at"])
 
     def mark_error(self, error_message: str):
         self.error_count += 1

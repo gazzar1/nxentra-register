@@ -9,6 +9,7 @@ Tests verify the API responses rather than direct database queries
 to avoid transaction isolation issues between the API client and
 test database connections.
 """
+
 import uuid
 from datetime import date
 from decimal import Decimal
@@ -109,8 +110,7 @@ class TestJournalEntryThinFlow:
     - Reverse -> creates REVERSAL + original becomes REVERSED
     """
 
-    def test_journal_entry_full_lifecycle(self, je_client, je_company, je_user,
-                                           je_accounts, je_fiscal_period):
+    def test_journal_entry_full_lifecycle(self, je_client, je_company, je_user, je_accounts, je_fiscal_period):
         """Test complete JE lifecycle: create -> complete -> post -> reverse"""
         cash, sales = je_accounts
 
@@ -124,7 +124,7 @@ class TestJournalEntryThinFlow:
             ],
         }
         r = je_client.post("/api/accounting/journal-entries/", payload_create, format="json")
-        assert r.status_code == 201, r.data if hasattr(r, 'data') else r.content
+        assert r.status_code == 201, r.data if hasattr(r, "data") else r.content
 
         je_id = r.data["id"]
 
@@ -152,12 +152,12 @@ class TestJournalEntryThinFlow:
             ],
         }
         r = je_client.put(f"/api/accounting/journal-entries/{je_id}/complete/", payload_complete, format="json")
-        assert r.status_code == 200, r.data if hasattr(r, 'data') else r.content
+        assert r.status_code == 200, r.data if hasattr(r, "data") else r.content
         assert r.data["status"] == JournalEntry.Status.DRAFT
 
         # 3) Post -> POSTED
         r = je_client.post(f"/api/accounting/journal-entries/{je_id}/post/", {}, format="json")
-        assert r.status_code == 200, r.data if hasattr(r, 'data') else r.content
+        assert r.status_code == 200, r.data if hasattr(r, "data") else r.content
 
         assert r.data["status"] == JournalEntry.Status.POSTED
         assert r.data["kind"] == JournalEntry.Kind.NORMAL
@@ -167,7 +167,7 @@ class TestJournalEntryThinFlow:
 
         # 4) Reverse -> creates REVERSAL + original becomes REVERSED
         r = je_client.post(f"/api/accounting/journal-entries/{je_id}/reverse/", {}, format="json")
-        assert r.status_code == 201, r.data if hasattr(r, 'data') else r.content
+        assert r.status_code == 201, r.data if hasattr(r, "data") else r.content
 
         reversal_id = r.data["id"]
         reversal_data = r.data
@@ -201,8 +201,7 @@ class TestJournalEntryThinFlow:
         assert Decimal(rev_lines[1]["debit"]) == Decimal("100.00")
         assert Decimal(rev_lines[1]["credit"]) == Decimal("0.00")
 
-    def test_unbalanced_entry_cannot_be_completed(self, je_client, je_accounts,
-                                                    je_fiscal_period):
+    def test_unbalanced_entry_cannot_be_completed(self, je_client, je_accounts, je_fiscal_period):
         """Test that unbalanced entries fail validation"""
         cash, sales = je_accounts
         payload = {
@@ -222,11 +221,9 @@ class TestJournalEntryThinFlow:
         assert r.status_code == 400
         # Error should mention either "balanced" or "line"
         error_text = str(r.data).lower()
-        assert "balanced" in error_text or "line" in error_text, \
-            f"Expected error about balance or lines, got: {r.data}"
+        assert "balanced" in error_text or "line" in error_text, f"Expected error about balance or lines, got: {r.data}"
 
-    def test_posted_entry_cannot_be_edited(self, je_client, je_accounts,
-                                            je_fiscal_period):
+    def test_posted_entry_cannot_be_edited(self, je_client, je_accounts, je_fiscal_period):
         """Test that posted entries are immutable"""
         cash, sales = je_accounts
         payload = {

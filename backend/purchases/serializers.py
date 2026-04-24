@@ -22,8 +22,10 @@ from .models import (
 # Purchase Bill Serializers
 # =============================================================================
 
+
 class PurchaseBillLineSerializer(serializers.ModelSerializer):
     """Serializer for PurchaseBillLine model."""
+
     item_code = serializers.CharField(source="item.code", read_only=True, default=None)
     account_code = serializers.CharField(source="account.code", read_only=True)
     tax_code_code = serializers.CharField(source="tax_code.code", read_only=True, default=None)
@@ -31,21 +33,42 @@ class PurchaseBillLineSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseBillLine
         fields = [
-            "id", "public_id", "line_number",
-            "item", "item_code", "description", "description_ar",
-            "quantity", "unit_price", "discount_amount",
-            "tax_code", "tax_code_code", "tax_rate",
-            "gross_amount", "net_amount", "tax_amount", "line_total",
-            "account", "account_code",
+            "id",
+            "public_id",
+            "line_number",
+            "item",
+            "item_code",
+            "description",
+            "description_ar",
+            "quantity",
+            "unit_price",
+            "discount_amount",
+            "tax_code",
+            "tax_code_code",
+            "tax_rate",
+            "gross_amount",
+            "net_amount",
+            "tax_amount",
+            "line_total",
+            "account",
+            "account_code",
         ]
         read_only_fields = [
-            "id", "public_id", "item_code", "account_code", "tax_code_code",
-            "gross_amount", "net_amount", "tax_amount", "line_total",
+            "id",
+            "public_id",
+            "item_code",
+            "account_code",
+            "tax_code_code",
+            "gross_amount",
+            "net_amount",
+            "tax_amount",
+            "line_total",
         ]
 
 
 class PurchaseBillSerializer(serializers.ModelSerializer):
     """Serializer for PurchaseBill model."""
+
     lines = PurchaseBillLineSerializer(many=True, read_only=True)
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
     vendor_code = serializers.CharField(source="vendor.code", read_only=True)
@@ -58,31 +81,63 @@ class PurchaseBillSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseBill
         fields = [
-            "id", "public_id", "bill_number", "bill_date", "due_date",
-            "vendor", "vendor_name", "vendor_code",
-            "posting_profile", "posting_profile_code",
-            "currency", "exchange_rate",
-            "subtotal", "total_discount", "total_tax", "total_amount",
-            "status", "posted_at", "posted_by", "posted_by_email",
-            "posted_journal_entry", "posted_journal_entry_number",
-            "notes", "reference",
-            "created_at", "created_by", "updated_at",
+            "id",
+            "public_id",
+            "bill_number",
+            "bill_date",
+            "due_date",
+            "vendor",
+            "vendor_name",
+            "vendor_code",
+            "posting_profile",
+            "posting_profile_code",
+            "currency",
+            "exchange_rate",
+            "subtotal",
+            "total_discount",
+            "total_tax",
+            "total_amount",
+            "status",
+            "posted_at",
+            "posted_by",
+            "posted_by_email",
+            "posted_journal_entry",
+            "posted_journal_entry_number",
+            "notes",
+            "reference",
+            "created_at",
+            "created_by",
+            "updated_at",
             "lines",
         ]
         read_only_fields = [
-            "id", "public_id",
-            "vendor_name", "vendor_code", "posting_profile_code",
-            "currency", "exchange_rate",
-            "subtotal", "total_discount", "total_tax", "total_amount",
-            "status", "posted_at", "posted_by", "posted_by_email",
-            "posted_journal_entry", "posted_journal_entry_number",
-            "created_at", "created_by", "updated_at",
+            "id",
+            "public_id",
+            "vendor_name",
+            "vendor_code",
+            "posting_profile_code",
+            "currency",
+            "exchange_rate",
+            "subtotal",
+            "total_discount",
+            "total_tax",
+            "total_amount",
+            "status",
+            "posted_at",
+            "posted_by",
+            "posted_by_email",
+            "posted_journal_entry",
+            "posted_journal_entry_number",
+            "created_at",
+            "created_by",
+            "updated_at",
             "lines",
         ]
 
 
 class PurchaseBillLineInputSerializer(serializers.Serializer):
     """Serializer for input line data when creating/updating bills."""
+
     account_id = serializers.IntegerField()
     description = serializers.CharField(max_length=500)
     description_ar = serializers.CharField(max_length=500, required=False, allow_blank=True, default="")
@@ -91,13 +146,12 @@ class PurchaseBillLineInputSerializer(serializers.Serializer):
     discount_amount = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, default=Decimal("0"))
     tax_code_id = serializers.IntegerField(required=False, allow_null=True)
     item_id = serializers.IntegerField(required=False, allow_null=True)
-    dimension_value_ids = serializers.ListField(
-        child=serializers.IntegerField(), required=False, default=list
-    )
+    dimension_value_ids = serializers.ListField(child=serializers.IntegerField(), required=False, default=list)
 
 
 class PurchaseBillCreateSerializer(serializers.Serializer):
     """Serializer for creating purchase bills via command."""
+
     bill_number = serializers.CharField(max_length=50, required=False, default="")
     bill_date = serializers.DateField()
     due_date = serializers.DateField(required=False, allow_null=True)
@@ -117,6 +171,7 @@ class PurchaseBillCreateSerializer(serializers.Serializer):
 
 class PurchaseBillListSerializer(serializers.ModelSerializer):
     """Lightweight serializer for listing bills."""
+
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
     vendor_code = serializers.CharField(source="vendor.code", read_only=True)
     vendor_bill_reference = serializers.CharField(source="reference", read_only=True)
@@ -124,10 +179,19 @@ class PurchaseBillListSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseBill
         fields = [
-            "id", "public_id", "bill_number", "bill_date", "due_date",
-            "vendor", "vendor_name", "vendor_code", "vendor_bill_reference",
-            "currency", "exchange_rate",
-            "total_amount", "status",
+            "id",
+            "public_id",
+            "bill_number",
+            "bill_date",
+            "due_date",
+            "vendor",
+            "vendor_name",
+            "vendor_code",
+            "vendor_bill_reference",
+            "currency",
+            "exchange_rate",
+            "total_amount",
+            "status",
             "created_at",
         ]
 
@@ -136,6 +200,7 @@ class PurchaseBillListSerializer(serializers.ModelSerializer):
 # Purchase Order Serializers
 # =============================================================================
 
+
 class PurchaseOrderLineSerializer(serializers.ModelSerializer):
     account_code = serializers.CharField(source="account.code", read_only=True)
     account_name = serializers.CharField(source="account.name", read_only=True)
@@ -143,13 +208,26 @@ class PurchaseOrderLineSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseOrderLine
         fields = [
-            "id", "public_id", "line_number",
-            "item", "description", "description_ar",
-            "quantity", "unit_price", "discount_amount",
-            "tax_code", "tax_rate",
-            "gross_amount", "net_amount", "tax_amount", "line_total",
-            "account", "account_code", "account_name",
-            "qty_received", "qty_billed",
+            "id",
+            "public_id",
+            "line_number",
+            "item",
+            "description",
+            "description_ar",
+            "quantity",
+            "unit_price",
+            "discount_amount",
+            "tax_code",
+            "tax_rate",
+            "gross_amount",
+            "net_amount",
+            "tax_amount",
+            "line_total",
+            "account",
+            "account_code",
+            "account_name",
+            "qty_received",
+            "qty_billed",
         ]
 
 
@@ -161,13 +239,30 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseOrder
         fields = [
-            "id", "public_id", "order_number", "order_date", "expected_delivery_date",
-            "vendor", "vendor_name", "vendor_code",
-            "posting_profile", "currency", "exchange_rate",
-            "subtotal", "total_discount", "total_tax", "total_amount",
-            "status", "approved_at", "approved_by",
-            "notes", "reference", "shipping_address",
-            "created_at", "created_by", "updated_at",
+            "id",
+            "public_id",
+            "order_number",
+            "order_date",
+            "expected_delivery_date",
+            "vendor",
+            "vendor_name",
+            "vendor_code",
+            "posting_profile",
+            "currency",
+            "exchange_rate",
+            "subtotal",
+            "total_discount",
+            "total_tax",
+            "total_amount",
+            "status",
+            "approved_at",
+            "approved_by",
+            "notes",
+            "reference",
+            "shipping_address",
+            "created_at",
+            "created_by",
+            "updated_at",
             "lines",
         ]
 
@@ -179,9 +274,17 @@ class PurchaseOrderListSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseOrder
         fields = [
-            "id", "public_id", "order_number", "order_date", "expected_delivery_date",
-            "vendor", "vendor_name", "vendor_code",
-            "currency", "total_amount", "status",
+            "id",
+            "public_id",
+            "order_number",
+            "order_date",
+            "expected_delivery_date",
+            "vendor",
+            "vendor_name",
+            "vendor_code",
+            "currency",
+            "total_amount",
+            "status",
             "created_at",
         ]
 
@@ -203,16 +306,22 @@ class PurchaseOrderCreateSerializer(serializers.Serializer):
 # Goods Receipt Serializers
 # =============================================================================
 
+
 class GoodsReceiptLineSerializer(serializers.ModelSerializer):
     po_line_number = serializers.IntegerField(source="po_line.line_number", read_only=True)
 
     class Meta:
         model = GoodsReceiptLine
         fields = [
-            "id", "public_id", "line_number",
-            "po_line", "po_line_number",
-            "item", "description",
-            "qty_received", "unit_cost",
+            "id",
+            "public_id",
+            "line_number",
+            "po_line",
+            "po_line_number",
+            "item",
+            "description",
+            "qty_received",
+            "unit_cost",
         ]
 
 
@@ -225,12 +334,22 @@ class GoodsReceiptSerializer(serializers.ModelSerializer):
     class Meta:
         model = GoodsReceipt
         fields = [
-            "id", "public_id", "receipt_number", "receipt_date",
-            "purchase_order", "order_number",
-            "vendor", "vendor_name",
-            "warehouse", "warehouse_name",
-            "status", "posted_at", "posted_by",
-            "notes", "created_at", "created_by",
+            "id",
+            "public_id",
+            "receipt_number",
+            "receipt_date",
+            "purchase_order",
+            "order_number",
+            "vendor",
+            "vendor_name",
+            "warehouse",
+            "warehouse_name",
+            "status",
+            "posted_at",
+            "posted_by",
+            "notes",
+            "created_at",
+            "created_by",
             "lines",
         ]
 
@@ -243,11 +362,18 @@ class GoodsReceiptListSerializer(serializers.ModelSerializer):
     class Meta:
         model = GoodsReceipt
         fields = [
-            "id", "public_id", "receipt_number", "receipt_date",
-            "purchase_order", "order_number",
-            "vendor", "vendor_name",
-            "warehouse", "warehouse_name",
-            "status", "created_at",
+            "id",
+            "public_id",
+            "receipt_number",
+            "receipt_date",
+            "purchase_order",
+            "order_number",
+            "vendor",
+            "vendor_name",
+            "warehouse",
+            "warehouse_name",
+            "status",
+            "created_at",
         ]
 
 
@@ -270,6 +396,7 @@ class CreateBillFromPOSerializer(serializers.Serializer):
 # Purchase Credit Note Serializers
 # =============================================================================
 
+
 class PurchaseCreditNoteLineSerializer(serializers.ModelSerializer):
     item_code = serializers.CharField(source="item.code", read_only=True, default=None)
     account_code = serializers.CharField(source="account.code", read_only=True)
@@ -279,17 +406,39 @@ class PurchaseCreditNoteLineSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseCreditNoteLine
         fields = [
-            "id", "public_id", "line_number",
-            "bill_line", "item", "item_code",
-            "description", "description_ar",
-            "quantity", "unit_price", "discount_amount",
-            "tax_code", "tax_code_code", "tax_rate",
-            "gross_amount", "net_amount", "tax_amount", "line_total",
-            "account", "account_code", "account_name",
+            "id",
+            "public_id",
+            "line_number",
+            "bill_line",
+            "item",
+            "item_code",
+            "description",
+            "description_ar",
+            "quantity",
+            "unit_price",
+            "discount_amount",
+            "tax_code",
+            "tax_code_code",
+            "tax_rate",
+            "gross_amount",
+            "net_amount",
+            "tax_amount",
+            "line_total",
+            "account",
+            "account_code",
+            "account_name",
         ]
         read_only_fields = [
-            "id", "public_id", "item_code", "account_code", "account_name", "tax_code_code",
-            "gross_amount", "net_amount", "tax_amount", "line_total",
+            "id",
+            "public_id",
+            "item_code",
+            "account_code",
+            "account_name",
+            "tax_code_code",
+            "gross_amount",
+            "net_amount",
+            "tax_amount",
+            "line_total",
         ]
 
 
@@ -307,16 +456,35 @@ class PurchaseCreditNoteSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseCreditNote
         fields = [
-            "id", "public_id", "credit_note_number", "credit_note_date",
-            "bill", "bill_number",
-            "vendor", "vendor_name", "vendor_code",
-            "posting_profile", "posting_profile_code",
-            "reason", "reason_notes",
-            "currency", "exchange_rate",
-            "subtotal", "total_discount", "total_tax", "total_amount",
-            "status", "posted_at", "posted_by", "posted_by_email",
-            "posted_journal_entry", "posted_journal_entry_number",
-            "notes", "created_at", "created_by", "updated_at",
+            "id",
+            "public_id",
+            "credit_note_number",
+            "credit_note_date",
+            "bill",
+            "bill_number",
+            "vendor",
+            "vendor_name",
+            "vendor_code",
+            "posting_profile",
+            "posting_profile_code",
+            "reason",
+            "reason_notes",
+            "currency",
+            "exchange_rate",
+            "subtotal",
+            "total_discount",
+            "total_tax",
+            "total_amount",
+            "status",
+            "posted_at",
+            "posted_by",
+            "posted_by_email",
+            "posted_journal_entry",
+            "posted_journal_entry_number",
+            "notes",
+            "created_at",
+            "created_by",
+            "updated_at",
             "lines",
         ]
 
@@ -329,10 +497,18 @@ class PurchaseCreditNoteListSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseCreditNote
         fields = [
-            "id", "public_id", "credit_note_number", "credit_note_date",
-            "bill", "bill_number",
-            "vendor", "vendor_name", "vendor_code",
-            "reason", "total_amount", "status",
+            "id",
+            "public_id",
+            "credit_note_number",
+            "credit_note_date",
+            "bill",
+            "bill_number",
+            "vendor",
+            "vendor_name",
+            "vendor_code",
+            "reason",
+            "total_amount",
+            "status",
             "created_at",
         ]
 

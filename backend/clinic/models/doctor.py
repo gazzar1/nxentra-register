@@ -10,7 +10,9 @@ class Doctor(ProjectionWriteGuard):
     allowed_write_contexts = {"command", "projection", "bootstrap", "migration"}
 
     company = models.ForeignKey(
-        Company, on_delete=models.CASCADE, related_name="clinic_doctors",
+        Company,
+        on_delete=models.CASCADE,
+        related_name="clinic_doctors",
     )
     public_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     code = models.CharField(max_length=20)

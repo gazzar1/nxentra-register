@@ -33,13 +33,13 @@ logger = logging.getLogger(__name__)
 class AccountBalanceProjection(BaseProjection):
     """
     Maintains materialized account balances from journal entry events.
-    
+
     Event Flow:
     1. Command posts journal entry
     2. journal_entry.posted event is emitted
     3. This projection consumes the event
     4. AccountBalance records are updated
-    
+
     The projection is idempotent: processing the same event twice
     will not double-count amounts (guaranteed by ProjectionAppliedEvent
     in BaseProjection.process_pending).
@@ -55,7 +55,6 @@ class AccountBalanceProjection(BaseProjection):
             EventTypes.JOURNAL_ENTRY_POSTED,
             # Note: REVERSED entries emit a new POSTED event for the reversal
             # so we don't need to handle REVERSED separately
-
             # LEPH chunked journal events (for large batch imports)
             EventTypes.JOURNAL_LINES_CHUNK_ADDED,
         ]
@@ -91,6 +90,7 @@ class AccountBalanceProjection(BaseProjection):
 
         # Parse entry date
         from datetime import datetime
+
         if entry_date_str:
             entry_date = datetime.fromisoformat(entry_date_str).date()
         else:
@@ -131,6 +131,7 @@ class AccountBalanceProjection(BaseProjection):
             entry_date_str = parent_data.get("date")
             if entry_date_str:
                 from datetime import datetime
+
                 entry_date = datetime.fromisoformat(entry_date_str).date()
 
         # Process each line in the chunk
@@ -143,18 +144,18 @@ class AccountBalanceProjection(BaseProjection):
             )
 
     def _apply_line(
-    self,
-    company: Company,
-    line_data: dict[str, Any],
-    entry_date,
-    event: BusinessEvent,
+        self,
+        company: Company,
+        line_data: dict[str, Any],
+        entry_date,
+        event: BusinessEvent,
     ) -> None:
         """
         Apply a single journal line to AccountBalance.
-        
+
         This method is now protected against race conditions using
         select_for_update() to lock the balance row during updates.
-        
+
         Args:
             company: The company
             line_data: Line data from the event
@@ -183,10 +184,7 @@ class AccountBalanceProjection(BaseProjection):
         try:
             account = Account.objects.get(public_id=account_public_id, company=company)
         except Account.DoesNotExist:
-            logger.error(
-                f"Account {account_public_id} not found for company {company.id} "
-                f"in event {event.id}"
-            )
+            logger.error(f"Account {account_public_id} not found for company {company.id} in event {event.id}")
             return
         if account.company_id != company.id:
             raise RuntimeError(
@@ -242,8 +240,7 @@ class AccountBalanceProjection(BaseProjection):
             balance.save()
 
             logger.debug(
-                f"Updated balance for {account.code}: "
-                f"debit={debit}, credit={credit}, new_balance={balance.balance}"
+                f"Updated balance for {account.code}: debit={debit}, credit={credit}, new_balance={balance.balance}"
             )
 
     def _clear_projected_data(self, company: Company) -> None:
@@ -261,7 +258,7 @@ class AccountBalanceProjection(BaseProjection):
     def get_balance(self, company: Company, account: Account) -> Decimal:
         """
         Get the current balance for an account.
-        
+
         This is the method that should be used instead of
         Account.get_balance() to ensure consistency.
         """
@@ -291,10 +288,14 @@ class AccountBalanceProjection(BaseProjection):
 
         # CRITICAL: Only include FINANCIAL domain accounts in trial balance
         # Statistical and off-balance accounts must never appear here
-        balances = AccountBalance.objects.filter(
-            company=company,
-            account__ledger_domain=Account.LedgerDomain.FINANCIAL,
-        ).select_related("account").order_by("account__code")
+        balances = (
+            AccountBalance.objects.filter(
+                company=company,
+                account__ledger_domain=Account.LedgerDomain.FINANCIAL,
+            )
+            .select_related("account")
+            .order_by("account__code")
+        )
 
         accounts = []
         total_debit = Decimal("0.00")
@@ -320,16 +321,18 @@ class AccountBalanceProjection(BaseProjection):
                     debit = abs(bal.balance)
                     credit = Decimal("0.00")
 
-            accounts.append({
-                "code": account.code,
-                "name": account.name,
-                "name_ar": account.name_ar or account.name,
-                "account_type": account.account_type,
-                "debit": str(debit),
-                "credit": str(credit),
-                "balance": str(bal.balance),
-                "normal_balance": account.normal_balance,
-            })
+            accounts.append(
+                {
+                    "code": account.code,
+                    "name": account.name,
+                    "name_ar": account.name_ar or account.name,
+                    "account_type": account.account_type,
+                    "debit": str(debit),
+                    "credit": str(credit),
+                    "balance": str(bal.balance),
+                    "normal_balance": account.normal_balance,
+                }
+            )
 
             total_debit += debit
             total_credit += credit
@@ -408,21 +411,25 @@ class AccountBalanceProjection(BaseProjection):
 
         for bal in balances:
             account_id = str(bal.account.public_id)
-            expected = expected_totals.get(account_id, {
-                "debit": Decimal("0.00"),
-                "credit": Decimal("0.00"),
-            })
+            expected = expected_totals.get(
+                account_id,
+                {
+                    "debit": Decimal("0.00"),
+                    "credit": Decimal("0.00"),
+                },
+            )
 
-            if (bal.debit_total != expected["debit"] or
-                    bal.credit_total != expected["credit"]):
-                mismatches.append({
-                    "account_code": bal.account.code,
-                    "account_public_id": account_id,
-                    "projected_debit": str(bal.debit_total),
-                    "projected_credit": str(bal.credit_total),
-                    "expected_debit": str(expected["debit"]),
-                    "expected_credit": str(expected["credit"]),
-                })
+            if bal.debit_total != expected["debit"] or bal.credit_total != expected["credit"]:
+                mismatches.append(
+                    {
+                        "account_code": bal.account.code,
+                        "account_public_id": account_id,
+                        "projected_debit": str(bal.debit_total),
+                        "projected_credit": str(bal.credit_total),
+                        "expected_debit": str(expected["debit"]),
+                        "expected_credit": str(expected["credit"]),
+                    }
+                )
             else:
                 verified += 1
 
@@ -430,14 +437,16 @@ class AccountBalanceProjection(BaseProjection):
         projected_ids = {str(bal.account.public_id) for bal in balances}
         for account_id, totals in expected_totals.items():
             if account_id not in projected_ids:
-                mismatches.append({
-                    "account_code": "(missing projection)",
-                    "account_public_id": account_id,
-                    "projected_debit": "0.00",
-                    "projected_credit": "0.00",
-                    "expected_debit": str(totals["debit"]),
-                    "expected_credit": str(totals["credit"]),
-                })
+                mismatches.append(
+                    {
+                        "account_code": "(missing projection)",
+                        "account_public_id": account_id,
+                        "projected_debit": "0.00",
+                        "projected_credit": "0.00",
+                        "expected_debit": str(totals["debit"]),
+                        "expected_credit": str(totals["credit"]),
+                    }
+                )
 
         return {
             "total_accounts": balances.count(),

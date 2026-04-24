@@ -261,7 +261,7 @@ class Command(BaseCommand):
         accounts = {}
 
         for role, code, name, name_ar, acct_type, acct_role in SHOPIFY_ACCOUNTS:
-            account, created = Account.objects.get_or_create(
+            account, _created = Account.objects.get_or_create(
                 company=company,
                 code=code,
                 defaults={
@@ -333,7 +333,7 @@ class Command(BaseCommand):
         for i in range(30):
             days_ago = random.randint(7, 45)
             order_date = today - timedelta(days=days_ago)
-            product_name, base_price = random.choice(ORDER_ITEMS)
+            _product_name, base_price = random.choice(ORDER_ITEMS)
             qty = random.randint(1, 3)
             subtotal = base_price * qty
             tax = (subtotal * Decimal("0.08")).quantize(Decimal("0.01"))
@@ -382,7 +382,7 @@ class Command(BaseCommand):
         for i in range(random.randint(3, 5)):
             days_ago = random.randint(0, 2)
             order_date = today - timedelta(days=days_ago)
-            product_name, base_price = random.choice(ORDER_ITEMS)
+            _product_name, base_price = random.choice(ORDER_ITEMS)
             qty = random.randint(1, 2)
             subtotal = base_price * qty
             tax = (subtotal * Decimal("0.08")).quantize(Decimal("0.01"))

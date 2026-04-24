@@ -1,6 +1,7 @@
 """
 Django Admin registration for Tenant models.
 """
+
 from django.contrib import admin
 
 from tenant.models import MigrationLog, TenantDirectory
@@ -31,28 +32,43 @@ class TenantDirectoryAdmin(admin.ModelAdmin):
     raw_id_fields = ["company"]
 
     fieldsets = (
-        (None, {
-            "fields": ("company", "public_id"),
-        }),
-        ("Database Configuration", {
-            "fields": ("mode", "db_alias", "status"),
-        }),
-        ("Migration Info", {
-            "fields": (
-                "migrated_at",
-                "migration_event_sequence",
-                "migration_export_hash",
-            ),
-            "classes": ("collapse",),
-        }),
-        ("Notes", {
-            "fields": ("notes",),
-            "classes": ("collapse",),
-        }),
-        ("Timestamps", {
-            "fields": ("created_at", "updated_at"),
-            "classes": ("collapse",),
-        }),
+        (
+            None,
+            {
+                "fields": ("company", "public_id"),
+            },
+        ),
+        (
+            "Database Configuration",
+            {
+                "fields": ("mode", "db_alias", "status"),
+            },
+        ),
+        (
+            "Migration Info",
+            {
+                "fields": (
+                    "migrated_at",
+                    "migration_event_sequence",
+                    "migration_export_hash",
+                ),
+                "classes": ("collapse",),
+            },
+        ),
+        (
+            "Notes",
+            {
+                "fields": ("notes",),
+                "classes": ("collapse",),
+            },
+        ),
+        (
+            "Timestamps",
+            {
+                "fields": ("created_at", "updated_at"),
+                "classes": ("collapse",),
+            },
+        ),
     )
 
     def has_delete_permission(self, request, obj=None):
@@ -97,32 +113,47 @@ class MigrationLogAdmin(admin.ModelAdmin):
     ]
 
     fieldsets = (
-        (None, {
-            "fields": ("tenant", "initiated_by"),
-        }),
-        ("Migration Direction", {
-            "fields": (
-                "from_mode",
-                "to_mode",
-                "from_db_alias",
-                "to_db_alias",
-            ),
-        }),
-        ("Timing", {
-            "fields": ("started_at", "completed_at"),
-        }),
-        ("Verification", {
-            "fields": (
-                "export_event_count",
-                "import_event_count",
-                "export_hash",
-                "import_hash",
-                "hashes_match",
-            ),
-        }),
-        ("Result", {
-            "fields": ("result", "error_message"),
-        }),
+        (
+            None,
+            {
+                "fields": ("tenant", "initiated_by"),
+            },
+        ),
+        (
+            "Migration Direction",
+            {
+                "fields": (
+                    "from_mode",
+                    "to_mode",
+                    "from_db_alias",
+                    "to_db_alias",
+                ),
+            },
+        ),
+        (
+            "Timing",
+            {
+                "fields": ("started_at", "completed_at"),
+            },
+        ),
+        (
+            "Verification",
+            {
+                "fields": (
+                    "export_event_count",
+                    "import_event_count",
+                    "export_hash",
+                    "import_hash",
+                    "hashes_match",
+                ),
+            },
+        ),
+        (
+            "Result",
+            {
+                "fields": ("result", "error_message"),
+            },
+        ),
     )
 
     def has_add_permission(self, request):

@@ -14,6 +14,7 @@ from events.types import BaseEventData, EventTypes, FinancialEventData
 # Non-financial events
 # =============================================================================
 
+
 @dataclass
 class DoctorCreatedData(BaseEventData):
     doctor_public_id: str = ""
@@ -68,9 +69,11 @@ class VisitCompletedData(BaseEventData):
 # Financial events (extend FinancialEventData)
 # =============================================================================
 
+
 @dataclass
 class InvoiceIssuedData(FinancialEventData):
     """Triggers DR Accounts Receivable / CR Consultation Revenue."""
+
     invoice_public_id: str = ""
     patient_public_id: str = ""
     visit_public_id: str = ""
@@ -83,6 +86,7 @@ class InvoiceIssuedData(FinancialEventData):
 @dataclass
 class PaymentReceivedData(FinancialEventData):
     """Triggers DR Cash-Bank / CR Accounts Receivable."""
+
     payment_public_id: str = ""
     invoice_public_id: str = ""
     patient_public_id: str = ""
@@ -93,6 +97,7 @@ class PaymentReceivedData(FinancialEventData):
 @dataclass
 class PaymentVoidedData(FinancialEventData):
     """Triggers reversal of the payment journal entry."""
+
     payment_public_id: str = ""
     invoice_public_id: str = ""
     patient_public_id: str = ""

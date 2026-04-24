@@ -17,6 +17,7 @@ Usage:
     # Scheduled periodic processing
     # Configure in Django admin -> Periodic Tasks
 """
+
 import logging
 
 from celery import shared_task
@@ -64,11 +65,7 @@ def process_company_projections(
 
     # Get projections to process
     if projection_names:
-        projections = [
-            projection_registry.get(name)
-            for name in projection_names
-            if projection_registry.get(name)
-        ]
+        projections = [projection_registry.get(name) for name in projection_names if projection_registry.get(name)]
     else:
         projections = projection_registry.all()
 
@@ -84,10 +81,7 @@ def process_company_projections(
             logger.exception(f"Error in projection {projection.name}: {e}")
             results[projection.name] = {"error": str(e), "status": "error"}
 
-    logger.info(
-        f"Completed projections for company {company_id}: "
-        f"{total_processed} events processed"
-    )
+    logger.info(f"Completed projections for company {company_id}: {total_processed} events processed")
 
     return {
         "company_id": company_id,
@@ -122,14 +116,10 @@ def process_all_projections(self, limit: int = 1000) -> dict:
 
         # Check tenant status - skip companies being migrated
         migrating_ids = set(
-            TenantDirectory.objects.filter(
-                status=TenantDirectory.Status.MIGRATING
-            ).values_list("company_id", flat=True)
+            TenantDirectory.objects.filter(status=TenantDirectory.Status.MIGRATING).values_list("company_id", flat=True)
         )
 
-        companies_to_process = [
-            c for c in active_companies if c.id not in migrating_ids
-        ]
+        companies_to_process = [c for c in active_companies if c.id not in migrating_ids]
 
     results = {}
     total_processed = 0
@@ -198,10 +188,7 @@ def rebuild_projection(
 
     try:
         processed = projection.rebuild(company)
-        logger.info(
-            f"Rebuilt projection {projection_name} for {company.slug}: "
-            f"{processed} events processed"
-        )
+        logger.info(f"Rebuilt projection {projection_name} for {company.slug}: {processed} events processed")
         return {
             "company_id": company_id,
             "projection": projection_name,
@@ -288,24 +275,26 @@ def check_projection_health(self) -> dict:
                 company_lag += lag
 
                 if lag > 0:
-                    lagging_projections.append({
-                        "projection": projection.name,
-                        "lag": lag,
-                    })
+                    lagging_projections.append(
+                        {
+                            "projection": projection.name,
+                            "lag": lag,
+                        }
+                    )
 
             if company_lag > 0:
-                report["companies_with_lag"].append({
-                    "company": company.slug,
-                    "total_lag": company_lag,
-                    "projections": lagging_projections,
-                })
+                report["companies_with_lag"].append(
+                    {
+                        "company": company.slug,
+                        "total_lag": company_lag,
+                        "projections": lagging_projections,
+                    }
+                )
 
             report["total_lag"] += company_lag
 
         if report["total_lag"] >= threshold:
             report["healthy"] = False
-            logger.warning(
-                f"Projection lag threshold exceeded: {report['total_lag']} >= {threshold}"
-            )
+            logger.warning(f"Projection lag threshold exceeded: {report['total_lag']} >= {threshold}")
 
     return report

@@ -46,7 +46,9 @@ def _create_exception(company, **kwargs):
     exc = ReconciliationException.objects.create(company=company, **kwargs)
     logger.info(
         "Created reconciliation exception: %s [%s] for %s",
-        exc.title, exc.exception_type, company.slug,
+        exc.title,
+        exc.exception_type,
+        company.slug,
     )
     return exc
 
@@ -250,10 +252,17 @@ def detect_payout_discrepancies(company, date_from=None, date_to=None):
             payout_date__gte=date_from,
             payout_date__lte=date_to,
         )
-        created.extend(_detect_platform_discrepancies(
-            company, "shopify", shopify_payouts,
-            shopify_reconcile, "shopify_payout_id", date_from, date_to,
-        ))
+        created.extend(
+            _detect_platform_discrepancies(
+                company,
+                "shopify",
+                shopify_payouts,
+                shopify_reconcile,
+                "shopify_payout_id",
+                date_from,
+                date_to,
+            )
+        )
     except ImportError:
         pass
 
@@ -267,10 +276,17 @@ def detect_payout_discrepancies(company, date_from=None, date_to=None):
             payout_date__gte=date_from,
             payout_date__lte=date_to,
         )
-        created.extend(_detect_platform_discrepancies(
-            company, "stripe", stripe_payouts,
-            stripe_reconcile, "stripe_payout_id", date_from, date_to,
-        ))
+        created.extend(
+            _detect_platform_discrepancies(
+                company,
+                "stripe",
+                stripe_payouts,
+                stripe_reconcile,
+                "stripe_payout_id",
+                date_from,
+                date_to,
+            )
+        )
     except ImportError:
         pass
 
@@ -297,6 +313,7 @@ def auto_resolve_matched(company):
         reference_id__isnull=False,
     )
     from .models import BankTransaction
+
     for exc in open_bank_excs:
         try:
             tx = BankTransaction.objects.get(pk=exc.reference_id, company=company)
@@ -320,6 +337,7 @@ def auto_resolve_matched(company):
         reference_id__isnull=False,
     )
     from .matching import _is_payout_already_matched
+
     for exc in open_payout_excs:
         payout_dict = {
             "platform": exc.platform,

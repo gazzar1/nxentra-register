@@ -72,21 +72,22 @@ class Command(BaseCommand):
 
             to_create = []
             for agg in aggregates:
-                to_create.append(DimensionBalance(
-                    company=company,
-                    dimension_id=agg["dimension_id"],
-                    dimension_value_id=agg["dimension_value_id"],
-                    account_id=agg["journal_line__account_id"],
-                    debit_total=agg["total_debit"],
-                    credit_total=agg["total_credit"],
-                    entry_count=agg["count"],
-                ))
+                to_create.append(
+                    DimensionBalance(
+                        company=company,
+                        dimension_id=agg["dimension_id"],
+                        dimension_value_id=agg["dimension_value_id"],
+                        account_id=agg["journal_line__account_id"],
+                        debit_total=agg["total_debit"],
+                        credit_total=agg["total_credit"],
+                        entry_count=agg["count"],
+                    )
+                )
 
             if to_create:
                 DimensionBalance.objects.bulk_create(
-                    to_create, ignore_conflicts=True,
+                    to_create,
+                    ignore_conflicts=True,
                 )
 
-            self.stdout.write(self.style.SUCCESS(
-                f"  Created {len(to_create)} dimension balance records"
-            ))
+            self.stdout.write(self.style.SUCCESS(f"  Created {len(to_create)} dimension balance records"))

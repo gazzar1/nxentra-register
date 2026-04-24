@@ -23,6 +23,7 @@ Safety:
     - Use --dry-run to see what would happen without making changes
     - STRICT VERIFICATION: Migration fails if hashes/counts mismatch or trial balance differs
 """
+
 import os
 import tempfile
 from datetime import datetime
@@ -119,7 +120,7 @@ class Command(BaseCommand):
             return
 
         # Get or create TenantDirectory entry
-        tenant_entry, created = TenantDirectory.objects.get_or_create(
+        tenant_entry, _created = TenantDirectory.objects.get_or_create(
             company=company,
             defaults={
                 "mode": TenantDirectory.IsolationMode.SHARED,
@@ -244,9 +245,7 @@ class Command(BaseCommand):
 
             if export_count > 0 and import_count > 0:
                 if export_count == import_count:
-                    self.stdout.write(self.style.SUCCESS(
-                        f"  Event count verification: PASSED ({export_count} events)"
-                    ))
+                    self.stdout.write(self.style.SUCCESS(f"  Event count verification: PASSED ({export_count} events)"))
                 else:
                     raise CommandError(
                         f"VERIFICATION FAILED: Event count mismatch!\n"
@@ -258,14 +257,13 @@ class Command(BaseCommand):
             # 6c: Verify trial balance on target matches source (HARD FAIL if mismatch)
             if not options["skip_replay"]:
                 self.stdout.write("  Verifying trial balance...")
-                trial_balance_ok, tb_details = self._verify_trial_balance(
-                    company, target_alias
-                )
+                trial_balance_ok, tb_details = self._verify_trial_balance(company, target_alias)
                 if trial_balance_ok:
-                    self.stdout.write(self.style.SUCCESS(
-                        f"  Trial balance verification: PASSED "
-                        f"(total: {tb_details.get('total', 'N/A')})"
-                    ))
+                    self.stdout.write(
+                        self.style.SUCCESS(
+                            f"  Trial balance verification: PASSED (total: {tb_details.get('total', 'N/A')})"
+                        )
+                    )
                 else:
                     raise CommandError(
                         f"VERIFICATION FAILED: Trial balance mismatch!\n"
@@ -295,12 +293,14 @@ class Command(BaseCommand):
             migration_log.hashes_match = hashes_match
             migration_log.save()
 
-            self.stdout.write(self.style.SUCCESS(
-                f"\n{'='*60}\n"
-                f"Migration complete!\n"
-                f"Tenant '{company.name}' is now on dedicated database '{target_alias}'\n"
-                f"{'='*60}"
-            ))
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"\n{'=' * 60}\n"
+                    f"Migration complete!\n"
+                    f"Tenant '{company.name}' is now on dedicated database '{target_alias}'\n"
+                    f"{'=' * 60}"
+                )
+            )
 
         except Exception as e:
             # Rollback: set status back to ACTIVE
@@ -336,27 +336,15 @@ class Command(BaseCommand):
         try:
             # Get source trial balance (from default database)
             with rls_bypass():
-                source_balances = AccountBalance.objects.using("default").filter(
-                    company=company
-                )
-                source_debit = sum(
-                    (b.debit_total or Decimal("0")) for b in source_balances
-                )
-                source_credit = sum(
-                    (b.credit_total or Decimal("0")) for b in source_balances
-                )
+                source_balances = AccountBalance.objects.using("default").filter(company=company)
+                source_debit = sum((b.debit_total or Decimal("0")) for b in source_balances)
+                source_credit = sum((b.credit_total or Decimal("0")) for b in source_balances)
 
             # Get target trial balance (from tenant database)
             with tenant_context(company.id, target_alias, is_shared=False), rls_bypass():
-                target_balances = AccountBalance.objects.using(target_alias).filter(
-                    company=company
-                )
-                target_debit = sum(
-                    (b.debit_total or Decimal("0")) for b in target_balances
-                )
-                target_credit = sum(
-                    (b.credit_total or Decimal("0")) for b in target_balances
-                )
+                target_balances = AccountBalance.objects.using(target_alias).filter(company=company)
+                target_debit = sum((b.debit_total or Decimal("0")) for b in target_balances)
+                target_credit = sum((b.credit_total or Decimal("0")) for b in target_balances)
 
             details = {
                 "source_debit": str(source_debit),

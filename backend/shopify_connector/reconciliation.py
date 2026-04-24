@@ -34,9 +34,11 @@ logger = logging.getLogger(__name__)
 
 # ── Data structures ──────────────────────────────────────────────
 
+
 @dataclass
 class TransactionMatch:
     """Result of matching a single payout transaction."""
+
     shopify_transaction_id: int
     transaction_type: str
     amount: Decimal
@@ -50,6 +52,7 @@ class TransactionMatch:
 @dataclass
 class PayoutReconciliation:
     """Reconciliation result for a single payout."""
+
     shopify_payout_id: int
     payout_date: date
     gross_amount: Decimal
@@ -79,6 +82,7 @@ class PayoutReconciliation:
 @dataclass
 class ReconciliationSummary:
     """Summary of reconciliation across multiple payouts."""
+
     date_from: date
     date_to: date
     total_payouts: int = 0
@@ -103,6 +107,7 @@ class ReconciliationSummary:
 
 
 # ── Core reconciliation ──────────────────────────────────────────
+
 
 def reconcile_payout(company, payout: ShopifyPayout) -> PayoutReconciliation:
     """
@@ -146,10 +151,7 @@ def reconcile_payout(company, payout: ShopifyPayout) -> PayoutReconciliation:
     result.net_variance = result.transactions_net_sum - payout.net_amount
 
     # Determine status
-    has_amount_discrepancy = (
-        result.net_variance != 0
-        or result.fee_variance != 0
-    )
+    has_amount_discrepancy = result.net_variance != 0 or result.fee_variance != 0
     if has_amount_discrepancy:
         result.status = "discrepancy"
         if result.net_variance != 0:
@@ -220,10 +222,12 @@ def _match_transaction(company, txn: ShopifyPayoutTransaction) -> TransactionMat
 
     if txn.transaction_type == ShopifyPayoutTransaction.TransactionType.REFUND:
         # Try to match to a refund record — pick the one closest in amount
-        refunds = list(ShopifyRefund.objects.filter(
-            company=company,
-            order__shopify_order_id=txn.source_order_id,
-        ).order_by("shopify_created_at"))
+        refunds = list(
+            ShopifyRefund.objects.filter(
+                company=company,
+                order__shopify_order_id=txn.source_order_id,
+            ).order_by("shopify_created_at")
+        )
         txn_abs = abs(txn.amount)
         if refunds:
             # Best match: smallest variance by amount
@@ -251,6 +255,7 @@ def _match_transaction(company, txn: ShopifyPayoutTransaction) -> TransactionMat
 
 
 # ── Summary / reporting ──────────────────────────────────────────
+
 
 def reconciliation_summary(
     company,
@@ -303,13 +308,14 @@ def reconciliation_summary(
             summary.unverified_payouts += 1
 
     if summary.total_transactions > 0:
-        summary.match_rate = Decimal(str(
-            round(summary.matched_transactions / summary.total_transactions * 100, 1)
-        ))
+        summary.match_rate = Decimal(str(round(summary.matched_transactions / summary.total_transactions * 100, 1)))
 
     # Compute unmatched orders (orders without a matching payout charge)
     summary.unmatched_order_total = _unmatched_orders_total(
-        company, date_from, date_to, store,
+        company,
+        date_from,
+        date_to,
+        store,
     )
 
     return summary
@@ -350,6 +356,7 @@ def _unmatched_orders_total(company, date_from, date_to, store=None):
 
 
 # ── Serialization helpers ────────────────────────────────────────
+
 
 def payout_recon_to_dict(recon: PayoutReconciliation) -> dict:
     """Convert a PayoutReconciliation to a JSON-serializable dict."""

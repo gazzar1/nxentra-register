@@ -47,32 +47,34 @@ class EventListView(generics.ListAPIView):
 
     def get_queryset(self):
         actor = resolve_actor(self.request)
-        qs = BusinessEvent.objects.filter(
-            company=actor.company
-        ).select_related('caused_by_user').order_by('-company_sequence')
+        qs = (
+            BusinessEvent.objects.filter(company=actor.company)
+            .select_related("caused_by_user")
+            .order_by("-company_sequence")
+        )
 
         # Apply filters
-        event_type = self.request.query_params.get('event_type')
+        event_type = self.request.query_params.get("event_type")
         if event_type:
             qs = qs.filter(event_type=event_type)
 
-        aggregate_type = self.request.query_params.get('aggregate_type')
+        aggregate_type = self.request.query_params.get("aggregate_type")
         if aggregate_type:
             qs = qs.filter(aggregate_type=aggregate_type)
 
-        aggregate_id = self.request.query_params.get('aggregate_id')
+        aggregate_id = self.request.query_params.get("aggregate_id")
         if aggregate_id:
             qs = qs.filter(aggregate_id=aggregate_id)
 
-        origin = self.request.query_params.get('origin')
+        origin = self.request.query_params.get("origin")
         if origin:
             qs = qs.filter(origin=origin)
 
-        occurred_after = self.request.query_params.get('occurred_at__gte')
+        occurred_after = self.request.query_params.get("occurred_at__gte")
         if occurred_after:
             qs = qs.filter(occurred_at__gte=occurred_after)
 
-        occurred_before = self.request.query_params.get('occurred_at__lte')
+        occurred_before = self.request.query_params.get("occurred_at__lte")
         if occurred_before:
             qs = qs.filter(occurred_at__lte=occurred_before)
 
@@ -93,13 +95,13 @@ class EventDetailView(generics.RetrieveAPIView):
 
     serializer_class = BusinessEventDetailSerializer
     permission_classes = [IsAuthenticated]
-    lookup_field = 'id'
+    lookup_field = "id"
 
     def get_queryset(self):
         actor = resolve_actor(self.request)
-        return BusinessEvent.objects.filter(
-            company=actor.company
-        ).select_related('caused_by_user', 'caused_by_event', 'payload_ref')
+        return BusinessEvent.objects.filter(company=actor.company).select_related(
+            "caused_by_user", "caused_by_event", "payload_ref"
+        )
 
 
 class EventCausationChainView(views.APIView):
@@ -121,14 +123,11 @@ class EventCausationChainView(views.APIView):
         actor = resolve_actor(request)
 
         try:
-            event = BusinessEvent.objects.select_related(
-                'caused_by_user', 'caused_by_event'
-            ).get(id=event_id, company=actor.company)
-        except BusinessEvent.DoesNotExist:
-            return Response(
-                {'error': 'Event not found'},
-                status=status.HTTP_404_NOT_FOUND
+            event = BusinessEvent.objects.select_related("caused_by_user", "caused_by_event").get(
+                id=event_id, company=actor.company
             )
+        except BusinessEvent.DoesNotExist:
+            return Response({"error": "Event not found"}, status=status.HTTP_404_NOT_FOUND)
 
         # Calculate chain depth (walk up to root)
         depth = 0
@@ -143,10 +142,10 @@ class EventCausationChainView(views.APIView):
         children = list(event.child_events.all()[:100])
 
         data = {
-            'event': BusinessEventListSerializer(event).data,
-            'parent': BusinessEventListSerializer(event.caused_by_event).data if event.caused_by_event else None,
-            'children': BusinessEventListSerializer(children, many=True).data,
-            'chain_depth': depth,
+            "event": BusinessEventListSerializer(event).data,
+            "parent": BusinessEventListSerializer(event.caused_by_event).data if event.caused_by_event else None,
+            "children": BusinessEventListSerializer(children, many=True).data,
+            "chain_depth": depth,
         }
 
         return Response(data)
@@ -168,23 +167,20 @@ class AggregateEventHistoryView(views.APIView):
             company=actor.company,
             aggregate_type=aggregate_type,
             aggregate_id=aggregate_id,
-        ).order_by('sequence')
+        ).order_by("sequence")
 
         event_list = list(events[:500])
 
         if not event_list:
-            return Response(
-                {'error': 'No events found for this aggregate'},
-                status=status.HTTP_404_NOT_FOUND
-            )
+            return Response({"error": "No events found for this aggregate"}, status=status.HTTP_404_NOT_FOUND)
 
         data = {
-            'aggregate_type': aggregate_type,
-            'aggregate_id': aggregate_id,
-            'event_count': events.count(),
-            'first_event_at': event_list[0].occurred_at if event_list else None,
-            'last_event_at': event_list[-1].occurred_at if event_list else None,
-            'events': BusinessEventListSerializer(event_list, many=True).data,
+            "aggregate_type": aggregate_type,
+            "aggregate_id": aggregate_id,
+            "event_count": events.count(),
+            "first_event_at": event_list[0].occurred_at if event_list else None,
+            "last_event_at": event_list[-1].occurred_at if event_list else None,
+            "events": BusinessEventListSerializer(event_list, many=True).data,
         }
 
         return Response(data)
@@ -207,21 +203,20 @@ class JournalEventMappingView(views.APIView):
         # Get all events for this journal entry
         events = BusinessEvent.objects.filter(
             company=actor.company,
-            aggregate_type='journal_entry',
+            aggregate_type="journal_entry",
             aggregate_id=str(journal_public_id),
-        ).order_by('sequence')
+        ).order_by("sequence")
 
         if not events.exists():
-            return Response(
-                {'error': 'No events found for this journal entry'},
-                status=status.HTTP_404_NOT_FOUND
-            )
+            return Response({"error": "No events found for this journal entry"}, status=status.HTTP_404_NOT_FOUND)
 
-        return Response({
-            'journal_public_id': str(journal_public_id),
-            'event_count': events.count(),
-            'events': BusinessEventListSerializer(events, many=True).data,
-        })
+        return Response(
+            {
+                "journal_public_id": str(journal_public_id),
+                "event_count": events.count(),
+                "events": BusinessEventListSerializer(events, many=True).data,
+            }
+        )
 
 
 class IntegrityCheckView(views.APIView):
@@ -240,11 +235,8 @@ class IntegrityCheckView(views.APIView):
         actor = resolve_actor(request)
 
         # Only allow admins
-        if actor.role not in ['OWNER', 'ADMIN']:
-            return Response(
-                {'error': 'Admin access required'},
-                status=status.HTTP_403_FORBIDDEN
-            )
+        if actor.role not in ["OWNER", "ADMIN"]:
+            return Response({"error": "Admin access required"}, status=status.HTTP_403_FORBIDDEN)
 
         result = full_integrity_check(actor.company, verbose=False)
 
@@ -285,6 +277,8 @@ class EventBookmarkListView(generics.ListAPIView):
 
     def get_queryset(self):
         actor = resolve_actor(request=self.request)
-        return EventBookmark.objects.filter(
-            company=actor.company
-        ).select_related('company', 'last_event').order_by('consumer_name')
+        return (
+            EventBookmark.objects.filter(company=actor.company)
+            .select_related("company", "last_event")
+            .order_by("consumer_name")
+        )

@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 # Authentication
 # =============================================================================
 
+
 class APIKeyAuthentication:
     """
     DRF-compatible authentication backend for ExternalAPIKey.
@@ -45,7 +46,7 @@ class APIKeyAuthentication:
         if not auth_header.startswith(self.keyword + " "):
             return None
 
-        raw_key = auth_header[len(self.keyword) + 1:]
+        raw_key = auth_header[len(self.keyword) + 1 :]
         api_key = ExternalAPIKey.authenticate(raw_key)
         if api_key is None:
             return None
@@ -59,6 +60,7 @@ class APIKeyAuthentication:
 # =============================================================================
 # Rate limiting
 # =============================================================================
+
 
 class ExternalIngestThrottle(SimpleRateThrottle):
     """Rate limit external event ingestion per API key."""
@@ -76,6 +78,7 @@ class ExternalIngestThrottle(SimpleRateThrottle):
 # Serializer
 # =============================================================================
 
+
 class IngestEventSerializer(serializers.Serializer):
     event_type = serializers.CharField(max_length=100)
     aggregate_type = serializers.CharField(max_length=50)
@@ -88,6 +91,7 @@ class IngestEventSerializer(serializers.Serializer):
 # =============================================================================
 # View
 # =============================================================================
+
 
 class EventIngestView(APIView):
     """
@@ -146,7 +150,9 @@ class EventIngestView(APIView):
         if not api_key.is_event_type_allowed(event_type):
             logger.warning(
                 "Unauthorized event type %s from key %s (%s)",
-                event_type, api_key.key_prefix, api_key.source_system,
+                event_type,
+                api_key.key_prefix,
+                api_key.source_system,
             )
             return Response(
                 {

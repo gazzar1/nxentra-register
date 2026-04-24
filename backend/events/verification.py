@@ -63,12 +63,12 @@ def verify_event_payload(event: BusinessEvent) -> dict[str, Any]:
         ChunkMissingError: If chunks are missing
     """
     result = {
-        'valid': True,
-        'payload_size': 0,
-        'storage_strategy': event.payload_storage,
+        "valid": True,
+        "payload_size": 0,
+        "storage_strategy": event.payload_storage,
     }
 
-    if event.payload_storage == 'inline':
+    if event.payload_storage == "inline":
         # Verify inline payload hash if present
         if event.payload_hash:
             computed = compute_payload_hash(event.data)
@@ -77,24 +77,24 @@ def verify_event_payload(event: BusinessEvent) -> dict[str, Any]:
                     f"Inline payload hash mismatch for event {event.id}",
                     event_id=str(event.id),
                     details={
-                        'expected': event.payload_hash,
-                        'computed': computed,
-                        'event_type': event.event_type,
-                    }
+                        "expected": event.payload_hash,
+                        "computed": computed,
+                        "event_type": event.event_type,
+                    },
                 )
-        result['payload_size'] = len(str(event.data))
+        result["payload_size"] = len(str(event.data))
 
-    elif event.payload_storage == 'external':
+    elif event.payload_storage == "external":
         # Verify external payload exists
         if not event.payload_ref_id:
             raise PayloadMissingError(
                 f"Event {event.id} has external storage but no payload_ref",
                 event_id=str(event.id),
                 details={
-                    'event_type': event.event_type,
-                    'aggregate_type': event.aggregate_type,
-                    'aggregate_id': event.aggregate_id,
-                }
+                    "event_type": event.event_type,
+                    "aggregate_type": event.aggregate_type,
+                    "aggregate_id": event.aggregate_id,
+                },
             )
 
         try:
@@ -104,9 +104,9 @@ def verify_event_payload(event: BusinessEvent) -> dict[str, Any]:
                 f"External payload {event.payload_ref_id} not found for event {event.id}",
                 event_id=str(event.id),
                 details={
-                    'payload_ref_id': event.payload_ref_id,
-                    'event_type': event.event_type,
-                }
+                    "payload_ref_id": event.payload_ref_id,
+                    "event_type": event.event_type,
+                },
             )
 
         # Verify hash
@@ -117,15 +117,15 @@ def verify_event_payload(event: BusinessEvent) -> dict[str, Any]:
                     f"External payload hash mismatch for event {event.id}",
                     event_id=str(event.id),
                     details={
-                        'expected': event.payload_hash,
-                        'computed': computed,
-                        'payload_ref_id': event.payload_ref_id,
-                    }
+                        "expected": event.payload_hash,
+                        "computed": computed,
+                        "payload_ref_id": event.payload_ref_id,
+                    },
                 )
 
-        result['payload_size'] = payload_record.size_bytes
+        result["payload_size"] = payload_record.size_bytes
 
-    elif event.payload_storage == 'chunked':
+    elif event.payload_storage == "chunked":
         # Verify chunk events exist
         if event.event_type == EventTypes.JOURNAL_CREATED:
             chunk_count = BusinessEvent.objects.filter(
@@ -140,17 +140,17 @@ def verify_event_payload(event: BusinessEvent) -> dict[str, Any]:
             ).first()
 
             if finalized:
-                finalized_data = finalized.data if finalized.payload_storage == 'inline' else {}
-                expected_chunks = finalized_data.get('chunk_count', 0)
+                finalized_data = finalized.data if finalized.payload_storage == "inline" else {}
+                expected_chunks = finalized_data.get("chunk_count", 0)
                 if chunk_count != expected_chunks:
                     raise ChunkMissingError(
                         f"Expected {expected_chunks} chunks, found {chunk_count} for event {event.id}",
                         event_id=str(event.id),
                         details={
-                            'expected_chunks': expected_chunks,
-                            'found_chunks': chunk_count,
-                            'finalized_event_id': str(finalized.id),
-                        }
+                            "expected_chunks": expected_chunks,
+                            "found_chunks": chunk_count,
+                            "finalized_event_id": str(finalized.id),
+                        },
                     )
 
     return result
@@ -183,7 +183,7 @@ def verify_sequence_continuity(
     if end_sequence is not None:
         events = events.filter(company_sequence__lte=end_sequence)
 
-    events = events.order_by('company_sequence').values_list('company_sequence', flat=True)
+    events = events.order_by("company_sequence").values_list("company_sequence", flat=True)
 
     expected = start_sequence + 1
     for seq in events:
@@ -219,15 +219,15 @@ def full_integrity_check(company, verbose: bool = False) -> dict[str, Any]:
         }
     """
     result = {
-        'total_events': 0,
-        'verified_events': 0,
-        'payload_errors': [],
-        'sequence_gaps': [],
-        'external_payload_count': 0,
-        'chunked_event_count': 0,
-        'inline_event_count': 0,
-        'total_payload_bytes': 0,
-        'is_valid': True,
+        "total_events": 0,
+        "verified_events": 0,
+        "payload_errors": [],
+        "sequence_gaps": [],
+        "external_payload_count": 0,
+        "chunked_event_count": 0,
+        "inline_event_count": 0,
+        "total_payload_bytes": 0,
+        "is_valid": True,
     }
 
     # Check sequence continuity
@@ -235,16 +235,18 @@ def full_integrity_check(company, verbose: bool = False) -> dict[str, Any]:
         logger.info(f"Checking sequence continuity for {company.name}...")
 
     for gap_start, gap_end in verify_sequence_continuity(company):
-        result['sequence_gaps'].append({
-            'start': gap_start,
-            'end': gap_end,
-            'missing_count': gap_end - gap_start + 1,
-        })
-        result['is_valid'] = False
+        result["sequence_gaps"].append(
+            {
+                "start": gap_start,
+                "end": gap_end,
+                "missing_count": gap_end - gap_start + 1,
+            }
+        )
+        result["is_valid"] = False
 
     # Verify all events
-    events = BusinessEvent.objects.filter(company=company).order_by('company_sequence')
-    result['total_events'] = events.count()
+    events = BusinessEvent.objects.filter(company=company).order_by("company_sequence")
+    result["total_events"] = events.count()
 
     if verbose:
         logger.info(f"Verifying {result['total_events']} events...")
@@ -252,30 +254,29 @@ def full_integrity_check(company, verbose: bool = False) -> dict[str, Any]:
     for event in events.iterator():
         try:
             verification = verify_event_payload(event)
-            result['verified_events'] += 1
-            result['total_payload_bytes'] += verification['payload_size']
+            result["verified_events"] += 1
+            result["total_payload_bytes"] += verification["payload_size"]
 
-            if verification['storage_strategy'] == 'external':
-                result['external_payload_count'] += 1
-            elif verification['storage_strategy'] == 'chunked':
-                result['chunked_event_count'] += 1
+            if verification["storage_strategy"] == "external":
+                result["external_payload_count"] += 1
+            elif verification["storage_strategy"] == "chunked":
+                result["chunked_event_count"] += 1
             else:
-                result['inline_event_count'] += 1
+                result["inline_event_count"] += 1
 
         except IntegrityViolationError as e:
-            result['payload_errors'].append(e.to_dict())
-            result['is_valid'] = False
+            result["payload_errors"].append(e.to_dict())
+            result["is_valid"] = False
 
             if verbose:
                 logger.error(f"Integrity error: {e}")
 
     if verbose:
-        if result['is_valid']:
+        if result["is_valid"]:
             logger.info(f"Integrity check passed: {result['verified_events']} events verified")
         else:
             logger.error(
-                f"Integrity check FAILED: {len(result['payload_errors'])} errors, "
-                f"{len(result['sequence_gaps'])} gaps"
+                f"Integrity check FAILED: {len(result['payload_errors'])} errors, {len(result['sequence_gaps'])} gaps"
             )
 
     return result
@@ -317,15 +318,15 @@ def get_integrity_summary(company) -> dict[str, Any]:
     events = BusinessEvent.objects.filter(company=company)
 
     # Count by storage type
-    storage_counts = events.values('payload_storage').annotate(count=Count('id'))
-    storage_map = {s['payload_storage']: s['count'] for s in storage_counts}
+    storage_counts = events.values("payload_storage").annotate(count=Count("id"))
+    storage_map = {s["payload_storage"]: s["count"] for s in storage_counts}
 
     # Count by origin
-    origin_counts = events.values('origin').annotate(count=Count('id'))
-    origin_map = {o['origin']: o['count'] for o in origin_counts}
+    origin_counts = events.values("origin").annotate(count=Count("id"))
+    origin_map = {o["origin"]: o["count"] for o in origin_counts}
 
     # Get max sequence
-    max_seq = events.aggregate(max_seq=Max('company_sequence'))['max_seq'] or 0
+    max_seq = events.aggregate(max_seq=Max("company_sequence"))["max_seq"] or 0
     total_events = events.count()
 
     # Check for obvious sequence gaps
@@ -333,11 +334,11 @@ def get_integrity_summary(company) -> dict[str, Any]:
     has_potential_gaps = total_events < expected_events if max_seq > 0 else False
 
     return {
-        'total_events': total_events,
-        'max_sequence': max_seq,
-        'has_potential_gaps': has_potential_gaps,
-        'storage_breakdown': storage_map,
-        'origin_breakdown': origin_map,
-        'external_payload_count': storage_map.get('external', 0),
-        'chunked_event_count': storage_map.get('chunked', 0),
+        "total_events": total_events,
+        "max_sequence": max_seq,
+        "has_potential_gaps": has_potential_gaps,
+        "storage_breakdown": storage_map,
+        "origin_breakdown": origin_map,
+        "external_payload_count": storage_map.get("external", 0),
+        "chunked_event_count": storage_map.get("chunked", 0),
     }

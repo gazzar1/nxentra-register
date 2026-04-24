@@ -62,6 +62,7 @@ def _make_company(db):
 
 def _make_user_and_actor(company):
     from django.contrib.auth import get_user_model
+
     User = get_user_model()
     uid = uuid4()
     user = User.objects.create_user(
@@ -132,63 +133,94 @@ def _create_fiscal_periods(company, fiscal_year=FISCAL_YEAR, include_p13=True):
 def _create_accounts(company):
     """Create a minimal chart of accounts for year-end testing."""
     cash = Account.objects.create(
-        public_id=uuid4(), company=company, code="1000", name="Cash",
+        public_id=uuid4(),
+        company=company,
+        code="1000",
+        name="Cash",
         account_type=Account.AccountType.ASSET,
         normal_balance=Account.NormalBalance.DEBIT,
         status=Account.Status.ACTIVE,
     )
     ar = Account.objects.create(
-        public_id=uuid4(), company=company, code="1200", name="Accounts Receivable",
+        public_id=uuid4(),
+        company=company,
+        code="1200",
+        name="Accounts Receivable",
         account_type=Account.AccountType.ASSET,
         normal_balance=Account.NormalBalance.DEBIT,
         role=Account.AccountRole.RECEIVABLE_CONTROL,
-        requires_counterparty=True, counterparty_kind="CUSTOMER",
+        requires_counterparty=True,
+        counterparty_kind="CUSTOMER",
         status=Account.Status.ACTIVE,
     )
     ap = Account.objects.create(
-        public_id=uuid4(), company=company, code="2100", name="Accounts Payable",
+        public_id=uuid4(),
+        company=company,
+        code="2100",
+        name="Accounts Payable",
         account_type=Account.AccountType.LIABILITY,
         normal_balance=Account.NormalBalance.CREDIT,
         role=Account.AccountRole.PAYABLE_CONTROL,
-        requires_counterparty=True, counterparty_kind="VENDOR",
+        requires_counterparty=True,
+        counterparty_kind="VENDOR",
         status=Account.Status.ACTIVE,
     )
     retained = Account.objects.create(
-        public_id=uuid4(), company=company, code="3100", name="Retained Earnings",
+        public_id=uuid4(),
+        company=company,
+        code="3100",
+        name="Retained Earnings",
         account_type=Account.AccountType.EQUITY,
         normal_balance=Account.NormalBalance.CREDIT,
         status=Account.Status.ACTIVE,
     )
     revenue = Account.objects.create(
-        public_id=uuid4(), company=company, code="4000", name="Sales Revenue",
+        public_id=uuid4(),
+        company=company,
+        code="4000",
+        name="Sales Revenue",
         account_type=Account.AccountType.REVENUE,
         normal_balance=Account.NormalBalance.CREDIT,
         status=Account.Status.ACTIVE,
     )
     expense = Account.objects.create(
-        public_id=uuid4(), company=company, code="5000", name="Operating Expenses",
+        public_id=uuid4(),
+        company=company,
+        code="5000",
+        name="Operating Expenses",
         account_type=Account.AccountType.EXPENSE,
         normal_balance=Account.NormalBalance.DEBIT,
         status=Account.Status.ACTIVE,
     )
     return {
-        "cash": cash, "ar": ar, "ap": ap,
-        "retained": retained, "revenue": revenue, "expense": expense,
+        "cash": cash,
+        "ar": ar,
+        "ap": ap,
+        "retained": retained,
+        "revenue": revenue,
+        "expense": expense,
     }
 
 
-def _post_simple_entry(actor, accts, debit_acct_key, credit_acct_key,
-                        amount, entry_date, memo="Test entry"):
+def _post_simple_entry(actor, accts, debit_acct_key, credit_acct_key, amount, entry_date, memo="Test entry"):
     """Create, complete, and post a balanced journal entry. Returns the entry."""
     result = create_journal_entry(
         actor,
         date=entry_date,
         memo=memo,
         lines=[
-            {"account_id": accts[debit_acct_key].id, "description": f"Dr {debit_acct_key}",
-             "debit": Decimal(str(amount)), "credit": Decimal("0")},
-            {"account_id": accts[credit_acct_key].id, "description": f"Cr {credit_acct_key}",
-             "debit": Decimal("0"), "credit": Decimal(str(amount))},
+            {
+                "account_id": accts[debit_acct_key].id,
+                "description": f"Dr {debit_acct_key}",
+                "debit": Decimal(str(amount)),
+                "credit": Decimal("0"),
+            },
+            {
+                "account_id": accts[credit_acct_key].id,
+                "description": f"Cr {credit_acct_key}",
+                "debit": Decimal("0"),
+                "credit": Decimal(str(amount)),
+            },
         ],
     )
     assert result.success, f"create failed: {result.error}"
@@ -207,7 +239,9 @@ def _close_all_normal_periods(actor, fiscal_year=FISCAL_YEAR):
     """Close periods 1-12 (skips already-closed periods)."""
     for p in range(1, 13):
         fp = FiscalPeriod.objects.filter(
-            company=actor.company, fiscal_year=fiscal_year, period=p,
+            company=actor.company,
+            fiscal_year=fiscal_year,
+            period=p,
         ).first()
         if fp and fp.status == FiscalPeriod.Status.CLOSED:
             continue
@@ -218,6 +252,7 @@ def _close_all_normal_periods(actor, fiscal_year=FISCAL_YEAR):
 # ===========================================================================
 # T06  –  API contract tests
 # ===========================================================================
+
 
 @pytest.mark.django_db(transaction=True)
 class TestCloseReadinessAPIContract:
@@ -258,8 +293,7 @@ class TestCloseReadinessAPIContract:
         accts = _create_accounts(company)
 
         # Post some revenue so closing entries have something to close
-        _post_simple_entry(actor, accts, "cash", "revenue", 1000,
-                           date(FISCAL_YEAR, 1, 15))
+        _post_simple_entry(actor, accts, "cash", "revenue", 1000, date(FISCAL_YEAR, 1, 15))
 
         # Close all normal periods
         _close_all_normal_periods(actor)
@@ -282,11 +316,9 @@ class TestClosingEntriesAPIContract:
         accts = _create_accounts(company)
 
         # Revenue transaction
-        _post_simple_entry(actor, accts, "cash", "revenue", 5000,
-                           date(FISCAL_YEAR, 3, 15), "Q1 sales")
+        _post_simple_entry(actor, accts, "cash", "revenue", 5000, date(FISCAL_YEAR, 3, 15), "Q1 sales")
         # Expense transaction
-        _post_simple_entry(actor, accts, "expense", "cash", 2000,
-                           date(FISCAL_YEAR, 6, 15), "Operating costs")
+        _post_simple_entry(actor, accts, "expense", "cash", 2000, date(FISCAL_YEAR, 6, 15), "Operating costs")
 
         # Close all normal periods and close the year
         _close_all_normal_periods(actor)
@@ -295,7 +327,9 @@ class TestClosingEntriesAPIContract:
 
         # Now query closing entries
         closing_entries = JournalEntry.objects.filter(
-            company=company, kind=JournalEntry.Kind.CLOSING, period=13,
+            company=company,
+            kind=JournalEntry.Kind.CLOSING,
+            period=13,
         )
         assert closing_entries.exists(), "No closing entries created"
 
@@ -311,6 +345,7 @@ class TestClosingEntriesAPIContract:
 # ===========================================================================
 # T07  –  Year-end lifecycle integration suite
 # ===========================================================================
+
 
 @pytest.mark.django_db(transaction=True)
 class TestYearEndLifecycle:
@@ -328,10 +363,8 @@ class TestYearEndLifecycle:
         company, actor, accts = self._setup(db)
 
         # Post revenue & expense
-        _post_simple_entry(actor, accts, "cash", "revenue", 10000,
-                           date(FISCAL_YEAR, 1, 15), "Revenue")
-        _post_simple_entry(actor, accts, "expense", "cash", 4000,
-                           date(FISCAL_YEAR, 6, 15), "Expenses")
+        _post_simple_entry(actor, accts, "cash", "revenue", 10000, date(FISCAL_YEAR, 1, 15), "Revenue")
+        _post_simple_entry(actor, accts, "expense", "cash", 4000, date(FISCAL_YEAR, 6, 15), "Expenses")
 
         # --- STEP 1: Close all normal periods ---
         _close_all_normal_periods(actor)
@@ -352,28 +385,32 @@ class TestYearEndLifecycle:
         assert fy.status == FiscalYearModel.Status.CLOSED
 
         # Verify next year was created
-        next_fy = FiscalYearModel.objects.filter(
-            company=company, fiscal_year=FISCAL_YEAR + 1
-        ).first()
+        next_fy = FiscalYearModel.objects.filter(company=company, fiscal_year=FISCAL_YEAR + 1).first()
         assert next_fy is not None
         assert next_fy.status == FiscalYearModel.Status.OPEN
 
         # Verify next year's Period 1 is OPEN, others CLOSED
         next_p1 = FiscalPeriod.objects.filter(
-            company=company, fiscal_year=FISCAL_YEAR + 1, period=1,
+            company=company,
+            fiscal_year=FISCAL_YEAR + 1,
+            period=1,
         ).first()
         assert next_p1 is not None
         assert next_p1.status == FiscalPeriod.Status.OPEN
 
         next_p2 = FiscalPeriod.objects.filter(
-            company=company, fiscal_year=FISCAL_YEAR + 1, period=2,
+            company=company,
+            fiscal_year=FISCAL_YEAR + 1,
+            period=2,
         ).first()
         if next_p2:
             assert next_p2.status == FiscalPeriod.Status.CLOSED
 
         # Verify closing entries exist in P13
         closing_entries = JournalEntry.objects.filter(
-            company=company, kind=JournalEntry.Kind.CLOSING, period=13,
+            company=company,
+            kind=JournalEntry.Kind.CLOSING,
+            period=13,
         )
         assert closing_entries.count() >= 1
 
@@ -402,30 +439,34 @@ class TestYearEndLifecycle:
 
     def test_close_readiness_fails_with_open_periods(self, db):
         """Readiness fails when normal periods are still open."""
-        company, actor, accts = self._setup(db)
+        _company, actor, _accts = self._setup(db)
 
         readiness = check_close_readiness(actor, FISCAL_YEAR)
         assert readiness.success
         assert readiness.data["is_ready"] is False
 
         # At least one check should reference open periods
-        open_check = [c for c in readiness.data["checks"]
-                      if "normal periods" in c["check"].lower()]
+        open_check = [c for c in readiness.data["checks"] if "normal periods" in c["check"].lower()]
         assert len(open_check) == 1
         assert open_check[0]["passed"] is False
 
     def test_close_readiness_fails_with_draft_entries(self, db):
         """Readiness fails when there are draft journal entries."""
-        company, actor, accts = self._setup(db)
+        _company, actor, accts = self._setup(db)
 
         # Create a draft entry (don't post it)
         result = create_journal_entry(
-            actor, date=date(FISCAL_YEAR, 1, 15), memo="Unfinished",
+            actor,
+            date=date(FISCAL_YEAR, 1, 15),
+            memo="Unfinished",
             lines=[
-                {"account_id": accts["cash"].id, "description": "Dr",
-                 "debit": Decimal("100"), "credit": Decimal("0")},
-                {"account_id": accts["revenue"].id, "description": "Cr",
-                 "debit": Decimal("0"), "credit": Decimal("100")},
+                {"account_id": accts["cash"].id, "description": "Dr", "debit": Decimal("100"), "credit": Decimal("0")},
+                {
+                    "account_id": accts["revenue"].id,
+                    "description": "Cr",
+                    "debit": Decimal("0"),
+                    "credit": Decimal("100"),
+                },
             ],
         )
         assert result.success
@@ -435,20 +476,17 @@ class TestYearEndLifecycle:
         assert readiness.success
         assert readiness.data["is_ready"] is False
 
-        draft_check = [c for c in readiness.data["checks"]
-                       if "draft" in c["check"].lower()]
+        draft_check = [c for c in readiness.data["checks"] if "draft" in c["check"].lower()]
         assert len(draft_check) == 1
         assert draft_check[0]["passed"] is False
 
     def test_net_income_flows_to_retained_earnings(self, db):
         """Verify closing entries correctly zero revenue/expense to retained earnings."""
-        company, actor, accts = self._setup(db)
+        _company, actor, accts = self._setup(db)
 
         # Revenue: 10,000 | Expense: 3,000 | Net income should be 7,000
-        _post_simple_entry(actor, accts, "cash", "revenue", 10000,
-                           date(FISCAL_YEAR, 2, 10))
-        _post_simple_entry(actor, accts, "expense", "cash", 3000,
-                           date(FISCAL_YEAR, 5, 20))
+        _post_simple_entry(actor, accts, "cash", "revenue", 10000, date(FISCAL_YEAR, 2, 10))
+        _post_simple_entry(actor, accts, "expense", "cash", 3000, date(FISCAL_YEAR, 5, 20))
 
         _close_all_normal_periods(actor)
         result = close_fiscal_year(actor, FISCAL_YEAR, "3100")
@@ -457,10 +495,9 @@ class TestYearEndLifecycle:
 
     def test_opening_period_in_closed_year_blocked(self, db):
         """Cannot open a period in a closed fiscal year."""
-        company, actor, accts = self._setup(db)
+        _company, actor, accts = self._setup(db)
 
-        _post_simple_entry(actor, accts, "cash", "revenue", 1000,
-                           date(FISCAL_YEAR, 1, 15))
+        _post_simple_entry(actor, accts, "cash", "revenue", 1000, date(FISCAL_YEAR, 1, 15))
         _close_all_normal_periods(actor)
         close_fiscal_year(actor, FISCAL_YEAR, "3100")
 
@@ -474,6 +511,7 @@ class TestYearEndLifecycle:
 # T08  –  Operational period-control coverage
 # ===========================================================================
 
+
 @pytest.mark.django_db(transaction=True)
 class TestOperationalPeriodControl:
     """T08: Receipts/payments blocked in closed periods and P13."""
@@ -484,18 +522,24 @@ class TestOperationalPeriodControl:
         _create_fiscal_periods(company)
         accts = _create_accounts(company)
         customer = Customer.objects.create(
-            public_id=uuid4(), company=company, code="C001",
-            name="Test Customer", status=Customer.Status.ACTIVE,
+            public_id=uuid4(),
+            company=company,
+            code="C001",
+            name="Test Customer",
+            status=Customer.Status.ACTIVE,
         )
         vendor = Vendor.objects.create(
-            public_id=uuid4(), company=company, code="V001",
-            name="Test Vendor", status=Vendor.Status.ACTIVE,
+            public_id=uuid4(),
+            company=company,
+            code="V001",
+            name="Test Vendor",
+            status=Vendor.Status.ACTIVE,
         )
         return company, actor, accts, customer, vendor
 
     def test_receipt_allowed_in_open_period(self, db):
         """Customer receipt succeeds in an open period."""
-        company, actor, accts, customer, vendor = self._setup(db)
+        _company, actor, accts, customer, _vendor = self._setup(db)
 
         result = record_customer_receipt(
             actor,
@@ -510,7 +554,7 @@ class TestOperationalPeriodControl:
 
     def test_receipt_blocked_in_closed_period(self, db):
         """Customer receipt blocked when the target period is closed."""
-        company, actor, accts, customer, vendor = self._setup(db)
+        _company, actor, accts, customer, _vendor = self._setup(db)
 
         # Close January
         close_period(actor, FISCAL_YEAR, 1)
@@ -528,7 +572,7 @@ class TestOperationalPeriodControl:
 
     def test_payment_allowed_in_open_period(self, db):
         """Vendor payment succeeds in an open period."""
-        company, actor, accts, customer, vendor = self._setup(db)
+        _company, actor, accts, _customer, vendor = self._setup(db)
 
         result = record_vendor_payment(
             actor,
@@ -543,7 +587,7 @@ class TestOperationalPeriodControl:
 
     def test_payment_blocked_in_closed_period(self, db):
         """Vendor payment blocked when the target period is closed."""
-        company, actor, accts, customer, vendor = self._setup(db)
+        _company, actor, accts, _customer, vendor = self._setup(db)
 
         # Close February
         close_period(actor, FISCAL_YEAR, 2)
@@ -561,10 +605,9 @@ class TestOperationalPeriodControl:
 
     def test_receipt_blocked_in_closed_fiscal_year(self, db):
         """Receipt blocked when the fiscal year is closed."""
-        company, actor, accts, customer, vendor = self._setup(db)
+        _company, actor, accts, customer, _vendor = self._setup(db)
 
-        _post_simple_entry(actor, accts, "cash", "revenue", 1000,
-                           date(FISCAL_YEAR, 1, 15))
+        _post_simple_entry(actor, accts, "cash", "revenue", 1000, date(FISCAL_YEAR, 1, 15))
         _close_all_normal_periods(actor)
         close_fiscal_year(actor, FISCAL_YEAR, "3100")
 
@@ -580,10 +623,9 @@ class TestOperationalPeriodControl:
 
     def test_payment_blocked_in_closed_fiscal_year(self, db):
         """Payment blocked when the fiscal year is closed."""
-        company, actor, accts, customer, vendor = self._setup(db)
+        _company, actor, accts, _customer, vendor = self._setup(db)
 
-        _post_simple_entry(actor, accts, "cash", "revenue", 1000,
-                           date(FISCAL_YEAR, 1, 15))
+        _post_simple_entry(actor, accts, "cash", "revenue", 1000, date(FISCAL_YEAR, 1, 15))
         _close_all_normal_periods(actor)
         close_fiscal_year(actor, FISCAL_YEAR, "3100")
 
@@ -599,20 +641,18 @@ class TestOperationalPeriodControl:
 
     def test_reversal_in_same_period_succeeds(self, db):
         """Journal reversal uses the original entry's date and succeeds."""
-        company, actor, accts, customer, vendor = self._setup(db)
+        _company, actor, accts, _customer, _vendor = self._setup(db)
 
-        entry = _post_simple_entry(actor, accts, "cash", "revenue", 1000,
-                                    date(FISCAL_YEAR, 1, 15))
+        entry = _post_simple_entry(actor, accts, "cash", "revenue", 1000, date(FISCAL_YEAR, 1, 15))
         result = reverse_journal_entry(actor, entry.id)
         assert result.success, f"reverse failed: {result.error}"
         assert result.data["reversal"].kind == JournalEntry.Kind.REVERSAL
 
     def test_reversal_blocked_when_period_closed(self, db):
         """Reversal blocked when the original entry's period is closed."""
-        company, actor, accts, customer, vendor = self._setup(db)
+        _company, actor, accts, _customer, _vendor = self._setup(db)
 
-        entry = _post_simple_entry(actor, accts, "cash", "revenue", 1000,
-                                    date(FISCAL_YEAR, 1, 15))
+        entry = _post_simple_entry(actor, accts, "cash", "revenue", 1000, date(FISCAL_YEAR, 1, 15))
         # Close January
         close_period(actor, FISCAL_YEAR, 1)
 

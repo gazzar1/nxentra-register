@@ -30,6 +30,7 @@ from events.types import (
 # Event Immutability Tests
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestEventImmutability:
     """Test that events cannot be modified after creation."""
@@ -67,6 +68,7 @@ class TestEventImmutability:
 # =============================================================================
 # Idempotency Tests
 # =============================================================================
+
 
 @pytest.mark.django_db
 class TestIdempotency:
@@ -143,6 +145,7 @@ class TestIdempotency:
 # =============================================================================
 # Event Sequencing Tests
 # =============================================================================
+
 
 @pytest.mark.django_db
 class TestEventSequencing:
@@ -236,6 +239,7 @@ class TestEventSequencing:
 # Data Class Serialization Tests
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestDataClassSerialization:
     """Test event data class serialization."""
@@ -293,7 +297,7 @@ class TestDataClassSerialization:
     def test_user_created_data_field_ordering(self):
         """
         UserCreatedData should accept positional args correctly.
-        
+
         This tests the fix for required field after optional field.
         """
         # This should NOT raise TypeError about required positional argument
@@ -322,6 +326,7 @@ class TestDataClassSerialization:
 # =============================================================================
 # Event Payload Validation Tests
 # =============================================================================
+
 
 @pytest.mark.django_db
 class TestEventPayloadValidation:
@@ -397,6 +402,7 @@ class TestEventPayloadValidation:
 # Event Bookmark Tests
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestEventBookmark:
     """Test event bookmark functionality."""
@@ -421,10 +427,12 @@ class TestEventBookmark:
         event_bookmark.mark_processed(events[1])
 
         # Should return remaining 3
-        unprocessed = list(event_bookmark.get_unprocessed_events(
-            event_types=[EventTypes.ACCOUNT_CREATED],
-            limit=10,
-        ))
+        unprocessed = list(
+            event_bookmark.get_unprocessed_events(
+                event_types=[EventTypes.ACCOUNT_CREATED],
+                limit=10,
+            )
+        )
 
         assert len(unprocessed) == 3
         assert unprocessed[0].id == events[2].id
@@ -466,6 +474,7 @@ class TestEventBookmark:
 # =============================================================================
 # Causation Chain Tests
 # =============================================================================
+
 
 @pytest.mark.django_db
 class TestCausationChain:

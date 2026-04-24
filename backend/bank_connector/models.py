@@ -21,15 +21,11 @@ class BankAccount(models.Model):
         ACTIVE = "ACTIVE", "Active"
         INACTIVE = "INACTIVE", "Inactive"
 
-    company = models.ForeignKey(
-        Company, on_delete=models.CASCADE, related_name="bank_accounts"
-    )
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="bank_accounts")
     public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     bank_name = models.CharField(max_length=255)
     account_name = models.CharField(max_length=255, help_text="Display name, e.g. 'CIB Main Account'")
-    account_number_last4 = models.CharField(
-        max_length=4, default="", blank=True, help_text="Last 4 digits for display"
-    )
+    account_number_last4 = models.CharField(max_length=4, default="", blank=True, help_text="Last 4 digits for display")
     currency = models.CharField(max_length=3, default="USD")
     gl_account = models.ForeignKey(
         "accounting.Account",
@@ -38,9 +34,7 @@ class BankAccount(models.Model):
         blank=True,
         help_text="Linked GL account from chart of accounts",
     )
-    status = models.CharField(
-        max_length=20, choices=Status.choices, default=Status.ACTIVE
-    )
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -59,12 +53,8 @@ class BankStatement(models.Model):
         PROCESSED = "PROCESSED", "Processed"
         ERROR = "ERROR", "Error"
 
-    company = models.ForeignKey(
-        Company, on_delete=models.CASCADE, related_name="bank_connector_statements"
-    )
-    bank_account = models.ForeignKey(
-        BankAccount, on_delete=models.CASCADE, related_name="statements"
-    )
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="bank_connector_statements")
+    bank_account = models.ForeignKey(BankAccount, on_delete=models.CASCADE, related_name="statements")
     public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     filename = models.CharField(max_length=255)
     period_start = models.DateField(null=True, blank=True)
@@ -72,9 +62,7 @@ class BankStatement(models.Model):
     transaction_count = models.IntegerField(default=0)
     total_debits = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     total_credits = models.DecimalField(max_digits=18, decimal_places=2, default=0)
-    status = models.CharField(
-        max_length=20, choices=Status.choices, default=Status.PENDING
-    )
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     column_mapping = models.JSONField(
         default=dict,
         help_text="Mapping of CSV columns to our fields: {date: col_name, description: col_name, ...}",
@@ -101,45 +89,42 @@ class BankTransaction(models.Model):
         CREDIT = "CREDIT", "Credit"
         DEBIT = "DEBIT", "Debit"
 
-    company = models.ForeignKey(
-        Company, on_delete=models.CASCADE, related_name="bank_transactions"
-    )
-    statement = models.ForeignKey(
-        BankStatement, on_delete=models.CASCADE, related_name="transactions"
-    )
-    bank_account = models.ForeignKey(
-        BankAccount, on_delete=models.CASCADE, related_name="transactions"
-    )
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="bank_transactions")
+    statement = models.ForeignKey(BankStatement, on_delete=models.CASCADE, related_name="transactions")
+    bank_account = models.ForeignKey(BankAccount, on_delete=models.CASCADE, related_name="transactions")
     public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     transaction_date = models.DateField()
     value_date = models.DateField(null=True, blank=True)
     description = models.CharField(max_length=500)
     reference = models.CharField(max_length=255, default="", blank=True, db_index=True)
     amount = models.DecimalField(
-        max_digits=18, decimal_places=2,
+        max_digits=18,
+        decimal_places=2,
         help_text="Positive = credit (money in), Negative = debit (money out)",
     )
     transaction_type = models.CharField(
-        max_length=10, choices=TransactionType.choices,
+        max_length=10,
+        choices=TransactionType.choices,
     )
-    running_balance = models.DecimalField(
-        max_digits=18, decimal_places=2, null=True, blank=True
-    )
-    status = models.CharField(
-        max_length=20, choices=Status.choices, default=Status.UNMATCHED
-    )
+    running_balance = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.UNMATCHED)
     # Reconciliation link — generic so it can match to any payout type
     matched_content_type = models.CharField(
-        max_length=100, default="", blank=True,
+        max_length=100,
+        default="",
+        blank=True,
         help_text="e.g. 'stripe_payout', 'shopify_payout'",
     )
     matched_object_id = models.IntegerField(
-        null=True, blank=True,
+        null=True,
+        blank=True,
         help_text="ID of the matched payout record",
     )
     matched_at = models.DateTimeField(null=True, blank=True)
     matched_by = models.CharField(
-        max_length=20, default="", blank=True,
+        max_length=20,
+        default="",
+        blank=True,
         help_text="'auto' or 'manual'",
     )
     raw_data = models.JSONField(default=dict, help_text="Original CSV row data")
@@ -186,9 +171,7 @@ class ReconciliationException(models.Model):
         ESCALATED = "ESCALATED", "Escalated"
         DISMISSED = "DISMISSED", "Dismissed"
 
-    company = models.ForeignKey(
-        Company, on_delete=models.CASCADE, related_name="reconciliation_exceptions"
-    )
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="reconciliation_exceptions")
     public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
 
     # Classification
@@ -198,13 +181,18 @@ class ReconciliationException(models.Model):
 
     # Context
     platform = models.CharField(
-        max_length=20, default="", blank=True,
+        max_length=20,
+        default="",
+        blank=True,
         help_text="Platform involved: shopify, stripe, or empty for bank-only",
     )
     title = models.CharField(max_length=255)
     description = models.TextField(default="")
     amount = models.DecimalField(
-        max_digits=18, decimal_places=2, null=True, blank=True,
+        max_digits=18,
+        decimal_places=2,
+        null=True,
+        blank=True,
         help_text="Amount involved in the exception",
     )
     currency = models.CharField(max_length=3, default="USD")
@@ -214,21 +202,29 @@ class ReconciliationException(models.Model):
 
     # References (generic so it can point to any related object)
     reference_type = models.CharField(
-        max_length=50, default="", blank=True,
+        max_length=50,
+        default="",
+        blank=True,
         help_text="e.g. 'bank_transaction', 'shopify_payout', 'stripe_payout'",
     )
     reference_id = models.IntegerField(
-        null=True, blank=True,
+        null=True,
+        blank=True,
         help_text="ID of the related record",
     )
     reference_label = models.CharField(
-        max_length=255, default="", blank=True,
+        max_length=255,
+        default="",
+        blank=True,
         help_text="Human-readable reference, e.g. 'Payout po_abc123'",
     )
 
     # Assignment
     assigned_to = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name="assigned_recon_exceptions",
         db_constraint=False,
     )
@@ -236,7 +232,10 @@ class ReconciliationException(models.Model):
     # Resolution
     resolved_at = models.DateTimeField(null=True, blank=True)
     resolved_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name="resolved_recon_exceptions",
         db_constraint=False,
     )
@@ -244,7 +243,8 @@ class ReconciliationException(models.Model):
 
     # Metadata
     details = models.JSONField(
-        default=dict, blank=True,
+        default=dict,
+        blank=True,
         help_text="Structured data about the exception (variance amounts, IDs, etc.)",
     )
     created_at = models.DateTimeField(auto_now_add=True)

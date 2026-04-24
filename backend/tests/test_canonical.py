@@ -217,7 +217,7 @@ class CanonicalRebuildTest(TestCase):
             result = create_journal_entry(
                 self.actor,
                 date=date.today(),
-                memo=f"Entry {i+1}",
+                memo=f"Entry {i + 1}",
                 lines=[
                     {"account_id": cash.id, "debit": Decimal("1000"), "credit": 0},
                     {"account_id": equity.id, "debit": 0, "credit": Decimal("1000")},
@@ -326,7 +326,7 @@ class CanonicalDoubleEntryTest(TestCase):
         # Error should mention either "lines" or "balanced"
         self.assertTrue(
             "line" in result.error.lower() or "balanced" in result.error.lower(),
-            f"Error should mention lines or balance: {result.error}"
+            f"Error should mention lines or balance: {result.error}",
         )
 
 

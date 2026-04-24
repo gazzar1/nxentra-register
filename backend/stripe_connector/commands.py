@@ -90,9 +90,7 @@ def store_refund(company, parsed, payload, event_id):
         return
 
     # Find or create the parent charge
-    charge = StripeCharge.objects.filter(
-        company=company, stripe_charge_id=stripe_charge_id
-    ).first()
+    charge = StripeCharge.objects.filter(company=company, stripe_charge_id=stripe_charge_id).first()
 
     if not charge:
         # Charge not stored yet — create a minimal record
@@ -118,9 +116,7 @@ def store_refund(company, parsed, payload, event_id):
                 raw_payload={},
             )
         except IntegrityError:
-            charge = StripeCharge.objects.get(
-                company=company, stripe_charge_id=stripe_charge_id
-            )
+            charge = StripeCharge.objects.get(company=company, stripe_charge_id=stripe_charge_id)
 
     refund_amount = Decimal(latest.get("amount", 0)) / 100
     refund_ts = latest.get("created", 0)
@@ -198,6 +194,4 @@ def _resolve_account(company, payload):
         except StripeAccount.DoesNotExist:
             pass
     # Fallback: first active account for this company
-    return StripeAccount.objects.filter(
-        company=company, status=StripeAccount.Status.ACTIVE
-    ).first()
+    return StripeAccount.objects.filter(company=company, status=StripeAccount.Status.ACTIVE).first()

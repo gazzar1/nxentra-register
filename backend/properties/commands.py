@@ -42,6 +42,7 @@ def _process_projections(company, exclude: set[str] | None = None) -> None:
             continue
         projection.process_pending(company, limit=1000)
 
+
 from .event_types import (
     DepositAdjustedData,
     DepositForfeitedData,
@@ -82,6 +83,7 @@ from .models import (
 # =============================================================================
 # Property Commands
 # =============================================================================
+
 
 @transaction.atomic
 def create_property(
@@ -166,7 +168,10 @@ def update_property(
     for field_name, new_value in kwargs.items():
         old_value = getattr(prop, field_name, None)
         if old_value != new_value:
-            changes[field_name] = {"old": str(old_value) if old_value is not None else None, "new": str(new_value) if new_value is not None else None}
+            changes[field_name] = {
+                "old": str(old_value) if old_value is not None else None,
+                "new": str(new_value) if new_value is not None else None,
+            }
             setattr(prop, field_name, new_value)
 
     if not changes:
@@ -195,6 +200,7 @@ def update_property(
 # =============================================================================
 # Unit Commands
 # =============================================================================
+
 
 @transaction.atomic
 def create_unit(
@@ -266,9 +272,7 @@ def update_unit(
     require(actor, "units.manage")
 
     try:
-        unit = Unit.objects.select_related("property").get(
-            company=actor.company, pk=unit_id
-        )
+        unit = Unit.objects.select_related("property").get(company=actor.company, pk=unit_id)
     except Unit.DoesNotExist:
         return CommandResult.fail("Unit not found.")
 
@@ -277,7 +281,10 @@ def update_unit(
     for field_name, new_value in kwargs.items():
         old_value = getattr(unit, field_name, None)
         if old_value != new_value:
-            changes[field_name] = {"old": str(old_value) if old_value is not None else None, "new": str(new_value) if new_value is not None else None}
+            changes[field_name] = {
+                "old": str(old_value) if old_value is not None else None,
+                "new": str(new_value) if new_value is not None else None,
+            }
             setattr(unit, field_name, new_value)
 
     if not changes:
@@ -310,6 +317,7 @@ def update_unit(
 # =============================================================================
 # Lessee Commands
 # =============================================================================
+
 
 @transaction.atomic
 def create_lessee(
@@ -388,7 +396,10 @@ def update_lessee(
     for field_name, new_value in kwargs.items():
         old_value = getattr(lessee, field_name, None)
         if old_value != new_value:
-            changes[field_name] = {"old": str(old_value) if old_value is not None else None, "new": str(new_value) if new_value is not None else None}
+            changes[field_name] = {
+                "old": str(old_value) if old_value is not None else None,
+                "new": str(new_value) if new_value is not None else None,
+            }
             setattr(lessee, field_name, new_value)
 
     if not changes:
@@ -417,6 +428,7 @@ def update_lessee(
 # =============================================================================
 # Lease Commands (Sprint 1: create only, activate/terminate/renew in Sprint 2)
 # =============================================================================
+
 
 @transaction.atomic
 def create_lease(
@@ -528,6 +540,7 @@ def create_lease(
 # Lease Update Command
 # =============================================================================
 
+
 @transaction.atomic
 def update_lease(
     actor: ActorContext,
@@ -539,7 +552,8 @@ def update_lease(
 
     try:
         lease = Lease.objects.select_for_update().get(
-            company=actor.company, pk=lease_id,
+            company=actor.company,
+            pk=lease_id,
         )
     except Lease.DoesNotExist:
         return CommandResult.fail("Lease not found.")
@@ -548,11 +562,21 @@ def update_lease(
         return CommandResult.fail("Only draft leases can be edited.")
 
     allowed_fields = {
-        "contract_no", "start_date", "end_date", "handover_date",
-        "payment_frequency", "rent_amount", "currency",
-        "grace_days", "due_day_rule", "specific_due_day",
-        "deposit_amount", "renewal_option", "notice_period_days",
-        "terms_summary", "document_ref",
+        "contract_no",
+        "start_date",
+        "end_date",
+        "handover_date",
+        "payment_frequency",
+        "rent_amount",
+        "currency",
+        "grace_days",
+        "due_day_rule",
+        "specific_due_day",
+        "deposit_amount",
+        "renewal_option",
+        "notice_period_days",
+        "terms_summary",
+        "document_ref",
     }
 
     # FK fields handled separately
@@ -600,9 +624,14 @@ def update_lease(
 
     # Validate contract_no uniqueness if changed
     if "contract_no" in changes:
-        if Lease.objects.filter(
-            company=actor.company, contract_no=lease.contract_no,
-        ).exclude(pk=lease.pk).exists():
+        if (
+            Lease.objects.filter(
+                company=actor.company,
+                contract_no=lease.contract_no,
+            )
+            .exclude(pk=lease.pk)
+            .exists()
+        ):
             return CommandResult.fail(f"Lease with contract number '{lease.contract_no}' already exists.")
 
     # Validate dates
@@ -634,6 +663,7 @@ def update_lease(
 # =============================================================================
 # Account Mapping Commands
 # =============================================================================
+
 
 @transaction.atomic
 def update_property_account_mapping(
@@ -706,6 +736,7 @@ def update_property_account_mapping(
 # Schedule Generation Helper
 # =============================================================================
 
+
 def _add_months(start: date, months: int) -> date:
     """Add months to a date, clamping to end-of-month."""
     month = start.month - 1 + months
@@ -767,15 +798,17 @@ def _generate_rent_schedule(lease: Lease) -> list:
         else:
             amount = rent
 
-        lines.append({
-            "installment_no": installment,
-            "period_start": period_start,
-            "period_end": period_end,
-            "due_date": due_date,
-            "base_rent": amount,
-            "total_due": amount,
-            "outstanding": amount,
-        })
+        lines.append(
+            {
+                "installment_no": installment,
+                "period_start": period_start,
+                "period_end": period_end,
+                "due_date": due_date,
+                "base_rent": amount,
+                "total_due": amount,
+                "outstanding": amount,
+            }
+        )
 
         installment += 1
         period_start = period_end + timedelta(days=1)
@@ -786,6 +819,7 @@ def _generate_rent_schedule(lease: Lease) -> list:
 # =============================================================================
 # Lease Lifecycle Commands (Sprint 2)
 # =============================================================================
+
 
 @transaction.atomic
 def activate_lease(
@@ -804,9 +838,7 @@ def activate_lease(
     require(actor, "leases.manage")
 
     try:
-        lease = Lease.objects.select_related(
-            "property", "unit", "lessee"
-        ).get(company=actor.company, pk=lease_id)
+        lease = Lease.objects.select_related("property", "unit", "lessee").get(company=actor.company, pk=lease_id)
     except Lease.DoesNotExist:
         return CommandResult.fail("Lease not found.")
 
@@ -820,9 +852,7 @@ def activate_lease(
     try:
         mapping = PropertyAccountMapping.objects.get(company=actor.company)
     except PropertyAccountMapping.DoesNotExist:
-        return CommandResult.fail(
-            "Property account mapping must be configured before activating a lease."
-        )
+        return CommandResult.fail("Property account mapping must be configured before activating a lease.")
 
     if not mapping.rental_income_account_id or not mapping.accounts_receivable_account_id:
         return CommandResult.fail(
@@ -832,29 +862,33 @@ def activate_lease(
     # Concurrency-safe overlap check (SELECT FOR UPDATE)
     if lease.unit:
         Unit.objects.select_for_update().get(pk=lease.unit_id)
-        overlapping = Lease.objects.filter(
-            unit=lease.unit,
-            status=Lease.LeaseStatus.ACTIVE,
-            start_date__lte=lease.end_date,
-            end_date__gte=lease.start_date,
-        ).exclude(pk=lease.pk).exists()
-        if overlapping:
-            return CommandResult.fail(
-                "An overlapping active lease exists for this unit."
+        overlapping = (
+            Lease.objects.filter(
+                unit=lease.unit,
+                status=Lease.LeaseStatus.ACTIVE,
+                start_date__lte=lease.end_date,
+                end_date__gte=lease.start_date,
             )
+            .exclude(pk=lease.pk)
+            .exists()
+        )
+        if overlapping:
+            return CommandResult.fail("An overlapping active lease exists for this unit.")
     else:
         # Whole-property lease — lock property, check all units
         Property.objects.select_for_update().get(pk=lease.property_id)
-        overlapping = Lease.objects.filter(
-            property=lease.property,
-            status=Lease.LeaseStatus.ACTIVE,
-            start_date__lte=lease.end_date,
-            end_date__gte=lease.start_date,
-        ).exclude(pk=lease.pk).exists()
-        if overlapping:
-            return CommandResult.fail(
-                "An overlapping active lease exists for this property."
+        overlapping = (
+            Lease.objects.filter(
+                property=lease.property,
+                status=Lease.LeaseStatus.ACTIVE,
+                start_date__lte=lease.end_date,
+                end_date__gte=lease.start_date,
             )
+            .exclude(pk=lease.pk)
+            .exists()
+        )
+        if overlapping:
+            return CommandResult.fail("An overlapping active lease exists for this property.")
 
     # Generate schedule
     schedule_data = _generate_rent_schedule(lease)
@@ -933,6 +967,7 @@ def activate_lease(
     # Emit unit.status_changed if unit-level lease
     if lease.unit:
         from .event_types import UnitStatusChangedData
+
         emit_event(
             actor=actor,
             event_type=EventTypes.UNIT_STATUS_CHANGED,
@@ -973,9 +1008,7 @@ def terminate_lease(
     require(actor, "leases.manage")
 
     try:
-        lease = Lease.objects.select_related(
-            "property", "unit", "lessee"
-        ).get(company=actor.company, pk=lease_id)
+        lease = Lease.objects.select_related("property", "unit", "lessee").get(company=actor.company, pk=lease_id)
     except Lease.DoesNotExist:
         return CommandResult.fail("Lease not found.")
 
@@ -1022,6 +1055,7 @@ def terminate_lease(
     # Emit unit.status_changed
     if lease.unit:
         from .event_types import UnitStatusChangedData
+
         emit_event(
             actor=actor,
             event_type=EventTypes.UNIT_STATUS_CHANGED,
@@ -1067,9 +1101,7 @@ def renew_lease(
     require(actor, "leases.manage")
 
     try:
-        old_lease = Lease.objects.select_related(
-            "property", "unit", "lessee"
-        ).get(company=actor.company, pk=lease_id)
+        old_lease = Lease.objects.select_related("property", "unit", "lessee").get(company=actor.company, pk=lease_id)
     except Lease.DoesNotExist:
         return CommandResult.fail("Lease not found.")
 
@@ -1082,9 +1114,7 @@ def renew_lease(
         return CommandResult.fail("New start date must be before or equal to new end date.")
 
     if Lease.objects.filter(company=actor.company, contract_no=new_contract_no).exists():
-        return CommandResult.fail(
-            f"Lease with contract number '{new_contract_no}' already exists."
-        )
+        return CommandResult.fail(f"Lease with contract number '{new_contract_no}' already exists.")
 
     with command_writes_allowed():
         # Mark old lease as renewed
@@ -1171,6 +1201,7 @@ def renew_lease(
 # Payment Commands (Sprint 3)
 # =============================================================================
 
+
 @transaction.atomic
 def record_rent_payment(
     actor: ActorContext,
@@ -1188,9 +1219,7 @@ def record_rent_payment(
     currency = currency or actor.company.default_currency
 
     try:
-        lease = Lease.objects.select_related("lessee").get(
-            company=actor.company, pk=lease_id
-        )
+        lease = Lease.objects.select_related("lessee").get(company=actor.company, pk=lease_id)
     except Lease.DoesNotExist:
         return CommandResult.fail("Lease not found.")
 
@@ -1201,9 +1230,7 @@ def record_rent_payment(
     try:
         mapping = PropertyAccountMapping.objects.get(company=actor.company)
     except PropertyAccountMapping.DoesNotExist:
-        return CommandResult.fail(
-            "Property account mapping must be configured before receiving payments."
-        )
+        return CommandResult.fail("Property account mapping must be configured before receiving payments.")
     missing = []
     if not mapping.cash_bank_account_id:
         missing.append("Cash / Bank")
@@ -1279,9 +1306,7 @@ def allocate_rent_payment(
     require(actor, "collections.receive")
 
     try:
-        payment = PaymentReceipt.objects.get(
-            company=actor.company, pk=payment_id
-        )
+        payment = PaymentReceipt.objects.get(company=actor.company, pk=payment_id)
     except PaymentReceipt.DoesNotExist:
         return CommandResult.fail("Payment not found.")
 
@@ -1289,10 +1314,7 @@ def allocate_rent_payment(
         return CommandResult.fail("Cannot allocate a voided payment.")
 
     # Calculate already allocated
-    already_allocated = sum(
-        a.allocated_amount
-        for a in PaymentAllocation.objects.filter(payment=payment)
-    )
+    already_allocated = sum(a.allocated_amount for a in PaymentAllocation.objects.filter(payment=payment))
 
     new_total = sum(Decimal(str(a["amount"])) for a in allocations)
     if already_allocated + new_total > payment.amount:
@@ -1311,9 +1333,7 @@ def allocate_rent_payment(
                 return CommandResult.fail("Allocation amount must be positive.")
 
             try:
-                line = RentScheduleLine.objects.get(
-                    lease=payment.lease, pk=line_id
-                )
+                line = RentScheduleLine.objects.get(lease=payment.lease, pk=line_id)
             except RentScheduleLine.DoesNotExist:
                 return CommandResult.fail(f"Schedule line {line_id} not found.")
 
@@ -1324,9 +1344,7 @@ def allocate_rent_payment(
 
             # Check for duplicate allocation
             if PaymentAllocation.objects.filter(payment=payment, schedule_line=line).exists():
-                return CommandResult.fail(
-                    f"Payment already allocated to installment #{line.installment_no}."
-                )
+                return CommandResult.fail(f"Payment already allocated to installment #{line.installment_no}.")
 
             allocation = PaymentAllocation.objects.create(
                 company=actor.company,
@@ -1389,9 +1407,7 @@ def void_payment(
     require(actor, "collections.receive")
 
     try:
-        payment = PaymentReceipt.objects.select_related("lease").get(
-            company=actor.company, pk=payment_id
-        )
+        payment = PaymentReceipt.objects.select_related("lease").get(company=actor.company, pk=payment_id)
     except PaymentReceipt.DoesNotExist:
         return CommandResult.fail("Payment not found.")
 
@@ -1454,18 +1470,10 @@ def void_payment(
 # =============================================================================
 
 DEPOSIT_EVENT_MAP = {
-    SecurityDepositTransaction.DepositTransactionType.RECEIVED: (
-        EventTypes.DEPOSIT_RECEIVED, DepositReceivedData
-    ),
-    SecurityDepositTransaction.DepositTransactionType.ADJUSTED: (
-        EventTypes.DEPOSIT_ADJUSTED, DepositAdjustedData
-    ),
-    SecurityDepositTransaction.DepositTransactionType.REFUNDED: (
-        EventTypes.DEPOSIT_REFUNDED, DepositRefundedData
-    ),
-    SecurityDepositTransaction.DepositTransactionType.FORFEITED: (
-        EventTypes.DEPOSIT_FORFEITED, DepositForfeitedData
-    ),
+    SecurityDepositTransaction.DepositTransactionType.RECEIVED: (EventTypes.DEPOSIT_RECEIVED, DepositReceivedData),
+    SecurityDepositTransaction.DepositTransactionType.ADJUSTED: (EventTypes.DEPOSIT_ADJUSTED, DepositAdjustedData),
+    SecurityDepositTransaction.DepositTransactionType.REFUNDED: (EventTypes.DEPOSIT_REFUNDED, DepositRefundedData),
+    SecurityDepositTransaction.DepositTransactionType.FORFEITED: (EventTypes.DEPOSIT_FORFEITED, DepositForfeitedData),
 }
 
 
@@ -1510,9 +1518,7 @@ def record_deposit_transaction(
     # For refund/forfeit, check balance
     if transaction_type in ("refunded", "forfeited"):
         if amount > balance:
-            return CommandResult.fail(
-                f"Cannot {transaction_type} {amount}. Current deposit balance is {balance}."
-            )
+            return CommandResult.fail(f"Cannot {transaction_type} {amount}. Current deposit balance is {balance}.")
 
     with command_writes_allowed():
         txn = SecurityDepositTransaction.objects.create(
@@ -1558,6 +1564,7 @@ def record_deposit_transaction(
 # Waive Schedule Line (Sprint 3)
 # =============================================================================
 
+
 @transaction.atomic
 def waive_schedule_line(
     actor: ActorContext,
@@ -1568,9 +1575,7 @@ def waive_schedule_line(
     require(actor, "leases.manage")
 
     try:
-        line = RentScheduleLine.objects.select_related("lease").get(
-            company=actor.company, pk=schedule_line_id
-        )
+        line = RentScheduleLine.objects.select_related("lease").get(company=actor.company, pk=schedule_line_id)
     except RentScheduleLine.DoesNotExist:
         return CommandResult.fail("Schedule line not found.")
 
@@ -1616,6 +1621,7 @@ def waive_schedule_line(
 # =============================================================================
 # Property Expense (Sprint 4)
 # =============================================================================
+
 
 @transaction.atomic
 def record_property_expense(

@@ -17,6 +17,4 @@ class AccountConsumer(AsyncWebsocketConsumer):
         # Optional: handle incoming messages
 
     async def send_account_update(self, event):
-        await self.send(text_data=json.dumps({
-            "message": event["data"]["message"]
-        }))
+        await self.send(text_data=json.dumps({"message": event["data"]["message"]}))

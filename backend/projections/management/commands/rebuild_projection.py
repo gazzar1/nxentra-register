@@ -161,36 +161,22 @@ class Command(BaseCommand):
 
         # Must specify projection target
         if not has_projection and not has_all_projections:
-            raise CommandError(
-                "Must specify --projection <name> or --all"
-            )
+            raise CommandError("Must specify --projection <name> or --all")
 
         if has_projection and has_all_projections:
-            raise CommandError(
-                "Cannot use --projection and --all together"
-            )
+            raise CommandError("Cannot use --projection and --all together")
 
         # Must specify tenant target
         if not has_tenant and not has_all_tenants:
-            raise CommandError(
-                "Must specify --tenant <slug> or --all-tenants"
-            )
+            raise CommandError("Must specify --tenant <slug> or --all-tenants")
 
         if has_tenant and has_all_tenants:
-            raise CommandError(
-                "Cannot use --tenant and --all-tenants together"
-            )
+            raise CommandError("Cannot use --tenant and --all-tenants together")
 
         # Warn about dangerous operations
         if has_all_projections and has_all_tenants:
-            self.stdout.write(
-                self.style.WARNING(
-                    "\nWARNING: Rebuilding ALL projections for ALL tenants."
-                )
-            )
-            self.stdout.write(
-                "This is a major operation that may take a long time.\n"
-            )
+            self.stdout.write(self.style.WARNING("\nWARNING: Rebuilding ALL projections for ALL tenants."))
+            self.stdout.write("This is a major operation that may take a long time.\n")
 
     def _list_projections(self):
         """List all available projections."""
@@ -231,9 +217,7 @@ class Command(BaseCommand):
 
             # Format status
             if status.status == ProjectionStatus.Status.REBUILDING:
-                status_str = self.style.WARNING(
-                    f"REBUILDING ({status.progress_percent:.1f}%)"
-                )
+                status_str = self.style.WARNING(f"REBUILDING ({status.progress_percent:.1f}%)")
             elif status.status == ProjectionStatus.Status.ERROR:
                 status_str = self.style.ERROR("ERROR")
             elif lag > 0:
@@ -250,9 +234,7 @@ class Command(BaseCommand):
                 )
 
             if status.error_message:
-                self.stdout.write(
-                    self.style.ERROR(f"    Error: {status.error_message}")
-                )
+                self.stdout.write(self.style.ERROR(f"    Error: {status.error_message}"))
 
     def _get_projections(self, options):
         """Get projections to rebuild."""
@@ -264,9 +246,7 @@ class Command(BaseCommand):
 
         if not projection:
             available = ", ".join(projection_registry.names())
-            raise CommandError(
-                f"Unknown projection: {name}\nAvailable: {available}"
-            )
+            raise CommandError(f"Unknown projection: {name}\nAvailable: {available}")
 
         return [projection]
 
@@ -317,9 +297,7 @@ class Command(BaseCommand):
             result = full_integrity_check(company, verbose=False)
 
             if result["is_valid"]:
-                self.stdout.write(
-                    self.style.SUCCESS(f"  {company.name}: OK")
-                )
+                self.stdout.write(self.style.SUCCESS(f"  {company.name}: OK"))
             else:
                 self.stdout.write(
                     self.style.ERROR(
@@ -331,9 +309,7 @@ class Command(BaseCommand):
                 all_valid = False
 
         if not all_valid:
-            raise CommandError(
-                "Event integrity check failed. Fix issues before rebuilding."
-            )
+            raise CommandError("Event integrity check failed. Fix issues before rebuilding.")
 
         self.stdout.write(self.style.SUCCESS("\nIntegrity check passed.\n"))
 
@@ -343,16 +319,12 @@ class Command(BaseCommand):
         total_events = 0
 
         for company in companies:
-            self.stdout.write(f"\n{'='*60}")
+            self.stdout.write(f"\n{'=' * 60}")
             self.stdout.write(f"Rebuilding for: {company.name}")
             self.stdout.write("=" * 60)
 
             for projection in projections:
-                events_processed = self._rebuild_projection(
-                    projection,
-                    company,
-                    options
-                )
+                events_processed = self._rebuild_projection(projection, company, options)
                 total_events += events_processed
 
         # Summary
@@ -383,22 +355,20 @@ class Command(BaseCommand):
 
         # Check if already rebuilding
         if status.is_rebuilding and not force:
-            self.stdout.write(
-                self.style.WARNING(
-                    "    Already rebuilding (use --force to override)"
-                )
-            )
+            self.stdout.write(self.style.WARNING("    Already rebuilding (use --force to override)"))
             return 0
 
         # Count events
         with rls_bypass():
             event_types = projection.consumes
-            total_events = BusinessEvent.objects.filter(
-                company=company,
-                event_type__in=event_types,
-            ).count() if event_types else BusinessEvent.objects.filter(
-                company=company
-            ).count()
+            total_events = (
+                BusinessEvent.objects.filter(
+                    company=company,
+                    event_type__in=event_types,
+                ).count()
+                if event_types
+                else BusinessEvent.objects.filter(company=company).count()
+            )
 
         self.stdout.write(f"    Events to process: {total_events:,}")
 
@@ -429,6 +399,7 @@ class Command(BaseCommand):
 
                 # Reset bookmark
                 from events.models import EventBookmark
+
                 EventBookmark.objects.filter(
                     consumer_name=name,
                     company=company,
@@ -437,12 +408,14 @@ class Command(BaseCommand):
                 # Step 2: Replay events
                 self.stdout.write("    Replaying events...")
 
-                events = BusinessEvent.objects.filter(
-                    company=company,
-                    event_type__in=event_types,
-                ).order_by("company_sequence") if event_types else BusinessEvent.objects.filter(
-                    company=company
-                ).order_by("company_sequence")
+                events = (
+                    BusinessEvent.objects.filter(
+                        company=company,
+                        event_type__in=event_types,
+                    ).order_by("company_sequence")
+                    if event_types
+                    else BusinessEvent.objects.filter(company=company).order_by("company_sequence")
+                )
 
                 processed = 0
                 last_sequence = None
@@ -459,9 +432,7 @@ class Command(BaseCommand):
                         status.update_progress(processed)
                         if not quiet:
                             percent = (processed / total_events) * 100
-                            self.stdout.write(
-                                f"      Progress: {processed:,}/{total_events:,} ({percent:.1f}%)"
-                            )
+                            self.stdout.write(f"      Progress: {processed:,}/{total_events:,} ({percent:.1f}%)")
 
                 # Mark as complete
                 status.mark_rebuild_completed(last_event_sequence=last_sequence)
@@ -470,18 +441,13 @@ class Command(BaseCommand):
                 rate = processed / elapsed if elapsed > 0 else 0
 
                 self.stdout.write(
-                    self.style.SUCCESS(
-                        f"    Complete: {processed:,} events in {elapsed:.2f}s "
-                        f"({rate:.0f} events/sec)"
-                    )
+                    self.style.SUCCESS(f"    Complete: {processed:,} events in {elapsed:.2f}s ({rate:.0f} events/sec)")
                 )
 
                 return processed
 
         except Exception as e:
             status.mark_rebuild_error(str(e))
-            self.stdout.write(
-                self.style.ERROR(f"    Error: {e}")
-            )
+            self.stdout.write(self.style.ERROR(f"    Error: {e}"))
             logger.exception(f"Projection rebuild failed: {name} @ {company.slug}")
             raise

@@ -42,16 +42,10 @@ class Property(ProjectionWriteGuard):
     city = models.CharField(max_length=100, blank=True, default="")
     region = models.CharField(max_length=100, blank=True, default="")
     country = models.CharField(max_length=3, default="SA")
-    status = models.CharField(
-        max_length=20, choices=PropertyStatus.choices, default=PropertyStatus.ACTIVE
-    )
+    status = models.CharField(max_length=20, choices=PropertyStatus.choices, default=PropertyStatus.ACTIVE)
     acquisition_date = models.DateField(null=True, blank=True)
-    area_sqm = models.DecimalField(
-        max_digits=12, decimal_places=2, null=True, blank=True
-    )
-    valuation = models.DecimalField(
-        max_digits=18, decimal_places=2, null=True, blank=True
-    )
+    area_sqm = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    valuation = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
     notes = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -104,15 +98,9 @@ class Unit(ProjectionWriteGuard):
     unit_type = models.CharField(max_length=20, choices=UnitType.choices)
     bedrooms = models.SmallIntegerField(null=True, blank=True)
     bathrooms = models.SmallIntegerField(null=True, blank=True)
-    area_sqm = models.DecimalField(
-        max_digits=12, decimal_places=2, null=True, blank=True
-    )
-    status = models.CharField(
-        max_length=20, choices=UnitStatus.choices, default=UnitStatus.VACANT
-    )
-    default_rent = models.DecimalField(
-        max_digits=18, decimal_places=2, null=True, blank=True
-    )
+    area_sqm = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    status = models.CharField(max_length=20, choices=UnitStatus.choices, default=UnitStatus.VACANT)
+    default_rent = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
     notes = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

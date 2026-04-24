@@ -32,6 +32,7 @@ from .models import Doctor, Invoice, Patient, PatientDocument, Payment, Visit
 # Patient Commands
 # =============================================================================
 
+
 @transaction.atomic
 def create_patient(
     actor: ActorContext,
@@ -108,10 +109,21 @@ def update_patient(actor: ActorContext, patient_id: int, **kwargs) -> CommandRes
 
     changes = {}
     allowed_fields = {
-        "name", "name_ar", "date_of_birth", "gender", "phone", "email",
-        "national_id", "blood_type", "allergies", "chronic_diseases",
-        "current_medications", "emergency_contact_name", "emergency_contact_phone",
-        "status", "notes",
+        "name",
+        "name_ar",
+        "date_of_birth",
+        "gender",
+        "phone",
+        "email",
+        "national_id",
+        "blood_type",
+        "allergies",
+        "chronic_diseases",
+        "current_medications",
+        "emergency_contact_name",
+        "emergency_contact_phone",
+        "status",
+        "notes",
     }
 
     with command_writes_allowed():
@@ -145,6 +157,7 @@ def update_patient(actor: ActorContext, patient_id: int, **kwargs) -> CommandRes
 # =============================================================================
 # Document Commands
 # =============================================================================
+
 
 @transaction.atomic
 def upload_document(
@@ -190,6 +203,7 @@ def upload_document(
 # =============================================================================
 # Doctor Commands
 # =============================================================================
+
 
 @transaction.atomic
 def create_doctor(
@@ -238,6 +252,7 @@ def create_doctor(
 # =============================================================================
 # Visit Commands
 # =============================================================================
+
 
 @transaction.atomic
 def create_visit(
@@ -340,6 +355,7 @@ def complete_visit(
 # Invoice Commands
 # =============================================================================
 
+
 def _next_invoice_no(company) -> str:
     last = Invoice.objects.filter(company=company).order_by("-id").first()
     if not last:
@@ -411,7 +427,8 @@ def issue_invoice(actor: ActorContext, invoice_id: int) -> CommandResult:
 
     try:
         invoice = Invoice.objects.select_related("patient", "visit").get(
-            company=actor.company, pk=invoice_id,
+            company=actor.company,
+            pk=invoice_id,
         )
     except Invoice.DoesNotExist:
         return CommandResult.fail("Invoice not found.")
@@ -451,6 +468,7 @@ def issue_invoice(actor: ActorContext, invoice_id: int) -> CommandResult:
 # Payment Commands
 # =============================================================================
 
+
 @transaction.atomic
 def receive_payment(
     actor: ActorContext,
@@ -465,7 +483,8 @@ def receive_payment(
 
     try:
         invoice = Invoice.objects.select_related("patient").get(
-            company=actor.company, pk=invoice_id,
+            company=actor.company,
+            pk=invoice_id,
         )
     except Invoice.DoesNotExist:
         return CommandResult.fail("Invoice not found.")
@@ -525,7 +544,8 @@ def void_payment(actor: ActorContext, payment_id: int, reason: str = "") -> Comm
 
     try:
         payment = Payment.objects.select_related("invoice", "patient").get(
-            company=actor.company, pk=payment_id,
+            company=actor.company,
+            pk=payment_id,
         )
     except Payment.DoesNotExist:
         return CommandResult.fail("Payment not found.")

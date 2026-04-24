@@ -14,6 +14,7 @@ from decimal import Decimal
 @dataclass
 class ParsedOrderLine:
     """Single line item within a parsed order."""
+
     sku: str = ""
     title: str = ""
     quantity: int = 0
@@ -32,6 +33,7 @@ class ParsedOrder:
     Populated by a connector's parse_order() method, consumed by the
     generic webhook handler to emit PLATFORM_ORDER_PAID events.
     """
+
     platform_order_id: str = ""
     order_number: str = ""
     order_name: str = ""
@@ -56,6 +58,7 @@ class ParsedRefund:
     """
     Platform-agnostic representation of a refund.
     """
+
     platform_refund_id: str = ""
     platform_order_id: str = ""
     order_number: str = ""
@@ -72,6 +75,7 @@ class ParsedPayout:
 
     Covers both positive (normal) and negative (refund-heavy) payouts.
     """
+
     platform_payout_id: str = ""
     gross_amount: Decimal = Decimal("0")
     fees: Decimal = Decimal("0")
@@ -86,6 +90,7 @@ class ParsedDispute:
     """
     Platform-agnostic representation of a chargeback/dispute.
     """
+
     platform_dispute_id: str = ""
     platform_order_id: str = ""
     order_name: str = ""
@@ -104,6 +109,7 @@ class ParsedFulfillment:
 
     Used to trigger COGS recognition and inventory deduction.
     """
+
     platform_fulfillment_id: str = ""
     platform_order_id: str = ""
     order_name: str = ""

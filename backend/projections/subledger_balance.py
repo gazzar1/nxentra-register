@@ -87,6 +87,7 @@ class SubledgerBalanceProjection(BaseProjection):
 
         # Parse entry date
         from datetime import datetime
+
         entry_date = None
         if entry_date_str:
             entry_date = datetime.fromisoformat(entry_date_str).date()
@@ -115,6 +116,7 @@ class SubledgerBalanceProjection(BaseProjection):
             entry_date_str = parent_data.get("date")
             if entry_date_str:
                 from datetime import datetime
+
                 entry_date = datetime.fromisoformat(entry_date_str).date()
 
         # Process each line in the chunk
@@ -195,10 +197,7 @@ class SubledgerBalanceProjection(BaseProjection):
                 company=company,
             )
         except Customer.DoesNotExist:
-            logger.error(
-                f"Customer {customer_public_id} not found for company {company.id} "
-                f"in event {event.id}"
-            )
+            logger.error(f"Customer {customer_public_id} not found for company {company.id} in event {event.id}")
             return
 
         with transaction.atomic():
@@ -276,10 +275,7 @@ class SubledgerBalanceProjection(BaseProjection):
                 company=company,
             )
         except Vendor.DoesNotExist:
-            logger.error(
-                f"Vendor {vendor_public_id} not found for company {company.id} "
-                f"in event {event.id}"
-            )
+            logger.error(f"Vendor {vendor_public_id} not found for company {company.id} in event {event.id}")
             return
 
         with transaction.atomic():
@@ -366,8 +362,7 @@ class SubledgerBalanceProjection(BaseProjection):
         )
 
         logger.info(
-            f"Reset {customer_cleared} CustomerBalance and "
-            f"{vendor_cleared} VendorBalance records for {company.name}"
+            f"Reset {customer_cleared} CustomerBalance and {vendor_cleared} VendorBalance records for {company.name}"
         )
 
     def get_customer_balance(self, company: Company, customer: Customer) -> Decimal:
@@ -413,10 +408,14 @@ class SubledgerBalanceProjection(BaseProjection):
             "total": Decimal("0.00"),
         }
 
-        balances = CustomerBalance.objects.filter(
-            company=company,
-            balance__gt=0,  # Only customers who owe us
-        ).select_related("customer").order_by("oldest_open_date")
+        balances = (
+            CustomerBalance.objects.filter(
+                company=company,
+                balance__gt=0,  # Only customers who owe us
+            )
+            .select_related("customer")
+            .order_by("oldest_open_date")
+        )
 
         for bal in balances:
             if not bal.oldest_open_date:
@@ -433,12 +432,14 @@ class SubledgerBalanceProjection(BaseProjection):
                 else:
                     bucket = "over_90"
 
-            buckets[bucket].append({
-                "customer_code": bal.customer.code,
-                "customer_name": bal.customer.name,
-                "balance": str(bal.balance),
-                "oldest_open_date": bal.oldest_open_date.isoformat() if bal.oldest_open_date else None,
-            })
+            buckets[bucket].append(
+                {
+                    "customer_code": bal.customer.code,
+                    "customer_name": bal.customer.name,
+                    "balance": str(bal.balance),
+                    "oldest_open_date": bal.oldest_open_date.isoformat() if bal.oldest_open_date else None,
+                }
+            )
             totals[bucket] += bal.balance
             totals["total"] += bal.balance
 
@@ -471,10 +472,14 @@ class SubledgerBalanceProjection(BaseProjection):
             "total": Decimal("0.00"),
         }
 
-        balances = VendorBalance.objects.filter(
-            company=company,
-            balance__gt=0,  # Only vendors we owe
-        ).select_related("vendor").order_by("oldest_open_date")
+        balances = (
+            VendorBalance.objects.filter(
+                company=company,
+                balance__gt=0,  # Only vendors we owe
+            )
+            .select_related("vendor")
+            .order_by("oldest_open_date")
+        )
 
         for bal in balances:
             if not bal.oldest_open_date:
@@ -490,12 +495,14 @@ class SubledgerBalanceProjection(BaseProjection):
                 else:
                     bucket = "over_90"
 
-            buckets[bucket].append({
-                "vendor_code": bal.vendor.code,
-                "vendor_name": bal.vendor.name,
-                "balance": str(bal.balance),
-                "oldest_open_date": bal.oldest_open_date.isoformat() if bal.oldest_open_date else None,
-            })
+            buckets[bucket].append(
+                {
+                    "vendor_code": bal.vendor.code,
+                    "vendor_name": bal.vendor.name,
+                    "balance": str(bal.balance),
+                    "oldest_open_date": bal.oldest_open_date.isoformat() if bal.oldest_open_date else None,
+                }
+            )
             totals[bucket] += bal.balance
             totals["total"] += bal.balance
 

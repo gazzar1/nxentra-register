@@ -42,10 +42,10 @@ class IntegrityViolationError(Exception):
     def to_dict(self) -> dict[str, Any]:
         """Convert to a dictionary for logging/diagnostics."""
         return {
-            'error_type': self.__class__.__name__,
-            'message': str(self),
-            'event_id': str(self.event_id) if self.event_id else None,
-            'details': self.details,
+            "error_type": self.__class__.__name__,
+            "message": str(self),
+            "event_id": str(self.event_id) if self.event_id else None,
+            "details": self.details,
         }
 
 
@@ -58,6 +58,7 @@ class PayloadMissingError(IntegrityViolationError):
 
     Recovery: Restore EventPayload table from backup.
     """
+
     pass
 
 
@@ -72,6 +73,7 @@ class PayloadHashMismatchError(IntegrityViolationError):
 
     Recovery: Restore from backup. Investigate storage system.
     """
+
     pass
 
 
@@ -85,6 +87,7 @@ class ChunkMissingError(IntegrityViolationError):
 
     Recovery: Restore missing events from backup.
     """
+
     pass
 
 
@@ -100,6 +103,7 @@ class SequenceGapError(IntegrityViolationError):
 
     Recovery: Investigate the gap and restore missing events.
     """
+
     pass
 
 
@@ -126,5 +130,5 @@ class ReplayAbortedError(IntegrityViolationError):
     def to_dict(self) -> dict[str, Any]:
         result = super().to_dict()
         if self.cause:
-            result['cause'] = self.cause.to_dict()
+            result["cause"] = self.cause.to_dict()
         return result

@@ -25,6 +25,7 @@ Usage:
     # Strict mode: exit 1 on any failure
     python manage.py pilot_readiness --company my-co --year 2026 --month 3 --strict
 """
+
 import json
 import sys
 from calendar import monthrange
@@ -39,23 +40,31 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument(
-            "--company", type=str, required=True,
+            "--company",
+            type=str,
+            required=True,
             help="Company slug.",
         )
         parser.add_argument(
-            "--year", type=int, required=True,
+            "--year",
+            type=int,
+            required=True,
             help="Fiscal year (e.g. 2026).",
         )
         parser.add_argument(
-            "--month", type=int, required=True,
+            "--month",
+            type=int,
+            required=True,
             help="Month number (1-12).",
         )
         parser.add_argument(
-            "--json", action="store_true",
+            "--json",
+            action="store_true",
             help="Output as JSON.",
         )
         parser.add_argument(
-            "--strict", action="store_true",
+            "--strict",
+            action="store_true",
             help="Exit code 1 on any FAIL.",
         )
 
@@ -119,12 +128,16 @@ class Command(BaseCommand):
         """Check 1: Shopify store connected and webhooks registered."""
         from shopify_connector.models import ShopifyStore
 
-        stores = list(ShopifyStore.objects.filter(
-            company=company, status=ShopifyStore.Status.ACTIVE,
-        ))
+        stores = list(
+            ShopifyStore.objects.filter(
+                company=company,
+                status=ShopifyStore.Status.ACTIVE,
+            )
+        )
         if not stores:
             return self._result(
-                "shopify_store", "FAIL",
+                "shopify_store",
+                "FAIL",
                 "No active Shopify store connected.",
             )
 
@@ -135,13 +148,15 @@ class Command(BaseCommand):
 
         if issues:
             return self._result(
-                "shopify_store", "WARN",
+                "shopify_store",
+                "WARN",
                 f"Store connected but: {'; '.join(issues)}",
                 detail={"stores": len(stores), "issues": issues},
             )
 
         return self._result(
-            "shopify_store", "PASS",
+            "shopify_store",
+            "PASS",
             f"{len(stores)} store(s) connected, webhooks OK.",
             detail={"stores": len(stores)},
         )
@@ -178,20 +193,23 @@ class Command(BaseCommand):
 
         if missing_required:
             return self._result(
-                "account_mapping", "FAIL",
+                "account_mapping",
+                "FAIL",
                 f"Missing required mappings: {', '.join(missing_required)}",
                 detail={"missing_required": missing_required, "missing_optional": missing_optional},
             )
 
         if missing_optional:
             return self._result(
-                "account_mapping", "WARN",
+                "account_mapping",
+                "WARN",
                 f"Optional mappings missing: {', '.join(missing_optional)}",
                 detail={"missing_optional": missing_optional},
             )
 
         return self._result(
-            "account_mapping", "PASS",
+            "account_mapping",
+            "PASS",
             "All account roles mapped.",
         )
 
@@ -209,14 +227,15 @@ class Command(BaseCommand):
 
         if lagging:
             return self._result(
-                "projection_lag", "FAIL",
-                f"{len(lagging)} projection(s) behind: "
-                + ", ".join(f"{l['name']}({l['lag']})" for l in lagging),
+                "projection_lag",
+                "FAIL",
+                f"{len(lagging)} projection(s) behind: " + ", ".join(f"{l['name']}({l['lag']})" for l in lagging),
                 detail={"lagging": lagging},
             )
 
         return self._result(
-            "projection_lag", "PASS",
+            "projection_lag",
+            "PASS",
             f"All {len(projections)} projections caught up.",
         )
 
@@ -228,7 +247,8 @@ class Command(BaseCommand):
 
         if summary.total_payouts == 0:
             return self._result(
-                "reconciliation", "WARN",
+                "reconciliation",
+                "WARN",
                 "No payouts found in period.",
                 detail={"total_payouts": 0},
             )
@@ -245,22 +265,23 @@ class Command(BaseCommand):
 
         if summary.discrepancy_payouts > 0:
             return self._result(
-                "reconciliation", "FAIL",
-                f"{summary.discrepancy_payouts} payout(s) with discrepancies, "
-                f"match rate {summary.match_rate}%.",
+                "reconciliation",
+                "FAIL",
+                f"{summary.discrepancy_payouts} payout(s) with discrepancies, match rate {summary.match_rate}%.",
                 detail=detail,
             )
 
         if summary.unverified_payouts > 0 or summary.match_rate < Decimal("90"):
             return self._result(
-                "reconciliation", "WARN",
-                f"{summary.verified_payouts}/{summary.total_payouts} verified, "
-                f"match rate {summary.match_rate}%.",
+                "reconciliation",
+                "WARN",
+                f"{summary.verified_payouts}/{summary.total_payouts} verified, match rate {summary.match_rate}%.",
                 detail=detail,
             )
 
         return self._result(
-            "reconciliation", "PASS",
+            "reconciliation",
+            "PASS",
             f"{summary.verified_payouts}/{summary.total_payouts} payouts verified, "
             f"match rate {summary.match_rate}%, net {summary.total_net}.",
             detail=detail,
@@ -282,7 +303,8 @@ class Command(BaseCommand):
         data = compute_clearing_balance(company)
         if data is None:
             return self._result(
-                "clearing_balance", "WARN",
+                "clearing_balance",
+                "WARN",
                 "No SHOPIFY_CLEARING account mapped (check account_mapping).",
             )
 
@@ -290,23 +312,29 @@ class Command(BaseCommand):
         pending = data["pending_payouts"]
 
         # Count orders that haven't appeared in a settled payout yet
-        unsettled_orders = ShopifyOrder.objects.filter(
-            company=company,
-            status=ShopifyOrder.Status.PROCESSED,
-        ).exclude(
-            shopify_order_id__in=ShopifyPayout.objects.filter(
+        unsettled_orders = (
+            ShopifyOrder.objects.filter(
                 company=company,
-                shopify_status="paid",
-            ).values_list(
-                "transactions__source_order_id", flat=True,
-            ),
-        ).count()
+                status=ShopifyOrder.Status.PROCESSED,
+            )
+            .exclude(
+                shopify_order_id__in=ShopifyPayout.objects.filter(
+                    company=company,
+                    shopify_status="paid",
+                ).values_list(
+                    "transactions__source_order_id",
+                    flat=True,
+                ),
+            )
+            .count()
+        )
 
         data["unsettled_orders"] = unsettled_orders
 
         if balance == Decimal("0"):
             return self._result(
-                "clearing_balance", "PASS",
+                "clearing_balance",
+                "PASS",
                 "Clearing balance is zero.",
                 detail=data,
             )
@@ -314,15 +342,16 @@ class Command(BaseCommand):
         # Non-zero but explainable by pending payouts or unsettled orders
         if pending > 0 or unsettled_orders > 0:
             return self._result(
-                "clearing_balance", "WARN",
-                f"Balance {balance} ({pending} pending payouts, "
-                f"{unsettled_orders} unsettled orders).",
+                "clearing_balance",
+                "WARN",
+                f"Balance {balance} ({pending} pending payouts, {unsettled_orders} unsettled orders).",
                 detail=data,
             )
 
         # Non-zero with nothing to explain it
         return self._result(
-            "clearing_balance", "FAIL",
+            "clearing_balance",
+            "FAIL",
             f"Unexplained non-zero balance {balance}.",
             detail=data,
         )
@@ -337,23 +366,27 @@ class Command(BaseCommand):
         """
         try:
             from accounting.policies import validate_subledger_tieout
+
             is_valid, errors = validate_subledger_tieout(company)
 
             if not is_valid:
                 return self._result(
-                    "subledger_tieout", "WARN",
+                    "subledger_tieout",
+                    "WARN",
                     f"Subledger imbalance (review before year-end): {'; '.join(errors)}",
                     detail={"balanced": False, "errors": errors},
                 )
 
             return self._result(
-                "subledger_tieout", "PASS",
+                "subledger_tieout",
+                "PASS",
                 "AR/AP subledgers tie out to GL.",
                 detail={"balanced": True, "errors": []},
             )
         except Exception as exc:
             return self._result(
-                "subledger_tieout", "WARN",
+                "subledger_tieout",
+                "WARN",
                 f"Could not run subledger check: {exc}",
             )
 
@@ -363,17 +396,13 @@ class Command(BaseCommand):
 
         from accounting.models import JournalEntry, JournalLine
 
-        agg = (
-            JournalLine.objects
-            .filter(
-                company=company,
-                entry__status=JournalEntry.Status.POSTED,
-                entry__date__lte=as_of_date,
-            )
-            .aggregate(
-                total_debit=Sum("debit"),
-                total_credit=Sum("credit"),
-            )
+        agg = JournalLine.objects.filter(
+            company=company,
+            entry__status=JournalEntry.Status.POSTED,
+            entry__date__lte=as_of_date,
+        ).aggregate(
+            total_debit=Sum("debit"),
+            total_credit=Sum("credit"),
         )
         total_debit = agg["total_debit"] or Decimal("0")
         total_credit = agg["total_credit"] or Decimal("0")
@@ -387,13 +416,15 @@ class Command(BaseCommand):
 
         if diff != Decimal("0"):
             return self._result(
-                "trial_balance", "FAIL",
+                "trial_balance",
+                "FAIL",
                 f"Trial balance out by {diff} (DR={total_debit}, CR={total_credit}).",
                 detail=detail,
             )
 
         return self._result(
-            "trial_balance", "PASS",
+            "trial_balance",
+            "PASS",
             f"Trial balance balanced (DR=CR={total_debit}).",
             detail=detail,
         )
@@ -414,7 +445,8 @@ class Command(BaseCommand):
 
         if drafts > 0:
             return self._result(
-                "draft_entries", "FAIL",
+                "draft_entries",
+                "FAIL",
                 f"{drafts} draft/incomplete journal entries in period.",
                 detail={"count": drafts},
             )
@@ -427,7 +459,8 @@ class Command(BaseCommand):
         ).count()
 
         return self._result(
-            "draft_entries", "PASS",
+            "draft_entries",
+            "PASS",
             f"All {posted} entries in period are posted.",
             detail={"posted": posted, "drafts": 0},
         )
@@ -444,10 +477,9 @@ class Command(BaseCommand):
 
     def _print_report(self, report):
         self.stdout.write("")
-        self.stdout.write(self.style.HTTP_INFO(
-            f"═══ Gate C: Pilot Readiness — {report['company']} "
-            f"({report['period']}) ═══"
-        ))
+        self.stdout.write(
+            self.style.HTTP_INFO(f"═══ Gate C: Pilot Readiness — {report['company']} ({report['period']}) ═══")
+        )
         self.stdout.write("")
 
         for c in report["checks"]:
@@ -467,8 +499,7 @@ class Command(BaseCommand):
 
         self.stdout.write("")
         self.stdout.write(
-            f"  Results: {report['passed']} passed, "
-            f"{report['warned']} warnings, {report['failed']} failures"
+            f"  Results: {report['passed']} passed, {report['warned']} warnings, {report['failed']} failures"
         )
 
         gate = report["gate_c"]

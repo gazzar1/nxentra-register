@@ -76,8 +76,10 @@ class Command(BaseCommand):
 
         # Load dimension lookups
         dimensions = {
-            d.code: d for d in AnalysisDimension.objects.filter(
-                company=company, is_active=True,
+            d.code: d
+            for d in AnalysisDimension.objects.filter(
+                company=company,
+                is_active=True,
                 code__in=["property", "unit", "lessee"],
             )
         }
@@ -90,7 +92,9 @@ class Command(BaseCommand):
         values = {
             (v.dimension_id, v.code): v
             for v in AnalysisDimensionValue.objects.filter(
-                company=company, dimension_id__in=dim_ids, is_active=True,
+                company=company,
+                dimension_id__in=dim_ids,
+                is_active=True,
             )
         }
 
@@ -120,7 +124,8 @@ class Command(BaseCommand):
 
             if source_type in LEASE_EVENT_TYPES:
                 dimension_context = self._resolve_lease_dims(
-                    company, source_data.get("lease_public_id"),
+                    company,
+                    source_data.get("lease_public_id"),
                 )
             elif source_type in PROPERTY_EVENT_TYPES:
                 dimension_context = self._resolve_property_dims(
@@ -142,7 +147,8 @@ class Command(BaseCommand):
 
             try:
                 entry = JournalEntry.objects.get(
-                    company=company, public_id=entry_public_id,
+                    company=company,
+                    public_id=entry_public_id,
                 )
             except JournalEntry.DoesNotExist:
                 skipped += 1
@@ -157,7 +163,8 @@ class Command(BaseCommand):
                 # Check if this line already has analysis for these dimensions
                 existing_dims = set(
                     JournalLineAnalysis.objects.filter(
-                        journal_line=line, company=company,
+                        journal_line=line,
+                        company=company,
                     ).values_list("dimension__code", flat=True)
                 )
 
@@ -170,31 +177,32 @@ class Command(BaseCommand):
                     val = values.get((dim.id, val_code))
                     if not val:
                         continue
-                    records.append(JournalLineAnalysis(
-                        journal_line=line,
-                        company=company,
-                        dimension=dim,
-                        dimension_value=val,
-                    ))
+                    records.append(
+                        JournalLineAnalysis(
+                            journal_line=line,
+                            company=company,
+                            dimension=dim,
+                            dimension_value=val,
+                        )
+                    )
 
             if records:
                 if dry_run:
                     self.stdout.write(
-                        f"    Would create {len(records)} analysis records for "
-                        f"{entry.entry_number} ({entry.memo[:40]})"
+                        f"    Would create {len(records)} analysis records for {entry.entry_number} ({entry.memo[:40]})"
                     )
                 else:
                     with projection_writes_allowed():
                         JournalLineAnalysis.objects.projection().bulk_create(
-                            records, ignore_conflicts=True,
+                            records,
+                            ignore_conflicts=True,
                         )
                 created += len(records)
 
         action = "Would create" if dry_run else "Created"
-        self.stdout.write(self.style.SUCCESS(
-            f"  {action} {created} analysis records across {total} entries "
-            f"(skipped {skipped})"
-        ))
+        self.stdout.write(
+            self.style.SUCCESS(f"  {action} {created} analysis records across {total} entries (skipped {skipped})")
+        )
 
     def _resolve_lease_dims(self, company, lease_public_id):
         """Derive dimension context from a lease."""
@@ -202,7 +210,9 @@ class Command(BaseCommand):
             return {}
         try:
             lease = Lease.objects.select_related(
-                "property", "unit", "lessee",
+                "property",
+                "unit",
+                "lessee",
             ).get(company=company, public_id=lease_public_id)
         except Lease.DoesNotExist:
             return {}

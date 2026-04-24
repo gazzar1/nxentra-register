@@ -164,10 +164,7 @@ class FiscalPeriodProjection(BaseProjection):
                 period_num = p["period"]
                 if is_yearend_creation:
                     # Year-end auto-creation: only Period 1 is OPEN
-                    period_status = (
-                        FiscalPeriod.Status.OPEN if period_num == 1
-                        else FiscalPeriod.Status.CLOSED
-                    )
+                    period_status = FiscalPeriod.Status.OPEN if period_num == 1 else FiscalPeriod.Status.CLOSED
                 else:
                     # Manual configuration: all periods OPEN
                     period_status = FiscalPeriod.Status.OPEN

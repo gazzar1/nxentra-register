@@ -23,6 +23,7 @@ Example:
 - JournalEntry events use aggregate_type="JournalEntry", aggregate_id=entry_public_id
 - JournalLine analysis events ALSO use "JournalEntry" because lines belong to entries
 """
+
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any

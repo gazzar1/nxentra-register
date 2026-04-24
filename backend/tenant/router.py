@@ -31,40 +31,47 @@ from tenant.context import get_current_db_alias, is_shared_tenant
 
 # System apps that ALWAYS live in the default database
 # These apps contain system-wide data, not tenant-specific data
-SYSTEM_APPS = frozenset({
-    "auth",
-    "contenttypes",
-    "sessions",
-    "admin",
-    "token_blacklist",  # SimpleJWT token blacklist
-    "tenant",  # TenantDirectory lives in system DB
-})
+SYSTEM_APPS = frozenset(
+    {
+        "auth",
+        "contenttypes",
+        "sessions",
+        "admin",
+        "token_blacklist",  # SimpleJWT token blacklist
+        "tenant",  # TenantDirectory lives in system DB
+    }
+)
 
 # System models within apps that otherwise have tenant models
 # These are explicitly classified as system models
-SYSTEM_MODELS = frozenset({
-    "accounts.User",
-    "accounts.Company",
-    "accounts.CompanyMembership",
-    "accounts.CompanyMembershipPermission",
-    "accounts.NxPermission",
-    "accounts.EmailVerificationToken",
-})
+SYSTEM_MODELS = frozenset(
+    {
+        "accounts.User",
+        "accounts.Company",
+        "accounts.CompanyMembership",
+        "accounts.CompanyMembershipPermission",
+        "accounts.NxPermission",
+        "accounts.EmailVerificationToken",
+    }
+)
 
 # Tenant apps that route based on context
 # All models in these apps are tenant-specific
-TENANT_APPS = frozenset({
-    "events",
-    "accounting",
-    "projections",
-    "edim",
-    "scratchpad",  # Scratchpad is tenant-specific
-})
+TENANT_APPS = frozenset(
+    {
+        "events",
+        "accounting",
+        "projections",
+        "edim",
+        "scratchpad",  # Scratchpad is tenant-specific
+    }
+)
 
 
 # =============================================================================
 # Router Implementation
 # =============================================================================
+
 
 class TenantDatabaseRouter:
     """
@@ -90,7 +97,7 @@ class TenantDatabaseRouter:
         """
         # Handle SimpleLazyObject and other types without _meta
         # This can happen when Django admin uses lazy user objects
-        if not hasattr(model, '_meta'):
+        if not hasattr(model, "_meta"):
             return True  # Treat as system model (safe fallback to default)
 
         app_label = model._meta.app_label
@@ -106,7 +113,7 @@ class TenantDatabaseRouter:
         - Its full label is NOT in SYSTEM_MODELS
         """
         # Handle types without _meta (e.g., SimpleLazyObject)
-        if not hasattr(model, '_meta'):
+        if not hasattr(model, "_meta"):
             return False  # Not a tenant model if no _meta
 
         app_label = model._meta.app_label
@@ -150,10 +157,10 @@ class TenantDatabaseRouter:
                 # This is a dedicated tenant but context says default
                 # This shouldn't happen in normal operation
                 import logging
+
                 logger = logging.getLogger(__name__)
                 logger.warning(
-                    "Writing tenant model %s to default without shared mode. "
-                    "This may indicate missing tenant context.",
+                    "Writing tenant model %s to default without shared mode. This may indicate missing tenant context.",
                     self._get_model_label(model),
                 )
 
@@ -230,11 +237,7 @@ def get_tenant_databases() -> list[str]:
         for db in get_tenant_databases():
             call_command('migrate', database=db)
     """
-    return [
-        alias
-        for alias in settings.DATABASES
-        if alias.startswith("tenant_")
-    ]
+    return [alias for alias in settings.DATABASES if alias.startswith("tenant_")]
 
 
 def get_all_databases() -> list[str]:

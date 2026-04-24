@@ -65,6 +65,7 @@ def _rls_bypass(db):
 # Company & User Fixtures
 # =============================================================================
 
+
 @pytest.fixture
 def company(db):
     """Create a test company with a unique slug."""
@@ -197,13 +198,12 @@ def deactivated_membership(db, company):
 # Actor Context Fixtures (Updated for your API)
 # =============================================================================
 
+
 @pytest.fixture
 def actor_context(user, company, owner_membership):
     """Create an ActorContext for the owner user."""
     # Get permissions for this membership
-    perms = frozenset(
-        owner_membership.permissions.values_list("code", flat=True)
-    )
+    perms = frozenset(owner_membership.permissions.values_list("code", flat=True))
 
     return ActorContext(
         user=user,
@@ -216,9 +216,7 @@ def actor_context(user, company, owner_membership):
 @pytest.fixture
 def admin_actor_context(admin_user, company, admin_membership):
     """Create an ActorContext for the admin user."""
-    perms = frozenset(
-        admin_membership.permissions.values_list("code", flat=True)
-    )
+    perms = frozenset(admin_membership.permissions.values_list("code", flat=True))
 
     return ActorContext(
         user=admin_user,
@@ -231,9 +229,7 @@ def admin_actor_context(admin_user, company, admin_membership):
 @pytest.fixture
 def user_actor_context(regular_user, company, user_membership):
     """Create an ActorContext for a regular user."""
-    perms = frozenset(
-        user_membership.permissions.values_list("code", flat=True)
-    )
+    perms = frozenset(user_membership.permissions.values_list("code", flat=True))
 
     return ActorContext(
         user=regular_user,
@@ -246,6 +242,7 @@ def user_actor_context(regular_user, company, user_membership):
 # =============================================================================
 # Permission Fixtures
 # =============================================================================
+
 
 @pytest.fixture
 def permissions(db):
@@ -274,7 +271,7 @@ def permissions(db):
             defaults={
                 "name": code,
                 "module": code.split(".")[0],
-            }
+            },
         )
         permissions.append(perm)
 
@@ -296,6 +293,7 @@ def user_with_permissions(db, company, user_membership, permissions):
 # =============================================================================
 # Account Fixtures
 # =============================================================================
+
 
 @pytest.fixture
 def cash_account(db, company):
@@ -403,6 +401,7 @@ def memo_account(db, company):
 # Journal Entry Fixtures
 # =============================================================================
 
+
 @pytest.fixture
 def incomplete_journal_entry(db, company, user):
     """Create an incomplete journal entry."""
@@ -502,6 +501,7 @@ def unbalanced_lines_data():
 # Event Fixtures (Updated for your API)
 # =============================================================================
 
+
 @pytest.fixture
 def account_created_event(db, company, user, cash_account, actor_context):
     """Create an account.created event using emit_event_no_actor."""
@@ -574,6 +574,7 @@ def journal_entry_posted_event(db, company, user, posted_journal_entry, cash_acc
 # Projection Fixtures
 # =============================================================================
 
+
 @pytest.fixture
 def account_balance(db, company, cash_account):
     """Create an account balance projection."""
@@ -601,6 +602,7 @@ def event_bookmark(db, company):
 # Analysis Dimension Fixtures
 # =============================================================================
 
+
 @pytest.fixture
 def cost_center_dimension(db, company):
     """Create a cost center analysis dimension."""
@@ -618,6 +620,7 @@ def cost_center_dimension(db, company):
 # =============================================================================
 # Fiscal Period Fixtures
 # =============================================================================
+
 
 @pytest.fixture
 def fiscal_periods(db, company):
@@ -699,10 +702,12 @@ def auto_fiscal_periods(db, company):
 # API Client Fixtures
 # =============================================================================
 
+
 @pytest.fixture
 def api_client():
     """Create a DRF API client."""
     from rest_framework.test import APIClient
+
     return APIClient()
 
 

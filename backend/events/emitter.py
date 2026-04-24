@@ -47,9 +47,11 @@ def _schedule_projection_processing(company_id: int) -> None:
     Runs via transaction.on_commit so projections only fire after the event
     is durably persisted.
     """
+
     def _dispatch():
         try:
             from projections.tasks import process_company_projections
+
             process_company_projections.delay(company_id=company_id)
         except Exception:
             # Celery not running or not configured — process synchronously
@@ -63,7 +65,8 @@ def _schedule_projection_processing(company_id: int) -> None:
             except Exception as exc:
                 _emitter_logger.warning(
                     "Failed to process projections synchronously for company %s: %s",
-                    company_id, exc,
+                    company_id,
+                    exc,
                 )
 
     transaction.on_commit(_dispatch)
@@ -139,11 +142,11 @@ def _emit_event_core(
     # ═══════════════════════════════════════════════════════════════════════════
     # LEPH: Determine storage strategy based on payload size and origin
     # ═══════════════════════════════════════════════════════════════════════════
-    strategy, strategy_meta = determine_storage_strategy(data, payload_origin)
+    strategy, _strategy_meta = determine_storage_strategy(data, payload_origin)
 
     # Prepare LEPH fields based on strategy
-    payload_storage = 'inline'
-    payload_hash = ''
+    payload_storage = "inline"
+    payload_hash = ""
     payload_ref = None
     event_data = data
 
@@ -153,13 +156,13 @@ def _emit_event_core(
 
         payload_hash = compute_payload_hash(data)
         payload_ref = EventPayload.store_payload(data)
-        payload_storage = 'external'
+        payload_storage = "external"
         event_data = {}  # Don't store payload inline
 
     elif strategy == PayloadStrategy.INLINE:
         # Small payload: compute hash for integrity, store inline
         payload_hash = compute_payload_hash(data)
-        payload_storage = 'inline'
+        payload_storage = "inline"
         event_data = data
 
     elif strategy == PayloadStrategy.CHUNKED:
@@ -169,7 +172,7 @@ def _emit_event_core(
 
         payload_hash = compute_payload_hash(data)
         payload_ref = EventPayload.store_payload(data)
-        payload_storage = 'external'
+        payload_storage = "external"
         event_data = {}
 
     # Minimal v0 retry:

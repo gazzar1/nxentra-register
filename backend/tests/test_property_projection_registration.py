@@ -78,35 +78,23 @@ def test_property_projection_registered_and_rebuild_stable(actor_context, compan
     assert lines[1].credit == Decimal("1000.00")
 
     before_count = JournalEntry.objects.filter(company=company).count()
-    before_debits = (
-        JournalLine.objects.filter(company=company, entry__status=JournalEntry.Status.POSTED)
-        .aggregate(total=models.Sum("debit"))
-        .get("total")
-        or Decimal("0")
-    )
-    before_credits = (
-        JournalLine.objects.filter(company=company, entry__status=JournalEntry.Status.POSTED)
-        .aggregate(total=models.Sum("credit"))
-        .get("total")
-        or Decimal("0")
-    )
+    before_debits = JournalLine.objects.filter(company=company, entry__status=JournalEntry.Status.POSTED).aggregate(
+        total=models.Sum("debit")
+    ).get("total") or Decimal("0")
+    before_credits = JournalLine.objects.filter(company=company, entry__status=JournalEntry.Status.POSTED).aggregate(
+        total=models.Sum("credit")
+    ).get("total") or Decimal("0")
 
     rebuilt = projection.rebuild(company)
     assert rebuilt >= 1
 
     after_count = JournalEntry.objects.filter(company=company).count()
-    after_debits = (
-        JournalLine.objects.filter(company=company, entry__status=JournalEntry.Status.POSTED)
-        .aggregate(total=models.Sum("debit"))
-        .get("total")
-        or Decimal("0")
-    )
-    after_credits = (
-        JournalLine.objects.filter(company=company, entry__status=JournalEntry.Status.POSTED)
-        .aggregate(total=models.Sum("credit"))
-        .get("total")
-        or Decimal("0")
-    )
+    after_debits = JournalLine.objects.filter(company=company, entry__status=JournalEntry.Status.POSTED).aggregate(
+        total=models.Sum("debit")
+    ).get("total") or Decimal("0")
+    after_credits = JournalLine.objects.filter(company=company, entry__status=JournalEntry.Status.POSTED).aggregate(
+        total=models.Sum("credit")
+    ).get("total") or Decimal("0")
 
     assert after_count == before_count
     assert after_debits == before_debits

@@ -32,6 +32,7 @@ from .models import (
 def _parse_date(val):
     """Parse date from query params."""
     from datetime import date as dt_date
+
     if not val:
         return None
     try:
@@ -51,8 +52,10 @@ def _company_or_400(request):
 # Report 1: Rent Roll
 # =============================================================================
 
+
 class RentRollView(APIView):
     """All active leases with current installment status."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -75,37 +78,41 @@ class RentRollView(APIView):
             total_billed = lines.aggregate(t=Coalesce(Sum("total_due"), Decimal(0)))["t"]
             total_collected = lines.aggregate(t=Coalesce(Sum("total_allocated"), Decimal(0)))["t"]
             total_outstanding = total_billed - total_collected
-            overdue_count = lines.filter(
-                status=RentScheduleLine.ScheduleStatus.OVERDUE
-            ).count()
+            overdue_count = lines.filter(status=RentScheduleLine.ScheduleStatus.OVERDUE).count()
 
-            current_line = lines.filter(
-                status__in=[
-                    RentScheduleLine.ScheduleStatus.DUE,
-                    RentScheduleLine.ScheduleStatus.OVERDUE,
-                    RentScheduleLine.ScheduleStatus.PARTIALLY_PAID,
-                ]
-            ).order_by("due_date").first()
+            current_line = (
+                lines.filter(
+                    status__in=[
+                        RentScheduleLine.ScheduleStatus.DUE,
+                        RentScheduleLine.ScheduleStatus.OVERDUE,
+                        RentScheduleLine.ScheduleStatus.PARTIALLY_PAID,
+                    ]
+                )
+                .order_by("due_date")
+                .first()
+            )
 
-            rows.append({
-                "lease_id": lease.id,
-                "contract_no": lease.contract_no,
-                "property_code": lease.property.code,
-                "property_name": lease.property.name,
-                "unit_code": lease.unit.unit_code if lease.unit else "—",
-                "lessee_name": lease.lessee.display_name,
-                "start_date": str(lease.start_date),
-                "end_date": str(lease.end_date),
-                "rent_amount": str(lease.rent_amount),
-                "currency": lease.currency,
-                "total_billed": str(total_billed),
-                "total_collected": str(total_collected),
-                "total_outstanding": str(total_outstanding),
-                "overdue_count": overdue_count,
-                "current_installment": current_line.installment_no if current_line else None,
-                "current_status": current_line.status if current_line else None,
-                "current_due_date": str(current_line.due_date) if current_line else None,
-            })
+            rows.append(
+                {
+                    "lease_id": lease.id,
+                    "contract_no": lease.contract_no,
+                    "property_code": lease.property.code,
+                    "property_name": lease.property.name,
+                    "unit_code": lease.unit.unit_code if lease.unit else "—",
+                    "lessee_name": lease.lessee.display_name,
+                    "start_date": str(lease.start_date),
+                    "end_date": str(lease.end_date),
+                    "rent_amount": str(lease.rent_amount),
+                    "currency": lease.currency,
+                    "total_billed": str(total_billed),
+                    "total_collected": str(total_collected),
+                    "total_outstanding": str(total_outstanding),
+                    "overdue_count": overdue_count,
+                    "current_installment": current_line.installment_no if current_line else None,
+                    "current_status": current_line.status if current_line else None,
+                    "current_due_date": str(current_line.due_date) if current_line else None,
+                }
+            )
 
         return Response(rows)
 
@@ -114,8 +121,10 @@ class RentRollView(APIView):
 # Report 2: Overdue Balances by Lessee
 # =============================================================================
 
+
 class OverdueBalancesView(APIView):
     """Lessees with outstanding overdue amounts."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -149,14 +158,16 @@ class OverdueBalancesView(APIView):
             entry = lessee_map[key]
             entry["total_overdue"] += line.outstanding
             entry["overdue_count"] += 1
-            entry["lines"].append({
-                "contract_no": line.lease.contract_no,
-                "property_code": line.lease.property.code,
-                "installment_no": line.installment_no,
-                "due_date": str(line.due_date),
-                "outstanding": str(line.outstanding),
-                "currency": line.lease.currency,
-            })
+            entry["lines"].append(
+                {
+                    "contract_no": line.lease.contract_no,
+                    "property_code": line.lease.property.code,
+                    "installment_no": line.installment_no,
+                    "due_date": str(line.due_date),
+                    "outstanding": str(line.outstanding),
+                    "currency": line.lease.currency,
+                }
+            )
 
         rows = sorted(lessee_map.values(), key=lambda x: x["total_overdue"], reverse=True)
         for r in rows:
@@ -169,8 +180,10 @@ class OverdueBalancesView(APIView):
 # Report 3: Lease Expiry Report
 # =============================================================================
 
+
 class LeaseExpiryReportView(APIView):
     """Leases expiring within 30/60/90 days."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -179,6 +192,7 @@ class LeaseExpiryReportView(APIView):
             return err
 
         from datetime import date
+
         today = date.today()
         threshold = int(request.query_params.get("days", 90))
         cutoff = today + timedelta(days=threshold)
@@ -204,20 +218,22 @@ class LeaseExpiryReportView(APIView):
             else:
                 urgency = "notice"
 
-            rows.append({
-                "lease_id": lease.id,
-                "contract_no": lease.contract_no,
-                "property_code": lease.property.code,
-                "property_name": lease.property.name,
-                "unit_code": lease.unit.unit_code if lease.unit else "—",
-                "lessee_name": lease.lessee.display_name,
-                "start_date": str(lease.start_date),
-                "end_date": str(lease.end_date),
-                "days_until_expiry": days_until,
-                "urgency": urgency,
-                "rent_amount": str(lease.rent_amount),
-                "currency": lease.currency,
-            })
+            rows.append(
+                {
+                    "lease_id": lease.id,
+                    "contract_no": lease.contract_no,
+                    "property_code": lease.property.code,
+                    "property_name": lease.property.name,
+                    "unit_code": lease.unit.unit_code if lease.unit else "—",
+                    "lessee_name": lease.lessee.display_name,
+                    "start_date": str(lease.start_date),
+                    "end_date": str(lease.end_date),
+                    "days_until_expiry": days_until,
+                    "urgency": urgency,
+                    "rent_amount": str(lease.rent_amount),
+                    "currency": lease.currency,
+                }
+            )
 
         return Response(rows)
 
@@ -226,8 +242,10 @@ class LeaseExpiryReportView(APIView):
 # Report 4: Occupancy Summary
 # =============================================================================
 
+
 class OccupancySummaryView(APIView):
     """Occupied vs vacant units, by property."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -252,21 +270,21 @@ class OccupancySummaryView(APIView):
             vacant = sum(1 for u in units if u.status == Unit.UnitStatus.VACANT)
             maintenance = total_units - occupied - vacant
 
-            occupancy_rate = (
-                round(occupied / total_units * 100, 1) if total_units > 0 else 0
-            )
+            occupancy_rate = round(occupied / total_units * 100, 1) if total_units > 0 else 0
 
-            rows.append({
-                "property_id": prop.id,
-                "property_code": prop.code,
-                "property_name": prop.name,
-                "property_type": prop.property_type,
-                "total_units": total_units,
-                "occupied": occupied,
-                "vacant": vacant,
-                "maintenance": maintenance,
-                "occupancy_rate": occupancy_rate,
-            })
+            rows.append(
+                {
+                    "property_id": prop.id,
+                    "property_code": prop.code,
+                    "property_name": prop.name,
+                    "property_type": prop.property_type,
+                    "total_units": total_units,
+                    "occupied": occupied,
+                    "vacant": vacant,
+                    "maintenance": maintenance,
+                    "occupancy_rate": occupancy_rate,
+                }
+            )
 
         return Response(rows)
 
@@ -275,8 +293,10 @@ class OccupancySummaryView(APIView):
 # Report 5: Monthly Net Income by Property
 # =============================================================================
 
+
 class MonthlyNetIncomeView(APIView):
     """Rental income minus expenses per property per month."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -304,9 +324,7 @@ class MonthlyNetIncomeView(APIView):
             if date_to:
                 income_qs = income_qs.filter(due_date__lte=date_to)
 
-            total_income = income_qs.aggregate(
-                t=Coalesce(Sum("total_allocated"), Decimal(0))
-            )["t"]
+            total_income = income_qs.aggregate(t=Coalesce(Sum("total_allocated"), Decimal(0)))["t"]
 
             # Expenses
             expense_qs = PropertyExpense.objects.filter(
@@ -318,21 +336,21 @@ class MonthlyNetIncomeView(APIView):
             if date_to:
                 expense_qs = expense_qs.filter(expense_date__lte=date_to)
 
-            total_expenses = expense_qs.aggregate(
-                t=Coalesce(Sum("amount"), Decimal(0))
-            )["t"]
+            total_expenses = expense_qs.aggregate(t=Coalesce(Sum("amount"), Decimal(0)))["t"]
 
             net_income = total_income - total_expenses
 
-            rows.append({
-                "property_id": prop.id,
-                "property_code": prop.code,
-                "property_name": prop.name,
-                "total_income": str(total_income),
-                "total_expenses": str(total_expenses),
-                "net_income": str(net_income),
-                "currency": company.default_currency,
-            })
+            rows.append(
+                {
+                    "property_id": prop.id,
+                    "property_code": prop.code,
+                    "property_name": prop.name,
+                    "total_income": str(total_income),
+                    "total_expenses": str(total_expenses),
+                    "net_income": str(net_income),
+                    "currency": company.default_currency,
+                }
+            )
 
         return Response(rows)
 
@@ -341,8 +359,10 @@ class MonthlyNetIncomeView(APIView):
 # Report 6: Rent Billed vs Collected
 # =============================================================================
 
+
 class RentCollectionsView(APIView):
     """Schedule total_due vs total_allocated per period."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -376,19 +396,17 @@ class RentCollectionsView(APIView):
         for row in lines:
             billed = row["total_billed"]
             collected = row["total_collected"]
-            collection_rate = (
-                round(float(collected) / float(billed) * 100, 1)
-                if billed > 0
-                else 0
+            collection_rate = round(float(collected) / float(billed) * 100, 1) if billed > 0 else 0
+            rows.append(
+                {
+                    "property_code": row["property_code"],
+                    "property_name": row["property_name"],
+                    "total_billed": str(billed),
+                    "total_collected": str(collected),
+                    "outstanding": str(billed - collected),
+                    "collection_rate": collection_rate,
+                }
             )
-            rows.append({
-                "property_code": row["property_code"],
-                "property_name": row["property_name"],
-                "total_billed": str(billed),
-                "total_collected": str(collected),
-                "outstanding": str(billed - collected),
-                "collection_rate": collection_rate,
-            })
 
         return Response(rows)
 
@@ -397,8 +415,10 @@ class RentCollectionsView(APIView):
 # Report 7: Expense Breakdown
 # =============================================================================
 
+
 class ExpenseBreakdownView(APIView):
     """Expenses by property and category."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -429,11 +449,7 @@ class ExpenseBreakdownView(APIView):
         )
 
         # Category breakdown
-        by_category = (
-            qs.values("category")
-            .annotate(total=Coalesce(Sum("amount"), Decimal(0)))
-            .order_by("-total")
-        )
+        by_category = qs.values("category").annotate(total=Coalesce(Sum("amount"), Decimal(0))).order_by("-total")
 
         # Per-property category breakdown
         by_property_category = (
@@ -445,36 +461,37 @@ class ExpenseBreakdownView(APIView):
             .order_by("property_code", "-total")
         )
 
-        return Response({
-            "by_property": [
-                {
-                    "property_code": r["property_code"],
-                    "property_name": r["property_name"],
-                    "total": str(r["total_amount"]),
-                }
-                for r in breakdown
-            ],
-            "by_category": [
-                {"category": r["category"], "total": str(r["total"])}
-                for r in by_category
-            ],
-            "by_property_category": [
-                {
-                    "property_code": r["property_code"],
-                    "category": r["cat"],
-                    "total": str(r["total"]),
-                }
-                for r in by_property_category
-            ],
-        })
+        return Response(
+            {
+                "by_property": [
+                    {
+                        "property_code": r["property_code"],
+                        "property_name": r["property_name"],
+                        "total": str(r["total_amount"]),
+                    }
+                    for r in breakdown
+                ],
+                "by_category": [{"category": r["category"], "total": str(r["total"])} for r in by_category],
+                "by_property_category": [
+                    {
+                        "property_code": r["property_code"],
+                        "category": r["cat"],
+                        "total": str(r["total"]),
+                    }
+                    for r in by_property_category
+                ],
+            }
+        )
 
 
 # =============================================================================
 # Report 8: Security Deposit Liability
 # =============================================================================
 
+
 class DepositLiabilityView(APIView):
     """Current deposit balance per lease."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -521,36 +538,42 @@ class DepositLiabilityView(APIView):
             if balance == 0 and not txns.exists():
                 continue
 
-            rows.append({
-                "lease_id": lease.id,
-                "contract_no": lease.contract_no,
-                "property_code": lease.property.code,
-                "property_name": lease.property.name,
-                "unit_code": lease.unit.unit_code if lease.unit else "—",
-                "lessee_name": lease.lessee.display_name,
-                "lease_status": lease.status,
-                "deposit_received": str(received),
-                "deposit_adjusted": str(adjusted),
-                "deposit_refunded": str(refunded),
-                "deposit_forfeited": str(forfeited),
-                "current_balance": str(balance),
-                "currency": lease.currency,
-            })
+            rows.append(
+                {
+                    "lease_id": lease.id,
+                    "contract_no": lease.contract_no,
+                    "property_code": lease.property.code,
+                    "property_name": lease.property.name,
+                    "unit_code": lease.unit.unit_code if lease.unit else "—",
+                    "lessee_name": lease.lessee.display_name,
+                    "lease_status": lease.status,
+                    "deposit_received": str(received),
+                    "deposit_adjusted": str(adjusted),
+                    "deposit_refunded": str(refunded),
+                    "deposit_forfeited": str(forfeited),
+                    "current_balance": str(balance),
+                    "currency": lease.currency,
+                }
+            )
 
         total_liability = sum(Decimal(r["current_balance"]) for r in rows)
 
-        return Response({
-            "total_liability": str(total_liability),
-            "leases": rows,
-        })
+        return Response(
+            {
+                "total_liability": str(total_liability),
+                "leases": rows,
+            }
+        )
 
 
 # =============================================================================
 # Dashboard Summary
 # =============================================================================
 
+
 class PropertyDashboardView(APIView):
     """Dashboard summary data for property management."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -559,6 +582,7 @@ class PropertyDashboardView(APIView):
             return err
 
         from datetime import date
+
         today = date.today()
 
         # Active leases
@@ -585,20 +609,14 @@ class PropertyDashboardView(APIView):
         ).count()
 
         # Occupancy rate
-        occupancy_rate = (
-            round(occupied_units / total_units * 100, 1)
-            if total_units > 0
-            else 0
-        )
+        occupancy_rate = round(occupied_units / total_units * 100, 1) if total_units > 0 else 0
 
         # Overdue amount
         overdue_qs = RentScheduleLine.objects.filter(
             company=company,
             status=RentScheduleLine.ScheduleStatus.OVERDUE,
         )
-        total_overdue = overdue_qs.aggregate(
-            t=Coalesce(Sum("outstanding"), Decimal(0))
-        )["t"]
+        total_overdue = overdue_qs.aggregate(t=Coalesce(Sum("outstanding"), Decimal(0)))["t"]
         overdue_count = overdue_qs.count()
 
         # Expiring leases (next 90 days)
@@ -616,26 +634,20 @@ class PropertyDashboardView(APIView):
             company=company,
             due_date__gte=current_month_start,
             due_date__lte=today,
-        ).aggregate(
-            t=Coalesce(Sum("total_allocated"), Decimal(0))
-        )["t"]
+        ).aggregate(t=Coalesce(Sum("total_allocated"), Decimal(0)))["t"]
 
         monthly_billed = RentScheduleLine.objects.filter(
             company=company,
             due_date__gte=current_month_start,
             due_date__lte=today,
-        ).aggregate(
-            t=Coalesce(Sum("total_due"), Decimal(0))
-        )["t"]
+        ).aggregate(t=Coalesce(Sum("total_due"), Decimal(0)))["t"]
 
         # Total expenses (current month)
         monthly_expenses = PropertyExpense.objects.filter(
             company=company,
             expense_date__gte=current_month_start,
             expense_date__lte=today,
-        ).aggregate(
-            t=Coalesce(Sum("amount"), Decimal(0))
-        )["t"]
+        ).aggregate(t=Coalesce(Sum("amount"), Decimal(0)))["t"]
 
         # Deposit liability — contractual deposit from active leases
         # Uses lease deposit_amount (the obligation), supplemented by
@@ -657,28 +669,32 @@ class PropertyDashboardView(APIView):
 
         total_deposit = active_lease_deposits - deposit_reductions
 
-        return Response({
-            "active_leases": active_leases,
-            "total_properties": total_properties,
-            "total_units": total_units,
-            "occupied_units": occupied_units,
-            "occupancy_rate": occupancy_rate,
-            "total_overdue": str(total_overdue),
-            "overdue_count": overdue_count,
-            "expiring_leases_90d": expiring_leases,
-            "monthly_billed": str(monthly_billed),
-            "monthly_collected": str(monthly_collected),
-            "monthly_expenses": str(monthly_expenses),
-            "deposit_liability": str(total_deposit),
-        })
+        return Response(
+            {
+                "active_leases": active_leases,
+                "total_properties": total_properties,
+                "total_units": total_units,
+                "occupied_units": occupied_units,
+                "occupancy_rate": occupancy_rate,
+                "total_overdue": str(total_overdue),
+                "overdue_count": overdue_count,
+                "expiring_leases_90d": expiring_leases,
+                "monthly_billed": str(monthly_billed),
+                "monthly_collected": str(monthly_collected),
+                "monthly_expenses": str(monthly_expenses),
+                "deposit_liability": str(total_deposit),
+            }
+        )
 
 
 # =============================================================================
 # Alerts Endpoint
 # =============================================================================
 
+
 class PropertyAlertsView(APIView):
     """Expiry warnings and overdue notices."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -687,6 +703,7 @@ class PropertyAlertsView(APIView):
             return err
 
         from datetime import date
+
         today = date.today()
         alerts = []
 
@@ -713,25 +730,21 @@ class PropertyAlertsView(APIView):
 
             for lease in expiring:
                 days_until = (lease.end_date - today).days
-                alerts.append({
-                    "type": "expiry",
-                    "severity": (
-                        "critical" if days_until <= 30
-                        else "warning" if days_until <= 60
-                        else "notice"
-                    ),
-                    "lease_id": lease.id,
-                    "contract_no": lease.contract_no,
-                    "property_code": lease.property.code,
-                    "property_name": lease.property.name,
-                    "unit_code": lease.unit.unit_code if lease.unit else "—",
-                    "lessee_name": lease.lessee.display_name,
-                    "end_date": str(lease.end_date),
-                    "days_until_expiry": days_until,
-                    "message": (
-                        f"Lease {lease.contract_no} expires in {days_until} days"
-                    ),
-                })
+                alerts.append(
+                    {
+                        "type": "expiry",
+                        "severity": ("critical" if days_until <= 30 else "warning" if days_until <= 60 else "notice"),
+                        "lease_id": lease.id,
+                        "contract_no": lease.contract_no,
+                        "property_code": lease.property.code,
+                        "property_name": lease.property.name,
+                        "unit_code": lease.unit.unit_code if lease.unit else "—",
+                        "lessee_name": lease.lessee.display_name,
+                        "end_date": str(lease.end_date),
+                        "days_until_expiry": days_until,
+                        "message": (f"Lease {lease.contract_no} expires in {days_until} days"),
+                    }
+                )
 
         # Overdue notices
         overdue_lines = (
@@ -745,27 +758,24 @@ class PropertyAlertsView(APIView):
 
         for line in overdue_lines:
             days_overdue = (today - line.due_date).days
-            alerts.append({
-                "type": "overdue",
-                "severity": (
-                    "critical" if days_overdue > 60
-                    else "warning" if days_overdue > 30
-                    else "notice"
-                ),
-                "lease_id": line.lease.id,
-                "contract_no": line.lease.contract_no,
-                "property_code": line.lease.property.code,
-                "property_name": line.lease.property.name,
-                "lessee_name": line.lease.lessee.display_name,
-                "installment_no": line.installment_no,
-                "due_date": str(line.due_date),
-                "outstanding": str(line.outstanding),
-                "days_overdue": days_overdue,
-                "message": (
-                    f"Installment #{line.installment_no} on {line.lease.contract_no} "
-                    f"is {days_overdue} days overdue"
-                ),
-            })
+            alerts.append(
+                {
+                    "type": "overdue",
+                    "severity": ("critical" if days_overdue > 60 else "warning" if days_overdue > 30 else "notice"),
+                    "lease_id": line.lease.id,
+                    "contract_no": line.lease.contract_no,
+                    "property_code": line.lease.property.code,
+                    "property_name": line.lease.property.name,
+                    "lessee_name": line.lease.lessee.display_name,
+                    "installment_no": line.installment_no,
+                    "due_date": str(line.due_date),
+                    "outstanding": str(line.outstanding),
+                    "days_overdue": days_overdue,
+                    "message": (
+                        f"Installment #{line.installment_no} on {line.lease.contract_no} is {days_overdue} days overdue"
+                    ),
+                }
+            )
 
         # Sort by severity: critical first
         severity_order = {"critical": 0, "warning": 1, "notice": 2}

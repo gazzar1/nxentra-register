@@ -197,7 +197,7 @@ def send_invitation_email(invitation, token: str) -> bool:
         "inviter_name": invitation.invited_by.name if invitation.invited_by else "A team member",
         "company_name": invitation.primary_company.name,
         "accept_url": accept_url,
-        "expiry_days": getattr(settings, 'INVITATION_EXPIRY_DAYS', 7),
+        "expiry_days": getattr(settings, "INVITATION_EXPIRY_DAYS", 7),
     }
 
     try:

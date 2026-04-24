@@ -7,8 +7,14 @@ from .models import BackupRecord
 @admin.register(BackupRecord)
 class BackupRecordAdmin(admin.ModelAdmin):
     list_display = (
-        "public_id", "company", "backup_type", "status",
-        "event_count", "file_size_bytes", "duration_seconds", "created_at",
+        "public_id",
+        "company",
+        "backup_type",
+        "status",
+        "event_count",
+        "file_size_bytes",
+        "duration_seconds",
+        "created_at",
     )
     list_filter = ("status", "backup_type")
     search_fields = ("company__name", "company__slug")

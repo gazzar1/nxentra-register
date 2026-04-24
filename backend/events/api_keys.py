@@ -130,7 +130,8 @@ class ExternalAPIKey(models.Model):
         hashed = hash_api_key(raw_key)
         try:
             key = cls.objects.select_related("company").get(
-                key_hash=hashed, is_active=True,
+                key_hash=hashed,
+                is_active=True,
             )
         except cls.DoesNotExist:
             return None

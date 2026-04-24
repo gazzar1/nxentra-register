@@ -26,6 +26,7 @@ Usage:
     # Cleanup
     clear_rls_context()
 """
+
 from contextlib import contextmanager
 
 from django.db import connection as default_connection

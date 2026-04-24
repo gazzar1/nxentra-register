@@ -19,14 +19,20 @@ class Payment(ProjectionWriteGuard):
         VOIDED = "voided", "Voided"
 
     company = models.ForeignKey(
-        Company, on_delete=models.CASCADE, related_name="clinic_payments",
+        Company,
+        on_delete=models.CASCADE,
+        related_name="clinic_payments",
     )
     public_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     invoice = models.ForeignKey(
-        "clinic.Invoice", on_delete=models.CASCADE, related_name="payments",
+        "clinic.Invoice",
+        on_delete=models.CASCADE,
+        related_name="payments",
     )
     patient = models.ForeignKey(
-        "clinic.Patient", on_delete=models.CASCADE, related_name="payments",
+        "clinic.Patient",
+        on_delete=models.CASCADE,
+        related_name="payments",
     )
     amount = models.DecimalField(max_digits=18, decimal_places=2)
     currency = models.CharField(max_length=3, default="SAR")

@@ -10,6 +10,7 @@ Three categories:
 2. WRITE_MODELS — Mutable state not derived from events
 3. READ_MODELS — Projections that can be rebuilt from events (optional in backup)
 """
+
 from collections import OrderedDict
 
 

@@ -126,7 +126,8 @@ class Command(BaseCommand):
         """Sync model instances to dimension values."""
         existing_codes = set(
             AnalysisDimensionValue.objects.filter(
-                dimension=dimension, company=company,
+                dimension=dimension,
+                company=company,
             ).values_list("code", flat=True)
         )
 
@@ -145,24 +146,25 @@ class Command(BaseCommand):
                 created += 1
                 continue
 
-            to_create.append(AnalysisDimensionValue(
-                dimension=dimension,
-                company=company,
-                public_id=uuid.uuid4(),
-                code=code,
-                name=name,
-                name_ar=name_ar,
-                is_active=True,
-            ))
+            to_create.append(
+                AnalysisDimensionValue(
+                    dimension=dimension,
+                    company=company,
+                    public_id=uuid.uuid4(),
+                    code=code,
+                    name=name,
+                    name_ar=name_ar,
+                    is_active=True,
+                )
+            )
             created += 1
 
         if to_create:
             with projection_writes_allowed():
                 AnalysisDimensionValue.objects.projection().bulk_create(
-                    to_create, ignore_conflicts=True,
+                    to_create,
+                    ignore_conflicts=True,
                 )
 
         action = "Would create" if dry_run else "Created"
-        self.stdout.write(
-            f"  {dimension.code}: {action} {created}, skipped {skipped} existing"
-        )
+        self.stdout.write(f"  {dimension.code}: {action} {created}, skipped {skipped} existing")

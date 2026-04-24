@@ -25,15 +25,21 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument(
-            "--company-id", type=int, default=None,
+            "--company-id",
+            type=int,
+            default=None,
             help="Company ID (defaults to first company)",
         )
         parser.add_argument(
-            "--inventory-account-id", type=int, default=None,
+            "--inventory-account-id",
+            type=int,
+            default=None,
             help="Default inventory asset account ID for auto-created Items",
         )
         parser.add_argument(
-            "--cogs-account-id", type=int, default=None,
+            "--cogs-account-id",
+            type=int,
+            default=None,
             help="Default COGS expense account ID for auto-created Items",
         )
 
@@ -56,9 +62,7 @@ class Command(BaseCommand):
         ).first()
 
         if not store:
-            self.stderr.write(self.style.ERROR(
-                "No active Shopify store. Connect a store first."
-            ))
+            self.stderr.write(self.style.ERROR("No active Shopify store. Connect a store first."))
             return
 
         self.stdout.write(f"Store: {store.shop_domain}")
@@ -75,12 +79,14 @@ class Command(BaseCommand):
             return
 
         data = result.data
-        self.stdout.write(self.style.SUCCESS(
-            f"Done! Created: {data['created']}, "
-            f"Linked: {data['linked']}, "
-            f"Updated: {data['updated']}, "
-            f"Skipped (no SKU): {data['skipped']}"
-        ))
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"Done! Created: {data['created']}, "
+                f"Linked: {data['linked']}, "
+                f"Updated: {data['updated']}, "
+                f"Skipped (no SKU): {data['skipped']}"
+            )
+        )
 
         if data.get("errors"):
             for err in data["errors"]:

@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ValidationResult:
     """Result of validate_system_journal_postable()."""
+
     ok: bool
     errors: list[str] = field(default_factory=list)
 
@@ -72,7 +73,6 @@ def validate_system_journal_postable(
         closed, returns ok=True but adds the period error to the errors list
         so the caller can decide to create an INCOMPLETE entry.
     """
-    from datetime import date as date_type
     from datetime import datetime
     from decimal import Decimal
 
@@ -138,9 +138,7 @@ def validate_system_journal_postable(
         total_credit += Decimal(str(_get_field(line, "credit") or "0"))
 
     if total_debit != total_credit:
-        errors.append(
-            f"Entry is unbalanced: debit={total_debit} credit={total_credit}"
-        )
+        errors.append(f"Entry is unbalanced: debit={total_debit} credit={total_credit}")
 
     if errors and not all(e.startswith("[period_closed]") for e in errors):
         return ValidationResult.fail(errors)

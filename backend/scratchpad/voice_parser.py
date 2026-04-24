@@ -73,23 +73,23 @@ def is_transient_error(error: Exception) -> bool:
     error_str = str(error).lower()
 
     # Check for timeout keywords
-    if 'timeout' in error_str or 'timed out' in error_str:
+    if "timeout" in error_str or "timed out" in error_str:
         return True
 
     # Check for connection errors
-    if 'connection' in error_str and ('reset' in error_str or 'refused' in error_str):
+    if "connection" in error_str and ("reset" in error_str or "refused" in error_str):
         return True
 
     # Check for OpenAI API errors with status codes
-    if hasattr(error, 'status_code'):
+    if hasattr(error, "status_code"):
         return error.status_code in TRANSIENT_STATUS_CODES
 
     # Check for rate limit errors
-    if 'rate limit' in error_str or 'rate_limit' in error_str:
+    if "rate limit" in error_str or "rate_limit" in error_str:
         return True
 
     # Check for server errors
-    return bool('502' in error_str or '503' in error_str or '504' in error_str)
+    return bool("502" in error_str or "503" in error_str or "504" in error_str)
 
 
 def get_retry_delay(attempt: int, base_delay: float = 1.0) -> float:
@@ -104,7 +104,7 @@ def get_retry_delay(attempt: int, base_delay: float = 1.0) -> float:
         Delay in seconds with jitter
     """
     # Exponential backoff: 1s, 2s, 4s...
-    delay = base_delay * (2 ** attempt)
+    delay = base_delay * (2**attempt)
     # Add jitter: ±25%
     jitter = delay * 0.25 * (2 * random.random() - 1)
     return delay + jitter
@@ -129,10 +129,7 @@ TRANSACTION_SCHEMA = {
                     "debit_account_code": {"type": ["string", "null"]},
                     "credit_account_code": {"type": ["string", "null"]},
                     "notes": {"type": ["string", "null"]},
-                    "dimensions": {
-                        "type": "object",
-                        "additionalProperties": {"type": "string"}
-                    },
+                    "dimensions": {"type": "object", "additionalProperties": {"type": "string"}},
                     "confidence": {
                         "type": "object",
                         "properties": {
@@ -141,28 +138,31 @@ TRANSACTION_SCHEMA = {
                             "amount": {"type": ["number", "null"]},
                             "accounts": {"type": ["number", "null"]},
                             "dimensions": {"type": ["number", "null"]},
-                            "description": {"type": ["number", "null"]}
+                            "description": {"type": ["number", "null"]},
                         },
                         "required": ["overall", "date", "amount", "accounts", "dimensions", "description"],
-                        "additionalProperties": False
+                        "additionalProperties": False,
                     },
-                    "questions": {
-                        "type": "array",
-                        "items": {"type": "string"}
-                    }
+                    "questions": {"type": "array", "items": {"type": "string"}},
                 },
                 "required": [
-                    "transaction_date", "amount", "description", "description_ar",
-                    "debit_account_code", "credit_account_code", "notes",
-                    "confidence", "questions"
+                    "transaction_date",
+                    "amount",
+                    "description",
+                    "description_ar",
+                    "debit_account_code",
+                    "credit_account_code",
+                    "notes",
+                    "confidence",
+                    "questions",
                 ],
-                "additionalProperties": False
-            }
+                "additionalProperties": False,
+            },
         },
-        "parse_notes": {"type": ["string", "null"]}
+        "parse_notes": {"type": ["string", "null"]},
     },
     "required": ["transactions", "parse_notes"],
-    "additionalProperties": False
+    "additionalProperties": False,
 }
 
 
@@ -170,9 +170,11 @@ TRANSACTION_SCHEMA = {
 # Data Classes
 # =============================================================================
 
+
 @dataclass
 class ParsedTransaction:
     """Structured output from voice parsing - SUGGESTIONS only, not truth."""
+
     transaction_date: date | None
     description: str
     description_ar: str
@@ -189,10 +191,11 @@ class ParsedTransaction:
 @dataclass
 class VoiceUsageInfo:
     """Token and cost tracking for a voice parsing operation."""
+
     audio_seconds: Decimal | None = None
     transcript_chars: int = 0
-    asr_model: str = ""   # populated at runtime from settings.VOICE_ASR_MODEL
-    parse_model: str = "" # populated at runtime from settings.VOICE_PARSE_MODEL
+    asr_model: str = ""  # populated at runtime from settings.VOICE_ASR_MODEL
+    parse_model: str = ""  # populated at runtime from settings.VOICE_PARSE_MODEL
     parse_input_tokens: int = 0
     parse_output_tokens: int = 0
 
@@ -206,6 +209,7 @@ class VoiceUsageInfo:
 @dataclass
 class VoiceParseResult:
     """Result from the voice parsing service."""
+
     success: bool
     transcript: str
     transactions: list[ParsedTransaction]
@@ -218,34 +222,41 @@ class VoiceParseResult:
 # Exceptions
 # =============================================================================
 
+
 class VoiceFeatureDisabledError(Exception):
     """Raised when voice feature is not enabled globally."""
+
     pass
 
 
 class VoiceUserNotAuthorizedError(Exception):
     """Raised when user does not have voice access permission."""
+
     pass
 
 
 class VoiceQuotaExceededError(Exception):
     """Raised when user has exceeded voice usage quota."""
+
     pass
 
 
 class VoiceQuotaNotConfiguredError(Exception):
     """Raised when voice quota is not configured (null/unlimited not allowed)."""
+
     pass
 
 
 class VoiceProviderNotConfiguredError(Exception):
     """Raised when voice is enabled but OpenAI API key is missing."""
+
     pass
 
 
 # =============================================================================
 # Voice Parser Service
 # =============================================================================
+
 
 class VoiceParserService:
     """
@@ -273,17 +284,13 @@ class VoiceParserService:
         if self._client is None:
             try:
                 from openai import OpenAI
-                api_key = getattr(settings, 'OPENAI_API_KEY', None)
+
+                api_key = getattr(settings, "OPENAI_API_KEY", None)
                 if not api_key:
-                    raise ValueError(
-                        "OPENAI_API_KEY not configured. "
-                        "Set OPENAI_API_KEY environment variable."
-                    )
+                    raise ValueError("OPENAI_API_KEY not configured. Set OPENAI_API_KEY environment variable.")
                 self._client = OpenAI(api_key=api_key)
             except ImportError:
-                raise ImportError(
-                    "OpenAI package not installed. Run: pip install openai"
-                )
+                raise ImportError("OpenAI package not installed. Run: pip install openai")
         return self._client
 
     def check_feature_enabled(self, company) -> None:
@@ -300,25 +307,20 @@ class VoiceParserService:
             VoiceProviderNotConfiguredError: If API key is missing
         """
         # Check global setting (kill-switch)
-        global_enabled = getattr(settings, 'VOICE_PARSING_ENABLED', True)
+        global_enabled = getattr(settings, "VOICE_PARSING_ENABLED", True)
         if not global_enabled:
-            raise VoiceFeatureDisabledError(
-                "Voice parsing is disabled globally (VOICE_PARSING_ENABLED=False)"
-            )
+            raise VoiceFeatureDisabledError("Voice parsing is disabled globally (VOICE_PARSING_ENABLED=False)")
 
         # Check tenant-level setting
-        tenant_enabled = getattr(company, 'voice_enabled', False)
+        tenant_enabled = getattr(company, "voice_enabled", False)
         if not tenant_enabled:
-            raise VoiceFeatureDisabledError(
-                "Voice feature not enabled for this tenant (voice_enabled=False)"
-            )
+            raise VoiceFeatureDisabledError("Voice feature not enabled for this tenant (voice_enabled=False)")
 
         # Check API key is configured (fail fast for voice-enabled tenants)
-        api_key = getattr(settings, 'OPENAI_API_KEY', '').strip()
+        api_key = getattr(settings, "OPENAI_API_KEY", "").strip()
         if not api_key:
             raise VoiceProviderNotConfiguredError(
-                "Voice is enabled but OPENAI_API_KEY is not configured. "
-                "Contact administrator."
+                "Voice is enabled but OPENAI_API_KEY is not configured. Contact administrator."
             )
 
     def check_quota(self, company) -> None:
@@ -332,31 +334,27 @@ class VoiceParserService:
             VoiceQuotaNotConfiguredError: If quota is null/unlimited
             VoiceQuotaExceededError: If quota exceeded
         """
-        voice_quota = getattr(company, 'voice_quota', None)
-        voice_rows_used = getattr(company, 'voice_rows_used', 0)
+        voice_quota = getattr(company, "voice_quota", None)
+        voice_rows_used = getattr(company, "voice_rows_used", 0)
 
         # Null quota = not configured = error (no unlimited allowed)
         if voice_quota is None:
             raise VoiceQuotaNotConfiguredError(
-                "Voice quota not configured for this tenant. "
-                "Contact administrator to set voice_quota."
+                "Voice quota not configured for this tenant. Contact administrator to set voice_quota."
             )
 
         if voice_rows_used >= voice_quota:
-            raise VoiceQuotaExceededError(
-                f"Voice quota exceeded ({voice_rows_used}/{voice_quota})"
-            )
+            raise VoiceQuotaExceededError(f"Voice quota exceeded ({voice_rows_used}/{voice_quota})")
 
     def increment_usage(self, company) -> None:
         """
         DEPRECATED: Use increment_user_usage instead.
         Increment voice usage counter at company level.
         """
-        if hasattr(company, 'voice_rows_used'):
+        if hasattr(company, "voice_rows_used"):
             from django.db.models import F
-            type(company).objects.filter(pk=company.pk).update(
-                voice_rows_used=F('voice_rows_used') + 1
-            )
+
+            type(company).objects.filter(pk=company.pk).update(voice_rows_used=F("voice_rows_used") + 1)
 
     # =========================================================================
     # User-Level Voice Permission Methods
@@ -371,18 +369,15 @@ class VoiceParserService:
             VoiceProviderNotConfiguredError: If API key is missing
         """
         # Check global setting (kill-switch)
-        global_enabled = getattr(settings, 'VOICE_PARSING_ENABLED', True)
+        global_enabled = getattr(settings, "VOICE_PARSING_ENABLED", True)
         if not global_enabled:
-            raise VoiceFeatureDisabledError(
-                "Voice parsing is disabled globally (VOICE_PARSING_ENABLED=False)"
-            )
+            raise VoiceFeatureDisabledError("Voice parsing is disabled globally (VOICE_PARSING_ENABLED=False)")
 
         # Check API key is configured
-        api_key = getattr(settings, 'OPENAI_API_KEY', '').strip()
+        api_key = getattr(settings, "OPENAI_API_KEY", "").strip()
         if not api_key:
             raise VoiceProviderNotConfiguredError(
-                "Voice is enabled but OPENAI_API_KEY is not configured. "
-                "Contact administrator."
+                "Voice is enabled but OPENAI_API_KEY is not configured. Contact administrator."
             )
 
     def check_user_voice_access(self, membership) -> None:
@@ -403,10 +398,9 @@ class VoiceParserService:
         self.check_global_enabled()
 
         # Check user-level permission (granted by admin)
-        if not getattr(membership, 'voice_enabled', False):
+        if not getattr(membership, "voice_enabled", False):
             raise VoiceUserNotAuthorizedError(
-                "Voice feature not enabled for your account. "
-                "Contact your administrator to request access."
+                "Voice feature not enabled for your account. Contact your administrator to request access."
             )
 
     def check_user_quota(self, membership) -> None:
@@ -420,14 +414,13 @@ class VoiceParserService:
             VoiceQuotaNotConfiguredError: If quota is null
             VoiceQuotaExceededError: If quota exceeded
         """
-        voice_quota = getattr(membership, 'voice_quota', None)
-        voice_rows_used = getattr(membership, 'voice_rows_used', 0)
+        voice_quota = getattr(membership, "voice_quota", None)
+        voice_rows_used = getattr(membership, "voice_rows_used", 0)
 
         # Null quota = not configured = error (no unlimited allowed)
         if voice_quota is None:
             raise VoiceQuotaNotConfiguredError(
-                "Voice quota not configured for your account. "
-                "Contact your administrator to set your voice quota."
+                "Voice quota not configured for your account. Contact your administrator to set your voice quota."
             )
 
         if voice_rows_used >= voice_quota:
@@ -449,9 +442,8 @@ class VoiceParserService:
         from django.db.models import F
 
         from accounts.models import CompanyMembership
-        CompanyMembership.objects.filter(pk=membership.pk).update(
-            voice_rows_used=F('voice_rows_used') + 1
-        )
+
+        CompanyMembership.objects.filter(pk=membership.pk).update(voice_rows_used=F("voice_rows_used") + 1)
 
     def get_user_voice_status(self, membership) -> dict:
         """
@@ -472,9 +464,9 @@ class VoiceParserService:
             global_enabled = False
             global_error = str(e)
 
-        voice_enabled = getattr(membership, 'voice_enabled', False)
-        voice_quota = getattr(membership, 'voice_quota', None)
-        voice_rows_used = getattr(membership, 'voice_rows_used', 0)
+        voice_enabled = getattr(membership, "voice_enabled", False)
+        voice_quota = getattr(membership, "voice_quota", None)
+        voice_rows_used = getattr(membership, "voice_rows_used", 0)
 
         return {
             "global_enabled": global_enabled,
@@ -489,9 +481,16 @@ class VoiceParserService:
     # Formats natively supported by the OpenAI Transcriptions API.
     # No conversion needed for these; the file is uploaded directly.
     TRANSCRIPTION_SUPPORTED_TYPES = {
-        'audio/flac', 'audio/mp3', 'audio/mpeg', 'audio/mpga',
-        'audio/mp4', 'audio/m4a', 'audio/ogg', 'audio/wav',
-        'audio/x-wav', 'audio/webm',
+        "audio/flac",
+        "audio/mp3",
+        "audio/mpeg",
+        "audio/mpga",
+        "audio/mp4",
+        "audio/m4a",
+        "audio/ogg",
+        "audio/wav",
+        "audio/x-wav",
+        "audio/webm",
     }
 
     def _convert_audio_to_mp3(self, audio_content: bytes, content_type: str) -> bytes:
@@ -514,14 +513,14 @@ class VoiceParserService:
         from pydub import AudioSegment
 
         format_map = {
-            'audio/webm': 'webm',
-            'audio/mp4': 'mp4',
-            'audio/mpeg': 'mp3',
-            'audio/wav': 'wav',
-            'audio/ogg': 'ogg',
-            'audio/x-wav': 'wav',
+            "audio/webm": "webm",
+            "audio/mp4": "mp4",
+            "audio/mpeg": "mp3",
+            "audio/wav": "wav",
+            "audio/ogg": "ogg",
+            "audio/x-wav": "wav",
         }
-        input_format = format_map.get(content_type, 'webm')
+        input_format = format_map.get(content_type, "webm")
 
         logger.info(f"Converting audio from {input_format} to mp3")
 
@@ -530,7 +529,7 @@ class VoiceParserService:
             audio = AudioSegment.from_file(audio_input, format=input_format)
 
             mp3_output = io.BytesIO()
-            audio.export(mp3_output, format='mp3', bitrate='128k')
+            audio.export(mp3_output, format="mp3", bitrate="128k")
             mp3_output.seek(0)
 
             return mp3_output.read()
@@ -575,7 +574,7 @@ class VoiceParserService:
         file_content = audio_file.read()
 
         # Determine content type
-        content_type = getattr(audio_file, 'content_type', 'audio/webm')
+        content_type = getattr(audio_file, "content_type", "audio/webm")
 
         # Convert to mp3 only if format is not natively supported
         if content_type not in self.TRANSCRIPTION_SUPPORTED_TYPES:
@@ -584,22 +583,24 @@ class VoiceParserService:
         else:
             # Derive file extension from content type for the API
             ext_map = {
-                'audio/webm': 'webm', 'audio/mp4': 'mp4', 'audio/mpeg': 'mp3',
-                'audio/mp3': 'mp3', 'audio/mpga': 'mp3', 'audio/m4a': 'm4a',
-                'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/ogg': 'ogg',
-                'audio/flac': 'flac',
+                "audio/webm": "webm",
+                "audio/mp4": "mp4",
+                "audio/mpeg": "mp3",
+                "audio/mp3": "mp3",
+                "audio/mpga": "mp3",
+                "audio/m4a": "m4a",
+                "audio/wav": "wav",
+                "audio/x-wav": "wav",
+                "audio/ogg": "ogg",
+                "audio/flac": "flac",
             }
-            ext = ext_map.get(content_type, 'webm')
+            ext = ext_map.get(content_type, "webm")
             file_name = f"audio.{ext}"
 
         # Build prompt for Arabic to enforce script fidelity
         prompt = None
         if language == "ar":
-            prompt = (
-                "هذا تسجيل صوتي باللغة العربية. "
-                "اكتب النص بالحروف العربية فقط. "
-                "اكتب الأرقام كأرقام: 1000، 5000."
-            )
+            prompt = "هذا تسجيل صوتي باللغة العربية. اكتب النص بالحروف العربية فقط. اكتب الأرقام كأرقام: 1000، 5000."
 
         for attempt in range(self.MAX_RETRIES + 1):
             try:
@@ -618,17 +619,12 @@ class VoiceParserService:
                 response = self.client.audio.transcriptions.create(**kwargs)
                 transcript = response.text.strip()
 
-                logger.info(
-                    f"Transcribed audio with {asr_model}: "
-                    f"{transcript[:100]}..."
-                )
+                logger.info(f"Transcribed audio with {asr_model}: {transcript[:100]}...")
                 return transcript
 
             except Exception as e:
                 last_error = e
-                logger.warning(
-                    f"Transcription attempt {attempt + 1} failed: {e}"
-                )
+                logger.warning(f"Transcription attempt {attempt + 1} failed: {e}")
 
                 if not is_transient_error(e):
                     logger.error(f"Non-transient error, not retrying: {e}")
@@ -650,14 +646,14 @@ class VoiceParserService:
             company=company,
             status=Account.Status.ACTIVE,
             is_header=False,
-        ).values('code', 'name', 'name_ar', 'account_type')
+        ).values("code", "name", "name_ar", "account_type")
 
         account_list = [
             {
-                "code": acc['code'],
-                "name": acc['name'],
-                "name_ar": acc['name_ar'] or acc['name'],
-                "type": acc['account_type'],
+                "code": acc["code"],
+                "name": acc["name"],
+                "name_ar": acc["name_ar"] or acc["name"],
+                "type": acc["account_type"],
             }
             for acc in accounts[:200]
         ]
@@ -665,23 +661,23 @@ class VoiceParserService:
         dimensions = AnalysisDimension.objects.filter(
             company=company,
             is_active=True,
-        ).prefetch_related('values')
+        ).prefetch_related("values")
 
         dimension_list = []
         for dim in dimensions[:10]:
-            values = list(
-                dim.values.filter(is_active=True).values('code', 'name')[:50]
+            values = list(dim.values.filter(is_active=True).values("code", "name")[:50])
+            dimension_list.append(
+                {
+                    "code": dim.code,
+                    "name": dim.name,
+                    "values": values,
+                }
             )
-            dimension_list.append({
-                "code": dim.code,
-                "name": dim.name,
-                "values": values,
-            })
 
         return {
             "accounts": account_list,
             "dimensions": dimension_list,
-            "currency": getattr(company, 'default_currency', 'USD'),
+            "currency": getattr(company, "default_currency", "USD"),
             "date_format": "YYYY-MM-DD",
             "today": timezone.now().date().isoformat(),
         }
@@ -727,7 +723,7 @@ class VoiceParserService:
                             "name": "transaction_parser",
                             "strict": True,
                             "schema": TRANSACTION_SCHEMA,
-                        }
+                        },
                     },
                     temperature=0.1,
                     max_tokens=2000,
@@ -740,8 +736,8 @@ class VoiceParserService:
                 usage_info = VoiceUsageInfo(
                     transcript_chars=len(transcript),
                     parse_model=parse_model,
-                    parse_input_tokens=getattr(response.usage, 'prompt_tokens', 0) if response.usage else 0,
-                    parse_output_tokens=getattr(response.usage, 'completion_tokens', 0) if response.usage else 0,
+                    parse_input_tokens=getattr(response.usage, "prompt_tokens", 0) if response.usage else 0,
+                    parse_output_tokens=getattr(response.usage, "completion_tokens", 0) if response.usage else 0,
                 )
 
                 return VoiceParseResult(
@@ -784,8 +780,8 @@ class VoiceParserService:
 
     def _build_system_prompt(self, context: dict[str, Any], language: str) -> str:
         """Build the system prompt with tenant context."""
-        accounts_json = json.dumps(context['accounts'], indent=2, ensure_ascii=False)
-        dimensions_json = json.dumps(context['dimensions'], indent=2, ensure_ascii=False)
+        accounts_json = json.dumps(context["accounts"], indent=2, ensure_ascii=False)
+        dimensions_json = json.dumps(context["dimensions"], indent=2, ensure_ascii=False)
 
         return f"""You are an accounting assistant. Your task is to SUGGEST transaction field values from voice transcripts.
 
@@ -795,7 +791,7 @@ IMPORTANT RULES:
 3. Use ONLY dimension codes and values from the provided list.
 4. If anything is unclear, set confidence lower and add questions.
 5. Never guess. If unsure, set field to null and ask for clarification.
-6. Today's date is {context['today']}.
+6. Today's date is {context["today"]}.
 
 AVAILABLE ACCOUNTS (use exact codes only):
 {accounts_json}
@@ -803,7 +799,7 @@ AVAILABLE ACCOUNTS (use exact codes only):
 AVAILABLE ANALYSIS DIMENSIONS:
 {dimensions_json}
 
-CURRENCY: {context['currency']}
+CURRENCY: {context["currency"]}
 
 Provide confidence as an object with:
 - overall (required)
@@ -854,42 +850,44 @@ Extract all transactions mentioned. For each one, suggest field values with conf
         """Parse the GPT response into ParsedTransaction objects."""
         transactions = []
 
-        for tx in response.get('transactions', []):
+        for tx in response.get("transactions", []):
             tx_date = None
-            if tx.get('transaction_date'):
+            if tx.get("transaction_date"):
                 try:
-                    tx_date = date.fromisoformat(tx['transaction_date'])
+                    tx_date = date.fromisoformat(tx["transaction_date"])
                 except ValueError:
                     pass
 
             amount = None
-            if tx.get('amount') is not None:
+            if tx.get("amount") is not None:
                 try:
-                    amount = Decimal(str(tx['amount']))
+                    amount = Decimal(str(tx["amount"]))
                 except (ValueError, TypeError):
                     pass
 
-            confidence = tx.get('confidence') or {}
-            if isinstance(confidence, (int, float)):
+            confidence = tx.get("confidence") or {}
+            if isinstance(confidence, int | float):
                 confidence = {"overall": float(confidence)}
             elif not isinstance(confidence, dict):
                 confidence = {}
             if "overall" not in confidence:
                 confidence["overall"] = None
 
-            transactions.append(ParsedTransaction(
-                transaction_date=tx_date,
-                description=tx.get('description') or '',
-                description_ar=tx.get('description_ar') or '',
-                amount=amount,
-                debit_account_code=tx.get('debit_account_code'),
-                credit_account_code=tx.get('credit_account_code'),
-                dimensions=tx.get('dimensions') or {},
-                notes=tx.get('notes') or '',
-                confidence=confidence,
-                raw_transcript=transcript,
-                questions=tx.get('questions') or [],
-            ))
+            transactions.append(
+                ParsedTransaction(
+                    transaction_date=tx_date,
+                    description=tx.get("description") or "",
+                    description_ar=tx.get("description_ar") or "",
+                    amount=amount,
+                    debit_account_code=tx.get("debit_account_code"),
+                    credit_account_code=tx.get("credit_account_code"),
+                    dimensions=tx.get("dimensions") or {},
+                    notes=tx.get("notes") or "",
+                    confidence=confidence,
+                    raw_transcript=transcript,
+                    questions=tx.get("questions") or [],
+                )
+            )
 
         return transactions
 
@@ -919,9 +917,7 @@ Extract all transactions mentioned. For each one, suggest field values with conf
         usage = result.usage or VoiceUsageInfo()
 
         # Calculate costs
-        asr_cost = VoiceUsageEvent.calculate_asr_cost(
-            audio_seconds or Decimal("0")
-        )
+        asr_cost = VoiceUsageEvent.calculate_asr_cost(audio_seconds or Decimal("0"))
         parse_cost = VoiceUsageEvent.calculate_parse_cost(
             usage.parse_input_tokens,
             usage.parse_output_tokens,
@@ -1014,8 +1010,12 @@ Extract all transactions mentioned. For each one, suggest field values with conf
 
             return result
 
-        except (VoiceFeatureDisabledError, VoiceUserNotAuthorizedError,
-                VoiceQuotaExceededError, VoiceQuotaNotConfiguredError):
+        except (
+            VoiceFeatureDisabledError,
+            VoiceUserNotAuthorizedError,
+            VoiceQuotaExceededError,
+            VoiceQuotaNotConfiguredError,
+        ):
             raise
         except Exception as e:
             logger.error(f"Voice parsing failed: {e}")

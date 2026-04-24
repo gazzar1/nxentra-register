@@ -37,13 +37,12 @@ def _is_postgresql():
 # Sequential test (works on all DBs including SQLite)
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 @pytest.mark.django_db
 class TestSequentialAggregateSequencing:
     """Prove sequence allocation is correct under sequential emission."""
 
-    def test_20_sequential_emits_produce_gapless_sequences(
-        self, company, user, owner_membership
-    ):
+    def test_20_sequential_emits_produce_gapless_sequences(self, company, user, owner_membership):
         """
         Emit 20 events to the same aggregate sequentially.
         Assert sequences are exactly [1, 2, 3, ..., 20].
@@ -60,16 +59,14 @@ class TestSequentialAggregateSequencing:
                 aggregate_id=aggregate_id,
                 data={
                     "account_public_id": aggregate_id,
-                    "changes": {"name": {"old": f"Name {i}", "new": f"Name {i+1}"}},
+                    "changes": {"name": {"old": f"Name {i}", "new": f"Name {i + 1}"}},
                 },
                 idempotency_key=f"seq-test-{aggregate_id}-{i}",
             )
             events.append(event)
 
         sequences = [e.sequence for e in events]
-        assert sequences == list(range(1, 21)), (
-            f"Expected [1..20], got {sequences}"
-        )
+        assert sequences == list(range(1, 21)), f"Expected [1..20], got {sequences}"
 
         # Verify no duplicates
         assert len(set(sequences)) == 20
@@ -79,9 +76,7 @@ class TestSequentialAggregateSequencing:
         assert company_seqs == sorted(company_seqs)
         assert len(set(company_seqs)) == 20
 
-    def test_different_aggregates_have_independent_sequences(
-        self, company, user, owner_membership
-    ):
+    def test_different_aggregates_have_independent_sequences(self, company, user, owner_membership):
         """
         Emit events to two different aggregates interleaved.
         Each aggregate should have its own independent sequence.
@@ -99,7 +94,7 @@ class TestSequentialAggregateSequencing:
                 aggregate_id=agg_a,
                 data={
                     "account_public_id": agg_a,
-                    "changes": {"name": {"old": f"A{i}", "new": f"A{i+1}"}},
+                    "changes": {"name": {"old": f"A{i}", "new": f"A{i + 1}"}},
                 },
                 idempotency_key=f"interleave-a-{agg_a}-{i}",
             )
@@ -111,21 +106,21 @@ class TestSequentialAggregateSequencing:
                 aggregate_id=agg_b,
                 data={
                     "account_public_id": agg_b,
-                    "changes": {"name": {"old": f"B{i}", "new": f"B{i+1}"}},
+                    "changes": {"name": {"old": f"B{i}", "new": f"B{i + 1}"}},
                 },
                 idempotency_key=f"interleave-b-{agg_b}-{i}",
             )
 
         # Each aggregate should have sequences [1, 2, 3]
         a_seqs = list(
-            BusinessEvent.objects.filter(
-                company=company, aggregate_id=agg_a
-            ).order_by("sequence").values_list("sequence", flat=True)
+            BusinessEvent.objects.filter(company=company, aggregate_id=agg_a)
+            .order_by("sequence")
+            .values_list("sequence", flat=True)
         )
         b_seqs = list(
-            BusinessEvent.objects.filter(
-                company=company, aggregate_id=agg_b
-            ).order_by("sequence").values_list("sequence", flat=True)
+            BusinessEvent.objects.filter(company=company, aggregate_id=agg_b)
+            .order_by("sequence")
+            .values_list("sequence", flat=True)
         )
 
         assert a_seqs == [1, 2, 3], f"Aggregate A sequences: {a_seqs}"
@@ -135,6 +130,7 @@ class TestSequentialAggregateSequencing:
 # ═══════════════════════════════════════════════════════════════════════════
 # Concurrent test (PostgreSQL only — the real proof)
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def _emit_worker(company_id, user_id, aggregate_id, worker_index):
     """
@@ -232,20 +228,14 @@ class TestConcurrentAggregateSequencing:
 
         # Verify sequences
         sequences = sorted(r["sequence"] for r in results)
-        assert sequences == list(range(1, num_workers + 1)), (
-            f"Expected [1..{num_workers}], got {sequences}"
-        )
+        assert sequences == list(range(1, num_workers + 1)), f"Expected [1..{num_workers}], got {sequences}"
 
         # Verify no duplicate sequences
-        assert len(set(sequences)) == num_workers, (
-            f"Duplicate sequences detected: {sequences}"
-        )
+        assert len(set(sequences)) == num_workers, f"Duplicate sequences detected: {sequences}"
 
         # Verify company_sequences are unique
         company_seqs = sorted(r["company_sequence"] for r in results)
-        assert len(set(company_seqs)) == num_workers, (
-            f"Duplicate company sequences: {company_seqs}"
-        )
+        assert len(set(company_seqs)) == num_workers, f"Duplicate company sequences: {company_seqs}"
 
         # Double-check from the database
         db_events = list(

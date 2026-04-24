@@ -2,6 +2,7 @@
 """
 Tests for the Gate C pilot_readiness management command.
 """
+
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from io import StringIO
@@ -17,6 +18,7 @@ from shopify_connector.models import (
 )
 
 # ── Fixtures ─────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def store(db, company):
@@ -79,15 +81,16 @@ def settled_payout(db, company, store, order):
 
 # ── Tests ────────────────────────────────────────────────────────
 
-class TestPilotReadinessCommand:
 
+class TestPilotReadinessCommand:
     def test_runs_without_error(self, db, company, store):
         """Command executes and produces output."""
         out = StringIO()
         call_command(
             "pilot_readiness",
             company=company.slug,
-            year=2026, month=3,
+            year=2026,
+            month=3,
             stdout=out,
         )
         output = out.getvalue()
@@ -96,11 +99,13 @@ class TestPilotReadinessCommand:
     def test_json_output(self, db, company, store):
         """JSON mode produces valid JSON with expected fields."""
         import json
+
         out = StringIO()
         call_command(
             "pilot_readiness",
             company=company.slug,
-            year=2026, month=3,
+            year=2026,
+            month=3,
             json=True,
             stdout=out,
         )
@@ -114,11 +119,13 @@ class TestPilotReadinessCommand:
     def test_store_check_passes(self, db, company, store):
         """Active store with webhooks passes the store check."""
         import json
+
         out = StringIO()
         call_command(
             "pilot_readiness",
             company=company.slug,
-            year=2026, month=3,
+            year=2026,
+            month=3,
             json=True,
             stdout=out,
         )
@@ -129,11 +136,13 @@ class TestPilotReadinessCommand:
     def test_no_store_fails(self, db, company):
         """No Shopify store connected results in FAIL."""
         import json
+
         out = StringIO()
         call_command(
             "pilot_readiness",
             company=company.slug,
-            year=2026, month=3,
+            year=2026,
+            month=3,
             json=True,
             stdout=out,
         )
@@ -144,11 +153,13 @@ class TestPilotReadinessCommand:
     def test_trial_balance_passes_with_no_entries(self, db, company, store):
         """Trial balance is trivially balanced when there are no entries."""
         import json
+
         out = StringIO()
         call_command(
             "pilot_readiness",
             company=company.slug,
-            year=2026, month=3,
+            year=2026,
+            month=3,
             json=True,
             stdout=out,
         )
@@ -159,11 +170,13 @@ class TestPilotReadinessCommand:
     def test_reconciliation_warns_with_no_payouts(self, db, company, store):
         """No payouts in period gives a WARN, not FAIL."""
         import json
+
         out = StringIO()
         call_command(
             "pilot_readiness",
             company=company.slug,
-            year=2026, month=3,
+            year=2026,
+            month=3,
             json=True,
             stdout=out,
         )
@@ -178,7 +191,8 @@ class TestPilotReadinessCommand:
             call_command(
                 "pilot_readiness",
                 company=company.slug,
-                year=2026, month=3,
+                year=2026,
+                month=3,
                 strict=True,
                 stdout=out,
             )
@@ -187,11 +201,13 @@ class TestPilotReadinessCommand:
     def test_eight_checks_run(self, db, company, store):
         """All 8 checks are present in the report."""
         import json
+
         out = StringIO()
         call_command(
             "pilot_readiness",
             company=company.slug,
-            year=2026, month=3,
+            year=2026,
+            month=3,
             json=True,
             stdout=out,
         )
@@ -199,8 +215,13 @@ class TestPilotReadinessCommand:
         assert len(data["checks"]) == 8
         check_names = {c["check"] for c in data["checks"]}
         expected = {
-            "shopify_store", "account_mapping", "projection_lag",
-            "reconciliation", "clearing_balance", "subledger_tieout",
-            "trial_balance", "draft_entries",
+            "shopify_store",
+            "account_mapping",
+            "projection_lag",
+            "reconciliation",
+            "clearing_balance",
+            "subledger_tieout",
+            "trial_balance",
+            "draft_entries",
         }
         assert check_names == expected

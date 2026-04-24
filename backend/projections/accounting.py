@@ -449,9 +449,7 @@ class JournalEntryProjection(BaseProjection):
                 original.save(_projection_write=True, update_fields=["status", "reversed_at", "reversed_by_id"])
 
             if original and reversal:
-                JournalEntry.objects.filter(
-                    pk=reversal.pk
-                ).update(reverses_entry=original)
+                JournalEntry.objects.filter(pk=reversal.pk).update(reverses_entry=original)
             return
 
         if event.event_type == EventTypes.JOURNAL_ENTRY_DELETED:
@@ -484,11 +482,15 @@ class JournalEntryProjection(BaseProjection):
                     company=event.company,
                     public_id=tag.get("dimension_public_id"),
                 ).first()
-                value = AnalysisDimensionValue.objects.filter(
-                    company=event.company,
-                    dimension=dimension,
-                    public_id=tag.get("value_public_id"),
-                ).first() if dimension else None
+                value = (
+                    AnalysisDimensionValue.objects.filter(
+                        company=event.company,
+                        dimension=dimension,
+                        public_id=tag.get("value_public_id"),
+                    ).first()
+                    if dimension
+                    else None
+                )
                 if not dimension or not value:
                     continue
                 JournalLineAnalysis.objects.projection().create(
@@ -541,21 +543,23 @@ class JournalEntryProjection(BaseProjection):
                     public_id=vendor_public_id,
                 ).first()
 
-            line_objects.append(JournalLine(
-                entry=entry,
-                company=entry.company,
-                line_no=line_no,
-                account=account,
-                description=line.get("description", ""),
-                description_ar=line.get("description_ar", ""),
-                debit=debit,
-                credit=credit,
-                amount_currency=line.get("amount_currency"),
-                currency=line.get("currency") or entry.currency or "",
-                exchange_rate=line.get("exchange_rate") or entry.exchange_rate,
-                customer=customer,
-                vendor=vendor,
-            ))
+            line_objects.append(
+                JournalLine(
+                    entry=entry,
+                    company=entry.company,
+                    line_no=line_no,
+                    account=account,
+                    description=line.get("description", ""),
+                    description_ar=line.get("description_ar", ""),
+                    debit=debit,
+                    credit=credit,
+                    amount_currency=line.get("amount_currency"),
+                    currency=line.get("currency") or entry.currency or "",
+                    exchange_rate=line.get("exchange_rate") or entry.exchange_rate,
+                    customer=customer,
+                    vendor=vendor,
+                )
+            )
             # Store analysis tags for this line
             if line.get("analysis_tags"):
                 line_analysis_tags[line_no] = line.get("analysis_tags")
@@ -565,9 +569,7 @@ class JournalEntryProjection(BaseProjection):
 
             # Create analysis tags for each line
             if line_analysis_tags:
-                created_lines = JournalLine.objects.filter(
-                    entry=entry, company=entry.company
-                ).order_by("line_no")
+                created_lines = JournalLine.objects.filter(entry=entry, company=entry.company).order_by("line_no")
                 for journal_line in created_lines:
                     tags = line_analysis_tags.get(journal_line.line_no, [])
                     for tag in tags:
@@ -575,11 +577,15 @@ class JournalEntryProjection(BaseProjection):
                             company=entry.company,
                             public_id=tag.get("dimension_public_id"),
                         ).first()
-                        value = AnalysisDimensionValue.objects.filter(
-                            company=entry.company,
-                            dimension=dimension,
-                            public_id=tag.get("value_public_id"),
-                        ).first() if dimension else None
+                        value = (
+                            AnalysisDimensionValue.objects.filter(
+                                company=entry.company,
+                                dimension=dimension,
+                                public_id=tag.get("value_public_id"),
+                            ).first()
+                            if dimension
+                            else None
+                        )
                         if dimension and value:
                             JournalLineAnalysis.objects.projection().create(
                                 journal_line=journal_line,

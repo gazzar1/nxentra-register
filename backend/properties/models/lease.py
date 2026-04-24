@@ -60,20 +60,14 @@ class Lease(ProjectionWriteGuard):
     start_date = models.DateField()
     end_date = models.DateField()
     handover_date = models.DateField(null=True, blank=True)
-    payment_frequency = models.CharField(
-        max_length=20, choices=PaymentFrequency.choices
-    )
+    payment_frequency = models.CharField(max_length=20, choices=PaymentFrequency.choices)
     rent_amount = models.DecimalField(max_digits=18, decimal_places=2)
     currency = models.CharField(max_length=3, default="SAR")
     grace_days = models.IntegerField(default=0)
     due_day_rule = models.CharField(max_length=20, choices=DueDayRule.choices)
     specific_due_day = models.SmallIntegerField(null=True, blank=True)
-    deposit_amount = models.DecimalField(
-        max_digits=18, decimal_places=2, default=0
-    )
-    status = models.CharField(
-        max_length=20, choices=LeaseStatus.choices, default=LeaseStatus.DRAFT
-    )
+    deposit_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    status = models.CharField(max_length=20, choices=LeaseStatus.choices, default=LeaseStatus.DRAFT)
     renewed_from_lease = models.ForeignKey(
         "self",
         on_delete=models.SET_NULL,

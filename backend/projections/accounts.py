@@ -22,8 +22,6 @@ logger = logging.getLogger(__name__)
 User = get_user_model()
 
 
-
-
 class CompanyProjection(BaseProjection):
     @property
     def name(self) -> str:
@@ -58,9 +56,7 @@ class CompanyProjection(BaseProjection):
 
         # ⬇️ ADD THIS HANDLER ⬇️
         if event.event_type == EventTypes.COMPANY_UPDATED:
-            company = Company.objects.filter(
-                public_id=data["company_public_id"]
-            ).first()
+            company = Company.objects.filter(public_id=data["company_public_id"]).first()
             if not company:
                 logger.warning("Company not found for update: %s", data["company_public_id"])
                 return
@@ -72,9 +68,7 @@ class CompanyProjection(BaseProjection):
             return
 
         if event.event_type == EventTypes.COMPANY_SETTINGS_CHANGED:
-            company = Company.objects.filter(
-                public_id=data["company_public_id"]
-            ).first()
+            company = Company.objects.filter(public_id=data["company_public_id"]).first()
             if not company:
                 logger.warning("Company not found for settings change: %s", data["company_public_id"])
                 return
@@ -86,9 +80,7 @@ class CompanyProjection(BaseProjection):
             return
 
         if event.event_type == EventTypes.COMPANY_LOGO_UPLOADED:
-            company = Company.objects.filter(
-                public_id=data["company_public_id"]
-            ).first()
+            company = Company.objects.filter(public_id=data["company_public_id"]).first()
             if not company:
                 logger.warning("Company not found for logo upload: %s", data["company_public_id"])
                 return
@@ -99,9 +91,7 @@ class CompanyProjection(BaseProjection):
             return
 
         if event.event_type == EventTypes.COMPANY_LOGO_DELETED:
-            company = Company.objects.filter(
-                public_id=data["company_public_id"]
-            ).first()
+            company = Company.objects.filter(public_id=data["company_public_id"]).first()
             if not company:
                 logger.warning("Company not found for logo delete: %s", data["company_public_id"])
                 return
@@ -164,9 +154,7 @@ class UserProjection(BaseProjection):
             if not user:
                 logger.warning("User not found for company switch: %s", data["user_public_id"])
                 return
-            company = Company.objects.filter(
-                public_id=data.get("to_company_public_id")
-            ).first()
+            company = Company.objects.filter(public_id=data.get("to_company_public_id")).first()
             user.active_company = company
             user.save(update_fields=["active_company"])
             return
@@ -213,9 +201,7 @@ class MembershipProjection(BaseProjection):
             return
 
         if event.event_type == EventTypes.MEMBERSHIP_REACTIVATED:
-            membership = CompanyMembership.objects.filter(
-                public_id=data["membership_public_id"]
-            ).first()
+            membership = CompanyMembership.objects.filter(public_id=data["membership_public_id"]).first()
             if not membership:
                 logger.warning("Membership not found for reactivation.")
                 return
@@ -226,9 +212,7 @@ class MembershipProjection(BaseProjection):
             return
 
         if event.event_type == EventTypes.MEMBERSHIP_ROLE_CHANGED:
-            membership = CompanyMembership.objects.filter(
-                public_id=data["membership_public_id"]
-            ).first()
+            membership = CompanyMembership.objects.filter(public_id=data["membership_public_id"]).first()
             if not membership:
                 logger.warning("Membership not found for role change.")
                 return
@@ -238,9 +222,7 @@ class MembershipProjection(BaseProjection):
             return
 
         if event.event_type == EventTypes.MEMBERSHIP_DEACTIVATED:
-            membership = CompanyMembership.objects.filter(
-                public_id=data["membership_public_id"]
-            ).first()
+            membership = CompanyMembership.objects.filter(public_id=data["membership_public_id"]).first()
             if not membership:
                 logger.warning("Membership not found for deactivation.")
                 return
@@ -252,9 +234,7 @@ class MembershipProjection(BaseProjection):
             return
 
         if event.event_type == EventTypes.PERMISSION_GRANTED:
-            membership = CompanyMembership.objects.filter(
-                public_id=data["membership_public_id"]
-            ).first()
+            membership = CompanyMembership.objects.filter(public_id=data["membership_public_id"]).first()
             if not membership:
                 return
             granted_by = None
@@ -274,9 +254,7 @@ class MembershipProjection(BaseProjection):
             return
 
         if event.event_type == EventTypes.PERMISSION_REVOKED:
-            membership = CompanyMembership.objects.filter(
-                public_id=data["membership_public_id"]
-            ).first()
+            membership = CompanyMembership.objects.filter(public_id=data["membership_public_id"]).first()
             if not membership:
                 return
             CompanyMembershipPermission.objects.filter(
@@ -287,9 +265,7 @@ class MembershipProjection(BaseProjection):
             return
 
         if event.event_type == EventTypes.MEMBERSHIP_PERMISSIONS_UPDATED:
-            membership = CompanyMembership.objects.filter(
-                public_id=data["membership_public_id"]
-            ).first()
+            membership = CompanyMembership.objects.filter(public_id=data["membership_public_id"]).first()
             if not membership:
                 return
             CompanyMembershipPermission.objects.filter(

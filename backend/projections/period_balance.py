@@ -61,10 +61,14 @@ def _determine_period(company: Company, entry_date, explicit_period: int = None)
                     return p13.fiscal_year, 13
 
         # Fallback: no date context, use most recent P13
-        fp = FiscalPeriod.objects.filter(
-            company=company,
-            period=13,
-        ).order_by("-fiscal_year").first()
+        fp = (
+            FiscalPeriod.objects.filter(
+                company=company,
+                period=13,
+            )
+            .order_by("-fiscal_year")
+            .first()
+        )
         if fp:
             return fp.fiscal_year, 13
         return None, None
@@ -119,9 +123,7 @@ class PeriodAccountBalanceProjection(BaseProjection):
             entry_date = datetime.fromisoformat(entry_date_str).date()
 
         # Determine fiscal year and period
-        fiscal_year, period_num = _determine_period(
-            event.company, entry_date, explicit_period
-        )
+        fiscal_year, period_num = _determine_period(event.company, entry_date, explicit_period)
         if fiscal_year is None or period_num is None:
             logger.warning(
                 f"Could not determine period for entry date={entry_date_str}, "
@@ -158,13 +160,9 @@ class PeriodAccountBalanceProjection(BaseProjection):
             return
 
         try:
-            account = Account.objects.get(
-                public_id=account_public_id, company=company
-            )
+            account = Account.objects.get(public_id=account_public_id, company=company)
         except Account.DoesNotExist:
-            logger.error(
-                f"Account {account_public_id} not found in event {event.id}"
-            )
+            logger.error(f"Account {account_public_id} not found in event {event.id}")
             return
 
         with transaction.atomic():

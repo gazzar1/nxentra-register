@@ -9,6 +9,7 @@ Validates the event export/import pipeline:
 4. Idempotent import (skip-existing)
 5. Replay projections after import produces correct balances
 """
+
 import json
 import tempfile
 from datetime import date
@@ -73,10 +74,15 @@ class TestEventExportIntegrity:
     def test_export_contains_all_events(self, company, user, cash_account, revenue_account):
         # Emit several events
         for i in range(5):
-            _emit_je_posted(company, user, [
-                _make_line(cash_account, debit="100.00", line_no=1),
-                _make_line(revenue_account, credit="100.00", line_no=2),
-            ], memo=f"Export entry {i}")
+            _emit_je_posted(
+                company,
+                user,
+                [
+                    _make_line(cash_account, debit="100.00", line_no=1),
+                    _make_line(revenue_account, credit="100.00", line_no=2),
+                ],
+                memo=f"Export entry {i}",
+            )
 
         # Count events
         event_count = BusinessEvent.objects.filter(company=company).count()
@@ -112,10 +118,15 @@ class TestEventExportIntegrity:
 
     def test_export_is_deterministic(self, company, user, cash_account, revenue_account):
         """Two exports of the same data must produce the same hash."""
-        _emit_je_posted(company, user, [
-            _make_line(cash_account, debit="500.00", line_no=1),
-            _make_line(revenue_account, credit="500.00", line_no=2),
-        ], memo="Determinism test")
+        _emit_je_posted(
+            company,
+            user,
+            [
+                _make_line(cash_account, debit="500.00", line_no=1),
+                _make_line(revenue_account, credit="500.00", line_no=2),
+            ],
+            memo="Determinism test",
+        )
 
         hashes = []
         for _ in range(2):
@@ -149,11 +160,16 @@ class TestProjectionReplayConsistency:
         """
         # Post multiple entries
         for i in range(5):
-            _emit_je_posted(company, user, [
-                _make_line(cash_account, debit="200.00", line_no=1),
-                _make_line(expense_account, debit="50.00", line_no=2),
-                _make_line(revenue_account, credit="250.00", line_no=3),
-            ], memo=f"Replay test {i}")
+            _emit_je_posted(
+                company,
+                user,
+                [
+                    _make_line(cash_account, debit="200.00", line_no=1),
+                    _make_line(expense_account, debit="50.00", line_no=2),
+                    _make_line(revenue_account, credit="250.00", line_no=3),
+                ],
+                memo=f"Replay test {i}",
+            )
 
         projection = AccountBalanceProjection()
         projection.process_pending(company)
@@ -173,9 +189,7 @@ class TestProjectionReplayConsistency:
             for b in AccountBalance.objects.filter(company=company).select_related("account")
         }
 
-        assert incremental == rebuilt, (
-            f"Rebuild diverged.\nIncremental: {incremental}\nRebuilt: {rebuilt}"
-        )
+        assert incremental == rebuilt, f"Rebuild diverged.\nIncremental: {incremental}\nRebuilt: {rebuilt}"
 
         # Verify trial balance is balanced
         tb = projection.get_trial_balance(company)

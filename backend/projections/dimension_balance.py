@@ -59,19 +59,22 @@ class DimensionBalanceProjection(BaseProjection):
 
         try:
             entry = JournalEntry.objects.get(
-                company=company, public_id=entry_public_id,
+                company=company,
+                public_id=entry_public_id,
             )
         except JournalEntry.DoesNotExist:
             return
 
         # Get all lines with their analysis records
         lines = JournalLine.objects.filter(
-            entry=entry, company=company,
+            entry=entry,
+            company=company,
         ).select_related("account")
 
         for line in lines:
             analysis_records = JournalLineAnalysis.objects.filter(
-                journal_line=line, company=company,
+                journal_line=line,
+                company=company,
             ).select_related("dimension", "dimension_value")
 
             for analysis in analysis_records:

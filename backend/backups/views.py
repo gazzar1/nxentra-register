@@ -10,6 +10,7 @@ Endpoints:
 - POST /api/backups/restore/    — Restore from backup upload
 - DELETE /api/backups/<public_id>/ — Delete a backup
 """
+
 import logging
 
 from django.http import FileResponse
@@ -83,6 +84,7 @@ class BackupExportView(APIView):
 
             # Save file
             from django.core.files.base import ContentFile
+
             filename = f"backup_{actor.company.slug}_{timezone.now().strftime('%Y%m%d_%H%M%S')}.zip"
             record.file.save(filename, ContentFile(zip_bytes), save=False)
 
@@ -127,9 +129,7 @@ class BackupDetailView(APIView):
             return Response({"detail": "No active company."}, status=400)
 
         try:
-            record = BackupRecord.objects.get(
-                public_id=public_id, company=actor.company
-            )
+            record = BackupRecord.objects.get(public_id=public_id, company=actor.company)
         except BackupRecord.DoesNotExist:
             return Response({"detail": "Not found."}, status=404)
 
@@ -141,9 +141,7 @@ class BackupDetailView(APIView):
             return Response({"detail": "No active company."}, status=400)
 
         try:
-            record = BackupRecord.objects.get(
-                public_id=public_id, company=actor.company
-            )
+            record = BackupRecord.objects.get(public_id=public_id, company=actor.company)
         except BackupRecord.DoesNotExist:
             return Response({"detail": "Not found."}, status=404)
 
@@ -166,9 +164,7 @@ class BackupDownloadView(APIView):
             return Response({"detail": "No active company."}, status=400)
 
         try:
-            record = BackupRecord.objects.get(
-                public_id=public_id, company=actor.company
-            )
+            record = BackupRecord.objects.get(public_id=public_id, company=actor.company)
         except BackupRecord.DoesNotExist:
             return Response({"detail": "Not found."}, status=404)
 
@@ -179,9 +175,7 @@ class BackupDownloadView(APIView):
             record.file.open("rb"),
             content_type="application/zip",
         )
-        response["Content-Disposition"] = (
-            f'attachment; filename="{record.file.name.split("/")[-1]}"'
-        )
+        response["Content-Disposition"] = f'attachment; filename="{record.file.name.split("/")[-1]}"'
         return response
 
 

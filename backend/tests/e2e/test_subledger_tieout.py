@@ -93,9 +93,7 @@ class TestSubledgerTieout:
         is_valid, errors = validate_subledger_tieout(company)
         assert is_valid, f"Empty company should be balanced: {errors}"
 
-    def test_ar_tieout_after_customer_invoices(
-        self, actor_context, company, ar_control, revenue_account, customers
-    ):
+    def test_ar_tieout_after_customer_invoices(self, actor_context, company, ar_control, revenue_account, customers):
         """AR control should match sum of customer balances after invoices."""
         # Create invoices for multiple customers
         amounts = [Decimal("100.00"), Decimal("250.00"), Decimal("175.00")]
@@ -139,14 +137,10 @@ class TestSubledgerTieout:
         ar_balance = AccountBalance.objects.get(company=company, account=ar_control)
         assert ar_balance.balance == expected_total
 
-        customer_total = sum(
-            CustomerBalance.objects.filter(company=company).values_list("balance", flat=True)
-        )
+        customer_total = sum(CustomerBalance.objects.filter(company=company).values_list("balance", flat=True))
         assert customer_total == expected_total
 
-    def test_ap_tieout_after_vendor_bills(
-        self, actor_context, company, ap_control, expense_account, vendors
-    ):
+    def test_ap_tieout_after_vendor_bills(self, actor_context, company, ap_control, expense_account, vendors):
         """AP control should match sum of vendor balances after bills."""
         amounts = [Decimal("500.00"), Decimal("300.00"), Decimal("200.00")]
         expected_total = sum(amounts)
@@ -190,9 +184,7 @@ class TestSubledgerTieout:
         # AP is credit-normal, so balance is negative from GL perspective
         assert abs(ap_balance.balance) == expected_total
 
-    def test_partial_payment_maintains_tieout(
-        self, actor_context, company, ar_control, cash_account, customers
-    ):
+    def test_partial_payment_maintains_tieout(self, actor_context, company, ar_control, cash_account, customers):
         """Partial customer payment should maintain tie-out."""
         customer = customers[0]
         invoice_amount = Decimal("1000.00")

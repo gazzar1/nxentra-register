@@ -23,6 +23,7 @@ from projections.base import BaseProjection, projection_registry
 # Projection integrity
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestProjectionIntegrity:
     """Every declared projection must be registered, unique, and discoverable."""
@@ -34,8 +35,7 @@ class TestProjectionIntegrity:
                 cls = import_string(dotted_path)
                 found = any(type(p) is cls for p in projection_registry.all())
                 assert found, (
-                    f"{app_config.name} declares projection {dotted_path} "
-                    f"but it is not in projection_registry"
+                    f"{app_config.name} declares projection {dotted_path} but it is not in projection_registry"
                 )
 
     def test_projection_names_are_unique(self):
@@ -44,8 +44,7 @@ class TestProjectionIntegrity:
         for p in projection_registry.all():
             name = p.name
             assert name not in seen, (
-                f"Duplicate projection name '{name}': "
-                f"{type(p).__qualname__} vs {type(seen[name]).__qualname__}"
+                f"Duplicate projection name '{name}': {type(p).__qualname__} vs {type(seen[name]).__qualname__}"
             )
             seen[name] = p
 
@@ -92,6 +91,7 @@ class TestProjectionIntegrity:
 # Event type integrity
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestEventTypeIntegrity:
     """Event types from declared modules must be properly registered."""
@@ -103,9 +103,7 @@ class TestEventTypeIntegrity:
             if not module_path:
                 continue
             mod = importlib.import_module(module_path)
-            assert hasattr(mod, "REGISTERED_EVENTS"), (
-                f"{module_path} from {app_config.name} has no REGISTERED_EVENTS"
-            )
+            assert hasattr(mod, "REGISTERED_EVENTS"), f"{module_path} from {app_config.name} has no REGISTERED_EVENTS"
 
     def test_registered_events_are_in_central_registry(self):
         """Every event type in REGISTERED_EVENTS must be in EVENT_DATA_CLASSES."""
@@ -116,8 +114,7 @@ class TestEventTypeIntegrity:
             mod = importlib.import_module(module_path)
             for event_type, data_cls in mod.REGISTERED_EVENTS.items():
                 assert event_type in EVENT_DATA_CLASSES, (
-                    f"Event type '{event_type}' from {app_config.name} "
-                    f"is not in EVENT_DATA_CLASSES"
+                    f"Event type '{event_type}' from {app_config.name} is not in EVENT_DATA_CLASSES"
                 )
                 assert EVENT_DATA_CLASSES[event_type] is data_cls, (
                     f"EVENT_DATA_CLASSES['{event_type}'] is {EVENT_DATA_CLASSES[event_type].__qualname__}, "
@@ -146,14 +143,14 @@ class TestEventTypeIntegrity:
             mod = importlib.import_module(module_path)
             for event_type in mod.REGISTERED_EVENTS:
                 assert isinstance(event_type, str), (
-                    f"REGISTERED_EVENTS key {event_type!r} in {module_path} "
-                    f"must be a string"
+                    f"REGISTERED_EVENTS key {event_type!r} in {module_path} must be a string"
                 )
 
 
 # =============================================================================
 # FinancialEventData contract
 # =============================================================================
+
 
 class TestFinancialEventDataContract:
     """FinancialEventData must carry the required canonical fields."""
@@ -206,6 +203,7 @@ class TestFinancialEventDataContract:
 # =============================================================================
 # ModuleAccountMapping
 # =============================================================================
+
 
 @pytest.mark.django_db
 class TestModuleAccountMapping:
@@ -278,33 +276,52 @@ class TestModuleAccountMapping:
     def test_check_required_roles_all_present(self, company, cash_account, revenue_account):
         """check_required_roles returns empty list when all roles mapped."""
         ModuleAccountMapping.objects.create(
-            company=company, module="test_module", role="CASH", account=cash_account,
+            company=company,
+            module="test_module",
+            role="CASH",
+            account=cash_account,
         )
         ModuleAccountMapping.objects.create(
-            company=company, module="test_module", role="REVENUE", account=revenue_account,
+            company=company,
+            module="test_module",
+            role="REVENUE",
+            account=revenue_account,
         )
         missing = ModuleAccountMapping.check_required_roles(
-            company, "test_module", ["CASH", "REVENUE"],
+            company,
+            "test_module",
+            ["CASH", "REVENUE"],
         )
         assert missing == []
 
     def test_check_required_roles_some_missing(self, company, cash_account):
         """check_required_roles returns list of missing roles."""
         ModuleAccountMapping.objects.create(
-            company=company, module="test_module", role="CASH", account=cash_account,
+            company=company,
+            module="test_module",
+            role="CASH",
+            account=cash_account,
         )
         missing = ModuleAccountMapping.check_required_roles(
-            company, "test_module", ["CASH", "REVENUE", "EXPENSE"],
+            company,
+            "test_module",
+            ["CASH", "REVENUE", "EXPENSE"],
         )
         assert sorted(missing) == ["EXPENSE", "REVENUE"]
 
     def test_cross_module_isolation(self, company, cash_account, revenue_account):
         """Different modules can map the same role to different accounts."""
         ModuleAccountMapping.objects.create(
-            company=company, module="properties", role="CASH_BANK", account=cash_account,
+            company=company,
+            module="properties",
+            role="CASH_BANK",
+            account=cash_account,
         )
         ModuleAccountMapping.objects.create(
-            company=company, module="clinic", role="CASH_BANK", account=revenue_account,
+            company=company,
+            module="clinic",
+            role="CASH_BANK",
+            account=revenue_account,
         )
         assert ModuleAccountMapping.get_account(company, "properties", "CASH_BANK") == cash_account
         assert ModuleAccountMapping.get_account(company, "clinic", "CASH_BANK") == revenue_account
@@ -313,6 +330,7 @@ class TestModuleAccountMapping:
 # =============================================================================
 # Property regression (regression suite for existing behavior)
 # =============================================================================
+
 
 @pytest.mark.django_db
 class TestPropertyRegistrationRegression:
@@ -329,14 +347,10 @@ class TestPropertyRegistrationRegression:
         from properties.event_types import REGISTERED_EVENTS
 
         for event_type, data_cls in REGISTERED_EVENTS.items():
-            assert event_type in EVENT_DATA_CLASSES, (
-                f"Property event '{event_type}' not in EVENT_DATA_CLASSES"
-            )
+            assert event_type in EVENT_DATA_CLASSES, f"Property event '{event_type}' not in EVENT_DATA_CLASSES"
             assert EVENT_DATA_CLASSES[event_type] is data_cls
 
-    def test_property_event_posting_and_rebuild(
-        self, actor_context, company, user
-    ):
+    def test_property_event_posting_and_rebuild(self, actor_context, company, user):
         """
         Emit a rent.due_posted event, verify journal entries are created,
         then rebuild and verify the result is identical.
@@ -350,14 +364,20 @@ class TestPropertyRegistrationRegression:
 
         # Create accounts
         ar_account = Account.objects.create(
-            company=company, public_id=uuid4(), code="1100",
-            name="AR", account_type=Account.AccountType.ASSET,
+            company=company,
+            public_id=uuid4(),
+            code="1100",
+            name="AR",
+            account_type=Account.AccountType.ASSET,
             normal_balance=Account.NormalBalance.DEBIT,
             status=Account.Status.ACTIVE,
         )
         rent_income = Account.objects.create(
-            company=company, public_id=uuid4(), code="4100",
-            name="Rental Income", account_type=Account.AccountType.REVENUE,
+            company=company,
+            public_id=uuid4(),
+            code="4100",
+            name="Rental Income",
+            account_type=Account.AccountType.REVENUE,
             normal_balance=Account.NormalBalance.CREDIT,
             status=Account.Status.ACTIVE,
         )
@@ -402,9 +422,8 @@ class TestPropertyRegistrationRegression:
 
         # Snapshot before rebuild
         before_count = JournalEntry.objects.filter(company=company).count()
-        before_total = (
-            JournalLine.objects.filter(company=company)
-            .aggregate(d=dj_models.Sum("debit"), c=dj_models.Sum("credit"))
+        before_total = JournalLine.objects.filter(company=company).aggregate(
+            d=dj_models.Sum("debit"), c=dj_models.Sum("credit")
         )
 
         # Rebuild
@@ -413,9 +432,8 @@ class TestPropertyRegistrationRegression:
 
         # Verify identical result
         after_count = JournalEntry.objects.filter(company=company).count()
-        after_total = (
-            JournalLine.objects.filter(company=company)
-            .aggregate(d=dj_models.Sum("debit"), c=dj_models.Sum("credit"))
+        after_total = JournalLine.objects.filter(company=company).aggregate(
+            d=dj_models.Sum("debit"), c=dj_models.Sum("credit")
         )
         assert after_count == before_count
         assert after_total["d"] == before_total["d"]
@@ -457,19 +475,14 @@ class TestFinanceEventCoverage:
                 continue  # caught by test above
             data_cls = EVENT_DATA_CLASSES[event_type]
             assert isinstance(data_cls, type) and issubclass(data_cls, BaseEventData), (
-                f"Finance event '{event_type}' maps to {data_cls!r}, "
-                f"which is not a BaseEventData subclass"
+                f"Finance event '{event_type}' maps to {data_cls!r}, which is not a BaseEventData subclass"
             )
 
     def test_journal_entry_posted_has_consuming_projection(self):
         """journal_entry.posted must have at least one consuming projection."""
-        consumers = [
-            p for p in projection_registry.all()
-            if "journal_entry.posted" in p.consumes
-        ]
+        consumers = [p for p in projection_registry.all() if "journal_entry.posted" in p.consumes]
         assert len(consumers) >= 1, (
-            "No projection consumes 'journal_entry.posted'. "
-            "AccountBalanceProjection should consume this event."
+            "No projection consumes 'journal_entry.posted'. AccountBalanceProjection should consume this event."
         )
 
     def test_all_finance_events_have_consumers(self):
@@ -489,9 +502,7 @@ class TestFinanceEventCoverage:
             "journal_entry.posted",
         ]
         for event_type in core_posting_events:
-            assert event_type not in uncovered, (
-                f"Core finance event '{event_type}' has no consuming projection"
-            )
+            assert event_type not in uncovered, f"Core finance event '{event_type}' has no consuming projection"
 
     def test_projection_consumes_list_valid(self):
         """Every event type in a projection's consumes list must be registered."""

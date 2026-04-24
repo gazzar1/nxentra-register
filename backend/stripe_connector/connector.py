@@ -44,18 +44,9 @@ def verify_stripe_signature(payload: bytes, sig_header: str, secret: str) -> boo
         return False
 
     try:
-        elements = dict(
-            pair.split("=", 1)
-            for pair in sig_header.split(",")
-            if "=" in pair
-        )
+        elements = dict(pair.split("=", 1) for pair in sig_header.split(",") if "=" in pair)
         timestamp = elements.get("t", "")
-        signatures = [
-            v for k, v in (
-                pair.split("=", 1) for pair in sig_header.split(",") if "=" in pair
-            )
-            if k == "v1"
-        ]
+        signatures = [v for k, v in (pair.split("=", 1) for pair in sig_header.split(",") if "=" in pair) if k == "v1"]
 
         if not timestamp or not signatures:
             return False
@@ -116,9 +107,7 @@ class StripeConnector(BasePlatformConnector):
                     stripe_account_id=account_id,
                     status=StripeAccount.Status.ACTIVE,
                 )
-                return verify_stripe_signature(
-                    request.body, sig_header, account.webhook_secret
-                )
+                return verify_stripe_signature(request.body, sig_header, account.webhook_secret)
             except StripeAccount.DoesNotExist:
                 pass
 
@@ -132,6 +121,7 @@ class StripeConnector(BasePlatformConnector):
     def parse_webhook_topic(self, request: HttpRequest) -> str:
         """Stripe sends event type in the JSON body."""
         import json
+
         try:
             body = json.loads(request.body)
             return body.get("type", "")
@@ -262,6 +252,7 @@ class StripeConnector(BasePlatformConnector):
     def _extract_account_id(request: HttpRequest) -> str | None:
         """Extract Stripe Connect account ID from the payload."""
         import json
+
         try:
             body = json.loads(request.body)
             return body.get("account")
@@ -274,4 +265,5 @@ class StripeConnector(BasePlatformConnector):
         if not ts:
             return ""
         from datetime import datetime
+
         return datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%d")

@@ -104,7 +104,7 @@ def validate_date(value: Any) -> bool:
     Returns:
         True if valid, False otherwise
     """
-    if isinstance(value, (date_cls,)):
+    if isinstance(value, date_cls):
         return True
 
     if isinstance(value, str):
@@ -116,6 +116,7 @@ def validate_date(value: Any) -> bool:
 
         # Try common formats
         from datetime import datetime
+
         formats = [
             "%Y-%m-%d",
             "%m/%d/%Y",

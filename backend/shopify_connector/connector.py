@@ -103,6 +103,7 @@ class ShopifyConnector(BasePlatformConnector):
             return None
 
         from shopify_connector.models import ShopifyStore
+
         try:
             store = ShopifyStore.objects.select_related("company").get(
                 shop_domain=shop_domain,
@@ -120,18 +121,17 @@ class ShopifyConnector(BasePlatformConnector):
     def parse_order(self, payload: dict) -> ParsedOrder:
         line_items = []
         for item in payload.get("line_items", []):
-            line_items.append(ParsedOrderLine(
-                sku=item.get("sku", ""),
-                title=item.get("title", ""),
-                quantity=item.get("quantity", 0),
-                unit_price=Decimal(str(item.get("price", "0"))),
-                total=Decimal(str(item.get("price", "0"))) * item.get("quantity", 1),
-                tax=sum(
-                    Decimal(str(t.get("price", "0")))
-                    for t in item.get("tax_lines", [])
-                ),
-                platform_line_id=str(item.get("id", "")),
-            ))
+            line_items.append(
+                ParsedOrderLine(
+                    sku=item.get("sku", ""),
+                    title=item.get("title", ""),
+                    quantity=item.get("quantity", 0),
+                    unit_price=Decimal(str(item.get("price", "0"))),
+                    total=Decimal(str(item.get("price", "0"))) * item.get("quantity", 1),
+                    tax=sum(Decimal(str(t.get("price", "0"))) for t in item.get("tax_lines", [])),
+                    platform_line_id=str(item.get("id", "")),
+                )
+            )
 
         return ParsedOrder(
             platform_order_id=str(payload.get("id", "")),
@@ -140,10 +140,7 @@ class ShopifyConnector(BasePlatformConnector):
             total_price=Decimal(str(payload.get("total_price", "0"))),
             subtotal=Decimal(str(payload.get("subtotal_price", "0"))),
             total_tax=Decimal(str(payload.get("total_tax", "0"))),
-            total_shipping=sum(
-                Decimal(str(line.get("price", "0")))
-                for line in payload.get("shipping_lines", [])
-            ),
+            total_shipping=sum(Decimal(str(line.get("price", "0"))) for line in payload.get("shipping_lines", [])),
             total_discounts=Decimal(str(payload.get("total_discounts", "0"))),
             currency=payload.get("currency", "USD"),
             financial_status=payload.get("financial_status", ""),
@@ -159,11 +156,7 @@ class ShopifyConnector(BasePlatformConnector):
         # Shopify refund webhook wraps in "refund" key
         refund = payload.get("refund", payload)
         transactions = refund.get("transactions", [])
-        amount = sum(
-            Decimal(str(t.get("amount", "0")))
-            for t in transactions
-            if t.get("kind") == "refund"
-        )
+        amount = sum(Decimal(str(t.get("amount", "0"))) for t in transactions if t.get("kind") == "refund")
         if amount == 0:
             amount = Decimal(str(refund.get("total_duties_set", {}).get("shop_money", {}).get("amount", "0")))
 

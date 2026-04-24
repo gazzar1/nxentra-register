@@ -47,7 +47,6 @@ urlpatterns = [
     path("orders/<int:pk>/cancel/", PurchaseOrderCancelView.as_view(), name="order-cancel"),
     path("orders/<int:pk>/close/", PurchaseOrderCloseView.as_view(), name="order-close"),
     path("orders/<int:pk>/create-bill/", PurchaseOrderCreateBillView.as_view(), name="order-create-bill"),
-
     # ==========================================================================
     # Goods Receipts
     # ==========================================================================
@@ -55,7 +54,6 @@ urlpatterns = [
     path("receipts/<int:pk>/", GoodsReceiptDetailView.as_view(), name="receipt-detail"),
     path("receipts/<int:pk>/post/", GoodsReceiptPostView.as_view(), name="receipt-post"),
     path("receipts/<int:pk>/void/", GoodsReceiptVoidView.as_view(), name="receipt-void"),
-
     # ==========================================================================
     # Purchase Bills
     # ==========================================================================
@@ -63,7 +61,6 @@ urlpatterns = [
     path("bills/<int:pk>/", PurchaseBillDetailView.as_view(), name="bill-detail"),
     path("bills/<int:pk>/post/", PurchaseBillPostView.as_view(), name="bill-post"),
     path("bills/<int:pk>/void/", PurchaseBillVoidView.as_view(), name="bill-void"),
-
     # ==========================================================================
     # Purchase Credit Notes (Vendor Returns / Debit Notes)
     # ==========================================================================

@@ -11,6 +11,7 @@ Usage:
     from backups.exporter import export_company
     zip_bytes, metadata = export_company(company)
 """
+
 import hashlib
 import io
 import json
@@ -59,7 +60,7 @@ def _serialize_instance(instance, excluded_fields=None):
         # Convert special types for JSON
         if isinstance(value, Decimal):
             value = str(value)
-        elif isinstance(value, (datetime, date)):
+        elif isinstance(value, datetime | date):
             value = value.isoformat() if value else None
         elif isinstance(value, UUID):
             value = str(value)
@@ -128,9 +129,7 @@ def export_company(company):
                 continue
 
             # Write to ZIP as models/<label>.json
-            json_bytes = json.dumps(
-                records, cls=BackupEncoder, ensure_ascii=False
-            ).encode("utf-8")
+            json_bytes = json.dumps(records, cls=BackupEncoder, ensure_ascii=False).encode("utf-8")
             zf.writestr(f"models/{label}.json", json_bytes)
 
             # Update hash
@@ -149,9 +148,7 @@ def export_company(company):
         manifest["export_hash"] = hasher.hexdigest()
 
         # Write manifest
-        manifest_bytes = json.dumps(
-            manifest, cls=BackupEncoder, indent=2, ensure_ascii=False
-        ).encode("utf-8")
+        manifest_bytes = json.dumps(manifest, cls=BackupEncoder, indent=2, ensure_ascii=False).encode("utf-8")
         zf.writestr("manifest.json", manifest_bytes)
 
     zip_bytes = buf.getvalue()
@@ -183,6 +180,7 @@ def _get_company_queryset(model_cls, company):
     # EventPayload has no company FK — export those referenced by company events
     if model_cls is EventPayload:
         from events.models import BusinessEvent
+
         payload_ids = (
             BusinessEvent.objects.filter(company=company, payload_ref__isnull=False)
             .values_list("payload_ref_id", flat=True)
@@ -193,7 +191,7 @@ def _get_company_queryset(model_cls, company):
     # Check for company field
     company_field = None
     for field in model_cls._meta.get_fields():
-        if isinstance(field, (models.ForeignKey, models.OneToOneField)):
+        if isinstance(field, models.ForeignKey | models.OneToOneField):
             if field.related_model and field.related_model.__name__ == "Company":
                 company_field = field.name
                 break

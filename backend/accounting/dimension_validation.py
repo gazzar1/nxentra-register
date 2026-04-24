@@ -10,7 +10,6 @@ Validates AccountDimensionRule (REQUIRED/OPTIONAL/FORBIDDEN) and
 global AnalysisDimension.is_required_on_posting rules.
 """
 
-
 from accounting.models import (
     Account,
     AccountDimensionRule,
@@ -53,22 +52,26 @@ def check_account_dimension_rules(
     for rule in rules:
         if rule.rule_type == AccountDimensionRule.RuleType.REQUIRED:
             if rule.dimension_id not in dimension_ids:
-                errors.append({
-                    "field": f"{side}_dimension_{rule.dimension.code}",
-                    "code": "DIMENSION_REQUIRED",
-                    "message": f"Dimension '{rule.dimension.name}' is required for account {account.code}.",
-                })
+                errors.append(
+                    {
+                        "field": f"{side}_dimension_{rule.dimension.code}",
+                        "code": "DIMENSION_REQUIRED",
+                        "message": f"Dimension '{rule.dimension.name}' is required for account {account.code}.",
+                    }
+                )
             else:
                 dim_entry = next(
                     (d for d in dimension_entries if d.dimension_id == rule.dimension_id),
                     None,
                 )
                 if dim_entry and not dim_entry.dimension_value_id:
-                    errors.append({
-                        "field": f"{side}_dimension_{rule.dimension.code}",
-                        "code": "DIMENSION_VALUE_REQUIRED",
-                        "message": f"A value for dimension '{rule.dimension.name}' is required for account {account.code}.",
-                    })
+                    errors.append(
+                        {
+                            "field": f"{side}_dimension_{rule.dimension.code}",
+                            "code": "DIMENSION_VALUE_REQUIRED",
+                            "message": f"A value for dimension '{rule.dimension.name}' is required for account {account.code}.",
+                        }
+                    )
 
         elif rule.rule_type == AccountDimensionRule.RuleType.FORBIDDEN:
             if rule.dimension_id in dimension_ids:
@@ -77,11 +80,13 @@ def check_account_dimension_rules(
                     None,
                 )
                 if dim_entry and dim_entry.dimension_value_id:
-                    errors.append({
-                        "field": f"{side}_dimension_{rule.dimension.code}",
-                        "code": "DIMENSION_FORBIDDEN",
-                        "message": f"Dimension '{rule.dimension.name}' is not allowed for account {account.code}.",
-                    })
+                    errors.append(
+                        {
+                            "field": f"{side}_dimension_{rule.dimension.code}",
+                            "code": "DIMENSION_FORBIDDEN",
+                            "message": f"Dimension '{rule.dimension.name}' is not allowed for account {account.code}.",
+                        }
+                    )
 
     # Also check global dimension requirements
     required_dimensions = AnalysisDimension.objects.filter(
@@ -98,28 +103,33 @@ def check_account_dimension_rules(
                     None,
                 )
                 if not override_rule:
-                    errors.append({
-                        "field": f"{side}_dimension_{dim.code}",
-                        "code": "DIMENSION_REQUIRED",
-                        "message": f"Dimension '{dim.name}' is required for this account type.",
-                    })
+                    errors.append(
+                        {
+                            "field": f"{side}_dimension_{dim.code}",
+                            "code": "DIMENSION_REQUIRED",
+                            "message": f"Dimension '{dim.name}' is required for this account type.",
+                        }
+                    )
             else:
                 dim_entry = next(
                     (d for d in dimension_entries if d.dimension_id == dim.id),
                     None,
                 )
                 if dim_entry and not dim_entry.dimension_value_id:
-                    errors.append({
-                        "field": f"{side}_dimension_{dim.code}",
-                        "code": "DIMENSION_VALUE_REQUIRED",
-                        "message": f"A value for dimension '{dim.name}' is required.",
-                    })
+                    errors.append(
+                        {
+                            "field": f"{side}_dimension_{dim.code}",
+                            "code": "DIMENSION_VALUE_REQUIRED",
+                            "message": f"A value for dimension '{dim.name}' is required.",
+                        }
+                    )
 
     return errors
 
 
 class _ResolvedTag:
     """Simple wrapper to give analysis_tags the same interface as ScratchpadRowDimension."""
+
     __slots__ = ("dimension_id", "dimension_value_id")
 
     def __init__(self, dimension_id: int | None, dimension_value_id: int | None):

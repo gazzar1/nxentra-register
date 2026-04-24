@@ -83,7 +83,7 @@ def get_install_url(company, shop_domain: str) -> dict:
     nonce = secrets.token_urlsafe(32)
 
     # Create or update the store record
-    store, _ = ShopifyStore.objects.update_or_create(
+    _store, _ = ShopifyStore.objects.update_or_create(
         company=company,
         shop_domain=shop_domain,
         defaults={

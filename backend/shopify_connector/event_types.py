@@ -14,6 +14,7 @@ from events.types import BaseEventData, EventTypes, FinancialEventData
 # Connection events
 # =============================================================================
 
+
 @dataclass
 class ShopifyStoreConnectedData(BaseEventData):
     store_public_id: str = ""
@@ -34,6 +35,7 @@ class ShopifyStoreDisconnectedData(BaseEventData):
 # Financial events (extend FinancialEventData)
 # =============================================================================
 
+
 @dataclass
 class ShopifyOrderPaidData(FinancialEventData):
     """
@@ -41,6 +43,7 @@ class ShopifyOrderPaidData(FinancialEventData):
     DR Shopify Clearing / CR Sales Revenue
     (+ tax and shipping lines if applicable)
     """
+
     store_public_id: str = ""
     shopify_order_id: str = ""
     order_number: str = ""
@@ -62,6 +65,7 @@ class ShopifyRefundCreatedData(FinancialEventData):
     Triggers reversal journal entry:
     DR Sales Revenue / CR Shopify Clearing
     """
+
     store_public_id: str = ""
     shopify_refund_id: str = ""
     shopify_order_id: str = ""
@@ -77,6 +81,7 @@ class ShopifyPayoutSettledData(FinancialEventData):
     DR Processing Fees  (fees)
     CR Shopify Clearing (gross_amount)
     """
+
     store_public_id: str = ""
     shopify_payout_id: str = ""
     gross_amount: str = "0"
@@ -95,6 +100,7 @@ class ShopifyOrderFulfilledData(FinancialEventData):
 
     Also triggers inventory deduction via INVENTORY_STOCK_ISSUED.
     """
+
     store_public_id: str = ""
     shopify_fulfillment_id: str = ""
     shopify_order_id: str = ""
@@ -116,6 +122,7 @@ class ShopifyDisputeCreatedData(FinancialEventData):
     DR Processing Fees               (chargeback fee)
     CR Shopify Clearing              (amount + fee)
     """
+
     store_public_id: str = ""
     shopify_dispute_id: str = ""
     shopify_order_id: str = ""
@@ -134,6 +141,7 @@ class ShopifyDisputeWonData(FinancialEventData):
     CR Chargeback Expense            (amount)
     CR Processing Fees               (chargeback fee)
     """
+
     store_public_id: str = ""
     shopify_dispute_id: str = ""
     shopify_order_id: str = ""

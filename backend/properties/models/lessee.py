@@ -45,12 +45,8 @@ class Lessee(ProjectionWriteGuard):
     email = models.EmailField(blank=True, null=True)
     address = models.TextField(blank=True, null=True)
     emergency_contact = models.CharField(max_length=100, blank=True, null=True)
-    status = models.CharField(
-        max_length=20, choices=LesseeStatus.choices, default=LesseeStatus.ACTIVE
-    )
-    risk_rating = models.CharField(
-        max_length=10, choices=RiskRating.choices, blank=True, null=True
-    )
+    status = models.CharField(max_length=20, choices=LesseeStatus.choices, default=LesseeStatus.ACTIVE)
+    risk_rating = models.CharField(max_length=10, choices=RiskRating.choices, blank=True, null=True)
     notes = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

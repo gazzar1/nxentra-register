@@ -30,9 +30,7 @@ from projections.models import AccountBalance
 class TestLEPHEndToEndProjection:
     """Full pipeline: external payload → projection → trial balance."""
 
-    def test_external_payload_je_updates_balances_and_trial_balance(
-        self, company, user, owner_membership
-    ):
+    def test_external_payload_je_updates_balances_and_trial_balance(self, company, user, owner_membership):
         """
         The definitive test: large externally-stored JE event flows through
         the projection pipeline and produces correct trial balance.
@@ -72,25 +70,29 @@ class TestLEPHEndToEndProjection:
         total_debit = Decimal("0.00")
         for i, acct in enumerate(debit_accounts):
             amount = expected_amounts[str(acct.public_id)]
-            lines.append({
-                "line_no": i + 1,
-                "account_public_id": str(acct.public_id),
-                "account_code": acct.code,
-                "description": f"Expense line {i + 1} " + ("x" * 80),
-                "debit": str(amount),
-                "credit": "0.00",
-            })
+            lines.append(
+                {
+                    "line_no": i + 1,
+                    "account_public_id": str(acct.public_id),
+                    "account_code": acct.code,
+                    "description": f"Expense line {i + 1} " + ("x" * 80),
+                    "debit": str(amount),
+                    "credit": "0.00",
+                }
+            )
             total_debit += amount
 
         # One big credit line to balance
-        lines.append({
-            "line_no": num_accounts + 1,
-            "account_public_id": str(credit_account.public_id),
-            "account_code": credit_account.code,
-            "description": "Balancing payable entry",
-            "debit": "0.00",
-            "credit": str(total_debit),
-        })
+        lines.append(
+            {
+                "line_no": num_accounts + 1,
+                "account_public_id": str(credit_account.public_id),
+                "account_code": credit_account.code,
+                "description": "Balancing payable entry",
+                "debit": "0.00",
+                "credit": str(total_debit),
+            }
+        )
 
         entry_id = uuid4()
         data = {
@@ -124,9 +126,7 @@ class TestLEPHEndToEndProjection:
             idempotency_key=f"e2e-leph-projection:{entry_id}",
         )
 
-        assert event.payload_storage == "external", (
-            f"Expected external, got {event.payload_storage}"
-        )
+        assert event.payload_storage == "external", f"Expected external, got {event.payload_storage}"
 
         # ─── Step 4: Run the projection ─────────────────────────────────────
         projection = AccountBalanceProjection()
@@ -135,35 +135,25 @@ class TestLEPHEndToEndProjection:
 
         # ─── Step 5: Verify AccountBalance for each debit account ───────────
         for acct in debit_accounts:
-            balance_record = AccountBalance.objects.filter(
-                company=company, account=acct
-            ).first()
-            assert balance_record is not None, (
-                f"AccountBalance missing for {acct.code}"
-            )
+            balance_record = AccountBalance.objects.filter(company=company, account=acct).first()
+            assert balance_record is not None, f"AccountBalance missing for {acct.code}"
 
             expected = expected_amounts[str(acct.public_id)]
             assert balance_record.debit_total == expected, (
-                f"Account {acct.code}: expected debit {expected}, "
-                f"got {balance_record.debit_total}"
+                f"Account {acct.code}: expected debit {expected}, got {balance_record.debit_total}"
             )
             assert balance_record.credit_total == Decimal("0.00")
             assert balance_record.balance == expected
 
         # Verify credit account
-        credit_balance = AccountBalance.objects.get(
-            company=company, account=credit_account
-        )
+        credit_balance = AccountBalance.objects.get(company=company, account=credit_account)
         assert credit_balance.credit_total == total_debit
         assert credit_balance.debit_total == Decimal("0.00")
         assert credit_balance.balance == total_debit
 
         # ─── Step 6: Verify trial balance ───────────────────────────────────
         tb = projection.get_trial_balance(company)
-        assert tb["is_balanced"], (
-            f"Trial balance not balanced: "
-            f"debit={tb['total_debit']}, credit={tb['total_credit']}"
-        )
+        assert tb["is_balanced"], f"Trial balance not balanced: debit={tb['total_debit']}, credit={tb['total_credit']}"
         assert Decimal(tb["total_debit"]) == total_debit
         assert Decimal(tb["total_credit"]) == total_debit
 
@@ -173,9 +163,7 @@ class TestLEPHEndToEndProjection:
             assert acct.code in tb_codes, f"Account {acct.code} missing from trial balance"
         assert credit_account.code in tb_codes
 
-    def test_projection_idempotency_with_external_payload(
-        self, company, user, owner_membership
-    ):
+    def test_projection_idempotency_with_external_payload(self, company, user, owner_membership):
         """
         Running the projection twice on the same external-payload event
         should not double-count balances.
@@ -210,23 +198,27 @@ class TestLEPHEndToEndProjection:
         # Build large payload: one line per account
         lines = []
         for i, acct in enumerate(accounts):
-            lines.append({
-                "line_no": i + 1,
-                "account_public_id": str(acct.public_id),
-                "account_code": acct.code,
-                "description": f"Line {i + 1}",
-                "debit": "100.00",
-                "credit": "0.00",
-            })
+            lines.append(
+                {
+                    "line_no": i + 1,
+                    "account_public_id": str(acct.public_id),
+                    "account_code": acct.code,
+                    "description": f"Line {i + 1}",
+                    "debit": "100.00",
+                    "credit": "0.00",
+                }
+            )
         total = Decimal("100.00") * 300
-        lines.append({
-            "line_no": 301,
-            "account_public_id": str(payable.public_id),
-            "account_code": payable.code,
-            "description": "Balancing credit",
-            "debit": "0.00",
-            "credit": str(total),
-        })
+        lines.append(
+            {
+                "line_no": 301,
+                "account_public_id": str(payable.public_id),
+                "account_code": payable.code,
+                "description": "Balancing credit",
+                "debit": "0.00",
+                "credit": str(total),
+            }
+        )
 
         entry_id = uuid4()
         emit_event_no_actor(
@@ -259,9 +251,7 @@ class TestLEPHEndToEndProjection:
 
         # Spot-check: first account should have exactly 100.00
         balance = AccountBalance.objects.get(company=company, account=accounts[0])
-        assert balance.debit_total == Decimal("100.00"), (
-            f"Expected 100.00, got {balance.debit_total} (double-counted?)"
-        )
+        assert balance.debit_total == Decimal("100.00"), f"Expected 100.00, got {balance.debit_total} (double-counted?)"
 
         # Verify trial balance is still balanced after double-run
         tb = projection.get_trial_balance(company)

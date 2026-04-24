@@ -47,9 +47,7 @@ class TestStatisticalEntryEventSourcing:
             status=Account.Status.ACTIVE,
         )
 
-    def test_create_statistical_entry_emits_event(
-        self, actor_context, company, statistical_account
-    ):
+    def test_create_statistical_entry_emits_event(self, actor_context, company, statistical_account):
         """Creating a statistical entry should emit STATISTICAL_ENTRY_CREATED event."""
         result = create_statistical_entry(
             actor_context,
@@ -79,9 +77,7 @@ class TestStatisticalEntryEventSourcing:
         assert entry.quantity == Decimal("10")
         assert entry.status == StatisticalEntry.Status.DRAFT
 
-    def test_update_statistical_entry_emits_event(
-        self, actor_context, company, statistical_account
-    ):
+    def test_update_statistical_entry_emits_event(self, actor_context, company, statistical_account):
         """Updating a statistical entry should emit STATISTICAL_ENTRY_UPDATED event."""
         # Create entry
         create_result = create_statistical_entry(
@@ -120,9 +116,7 @@ class TestStatisticalEntryEventSourcing:
         assert entry.quantity == Decimal("15")
         assert entry.memo == "Updated headcount"
 
-    def test_post_statistical_entry_emits_event(
-        self, actor_context, company, statistical_account
-    ):
+    def test_post_statistical_entry_emits_event(self, actor_context, company, statistical_account):
         """Posting a statistical entry should emit STATISTICAL_ENTRY_POSTED event."""
         # Create entry
         create_result = create_statistical_entry(
@@ -153,9 +147,7 @@ class TestStatisticalEntryEventSourcing:
         assert entry.status == StatisticalEntry.Status.POSTED
         assert entry.posted_at is not None
 
-    def test_reverse_statistical_entry_emits_event(
-        self, actor_context, company, statistical_account
-    ):
+    def test_reverse_statistical_entry_emits_event(self, actor_context, company, statistical_account):
         """Reversing a statistical entry should emit STATISTICAL_ENTRY_REVERSED event."""
         # Create and post entry
         create_result = create_statistical_entry(
@@ -194,9 +186,7 @@ class TestStatisticalEntryEventSourcing:
         assert reversal.quantity == Decimal("5")
         assert reversal.status == StatisticalEntry.Status.POSTED
 
-    def test_delete_statistical_entry_emits_event(
-        self, actor_context, company, statistical_account
-    ):
+    def test_delete_statistical_entry_emits_event(self, actor_context, company, statistical_account):
         """Deleting a draft statistical entry should emit STATISTICAL_ENTRY_DELETED event."""
         # Create entry
         create_result = create_statistical_entry(
@@ -224,9 +214,7 @@ class TestStatisticalEntryEventSourcing:
         # Verify entry was deleted
         assert not StatisticalEntry.objects.filter(public_id=entry_public_id).exists()
 
-    def test_cannot_update_posted_entry(
-        self, actor_context, company, statistical_account
-    ):
+    def test_cannot_update_posted_entry(self, actor_context, company, statistical_account):
         """Cannot update a posted statistical entry."""
         # Create and post
         create_result = create_statistical_entry(
@@ -249,9 +237,7 @@ class TestStatisticalEntryEventSourcing:
         assert not update_result.success
         assert "POSTED" in update_result.error
 
-    def test_cannot_delete_posted_entry(
-        self, actor_context, company, statistical_account
-    ):
+    def test_cannot_delete_posted_entry(self, actor_context, company, statistical_account):
         """Cannot delete a posted statistical entry."""
         # Create and post
         create_result = create_statistical_entry(
@@ -270,9 +256,7 @@ class TestStatisticalEntryEventSourcing:
         assert not delete_result.success
         assert "POSTED" in delete_result.error or "reversal" in delete_result.error.lower()
 
-    def test_cannot_reverse_draft_entry(
-        self, actor_context, company, statistical_account
-    ):
+    def test_cannot_reverse_draft_entry(self, actor_context, company, statistical_account):
         """Cannot reverse a draft statistical entry."""
         # Create entry (don't post)
         create_result = create_statistical_entry(

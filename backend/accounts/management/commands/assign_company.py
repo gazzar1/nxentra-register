@@ -94,9 +94,7 @@ class Command(BaseCommand):
         existing = CompanyMembership.objects.filter(user=user, company=company).first()
         if existing:
             if existing.is_active:
-                self.stdout.write(self.style.WARNING(
-                    f"User already has active membership in '{company.name}'"
-                ))
+                self.stdout.write(self.style.WARNING(f"User already has active membership in '{company.name}'"))
                 return
             else:
                 # Reactivate using direct SQL update
@@ -105,9 +103,7 @@ class Command(BaseCommand):
                     role=CompanyMembership.Role.OWNER,
                 )
                 User.objects.filter(pk=user.pk).update(active_company=company)
-                self.stdout.write(self.style.SUCCESS(
-                    f"Reactivated membership for '{user.email}' in '{company.name}'"
-                ))
+                self.stdout.write(self.style.SUCCESS(f"Reactivated membership for '{user.email}' in '{company.name}'"))
                 return
 
         # Use the command to add user to company
@@ -127,9 +123,7 @@ class Command(BaseCommand):
         # Set as active company
         User.objects.filter(pk=user.pk).update(active_company=company)
 
-        self.stdout.write(self.style.SUCCESS(
-            f"User '{user.email}' added to '{company.name}' as OWNER"
-        ))
+        self.stdout.write(self.style.SUCCESS(f"User '{user.email}' added to '{company.name}' as OWNER"))
 
     def create_company_for_user(self, user, company_name):
         from accounts.commands import create_company
@@ -141,6 +135,6 @@ class Command(BaseCommand):
             return
 
         company = result.data["company"]
-        self.stdout.write(self.style.SUCCESS(
-            f"Created company '{company_name}' (ID: {company.id}) with '{user.email}' as OWNER"
-        ))
+        self.stdout.write(
+            self.style.SUCCESS(f"Created company '{company_name}' (ID: {company.id}) with '{user.email}' as OWNER")
+        )

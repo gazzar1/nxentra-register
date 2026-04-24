@@ -12,6 +12,7 @@ Environment variables:
 - LOG_FORMAT: "json" or "console" (default: json in production)
 - LOG_LEVEL: DEBUG, INFO, WARNING, ERROR (default: INFO)
 """
+
 import logging
 import os
 
@@ -184,10 +185,26 @@ class JsonFormatter(logging.Formatter):
 
         # Add extra fields (anything beyond standard LogRecord attributes)
         standard_attrs = {
-            "name", "msg", "args", "levelname", "levelno", "pathname",
-            "filename", "module", "lineno", "funcName", "created",
-            "msecs", "relativeCreated", "thread", "threadName",
-            "processName", "process", "exc_info", "exc_text", "stack_info",
+            "name",
+            "msg",
+            "args",
+            "levelname",
+            "levelno",
+            "pathname",
+            "filename",
+            "module",
+            "lineno",
+            "funcName",
+            "created",
+            "msecs",
+            "relativeCreated",
+            "thread",
+            "threadName",
+            "processName",
+            "process",
+            "exc_info",
+            "exc_text",
+            "stack_info",
             "message",
         }
 

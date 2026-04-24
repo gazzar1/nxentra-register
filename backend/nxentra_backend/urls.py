@@ -9,7 +9,6 @@ urlpatterns = [
     # Operations endpoints (no auth required)
     path("_health/", include("ops.urls")),
     path("_metrics/", include(metrics_patterns)),
-
     # Admin and API
     path("admin/", admin.site.urls),
     path("api/", include("accounts.urls")),

@@ -48,6 +48,7 @@ STAT_ROLES = {
 # Derivation Functions
 # =============================================================================
 
+
 def derive_normal_balance(account_type: str, role: str, ledger_domain: str) -> str:
     """
     Derive normal balance from type, role, and ledger domain.
@@ -150,6 +151,7 @@ def derive_requires_unit(ledger_domain: str, role: str) -> bool:
 # =============================================================================
 # Main Application Function
 # =============================================================================
+
 
 def apply_derived_fields(account: "Account") -> None:
     """

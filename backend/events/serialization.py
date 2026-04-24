@@ -39,7 +39,7 @@ def canonical_json(data: dict[str, Any]) -> str:
     return json.dumps(
         data,
         sort_keys=True,
-        separators=(',', ':'),
+        separators=(",", ":"),
         ensure_ascii=False,
     )
 
@@ -64,7 +64,7 @@ def compute_payload_hash(data: dict[str, Any]) -> str:
         '2d8bd7d9bb5f85ba643f0110d50cb506a1fe439e769a22503193ea6046bb87f7'
     """
     canonical = canonical_json(data)
-    return hashlib.sha256(canonical.encode('utf-8')).hexdigest()
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def compute_bytes_hash(data: bytes) -> str:
@@ -95,4 +95,4 @@ def estimate_json_size(data: dict[str, Any]) -> int:
     Returns:
         Approximate size in bytes
     """
-    return len(canonical_json(data).encode('utf-8'))
+    return len(canonical_json(data).encode("utf-8"))

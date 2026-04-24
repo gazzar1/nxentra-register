@@ -22,62 +22,104 @@ class BusinessEventAdmin(admin.ModelAdmin):
     """
 
     list_display = [
-        "id_short", "event_type", "aggregate_display",
-        "caused_by_user", "occurred_at", "company",
+        "id_short",
+        "event_type",
+        "aggregate_display",
+        "caused_by_user",
+        "occurred_at",
+        "company",
     ]
     list_filter = [
-        "company", "event_type", "aggregate_type",
-        "occurred_at", "external_source",
+        "company",
+        "event_type",
+        "aggregate_type",
+        "occurred_at",
+        "external_source",
     ]
     search_fields = [
-        "event_type", "aggregate_type",
-        "caused_by_user__email", "external_id",
+        "event_type",
+        "aggregate_type",
+        "caused_by_user__email",
+        "external_id",
     ]
     date_hierarchy = "occurred_at"
     list_select_related = ["company", "caused_by_user"]
     ordering = ["-occurred_at"]
 
     readonly_fields = [
-        "id", "company", "event_type", "aggregate_type", "aggregate_id",
-        "sequence", "data_formatted", "metadata_formatted", "schema_version",
-        "caused_by_user", "caused_by_event", "external_source", "external_id",
+        "id",
+        "company",
+        "event_type",
+        "aggregate_type",
+        "aggregate_id",
+        "sequence",
+        "data_formatted",
+        "metadata_formatted",
+        "schema_version",
+        "caused_by_user",
+        "caused_by_event",
+        "external_source",
+        "external_id",
         "occurred_at",
     ]
 
     fieldsets = (
-        ("Event Identity", {
-            "fields": ("id", "event_type", "schema_version"),
-        }),
-        ("Aggregate", {
-            "fields": ("aggregate_type", "aggregate_id", "sequence"),
-        }),
-        ("Payload", {
-            "fields": ("data_formatted",),
-        }),
-        ("Context", {
-            "fields": ("company", "caused_by_user", "caused_by_event"),
-        }),
-        ("Metadata", {
-            "fields": ("metadata_formatted",),
-            "classes": ("collapse",),
-        }),
-        ("External Source", {
-            "fields": ("external_source", "external_id"),
-            "classes": ("collapse",),
-        }),
-        ("Timestamp", {
-            "fields": ("occurred_at",),
-        }),
+        (
+            "Event Identity",
+            {
+                "fields": ("id", "event_type", "schema_version"),
+            },
+        ),
+        (
+            "Aggregate",
+            {
+                "fields": ("aggregate_type", "aggregate_id", "sequence"),
+            },
+        ),
+        (
+            "Payload",
+            {
+                "fields": ("data_formatted",),
+            },
+        ),
+        (
+            "Context",
+            {
+                "fields": ("company", "caused_by_user", "caused_by_event"),
+            },
+        ),
+        (
+            "Metadata",
+            {
+                "fields": ("metadata_formatted",),
+                "classes": ("collapse",),
+            },
+        ),
+        (
+            "External Source",
+            {
+                "fields": ("external_source", "external_id"),
+                "classes": ("collapse",),
+            },
+        ),
+        (
+            "Timestamp",
+            {
+                "fields": ("occurred_at",),
+            },
+        ),
     )
 
     def id_short(self, obj):
         """Display shortened UUID."""
         return str(obj.id)[:8] + "..."
+
     id_short.short_description = "ID"
 
     def aggregate_display(self, obj):
         """Display aggregate type and ID together."""
         return f"{obj.aggregate_type}#{obj.aggregate_id}"
+
     aggregate_display.short_description = "Aggregate"
 
     def data_formatted(self, obj):
@@ -86,6 +128,7 @@ class BusinessEventAdmin(admin.ModelAdmin):
             "<pre style='white-space: pre-wrap; max-width: 600px;'>{}</pre>",
             json.dumps(obj.data, indent=2, default=str),
         )
+
     data_formatted.short_description = "Data"
 
     def metadata_formatted(self, obj):
@@ -94,6 +137,7 @@ class BusinessEventAdmin(admin.ModelAdmin):
             "<pre style='white-space: pre-wrap; max-width: 600px;'>{}</pre>",
             json.dumps(obj.metadata, indent=2, default=str),
         )
+
     metadata_formatted.short_description = "Metadata"
 
     def has_add_permission(self, request):
@@ -114,8 +158,12 @@ class EventBookmarkAdmin(admin.ModelAdmin):
     """
 
     list_display = [
-        "consumer_name", "company", "last_event_short",
-        "last_processed_at", "is_paused", "error_count",
+        "consumer_name",
+        "company",
+        "last_event_short",
+        "last_processed_at",
+        "is_paused",
+        "error_count",
     ]
     list_filter = ["company", "is_paused", "consumer_name"]
     search_fields = ["consumer_name"]
@@ -123,19 +171,31 @@ class EventBookmarkAdmin(admin.ModelAdmin):
     ordering = ["consumer_name", "company"]
 
     fieldsets = (
-        (None, {
-            "fields": ("consumer_name", "company"),
-        }),
-        ("Progress", {
-            "fields": ("last_event", "last_processed_at"),
-        }),
-        ("Status", {
-            "fields": ("is_paused", "error_count", "last_error"),
-        }),
-        ("Timestamps", {
-            "fields": ("created_at", "updated_at"),
-            "classes": ("collapse",),
-        }),
+        (
+            None,
+            {
+                "fields": ("consumer_name", "company"),
+            },
+        ),
+        (
+            "Progress",
+            {
+                "fields": ("last_event", "last_processed_at"),
+            },
+        ),
+        (
+            "Status",
+            {
+                "fields": ("is_paused", "error_count", "last_error"),
+            },
+        ),
+        (
+            "Timestamps",
+            {
+                "fields": ("created_at", "updated_at"),
+                "classes": ("collapse",),
+            },
+        ),
     )
 
     readonly_fields = ["last_processed_at", "error_count", "last_error", "created_at", "updated_at"]
@@ -148,6 +208,7 @@ class EventBookmarkAdmin(admin.ModelAdmin):
         if obj.last_event:
             return str(obj.last_event.id)[:8] + "..."
         return "-"
+
     last_event_short.short_description = "Last Event"
 
     @admin.action(description="Pause selected consumers")

@@ -34,11 +34,12 @@ User = get_user_model()
 # Membership is_active Tests (Critical Fix)
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestMembershipIsActiveChecks:
     """
     Test that deactivated memberships don't grant permissions.
-    
+
     This tests the critical fix in accounts/models.py.
     """
 
@@ -109,11 +110,12 @@ class TestMembershipIsActiveChecks:
 # User.get_active_membership Tests (Critical Fix)
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestGetActiveMembership:
     """
     Test that get_active_membership respects is_active flag.
-    
+
     This tests the critical fix in accounts/models.py.
     """
 
@@ -165,6 +167,7 @@ class TestGetActiveMembership:
 # ActorContext and Authorization Tests
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestActorContext:
     """Test ActorContext creation and usage."""
@@ -201,6 +204,7 @@ class TestActorContext:
 # =============================================================================
 # Registration Command Tests
 # =============================================================================
+
 
 @pytest.mark.django_db
 class TestRegisterSignup:
@@ -280,6 +284,7 @@ class TestRegisterSignup:
 # Company Switching Tests
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestSwitchActiveCompany:
     """Test company switching command."""
@@ -329,6 +334,7 @@ class TestSwitchActiveCompany:
 # Membership Role Change Tests
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestUpdateMembershipRole:
     """Test membership role change command."""
@@ -361,6 +367,7 @@ class TestUpdateMembershipRole:
 # =============================================================================
 # Membership Deactivation Tests
 # =============================================================================
+
 
 @pytest.mark.django_db
 class TestDeactivateMembership:
@@ -399,6 +406,7 @@ class TestDeactivateMembership:
 # =============================================================================
 # Permission Grant/Revoke Tests
 # =============================================================================
+
 
 @pytest.mark.django_db
 class TestPermissionManagement:
@@ -470,6 +478,7 @@ class TestPermissionManagement:
 # =============================================================================
 # User Update Tests
 # =============================================================================
+
 
 @pytest.mark.django_db
 class TestUpdateUser:

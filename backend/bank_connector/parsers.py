@@ -26,10 +26,12 @@ def _detect_delimiter(text: str) -> str:
     """Auto-detect CSV delimiter by inspecting the first line."""
     first_line = text.split("\n", 1)[0]
     # Count candidate delimiters in the header line
-    candidates = [(",", first_line.count(",")),
-                  (";", first_line.count(";")),
-                  ("\t", first_line.count("\t")),
-                  ("|", first_line.count("|"))]
+    candidates = [
+        (",", first_line.count(",")),
+        (";", first_line.count(";")),
+        ("\t", first_line.count("\t")),
+        ("|", first_line.count("|")),
+    ]
     # Pick the one with the most occurrences (minimum 1)
     best = max(candidates, key=lambda c: c[1])
     return best[0] if best[1] > 0 else ","
@@ -100,19 +102,19 @@ def preview_csv(uploaded_file, max_rows: int = 5) -> dict:
 
 # Common date formats found in bank CSVs
 DATE_FORMATS = [
-    "%Y-%m-%d",       # 2024-08-15
-    "%d/%m/%Y",       # 15/08/2024
-    "%m/%d/%Y",       # 08/15/2024
-    "%d-%m-%Y",       # 15-08-2024
-    "%m-%d-%Y",       # 08-15-2024
-    "%d.%m.%Y",       # 15.08.2024
-    "%Y/%m/%d",       # 2024/08/15
-    "%d %b %Y",       # 15 Aug 2024
-    "%d %B %Y",       # 15 August 2024
-    "%b %d, %Y",      # Aug 15, 2024
-    "%a %b %d %Y",    # Wed Mar 04 2026 (CIB format)
-    "%a %d %b %Y",    # Wed 04 Mar 2026
-    "%B %d, %Y",      # August 15, 2024
+    "%Y-%m-%d",  # 2024-08-15
+    "%d/%m/%Y",  # 15/08/2024
+    "%m/%d/%Y",  # 08/15/2024
+    "%d-%m-%Y",  # 15-08-2024
+    "%m-%d-%Y",  # 08-15-2024
+    "%d.%m.%Y",  # 15.08.2024
+    "%Y/%m/%d",  # 2024/08/15
+    "%d %b %Y",  # 15 Aug 2024
+    "%d %B %Y",  # 15 August 2024
+    "%b %d, %Y",  # Aug 15, 2024
+    "%a %b %d %Y",  # Wed Mar 04 2026 (CIB format)
+    "%a %d %b %Y",  # Wed 04 Mar 2026
+    "%B %d, %Y",  # August 15, 2024
 ]
 
 

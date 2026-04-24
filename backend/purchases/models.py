@@ -26,6 +26,7 @@ from sales.models import Item, PostingProfile, TaxCode
 # Purchase Order
 # =============================================================================
 
+
 class PurchaseOrder(ProjectionWriteGuard):
     """
     Purchase Order header.
@@ -100,6 +101,7 @@ class PurchaseOrder(ProjectionWriteGuard):
 
     def recalculate_totals(self):
         from django.db.models import Sum
+
         totals = self.lines.aggregate(
             subtotal=Sum("gross_amount"),
             total_discount=Sum("discount_amount"),
@@ -184,6 +186,7 @@ class PurchaseOrderLine(ProjectionWriteGuard):
 # =============================================================================
 # Goods Receipt
 # =============================================================================
+
 
 class GoodsReceipt(ProjectionWriteGuard):
     """
@@ -272,6 +275,7 @@ class GoodsReceiptLine(ProjectionWriteGuard):
 # =============================================================================
 # Purchase Bill (existing)
 # =============================================================================
+
 
 class PurchaseBill(ProjectionWriteGuard):
     """
@@ -480,6 +484,7 @@ class PurchaseBill(ProjectionWriteGuard):
 # Purchase Credit Note (Vendor Return / Debit Note)
 # =============================================================================
 
+
 class PurchaseCreditNote(ProjectionWriteGuard):
     """
     Purchase Credit Note (Debit Note / Vendor Return).
@@ -551,7 +556,8 @@ class PurchaseCreditNote(ProjectionWriteGuard):
     posted_journal_entry = models.ForeignKey(
         "accounting.JournalEntry",
         on_delete=models.SET_NULL,
-        null=True, blank=True,
+        null=True,
+        blank=True,
         related_name="purchase_credit_notes",
     )
 
@@ -584,6 +590,7 @@ class PurchaseCreditNote(ProjectionWriteGuard):
 
     def recalculate_totals(self):
         from django.db.models import Sum
+
         totals = self.lines.aggregate(
             subtotal=Sum("gross_amount"),
             total_discount=Sum("discount_amount"),
@@ -618,7 +625,8 @@ class PurchaseCreditNoteLine(ProjectionWriteGuard):
     bill_line = models.ForeignKey(
         "purchases.PurchaseBillLine",
         on_delete=models.SET_NULL,
-        null=True, blank=True,
+        null=True,
+        blank=True,
         related_name="credit_note_lines",
     )
 

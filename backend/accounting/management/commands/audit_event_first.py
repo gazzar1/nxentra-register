@@ -21,6 +21,7 @@ Usage:
     # Single company
     python manage.py audit_event_first --company my-company
 """
+
 import json
 import logging
 import sys
@@ -75,10 +76,7 @@ class Command(BaseCommand):
             with rls_bypass():
                 result = self._audit_company(company)
 
-            has_violations = any(
-                c["severity"] == "CRITICAL" and c["count"] > 0
-                for c in result["checks"]
-            )
+            has_violations = any(c["severity"] == "CRITICAL" and c["count"] > 0 for c in result["checks"])
             if has_violations:
                 any_violation = True
 
@@ -91,9 +89,7 @@ class Command(BaseCommand):
             self._print_report(results)
 
         if strict and any_violation:
-            self.stderr.write(
-                self.style.ERROR("STRICT MODE: Event-first violations detected.")
-            )
+            self.stderr.write(self.style.ERROR("STRICT MODE: Event-first violations detected."))
             sys.exit(1)
 
     def _audit_company(self, company):
@@ -156,12 +152,16 @@ class Command(BaseCommand):
 
         # Events with caused_by_event that reference a different company
         # or where the parent event doesn't exist
-        dangling = BusinessEvent.objects.filter(
-            company=company,
-            caused_by_event__isnull=False,
-        ).exclude(
-            caused_by_event__company=company,
-        ).values_list("id", "caused_by_event_id")
+        dangling = (
+            BusinessEvent.objects.filter(
+                company=company,
+                caused_by_event__isnull=False,
+            )
+            .exclude(
+                caused_by_event__company=company,
+            )
+            .values_list("id", "caused_by_event_id")
+        )
 
         dangling_list = list(dangling[:20])
 
@@ -170,10 +170,7 @@ class Command(BaseCommand):
             "description": "Events with cross-company or invalid caused_by_event",
             "severity": "CRITICAL",
             "count": len(dangling_list),
-            "details": [
-                {"event_id": eid, "caused_by_event_id": pid}
-                for eid, pid in dangling_list
-            ],
+            "details": [{"event_id": eid, "caused_by_event_id": pid} for eid, pid in dangling_list],
         }
 
     def _check_projection_lag(self, company):
@@ -209,10 +206,12 @@ class Command(BaseCommand):
                 unprocessed = latest_event - last_seq
 
             if unprocessed > 0:
-                lagging.append({
-                    "consumer": bookmark.consumer_name,
-                    "unprocessed_events": unprocessed,
-                })
+                lagging.append(
+                    {
+                        "consumer": bookmark.consumer_name,
+                        "unprocessed_events": unprocessed,
+                    }
+                )
 
         return {
             "name": "projection_lag",
@@ -265,15 +264,19 @@ class Command(BaseCommand):
                 required = ["entry_public_id", "lines", "total_debit", "total_credit"]
                 missing = [f for f in required if f not in data]
                 if missing:
-                    invalid.append({
-                        "event_id": event.id,
-                        "reason": f"missing fields: {missing}",
-                    })
+                    invalid.append(
+                        {
+                            "event_id": event.id,
+                            "reason": f"missing fields: {missing}",
+                        }
+                    )
             except Exception as e:
-                invalid.append({
-                    "event_id": event.id,
-                    "reason": f"payload read error: {str(e)[:100]}",
-                })
+                invalid.append(
+                    {
+                        "event_id": event.id,
+                        "reason": f"payload read error: {str(e)[:100]}",
+                    }
+                )
 
         return {
             "name": "event_payload_integrity",
@@ -325,8 +328,5 @@ class Command(BaseCommand):
 
         total = len(results)
         passed = sum(1 for r in results if r["status"] == "PASS")
-        self.stdout.write(
-            f"  Total: {total} companies, {passed} passed, "
-            f"{total - passed} with issues"
-        )
+        self.stdout.write(f"  Total: {total} companies, {passed} passed, {total - passed} with issues")
         self.stdout.write("")

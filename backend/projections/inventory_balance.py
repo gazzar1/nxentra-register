@@ -272,9 +272,7 @@ class InventoryBalanceProjection(BaseProjection):
                     warehouse=warehouse,
                 )
             except InventoryBalance.DoesNotExist:
-                logger.error(
-                    f"No inventory balance for {item.code}@{warehouse.code} in event {event.id}"
-                )
+                logger.error(f"No inventory balance for {item.code}@{warehouse.code} in event {event.id}")
                 return
 
             # Note: Event-level idempotency is handled by ProjectionAppliedEvent
@@ -289,8 +287,7 @@ class InventoryBalanceProjection(BaseProjection):
             balance.save()
 
             logger.debug(
-                f"Applied issue to {item.code}@{warehouse.code}: "
-                f"qty={qty_to_issue}, new_qty={balance.qty_on_hand}"
+                f"Applied issue to {item.code}@{warehouse.code}: qty={qty_to_issue}, new_qty={balance.qty_on_hand}"
             )
 
     def _clear_projected_data(self, company: Company) -> None:
@@ -378,22 +375,21 @@ class InventoryBalanceProjection(BaseProjection):
             warehouse_summary[wh_code]["total_value"] += balance.stock_value
             total_value += balance.stock_value
 
-            items.append({
-                "code": balance.item.code,
-                "name": balance.item.name,
-                "warehouse": wh_code,
-                "qty": str(balance.qty_on_hand),
-                "avg_cost": str(balance.avg_cost),
-                "value": str(balance.stock_value),
-            })
+            items.append(
+                {
+                    "code": balance.item.code,
+                    "name": balance.item.name,
+                    "warehouse": wh_code,
+                    "qty": str(balance.qty_on_hand),
+                    "avg_cost": str(balance.avg_cost),
+                    "value": str(balance.stock_value),
+                }
+            )
 
         return {
             "total_items": len(items),
             "total_value": str(total_value),
-            "warehouses": [
-                {**wh, "total_value": str(wh["total_value"])}
-                for wh in warehouse_summary.values()
-            ],
+            "warehouses": [{**wh, "total_value": str(wh["total_value"])} for wh in warehouse_summary.values()],
             "items": items,
         }
 
@@ -465,9 +461,7 @@ class InventoryBalanceProjection(BaseProjection):
                 events_processed += 1
 
         # Compare against projected balances
-        balances = InventoryBalance.objects.filter(company=company).select_related(
-            "item", "warehouse"
-        )
+        balances = InventoryBalance.objects.filter(company=company).select_related("item", "warehouse")
 
         mismatches = []
         verified = 0
@@ -481,14 +475,16 @@ class InventoryBalanceProjection(BaseProjection):
             cost_match = abs(balance.avg_cost - exp["avg_cost"]) < Decimal("0.000001")
 
             if not qty_match or not cost_match:
-                mismatches.append({
-                    "item_code": balance.item.code,
-                    "warehouse_code": balance.warehouse.code,
-                    "projected_qty": str(balance.qty_on_hand),
-                    "projected_avg_cost": str(balance.avg_cost),
-                    "expected_qty": str(exp["qty"]),
-                    "expected_avg_cost": str(exp["avg_cost"]),
-                })
+                mismatches.append(
+                    {
+                        "item_code": balance.item.code,
+                        "warehouse_code": balance.warehouse.code,
+                        "projected_qty": str(balance.qty_on_hand),
+                        "projected_avg_cost": str(balance.avg_cost),
+                        "expected_qty": str(exp["qty"]),
+                        "expected_avg_cost": str(exp["avg_cost"]),
+                    }
+                )
             else:
                 verified += 1
 

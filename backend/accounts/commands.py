@@ -3379,7 +3379,7 @@ def complete_onboarding(
         from projections.write_barrier import projection_writes_allowed
 
         with projection_writes_allowed():
-            fy, fy_created = FiscalYear.objects.get_or_create(
+            _fy, fy_created = FiscalYear.objects.get_or_create(
                 company=company,
                 fiscal_year=fiscal_year,
                 defaults={

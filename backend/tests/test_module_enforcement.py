@@ -110,9 +110,7 @@ class TestModuleEnforcementBackend:
             )
 
         # Disable the module
-        CompanyModule.objects.filter(
-            company=module_company, module_key="clinic"
-        ).update(is_enabled=False)
+        CompanyModule.objects.filter(company=module_company, module_key="clinic").update(is_enabled=False)
 
         # API should be blocked
         response = module_client.get("/api/clinic/patients/")

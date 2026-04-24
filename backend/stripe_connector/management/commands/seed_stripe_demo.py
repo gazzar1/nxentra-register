@@ -50,10 +50,21 @@ CHARGE_DESCRIPTIONS = [
 ]
 
 CHARGE_AMOUNTS = [
-    Decimal("29.00"), Decimal("49.00"), Decimal("99.00"), Decimal("149.00"),
-    Decimal("199.00"), Decimal("299.00"), Decimal("499.00"), Decimal("19.00"),
-    Decimal("79.00"), Decimal("39.00"), Decimal("249.00"), Decimal("599.00"),
-    Decimal("9.99"), Decimal("14.99"), Decimal("59.00"),
+    Decimal("29.00"),
+    Decimal("49.00"),
+    Decimal("99.00"),
+    Decimal("149.00"),
+    Decimal("199.00"),
+    Decimal("299.00"),
+    Decimal("499.00"),
+    Decimal("19.00"),
+    Decimal("79.00"),
+    Decimal("39.00"),
+    Decimal("249.00"),
+    Decimal("599.00"),
+    Decimal("9.99"),
+    Decimal("14.99"),
+    Decimal("59.00"),
 ]
 
 DEMO_ACCOUNTS = [
@@ -66,9 +77,18 @@ DEMO_ACCOUNTS = [
 ]
 
 CUSTOMER_NAMES = [
-    "Acme Corp", "TechStart Inc", "Global Widgets", "DataFlow Systems",
-    "CloudNine SaaS", "Pinnacle Software", "Vertex Analytics", "Horizon Labs",
-    "Nexus Digital", "Summit Solutions", "Atlas Ventures", "Quantum Logic",
+    "Acme Corp",
+    "TechStart Inc",
+    "Global Widgets",
+    "DataFlow Systems",
+    "CloudNine SaaS",
+    "Pinnacle Software",
+    "Vertex Analytics",
+    "Horizon Labs",
+    "Nexus Digital",
+    "Summit Solutions",
+    "Atlas Ventures",
+    "Quantum Logic",
 ]
 
 
@@ -77,15 +97,19 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument(
-            "--company-id", type=int, default=None,
+            "--company-id",
+            type=int,
+            default=None,
             help="Company ID to seed data for (defaults to first company)",
         )
         parser.add_argument(
-            "--flush", action="store_true",
+            "--flush",
+            action="store_true",
             help="Delete existing demo data before seeding",
         )
         parser.add_argument(
-            "--flush-only", action="store_true",
+            "--flush-only",
+            action="store_true",
             help="Delete existing Stripe demo data before seeding",
         )
 
@@ -117,10 +141,12 @@ class Command(BaseCommand):
         self._create_refund(company, charges)
         self._create_payouts(company, account, charges)
 
-        self.stdout.write(self.style.SUCCESS(
-            f"Done! Created {len(charges)} charges, 1 refund, and payouts. "
-            f"Visit /stripe/reconciliation to see the dashboard."
-        ))
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"Done! Created {len(charges)} charges, 1 refund, and payouts. "
+                f"Visit /stripe/reconciliation to see the dashboard."
+            )
+        )
 
     def _flush(self, company):
         count, _ = StripePayoutTransaction.objects.filter(company=company).delete()
@@ -200,9 +226,7 @@ class Command(BaseCommand):
                     "customer_email": f"{customer.lower().replace(' ', '.')}@example.com",
                     "customer_name": customer,
                     "charge_date": charge_date,
-                    "stripe_created_at": datetime.combine(
-                        charge_date, datetime.min.time(), tzinfo=UTC
-                    ),
+                    "stripe_created_at": datetime.combine(charge_date, datetime.min.time(), tzinfo=UTC),
                     "status": "PROCESSED",
                 },
             )
@@ -227,7 +251,8 @@ class Command(BaseCommand):
                 "reason": "requested_by_customer",
                 "stripe_created_at": datetime.combine(
                     charge.charge_date + timedelta(days=3),
-                    datetime.min.time(), tzinfo=UTC,
+                    datetime.min.time(),
+                    tzinfo=UTC,
                 ),
                 "status": "PROCESSED",
             },

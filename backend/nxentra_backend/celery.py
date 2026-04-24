@@ -14,6 +14,7 @@ Usage:
     # Start both (development only)
     celery -A nxentra_backend worker -B -l INFO
 """
+
 import os
 
 from celery import Celery

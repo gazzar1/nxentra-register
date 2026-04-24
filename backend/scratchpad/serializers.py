@@ -17,20 +17,16 @@ from .models import AccountDimensionRule, ScratchpadRow, ScratchpadRowDimension
 # Dimension Serializers
 # =============================================================================
 
+
 class ScratchpadRowDimensionSerializer(serializers.ModelSerializer):
     """Serializer for dimension values on a scratchpad row."""
+
     dimension_id = serializers.IntegerField(source="dimension.id", read_only=True)
     dimension_code = serializers.CharField(source="dimension.code", read_only=True)
     dimension_name = serializers.CharField(source="dimension.name", read_only=True)
-    dimension_value_id = serializers.IntegerField(
-        source="dimension_value.id", read_only=True, default=None
-    )
-    dimension_value_code = serializers.CharField(
-        source="dimension_value.code", read_only=True, default=None
-    )
-    dimension_value_name = serializers.CharField(
-        source="dimension_value.name", read_only=True, default=None
-    )
+    dimension_value_id = serializers.IntegerField(source="dimension_value.id", read_only=True, default=None)
+    dimension_value_code = serializers.CharField(source="dimension_value.code", read_only=True, default=None)
+    dimension_value_name = serializers.CharField(source="dimension_value.name", read_only=True, default=None)
 
     class Meta:
         model = ScratchpadRowDimension
@@ -57,6 +53,7 @@ class ScratchpadRowDimensionSerializer(serializers.ModelSerializer):
 
 class ScratchpadRowDimensionInputSerializer(serializers.Serializer):
     """Input serializer for creating/updating dimension values."""
+
     dimension_id = serializers.IntegerField()
     dimension_value_id = serializers.IntegerField(required=False, allow_null=True)
     raw_value = serializers.CharField(required=False, allow_blank=True, default="")
@@ -66,30 +63,18 @@ class ScratchpadRowDimensionInputSerializer(serializers.Serializer):
 # ScratchpadRow Serializers
 # =============================================================================
 
+
 class ScratchpadRowSerializer(serializers.ModelSerializer):
     """Serializer for ScratchpadRow - used for list/retrieve."""
+
     dimensions = ScratchpadRowDimensionSerializer(many=True, read_only=True)
-    debit_account_id = serializers.IntegerField(
-        source="debit_account.id", read_only=True, default=None
-    )
-    debit_account_code = serializers.CharField(
-        source="debit_account.code", read_only=True, default=None
-    )
-    debit_account_name = serializers.CharField(
-        source="debit_account.name", read_only=True, default=None
-    )
-    credit_account_id = serializers.IntegerField(
-        source="credit_account.id", read_only=True, default=None
-    )
-    credit_account_code = serializers.CharField(
-        source="credit_account.code", read_only=True, default=None
-    )
-    credit_account_name = serializers.CharField(
-        source="credit_account.name", read_only=True, default=None
-    )
-    created_by_email = serializers.CharField(
-        source="created_by.email", read_only=True, default=None
-    )
+    debit_account_id = serializers.IntegerField(source="debit_account.id", read_only=True, default=None)
+    debit_account_code = serializers.CharField(source="debit_account.code", read_only=True, default=None)
+    debit_account_name = serializers.CharField(source="debit_account.name", read_only=True, default=None)
+    credit_account_id = serializers.IntegerField(source="credit_account.id", read_only=True, default=None)
+    credit_account_code = serializers.CharField(source="credit_account.code", read_only=True, default=None)
+    credit_account_name = serializers.CharField(source="credit_account.name", read_only=True, default=None)
+    created_by_email = serializers.CharField(source="created_by.email", read_only=True, default=None)
 
     class Meta:
         model = ScratchpadRow
@@ -142,6 +127,7 @@ class ScratchpadRowSerializer(serializers.ModelSerializer):
 
 class ScratchpadRowCreateSerializer(serializers.Serializer):
     """Serializer for creating a new scratchpad row."""
+
     group_id = serializers.UUIDField(required=False, allow_null=True)
     group_order = serializers.IntegerField(required=False, default=0)
     source = serializers.ChoiceField(
@@ -151,9 +137,7 @@ class ScratchpadRowCreateSerializer(serializers.Serializer):
     transaction_date = serializers.DateField(required=False, allow_null=True)
     description = serializers.CharField(required=False, allow_blank=True, default="")
     description_ar = serializers.CharField(required=False, allow_blank=True, default="")
-    amount = serializers.DecimalField(
-        max_digits=18, decimal_places=2, required=False, allow_null=True
-    )
+    amount = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, allow_null=True)
     debit_account_id = serializers.IntegerField(required=False, allow_null=True)
     credit_account_id = serializers.IntegerField(required=False, allow_null=True)
     notes = serializers.CharField(required=False, allow_blank=True, default="")
@@ -163,14 +147,13 @@ class ScratchpadRowCreateSerializer(serializers.Serializer):
 
 class ScratchpadRowUpdateSerializer(serializers.Serializer):
     """Serializer for updating a scratchpad row."""
+
     group_id = serializers.UUIDField(required=False, allow_null=True)
     group_order = serializers.IntegerField(required=False)
     transaction_date = serializers.DateField(required=False, allow_null=True)
     description = serializers.CharField(required=False, allow_blank=True)
     description_ar = serializers.CharField(required=False, allow_blank=True)
-    amount = serializers.DecimalField(
-        max_digits=18, decimal_places=2, required=False, allow_null=True
-    )
+    amount = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, allow_null=True)
     debit_account_id = serializers.IntegerField(required=False, allow_null=True)
     credit_account_id = serializers.IntegerField(required=False, allow_null=True)
     notes = serializers.CharField(required=False, allow_blank=True)
@@ -179,12 +162,14 @@ class ScratchpadRowUpdateSerializer(serializers.Serializer):
 
 class ScratchpadBulkCreateSerializer(serializers.Serializer):
     """Serializer for bulk creating scratchpad rows."""
+
     rows = ScratchpadRowCreateSerializer(many=True)
     group_id = serializers.UUIDField(required=False, allow_null=True)
 
 
 class ScratchpadBulkDeleteSerializer(serializers.Serializer):
     """Serializer for bulk deleting scratchpad rows."""
+
     row_ids = serializers.ListField(
         child=serializers.UUIDField(),
         min_length=1,
@@ -195,8 +180,10 @@ class ScratchpadBulkDeleteSerializer(serializers.Serializer):
 # Validation Serializers
 # =============================================================================
 
+
 class ScratchpadValidateSerializer(serializers.Serializer):
     """Serializer for validation request."""
+
     row_ids = serializers.ListField(
         child=serializers.UUIDField(),
         required=False,
@@ -211,6 +198,7 @@ class ScratchpadValidateSerializer(serializers.Serializer):
 
 class ValidationErrorSerializer(serializers.Serializer):
     """Serializer for a single validation error."""
+
     field = serializers.CharField()
     code = serializers.CharField()
     message = serializers.CharField()
@@ -218,6 +206,7 @@ class ValidationErrorSerializer(serializers.Serializer):
 
 class ValidationResultSerializer(serializers.Serializer):
     """Serializer for validation result per row."""
+
     row_id = serializers.UUIDField()
     status = serializers.CharField()
     errors = ValidationErrorSerializer(many=True)
@@ -225,6 +214,7 @@ class ValidationResultSerializer(serializers.Serializer):
 
 class ScratchpadValidateResponseSerializer(serializers.Serializer):
     """Serializer for validation response."""
+
     valid_count = serializers.IntegerField()
     invalid_count = serializers.IntegerField()
     results = ValidationResultSerializer(many=True)
@@ -234,8 +224,10 @@ class ScratchpadValidateResponseSerializer(serializers.Serializer):
 # Commit Serializers
 # =============================================================================
 
+
 class ScratchpadCommitSerializer(serializers.Serializer):
     """Serializer for commit request."""
+
     group_ids = serializers.ListField(
         child=serializers.UUIDField(),
         min_length=1,
@@ -245,6 +237,7 @@ class ScratchpadCommitSerializer(serializers.Serializer):
 
 class CommittedEntrySerializer(serializers.Serializer):
     """Serializer for a committed journal entry."""
+
     group_id = serializers.UUIDField()
     entry_id = serializers.IntegerField()
     entry_public_id = serializers.UUIDField()
@@ -252,6 +245,7 @@ class CommittedEntrySerializer(serializers.Serializer):
 
 class ScratchpadCommitResponseSerializer(serializers.Serializer):
     """Serializer for commit response."""
+
     batch_id = serializers.UUIDField()
     committed_groups = serializers.IntegerField()
     journal_entries = CommittedEntrySerializer(many=True)
@@ -261,8 +255,10 @@ class ScratchpadCommitResponseSerializer(serializers.Serializer):
 # Import/Export Serializers
 # =============================================================================
 
+
 class ColumnMappingSerializer(serializers.Serializer):
     """Serializer for column mapping in imports."""
+
     date = serializers.CharField(required=False, allow_blank=True)
     description = serializers.CharField(required=False, allow_blank=True)
     amount = serializers.CharField(required=False, allow_blank=True)
@@ -274,6 +270,7 @@ class ColumnMappingSerializer(serializers.Serializer):
 
 class ImportPreviewRowSerializer(serializers.Serializer):
     """Serializer for import preview row."""
+
     row_number = serializers.IntegerField()
     data = serializers.DictField()
     errors = serializers.ListField(child=serializers.CharField(), default=list)
@@ -281,6 +278,7 @@ class ImportPreviewRowSerializer(serializers.Serializer):
 
 class ImportPreviewResponseSerializer(serializers.Serializer):
     """Serializer for import preview response."""
+
     columns = serializers.ListField(child=serializers.CharField())
     sample_rows = ImportPreviewRowSerializer(many=True)
     total_rows = serializers.IntegerField()
@@ -288,6 +286,7 @@ class ImportPreviewResponseSerializer(serializers.Serializer):
 
 class ImportResultSerializer(serializers.Serializer):
     """Serializer for import result."""
+
     import_batch_id = serializers.UUIDField()
     rows_created = serializers.IntegerField()
     rows_with_errors = serializers.IntegerField()
@@ -298,15 +297,15 @@ class ImportResultSerializer(serializers.Serializer):
 # Account Dimension Rule Serializers
 # =============================================================================
 
+
 class AccountDimensionRuleSerializer(serializers.ModelSerializer):
     """Serializer for AccountDimensionRule."""
+
     account_code = serializers.CharField(source="account.code", read_only=True)
     account_name = serializers.CharField(source="account.name", read_only=True)
     dimension_code = serializers.CharField(source="dimension.code", read_only=True)
     dimension_name = serializers.CharField(source="dimension.name", read_only=True)
-    default_value_code = serializers.CharField(
-        source="default_value.code", read_only=True, default=None
-    )
+    default_value_code = serializers.CharField(source="default_value.code", read_only=True, default=None)
 
     class Meta:
         model = AccountDimensionRule
@@ -334,6 +333,7 @@ class AccountDimensionRuleSerializer(serializers.ModelSerializer):
 
 class AccountDimensionRuleCreateSerializer(serializers.Serializer):
     """Serializer for creating AccountDimensionRule."""
+
     account_id = serializers.IntegerField()
     dimension_id = serializers.IntegerField()
     rule_type = serializers.ChoiceField(choices=AccountDimensionRule.RuleType.choices)
@@ -344,8 +344,10 @@ class AccountDimensionRuleCreateSerializer(serializers.Serializer):
 # Dimension Schema Serializers
 # =============================================================================
 
+
 class DimensionValueSchema(serializers.Serializer):
     """Schema for a dimension value."""
+
     id = serializers.IntegerField()
     code = serializers.CharField()
     name = serializers.CharField()
@@ -354,6 +356,7 @@ class DimensionValueSchema(serializers.Serializer):
 
 class DimensionSchema(serializers.Serializer):
     """Schema for a dimension type."""
+
     id = serializers.IntegerField()
     code = serializers.CharField()
     name = serializers.CharField()
@@ -366,12 +369,14 @@ class DimensionSchema(serializers.Serializer):
 
 class DimensionSchemaResponseSerializer(serializers.Serializer):
     """Schema response for frontend."""
+
     dimensions = DimensionSchema(many=True)
 
 
 # =============================================================================
 # Voice Parsing Serializers
 # =============================================================================
+
 
 class VoiceParseRequestSerializer(serializers.Serializer):
     """
@@ -381,6 +386,7 @@ class VoiceParseRequestSerializer(serializers.Serializer):
     1. Audio file upload (multipart/form-data)
     2. Text transcript (JSON body)
     """
+
     # For text-based parsing (JSON body)
     transcript = serializers.CharField(
         required=False,
@@ -409,12 +415,11 @@ class VoiceParseRequestSerializer(serializers.Serializer):
 
 class ParsedTransactionSerializer(serializers.Serializer):
     """Serializer for a single parsed transaction from voice input."""
+
     transaction_date = serializers.DateField(allow_null=True)
     description = serializers.CharField(allow_blank=True)
     description_ar = serializers.CharField(allow_blank=True)
-    amount = serializers.DecimalField(
-        max_digits=18, decimal_places=2, allow_null=True
-    )
+    amount = serializers.DecimalField(max_digits=18, decimal_places=2, allow_null=True)
     debit_account_code = serializers.CharField(allow_null=True, allow_blank=True)
     credit_account_code = serializers.CharField(allow_null=True, allow_blank=True)
     dimensions = serializers.DictField(
@@ -435,6 +440,7 @@ class ParsedTransactionSerializer(serializers.Serializer):
 
 class VoiceParseResponseSerializer(serializers.Serializer):
     """Serializer for voice parsing response."""
+
     success = serializers.BooleanField()
     transcript = serializers.CharField(allow_blank=True)
     transactions = ParsedTransactionSerializer(many=True)
@@ -454,12 +460,11 @@ class CreateFromParsedTransactionSerializer(serializers.Serializer):
     This is used when the frontend has already received parsed data and wants
     to create rows without re-parsing (avoiding double API calls).
     """
+
     transaction_date = serializers.DateField(required=False, allow_null=True)
     description = serializers.CharField(required=False, allow_blank=True, default="")
     description_ar = serializers.CharField(required=False, allow_blank=True, default="")
-    amount = serializers.DecimalField(
-        max_digits=18, decimal_places=2, required=False, allow_null=True
-    )
+    amount = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, allow_null=True)
     debit_account_code = serializers.CharField(required=False, allow_null=True, allow_blank=True)
     credit_account_code = serializers.CharField(required=False, allow_null=True, allow_blank=True)
     dimensions = serializers.DictField(
@@ -487,6 +492,7 @@ class CreateFromParsedRequestSerializer(serializers.Serializer):
 
     Instead, step 3 can call this endpoint with the already-parsed data.
     """
+
     transactions = CreateFromParsedTransactionSerializer(many=True, min_length=1)
     transcript = serializers.CharField(required=False, allow_blank=True, default="")
     group_id = serializers.UUIDField(required=False, allow_null=True)
@@ -496,8 +502,10 @@ class CreateFromParsedRequestSerializer(serializers.Serializer):
 # Voice Usage Serializers
 # =============================================================================
 
+
 class VoiceUsageEventSerializer(serializers.Serializer):
     """Serializer for individual voice usage events."""
+
     id = serializers.IntegerField()
     public_id = serializers.UUIDField()
     user_id = serializers.IntegerField()
@@ -518,6 +526,7 @@ class VoiceUsageEventSerializer(serializers.Serializer):
 
 class VoiceUsageUserSummarySerializer(serializers.Serializer):
     """Aggregated usage per user."""
+
     user_id = serializers.IntegerField()
     user_email = serializers.CharField()
     total_requests = serializers.IntegerField()
@@ -532,6 +541,7 @@ class VoiceUsageUserSummarySerializer(serializers.Serializer):
 
 class VoiceUsageDailySummarySerializer(serializers.Serializer):
     """Daily usage summary."""
+
     date = serializers.DateField()
     total_requests = serializers.IntegerField()
     successful_requests = serializers.IntegerField()
@@ -542,6 +552,7 @@ class VoiceUsageDailySummarySerializer(serializers.Serializer):
 
 class VoiceUsageSummaryResponseSerializer(serializers.Serializer):
     """Complete usage summary response."""
+
     company_totals = serializers.DictField()
     per_user = VoiceUsageUserSummarySerializer(many=True)
     daily = VoiceUsageDailySummarySerializer(many=True)

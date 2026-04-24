@@ -17,6 +17,7 @@ Usage:
     # Fail if critical exceptions exist (for CI gates)
     python manage.py scan_exceptions --strict
 """
+
 import json
 import sys
 
@@ -99,13 +100,10 @@ class Command(BaseCommand):
                     else self.style.SUCCESS("  OK")
                 )
                 self.stdout.write(
-                    f"  {r['company']}: {status_str}  "
-                    f"created={r['created']} resolved={r['resolved']} open={r['open']}"
+                    f"  {r['company']}: {status_str}  created={r['created']} resolved={r['resolved']} open={r['open']}"
                 )
             self.stdout.write("")
 
         if strict and any_critical:
-            self.stderr.write(
-                self.style.ERROR("STRICT MODE: Critical reconciliation exceptions found.")
-            )
+            self.stderr.write(self.style.ERROR("STRICT MODE: Critical reconciliation exceptions found."))
             sys.exit(1)

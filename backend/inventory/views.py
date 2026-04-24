@@ -93,6 +93,7 @@ class WarehouseViewSet(viewsets.ModelViewSet):
             )
         except Exception as e:
             import traceback
+
             traceback.print_exc()
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -153,9 +154,7 @@ class InventoryBalanceViewSet(viewsets.ReadOnlyModelViewSet):
         if not company:
             return InventoryBalance.objects.none()
 
-        queryset = InventoryBalance.objects.filter(company=company).select_related(
-            "item", "warehouse"
-        )
+        queryset = InventoryBalance.objects.filter(company=company).select_related("item", "warehouse")
 
         # Manual filtering
         item_code = self.request.query_params.get("item_code")
@@ -293,12 +292,14 @@ class InventoryAdjustmentViewSet(viewsets.ViewSet):
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
-            lines.append({
-                "item": item,
-                "warehouse": warehouse,
-                "qty_delta": line_data["qty_delta"],
-                "unit_cost": line_data.get("unit_cost"),
-            })
+            lines.append(
+                {
+                    "item": item,
+                    "warehouse": warehouse,
+                    "qty_delta": line_data["qty_delta"],
+                    "unit_cost": line_data.get("unit_cost"),
+                }
+            )
 
         result = adjust_inventory(
             actor=resolve_actor(request),
@@ -311,11 +312,14 @@ class InventoryAdjustmentViewSet(viewsets.ViewSet):
         if not result.success:
             return Response({"error": result.error}, status=status.HTTP_400_BAD_REQUEST)
 
-        return Response({
-            "adjustment_public_id": result.data["adjustment_public_id"],
-            "journal_entry_public_id": str(result.data["journal_entry"].public_id),
-            "entry_count": len(result.data["entries"]),
-        }, status=status.HTTP_201_CREATED)
+        return Response(
+            {
+                "adjustment_public_id": result.data["adjustment_public_id"],
+                "journal_entry_public_id": str(result.data["journal_entry"].public_id),
+                "entry_count": len(result.data["entries"]),
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class InventoryOpeningBalanceViewSet(viewsets.ViewSet):
@@ -358,30 +362,33 @@ class InventoryOpeningBalanceViewSet(viewsets.ViewSet):
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
-            lines.append({
-                "item": item,
-                "warehouse": warehouse,
-                "qty": line_data["qty"],
-                "unit_cost": line_data["unit_cost"],
-            })
+            lines.append(
+                {
+                    "item": item,
+                    "warehouse": warehouse,
+                    "qty": line_data["qty"],
+                    "unit_cost": line_data["unit_cost"],
+                }
+            )
 
         result = record_opening_balance(
             actor=resolve_actor(request),
             as_of_date=serializer.validated_data["as_of_date"],
             lines=lines,
-            opening_balance_equity_account_id=serializer.validated_data[
-                "opening_balance_equity_account_id"
-            ],
+            opening_balance_equity_account_id=serializer.validated_data["opening_balance_equity_account_id"],
         )
 
         if not result.success:
             return Response({"error": result.error}, status=status.HTTP_400_BAD_REQUEST)
 
-        return Response({
-            "opening_public_id": result.data["opening_public_id"],
-            "journal_entry_public_id": str(result.data["journal_entry"].public_id),
-            "entry_count": len(result.data["entries"]),
-        }, status=status.HTTP_201_CREATED)
+        return Response(
+            {
+                "opening_public_id": result.data["opening_public_id"],
+                "journal_entry_public_id": str(result.data["journal_entry"].public_id),
+                "entry_count": len(result.data["entries"]),
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class StockAvailabilityViewSet(viewsets.ViewSet):
@@ -435,26 +442,24 @@ class StockAvailabilityViewSet(viewsets.ViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        is_available, error = check_stock_availability(
-            company, item, warehouse, qty_requested
-        )
+        is_available, error = check_stock_availability(company, item, warehouse, qty_requested)
 
         # Get current balance
         try:
-            balance = InventoryBalance.objects.get(
-                company=company, item=item, warehouse=warehouse
-            )
+            balance = InventoryBalance.objects.get(company=company, item=item, warehouse=warehouse)
             qty_on_hand = balance.qty_on_hand
         except InventoryBalance.DoesNotExist:
             qty_on_hand = Decimal("0")
 
-        return Response({
-            "item_public_id": str(item.public_id),
-            "item_code": item.code,
-            "warehouse_public_id": str(warehouse.public_id),
-            "warehouse_code": warehouse.code,
-            "qty_on_hand": str(qty_on_hand),
-            "qty_requested": str(qty_requested),
-            "is_available": is_available,
-            "error": error if not is_available else None,
-        })
+        return Response(
+            {
+                "item_public_id": str(item.public_id),
+                "item_code": item.code,
+                "warehouse_public_id": str(warehouse.public_id),
+                "warehouse_code": warehouse.code,
+                "qty_on_hand": str(qty_on_hand),
+                "qty_requested": str(qty_requested),
+                "is_available": is_available,
+                "error": error if not is_available else None,
+            }
+        )

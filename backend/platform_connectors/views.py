@@ -68,6 +68,7 @@ class PlatformWebhookView(APIView):
     No authentication — platforms send these directly with their own
     verification mechanisms (HMAC, signing secrets, etc.).
     """
+
     permission_classes = [AllowAny]
     authentication_classes = []
 
@@ -85,9 +86,7 @@ class PlatformWebhookView(APIView):
         # Step 2: Resolve company from the webhook
         company = connector.resolve_company_from_webhook(request)
         if not company:
-            logger.warning(
-                "Could not resolve company from %s webhook", platform_slug
-            )
+            logger.warning("Could not resolve company from %s webhook", platform_slug)
             return HttpResponse(status=200)  # Acknowledge but skip
 
         # Step 3: Parse topic
@@ -104,9 +103,9 @@ class PlatformWebhookView(APIView):
             return HttpResponse(status=400)
 
         # Step 5: Map topic to canonical handler
-        canonical_topic = connector.map_topic_to_canonical(topic) if hasattr(
-            connector, "map_topic_to_canonical"
-        ) else None
+        canonical_topic = (
+            connector.map_topic_to_canonical(topic) if hasattr(connector, "map_topic_to_canonical") else None
+        )
 
         if not canonical_topic or canonical_topic not in TOPIC_HANDLERS:
             logger.info("Unhandled %s webhook topic: %s", platform_slug, topic)
@@ -117,17 +116,13 @@ class PlatformWebhookView(APIView):
         # Step 6: Parse platform payload → canonical dataclass
         parser = getattr(connector, parse_method, None)
         if not parser:
-            logger.warning(
-                "Connector %s has no %s method", platform_slug, parse_method
-            )
+            logger.warning("Connector %s has no %s method", platform_slug, parse_method)
             return HttpResponse(status=200)
 
         try:
             parsed = parser(payload)
         except Exception:
-            logger.exception(
-                "Error parsing %s webhook topic %s", platform_slug, topic
-            )
+            logger.exception("Error parsing %s webhook topic %s", platform_slug, topic)
             return HttpResponse(status=500)
 
         if parsed is None:
@@ -136,9 +131,7 @@ class PlatformWebhookView(APIView):
 
         # Step 7: Convert parsed canonical to event data and emit
         try:
-            event_data = _canonical_to_event_data(
-                parsed, data_class, platform_slug
-            )
+            event_data = _canonical_to_event_data(parsed, data_class, platform_slug)
             aggregate_id = _extract_aggregate_id(parsed)
 
             business_event = emit_event_no_actor(
@@ -152,12 +145,13 @@ class PlatformWebhookView(APIView):
 
             logger.info(
                 "Emitted %s for %s (company=%s, id=%s)",
-                event_type, platform_slug, company, aggregate_id,
+                event_type,
+                platform_slug,
+                company,
+                aggregate_id,
             )
         except Exception:
-            logger.exception(
-                "Error emitting event for %s webhook %s", platform_slug, topic
-            )
+            logger.exception("Error emitting event for %s webhook %s", platform_slug, topic)
             return HttpResponse(status=500)
 
         # Step 8: Store platform-specific local record for reconciliation
@@ -173,7 +167,8 @@ class PlatformWebhookView(APIView):
         except Exception:
             logger.exception(
                 "Error storing local record for %s webhook %s (event emitted OK)",
-                platform_slug, topic,
+                platform_slug,
+                topic,
             )
             # Don't fail the webhook — event was already emitted successfully
 
@@ -210,8 +205,10 @@ def _canonical_to_event_data(parsed, data_class, platform_slug):
         elif f.name == "document_ref":
             # Use the platform-specific ID as document_ref
             for ref_field in (
-                "platform_order_id", "platform_refund_id",
-                "platform_payout_id", "platform_dispute_id",
+                "platform_order_id",
+                "platform_refund_id",
+                "platform_payout_id",
+                "platform_dispute_id",
                 "platform_fulfillment_id",
             ):
                 if parsed_dict.get(ref_field):
@@ -224,8 +221,11 @@ def _canonical_to_event_data(parsed, data_class, platform_slug):
 def _extract_aggregate_id(parsed) -> str:
     """Extract a stable ID from a parsed canonical object."""
     for attr in (
-        "platform_order_id", "platform_refund_id", "platform_payout_id",
-        "platform_dispute_id", "platform_fulfillment_id",
+        "platform_order_id",
+        "platform_refund_id",
+        "platform_payout_id",
+        "platform_dispute_id",
+        "platform_fulfillment_id",
     ):
         val = getattr(parsed, attr, None)
         if val:

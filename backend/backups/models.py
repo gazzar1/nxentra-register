@@ -5,6 +5,7 @@ BackupRecord tracks company backup/restore history.
 Each record represents a single export or restore operation,
 with metadata about what was included and the resulting file.
 """
+
 import uuid
 
 from django.conf import settings
@@ -33,12 +34,8 @@ class BackupRecord(models.Model):
     )
     public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
 
-    backup_type = models.CharField(
-        max_length=20, choices=BackupType.choices, default=BackupType.MANUAL
-    )
-    status = models.CharField(
-        max_length=20, choices=Status.choices, default=Status.PENDING
-    )
+    backup_type = models.CharField(max_length=20, choices=BackupType.choices, default=BackupType.MANUAL)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
 
     # File
     file = models.FileField(upload_to=backup_upload_path, blank=True, null=True)
@@ -68,9 +65,7 @@ class BackupRecord(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     # Restore tracking
-    restored_from = models.ForeignKey(
-        "self", null=True, blank=True, on_delete=models.SET_NULL
-    )
+    restored_from = models.ForeignKey("self", null=True, blank=True, on_delete=models.SET_NULL)
 
     class Meta:
         ordering = ["-created_at"]

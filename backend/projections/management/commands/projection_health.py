@@ -7,6 +7,7 @@ Usage:
     python manage.py projection_health --clear-errors   # reset error counts
     python manage.py projection_health --trigger        # trigger catch-up
 """
+
 from django.core.management.base import BaseCommand
 
 from accounts.rls import rls_bypass
@@ -36,21 +37,18 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         with rls_bypass():
             if options["resume"]:
-                count = EventBookmark.objects.filter(is_paused=True).update(
-                    is_paused=False
-                )
+                count = EventBookmark.objects.filter(is_paused=True).update(is_paused=False)
                 self.stdout.write(self.style.SUCCESS(f"Resumed {count} paused projections"))
                 return
 
             if options["clear_errors"]:
-                count = EventBookmark.objects.filter(error_count__gt=0).update(
-                    error_count=0, last_error=""
-                )
+                count = EventBookmark.objects.filter(error_count__gt=0).update(error_count=0, last_error="")
                 self.stdout.write(self.style.SUCCESS(f"Cleared errors on {count} bookmarks"))
                 return
 
             if options["trigger"]:
                 from projections.tasks import process_all_projections
+
                 process_all_projections.delay()
                 self.stdout.write(self.style.SUCCESS("Triggered process_all_projections"))
                 return
@@ -79,14 +77,14 @@ class Command(BaseCommand):
             # Show lag via metrics if available
             try:
                 from events.metrics import get_projection_lag_metrics
+
                 metrics = get_projection_lag_metrics()
                 lagging = [m for m in metrics if m.get("lag", 0) > 0]
                 if lagging:
                     self.stdout.write(self.style.WARNING("\nProjection lag:"))
                     for m in lagging:
                         self.stdout.write(
-                            f"  {m['consumer_name']} ({m.get('company_name', '?')}): "
-                            f"{m['lag']} events behind"
+                            f"  {m['consumer_name']} ({m.get('company_name', '?')}): {m['lag']} events behind"
                         )
                 else:
                     self.stdout.write(self.style.SUCCESS("\nAll projections up to date"))

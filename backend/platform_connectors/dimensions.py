@@ -36,7 +36,8 @@ PLATFORM_DIMENSIONS = [
 def ensure_dimension(company, code, name, name_ar):
     """Get or create a CONTEXT dimension. Returns the AnalysisDimension."""
     dim = AnalysisDimension.objects.filter(
-        company=company, code=code,
+        company=company,
+        code=code,
     ).first()
     if dim:
         return dim
@@ -61,7 +62,9 @@ def ensure_dimension(company, code, name, name_ar):
 def ensure_dimension_value(company, dimension, code, name, name_ar=""):
     """Get or create a dimension value. Returns the AnalysisDimensionValue."""
     val = AnalysisDimensionValue.objects.filter(
-        dimension=dimension, company=company, code=code,
+        dimension=dimension,
+        company=company,
+        code=code,
     ).first()
     if val:
         return val
@@ -97,6 +100,7 @@ def sync_platform_dimensions(company):
 
         # Sync platform values from the connector registry
         from platform_connectors.registry import connector_registry
+
         platform_dim = dimensions["platform"]
 
         for connector in connector_registry.all():
@@ -148,23 +152,31 @@ def resolve_platform_dimensions(company, platform_slug, store_code=None):
     context = {}
 
     platform_dim = AnalysisDimension.objects.filter(
-        company=company, code="platform", is_active=True,
+        company=company,
+        code="platform",
+        is_active=True,
     ).first()
     if platform_dim:
         val = AnalysisDimensionValue.objects.filter(
-            dimension=platform_dim, company=company, code=platform_slug,
+            dimension=platform_dim,
+            company=company,
+            code=platform_slug,
         ).first()
         if val:
             context["platform"] = platform_slug
 
     if store_code:
         store_dim = AnalysisDimension.objects.filter(
-            company=company, code="store", is_active=True,
+            company=company,
+            code="store",
+            is_active=True,
         ).first()
         if store_dim:
             value_code = f"{platform_slug}:{store_code}"
             val = AnalysisDimensionValue.objects.filter(
-                dimension=store_dim, company=company, code=value_code,
+                dimension=store_dim,
+                company=company,
+                code=value_code,
             ).first()
             if val:
                 context["store"] = value_code

@@ -14,7 +14,6 @@ from datetime import date as date_type
 from decimal import Decimal
 
 from celery import shared_task
-from django.conf import settings
 
 from accounts.models import Company
 from accounts.rls import rls_bypass
@@ -107,8 +106,7 @@ def _revalue_company(company: Company, reval_date: date_type, auto_reverse: bool
 
     # Find all posted journal lines with foreign currencies
     foreign_lines = (
-        JournalLine.objects
-        .filter(
+        JournalLine.objects.filter(
             company=company,
             entry__status="POSTED",
             entry__date__lte=reval_date,
@@ -148,7 +146,10 @@ def _revalue_company(company: Company, reval_date: date_type, auto_reverse: bool
         if not current_rate:
             logger.warning(
                 "No %s→%s rate for company %s on %s, skipping",
-                line_currency, functional_currency, company.name, reval_date,
+                line_currency,
+                functional_currency,
+                company.name,
+                reval_date,
             )
             continue
 
@@ -158,13 +159,15 @@ def _revalue_company(company: Company, reval_date: date_type, auto_reverse: bool
         if abs(unrealized) < Decimal("0.01"):
             continue
 
-        adjustments.append({
-            "account_id": account_id,
-            "account_code": group["account__code"],
-            "currency": line_currency,
-            "current_rate": str(current_rate),
-            "unrealized_gain_loss": unrealized,
-        })
+        adjustments.append(
+            {
+                "account_id": account_id,
+                "account_code": group["account__code"],
+                "currency": line_currency,
+                "current_rate": str(current_rate),
+                "unrealized_gain_loss": unrealized,
+            }
+        )
 
     if not adjustments:
         return {"status": "no_adjustments", "message": "No foreign currency adjustments needed"}
@@ -172,12 +175,22 @@ def _revalue_company(company: Company, reval_date: date_type, auto_reverse: bool
     # Resolve FX gain/loss accounts
     from accounting.models import Account
 
-    fx_gain_account = core_mapping.get("FX_GAIN") or Account.objects.filter(
-        company=company, role="FINANCIAL_INCOME", is_postable=True,
-    ).first()
-    fx_loss_account = core_mapping.get("FX_LOSS") or Account.objects.filter(
-        company=company, role="FINANCIAL_EXPENSE", is_postable=True,
-    ).first()
+    fx_gain_account = (
+        core_mapping.get("FX_GAIN")
+        or Account.objects.filter(
+            company=company,
+            role="FINANCIAL_INCOME",
+            is_postable=True,
+        ).first()
+    )
+    fx_loss_account = (
+        core_mapping.get("FX_LOSS")
+        or Account.objects.filter(
+            company=company,
+            role="FINANCIAL_EXPENSE",
+            is_postable=True,
+        ).first()
+    )
     fx_rounding_account = core_mapping.get("FX_ROUNDING")
 
     if not fx_gain_account or not fx_loss_account:
@@ -186,9 +199,13 @@ def _revalue_company(company: Company, reval_date: date_type, auto_reverse: bool
     # Build a system actor for automated posting
     from accounts.authz import ActorContext
 
-    admin_user = company.memberships.filter(
-        role__in=["owner", "admin", "OWNER", "ADMIN"],
-    ).select_related("user").first()
+    admin_user = (
+        company.memberships.filter(
+            role__in=["owner", "admin", "OWNER", "ADMIN"],
+        )
+        .select_related("user")
+        .first()
+    )
     if not admin_user:
         admin_user = company.memberships.select_related("user").first()
     if not admin_user:
@@ -203,21 +220,25 @@ def _revalue_company(company: Company, reval_date: date_type, auto_reverse: bool
     for adj in adjustments:
         unrealized = adj["unrealized_gain_loss"]
         if unrealized > 0:
-            lines.append({
-                "account_id": adj["account_id"],
-                "description": f"FX revaluation {adj['currency']} @ {adj['current_rate']}",
-                "debit": str(unrealized),
-                "credit": "0",
-                "currency": adj["currency"],
-            })
+            lines.append(
+                {
+                    "account_id": adj["account_id"],
+                    "description": f"FX revaluation {adj['currency']} @ {adj['current_rate']}",
+                    "debit": str(unrealized),
+                    "credit": "0",
+                    "currency": adj["currency"],
+                }
+            )
         else:
-            lines.append({
-                "account_id": adj["account_id"],
-                "description": f"FX revaluation {adj['currency']} @ {adj['current_rate']}",
-                "debit": "0",
-                "credit": str(abs(unrealized)),
-                "currency": adj["currency"],
-            })
+            lines.append(
+                {
+                    "account_id": adj["account_id"],
+                    "description": f"FX revaluation {adj['currency']} @ {adj['current_rate']}",
+                    "debit": "0",
+                    "credit": str(abs(unrealized)),
+                    "currency": adj["currency"],
+                }
+            )
 
     # Offset entries per currency
     gains_by_currency = defaultdict(Decimal)
@@ -230,22 +251,26 @@ def _revalue_company(company: Company, reval_date: date_type, auto_reverse: bool
             losses_by_currency[adj["currency"]] += abs(amt)
 
     for curr, gain in gains_by_currency.items():
-        lines.append({
-            "account_id": fx_gain_account.id,
-            "description": f"Unrealized FX gain ({curr})",
-            "debit": "0",
-            "credit": str(gain),
-            "currency": curr,
-        })
+        lines.append(
+            {
+                "account_id": fx_gain_account.id,
+                "description": f"Unrealized FX gain ({curr})",
+                "debit": "0",
+                "credit": str(gain),
+                "currency": curr,
+            }
+        )
 
     for curr, loss in losses_by_currency.items():
-        lines.append({
-            "account_id": fx_loss_account.id,
-            "description": f"Unrealized FX loss ({curr})",
-            "debit": str(loss),
-            "credit": "0",
-            "currency": curr,
-        })
+        lines.append(
+            {
+                "account_id": fx_loss_account.id,
+                "description": f"Unrealized FX loss ({curr})",
+                "debit": str(loss),
+                "credit": "0",
+                "currency": curr,
+            }
+        )
 
     # Rounding line
     total_debit = sum(Decimal(l["debit"]) for l in lines)
@@ -254,9 +279,23 @@ def _revalue_company(company: Company, reval_date: date_type, auto_reverse: bool
     if diff != 0 and abs(diff) <= Decimal("1.00"):
         rounding_account = fx_rounding_account or fx_loss_account
         if diff > 0:
-            lines.append({"account_id": rounding_account.id, "description": "FX rounding difference", "debit": "0", "credit": str(abs(diff))})
+            lines.append(
+                {
+                    "account_id": rounding_account.id,
+                    "description": "FX rounding difference",
+                    "debit": "0",
+                    "credit": str(abs(diff)),
+                }
+            )
         else:
-            lines.append({"account_id": rounding_account.id, "description": "FX rounding difference", "debit": str(abs(diff)), "credit": "0"})
+            lines.append(
+                {
+                    "account_id": rounding_account.id,
+                    "description": "FX rounding difference",
+                    "debit": str(abs(diff)),
+                    "credit": "0",
+                }
+            )
 
     # Resolve fiscal period
     from projections.models import FiscalPeriod
@@ -270,6 +309,7 @@ def _revalue_company(company: Company, reval_date: date_type, auto_reverse: bool
     period = fp.period if fp else reval_date.month
 
     import uuid as _uuid
+
     nonce = str(_uuid.uuid4())[:8]
 
     result = create_journal_entry(
@@ -308,12 +348,16 @@ def _revalue_company(company: Company, reval_date: date_type, auto_reverse: bool
     # Auto-reverse
     if auto_reverse and fp:
         next_period = FiscalPeriod.objects.filter(
-            company=company, fiscal_year=fp.fiscal_year, period=fp.period + 1,
+            company=company,
+            fiscal_year=fp.fiscal_year,
+            period=fp.period + 1,
             period_type=FiscalPeriod.PeriodType.NORMAL,
         ).first()
         if not next_period:
             next_period = FiscalPeriod.objects.filter(
-                company=company, fiscal_year=fp.fiscal_year + 1, period=1,
+                company=company,
+                fiscal_year=fp.fiscal_year + 1,
+                period=1,
                 period_type=FiscalPeriod.PeriodType.NORMAL,
             ).first()
 
@@ -321,20 +365,25 @@ def _revalue_company(company: Company, reval_date: date_type, auto_reverse: bool
             reversal_date = next_period.start_date
             reversal_lines = []
             for line in lines:
-                reversal_lines.append({
-                    "account_id": line["account_id"],
-                    "description": f"Reversal: {line['description']}",
-                    "debit": line["credit"],
-                    "credit": line["debit"],
-                    "currency": line.get("currency"),
-                })
+                reversal_lines.append(
+                    {
+                        "account_id": line["account_id"],
+                        "description": f"Reversal: {line['description']}",
+                        "debit": line["credit"],
+                        "credit": line["debit"],
+                        "currency": line.get("currency"),
+                    }
+                )
 
             try:
                 rev_result = create_journal_entry(
-                    actor=actor, date=reversal_date,
+                    actor=actor,
+                    date=reversal_date,
                     memo=f"Reversal of revaluation {reval_date.isoformat()}",
-                    lines=reversal_lines, kind="ADJUSTMENT",
-                    currency=functional_currency, period=next_period.period,
+                    lines=reversal_lines,
+                    kind="ADJUSTMENT",
+                    currency=functional_currency,
+                    period=next_period.period,
                 )
                 if rev_result.success:
                     rev_entry = rev_result.data

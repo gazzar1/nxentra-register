@@ -30,13 +30,12 @@ from projections.models import AccountBalance, ProjectionAppliedEvent
 # Account Balance Projection Tests
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestAccountBalanceProjection:
     """Test account balance materialization."""
 
-    def test_posted_entry_creates_balance(
-        self, company, user, cash_account, revenue_account
-    ):
+    def test_posted_entry_creates_balance(self, company, user, cash_account, revenue_account):
         """Posting an entry should create/update AccountBalance records."""
         # Emit a posted event
         entry_public_id = str(uuid4())
@@ -95,9 +94,7 @@ class TestAccountBalanceProjection:
         assert revenue_balance.credit_total == Decimal("1000.00")
         assert revenue_balance.balance == Decimal("1000.00")  # Credit normal
 
-    def test_idempotent_event_processing(
-        self, company, user, cash_account, revenue_account
-    ):
+    def test_idempotent_event_processing(self, company, user, cash_account, revenue_account):
         """Processing same event twice should not double-count."""
         entry_public_id = str(uuid4())
 
@@ -150,9 +147,7 @@ class TestAccountBalanceProjection:
         cash_balance = AccountBalance.objects.get(company=company, account=cash_account)
         assert cash_balance.debit_total == Decimal("500.00")
 
-    def test_multiple_lines_same_account_in_single_event(
-        self, company, user, cash_account, revenue_account
-    ):
+    def test_multiple_lines_same_account_in_single_event(self, company, user, cash_account, revenue_account):
         """
         A single JE with two lines to the same account must apply BOTH lines.
 
@@ -227,9 +222,7 @@ class TestAccountBalanceProjection:
         rev_balance = AccountBalance.objects.get(company=company, account=revenue_account)
         assert rev_balance.credit_total == Decimal("100.00")
 
-    def test_memo_lines_excluded_from_balance(
-        self, company, user, cash_account, memo_account
-    ):
+    def test_memo_lines_excluded_from_balance(self, company, user, cash_account, memo_account):
         """Memo/statistical lines should not affect financial balance."""
         entry_public_id = str(uuid4())
 
@@ -276,9 +269,7 @@ class TestAccountBalanceProjection:
         projection.process_pending(company)
 
         # Memo account should NOT have a balance record (or it should be zero)
-        memo_exists = AccountBalance.objects.filter(
-            company=company, account=memo_account
-        ).exists()
+        memo_exists = AccountBalance.objects.filter(company=company, account=memo_account).exists()
 
         # Either no record or zero balance
         if memo_exists:
@@ -290,17 +281,16 @@ class TestAccountBalanceProjection:
 # Journal Entry Projection 0/0 Line Fix Tests
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestJournalLineZeroZeroFiltering:
     """
     Test that lines with debit=0 and credit=0 are filtered out.
-    
+
     This tests the fix for the DB constraint violation.
     """
 
-    def test_zero_zero_lines_filtered_in_projection(
-        self, company, user, cash_account, revenue_account
-    ):
+    def test_zero_zero_lines_filtered_in_projection(self, company, user, cash_account, revenue_account):
         """Lines with debit=0 and credit=0 should not be created."""
         entry_public_id = str(uuid4())
 
@@ -365,13 +355,12 @@ class TestJournalLineZeroZeroFiltering:
 # Journal Entry Currency Projection Tests
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestJournalEntryCurrencyProjection:
     """Test that currency fields persist in the read model."""
 
-    def test_posted_entry_persists_currency_fields(
-        self, company, user, cash_account, revenue_account
-    ):
+    def test_posted_entry_persists_currency_fields(self, company, user, cash_account, revenue_account):
         entry_public_id = str(uuid4())
 
         emit_event(
@@ -438,20 +427,19 @@ class TestJournalEntryCurrencyProjection:
 # Race Condition Fix Tests
 # =============================================================================
 
+
 @pytest.mark.django_db(transaction=True)
 class TestAccountBalanceRaceCondition:
     """
     Test that concurrent balance updates don't lose data.
-    
+
     This tests the select_for_update() fix.
     """
 
-    def test_concurrent_updates_are_serialized(
-        self, company, user, cash_account
-    ):
+    def test_concurrent_updates_are_serialized(self, company, user, cash_account):
         """
         Multiple workers updating same balance should not lose updates.
-        
+
         Note: This test requires transaction=True to test real concurrency.
         """
         # Create multiple events for the same account
@@ -506,6 +494,7 @@ class TestAccountBalanceRaceCondition:
 # Projection Registry Tests
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestProjectionRegistry:
     """Test projection registry functionality."""
@@ -547,13 +536,12 @@ class TestProjectionRegistry:
 # Projection Rebuild Tests
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestProjectionRebuild:
     """Test projection rebuild functionality."""
 
-    def test_rebuild_clears_and_replays(
-        self, company, user, cash_account, revenue_account
-    ):
+    def test_rebuild_clears_and_replays(self, company, user, cash_account, revenue_account):
         """Rebuild should clear data and replay all events."""
         # Create some events
         for i in range(3):
@@ -619,13 +607,12 @@ class TestProjectionRebuild:
 # Trial Balance Tests
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestTrialBalance:
     """Test trial balance generation."""
 
-    def test_trial_balance_is_balanced(
-        self, company, user, cash_account, revenue_account
-    ):
+    def test_trial_balance_is_balanced(self, company, user, cash_account, revenue_account):
         """Trial balance debits should equal credits."""
         # Create balanced entry
         entry_public_id = str(uuid4())
@@ -680,6 +667,7 @@ class TestTrialBalance:
 # Accounts Projection Tests
 # =============================================================================
 
+
 @pytest.mark.django_db
 class TestAccountsProjections:
     """Test user/company/membership projections."""
@@ -687,6 +675,7 @@ class TestAccountsProjections:
     def test_user_created_projection(self, company):
         """User created event should create user record."""
         from django.contrib.auth import get_user_model
+
         User = get_user_model()
 
         user_public_id = str(uuid4())
@@ -746,6 +735,7 @@ class TestAccountsProjections:
 # =============================================================================
 # Projection Applied Event Tracking Tests
 # =============================================================================
+
 
 @pytest.mark.django_db
 class TestProjectionAppliedEventTracking:

@@ -25,14 +25,15 @@ class TenantConfig(AppConfig):
         """
         # Skip during migrations or test setup
         import sys
-        if 'migrate' in sys.argv or 'makemigrations' in sys.argv:
+
+        if "migrate" in sys.argv or "makemigrations" in sys.argv:
             return
-        if 'test' in sys.argv or os.environ.get('DJANGO_TEST_MODE'):
+        if "test" in sys.argv or os.environ.get("DJANGO_TEST_MODE"):
             return
 
         # Get health check mode from environment
-        health_check_mode = os.environ.get('TENANT_HEALTH_CHECK', 'error')
-        if health_check_mode == 'skip':
+        health_check_mode = os.environ.get("TENANT_HEALTH_CHECK", "error")
+        if health_check_mode == "skip":
             logger.debug("Tenant health check skipped (TENANT_HEALTH_CHECK=skip)")
             return
 
@@ -89,7 +90,7 @@ class TenantConfig(AppConfig):
         try:
             with rls_bypass():
                 # Get all company IDs
-                company_ids = set(Company.objects.values_list('id', flat=True))
+                company_ids = set(Company.objects.values_list("id", flat=True))
 
                 # Get all TenantDirectory entries
                 tenant_entries = list(TenantDirectory.objects.all())
@@ -98,9 +99,7 @@ class TenantConfig(AppConfig):
                 # 1. Check for missing TenantDirectory entries
                 missing = company_ids - tenant_company_ids
                 if missing:
-                    missing_companies = list(
-                        Company.objects.filter(id__in=missing).values_list('slug', flat=True)
-                    )
+                    missing_companies = list(Company.objects.filter(id__in=missing).values_list("slug", flat=True))
                     errors.append(
                         f"Missing TenantDirectory: {len(missing)} companies without entries: "
                         f"{missing_companies[:10]}{'...' if len(missing) > 10 else ''}"
@@ -108,16 +107,11 @@ class TenantConfig(AppConfig):
 
                 # 2. Check for duplicate TenantDirectory entries
                 duplicates = (
-                    TenantDirectory.objects
-                    .values('company_id')
-                    .annotate(count=Count('id'))
-                    .filter(count__gt=1)
+                    TenantDirectory.objects.values("company_id").annotate(count=Count("id")).filter(count__gt=1)
                 )
                 if duplicates.exists():
-                    dup_company_ids = [d['company_id'] for d in duplicates]
-                    dup_slugs = list(
-                        Company.objects.filter(id__in=dup_company_ids).values_list('slug', flat=True)
-                    )
+                    dup_company_ids = [d["company_id"] for d in duplicates]
+                    dup_slugs = list(Company.objects.filter(id__in=dup_company_ids).values_list("slug", flat=True))
                     errors.append(
                         f"Duplicate TenantDirectory: {len(dup_company_ids)} companies have "
                         f"multiple entries: {dup_slugs[:10]}{'...' if len(dup_slugs) > 10 else ''}"
@@ -154,7 +148,7 @@ class TenantConfig(AppConfig):
                         + "\nRun: python manage.py seed_tenant_directory"
                     )
 
-                    if mode == 'error':
+                    if mode == "error":
                         raise RuntimeError(message)
                     else:
                         logger.warning(message)

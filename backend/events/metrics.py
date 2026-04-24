@@ -41,28 +41,26 @@ def get_event_storage_metrics(company: Company | None = None) -> dict[str, Any]:
 
     # Count by storage type
     storage_breakdown = dict(
-        qs.values('payload_storage')
-        .annotate(count=Count('id'))
-        .values_list('payload_storage', 'count')
+        qs.values("payload_storage").annotate(count=Count("id")).values_list("payload_storage", "count")
     )
 
     total_events = sum(storage_breakdown.values())
     if total_events == 0:
         return {
-            'total_events': 0,
-            'storage_breakdown': {},
-            'external_payload_ratio': 0.0,
-            'chunked_ratio': 0.0,
+            "total_events": 0,
+            "storage_breakdown": {},
+            "external_payload_ratio": 0.0,
+            "chunked_ratio": 0.0,
         }
 
-    external_count = storage_breakdown.get('external', 0)
-    chunked_count = storage_breakdown.get('chunked', 0)
+    external_count = storage_breakdown.get("external", 0)
+    chunked_count = storage_breakdown.get("chunked", 0)
 
     return {
-        'total_events': total_events,
-        'storage_breakdown': storage_breakdown,
-        'external_payload_ratio': external_count / total_events if total_events else 0.0,
-        'chunked_ratio': chunked_count / total_events if total_events else 0.0,
+        "total_events": total_events,
+        "storage_breakdown": storage_breakdown,
+        "external_payload_ratio": external_count / total_events if total_events else 0.0,
+        "chunked_ratio": chunked_count / total_events if total_events else 0.0,
     }
 
 
@@ -77,19 +75,19 @@ def get_payload_size_metrics(company: Company | None = None) -> dict[str, Any]:
         qs = qs.filter(company=company)
 
     stats = qs.aggregate(
-        total_bytes=Sum('size_bytes'),
-        avg_bytes=Avg('size_bytes'),
-        min_bytes=Min('size_bytes'),
-        max_bytes=Max('size_bytes'),
-        count=Count('id'),
+        total_bytes=Sum("size_bytes"),
+        avg_bytes=Avg("size_bytes"),
+        min_bytes=Min("size_bytes"),
+        max_bytes=Max("size_bytes"),
+        count=Count("id"),
     )
 
     return {
-        'external_payload_count': stats['count'] or 0,
-        'total_bytes': stats['total_bytes'] or 0,
-        'avg_bytes': float(stats['avg_bytes'] or 0),
-        'min_bytes': stats['min_bytes'] or 0,
-        'max_bytes': stats['max_bytes'] or 0,
+        "external_payload_count": stats["count"] or 0,
+        "total_bytes": stats["total_bytes"] or 0,
+        "avg_bytes": float(stats["avg_bytes"] or 0),
+        "min_bytes": stats["min_bytes"] or 0,
+        "max_bytes": stats["max_bytes"] or 0,
     }
 
 
@@ -103,21 +101,17 @@ def get_event_origin_metrics(company: Company | None = None) -> dict[str, Any]:
     if company:
         qs = qs.filter(company=company)
 
-    origin_breakdown = dict(
-        qs.values('origin')
-        .annotate(count=Count('id'))
-        .values_list('origin', 'count')
-    )
+    origin_breakdown = dict(qs.values("origin").annotate(count=Count("id")).values_list("origin", "count"))
 
     total = sum(origin_breakdown.values())
 
     return {
-        'total_events': total,
-        'origin_breakdown': origin_breakdown,
-        'human_ratio': origin_breakdown.get('human', 0) / total if total else 0.0,
-        'batch_ratio': origin_breakdown.get('batch', 0) / total if total else 0.0,
-        'api_ratio': origin_breakdown.get('api', 0) / total if total else 0.0,
-        'system_ratio': origin_breakdown.get('system', 0) / total if total else 0.0,
+        "total_events": total,
+        "origin_breakdown": origin_breakdown,
+        "human_ratio": origin_breakdown.get("human", 0) / total if total else 0.0,
+        "batch_ratio": origin_breakdown.get("batch", 0) / total if total else 0.0,
+        "api_ratio": origin_breakdown.get("api", 0) / total if total else 0.0,
+        "system_ratio": origin_breakdown.get("system", 0) / total if total else 0.0,
     }
 
 
@@ -130,7 +124,7 @@ def get_projection_lag_metrics() -> list[dict[str, Any]]:
 
     results = []
 
-    for bookmark in EventBookmark.objects.select_related('company', 'last_event').all():
+    for bookmark in EventBookmark.objects.select_related("company", "last_event").all():
         # Get total events for company
         total_events = BusinessEvent.objects.filter(company=bookmark.company).count()
 
@@ -145,17 +139,19 @@ def get_projection_lag_metrics() -> list[dict[str, Any]]:
 
         lag = total_events - processed
 
-        results.append({
-            'consumer_name': bookmark.consumer_name,
-            'company_id': str(bookmark.company.public_id),
-            'company_name': bookmark.company.name,
-            'total_events': total_events,
-            'processed_events': processed,
-            'lag': lag,
-            'last_processed_at': bookmark.last_processed_at,
-            'is_paused': bookmark.is_paused,
-            'error_count': bookmark.error_count,
-        })
+        results.append(
+            {
+                "consumer_name": bookmark.consumer_name,
+                "company_id": str(bookmark.company.public_id),
+                "company_name": bookmark.company.name,
+                "total_events": total_events,
+                "processed_events": processed,
+                "lag": lag,
+                "last_processed_at": bookmark.last_processed_at,
+                "is_paused": bookmark.is_paused,
+                "error_count": bookmark.error_count,
+            }
+        )
 
     return results
 
@@ -176,23 +172,20 @@ def get_event_throughput_metrics(
         qs = qs.filter(company=company)
 
     hourly_counts = list(
-        qs.annotate(hour=TruncHour('occurred_at'))
-        .values('hour')
-        .annotate(count=Count('id'))
-        .order_by('hour')
+        qs.annotate(hour=TruncHour("occurred_at")).values("hour").annotate(count=Count("id")).order_by("hour")
     )
 
-    total_events = sum(h['count'] for h in hourly_counts)
+    total_events = sum(h["count"] for h in hourly_counts)
     avg_per_hour = total_events / hours if hours else 0
 
     return {
-        'time_window_hours': hours,
-        'total_events': total_events,
-        'avg_events_per_hour': avg_per_hour,
-        'hourly_breakdown': [
+        "time_window_hours": hours,
+        "total_events": total_events,
+        "avg_events_per_hour": avg_per_hour,
+        "hourly_breakdown": [
             {
-                'hour': h['hour'].isoformat() if h['hour'] else None,
-                'count': h['count'],
+                "hour": h["hour"].isoformat() if h["hour"] else None,
+                "count": h["count"],
             }
             for h in hourly_counts
         ],
@@ -210,15 +203,12 @@ def get_event_type_metrics(company: Company | None = None) -> dict[str, Any]:
         qs = qs.filter(company=company)
 
     type_breakdown = dict(
-        qs.values('event_type')
-        .annotate(count=Count('id'))
-        .order_by('-count')
-        .values_list('event_type', 'count')
+        qs.values("event_type").annotate(count=Count("id")).order_by("-count").values_list("event_type", "count")
     )
 
     return {
-        'total_event_types': len(type_breakdown),
-        'type_breakdown': type_breakdown,
+        "total_event_types": len(type_breakdown),
+        "type_breakdown": type_breakdown,
     }
 
 
@@ -233,23 +223,22 @@ def get_aggregate_metrics(company: Company | None = None) -> dict[str, Any]:
         qs = qs.filter(company=company)
 
     aggregate_stats = list(
-        qs.values('aggregate_type')
+        qs.values("aggregate_type")
         .annotate(
-            event_count=Count('id'),
-            unique_aggregates=Count('aggregate_id', distinct=True),
+            event_count=Count("id"),
+            unique_aggregates=Count("aggregate_id", distinct=True),
         )
-        .order_by('-event_count')
+        .order_by("-event_count")
     )
 
     return {
-        'aggregate_types': [
+        "aggregate_types": [
             {
-                'type': stat['aggregate_type'],
-                'event_count': stat['event_count'],
-                'unique_aggregates': stat['unique_aggregates'],
-                'avg_events_per_aggregate': (
-                    stat['event_count'] / stat['unique_aggregates']
-                    if stat['unique_aggregates'] else 0
+                "type": stat["aggregate_type"],
+                "event_count": stat["event_count"],
+                "unique_aggregates": stat["unique_aggregates"],
+                "avg_events_per_aggregate": (
+                    stat["event_count"] / stat["unique_aggregates"] if stat["unique_aggregates"] else 0
                 ),
             }
             for stat in aggregate_stats
@@ -263,25 +252,22 @@ def measure_replay_duration(func):
 
     Logs the duration and returns it in the result.
     """
+
     def wrapper(*args, **kwargs):
         start = time.time()
         try:
             result = func(*args, **kwargs)
             duration = time.time() - start
 
-            logger.info(
-                f"Replay operation {func.__name__} completed in {duration:.2f}s"
-            )
+            logger.info(f"Replay operation {func.__name__} completed in {duration:.2f}s")
 
             if isinstance(result, dict):
-                result['replay_duration_seconds'] = duration
+                result["replay_duration_seconds"] = duration
             return result
 
         except Exception as e:
             duration = time.time() - start
-            logger.error(
-                f"Replay operation {func.__name__} failed after {duration:.2f}s: {e}"
-            )
+            logger.error(f"Replay operation {func.__name__} failed after {duration:.2f}s: {e}")
             raise
 
     return wrapper
@@ -294,14 +280,14 @@ def get_full_metrics_report(company: Company | None = None) -> dict[str, Any]:
     Combines all metric categories into a single report.
     """
     return {
-        'generated_at': timezone.now().isoformat(),
-        'company_id': str(company.public_id) if company else None,
-        'company_name': company.name if company else 'All Companies',
-        'storage': get_event_storage_metrics(company),
-        'payload_sizes': get_payload_size_metrics(company),
-        'origins': get_event_origin_metrics(company),
-        'projections': get_projection_lag_metrics(),
-        'throughput_24h': get_event_throughput_metrics(company, hours=24),
-        'event_types': get_event_type_metrics(company),
-        'aggregates': get_aggregate_metrics(company),
+        "generated_at": timezone.now().isoformat(),
+        "company_id": str(company.public_id) if company else None,
+        "company_name": company.name if company else "All Companies",
+        "storage": get_event_storage_metrics(company),
+        "payload_sizes": get_payload_size_metrics(company),
+        "origins": get_event_origin_metrics(company),
+        "projections": get_projection_lag_metrics(),
+        "throughput_24h": get_event_throughput_metrics(company, hours=24),
+        "event_types": get_event_type_metrics(company),
+        "aggregates": get_aggregate_metrics(company),
     }

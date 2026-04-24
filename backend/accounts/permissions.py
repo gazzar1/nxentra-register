@@ -11,6 +11,7 @@ from projections.write_barrier import write_context_allowed
 
 User = get_user_model()
 
+
 def _perm_defaults(code: str) -> dict:
     return {
         "name": code,
@@ -20,14 +21,12 @@ def _perm_defaults(code: str) -> dict:
         "default_for_roles": [],
     }
 
+
 def _require_write_context() -> None:
     if getattr(settings, "TESTING", False):
         return
     if not write_context_allowed({"projection", "command", "bootstrap", "migration", "admin_emergency"}):
-        raise RuntimeError(
-            "Permission defaults can only be written within an allowed write context."
-        )
-
+        raise RuntimeError("Permission defaults can only be written within an allowed write context.")
 
 
 @transaction.atomic

@@ -28,15 +28,11 @@ class Command(BaseCommand):
         try:
             user = User.objects.get(email=email)
         except User.DoesNotExist:
-            self.stdout.write(
-                self.style.ERROR(f"User with email '{email}' not found")
-            )
+            self.stdout.write(self.style.ERROR(f"User with email '{email}' not found"))
             return
 
         if user.email_verified:
-            self.stdout.write(
-                self.style.WARNING(f"User '{email}' is already verified")
-            )
+            self.stdout.write(self.style.WARNING(f"User '{email}' is already verified"))
             return
 
         # Use update() to bypass the model save() guard
@@ -47,6 +43,4 @@ class Command(BaseCommand):
             approved_at=timezone.now(),
         )
 
-        self.stdout.write(
-            self.style.SUCCESS(f"User '{email}' has been verified and approved!")
-        )
+        self.stdout.write(self.style.SUCCESS(f"User '{email}' has been verified and approved!"))

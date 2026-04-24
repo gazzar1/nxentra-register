@@ -40,6 +40,7 @@ from typing import Any, Dict, List, Optional, Union, get_args, get_origin, get_t
 # Event Validation
 # =============================================================================
 
+
 class InvalidEventPayload(Exception):
     """
     Raised when an event payload fails validation.
@@ -47,13 +48,12 @@ class InvalidEventPayload(Exception):
     This exception is raised at event emission time when the provided
     data does not match the expected schema for the event type.
     """
+
     def __init__(self, event_type: str, errors: List[str]):
         self.event_type = event_type
         self.errors = errors
         error_list = "\n  - ".join(errors)
-        super().__init__(
-            f"Invalid payload for event '{event_type}':\n  - {error_list}"
-        )
+        super().__init__(f"Invalid payload for event '{event_type}':\n  - {error_list}")
 
 
 def _is_optional_type(type_hint) -> bool:
@@ -100,10 +100,7 @@ def validate_event_payload(event_type: str, data: Dict[str, Any]) -> None:
 
     data_class = EVENT_DATA_CLASSES.get(event_type)
     if data_class is None:
-        raise ValueError(
-            f"No schema registered for event type '{event_type}'. "
-            f"Add a dataclass to EVENT_DATA_CLASSES."
-        )
+        raise ValueError(f"No schema registered for event type '{event_type}'. Add a dataclass to EVENT_DATA_CLASSES.")
 
     errors = []
 
@@ -119,11 +116,9 @@ def validate_event_payload(event_type: str, data: Dict[str, Any]) -> None:
 
     # Check for required fields (fields without defaults)
     from dataclasses import MISSING
+
     for field_name, field_info in dc_fields.items():
-        required = (
-            field_info.default is MISSING and
-            field_info.default_factory is MISSING
-        )
+        required = field_info.default is MISSING and field_info.default_factory is MISSING
         if required and field_name not in data:
             errors.append(f"Missing required field: '{field_name}'")
 
@@ -132,10 +127,7 @@ def validate_event_payload(event_type: str, data: Dict[str, Any]) -> None:
     provided_fields = set(data.keys())
     unexpected = provided_fields - expected_fields
     if unexpected:
-        errors.append(
-            f"Unexpected fields: {sorted(unexpected)}. "
-            f"Expected: {sorted(expected_fields)}"
-        )
+        errors.append(f"Unexpected fields: {sorted(unexpected)}. Expected: {sorted(expected_fields)}")
 
     # Basic type validation for provided fields
     for field_name, value in data.items():
@@ -149,9 +141,7 @@ def validate_event_payload(event_type: str, data: Dict[str, Any]) -> None:
         # Handle Optional types
         if value is None:
             if not _is_optional_type(type_hint):
-                errors.append(
-                    f"Field '{field_name}' cannot be None (type: {type_hint})"
-                )
+                errors.append(f"Field '{field_name}' cannot be None (type: {type_hint})")
             continue
 
         # Get the actual type to check against
@@ -161,60 +151,40 @@ def validate_event_payload(event_type: str, data: Dict[str, Any]) -> None:
         # Basic type checks (not exhaustive, but catches common errors)
         if origin is list or check_type is list or check_type is List:
             if not isinstance(value, list):
-                errors.append(
-                    f"Field '{field_name}' must be a list, got {type(value).__name__}"
-                )
+                errors.append(f"Field '{field_name}' must be a list, got {type(value).__name__}")
             else:
                 inner = get_args(check_type)
                 if inner:
                     inner_type = inner[0]
                     for idx, item in enumerate(value):
                         if inner_type in (dict, Dict) and not isinstance(item, dict):
-                            errors.append(
-                                f"Field '{field_name}[{idx}]' must be a dict, got {type(item).__name__}"
-                            )
+                            errors.append(f"Field '{field_name}[{idx}]' must be a dict, got {type(item).__name__}")
                         elif inner_type in (str,) and not isinstance(item, str):
-                            errors.append(
-                                f"Field '{field_name}[{idx}]' must be a string, got {type(item).__name__}"
-                            )
+                            errors.append(f"Field '{field_name}[{idx}]' must be a string, got {type(item).__name__}")
         elif origin is dict or check_type is dict or check_type is Dict:
             if not isinstance(value, dict):
-                errors.append(
-                    f"Field '{field_name}' must be a dict, got {type(value).__name__}"
-                )
+                errors.append(f"Field '{field_name}' must be a dict, got {type(value).__name__}")
             else:
                 key_type, value_type = (get_args(check_type) + (None, None))[:2]
                 if key_type is str:
                     for key in value.keys():
                         if not isinstance(key, str):
-                            errors.append(
-                                f"Field '{field_name}' has non-string key: {key!r}"
-                            )
+                            errors.append(f"Field '{field_name}' has non-string key: {key!r}")
                 if value_type is not None and value_type not in (Any,):
                     for key, item in value.items():
                         if value_type is dict and not isinstance(item, dict):
-                            errors.append(
-                                f"Field '{field_name}[{key}]' must be a dict, got {type(item).__name__}"
-                            )
+                            errors.append(f"Field '{field_name}[{key}]' must be a dict, got {type(item).__name__}")
                         elif value_type is str and not isinstance(item, str):
-                            errors.append(
-                                f"Field '{field_name}[{key}]' must be a string, got {type(item).__name__}"
-                            )
+                            errors.append(f"Field '{field_name}[{key}]' must be a string, got {type(item).__name__}")
         elif check_type is str:
             if not isinstance(value, str):
-                errors.append(
-                    f"Field '{field_name}' must be a string, got {type(value).__name__}"
-                )
+                errors.append(f"Field '{field_name}' must be a string, got {type(value).__name__}")
         elif check_type is int:
             if not isinstance(value, int) or isinstance(value, bool):
-                errors.append(
-                    f"Field '{field_name}' must be an int, got {type(value).__name__}"
-                )
+                errors.append(f"Field '{field_name}' must be an int, got {type(value).__name__}")
         elif check_type is bool:
             if not isinstance(value, bool):
-                errors.append(
-                    f"Field '{field_name}' must be a bool, got {type(value).__name__}"
-                )
+                errors.append(f"Field '{field_name}' must be a bool, got {type(value).__name__}")
 
     # Domain-specific validation for common semantics
     from datetime import date as _date
@@ -255,17 +225,15 @@ def validate_event_payload(event_type: str, data: Dict[str, Any]) -> None:
     datetime_fields = {"posted_at", "recorded_at", "occurred_at", "closed_at", "reversed_at", "updated_at"}
 
     def _validate_scalar(name: str, value: Any) -> None:
-        if isinstance(value, (dict, list)):
+        if isinstance(value, dict | list):
             return  # Only validate scalar values
         if name in enum_fields and value is not None:
             if value not in enum_fields[name]:
-                errors.append(
-                    f"Field '{name}' must be one of {sorted(enum_fields[name])}, got {value!r}"
-                )
+                errors.append(f"Field '{name}' must be one of {sorted(enum_fields[name])}, got {value!r}")
         if name in decimal_fields and value is not None:
             if isinstance(value, bool):
                 errors.append(f"Field '{name}' must be a decimal string, got bool")
-            elif isinstance(value, (int, Decimal, str)):
+            elif isinstance(value, int | Decimal | str):
                 try:
                     parsed = Decimal(str(value))
                     if name == "exchange_rate" and parsed <= 0:
@@ -275,12 +243,7 @@ def validate_event_payload(event_type: str, data: Dict[str, Any]) -> None:
             else:
                 errors.append(f"Field '{name}' must be a decimal string, got {type(value).__name__}")
         if name in currency_fields and value is not None:
-            if (
-                not isinstance(value, str)
-                or len(value) != 3
-                or not value.isalpha()
-                or value != value.upper()
-            ):
+            if not isinstance(value, str) or len(value) != 3 or not value.isalpha() or value != value.upper():
                 errors.append(f"Field '{name}' must be a 3-letter uppercase currency code, got {value!r}")
         if name in date_fields and value is not None:
             if not isinstance(value, str):
@@ -311,7 +274,7 @@ def validate_event_payload(event_type: str, data: Dict[str, Any]) -> None:
                 _walk(k, v)
         elif isinstance(value, list):
             for item in value:
-                if isinstance(item, (dict, list)):
+                if isinstance(item, dict | list):
                     _walk(name, item)
 
     if data.get("exchange_rate") is not None and not data.get("currency"):
@@ -328,22 +291,22 @@ def validate_event_payload(event_type: str, data: Dict[str, Any]) -> None:
 # Base Event Classes
 # =============================================================================
 
+
 @dataclass
 class BaseEventData:
     """Base class for all event data."""
-    
+
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON storage."""
         result = {}
         for key, value in asdict(self).items():
             if isinstance(value, Decimal):
                 result[key] = str(value)
-            elif isinstance(value, (date, datetime)):
+            elif isinstance(value, date | datetime):
                 result[key] = value.isoformat()
             elif isinstance(value, list):
                 result[key] = [
-                    item.to_dict() if hasattr(item, 'to_dict') else
-                    (dict(item) if isinstance(item, dict) else item)
+                    item.to_dict() if hasattr(item, "to_dict") else (dict(item) if isinstance(item, dict) else item)
                     for item in value
                 ]
             elif isinstance(value, dict):
@@ -366,6 +329,7 @@ class FinancialEventData(BaseEventData):
     Existing events (e.g. RentDuePostedData) are not required to adopt
     this immediately — it is the canonical contract for new modules.
     """
+
     amount: str = "0"
     currency: str = ""
     transaction_date: str = ""
@@ -376,9 +340,11 @@ class FinancialEventData(BaseEventData):
 # Account Events
 # =============================================================================
 
+
 @dataclass
 class AccountCreatedData(BaseEventData):
     """Data for account.created event."""
+
     account_public_id: str
     code: str
     name: str
@@ -395,11 +361,10 @@ class AccountCreatedData(BaseEventData):
     allow_manual_posting: bool = True  # False for control accounts by default
 
 
-
-
 @dataclass
 class AccountUpdatedData(BaseEventData):
     """Data for account.updated event."""
+
     account_public_id: str
     changes: Dict[str, Dict[str, Any]]  # {"field": {"old": x, "new": y}}
 
@@ -407,6 +372,7 @@ class AccountUpdatedData(BaseEventData):
 @dataclass
 class AccountDeletedData(BaseEventData):
     """Data for account.deleted event."""
+
     account_public_id: str
     code: str
     name: str
@@ -416,9 +382,11 @@ class AccountDeletedData(BaseEventData):
 # Journal Entry Events
 # =============================================================================
 
+
 @dataclass
 class JournalLineData:
     """Journal line data for embedding in events."""
+
     line_no: int
     account_public_id: str
     account_code: str
@@ -461,6 +429,7 @@ class JournalLineData:
 @dataclass
 class JournalEntryCreatedData(BaseEventData):
     """Data for journal_entry.created event."""
+
     entry_public_id: str
     date: str  # ISO format
     memo: str
@@ -477,6 +446,7 @@ class JournalEntryCreatedData(BaseEventData):
 @dataclass
 class JournalEntryUpdatedData(BaseEventData):
     """Data for journal_entry.updated event."""
+
     entry_public_id: str
     changes: Dict[str, Dict[str, Any]]
     lines: Optional[List[dict]] = None
@@ -485,6 +455,7 @@ class JournalEntryUpdatedData(BaseEventData):
 @dataclass
 class JournalEntryPostedData(BaseEventData):
     """Data for journal_entry.posted event."""
+
     entry_public_id: str
     entry_number: str
     date: str
@@ -505,6 +476,7 @@ class JournalEntryPostedData(BaseEventData):
 @dataclass
 class JournalEntryReversedData(BaseEventData):
     """Data for journal_entry.reversed event."""
+
     original_entry_public_id: str
     reversal_entry_public_id: str
     reversed_at: str
@@ -515,6 +487,7 @@ class JournalEntryReversedData(BaseEventData):
 @dataclass
 class JournalEntrySavedCompleteData(BaseEventData):
     """Data for journal_entry.saved_complete event."""
+
     entry_public_id: str
     date: str
     memo: str
@@ -532,6 +505,7 @@ class JournalEntrySavedCompleteData(BaseEventData):
 @dataclass
 class JournalEntryDeletedData(BaseEventData):
     """Data for journal_entry.deleted event."""
+
     entry_public_id: str
     date: str
     memo: str
@@ -541,6 +515,7 @@ class JournalEntryDeletedData(BaseEventData):
 # =============================================================================
 # LEPH Chunked Journal Events
 # =============================================================================
+
 
 @dataclass
 class JournalCreatedData(BaseEventData):
@@ -552,6 +527,7 @@ class JournalCreatedData(BaseEventData):
 
     Used by EDIM batch imports for large journal entries.
     """
+
     journal_entry_id: str  # public_id of the journal entry
     company_public_id: str
     date: str  # ISO format
@@ -573,6 +549,7 @@ class JournalLinesChunkData(BaseEventData):
 
     The parent JOURNAL_CREATED event is linked via caused_by_event.
     """
+
     journal_entry_id: str  # public_id of the journal entry
     company_public_id: str
     chunk_index: int  # 0-based chunk index
@@ -591,6 +568,7 @@ class JournalFinalizedData(BaseEventData):
 
     After this event, the journal can be posted.
     """
+
     journal_entry_id: str  # public_id of the journal entry
     company_public_id: str
     total_debit: str
@@ -604,9 +582,11 @@ class JournalFinalizedData(BaseEventData):
 # Period Events
 # =============================================================================
 
+
 @dataclass
 class FiscalPeriodClosedData(BaseEventData):
     """Data for fiscal_period.closed event."""
+
     company_public_id: str
     fiscal_year: int
     period: int
@@ -618,6 +598,7 @@ class FiscalPeriodClosedData(BaseEventData):
 @dataclass
 class FiscalPeriodOpenedData(BaseEventData):
     """Data for fiscal_period.opened event."""
+
     company_public_id: str
     fiscal_year: int
     period: int
@@ -629,6 +610,7 @@ class FiscalPeriodOpenedData(BaseEventData):
 @dataclass
 class FiscalPeriodsConfiguredData(BaseEventData):
     """Data for fiscal_period.configured event."""
+
     company_public_id: str
     fiscal_year: int
     period_count: int
@@ -643,6 +625,7 @@ class FiscalPeriodsConfiguredData(BaseEventData):
 @dataclass
 class FiscalPeriodRangeSetData(BaseEventData):
     """Data for fiscal_period.range_set event."""
+
     company_public_id: str
     fiscal_year: int
     open_from_period: int
@@ -655,6 +638,7 @@ class FiscalPeriodRangeSetData(BaseEventData):
 @dataclass
 class FiscalPeriodCurrentSetData(BaseEventData):
     """Data for fiscal_period.current_set event."""
+
     company_public_id: str
     fiscal_year: int
     period: int
@@ -667,6 +651,7 @@ class FiscalPeriodCurrentSetData(BaseEventData):
 @dataclass
 class FiscalPeriodDatesUpdatedData(BaseEventData):
     """Data for fiscal_period.dates_updated event."""
+
     company_public_id: str
     fiscal_year: int
     period: int
@@ -683,9 +668,11 @@ class FiscalPeriodDatesUpdatedData(BaseEventData):
 # Fiscal Year Events
 # =============================================================================
 
+
 @dataclass
 class ReceiptAllocationData(BaseEventData):
     """Typed allocation for customer receipts."""
+
     invoice_public_id: str
     invoice_number: str = ""
     amount: str = "0"
@@ -694,6 +681,7 @@ class ReceiptAllocationData(BaseEventData):
 @dataclass
 class PaymentAllocationData(BaseEventData):
     """Typed allocation for vendor payments."""
+
     bill_reference: str = ""
     amount: str = "0"
     bill_date: Optional[str] = None
@@ -703,6 +691,7 @@ class PaymentAllocationData(BaseEventData):
 @dataclass
 class FiscalYearCloseReadinessCheckedData(BaseEventData):
     """Data for fiscal_year.close_readiness_checked event (audit trail)."""
+
     company_public_id: str
     fiscal_year: int
     is_ready: bool
@@ -720,6 +709,7 @@ class FiscalYearClosedData(BaseEventData):
     Emitted when a fiscal year is formally closed. This is the completion
     event after closing entries have been generated and all periods locked.
     """
+
     company_public_id: str
     fiscal_year: int
     retained_earnings_account_public_id: str
@@ -743,6 +733,7 @@ class FiscalYearReopenedData(BaseEventData):
     Emitted when a closed fiscal year is reopened. Closing entries are
     reversed (not deleted) to maintain audit trail.
     """
+
     company_public_id: str
     fiscal_year: int
     reason: str
@@ -761,6 +752,7 @@ class ClosingEntryGeneratedData(BaseEventData):
     This entry zeros out all temporary accounts (Revenue, Expense) to
     retained earnings.
     """
+
     company_public_id: str
     fiscal_year: int
     entry_public_id: str
@@ -784,6 +776,7 @@ class ClosingEntryReversedData(BaseEventData):
     Emitted when closing entries are reversed due to fiscal year reopen.
     The original closing entry is NOT deleted — a compensating reversal is created.
     """
+
     company_public_id: str
     fiscal_year: int
     original_entry_public_id: str
@@ -798,9 +791,11 @@ class ClosingEntryReversedData(BaseEventData):
 # Analysis Dimension Events
 # =============================================================================
 
+
 @dataclass
 class AnalysisDimensionCreatedData(BaseEventData):
     """Data for analysis_dimension.created event."""
+
     dimension_public_id: str
     code: str
     name: str
@@ -816,6 +811,7 @@ class AnalysisDimensionCreatedData(BaseEventData):
 @dataclass
 class AnalysisDimensionUpdatedData(BaseEventData):
     """Data for analysis_dimension.updated event."""
+
     dimension_public_id: str
     changes: Dict[str, Dict[str, Any]]
 
@@ -823,6 +819,7 @@ class AnalysisDimensionUpdatedData(BaseEventData):
 @dataclass
 class AnalysisDimensionDeletedData(BaseEventData):
     """Data for analysis_dimension.deleted event."""
+
     dimension_public_id: str
     code: str
     name: str
@@ -831,6 +828,7 @@ class AnalysisDimensionDeletedData(BaseEventData):
 @dataclass
 class AnalysisDimensionValueCreatedData(BaseEventData):
     """Data for analysis_dimension_value.created event."""
+
     value_public_id: str
     dimension_public_id: str
     dimension_code: str
@@ -845,6 +843,7 @@ class AnalysisDimensionValueCreatedData(BaseEventData):
 @dataclass
 class AnalysisDimensionValueUpdatedData(BaseEventData):
     """Data for analysis_dimension_value.updated event."""
+
     value_public_id: str
     dimension_public_id: str
     changes: Dict[str, Dict[str, Any]]
@@ -853,6 +852,7 @@ class AnalysisDimensionValueUpdatedData(BaseEventData):
 @dataclass
 class AnalysisDimensionValueDeletedData(BaseEventData):
     """Data for analysis_dimension_value.deleted event."""
+
     value_public_id: str
     dimension_public_id: str
     code: str
@@ -863,9 +863,11 @@ class AnalysisDimensionValueDeletedData(BaseEventData):
 # Account Analysis Default Events
 # =============================================================================
 
+
 @dataclass
 class AccountAnalysisDefaultSetData(BaseEventData):
     """Data for account_analysis_default.set event."""
+
     account_public_id: str
     account_code: str
     dimension_public_id: str
@@ -877,6 +879,7 @@ class AccountAnalysisDefaultSetData(BaseEventData):
 @dataclass
 class AccountAnalysisDefaultRemovedData(BaseEventData):
     """Data for account_analysis_default.removed event."""
+
     account_public_id: str
     account_code: str
     dimension_public_id: str
@@ -887,9 +890,11 @@ class AccountAnalysisDefaultRemovedData(BaseEventData):
 # Journal Line Analysis Events
 # =============================================================================
 
+
 @dataclass
 class JournalLineAnalysisSetData(BaseEventData):
     """Data for journal_line.analysis_set event."""
+
     entry_public_id: str
     line_no: int
     analysis_tags: List[Dict[str, Any]]
@@ -899,9 +904,11 @@ class JournalLineAnalysisSetData(BaseEventData):
 # User/Auth Events
 # =============================================================================
 
+
 @dataclass
 class UserRegisteredData(BaseEventData):
     """Data for user.registered event."""
+
     user_public_id: str
     email: str
     name: str
@@ -913,6 +920,7 @@ class UserRegisteredData(BaseEventData):
 @dataclass
 class CompanyCreatedData(BaseEventData):
     """Data for company.created event."""
+
     company_public_id: str
     name: str
     name_ar: str = ""
@@ -925,6 +933,7 @@ class CompanyCreatedData(BaseEventData):
 @dataclass
 class UserLoggedInData(BaseEventData):
     """Data for user.logged_in event."""
+
     user_public_id: str
     email: str
     ip_address: str = ""
@@ -934,6 +943,7 @@ class UserLoggedInData(BaseEventData):
 @dataclass
 class UserLoggedOutData(BaseEventData):
     """Data for user.logged_out event."""
+
     user_public_id: str
     email: str
 
@@ -941,12 +951,14 @@ class UserLoggedOutData(BaseEventData):
 @dataclass
 class UserCompanySwitchedData(BaseEventData):
     """Data for user.company_switched event."""
+
     user_public_id: str
     email: str
     from_company_public_id: Optional[str]
     to_company_public_id: str
     to_company_name: str
-    
+
+
 @dataclass
 class UserCreatedData(BaseEventData):
     user_public_id: str
@@ -954,7 +966,7 @@ class UserCreatedData(BaseEventData):
     name: str
     phone: str = ""
     created_by_user_public_id: Optional[str] = None
-    
+
 
 @dataclass
 class MembershipCreatedData(BaseEventData):
@@ -964,6 +976,7 @@ class MembershipCreatedData(BaseEventData):
     role: str
     is_active: bool = True
 
+
 @dataclass
 class MembershipReactivatedData(BaseEventData):
     membership_public_id: str
@@ -971,18 +984,21 @@ class MembershipReactivatedData(BaseEventData):
     user_public_id: str
     role: str
     reactivated_by_user_public_id: Optional[str] = None
-    
+
+
 @dataclass
 class UserUpdatedData(BaseEventData):
     user_public_id: str
     email: str
     changes: Dict[str, Dict[str, Any]]
 
+
 @dataclass
 class UserPasswordChangedData(BaseEventData):
     user_public_id: str
     email: str
     changed_by_self: bool
+
 
 @dataclass
 class MembershipRoleChangedData(BaseEventData):
@@ -996,12 +1012,14 @@ class MembershipRoleChangedData(BaseEventData):
     permissions_revoked: List[str] = field(default_factory=list)
     policy: str = ""
 
+
 @dataclass
 class MembershipDeactivatedData(BaseEventData):
     membership_public_id: str
     user_public_id: str
     company_public_id: str
     user_email: str = ""
+
 
 @dataclass
 class MembershipPermissionsUpdatedData(BaseEventData):
@@ -1018,9 +1036,11 @@ class MembershipPermissionsUpdatedData(BaseEventData):
 # Email Verification Events
 # =============================================================================
 
+
 @dataclass
 class UserEmailVerificationSentData(BaseEventData):
     """Data for user.email_verification_sent event."""
+
     user_public_id: str
     email: str
     expires_at: str  # ISO datetime
@@ -1030,6 +1050,7 @@ class UserEmailVerificationSentData(BaseEventData):
 @dataclass
 class UserEmailVerifiedData(BaseEventData):
     """Data for user.email_verified event."""
+
     user_public_id: str
     email: str
     verified_at: str  # ISO datetime
@@ -1040,9 +1061,11 @@ class UserEmailVerifiedData(BaseEventData):
 # Admin Approval Events (Beta Gate)
 # =============================================================================
 
+
 @dataclass
 class UserApprovalRequestedData(BaseEventData):
     """Data for user.approval_requested event."""
+
     user_public_id: str
     email: str
     company_public_id: str
@@ -1052,6 +1075,7 @@ class UserApprovalRequestedData(BaseEventData):
 @dataclass
 class UserApprovedData(BaseEventData):
     """Data for user.approved event."""
+
     user_public_id: str
     email: str
     approved_by_public_id: str
@@ -1062,6 +1086,7 @@ class UserApprovedData(BaseEventData):
 @dataclass
 class UserRejectedData(BaseEventData):
     """Data for user.rejected event."""
+
     user_public_id: str
     email: str
     rejected_by_public_id: str
@@ -1073,9 +1098,11 @@ class UserRejectedData(BaseEventData):
 # Permission Events
 # =============================================================================
 
+
 @dataclass
 class PermissionGrantedData(BaseEventData):
     """Data for permission.granted event."""
+
     membership_public_id: str
     user_public_id: str
     user_email: str
@@ -1087,25 +1114,28 @@ class PermissionGrantedData(BaseEventData):
 @dataclass
 class PermissionRevokedData(BaseEventData):
     """Data for permission.revoked event."""
+
     membership_public_id: str
     user_public_id: str
     user_email: str
     permission_codes: List[str] = field(default_factory=list)
     revoked_by_public_id: Optional[str] = None
     revoked_by_email: str = ""
-    
+
+
 # =============================================================================
 # Company Events
 # =============================================================================
+
 
 @dataclass
 class CompanyUpdatedData(BaseEventData):
     """
     Data for company.updated event.
-    
+
     Emitted when basic company information changes:
     - name, name_ar, slug, is_active
-    
+
     Example:
         CompanyUpdatedData(
             company_public_id="abc-123",
@@ -1115,6 +1145,7 @@ class CompanyUpdatedData(BaseEventData):
             }
         )
     """
+
     company_public_id: str
     changes: Dict[str, Dict[str, Any]]  # {"field": {"old": value, "new": value}}
 
@@ -1146,6 +1177,7 @@ class CompanySettingsChangedData(BaseEventData):
             }
         )
     """
+
     company_public_id: str
     changes: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     # Alternative: single setting change
@@ -1161,6 +1193,7 @@ class CompanyLogoUploadedData(BaseEventData):
 
     Emitted when a company logo is uploaded or changed.
     """
+
     company_public_id: str
     logo_path: str  # Relative path to media root
     old_logo_path: Optional[str] = None  # Previous logo if any
@@ -1173,6 +1206,7 @@ class CompanyLogoDeletedData(BaseEventData):
 
     Emitted when a company logo is removed.
     """
+
     company_public_id: str
     deleted_logo_path: str  # Path of the deleted logo
 
@@ -1181,9 +1215,11 @@ class CompanyLogoDeletedData(BaseEventData):
 # Sales Module Events
 # =============================================================================
 
+
 @dataclass
 class ItemCreatedData(BaseEventData):
     """Data for sales.item_created event."""
+
     item_public_id: str
     company_public_id: str
     code: str
@@ -1201,6 +1237,7 @@ class ItemCreatedData(BaseEventData):
 @dataclass
 class ItemUpdatedData(BaseEventData):
     """Data for sales.item_updated event."""
+
     item_public_id: str
     company_public_id: str
     changes: Dict[str, Dict[str, Any]]
@@ -1209,6 +1246,7 @@ class ItemUpdatedData(BaseEventData):
 @dataclass
 class TaxCodeCreatedData(BaseEventData):
     """Data for sales.taxcode_created event."""
+
     taxcode_public_id: str
     company_public_id: str
     code: str
@@ -1224,6 +1262,7 @@ class TaxCodeCreatedData(BaseEventData):
 @dataclass
 class TaxCodeUpdatedData(BaseEventData):
     """Data for sales.taxcode_updated event."""
+
     taxcode_public_id: str
     company_public_id: str
     changes: Dict[str, Dict[str, Any]]
@@ -1232,6 +1271,7 @@ class TaxCodeUpdatedData(BaseEventData):
 @dataclass
 class PostingProfileCreatedData(BaseEventData):
     """Data for sales.postingprofile_created event."""
+
     profile_public_id: str
     company_public_id: str
     code: str
@@ -1247,6 +1287,7 @@ class PostingProfileCreatedData(BaseEventData):
 @dataclass
 class PostingProfileUpdatedData(BaseEventData):
     """Data for sales.postingprofile_updated event."""
+
     profile_public_id: str
     company_public_id: str
     changes: Dict[str, Dict[str, Any]]
@@ -1255,6 +1296,7 @@ class PostingProfileUpdatedData(BaseEventData):
 @dataclass
 class SalesInvoiceLineData:
     """Sales invoice line data for embedding in events."""
+
     line_no: int
     item_public_id: Optional[str]
     description: str
@@ -1296,6 +1338,7 @@ class SalesInvoiceLineData:
 @dataclass
 class SalesInvoiceCreatedData(BaseEventData):
     """Data for sales.invoice_created event."""
+
     invoice_public_id: str
     company_public_id: str
     invoice_number: str
@@ -1318,6 +1361,7 @@ class SalesInvoiceCreatedData(BaseEventData):
 @dataclass
 class SalesInvoiceUpdatedData(BaseEventData):
     """Data for sales.invoice_updated event."""
+
     invoice_public_id: str
     company_public_id: str
     changes: Dict[str, Dict[str, Any]]
@@ -1327,6 +1371,7 @@ class SalesInvoiceUpdatedData(BaseEventData):
 @dataclass
 class SalesInvoicePostedData(BaseEventData):
     """Data for sales.invoice_posted event."""
+
     invoice_public_id: str
     company_public_id: str
     invoice_number: str
@@ -1348,6 +1393,7 @@ class SalesInvoicePostedData(BaseEventData):
 @dataclass
 class SalesInvoiceVoidedData(BaseEventData):
     """Data for sales.invoice_voided event."""
+
     invoice_public_id: str
     company_public_id: str
     invoice_number: str
@@ -1362,9 +1408,11 @@ class SalesInvoiceVoidedData(BaseEventData):
 # Sales Credit Note Events
 # =============================================================================
 
+
 @dataclass
 class SalesCreditNoteCreatedData(BaseEventData):
     """Data for sales.credit_note_created event."""
+
     credit_note_public_id: str
     company_public_id: str
     credit_note_number: str
@@ -1380,6 +1428,7 @@ class SalesCreditNoteCreatedData(BaseEventData):
 @dataclass
 class SalesCreditNotePostedData(BaseEventData):
     """Data for sales.credit_note_posted event."""
+
     credit_note_public_id: str
     company_public_id: str
     credit_note_number: str
@@ -1402,6 +1451,7 @@ class SalesCreditNotePostedData(BaseEventData):
 @dataclass
 class SalesCreditNoteVoidedData(BaseEventData):
     """Data for sales.credit_note_voided event."""
+
     credit_note_public_id: str
     company_public_id: str
     credit_note_number: str
@@ -1416,9 +1466,11 @@ class SalesCreditNoteVoidedData(BaseEventData):
 # Purchases Module Events
 # =============================================================================
 
+
 @dataclass
 class PurchaseBillLineData:
     """Purchase bill line data for embedding in events."""
+
     line_no: int
     item_public_id: Optional[str]
     description: str
@@ -1460,6 +1512,7 @@ class PurchaseBillLineData:
 @dataclass
 class PurchaseBillCreatedData(BaseEventData):
     """Data for purchases.bill_created event."""
+
     bill_public_id: str
     company_public_id: str
     bill_number: str
@@ -1482,6 +1535,7 @@ class PurchaseBillCreatedData(BaseEventData):
 @dataclass
 class PurchaseBillUpdatedData(BaseEventData):
     """Data for purchases.bill_updated event."""
+
     bill_public_id: str
     company_public_id: str
     changes: Dict[str, Dict[str, Any]]
@@ -1491,6 +1545,7 @@ class PurchaseBillUpdatedData(BaseEventData):
 @dataclass
 class PurchaseBillPostedData(BaseEventData):
     """Data for purchases.bill_posted event."""
+
     bill_public_id: str
     company_public_id: str
     bill_number: str
@@ -1512,6 +1567,7 @@ class PurchaseBillPostedData(BaseEventData):
 @dataclass
 class PurchaseBillVoidedData(BaseEventData):
     """Data for purchases.bill_voided event."""
+
     bill_public_id: str
     company_public_id: str
     bill_number: str
@@ -1525,6 +1581,7 @@ class PurchaseBillVoidedData(BaseEventData):
 # =============================================================================
 # Purchase Order Events
 # =============================================================================
+
 
 @dataclass
 class PurchaseOrderCreatedData(BaseEventData):
@@ -1615,9 +1672,11 @@ class GoodsReceiptVoidedData(BaseEventData):
 # Purchase Credit Note Events
 # =============================================================================
 
+
 @dataclass
 class PurchaseCreditNoteCreatedData(BaseEventData):
     """Data for purchases.credit_note_created event."""
+
     credit_note_public_id: str
     company_public_id: str
     credit_note_number: str
@@ -1640,6 +1699,7 @@ class PurchaseCreditNoteCreatedData(BaseEventData):
 @dataclass
 class PurchaseCreditNotePostedData(BaseEventData):
     """Data for purchases.credit_note_posted event."""
+
     credit_note_public_id: str
     company_public_id: str
     credit_note_number: str
@@ -1663,6 +1723,7 @@ class PurchaseCreditNotePostedData(BaseEventData):
 @dataclass
 class PurchaseCreditNoteVoidedData(BaseEventData):
     """Data for purchases.credit_note_voided event."""
+
     credit_note_public_id: str
     company_public_id: str
     credit_note_number: str
@@ -1677,9 +1738,11 @@ class PurchaseCreditNoteVoidedData(BaseEventData):
 # Inventory Module Events
 # =============================================================================
 
+
 @dataclass
 class StockLedgerEntryData:
     """Stock ledger entry data for embedding in events."""
+
     item_public_id: str
     warehouse_public_id: str
     qty_delta: str  # String for JSON safety, +IN or -OUT
@@ -1703,6 +1766,7 @@ class StockLedgerEntryData:
 @dataclass
 class WarehouseCreatedData(BaseEventData):
     """Data for inventory.warehouse_created event."""
+
     warehouse_public_id: str
     company_public_id: str
     code: str
@@ -1715,6 +1779,7 @@ class WarehouseCreatedData(BaseEventData):
 @dataclass
 class WarehouseUpdatedData(BaseEventData):
     """Data for inventory.warehouse_updated event."""
+
     warehouse_public_id: str
     company_public_id: str
     changes: Dict[str, Dict[str, Any]]
@@ -1728,6 +1793,7 @@ class StockReceivedData(BaseEventData):
     Emitted when stock is received from purchase bill or opening balance.
     Each entry increases inventory qty and value.
     """
+
     source_type: str  # PURCHASE_BILL, OPENING_BALANCE, ADJUSTMENT
     source_id: str  # Document public_id
     company_public_id: str
@@ -1746,6 +1812,7 @@ class StockIssuedData(BaseEventData):
     Emitted when stock is issued for sales invoice.
     Each entry decreases inventory qty and calculates COGS.
     """
+
     source_type: str  # SALES_INVOICE, ADJUSTMENT
     source_id: str  # Document public_id
     company_public_id: str
@@ -1765,6 +1832,7 @@ class InventoryAdjustedData(BaseEventData):
     Emitted when inventory is manually adjusted (count, write-off, etc).
     Can include both positive and negative adjustments.
     """
+
     adjustment_public_id: str
     company_public_id: str
     adjustment_date: str
@@ -1784,6 +1852,7 @@ class InventoryOpeningBalanceData(BaseEventData):
     Emitted when opening balances are set for inventory items.
     Dr Inventory, Cr Opening Balance Equity.
     """
+
     company_public_id: str
     as_of_date: str
     entries: List[dict]  # List of StockLedgerEntryData dicts
@@ -1797,9 +1866,11 @@ class InventoryOpeningBalanceData(BaseEventData):
 # Invitation Events
 # =============================================================================
 
+
 @dataclass
 class InvitationCreatedData(BaseEventData):
     """Data for invitation.created event."""
+
     invitation_public_id: str
     email: str
     name: str
@@ -1815,6 +1886,7 @@ class InvitationCreatedData(BaseEventData):
 @dataclass
 class InvitationAcceptedData(BaseEventData):
     """Data for invitation.accepted event."""
+
     invitation_public_id: str
     email: str
     user_public_id: str
@@ -1825,6 +1897,7 @@ class InvitationAcceptedData(BaseEventData):
 @dataclass
 class InvitationCancelledData(BaseEventData):
     """Data for invitation.cancelled event."""
+
     invitation_public_id: str
     email: str
     cancelled_by_public_id: str
@@ -1836,6 +1909,7 @@ class InvitationCancelledData(BaseEventData):
 # Cash Application Events
 # =============================================================================
 
+
 @dataclass
 class CustomerReceiptRecordedData(BaseEventData):
     """
@@ -1844,6 +1918,7 @@ class CustomerReceiptRecordedData(BaseEventData):
     Emitted when a payment is received from a customer.
     Reduces the customer's AR balance.
     """
+
     receipt_public_id: str
     company_public_id: str
     customer_public_id: str
@@ -1873,6 +1948,7 @@ class VendorPaymentRecordedData(BaseEventData):
     Emitted when a payment is made to a vendor.
     Reduces the vendor's AP balance.
     """
+
     payment_public_id: str
     company_public_id: str
     vendor_public_id: str
@@ -1898,6 +1974,7 @@ class VendorPaymentRecordedData(BaseEventData):
 # Scratchpad Events
 # =============================================================================
 
+
 @dataclass
 class ScratchpadBatchCommittedData(BaseEventData):
     """
@@ -1907,6 +1984,7 @@ class ScratchpadBatchCommittedData(BaseEventData):
     This is an audit event that links scratchpad rows to the created
     journal entries.
     """
+
     batch_id: str  # UUID of the commit batch
     group_ids: List[str]  # UUIDs of committed groups
     row_count: int
@@ -1920,6 +1998,7 @@ class ScratchpadBatchCommittedData(BaseEventData):
 # Statistical Entry Events
 # =============================================================================
 
+
 @dataclass
 class StatisticalEntryCreatedData(BaseEventData):
     """
@@ -1928,6 +2007,7 @@ class StatisticalEntryCreatedData(BaseEventData):
     Emitted when a draft statistical entry is created.
     Statistical entries track non-monetary quantities (headcount, units, etc).
     """
+
     entry_public_id: str
     company_public_id: str
     entry_date: str  # ISO date
@@ -1952,6 +2032,7 @@ class StatisticalEntryUpdatedData(BaseEventData):
 
     Emitted when a draft statistical entry is modified.
     """
+
     entry_public_id: str
     company_public_id: str
     changes: Dict[str, Dict[str, Any]]  # {"field": {"old": x, "new": y}}
@@ -1965,6 +2046,7 @@ class StatisticalEntryPostedData(BaseEventData):
     Emitted when a statistical entry is finalized (posted).
     Once posted, it cannot be modified, only reversed.
     """
+
     entry_public_id: str
     company_public_id: str
     entry_date: str
@@ -1991,6 +2073,7 @@ class StatisticalEntryReversedData(BaseEventData):
     Emitted when a posted statistical entry is reversed.
     Creates a new entry with opposite direction.
     """
+
     original_entry_public_id: str
     reversal_entry_public_id: str
     company_public_id: str
@@ -2008,6 +2091,7 @@ class StatisticalEntryDeletedData(BaseEventData):
     Emitted when a draft statistical entry is deleted.
     Posted entries cannot be deleted, only reversed.
     """
+
     entry_public_id: str
     company_public_id: str
     entry_date: str
@@ -2018,23 +2102,20 @@ class StatisticalEntryDeletedData(BaseEventData):
     deleted_by_email: str
 
 
-
-
-
-
 # =============================================================================
 # Event Type Registry
 # =============================================================================
 
+
 class EventTypes:
     """
     Registry of all event types.
-    
+
     Naming convention: {aggregate}.{past_tense_verb}
     - account.created (not account.create)
     - journal_entry.posted (not journal_entry.post)
     """
-    
+
     # Account events
     ACCOUNT_CREATED = "account.created"
     ACCOUNT_UPDATED = "account.updated"
@@ -2050,9 +2131,9 @@ class EventTypes:
     JOURNAL_LINE_ANALYSIS_SET = "journal_line.analysis_set"
 
     # LEPH chunked journal events (for large batch imports)
-    JOURNAL_CREATED = "journal.created"                    # Header only
+    JOURNAL_CREATED = "journal.created"  # Header only
     JOURNAL_LINES_CHUNK_ADDED = "journal.lines_chunk_added"  # Batch of lines
-    JOURNAL_FINALIZED = "journal.finalized"                # Completion marker
+    JOURNAL_FINALIZED = "journal.finalized"  # Completion marker
 
     # Fiscal period events
     FISCAL_PERIOD_CLOSED = "fiscal_period.closed"
@@ -2066,12 +2147,12 @@ class EventTypes:
     ANALYSIS_DIMENSION_CREATED = "analysis_dimension.created"
     ANALYSIS_DIMENSION_UPDATED = "analysis_dimension.updated"
     ANALYSIS_DIMENSION_DELETED = "analysis_dimension.deleted"
-    
+
     # Analysis dimension value events
     ANALYSIS_DIMENSION_VALUE_CREATED = "analysis_dimension_value.created"
     ANALYSIS_DIMENSION_VALUE_UPDATED = "analysis_dimension_value.updated"
     ANALYSIS_DIMENSION_VALUE_DELETED = "analysis_dimension_value.deleted"
-    
+
     # Account analysis default events
     ACCOUNT_ANALYSIS_DEFAULT_SET = "account_analysis_default.set"
     ACCOUNT_ANALYSIS_DEFAULT_REMOVED = "account_analysis_default.removed"
@@ -2097,7 +2178,7 @@ class EventTypes:
     # Permission events
     PERMISSION_GRANTED = "permission.granted"
     PERMISSION_REVOKED = "permission.revoked"
-    
+
     # Company events
     COMPANY_CREATED = "company.created"
     COMPANY_UPDATED = "company.updated"
@@ -2108,7 +2189,7 @@ class EventTypes:
     # Membership events
     MEMBERSHIP_CREATED = "membership.created"  # <-- add
     MEMBERSHIP_ROLE_CHANGED = "membership.role_changed"  # optional but recommended
-    MEMBERSHIP_DEACTIVATED = "membership.deactivated"    # optional but recommended
+    MEMBERSHIP_DEACTIVATED = "membership.deactivated"  # optional but recommended
     MEMBERSHIP_PERMISSIONS_UPDATED = "membership.permissions_updated"  # optional
     MEMBERSHIP_REACTIVATED = "membership.reactivated"
 
@@ -2268,6 +2349,7 @@ class EventTypes:
 # Platform-agnostic Event Data Classes
 # =============================================================================
 
+
 @dataclass
 class PlatformOrderPaidData(FinancialEventData):
     """
@@ -2277,6 +2359,7 @@ class PlatformOrderPaidData(FinancialEventData):
     Shopify keeps its own events for backward compatibility; new platforms
     use these generic events.
     """
+
     platform_slug: str = ""
     platform_order_id: str = ""
     order_number: str = ""
@@ -2295,6 +2378,7 @@ class PlatformOrderPaidData(FinancialEventData):
 @dataclass
 class PlatformRefundCreatedData(FinancialEventData):
     """Generic refund event from any platform connector."""
+
     platform_slug: str = ""
     platform_refund_id: str = ""
     platform_order_id: str = ""
@@ -2305,6 +2389,7 @@ class PlatformRefundCreatedData(FinancialEventData):
 @dataclass
 class PlatformPayoutSettledData(FinancialEventData):
     """Generic payout/settlement event from any platform connector."""
+
     platform_slug: str = ""
     platform_payout_id: str = ""
     gross_amount: str = "0"
@@ -2317,6 +2402,7 @@ class PlatformPayoutSettledData(FinancialEventData):
 @dataclass
 class PlatformDisputeCreatedData(FinancialEventData):
     """Generic chargeback/dispute event from any platform connector."""
+
     platform_slug: str = ""
     platform_dispute_id: str = ""
     platform_order_id: str = ""
@@ -2330,6 +2416,7 @@ class PlatformDisputeCreatedData(FinancialEventData):
 @dataclass
 class PlatformFulfillmentCreatedData(FinancialEventData):
     """Generic fulfillment event for COGS recognition."""
+
     platform_slug: str = ""
     platform_fulfillment_id: str = ""
     platform_order_id: str = ""
@@ -2348,7 +2435,6 @@ EVENT_DATA_CLASSES = {
     EventTypes.ACCOUNT_CREATED: AccountCreatedData,
     EventTypes.ACCOUNT_UPDATED: AccountUpdatedData,
     EventTypes.ACCOUNT_DELETED: AccountDeletedData,
-    
     EventTypes.JOURNAL_ENTRY_CREATED: JournalEntryCreatedData,
     EventTypes.JOURNAL_ENTRY_UPDATED: JournalEntryUpdatedData,
     EventTypes.JOURNAL_ENTRY_POSTED: JournalEntryPostedData,
@@ -2356,36 +2442,29 @@ EVENT_DATA_CLASSES = {
     EventTypes.JOURNAL_ENTRY_SAVED_COMPLETE: JournalEntrySavedCompleteData,
     EventTypes.JOURNAL_ENTRY_DELETED: JournalEntryDeletedData,
     EventTypes.JOURNAL_LINE_ANALYSIS_SET: JournalLineAnalysisSetData,
-
     # LEPH chunked journal events
     EventTypes.JOURNAL_CREATED: JournalCreatedData,
     EventTypes.JOURNAL_LINES_CHUNK_ADDED: JournalLinesChunkData,
     EventTypes.JOURNAL_FINALIZED: JournalFinalizedData,
-
     EventTypes.FISCAL_PERIOD_CLOSED: FiscalPeriodClosedData,
     EventTypes.FISCAL_PERIOD_OPENED: FiscalPeriodOpenedData,
     EventTypes.FISCAL_PERIODS_CONFIGURED: FiscalPeriodsConfiguredData,
     EventTypes.FISCAL_PERIOD_RANGE_SET: FiscalPeriodRangeSetData,
     EventTypes.FISCAL_PERIOD_CURRENT_SET: FiscalPeriodCurrentSetData,
     EventTypes.FISCAL_PERIOD_DATES_UPDATED: FiscalPeriodDatesUpdatedData,
-
     EventTypes.FISCAL_YEAR_CLOSE_READINESS_CHECKED: FiscalYearCloseReadinessCheckedData,
     EventTypes.FISCAL_YEAR_CLOSED: FiscalYearClosedData,
     EventTypes.FISCAL_YEAR_REOPENED: FiscalYearReopenedData,
     EventTypes.CLOSING_ENTRY_GENERATED: ClosingEntryGeneratedData,
     EventTypes.CLOSING_ENTRY_REVERSED: ClosingEntryReversedData,
-
     EventTypes.ANALYSIS_DIMENSION_CREATED: AnalysisDimensionCreatedData,
     EventTypes.ANALYSIS_DIMENSION_UPDATED: AnalysisDimensionUpdatedData,
     EventTypes.ANALYSIS_DIMENSION_DELETED: AnalysisDimensionDeletedData,
-    
     EventTypes.ANALYSIS_DIMENSION_VALUE_CREATED: AnalysisDimensionValueCreatedData,
     EventTypes.ANALYSIS_DIMENSION_VALUE_UPDATED: AnalysisDimensionValueUpdatedData,
     EventTypes.ANALYSIS_DIMENSION_VALUE_DELETED: AnalysisDimensionValueDeletedData,
-    
     EventTypes.ACCOUNT_ANALYSIS_DEFAULT_SET: AccountAnalysisDefaultSetData,
     EventTypes.ACCOUNT_ANALYSIS_DEFAULT_REMOVED: AccountAnalysisDefaultRemovedData,
-    
     EventTypes.USER_REGISTERED: UserRegisteredData,
     EventTypes.USER_LOGGED_IN: UserLoggedInData,
     EventTypes.USER_LOGGED_OUT: UserLoggedOutData,
@@ -2395,11 +2474,8 @@ EVENT_DATA_CLASSES = {
     EventTypes.COMPANY_SETTINGS_CHANGED: CompanySettingsChangedData,
     EventTypes.COMPANY_LOGO_UPLOADED: CompanyLogoUploadedData,
     EventTypes.COMPANY_LOGO_DELETED: CompanyLogoDeletedData,
-
     EventTypes.PERMISSION_GRANTED: PermissionGrantedData,
     EventTypes.PERMISSION_REVOKED: PermissionRevokedData,
-    
-    
     EventTypes.USER_CREATED: UserCreatedData,
     EventTypes.USER_UPDATED: UserUpdatedData,
     EventTypes.USER_PASSWORD_CHANGED: UserPasswordChangedData,
@@ -2408,35 +2484,28 @@ EVENT_DATA_CLASSES = {
     EventTypes.MEMBERSHIP_ROLE_CHANGED: MembershipRoleChangedData,
     EventTypes.MEMBERSHIP_DEACTIVATED: MembershipDeactivatedData,
     EventTypes.MEMBERSHIP_PERMISSIONS_UPDATED: MembershipPermissionsUpdatedData,
-
     # Email verification events
     EventTypes.USER_EMAIL_VERIFICATION_SENT: UserEmailVerificationSentData,
     EventTypes.USER_EMAIL_VERIFIED: UserEmailVerifiedData,
-
     # Admin approval events
     EventTypes.USER_APPROVAL_REQUESTED: UserApprovalRequestedData,
     EventTypes.USER_APPROVED: UserApprovedData,
     EventTypes.USER_REJECTED: UserRejectedData,
-
     # Invitation events
     EventTypes.INVITATION_CREATED: InvitationCreatedData,
     EventTypes.INVITATION_ACCEPTED: InvitationAcceptedData,
     EventTypes.INVITATION_CANCELLED: InvitationCancelledData,
-
     # Cash application events
     EventTypes.CUSTOMER_RECEIPT_RECORDED: CustomerReceiptRecordedData,
     EventTypes.VENDOR_PAYMENT_RECORDED: VendorPaymentRecordedData,
-
     # Scratchpad events
     EventTypes.SCRATCHPAD_BATCH_COMMITTED: ScratchpadBatchCommittedData,
-
     # Statistical entry events
     EventTypes.STATISTICAL_ENTRY_CREATED: StatisticalEntryCreatedData,
     EventTypes.STATISTICAL_ENTRY_UPDATED: StatisticalEntryUpdatedData,
     EventTypes.STATISTICAL_ENTRY_POSTED: StatisticalEntryPostedData,
     EventTypes.STATISTICAL_ENTRY_REVERSED: StatisticalEntryReversedData,
     EventTypes.STATISTICAL_ENTRY_DELETED: StatisticalEntryDeletedData,
-
     # Sales module events
     EventTypes.SALES_ITEM_CREATED: ItemCreatedData,
     EventTypes.SALES_ITEM_UPDATED: ItemUpdatedData,
@@ -2451,7 +2520,6 @@ EVENT_DATA_CLASSES = {
     EventTypes.SALES_CREDIT_NOTE_CREATED: SalesCreditNoteCreatedData,
     EventTypes.SALES_CREDIT_NOTE_POSTED: SalesCreditNotePostedData,
     EventTypes.SALES_CREDIT_NOTE_VOIDED: SalesCreditNoteVoidedData,
-
     # Purchases module events
     EventTypes.PURCHASES_BILL_CREATED: PurchaseBillCreatedData,
     EventTypes.PURCHASES_BILL_UPDATED: PurchaseBillUpdatedData,
@@ -2468,7 +2536,6 @@ EVENT_DATA_CLASSES = {
     EventTypes.PURCHASES_CREDIT_NOTE_CREATED: PurchaseCreditNoteCreatedData,
     EventTypes.PURCHASES_CREDIT_NOTE_POSTED: PurchaseCreditNotePostedData,
     EventTypes.PURCHASES_CREDIT_NOTE_VOIDED: PurchaseCreditNoteVoidedData,
-
     # Inventory module events
     EventTypes.INVENTORY_WAREHOUSE_CREATED: WarehouseCreatedData,
     EventTypes.INVENTORY_WAREHOUSE_UPDATED: WarehouseUpdatedData,
@@ -2476,7 +2543,6 @@ EVENT_DATA_CLASSES = {
     EventTypes.INVENTORY_STOCK_ISSUED: StockIssuedData,
     EventTypes.INVENTORY_ADJUSTED: InventoryAdjustedData,
     EventTypes.INVENTORY_OPENING_BALANCE: InventoryOpeningBalanceData,
-
     # Platform-agnostic commerce events
     EventTypes.PLATFORM_ORDER_PAID: PlatformOrderPaidData,
     EventTypes.PLATFORM_REFUND_CREATED: PlatformRefundCreatedData,

@@ -80,6 +80,7 @@ class VoiceUsageEventAdmin(admin.ModelAdmin):
     This is an APPEND-ONLY table - no editing allowed.
     Use filters to analyze usage by company, user, date range.
     """
+
     list_display = [
         "id",
         "company",
@@ -134,6 +135,7 @@ class VoiceUsageEventAdmin(admin.ModelAdmin):
 
     def user_email(self, obj):
         return obj.user.email if obj.user else "-"
+
     user_email.short_description = "User"
     user_email.admin_order_field = "user__email"
 
@@ -143,6 +145,7 @@ class VoiceUsageEventAdmin(admin.ModelAdmin):
             seconds = int(obj.audio_seconds % 60)
             return f"{minutes}:{seconds:02d}"
         return "-"
+
     audio_duration_display.short_description = "Duration"
     audio_duration_display.admin_order_field = "audio_seconds"
 
@@ -151,12 +154,14 @@ class VoiceUsageEventAdmin(admin.ModelAdmin):
         if total:
             return f"${total:.4f}"
         return "-"
+
     total_cost_display.short_description = "Cost"
 
     def success_display(self, obj):
         if obj.success:
             return format_html('<span style="color: green;">&#10004;</span>')
         return format_html('<span style="color: red;">&#10008;</span>')
+
     success_display.short_description = "OK"
     success_display.admin_order_field = "success"
 

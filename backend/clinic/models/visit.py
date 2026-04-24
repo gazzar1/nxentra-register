@@ -22,14 +22,20 @@ class Visit(ProjectionWriteGuard):
         CANCELLED = "cancelled", "Cancelled"
 
     company = models.ForeignKey(
-        Company, on_delete=models.CASCADE, related_name="clinic_visits",
+        Company,
+        on_delete=models.CASCADE,
+        related_name="clinic_visits",
     )
     public_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     patient = models.ForeignKey(
-        "clinic.Patient", on_delete=models.CASCADE, related_name="visits",
+        "clinic.Patient",
+        on_delete=models.CASCADE,
+        related_name="visits",
     )
     doctor = models.ForeignKey(
-        "clinic.Doctor", on_delete=models.CASCADE, related_name="visits",
+        "clinic.Doctor",
+        on_delete=models.CASCADE,
+        related_name="visits",
     )
     visit_date = models.DateField()
     visit_type = models.CharField(max_length=20, choices=VisitType.choices)

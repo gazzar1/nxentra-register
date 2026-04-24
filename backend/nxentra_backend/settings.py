@@ -10,7 +10,6 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env", override=False)  # Real env vars take precedence
 
 
-
 SECRET_KEY = os.environ.get("SECRET_KEY", os.environ.get("DJANGO_SECRET_KEY", "changeme"))
 DEBUG = os.getenv("DEBUG", os.getenv("DJANGO_DEBUG", "True")).strip().lower() in ("true", "1", "yes")
 ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
@@ -53,17 +52,12 @@ if not DEBUG:
     # Validate SECRET_KEY is not the default
     if SECRET_KEY == "changeme":
         raise ValueError(
-            "SECRET_KEY is set to the default 'changeme'. "
-            "Set a strong SECRET_KEY environment variable for production."
+            "SECRET_KEY is set to the default 'changeme'. Set a strong SECRET_KEY environment variable for production."
         )
 
 # Test-mode flags used by read-model guards and event payload validation.
 # Include Django's manage.py test invocation.
-TESTING = (
-    "PYTEST_CURRENT_TEST" in os.environ
-    or "pytest" in sys.argv
-    or "test" in sys.argv
-)
+TESTING = "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.argv or "test" in sys.argv
 DISABLE_EVENT_VALIDATION = TESTING
 RLS_BYPASS = os.getenv("RLS_BYPASS", "False") == "True" or TESTING
 PROJECTIONS_SYNC = os.getenv("PROJECTIONS_SYNC", "") == "True" or DEBUG or TESTING
@@ -198,9 +192,7 @@ REST_FRAMEWORK = {
         "accounts.authentication.CookieJWTAuthentication",  # HttpOnly cookie first
         "rest_framework_simplejwt.authentication.JWTAuthentication",  # Bearer header fallback
     ),
-    "DEFAULT_PERMISSION_CLASSES": (
-        "rest_framework.permissions.IsAuthenticated",
-    )
+    "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
 }
 
 # =============================================================================
@@ -220,21 +212,16 @@ SIMPLE_JWT = {
     "BLACKLIST_AFTER_ROTATION": True,
 }
 
-CORS_ALLOWED_ORIGINS = os.getenv(
-    "CORS_ALLOWED_ORIGINS",
-    "http://localhost:3000"
-).split(",")
+CORS_ALLOWED_ORIGINS = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000").split(",")
 
 CORS_ALLOW_CREDENTIALS = True
 
-CSRF_TRUSTED_ORIGINS = os.getenv(
-    "CSRF_TRUSTED_ORIGINS",
-    "http://localhost:3000"
-).split(",")
+CSRF_TRUSTED_ORIGINS = os.getenv("CSRF_TRUSTED_ORIGINS", "http://localhost:3000").split(",")
 
 # Production guard: REJECT wildcard / localhost origins (hard fail, not just a warning).
 if not DEBUG and not TESTING:
     from django.core.exceptions import ImproperlyConfigured as _IC
+
     _bad_origins = {"*", "http://localhost:3000", "http://127.0.0.1:3000"}
     if _bad_origins & set(CORS_ALLOWED_ORIGINS):
         raise _IC(
@@ -252,7 +239,7 @@ if not DEBUG and not TESTING:
 # =============================================================================
 EMAIL_BACKEND = os.getenv(
     "EMAIL_BACKEND",
-    "django.core.mail.backends.console.EmailBackend"  # Console output for dev
+    "django.core.mail.backends.console.EmailBackend",  # Console output for dev
 )
 EMAIL_HOST = os.getenv("EMAIL_HOST", "")
 EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))

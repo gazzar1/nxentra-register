@@ -76,10 +76,15 @@ from .views import (
     FiscalYearClosingEntriesView,
     FiscalYearReopenView,
     IncomeStatementView,
+    # Item profitability
+    ItemProfitabilityView,
+    # System Health & Month-End Close
+    MonthEndCloseView,
     ProjectionStatusView,
     # Reconciliation
     ReconciliationCheckView,
     SubledgerTieOutView,
+    SystemHealthView,
     # Tax summary
     TaxSummaryReportView,
     # Trial balance by currency
@@ -88,11 +93,6 @@ from .views import (
     VendorBalanceDetailView,
     VendorBalanceListView,
     VendorStatementView,
-    # Item profitability
-    ItemProfitabilityView,
-    # System Health & Month-End Close
-    MonthEndCloseView,
-    SystemHealthView,
 )
 
 app_name = "projections"
@@ -144,7 +144,6 @@ urlpatterns = [
         SubledgerTieOutView.as_view(),
         name="subledger-tieout",
     ),
-
     # Aging Reports
     path(
         "ar-aging/",
@@ -156,14 +155,12 @@ urlpatterns = [
         APAgingReportView.as_view(),
         name="ap-aging",
     ),
-
     # Tax Summary
     path(
         "tax-summary/",
         TaxSummaryReportView.as_view(),
         name="tax-summary",
     ),
-
     # Account Balances
     path(
         "account-balances/",
@@ -175,7 +172,6 @@ urlpatterns = [
         AccountBalanceDetailView.as_view(),
         name="account-balance-detail",
     ),
-
     # Customer Balances (AR Subledger)
     path(
         "customer-balances/",
@@ -187,7 +183,6 @@ urlpatterns = [
         CustomerBalanceDetailView.as_view(),
         name="customer-balance-detail",
     ),
-
     # Vendor Balances (AP Subledger)
     path(
         "vendor-balances/",
@@ -199,7 +194,6 @@ urlpatterns = [
         VendorBalanceDetailView.as_view(),
         name="vendor-balance-detail",
     ),
-
     # Customer/Vendor Statements
     path(
         "customer-statement/<str:code>/",
@@ -211,14 +205,12 @@ urlpatterns = [
         VendorStatementView.as_view(),
         name="vendor-statement",
     ),
-
     # Account Inquiry
     path(
         "account-inquiry/",
         AccountInquiryView.as_view(),
         name="account-inquiry",
     ),
-
     # Fiscal Periods
     path(
         "periods/",
@@ -255,7 +247,6 @@ urlpatterns = [
         FiscalPeriodDatesView.as_view(),
         name="period-dates",
     ),
-
     # Fiscal Year Management
     path(
         "fiscal-years/<int:year>/close-readiness/",
@@ -277,35 +268,30 @@ urlpatterns = [
         FiscalYearClosingEntriesView.as_view(),
         name="fiscal-year-closing-entries",
     ),
-
     # Reconciliation
     path(
         "reconciliation/",
         ReconciliationCheckView.as_view(),
         name="reconciliation-check",
     ),
-
     # Currency Revaluation
     path(
         "currency-revaluation/",
         CurrencyRevaluationView.as_view(),
         name="currency-revaluation",
     ),
-
     # Trial Balance by Currency
     path(
         "trial-balance-by-currency/",
         TrialBalanceByCurrencyView.as_view(),
         name="trial-balance-by-currency",
     ),
-
     # Item Profitability
     path(
         "item-profitability/",
         ItemProfitabilityView.as_view(),
         name="item-profitability",
     ),
-
     # System Status
     path(
         "projection-status/",
@@ -322,7 +308,6 @@ urlpatterns = [
         MonthEndCloseView.as_view(),
         name="month-end-close",
     ),
-
     # Dashboard
     path(
         "dashboard-charts/",
@@ -334,7 +319,6 @@ urlpatterns = [
         DashboardWidgetsView.as_view(),
         name="dashboard-widgets",
     ),
-
     # Admin Projection Management
     path(
         "admin/projections/",

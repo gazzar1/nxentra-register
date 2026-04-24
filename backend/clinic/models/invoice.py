@@ -17,14 +17,22 @@ class Invoice(ProjectionWriteGuard):
         CANCELLED = "cancelled", "Cancelled"
 
     company = models.ForeignKey(
-        Company, on_delete=models.CASCADE, related_name="clinic_invoices",
+        Company,
+        on_delete=models.CASCADE,
+        related_name="clinic_invoices",
     )
     public_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     patient = models.ForeignKey(
-        "clinic.Patient", on_delete=models.CASCADE, related_name="invoices",
+        "clinic.Patient",
+        on_delete=models.CASCADE,
+        related_name="invoices",
     )
     visit = models.ForeignKey(
-        "clinic.Visit", on_delete=models.SET_NULL, null=True, blank=True, related_name="invoices",
+        "clinic.Visit",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="invoices",
     )
     invoice_no = models.CharField(max_length=30)
     date = models.DateField()

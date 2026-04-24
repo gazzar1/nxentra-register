@@ -9,6 +9,7 @@ Design Principles:
 - Backward compatible (missing entry = shared mode)
 - Supports migration status tracking
 """
+
 import uuid
 
 from django.db import models

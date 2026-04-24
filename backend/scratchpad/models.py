@@ -38,10 +38,10 @@ class ScratchpadRow(models.Model):
     """
 
     class Status(models.TextChoices):
-        RAW = "RAW", "Raw input"              # Just created, not yet validated
-        PARSED = "PARSED", "Parsed"           # Voice/import parsed, pending validation
-        INVALID = "INVALID", "Invalid"        # Validation failed
-        READY = "READY", "Ready"              # Valid, ready to commit
+        RAW = "RAW", "Raw input"  # Just created, not yet validated
+        PARSED = "PARSED", "Parsed"  # Voice/import parsed, pending validation
+        INVALID = "INVALID", "Invalid"  # Validation failed
+        READY = "READY", "Ready"  # Valid, ready to commit
         COMMITTED = "COMMITTED", "Committed"  # Converted to JournalEntry
 
     class Source(models.TextChoices):

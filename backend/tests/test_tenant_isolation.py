@@ -9,6 +9,7 @@ Verifies that tenant data is properly isolated:
 4. TenantDirectory controls routing
 5. Write freeze during migration status
 """
+
 from uuid import uuid4
 
 import pytest
@@ -32,6 +33,7 @@ from tenant.router import SYSTEM_APPS, TENANT_APPS, TenantDatabaseRouter
 # ═════════════════════════════════════════════════════════════════════════════
 # TENANT CONTEXT TESTS
 # ═════════════════════════════════════════════════════════════════════════════
+
 
 class TestTenantContext:
     """Test tenant context management (contextvars)."""
@@ -97,6 +99,7 @@ class TestTenantContext:
 # ═════════════════════════════════════════════════════════════════════════════
 # DATABASE ROUTER TESTS
 # ═════════════════════════════════════════════════════════════════════════════
+
 
 class TestDatabaseRouter:
     """Test that the router classifies models correctly."""
@@ -175,6 +178,7 @@ class TestDatabaseRouter:
 # ═════════════════════════════════════════════════════════════════════════════
 # CROSS-TENANT DATA ISOLATION (requires DB)
 # ═════════════════════════════════════════════════════════════════════════════
+
 
 @pytest.mark.django_db
 class TestCrossTenantIsolation:
@@ -272,6 +276,7 @@ class TestCrossTenantIsolation:
 # ═════════════════════════════════════════════════════════════════════════════
 # TENANT DIRECTORY TESTS
 # ═════════════════════════════════════════════════════════════════════════════
+
 
 @pytest.mark.django_db
 class TestTenantDirectory:

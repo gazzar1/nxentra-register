@@ -97,12 +97,15 @@ class PlatformAccountingProjection(BaseProjection):
         if not mapping:
             logger.warning(
                 "No ModuleAccountMapping for %s, company %s — skipping %s",
-                module_key, company, event.event_type,
+                module_key,
+                company,
+                event.event_type,
             )
             return
 
         # Resolve dimension context for JE line tagging
         from platform_connectors.dimensions import resolve_platform_dimensions
+
         dimension_context = resolve_platform_dimensions(company, platform_slug)
 
         handler = {
@@ -146,39 +149,47 @@ class PlatformAccountingProjection(BaseProjection):
 
         tax_account = mapping.get(ROLE_SALES_TAX)
         if total_tax > 0 and tax_account:
-            lines.append(JELine(
-                account=tax_account,
-                description=f"Sales tax: {order_name}",
-                credit=total_tax,
-            ))
+            lines.append(
+                JELine(
+                    account=tax_account,
+                    description=f"Sales tax: {order_name}",
+                    credit=total_tax,
+                )
+            )
 
         shipping_account = mapping.get(ROLE_SHIPPING_REVENUE)
         if total_shipping > 0:
             ship_acct = shipping_account or revenue
-            lines.append(JELine(
-                account=ship_acct,
-                description=f"Shipping: {order_name}",
-                credit=total_shipping,
-            ))
+            lines.append(
+                JELine(
+                    account=ship_acct,
+                    description=f"Shipping: {order_name}",
+                    credit=total_shipping,
+                )
+            )
 
-        entry = build_journal_entry(JERequest(
-            company=event.company,
-            entry_date=entry_date,
-            memo=memo,
-            source_module=f"platform_{platform_slug}",
-            source_document=data.get("platform_order_id", ""),
-            currency=currency,
-            lines=lines,
-            caused_by_event=event,
-            projection_name=PROJECTION_NAME,
-            posted_by_email=f"system@{platform_slug}",
-            dimension_context=dimension_context or {},
-        ))
+        entry = build_journal_entry(
+            JERequest(
+                company=event.company,
+                entry_date=entry_date,
+                memo=memo,
+                source_module=f"platform_{platform_slug}",
+                source_document=data.get("platform_order_id", ""),
+                currency=currency,
+                lines=lines,
+                caused_by_event=event,
+                projection_name=PROJECTION_NAME,
+                posted_by_email=f"system@{platform_slug}",
+                dimension_context=dimension_context or {},
+            )
+        )
 
         if entry:
             logger.info(
                 "Created JE %s for %s order %s",
-                entry.public_id, platform_slug, order_name,
+                entry.public_id,
+                platform_slug,
+                order_name,
             )
 
     def _handle_refund_created(self, event, data, mapping, platform_slug, dimension_context=None):
@@ -197,27 +208,31 @@ class PlatformAccountingProjection(BaseProjection):
         if amount <= 0:
             return
 
-        entry = build_journal_entry(JERequest(
-            company=event.company,
-            entry_date=entry_date,
-            memo=memo,
-            source_module=f"platform_{platform_slug}",
-            source_document=str(refund_id),
-            currency=currency,
-            lines=[
-                JELine(account=revenue, description=memo, debit=amount),
-                JELine(account=clearing, description=memo, credit=amount),
-            ],
-            caused_by_event=event,
-            projection_name=PROJECTION_NAME,
-            posted_by_email=f"system@{platform_slug}",
-            dimension_context=dimension_context or {},
-        ))
+        entry = build_journal_entry(
+            JERequest(
+                company=event.company,
+                entry_date=entry_date,
+                memo=memo,
+                source_module=f"platform_{platform_slug}",
+                source_document=str(refund_id),
+                currency=currency,
+                lines=[
+                    JELine(account=revenue, description=memo, debit=amount),
+                    JELine(account=clearing, description=memo, credit=amount),
+                ],
+                caused_by_event=event,
+                projection_name=PROJECTION_NAME,
+                posted_by_email=f"system@{platform_slug}",
+                dimension_context=dimension_context or {},
+            )
+        )
 
         if entry:
             logger.info(
                 "Created refund JE %s for %s order %s",
-                entry.public_id, platform_slug, order_number,
+                entry.public_id,
+                platform_slug,
+                order_number,
             )
 
     def _handle_payout_settled(self, event, data, mapping, platform_slug, dimension_context=None):
@@ -236,9 +251,7 @@ class PlatformAccountingProjection(BaseProjection):
         fees = Decimal(str(data.get("fees", "0")))
         net_amount = Decimal(str(data.get("net_amount", "0")))
         payout_id = data.get("platform_payout_id", "")
-        entry_date = _parse_date(
-            data.get("payout_date") or data.get("transaction_date")
-        ) or event.created_at.date()
+        entry_date = _parse_date(data.get("payout_date") or data.get("transaction_date")) or event.created_at.date()
         currency = data.get("currency") or "USD"
         memo = f"{platform_slug.title()} payout: {payout_id}"
 
@@ -254,41 +267,49 @@ class PlatformAccountingProjection(BaseProjection):
             # Negative payout: refunds > charges in this period
             lines.append(JELine(account=clearing, description=memo, debit=abs_gross))
             if fees > 0 and fees_account:
-                lines.append(JELine(
-                    account=fees_account,
-                    description=f"Processing fees: {payout_id}",
-                    debit=fees,
-                ))
+                lines.append(
+                    JELine(
+                        account=fees_account,
+                        description=f"Processing fees: {payout_id}",
+                        debit=fees,
+                    )
+                )
             lines.append(JELine(account=bank, description=memo, credit=abs_net))
         else:
             # Normal positive payout
             lines.append(JELine(account=bank, description=memo, debit=abs_net))
             if fees > 0 and fees_account:
-                lines.append(JELine(
-                    account=fees_account,
-                    description=f"Processing fees: {payout_id}",
-                    debit=fees,
-                ))
+                lines.append(
+                    JELine(
+                        account=fees_account,
+                        description=f"Processing fees: {payout_id}",
+                        debit=fees,
+                    )
+                )
             lines.append(JELine(account=clearing, description=memo, credit=abs_gross))
 
-        entry = build_journal_entry(JERequest(
-            company=event.company,
-            entry_date=entry_date,
-            memo=memo,
-            source_module=f"platform_{platform_slug}",
-            source_document=str(payout_id),
-            currency=currency,
-            lines=lines,
-            caused_by_event=event,
-            projection_name=PROJECTION_NAME,
-            posted_by_email=f"system@{platform_slug}",
-            dimension_context=dimension_context or {},
-        ))
+        entry = build_journal_entry(
+            JERequest(
+                company=event.company,
+                entry_date=entry_date,
+                memo=memo,
+                source_module=f"platform_{platform_slug}",
+                source_document=str(payout_id),
+                currency=currency,
+                lines=lines,
+                caused_by_event=event,
+                projection_name=PROJECTION_NAME,
+                posted_by_email=f"system@{platform_slug}",
+                dimension_context=dimension_context or {},
+            )
+        )
 
         if entry:
             logger.info(
                 "Created payout JE %s for %s payout %s",
-                entry.public_id, platform_slug, payout_id,
+                entry.public_id,
+                platform_slug,
+                payout_id,
             )
 
     def _handle_dispute_created(self, event, data, mapping, platform_slug, dimension_context=None):
@@ -319,29 +340,35 @@ class PlatformAccountingProjection(BaseProjection):
             JELine(account=chargeback, description=memo, debit=dispute_amount),
         ]
         if chargeback_fee > 0 and fees_account:
-            lines.append(JELine(
-                account=fees_account,
-                description=f"Chargeback fee: {dispute_id}",
-                debit=chargeback_fee,
-            ))
+            lines.append(
+                JELine(
+                    account=fees_account,
+                    description=f"Chargeback fee: {dispute_id}",
+                    debit=chargeback_fee,
+                )
+            )
         lines.append(JELine(account=clearing, description=memo, credit=total))
 
-        entry = build_journal_entry(JERequest(
-            company=event.company,
-            entry_date=entry_date,
-            memo=memo,
-            source_module=f"platform_{platform_slug}",
-            source_document=str(dispute_id),
-            currency=currency,
-            lines=lines,
-            caused_by_event=event,
-            projection_name=PROJECTION_NAME,
-            posted_by_email=f"system@{platform_slug}",
-            dimension_context=dimension_context or {},
-        ))
+        entry = build_journal_entry(
+            JERequest(
+                company=event.company,
+                entry_date=entry_date,
+                memo=memo,
+                source_module=f"platform_{platform_slug}",
+                source_document=str(dispute_id),
+                currency=currency,
+                lines=lines,
+                caused_by_event=event,
+                projection_name=PROJECTION_NAME,
+                posted_by_email=f"system@{platform_slug}",
+                dimension_context=dimension_context or {},
+            )
+        )
 
         if entry:
             logger.info(
                 "Created chargeback JE %s for %s dispute %s",
-                entry.public_id, platform_slug, dispute_id,
+                entry.public_id,
+                platform_slug,
+                dispute_id,
             )

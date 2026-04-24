@@ -20,7 +20,7 @@ class Command(BaseCommand):
                 _, was_created = NxPermission.objects.update_or_create(
                     code=code,
                     defaults={
-                        "name": code,       # placeholder
+                        "name": code,  # placeholder
                         "name_ar": "",
                         "module": code.split(".")[0],
                         "description": "",

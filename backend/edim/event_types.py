@@ -15,9 +15,11 @@ from events.types import BaseEventData, EventTypes
 # Source System Events
 # =============================================================================
 
+
 @dataclass
 class EdimSourceSystemCreatedData(BaseEventData):
     """Data for edim_source_system.created event."""
+
     source_system_public_id: str
     code: str
     name: str
@@ -29,6 +31,7 @@ class EdimSourceSystemCreatedData(BaseEventData):
 @dataclass
 class EdimSourceSystemUpdatedData(BaseEventData):
     """Data for edim_source_system.updated event."""
+
     source_system_public_id: str
     changes: dict[str, dict[str, Any]] = field(default_factory=dict)
 
@@ -36,6 +39,7 @@ class EdimSourceSystemUpdatedData(BaseEventData):
 @dataclass
 class EdimSourceSystemDeactivatedData(BaseEventData):
     """Data for edim_source_system.deactivated event."""
+
     source_system_public_id: str
     code: str
     name: str
@@ -45,9 +49,11 @@ class EdimSourceSystemDeactivatedData(BaseEventData):
 # Ingestion Batch Events
 # =============================================================================
 
+
 @dataclass
 class EdimBatchStagedData(BaseEventData):
     """Data for edim_batch.staged event."""
+
     batch_public_id: str
     source_system_public_id: str
     source_system_code: str
@@ -62,6 +68,7 @@ class EdimBatchStagedData(BaseEventData):
 @dataclass
 class EdimBatchMappedData(BaseEventData):
     """Data for edim_batch.mapped event."""
+
     batch_public_id: str
     mapping_profile_public_id: str
     mapping_profile_version: int
@@ -73,6 +80,7 @@ class EdimBatchMappedData(BaseEventData):
 @dataclass
 class EdimBatchValidatedData(BaseEventData):
     """Data for edim_batch.validated event."""
+
     batch_public_id: str
     total_records: int
     validated_records: int
@@ -83,6 +91,7 @@ class EdimBatchValidatedData(BaseEventData):
 @dataclass
 class EdimBatchPreviewedData(BaseEventData):
     """Data for edim_batch.previewed event."""
+
     batch_public_id: str
     previewed_by_id: int
     previewed_by_email: str
@@ -92,6 +101,7 @@ class EdimBatchPreviewedData(BaseEventData):
 @dataclass
 class EdimBatchCommittedData(BaseEventData):
     """Data for edim_batch.committed event."""
+
     batch_public_id: str
     committed_by_id: int
     committed_by_email: str
@@ -105,6 +115,7 @@ class EdimBatchCommittedData(BaseEventData):
 @dataclass
 class EdimBatchRejectedData(BaseEventData):
     """Data for edim_batch.rejected event."""
+
     batch_public_id: str
     rejected_by_id: int
     rejected_by_email: str
@@ -115,9 +126,11 @@ class EdimBatchRejectedData(BaseEventData):
 # Mapping Profile Events
 # =============================================================================
 
+
 @dataclass
 class EdimMappingProfileCreatedData(BaseEventData):
     """Data for edim_mapping_profile.created event."""
+
     profile_public_id: str
     source_system_public_id: str
     name: str
@@ -130,6 +143,7 @@ class EdimMappingProfileCreatedData(BaseEventData):
 @dataclass
 class EdimMappingProfileUpdatedData(BaseEventData):
     """Data for edim_mapping_profile.updated event."""
+
     profile_public_id: str
     changes: dict[str, dict[str, Any]] = field(default_factory=dict)
     new_version: int = 0
@@ -138,6 +152,7 @@ class EdimMappingProfileUpdatedData(BaseEventData):
 @dataclass
 class EdimMappingProfileActivatedData(BaseEventData):
     """Data for edim_mapping_profile.activated event."""
+
     profile_public_id: str
     version: int
     previous_active_version: int | None = None
@@ -146,6 +161,7 @@ class EdimMappingProfileActivatedData(BaseEventData):
 @dataclass
 class EdimMappingProfileDeprecatedData(BaseEventData):
     """Data for edim_mapping_profile.deprecated event."""
+
     profile_public_id: str
     version: int
 
@@ -154,9 +170,11 @@ class EdimMappingProfileDeprecatedData(BaseEventData):
 # Identity Crosswalk Events
 # =============================================================================
 
+
 @dataclass
 class EdimCrosswalkCreatedData(BaseEventData):
     """Data for edim_crosswalk.created event."""
+
     crosswalk_public_id: str
     source_system_public_id: str
     object_type: str
@@ -170,6 +188,7 @@ class EdimCrosswalkCreatedData(BaseEventData):
 @dataclass
 class EdimCrosswalkVerifiedData(BaseEventData):
     """Data for edim_crosswalk.verified event."""
+
     crosswalk_public_id: str
     verified_by_id: int
     verified_by_email: str
@@ -178,6 +197,7 @@ class EdimCrosswalkVerifiedData(BaseEventData):
 @dataclass
 class EdimCrosswalkRejectedData(BaseEventData):
     """Data for edim_crosswalk.rejected event."""
+
     crosswalk_public_id: str
     rejected_by_id: int
     rejected_by_email: str
@@ -187,6 +207,7 @@ class EdimCrosswalkRejectedData(BaseEventData):
 @dataclass
 class EdimCrosswalkUpdatedData(BaseEventData):
     """Data for edim_crosswalk.updated event."""
+
     crosswalk_public_id: str
     changes: dict[str, dict[str, Any]] = field(default_factory=dict)
 

@@ -26,9 +26,9 @@ Database Routing (with company_id):
 - Shared tenants: route to 'default' with RLS enabled
 - Dedicated tenants: route to tenant-specific database, RLS bypassed
 """
+
 from django.conf import settings
 from django.http import JsonResponse
-from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from accounts import rls
 from tenant.context import clear_tenant_context, set_tenant_context
@@ -102,6 +102,7 @@ class TenantRlsMiddleware:
     def __init__(self, get_response):
         self.get_response = get_response
         from accounts.authentication import CookieJWTAuthentication
+
         self.jwt_auth = CookieJWTAuthentication()
         # Cache for TenantDirectory lookups (cleared per-process)
         self._tenant_cache = {}
@@ -239,9 +240,7 @@ class TenantRlsMiddleware:
 
     def _is_no_tenant_allowed(self, method: str, path: str) -> bool:
         """Check if method+path is allowed without company_id in token."""
-        return any(
-            method == m and path.startswith(p) for m, p in self.NO_TENANT_ALLOWLIST
-        )
+        return any(method == m and path.startswith(p) for m, p in self.NO_TENANT_ALLOWLIST)
 
     def invalidate_tenant_cache(self, company_id: int = None):
         """

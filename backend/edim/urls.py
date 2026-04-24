@@ -35,19 +35,18 @@ urlpatterns = [
     # Source Systems
     path("source-systems/", SourceSystemListCreateView.as_view(), name="source-system-list"),
     path("source-systems/<int:pk>/", SourceSystemDetailView.as_view(), name="source-system-detail"),
-
     # Mapping Profiles
     path("mapping-profiles/", MappingProfileListCreateView.as_view(), name="mapping-profile-list"),
     path("mapping-profiles/<int:pk>/", MappingProfileDetailView.as_view(), name="mapping-profile-detail"),
     path("mapping-profiles/<int:pk>/activate/", MappingProfileActivateView.as_view(), name="mapping-profile-activate"),
-    path("mapping-profiles/<int:pk>/deprecate/", MappingProfileDeprecateView.as_view(), name="mapping-profile-deprecate"),
-
+    path(
+        "mapping-profiles/<int:pk>/deprecate/", MappingProfileDeprecateView.as_view(), name="mapping-profile-deprecate"
+    ),
     # Identity Crosswalks
     path("crosswalks/", CrosswalkListCreateView.as_view(), name="crosswalk-list"),
     path("crosswalks/<int:pk>/", CrosswalkDetailView.as_view(), name="crosswalk-detail"),
     path("crosswalks/<int:pk>/verify/", CrosswalkVerifyView.as_view(), name="crosswalk-verify"),
     path("crosswalks/<int:pk>/reject/", CrosswalkRejectView.as_view(), name="crosswalk-reject"),
-
     # Ingestion Batches
     path("batches/", BatchListView.as_view(), name="batch-list"),
     path("batches/upload/", BatchUploadView.as_view(), name="batch-upload"),

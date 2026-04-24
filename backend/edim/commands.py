@@ -111,6 +111,7 @@ def _process_projections(company, exclude: set[str] | None = None) -> None:
 # Source System Commands
 # =============================================================================
 
+
 @transaction.atomic
 def create_source_system(
     actor: ActorContext,
@@ -152,14 +153,17 @@ def create_source_system(
 
     source_system_public_id = uuid.uuid4()
 
-    idempotency_key = _idempotency_hash("edim_source_system.created", {
-        "company_public_id": str(actor.company.public_id),
-        "code": code,
-        "name": name,
-        "system_type": system_type,
-        "trust_level": trust_level,
-        "description": description,
-    })
+    idempotency_key = _idempotency_hash(
+        "edim_source_system.created",
+        {
+            "company_public_id": str(actor.company.public_id),
+            "code": code,
+            "name": name,
+            "system_type": system_type,
+            "trust_level": trust_level,
+            "description": description,
+        },
+    )
 
     # Create the source system within write context
     with command_writes_allowed():
@@ -214,9 +218,7 @@ def update_source_system(
     require(actor, "edim.manage_sources")
 
     try:
-        source_system = SourceSystem.objects.select_for_update().get(
-            pk=source_system_id, company=actor.company
-        )
+        source_system = SourceSystem.objects.select_for_update().get(pk=source_system_id, company=actor.company)
     except SourceSystem.DoesNotExist:
         return CommandResult.fail("Source system not found.")
 
@@ -274,9 +276,7 @@ def deactivate_source_system(
     require(actor, "edim.manage_sources")
 
     try:
-        source_system = SourceSystem.objects.select_for_update().get(
-            pk=source_system_id, company=actor.company
-        )
+        source_system = SourceSystem.objects.select_for_update().get(pk=source_system_id, company=actor.company)
     except SourceSystem.DoesNotExist:
         return CommandResult.fail("Source system not found.")
 
@@ -309,6 +309,7 @@ def deactivate_source_system(
 # =============================================================================
 # Mapping Profile Commands
 # =============================================================================
+
 
 @transaction.atomic
 def create_mapping_profile(
@@ -346,9 +347,7 @@ def create_mapping_profile(
     require(actor, "edim.manage_mappings")
 
     try:
-        source_system = SourceSystem.objects.get(
-            pk=source_system_id, company=actor.company
-        )
+        source_system = SourceSystem.objects.get(pk=source_system_id, company=actor.company)
     except SourceSystem.DoesNotExist:
         return CommandResult.fail("Source system not found.")
 
@@ -372,13 +371,16 @@ def create_mapping_profile(
     ).values_list("version", flat=True)
     version = max(existing_versions, default=0) + 1
 
-    idempotency_key = _idempotency_hash("edim_mapping_profile.created", {
-        "company_public_id": str(actor.company.public_id),
-        "source_system_public_id": str(source_system.public_id),
-        "name": name,
-        "document_type": document_type,
-        "version": version,
-    })
+    idempotency_key = _idempotency_hash(
+        "edim_mapping_profile.created",
+        {
+            "company_public_id": str(actor.company.public_id),
+            "source_system_public_id": str(source_system.public_id),
+            "name": name,
+            "document_type": document_type,
+            "version": version,
+        },
+    )
 
     # Create profile within write context
     with command_writes_allowed():
@@ -441,9 +443,7 @@ def update_mapping_profile(
     require(actor, "edim.manage_mappings")
 
     try:
-        profile = MappingProfile.objects.select_for_update().get(
-            pk=profile_id, company=actor.company
-        )
+        profile = MappingProfile.objects.select_for_update().get(pk=profile_id, company=actor.company)
     except MappingProfile.DoesNotExist:
         return CommandResult.fail("Mapping profile not found.")
 
@@ -453,9 +453,14 @@ def update_mapping_profile(
     # Track changes
     changes = {}
     allowed_fields = {
-        "name", "field_mappings", "transform_rules", "defaults",
-        "validation_rules", "posting_policy",
-        "default_debit_account_code", "default_credit_account_code"
+        "name",
+        "field_mappings",
+        "transform_rules",
+        "defaults",
+        "validation_rules",
+        "posting_policy",
+        "default_debit_account_code",
+        "default_credit_account_code",
     }
 
     for field, value in updates.items():
@@ -517,9 +522,7 @@ def activate_mapping_profile(
     require(actor, "edim.manage_mappings")
 
     try:
-        profile = MappingProfile.objects.select_for_update().get(
-            pk=profile_id, company=actor.company
-        )
+        profile = MappingProfile.objects.select_for_update().get(pk=profile_id, company=actor.company)
     except MappingProfile.DoesNotExist:
         return CommandResult.fail("Mapping profile not found.")
 
@@ -584,9 +587,7 @@ def deprecate_mapping_profile(
     require(actor, "edim.manage_mappings")
 
     try:
-        profile = MappingProfile.objects.select_for_update().get(
-            pk=profile_id, company=actor.company
-        )
+        profile = MappingProfile.objects.select_for_update().get(pk=profile_id, company=actor.company)
     except MappingProfile.DoesNotExist:
         return CommandResult.fail("Mapping profile not found.")
 
@@ -619,6 +620,7 @@ def deprecate_mapping_profile(
 # Identity Crosswalk Commands
 # =============================================================================
 
+
 @transaction.atomic
 def create_crosswalk(
     actor: ActorContext,
@@ -649,9 +651,7 @@ def create_crosswalk(
     require(actor, "edim.manage_crosswalks")
 
     try:
-        source_system = SourceSystem.objects.get(
-            pk=source_system_id, company=actor.company
-        )
+        source_system = SourceSystem.objects.get(pk=source_system_id, company=actor.company)
     except SourceSystem.DoesNotExist:
         return CommandResult.fail("Source system not found.")
 
@@ -678,12 +678,15 @@ def create_crosswalk(
 
     crosswalk_public_id = uuid.uuid4()
 
-    idempotency_key = _idempotency_hash("edim_crosswalk.created", {
-        "company_public_id": str(actor.company.public_id),
-        "source_system_public_id": str(source_system.public_id),
-        "object_type": object_type,
-        "external_id": external_id,
-    })
+    idempotency_key = _idempotency_hash(
+        "edim_crosswalk.created",
+        {
+            "company_public_id": str(actor.company.public_id),
+            "source_system_public_id": str(source_system.public_id),
+            "object_type": object_type,
+            "external_id": external_id,
+        },
+    )
 
     # Create crosswalk within write context
     with command_writes_allowed():
@@ -742,9 +745,7 @@ def update_crosswalk(
     require(actor, "edim.manage_crosswalks")
 
     try:
-        crosswalk = IdentityCrosswalk.objects.select_for_update().get(
-            pk=crosswalk_id, company=actor.company
-        )
+        crosswalk = IdentityCrosswalk.objects.select_for_update().get(pk=crosswalk_id, company=actor.company)
     except IdentityCrosswalk.DoesNotExist:
         return CommandResult.fail("Crosswalk entry not found.")
 
@@ -802,9 +803,7 @@ def verify_crosswalk(
     require(actor, "edim.manage_crosswalks")
 
     try:
-        crosswalk = IdentityCrosswalk.objects.select_for_update().get(
-            pk=crosswalk_id, company=actor.company
-        )
+        crosswalk = IdentityCrosswalk.objects.select_for_update().get(pk=crosswalk_id, company=actor.company)
     except IdentityCrosswalk.DoesNotExist:
         return CommandResult.fail("Crosswalk entry not found.")
 
@@ -861,9 +860,7 @@ def reject_crosswalk(
     require(actor, "edim.manage_crosswalks")
 
     try:
-        crosswalk = IdentityCrosswalk.objects.select_for_update().get(
-            pk=crosswalk_id, company=actor.company
-        )
+        crosswalk = IdentityCrosswalk.objects.select_for_update().get(pk=crosswalk_id, company=actor.company)
     except IdentityCrosswalk.DoesNotExist:
         return CommandResult.fail("Crosswalk entry not found.")
 
@@ -898,6 +895,7 @@ def reject_crosswalk(
 # Ingestion Batch Commands (Stage, Map, Validate, Preview, Commit, Reject)
 # =============================================================================
 
+
 @transaction.atomic
 def stage_batch(
     actor: ActorContext,
@@ -922,9 +920,7 @@ def stage_batch(
     require(actor, "edim.stage_data")
 
     try:
-        source_system = SourceSystem.objects.get(
-            pk=source_system_id, company=actor.company
-        )
+        source_system = SourceSystem.objects.get(pk=source_system_id, company=actor.company)
     except SourceSystem.DoesNotExist:
         return CommandResult.fail("Source system not found.")
 
@@ -947,9 +943,7 @@ def stage_batch(
     mapping_profile = None
     if mapping_profile_id:
         try:
-            mapping_profile = MappingProfile.objects.get(
-                pk=mapping_profile_id, company=actor.company
-            )
+            mapping_profile = MappingProfile.objects.get(pk=mapping_profile_id, company=actor.company)
         except MappingProfile.DoesNotExist:
             return CommandResult.fail("Mapping profile not found.")
 
@@ -979,10 +973,13 @@ def stage_batch(
 
     batch_public_id = uuid.uuid4()
 
-    idempotency_key = _idempotency_hash("edim_batch.staged", {
-        "company_public_id": str(actor.company.public_id),
-        "file_checksum": file_checksum,
-    })
+    idempotency_key = _idempotency_hash(
+        "edim_batch.staged",
+        {
+            "company_public_id": str(actor.company.public_id),
+            "file_checksum": file_checksum,
+        },
+    )
 
     # Create batch and staged records within write context
     with command_writes_allowed():
@@ -1057,9 +1054,7 @@ def map_batch(
     require(actor, "edim.stage_data")
 
     try:
-        batch = IngestionBatch.objects.select_for_update().get(
-            pk=batch_id, company=actor.company
-        )
+        batch = IngestionBatch.objects.select_for_update().get(pk=batch_id, company=actor.company)
     except IngestionBatch.DoesNotExist:
         return CommandResult.fail("Batch not found.")
 
@@ -1069,9 +1064,7 @@ def map_batch(
     # Get mapping profile
     if mapping_profile_id:
         try:
-            mapping_profile = MappingProfile.objects.get(
-                pk=mapping_profile_id, company=actor.company
-            )
+            mapping_profile = MappingProfile.objects.get(pk=mapping_profile_id, company=actor.company)
         except MappingProfile.DoesNotExist:
             return CommandResult.fail("Mapping profile not found.")
     elif batch.mapping_profile:
@@ -1145,9 +1138,7 @@ def validate_batch(
     require(actor, "edim.stage_data")
 
     try:
-        batch = IngestionBatch.objects.select_for_update().get(
-            pk=batch_id, company=actor.company
-        )
+        batch = IngestionBatch.objects.select_for_update().get(pk=batch_id, company=actor.company)
     except IngestionBatch.DoesNotExist:
         return CommandResult.fail("Batch not found.")
 
@@ -1178,9 +1169,7 @@ def validate_batch(
                 error_count += 1
                 continue
 
-            is_valid, errors, resolved_accounts = validate_record(
-                record.mapped_payload, actor.company, crosswalks
-            )
+            is_valid, errors, resolved_accounts = validate_record(record.mapped_payload, actor.company, crosswalks)
             record.validation_errors = errors
             record.is_valid = is_valid
             record.resolved_accounts = resolved_accounts
@@ -1242,9 +1231,7 @@ def preview_batch(
     require(actor, "edim.review_batches")
 
     try:
-        batch = IngestionBatch.objects.select_for_update().get(
-            pk=batch_id, company=actor.company
-        )
+        batch = IngestionBatch.objects.select_for_update().get(pk=batch_id, company=actor.company)
     except IngestionBatch.DoesNotExist:
         return CommandResult.fail("Batch not found.")
 
@@ -1282,18 +1269,22 @@ def preview_batch(
             credit = Decimal(str(payload.get("credit", "0")))
             total_debit += debit
             total_credit += credit
-            entry_lines.append({
-                "account_code": payload.get("account_code", ""),
-                "description": payload.get("description", ""),
-                "debit": str(debit),
-                "credit": str(credit),
-            })
+            entry_lines.append(
+                {
+                    "account_code": payload.get("account_code", ""),
+                    "description": payload.get("description", ""),
+                    "debit": str(debit),
+                    "credit": str(credit),
+                }
+            )
 
-        preview_summary["proposed_entries"].append({
-            "date": entry_date,
-            "memo": f"Imported from {batch.original_filename}",
-            "lines": entry_lines,
-        })
+        preview_summary["proposed_entries"].append(
+            {
+                "date": entry_date,
+                "memo": f"Imported from {batch.original_filename}",
+                "lines": entry_lines,
+            }
+        )
 
     preview_summary["total_entries"] = len(preview_summary["proposed_entries"])
     preview_summary["total_debit"] = str(total_debit)
@@ -1341,9 +1332,7 @@ def commit_batch(
     require(actor, "edim.commit_batches")
 
     try:
-        batch = IngestionBatch.objects.select_for_update().get(
-            pk=batch_id, company=actor.company
-        )
+        batch = IngestionBatch.objects.select_for_update().get(pk=batch_id, company=actor.company)
     except IngestionBatch.DoesNotExist:
         return CommandResult.fail("Batch not found.")
 
@@ -1351,7 +1340,10 @@ def commit_batch(
     if batch.status == IngestionBatch.Status.PREVIEWED:
         pass  # OK
     elif batch.status == IngestionBatch.Status.VALIDATED:
-        if batch.mapping_profile and batch.mapping_profile.posting_policy == MappingProfile.PostingPolicy.MANUAL_APPROVAL:
+        if (
+            batch.mapping_profile
+            and batch.mapping_profile.posting_policy == MappingProfile.PostingPolicy.MANUAL_APPROVAL
+        ):
             return CommandResult.fail("Batch requires preview before commit (MANUAL_APPROVAL policy).")
     else:
         return CommandResult.fail(f"Batch must be in VALIDATED or PREVIEWED status to commit. Current: {batch.status}")
@@ -1418,12 +1410,14 @@ def commit_batch(
             total_debit += debit
             total_credit += credit
 
-            lines.append({
-                "account_id": account.id,
-                "description": payload.get("description", ""),
-                "debit": debit,
-                "credit": credit,
-            })
+            lines.append(
+                {
+                    "account_id": account.id,
+                    "description": payload.get("description", ""),
+                    "debit": debit,
+                    "credit": credit,
+                }
+            )
 
         # Create journal entry
         result = create_journal_entry(
@@ -1447,10 +1441,17 @@ def commit_batch(
             raise ValueError(f"Failed to save journal entry: {result.error}")
 
         # Post if policy allows
-        posting_policy = batch.mapping_profile.posting_policy if batch.mapping_profile else MappingProfile.PostingPolicy.MANUAL_APPROVAL
+        posting_policy = (
+            batch.mapping_profile.posting_policy
+            if batch.mapping_profile
+            else MappingProfile.PostingPolicy.MANUAL_APPROVAL
+        )
         trust_level = batch.source_system.trust_level
 
-        if posting_policy == MappingProfile.PostingPolicy.AUTO_POST and trust_level == SourceSystem.TrustLevel.FINANCIAL:
+        if (
+            posting_policy == MappingProfile.PostingPolicy.AUTO_POST
+            and trust_level == SourceSystem.TrustLevel.FINANCIAL
+        ):
             result = post_journal_entry(actor=actor, entry_id=entry.id)
             if not result.success:
                 raise ValueError(f"Failed to post journal entry: {result.error}")
@@ -1509,9 +1510,7 @@ def reject_batch(
     require(actor, "edim.review_batches")
 
     try:
-        batch = IngestionBatch.objects.select_for_update().get(
-            pk=batch_id, company=actor.company
-        )
+        batch = IngestionBatch.objects.select_for_update().get(pk=batch_id, company=actor.company)
     except IngestionBatch.DoesNotExist:
         return CommandResult.fail("Batch not found.")
 

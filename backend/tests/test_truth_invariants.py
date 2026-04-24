@@ -41,6 +41,7 @@ from projections.write_barrier import (
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _emit_posted_event(company, user, lines, memo="Truth test", entry_id=None):
     """Emit a JOURNAL_ENTRY_POSTED event with the given lines."""
     entry_id = entry_id or uuid4()
@@ -100,6 +101,7 @@ def _snapshot_balances(company):
 # INVARIANT 1: Replay-from-zero equals incremental projection state
 # ═════════════════════════════════════════════════════════════════════════════
 
+
 @pytest.mark.django_db
 class TestReplayEqualsIncremental:
     """
@@ -109,26 +111,39 @@ class TestReplayEqualsIncremental:
     If this fails, the projection has order-dependent or state-dependent bugs.
     """
 
-    def test_rebuild_matches_incremental(
-        self, company, user, cash_account, revenue_account, expense_account
-    ):
+    def test_rebuild_matches_incremental(self, company, user, cash_account, revenue_account, expense_account):
         # Emit several events with varied patterns
-        _emit_posted_event(company, user, [
-            _make_line(cash_account, debit="1000.00", line_no=1),
-            _make_line(revenue_account, credit="1000.00", line_no=2),
-        ], memo="Sale 1")
+        _emit_posted_event(
+            company,
+            user,
+            [
+                _make_line(cash_account, debit="1000.00", line_no=1),
+                _make_line(revenue_account, credit="1000.00", line_no=2),
+            ],
+            memo="Sale 1",
+        )
 
-        _emit_posted_event(company, user, [
-            _make_line(expense_account, debit="300.00", line_no=1),
-            _make_line(cash_account, credit="300.00", line_no=2),
-        ], memo="Expense payment")
+        _emit_posted_event(
+            company,
+            user,
+            [
+                _make_line(expense_account, debit="300.00", line_no=1),
+                _make_line(cash_account, credit="300.00", line_no=2),
+            ],
+            memo="Expense payment",
+        )
 
         # Multi-line same account (the bug we just fixed)
-        _emit_posted_event(company, user, [
-            _make_line(cash_account, debit="200.00", line_no=1),
-            _make_line(cash_account, debit="150.00", line_no=2),
-            _make_line(revenue_account, credit="350.00", line_no=3),
-        ], memo="Consolidated receipt")
+        _emit_posted_event(
+            company,
+            user,
+            [
+                _make_line(cash_account, debit="200.00", line_no=1),
+                _make_line(cash_account, debit="150.00", line_no=2),
+                _make_line(revenue_account, credit="350.00", line_no=3),
+            ],
+            memo="Consolidated receipt",
+        )
 
         projection = AccountBalanceProjection()
         projection.process_pending(company)
@@ -144,15 +159,14 @@ class TestReplayEqualsIncremental:
 
         # They must be identical
         assert incremental == rebuilt, (
-            f"Rebuild diverged from incremental.\n"
-            f"Incremental: {incremental}\n"
-            f"Rebuilt:      {rebuilt}"
+            f"Rebuild diverged from incremental.\nIncremental: {incremental}\nRebuilt:      {rebuilt}"
         )
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 # INVARIANT 2: Double-apply stability (reprocessing = no-op)
 # ═════════════════════════════════════════════════════════════════════════════
+
 
 @pytest.mark.django_db
 class TestDoubleApplyStability:
@@ -163,13 +177,15 @@ class TestDoubleApplyStability:
     If this fails, the idempotency mechanism is broken.
     """
 
-    def test_process_pending_is_idempotent(
-        self, company, user, cash_account, revenue_account
-    ):
-        _emit_posted_event(company, user, [
-            _make_line(cash_account, debit="500.00", line_no=1),
-            _make_line(revenue_account, credit="500.00", line_no=2),
-        ])
+    def test_process_pending_is_idempotent(self, company, user, cash_account, revenue_account):
+        _emit_posted_event(
+            company,
+            user,
+            [
+                _make_line(cash_account, debit="500.00", line_no=1),
+                _make_line(revenue_account, credit="500.00", line_no=2),
+            ],
+        )
 
         projection = AccountBalanceProjection()
 
@@ -189,6 +205,7 @@ class TestDoubleApplyStability:
 # INVARIANT 3: Reversal fully offsets original
 # ═════════════════════════════════════════════════════════════════════════════
 
+
 @pytest.mark.django_db
 class TestReversalFullyOffsets:
     """
@@ -199,22 +216,30 @@ class TestReversalFullyOffsets:
     JOURNAL_ENTRY_POSTED event with debits and credits swapped.
     """
 
-    def test_reversal_nets_to_zero(
-        self, company, user, cash_account, revenue_account, expense_account
-    ):
+    def test_reversal_nets_to_zero(self, company, user, cash_account, revenue_account, expense_account):
         # Original entry
-        _emit_posted_event(company, user, [
-            _make_line(cash_account, debit="750.00", line_no=1),
-            _make_line(expense_account, debit="250.00", line_no=2),
-            _make_line(revenue_account, credit="1000.00", line_no=3),
-        ], memo="Original entry")
+        _emit_posted_event(
+            company,
+            user,
+            [
+                _make_line(cash_account, debit="750.00", line_no=1),
+                _make_line(expense_account, debit="250.00", line_no=2),
+                _make_line(revenue_account, credit="1000.00", line_no=3),
+            ],
+            memo="Original entry",
+        )
 
         # Reversal: swap debit/credit on every line
-        _emit_posted_event(company, user, [
-            _make_line(cash_account, credit="750.00", line_no=1),
-            _make_line(expense_account, credit="250.00", line_no=2),
-            _make_line(revenue_account, debit="1000.00", line_no=3),
-        ], memo="Reversal entry")
+        _emit_posted_event(
+            company,
+            user,
+            [
+                _make_line(cash_account, credit="750.00", line_no=1),
+                _make_line(expense_account, credit="250.00", line_no=2),
+                _make_line(revenue_account, debit="1000.00", line_no=3),
+            ],
+            memo="Reversal entry",
+        )
 
         projection = AccountBalanceProjection()
         projection.process_pending(company)
@@ -226,23 +251,30 @@ class TestReversalFullyOffsets:
                 f"Account {account.code} balance is {bal.balance}, expected 0.00 after reversal"
             )
             assert bal.debit_total == bal.credit_total, (
-                f"Account {account.code}: debit_total={bal.debit_total} != "
-                f"credit_total={bal.credit_total}"
+                f"Account {account.code}: debit_total={bal.debit_total} != credit_total={bal.credit_total}"
             )
 
-    def test_partial_reversal_leaves_correct_remainder(
-        self, company, user, cash_account, revenue_account
-    ):
+    def test_partial_reversal_leaves_correct_remainder(self, company, user, cash_account, revenue_account):
         """A partial reversal (smaller amount) leaves the correct remainder."""
-        _emit_posted_event(company, user, [
-            _make_line(cash_account, debit="1000.00", line_no=1),
-            _make_line(revenue_account, credit="1000.00", line_no=2),
-        ], memo="Original")
+        _emit_posted_event(
+            company,
+            user,
+            [
+                _make_line(cash_account, debit="1000.00", line_no=1),
+                _make_line(revenue_account, credit="1000.00", line_no=2),
+            ],
+            memo="Original",
+        )
 
-        _emit_posted_event(company, user, [
-            _make_line(cash_account, credit="400.00", line_no=1),
-            _make_line(revenue_account, debit="400.00", line_no=2),
-        ], memo="Partial reversal")
+        _emit_posted_event(
+            company,
+            user,
+            [
+                _make_line(cash_account, credit="400.00", line_no=1),
+                _make_line(revenue_account, debit="400.00", line_no=2),
+            ],
+            memo="Partial reversal",
+        )
 
         projection = AccountBalanceProjection()
         projection.process_pending(company)
@@ -260,6 +292,7 @@ class TestReversalFullyOffsets:
 # INVARIANT 4: Multiple same-account lines sum correctly
 # ═════════════════════════════════════════════════════════════════════════════
 
+
 @pytest.mark.django_db
 class TestMultiLineSameAccount:
     """
@@ -269,15 +302,17 @@ class TestMultiLineSameAccount:
     These tests ensure it stays fixed under varied conditions.
     """
 
-    def test_three_debits_to_same_account(
-        self, company, user, cash_account, revenue_account
-    ):
-        _emit_posted_event(company, user, [
-            _make_line(cash_account, debit="100.00", line_no=1),
-            _make_line(cash_account, debit="200.00", line_no=2),
-            _make_line(cash_account, debit="300.00", line_no=3),
-            _make_line(revenue_account, credit="600.00", line_no=4),
-        ])
+    def test_three_debits_to_same_account(self, company, user, cash_account, revenue_account):
+        _emit_posted_event(
+            company,
+            user,
+            [
+                _make_line(cash_account, debit="100.00", line_no=1),
+                _make_line(cash_account, debit="200.00", line_no=2),
+                _make_line(cash_account, debit="300.00", line_no=3),
+                _make_line(revenue_account, credit="600.00", line_no=4),
+            ],
+        )
 
         projection = AccountBalanceProjection()
         projection.process_pending(company)
@@ -286,15 +321,17 @@ class TestMultiLineSameAccount:
         assert bal.debit_total == Decimal("600.00")
         assert bal.entry_count == 3
 
-    def test_mixed_debit_credit_to_same_account(
-        self, company, user, cash_account, revenue_account
-    ):
+    def test_mixed_debit_credit_to_same_account(self, company, user, cash_account, revenue_account):
         """Debit + credit to the same account in one event (allocation pattern)."""
-        _emit_posted_event(company, user, [
-            _make_line(cash_account, debit="500.00", line_no=1),
-            _make_line(cash_account, credit="200.00", line_no=2),
-            _make_line(revenue_account, credit="300.00", line_no=3),
-        ])
+        _emit_posted_event(
+            company,
+            user,
+            [
+                _make_line(cash_account, debit="500.00", line_no=1),
+                _make_line(cash_account, credit="200.00", line_no=2),
+                _make_line(revenue_account, credit="300.00", line_no=3),
+            ],
+        )
 
         projection = AccountBalanceProjection()
         projection.process_pending(company)
@@ -304,16 +341,19 @@ class TestMultiLineSameAccount:
         assert bal.credit_total == Decimal("200.00")
         assert bal.balance == Decimal("300.00")  # Debit-normal: debits - credits
 
-    def test_same_account_across_multiple_events(
-        self, company, user, cash_account, revenue_account
-    ):
+    def test_same_account_across_multiple_events(self, company, user, cash_account, revenue_account):
         """Multiple events each with multi-line same-account must all accumulate."""
         for i in range(3):
-            _emit_posted_event(company, user, [
-                _make_line(cash_account, debit="100.00", line_no=1),
-                _make_line(cash_account, debit="50.00", line_no=2),
-                _make_line(revenue_account, credit="150.00", line_no=3),
-            ], memo=f"Batch {i}")
+            _emit_posted_event(
+                company,
+                user,
+                [
+                    _make_line(cash_account, debit="100.00", line_no=1),
+                    _make_line(cash_account, debit="50.00", line_no=2),
+                    _make_line(revenue_account, credit="150.00", line_no=3),
+                ],
+                memo=f"Batch {i}",
+            )
 
         projection = AccountBalanceProjection()
         projection.process_pending(company)
@@ -327,6 +367,7 @@ class TestMultiLineSameAccount:
 # INVARIANT 5: External payload produces identical output to inline
 # ═════════════════════════════════════════════════════════════════════════════
 
+
 @pytest.mark.django_db
 class TestExternalPayloadEquivalence:
     """
@@ -337,38 +378,57 @@ class TestExternalPayloadEquivalence:
     strategies differently.
     """
 
-    def test_external_and_inline_produce_same_balance(
-        self, company, user
-    ):
+    def test_external_and_inline_produce_same_balance(self, company, user):
         # Create two sets of accounts
         inline_debit = Account.objects.create(
-            public_id=uuid4(), company=company, code="7001",
-            name="Inline Debit", account_type=Account.AccountType.EXPENSE,
-            normal_balance=Account.NormalBalance.DEBIT, status=Account.Status.ACTIVE,
+            public_id=uuid4(),
+            company=company,
+            code="7001",
+            name="Inline Debit",
+            account_type=Account.AccountType.EXPENSE,
+            normal_balance=Account.NormalBalance.DEBIT,
+            status=Account.Status.ACTIVE,
         )
         inline_credit = Account.objects.create(
-            public_id=uuid4(), company=company, code="7002",
-            name="Inline Credit", account_type=Account.AccountType.PAYABLE,
-            normal_balance=Account.NormalBalance.CREDIT, status=Account.Status.ACTIVE,
+            public_id=uuid4(),
+            company=company,
+            code="7002",
+            name="Inline Credit",
+            account_type=Account.AccountType.PAYABLE,
+            normal_balance=Account.NormalBalance.CREDIT,
+            status=Account.Status.ACTIVE,
         )
         external_debit = Account.objects.create(
-            public_id=uuid4(), company=company, code="7003",
-            name="External Debit", account_type=Account.AccountType.EXPENSE,
-            normal_balance=Account.NormalBalance.DEBIT, status=Account.Status.ACTIVE,
+            public_id=uuid4(),
+            company=company,
+            code="7003",
+            name="External Debit",
+            account_type=Account.AccountType.EXPENSE,
+            normal_balance=Account.NormalBalance.DEBIT,
+            status=Account.Status.ACTIVE,
         )
         external_credit = Account.objects.create(
-            public_id=uuid4(), company=company, code="7004",
-            name="External Credit", account_type=Account.AccountType.PAYABLE,
-            normal_balance=Account.NormalBalance.CREDIT, status=Account.Status.ACTIVE,
+            public_id=uuid4(),
+            company=company,
+            code="7004",
+            name="External Credit",
+            account_type=Account.AccountType.PAYABLE,
+            normal_balance=Account.NormalBalance.CREDIT,
+            status=Account.Status.ACTIVE,
         )
 
         amount = Decimal("42.50")
 
         # Inline event (small payload, stays inline)
-        _emit_posted_event(company, user, [
-            _make_line(inline_debit, debit=str(amount), line_no=1),
-            _make_line(inline_credit, credit=str(amount), line_no=2),
-        ], memo="Inline event")
+        _emit_posted_event(
+            company,
+            user,
+            [
+                _make_line(inline_debit, debit=str(amount), line_no=1),
+                _make_line(inline_credit, credit=str(amount), line_no=2),
+            ],
+            memo="Inline event",
+        )
 
         # External event (large payload, forced to external storage)
         # Build 300+ lines to exceed 64KB inline threshold
@@ -377,7 +437,9 @@ class TestExternalPayloadEquivalence:
         total = Decimal("0.00")
         for i in range(300):
             acct = Account.objects.create(
-                public_id=uuid4(), company=company, code=f"8{i:03d}",
+                public_id=uuid4(),
+                company=company,
+                code=f"8{i:03d}",
                 name=f"Ext Account {i}",
                 account_type=Account.AccountType.EXPENSE,
                 normal_balance=Account.NormalBalance.DEBIT,
@@ -390,14 +452,10 @@ class TestExternalPayloadEquivalence:
             total += amount
 
         # Also add our tracked external_debit account
-        external_lines.append(
-            _make_line(external_debit, debit=str(amount), line_no=301)
-        )
+        external_lines.append(_make_line(external_debit, debit=str(amount), line_no=301))
         total += amount
         # Balancing credit
-        external_lines.append(
-            _make_line(external_credit, credit=str(total), line_no=302)
-        )
+        external_lines.append(_make_line(external_credit, credit=str(total), line_no=302))
 
         ext_entry_id = uuid4()
         ext_event = emit_event(
@@ -429,9 +487,7 @@ class TestExternalPayloadEquivalence:
         ).first()
         assert inline_event is not None
         # External event should be external
-        assert ext_event.payload_storage == "external", (
-            f"Expected external storage, got {ext_event.payload_storage}"
-        )
+        assert ext_event.payload_storage == "external", f"Expected external storage, got {ext_event.payload_storage}"
 
         # Process projection
         projection = AccountBalanceProjection()
@@ -450,6 +506,7 @@ class TestExternalPayloadEquivalence:
 # INVARIANT 6: verify_all_balances agrees with projection state
 # ═════════════════════════════════════════════════════════════════════════════
 
+
 @pytest.mark.django_db
 class TestVerifyAllBalancesConsistency:
     """
@@ -460,33 +517,51 @@ class TestVerifyAllBalancesConsistency:
     must match.
     """
 
-    def test_verify_passes_after_mixed_operations(
-        self, company, user, cash_account, revenue_account, expense_account
-    ):
+    def test_verify_passes_after_mixed_operations(self, company, user, cash_account, revenue_account, expense_account):
         # Normal entry
-        _emit_posted_event(company, user, [
-            _make_line(cash_account, debit="2000.00", line_no=1),
-            _make_line(revenue_account, credit="2000.00", line_no=2),
-        ], memo="Big sale")
+        _emit_posted_event(
+            company,
+            user,
+            [
+                _make_line(cash_account, debit="2000.00", line_no=1),
+                _make_line(revenue_account, credit="2000.00", line_no=2),
+            ],
+            memo="Big sale",
+        )
 
         # Multi-line same account
-        _emit_posted_event(company, user, [
-            _make_line(expense_account, debit="300.00", line_no=1),
-            _make_line(expense_account, debit="200.00", line_no=2),
-            _make_line(cash_account, credit="500.00", line_no=3),
-        ], memo="Split expense")
+        _emit_posted_event(
+            company,
+            user,
+            [
+                _make_line(expense_account, debit="300.00", line_no=1),
+                _make_line(expense_account, debit="200.00", line_no=2),
+                _make_line(cash_account, credit="500.00", line_no=3),
+            ],
+            memo="Split expense",
+        )
 
         # Reversal-style entry
-        _emit_posted_event(company, user, [
-            _make_line(cash_account, credit="100.00", line_no=1),
-            _make_line(revenue_account, debit="100.00", line_no=2),
-        ], memo="Partial refund")
+        _emit_posted_event(
+            company,
+            user,
+            [
+                _make_line(cash_account, credit="100.00", line_no=1),
+                _make_line(revenue_account, debit="100.00", line_no=2),
+            ],
+            memo="Partial refund",
+        )
 
         # Another normal entry
-        _emit_posted_event(company, user, [
-            _make_line(cash_account, debit="800.00", line_no=1),
-            _make_line(revenue_account, credit="800.00", line_no=2),
-        ], memo="Another sale")
+        _emit_posted_event(
+            company,
+            user,
+            [
+                _make_line(cash_account, debit="800.00", line_no=1),
+                _make_line(revenue_account, credit="800.00", line_no=2),
+            ],
+            memo="Another sale",
+        )
 
         projection = AccountBalanceProjection()
         projection.process_pending(company)
@@ -494,21 +569,22 @@ class TestVerifyAllBalancesConsistency:
         # verify_all_balances replays events independently and compares
         result = projection.verify_all_balances(company)
 
-        assert result["mismatches"] == [], (
-            f"Projection state diverges from event replay:\n{result['mismatches']}"
-        )
+        assert result["mismatches"] == [], f"Projection state diverges from event replay:\n{result['mismatches']}"
         assert result["verified"] == result["total_accounts"]
 
-    def test_verify_passes_after_rebuild(
-        self, company, user, cash_account, revenue_account
-    ):
+    def test_verify_passes_after_rebuild(self, company, user, cash_account, revenue_account):
         """verify_all_balances must also pass after a full rebuild."""
         for i in range(5):
-            _emit_posted_event(company, user, [
-                _make_line(cash_account, debit="100.00", line_no=1),
-                _make_line(cash_account, debit="50.00", line_no=2),
-                _make_line(revenue_account, credit="150.00", line_no=3),
-            ], memo=f"Entry {i}")
+            _emit_posted_event(
+                company,
+                user,
+                [
+                    _make_line(cash_account, debit="100.00", line_no=1),
+                    _make_line(cash_account, debit="50.00", line_no=2),
+                    _make_line(revenue_account, credit="150.00", line_no=3),
+                ],
+                memo=f"Entry {i}",
+            )
 
         projection = AccountBalanceProjection()
         projection.process_pending(company)
@@ -523,9 +599,7 @@ class TestVerifyAllBalancesConsistency:
 
         # Verify after rebuild
         result = projection.verify_all_balances(company)
-        assert result["mismatches"] == [], (
-            f"Post-rebuild verification failed:\n{result['mismatches']}"
-        )
+        assert result["mismatches"] == [], f"Post-rebuild verification failed:\n{result['mismatches']}"
 
         # Check the actual values are correct
         bal.refresh_from_db()
@@ -537,6 +611,7 @@ class TestVerifyAllBalancesConsistency:
 # INVARIANT 7: Trial balance is always balanced
 # ═════════════════════════════════════════════════════════════════════════════
 
+
 @pytest.mark.django_db
 class TestTrialBalanceAlwaysBalanced:
     """
@@ -547,23 +622,41 @@ class TestTrialBalanceAlwaysBalanced:
     either the projection or the event emission is corrupted.
     """
 
-    def test_balanced_after_complex_sequence(
-        self, company, user, cash_account, revenue_account, expense_account
-    ):
+    def test_balanced_after_complex_sequence(self, company, user, cash_account, revenue_account, expense_account):
         entries = [
             # Normal sale
-            ([_make_line(cash_account, debit="1000.00", line_no=1),
-              _make_line(revenue_account, credit="1000.00", line_no=2)], "Sale"),
+            (
+                [
+                    _make_line(cash_account, debit="1000.00", line_no=1),
+                    _make_line(revenue_account, credit="1000.00", line_no=2),
+                ],
+                "Sale",
+            ),
             # Multi-line expense
-            ([_make_line(expense_account, debit="200.00", line_no=1),
-              _make_line(expense_account, debit="300.00", line_no=2),
-              _make_line(cash_account, credit="500.00", line_no=3)], "Expenses"),
+            (
+                [
+                    _make_line(expense_account, debit="200.00", line_no=1),
+                    _make_line(expense_account, debit="300.00", line_no=2),
+                    _make_line(cash_account, credit="500.00", line_no=3),
+                ],
+                "Expenses",
+            ),
             # Reversal
-            ([_make_line(cash_account, credit="100.00", line_no=1),
-              _make_line(revenue_account, debit="100.00", line_no=2)], "Refund"),
+            (
+                [
+                    _make_line(cash_account, credit="100.00", line_no=1),
+                    _make_line(revenue_account, debit="100.00", line_no=2),
+                ],
+                "Refund",
+            ),
             # Another sale
-            ([_make_line(cash_account, debit="750.00", line_no=1),
-              _make_line(revenue_account, credit="750.00", line_no=2)], "Sale 2"),
+            (
+                [
+                    _make_line(cash_account, debit="750.00", line_no=1),
+                    _make_line(revenue_account, credit="750.00", line_no=2),
+                ],
+                "Sale 2",
+            ),
         ]
 
         for lines, memo in entries:
@@ -573,16 +666,14 @@ class TestTrialBalanceAlwaysBalanced:
         projection.process_pending(company)
 
         tb = projection.get_trial_balance(company)
-        assert tb["is_balanced"], (
-            f"Trial balance not balanced: "
-            f"debit={tb['total_debit']}, credit={tb['total_credit']}"
-        )
+        assert tb["is_balanced"], f"Trial balance not balanced: debit={tb['total_debit']}, credit={tb['total_credit']}"
         assert Decimal(tb["total_debit"]) == Decimal(tb["total_credit"])
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 # INVARIANT 8: Every posted JE traces to a business event
 # ═════════════════════════════════════════════════════════════════════════════
+
 
 @pytest.mark.django_db
 class TestPostedJETracesToEvent:
@@ -593,15 +684,18 @@ class TestPostedJETracesToEvent:
     If this fails, a JE was created outside the event-first path.
     """
 
-    def test_event_emitted_je_has_matching_event(
-        self, company, user, cash_account, revenue_account
-    ):
+    def test_event_emitted_je_has_matching_event(self, company, user, cash_account, revenue_account):
         """JE created via event emission must have a matching event."""
         entry_id = uuid4()
-        _emit_posted_event(company, user, [
-            _make_line(cash_account, debit="500.00", line_no=1),
-            _make_line(revenue_account, credit="500.00", line_no=2),
-        ], entry_id=entry_id)
+        _emit_posted_event(
+            company,
+            user,
+            [
+                _make_line(cash_account, debit="500.00", line_no=1),
+                _make_line(revenue_account, credit="500.00", line_no=2),
+            ],
+            entry_id=entry_id,
+        )
 
         projection = AccountBalanceProjection()
         projection.process_pending(company)
@@ -613,22 +707,27 @@ class TestPostedJETracesToEvent:
             aggregate_id=str(entry_id),
         )
         assert events.count() == 1, (
-            f"Expected 1 JOURNAL_ENTRY_POSTED event for entry {entry_id}, "
-            f"found {events.count()}"
+            f"Expected 1 JOURNAL_ENTRY_POSTED event for entry {entry_id}, found {events.count()}"
         )
 
-    def test_no_orphan_posted_events(
-        self, company, user, cash_account, revenue_account
-    ):
+    def test_no_orphan_posted_events(self, company, user, cash_account, revenue_account):
         """Every JOURNAL_ENTRY_POSTED event should reference a valid entry_public_id."""
-        _emit_posted_event(company, user, [
-            _make_line(cash_account, debit="100.00", line_no=1),
-            _make_line(revenue_account, credit="100.00", line_no=2),
-        ])
-        _emit_posted_event(company, user, [
-            _make_line(cash_account, debit="200.00", line_no=1),
-            _make_line(revenue_account, credit="200.00", line_no=2),
-        ])
+        _emit_posted_event(
+            company,
+            user,
+            [
+                _make_line(cash_account, debit="100.00", line_no=1),
+                _make_line(revenue_account, credit="100.00", line_no=2),
+            ],
+        )
+        _emit_posted_event(
+            company,
+            user,
+            [
+                _make_line(cash_account, debit="200.00", line_no=1),
+                _make_line(revenue_account, credit="200.00", line_no=2),
+            ],
+        )
 
         # All JOURNAL_ENTRY_POSTED events must have valid aggregate_ids
         posted_events = BusinessEvent.objects.filter(
@@ -637,9 +736,7 @@ class TestPostedJETracesToEvent:
         )
         for event in posted_events:
             data = event.get_data()
-            assert "entry_public_id" in data, (
-                f"Event {event.id} missing entry_public_id in payload"
-            )
+            assert "entry_public_id" in data, f"Event {event.id} missing entry_public_id in payload"
             assert data["entry_public_id"] == str(event.aggregate_id), (
                 f"Event {event.id}: entry_public_id={data['entry_public_id']} "
                 f"doesn't match aggregate_id={event.aggregate_id}"
@@ -649,6 +746,7 @@ class TestPostedJETracesToEvent:
 # ═════════════════════════════════════════════════════════════════════════════
 # INVARIANT 9: No finance writes outside write barriers
 # ═════════════════════════════════════════════════════════════════════════════
+
 
 @pytest.mark.django_db
 class TestWriteBarrierEnforcement:
@@ -739,6 +837,7 @@ class TestWriteBarrierEnforcement:
 # INVARIANT 10: Event causation chain integrity
 # ═════════════════════════════════════════════════════════════════════════════
 
+
 @pytest.mark.django_db
 class TestCausationChainIntegrity:
     """
@@ -751,10 +850,15 @@ class TestCausationChainIntegrity:
     def test_caused_by_event_exists(self, company, user, cash_account, revenue_account):
         """Events with caused_by_event must reference valid parent events."""
         # Emit parent event
-        parent_event = _emit_posted_event(company, user, [
-            _make_line(cash_account, debit="500.00", line_no=1),
-            _make_line(revenue_account, credit="500.00", line_no=2),
-        ], memo="Parent entry")
+        parent_event = _emit_posted_event(
+            company,
+            user,
+            [
+                _make_line(cash_account, debit="500.00", line_no=1),
+                _make_line(revenue_account, credit="500.00", line_no=2),
+            ],
+            memo="Parent entry",
+        )
 
         # Emit child event with causation link
         child_entry_id = uuid4()
@@ -791,10 +895,14 @@ class TestCausationChainIntegrity:
     def test_all_causation_links_valid(self, company, user, cash_account, revenue_account):
         """No event in the system should have a dangling caused_by_event."""
         # Emit a few linked events
-        e1 = _emit_posted_event(company, user, [
-            _make_line(cash_account, debit="100.00", line_no=1),
-            _make_line(revenue_account, credit="100.00", line_no=2),
-        ])
+        e1 = _emit_posted_event(
+            company,
+            user,
+            [
+                _make_line(cash_account, debit="100.00", line_no=1),
+                _make_line(revenue_account, credit="100.00", line_no=2),
+            ],
+        )
         e2 = emit_event(
             company=company,
             event_type=EventTypes.JOURNAL_ENTRY_POSTED,

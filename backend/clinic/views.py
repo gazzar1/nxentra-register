@@ -57,6 +57,7 @@ from .serializers import (
 # Patient Views
 # =============================================================================
 
+
 class PatientListCreateView(APIView):
     module_key = "clinic"
     permission_classes = [IsAuthenticated, ModuleEnabled]
@@ -73,10 +74,10 @@ class PatientListCreateView(APIView):
         if "search" in request.query_params:
             q = request.query_params["search"]
             qs = qs.filter(
-                db_models.Q(name__icontains=q) |
-                db_models.Q(code__icontains=q) |
-                db_models.Q(phone__icontains=q) |
-                db_models.Q(national_id__icontains=q)
+                db_models.Q(name__icontains=q)
+                | db_models.Q(code__icontains=q)
+                | db_models.Q(phone__icontains=q)
+                | db_models.Q(national_id__icontains=q)
             )
 
         serializer = PatientSerializer(qs, many=True)
@@ -142,6 +143,7 @@ class PatientDetailView(APIView):
 # Document Views
 # =============================================================================
 
+
 class PatientDocumentListCreateView(APIView):
     module_key = "clinic"
     permission_classes = [IsAuthenticated, ModuleEnabled]
@@ -188,6 +190,7 @@ class PatientDocumentListCreateView(APIView):
 
 class PatientDocumentDetailView(APIView):
     """Download or delete a patient document."""
+
     module_key = "clinic"
     permission_classes = [IsAuthenticated, ModuleEnabled]
 
@@ -237,6 +240,7 @@ class PatientDocumentDetailView(APIView):
 # =============================================================================
 # Doctor Views
 # =============================================================================
+
 
 class DoctorListCreateView(APIView):
     module_key = "clinic"
@@ -293,6 +297,7 @@ class DoctorDetailView(APIView):
 # Visit Views
 # =============================================================================
 
+
 class VisitListCreateView(APIView):
     module_key = "clinic"
     permission_classes = [IsAuthenticated, ModuleEnabled]
@@ -302,9 +307,13 @@ class VisitListCreateView(APIView):
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
 
-        qs = Visit.objects.filter(
-            company=actor.company,
-        ).select_related("patient", "doctor").order_by("-visit_date", "-created_at")
+        qs = (
+            Visit.objects.filter(
+                company=actor.company,
+            )
+            .select_related("patient", "doctor")
+            .order_by("-visit_date", "-created_at")
+        )
 
         if "patient_id" in request.query_params:
             qs = qs.filter(patient_id=request.query_params["patient_id"])
@@ -345,7 +354,8 @@ class VisitDetailView(APIView):
 
         try:
             visit = Visit.objects.select_related("patient", "doctor").get(
-                company=actor.company, pk=pk,
+                company=actor.company,
+                pk=pk,
             )
         except Visit.DoesNotExist:
             return Response({"detail": "Visit not found."}, status=404)
@@ -377,6 +387,7 @@ class VisitCompleteView(APIView):
 # Invoice Views
 # =============================================================================
 
+
 class InvoiceListCreateView(APIView):
     module_key = "clinic"
     permission_classes = [IsAuthenticated, ModuleEnabled]
@@ -386,9 +397,13 @@ class InvoiceListCreateView(APIView):
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
 
-        qs = Invoice.objects.filter(
-            company=actor.company,
-        ).select_related("patient").order_by("-date", "-created_at")
+        qs = (
+            Invoice.objects.filter(
+                company=actor.company,
+            )
+            .select_related("patient")
+            .order_by("-date", "-created_at")
+        )
 
         if "patient_id" in request.query_params:
             qs = qs.filter(patient_id=request.query_params["patient_id"])
@@ -407,10 +422,7 @@ class InvoiceListCreateView(APIView):
         serializer.is_valid(raise_exception=True)
 
         data = serializer.validated_data
-        line_items = [
-            {"description": li["description"], "amount": str(li["amount"])}
-            for li in data.pop("line_items")
-        ]
+        line_items = [{"description": li["description"], "amount": str(li["amount"])} for li in data.pop("line_items")]
 
         result = create_invoice(actor, line_items=line_items, **data)
         if not result.success:
@@ -433,7 +445,8 @@ class InvoiceDetailView(APIView):
 
         try:
             invoice = Invoice.objects.select_related("patient").get(
-                company=actor.company, pk=pk,
+                company=actor.company,
+                pk=pk,
             )
         except Invoice.DoesNotExist:
             return Response({"detail": "Invoice not found."}, status=404)
@@ -461,6 +474,7 @@ class InvoiceIssueView(APIView):
 # Payment Views
 # =============================================================================
 
+
 class PaymentListCreateView(APIView):
     module_key = "clinic"
     permission_classes = [IsAuthenticated, ModuleEnabled]
@@ -470,9 +484,13 @@ class PaymentListCreateView(APIView):
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
 
-        qs = Payment.objects.filter(
-            company=actor.company,
-        ).select_related("invoice", "patient").order_by("-payment_date", "-created_at")
+        qs = (
+            Payment.objects.filter(
+                company=actor.company,
+            )
+            .select_related("invoice", "patient")
+            .order_by("-payment_date", "-created_at")
+        )
 
         if "invoice_id" in request.query_params:
             qs = qs.filter(invoice_id=request.query_params["invoice_id"])
@@ -526,6 +544,7 @@ class PaymentVoidView(APIView):
 # Account Mapping View
 # =============================================================================
 
+
 class ClinicAccountMappingView(APIView):
     module_key = "clinic"
     permission_classes = [IsAuthenticated, ModuleEnabled]
@@ -539,12 +558,14 @@ class ClinicAccountMappingView(APIView):
         result = []
         for role in REQUIRED_ROLES:
             account = mapping.get(role)
-            result.append({
-                "role": role,
-                "account_id": account.id if account else None,
-                "account_code": account.code if account else "",
-                "account_name": account.name if account else "",
-            })
+            result.append(
+                {
+                    "role": role,
+                    "account_id": account.id if account else None,
+                    "account_code": account.code if account else "",
+                    "account_name": account.name if account else "",
+                }
+            )
         return Response(result)
 
     def put(self, request):
@@ -568,7 +589,8 @@ class ClinicAccountMappingView(APIView):
                 if account_id:
                     try:
                         account = Account.objects.get(
-                            company=actor.company, pk=account_id,
+                            company=actor.company,
+                            pk=account_id,
                         )
                     except Account.DoesNotExist:
                         return Response(

@@ -28,7 +28,16 @@ class PurchaseCreditNoteLineInline(admin.TabularInline):
 
 @admin.register(PurchaseCreditNote)
 class PurchaseCreditNoteAdmin(admin.ModelAdmin):
-    list_display = ["credit_note_number", "credit_note_date", "vendor", "bill", "reason", "total_amount", "status", "company"]
+    list_display = [
+        "credit_note_number",
+        "credit_note_date",
+        "vendor",
+        "bill",
+        "reason",
+        "total_amount",
+        "status",
+        "company",
+    ]
     list_filter = ["status", "reason", "company"]
     search_fields = ["credit_note_number", "vendor__name", "bill__bill_number"]
     ordering = ["-credit_note_date", "-created_at"]

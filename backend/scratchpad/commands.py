@@ -87,15 +87,16 @@ def commit_scratchpad_groups(
 
     for group_id in group_ids:
         # Load all READY rows for this group
-        rows = list(ScratchpadRow.objects.filter(
-            company=actor.company,
-            group_id=group_id,
-            status=ScratchpadRow.Status.READY,
-        ).select_related(
-            "debit_account", "credit_account"
-        ).prefetch_related(
-            "dimensions__dimension", "dimensions__dimension_value"
-        ).order_by("group_order"))
+        rows = list(
+            ScratchpadRow.objects.filter(
+                company=actor.company,
+                group_id=group_id,
+                status=ScratchpadRow.Status.READY,
+            )
+            .select_related("debit_account", "credit_account")
+            .prefetch_related("dimensions__dimension", "dimensions__dimension_value")
+            .order_by("group_order")
+        )
 
         if not rows:
             return CommandResult.fail(f"No READY rows found for group {group_id}")
@@ -104,16 +105,12 @@ def commit_scratchpad_groups(
         for row in rows:
             validation = validate_row(row, actor.company)
             if not validation["is_valid"]:
-                return CommandResult.fail(
-                    f"Row {row.public_id} failed validation: {validation['errors']}"
-                )
+                return CommandResult.fail(f"Row {row.public_id} failed validation: {validation['errors']}")
 
         # Check group balance (should always pass for simple model)
         balance_check = validate_group_balance(rows)
         if not balance_check["is_balanced"]:
-            return CommandResult.fail(
-                f"Group {group_id} is unbalanced: {balance_check['errors']}"
-            )
+            return CommandResult.fail(f"Group {group_id} is unbalanced: {balance_check['errors']}")
 
         # Build journal entry data from scratchpad rows
         entry_data = _build_journal_entry_from_rows(rows)
@@ -129,9 +126,7 @@ def commit_scratchpad_groups(
         )
 
         if not result.success:
-            return CommandResult.fail(
-                f"Failed to create journal entry for group {group_id}: {result.error}"
-            )
+            return CommandResult.fail(f"Failed to create journal entry for group {group_id}: {result.error}")
 
         entry = result.data
         event = result.event
@@ -139,9 +134,7 @@ def commit_scratchpad_groups(
         # Save as complete (mark it as DRAFT, not INCOMPLETE)
         save_result = save_journal_entry_complete(actor, entry.id)
         if not save_result.success:
-            return CommandResult.fail(
-                f"Failed to save journal entry: {save_result.error}"
-            )
+            return CommandResult.fail(f"Failed to save journal entry: {save_result.error}")
 
         # Optionally post immediately
         if post_immediately:
@@ -164,11 +157,13 @@ def commit_scratchpad_groups(
             committed_event=event,
         )
 
-        created_entries.append({
-            "group_id": str(group_id),
-            "entry_id": entry.id,
-            "entry_public_id": str(entry.public_id),
-        })
+        created_entries.append(
+            {
+                "group_id": str(group_id),
+                "entry_id": entry.id,
+                "entry_public_id": str(entry.public_id),
+            }
+        )
 
     # Emit audit event for the batch commit
     from events.types import ScratchpadBatchCommittedData
@@ -190,11 +185,13 @@ def commit_scratchpad_groups(
         ).to_dict(),
     )
 
-    return CommandResult.ok({
-        "batch_id": str(batch_id),
-        "committed_groups": len(group_ids),
-        "journal_entries": created_entries,
-    })
+    return CommandResult.ok(
+        {
+            "batch_id": str(batch_id),
+            "committed_groups": len(group_ids),
+            "journal_entries": created_entries,
+        }
+    )
 
 
 def _build_journal_entry_from_rows(rows: list[ScratchpadRow]) -> dict:
@@ -214,17 +211,11 @@ def _build_journal_entry_from_rows(rows: list[ScratchpadRow]) -> dict:
     first_row = rows[0]
 
     # Combine descriptions for memo
-    descriptions = [
-        row.description for row in rows
-        if row.description
-    ]
+    descriptions = [row.description for row in rows if row.description]
     memo = "; ".join(descriptions) if descriptions else "Scratchpad commit"
 
     # Combine Arabic descriptions
-    descriptions_ar = [
-        row.description_ar for row in rows
-        if row.description_ar
-    ]
+    descriptions_ar = [row.description_ar for row in rows if row.description_ar]
     memo_ar = "; ".join(descriptions_ar) if descriptions_ar else ""
 
     lines = []
@@ -233,32 +224,38 @@ def _build_journal_entry_from_rows(rows: list[ScratchpadRow]) -> dict:
         analysis_tags = []
         for dim in row.dimensions.all():
             if dim.dimension_value_id:
-                analysis_tags.append({
-                    "dimension_id": dim.dimension_id,
-                    "value_id": dim.dimension_value_id,
-                })
+                analysis_tags.append(
+                    {
+                        "dimension_id": dim.dimension_id,
+                        "value_id": dim.dimension_value_id,
+                    }
+                )
 
         # Debit line
         if row.debit_account_id and row.amount:
-            lines.append({
-                "account_id": row.debit_account_id,
-                "description": row.description,
-                "description_ar": row.description_ar,
-                "debit": row.amount,
-                "credit": Decimal("0"),
-                "analysis_tags": analysis_tags,
-            })
+            lines.append(
+                {
+                    "account_id": row.debit_account_id,
+                    "description": row.description,
+                    "description_ar": row.description_ar,
+                    "debit": row.amount,
+                    "credit": Decimal("0"),
+                    "analysis_tags": analysis_tags,
+                }
+            )
 
         # Credit line
         if row.credit_account_id and row.amount:
-            lines.append({
-                "account_id": row.credit_account_id,
-                "description": row.description,
-                "description_ar": row.description_ar,
-                "debit": Decimal("0"),
-                "credit": row.amount,
-                "analysis_tags": analysis_tags,
-            })
+            lines.append(
+                {
+                    "account_id": row.credit_account_id,
+                    "description": row.description,
+                    "description_ar": row.description_ar,
+                    "debit": Decimal("0"),
+                    "credit": row.amount,
+                    "analysis_tags": analysis_tags,
+                }
+            )
 
     return {
         "date": first_row.transaction_date,

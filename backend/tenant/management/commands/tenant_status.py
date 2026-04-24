@@ -7,6 +7,7 @@ Usage:
     python manage.py tenant_status acme-corp --set-status ACTIVE
     python manage.py tenant_status acme-corp --revert-to-shared
 """
+
 from django.core.management.base import BaseCommand, CommandError
 
 from accounts.rls import rls_bypass
@@ -34,9 +35,7 @@ class Command(BaseCommand):
 
         with rls_bypass():
             try:
-                td = TenantDirectory.objects.select_related("company").get(
-                    company__slug=slug
-                )
+                td = TenantDirectory.objects.select_related("company").get(company__slug=slug)
             except TenantDirectory.DoesNotExist:
                 raise CommandError(f"No TenantDirectory for slug '{slug}'")
 
@@ -46,9 +45,7 @@ class Command(BaseCommand):
                 td.status = TenantDirectory.Status.ACTIVE
                 td.migrated_at = None
                 td.save()
-                self.stdout.write(self.style.SUCCESS(
-                    f"Reverted '{slug}' to SHARED mode on default DB"
-                ))
+                self.stdout.write(self.style.SUCCESS(f"Reverted '{slug}' to SHARED mode on default DB"))
                 return
 
             if options["set_status"]:
@@ -56,9 +53,7 @@ class Command(BaseCommand):
                 old_status = td.status
                 td.status = new_status
                 td.save()
-                self.stdout.write(self.style.SUCCESS(
-                    f"'{slug}' status: {old_status} → {new_status}"
-                ))
+                self.stdout.write(self.style.SUCCESS(f"'{slug}' status: {old_status} → {new_status}"))
                 return
 
             # Default: show current state

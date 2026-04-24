@@ -98,10 +98,12 @@ def paginate_queryset(
 
     serializer = serializer_class(page_qs, many=True, context=ctx)
 
-    return Response({
-        "results": serializer.data,
-        "count": total_count,
-        "page": page,
-        "page_size": page_size,
-        "total_pages": total_pages,
-    })
+    return Response(
+        {
+            "results": serializer.data,
+            "count": total_count,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+        }
+    )

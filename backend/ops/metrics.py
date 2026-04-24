@@ -10,6 +10,7 @@ Metrics exposed:
 - nxentra_request_duration_seconds: HTTP request duration histogram
 - nxentra_tenant_mode_info: Tenant isolation mode (shared/dedicated)
 """
+
 import logging
 import time
 
@@ -108,10 +109,8 @@ def collect_metrics():
 
         with rls_bypass():
             # Event counts by type
-            event_counts = (
-                BusinessEvent.objects
-                .values("event_type", "company__slug")
-                .annotate(count=models.Count("id"))
+            event_counts = BusinessEvent.objects.values("event_type", "company__slug").annotate(
+                count=models.Count("id")
             )
             for row in event_counts:
                 _events_total.labels(
@@ -215,6 +214,7 @@ def track_request_metrics(get_response):
             endpoint = request.path
             # Strip IDs from common patterns
             import re
+
             endpoint = re.sub(r"/\d+/", "/{id}/", endpoint)
             endpoint = re.sub(r"/[0-9a-f-]{36}/", "/{uuid}/", endpoint)
 

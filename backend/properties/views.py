@@ -80,6 +80,7 @@ from .serializers import (
 # Property Views
 # =============================================================================
 
+
 class PropertyListCreateView(APIView):
     module_key = "properties"
     permission_classes = [IsAuthenticated, ModuleEnabled]
@@ -160,6 +161,7 @@ class PropertyDetailView(APIView):
 # Unit Views
 # =============================================================================
 
+
 class UnitListCreateView(APIView):
     module_key = "properties"
     permission_classes = [IsAuthenticated, ModuleEnabled]
@@ -204,9 +206,7 @@ class UnitDetailView(APIView):
 
     def get_object(self, actor, pk):
         try:
-            return Unit.objects.select_related("property").get(
-                company=actor.company, pk=pk
-            )
+            return Unit.objects.select_related("property").get(company=actor.company, pk=pk)
         except Unit.DoesNotExist:
             return None
 
@@ -241,6 +241,7 @@ class UnitDetailView(APIView):
 # =============================================================================
 # Lessee Views
 # =============================================================================
+
 
 class LesseeListCreateView(APIView):
     module_key = "properties"
@@ -322,6 +323,7 @@ class LesseeDetailView(APIView):
 # Lease Views
 # =============================================================================
 
+
 class LeaseListCreateView(APIView):
     module_key = "properties"
     permission_classes = [IsAuthenticated, ModuleEnabled]
@@ -331,9 +333,7 @@ class LeaseListCreateView(APIView):
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
 
-        qs = Lease.objects.filter(company=actor.company).select_related(
-            "property", "unit", "lessee"
-        )
+        qs = Lease.objects.filter(company=actor.company).select_related("property", "unit", "lessee")
 
         # Filters
         if "status" in request.query_params:
@@ -374,9 +374,7 @@ class LeaseDetailView(APIView):
             return Response({"detail": "No active company."}, status=400)
 
         try:
-            lease = Lease.objects.select_related(
-                "property", "unit", "lessee"
-            ).get(company=actor.company, pk=pk)
+            lease = Lease.objects.select_related("property", "unit", "lessee").get(company=actor.company, pk=pk)
         except Lease.DoesNotExist:
             return Response({"detail": "Lease not found."}, status=404)
 
@@ -394,9 +392,7 @@ class LeaseDetailView(APIView):
         if not result.success:
             return Response({"detail": result.error}, status=400)
 
-        lease = Lease.objects.select_related(
-            "property", "unit", "lessee"
-        ).get(pk=result.data["lease"].pk)
+        lease = Lease.objects.select_related("property", "unit", "lessee").get(pk=result.data["lease"].pk)
         return Response(LeaseSerializer(lease).data)
 
     patch = put
@@ -461,10 +457,12 @@ class LeaseRenewView(APIView):
         if not result.success:
             return Response({"detail": result.error}, status=400)
 
-        return Response({
-            "old_lease": LeaseSerializer(result.data["old_lease"]).data,
-            "new_lease": LeaseSerializer(result.data["new_lease"]).data,
-        })
+        return Response(
+            {
+                "old_lease": LeaseSerializer(result.data["old_lease"]).data,
+                "new_lease": LeaseSerializer(result.data["new_lease"]).data,
+            }
+        )
 
 
 class LeaseScheduleView(APIView):
@@ -512,6 +510,7 @@ class WaiveScheduleLineView(APIView):
 # Payment Views
 # =============================================================================
 
+
 class PaymentListCreateView(APIView):
     module_key = "properties"
     permission_classes = [IsAuthenticated, ModuleEnabled]
@@ -521,9 +520,7 @@ class PaymentListCreateView(APIView):
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
 
-        qs = PaymentReceipt.objects.filter(
-            company=actor.company
-        ).select_related("lessee", "lease")
+        qs = PaymentReceipt.objects.filter(company=actor.company).select_related("lessee", "lease")
 
         if "lease" in request.query_params:
             qs = qs.filter(lease_id=request.query_params["lease"])
@@ -562,9 +559,7 @@ class PaymentDetailView(APIView):
             return Response({"detail": "No active company."}, status=400)
 
         try:
-            payment = PaymentReceipt.objects.select_related(
-                "lessee", "lease"
-            ).get(company=actor.company, pk=pk)
+            payment = PaymentReceipt.objects.select_related("lessee", "lease").get(company=actor.company, pk=pk)
         except PaymentReceipt.DoesNotExist:
             return Response({"detail": "Payment not found."}, status=404)
 
@@ -610,9 +605,7 @@ class PaymentAllocationsListView(APIView):
         except PaymentReceipt.DoesNotExist:
             return Response({"detail": "Payment not found."}, status=404)
 
-        allocs = PaymentAllocation.objects.filter(
-            payment=payment
-        ).select_related("schedule_line")
+        allocs = PaymentAllocation.objects.filter(payment=payment).select_related("schedule_line")
         return Response(PaymentAllocationSerializer(allocs, many=True).data)
 
 
@@ -643,6 +636,7 @@ class PaymentVoidView(APIView):
 # Deposit Views
 # =============================================================================
 
+
 class DepositListCreateView(APIView):
     module_key = "properties"
     permission_classes = [IsAuthenticated, ModuleEnabled]
@@ -652,9 +646,7 @@ class DepositListCreateView(APIView):
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
 
-        qs = SecurityDepositTransaction.objects.filter(
-            company=actor.company
-        ).select_related("lease")
+        qs = SecurityDepositTransaction.objects.filter(company=actor.company).select_related("lease")
 
         if "lease" in request.query_params:
             qs = qs.filter(lease_id=request.query_params["lease"])
@@ -683,6 +675,7 @@ class DepositListCreateView(APIView):
 # Expense Views
 # =============================================================================
 
+
 class ExpenseListCreateView(APIView):
     module_key = "properties"
     permission_classes = [IsAuthenticated, ModuleEnabled]
@@ -692,9 +685,7 @@ class ExpenseListCreateView(APIView):
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
 
-        qs = PropertyExpense.objects.filter(
-            company=actor.company
-        ).select_related("property", "unit")
+        qs = PropertyExpense.objects.filter(company=actor.company).select_related("property", "unit")
 
         if "property" in request.query_params:
             qs = qs.filter(property_id=request.query_params["property"])
@@ -733,9 +724,7 @@ class ExpenseDetailView(APIView):
             return Response({"detail": "No active company."}, status=400)
 
         try:
-            expense = PropertyExpense.objects.select_related(
-                "property", "unit"
-            ).get(company=actor.company, pk=pk)
+            expense = PropertyExpense.objects.select_related("property", "unit").get(company=actor.company, pk=pk)
         except PropertyExpense.DoesNotExist:
             return Response({"detail": "Expense not found."}, status=404)
 
@@ -745,6 +734,7 @@ class ExpenseDetailView(APIView):
 # =============================================================================
 # Account Mapping View
 # =============================================================================
+
 
 class PropertyAccountMappingView(APIView):
     module_key = "properties"

@@ -25,17 +25,32 @@ from .models import (
 # Property Serializers
 # =============================================================================
 
+
 class PropertySerializer(serializers.ModelSerializer):
     unit_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Property
         fields = [
-            "id", "public_id", "code", "name", "name_ar",
-            "property_type", "owner_entity_ref",
-            "address", "city", "region", "country",
-            "status", "acquisition_date", "area_sqm", "valuation",
-            "notes", "unit_count", "created_at", "updated_at",
+            "id",
+            "public_id",
+            "code",
+            "name",
+            "name_ar",
+            "property_type",
+            "owner_entity_ref",
+            "address",
+            "city",
+            "region",
+            "country",
+            "status",
+            "acquisition_date",
+            "area_sqm",
+            "valuation",
+            "notes",
+            "unit_count",
+            "created_at",
+            "updated_at",
         ]
         read_only_fields = ["id", "public_id", "created_at", "updated_at"]
 
@@ -48,7 +63,9 @@ class PropertyCreateSerializer(serializers.Serializer):
     name = serializers.CharField(max_length=255)
     name_ar = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
     property_type = serializers.ChoiceField(choices=Property.PropertyType.choices)
-    owner_entity_ref = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True, default=None)
+    owner_entity_ref = serializers.CharField(
+        max_length=255, required=False, allow_blank=True, allow_null=True, default=None
+    )
     address = serializers.CharField(required=False, allow_blank=True, default="")
     city = serializers.CharField(max_length=100, required=False, allow_blank=True, default="")
     region = serializers.CharField(max_length=100, required=False, allow_blank=True, default="")
@@ -79,6 +96,7 @@ class PropertyUpdateSerializer(serializers.Serializer):
 # Unit Serializers
 # =============================================================================
 
+
 class UnitSerializer(serializers.ModelSerializer):
     property_code = serializers.CharField(source="property.code", read_only=True)
     property_name = serializers.CharField(source="property.name", read_only=True)
@@ -86,11 +104,22 @@ class UnitSerializer(serializers.ModelSerializer):
     class Meta:
         model = Unit
         fields = [
-            "id", "public_id", "property", "property_code", "property_name",
-            "unit_code", "floor", "unit_type",
-            "bedrooms", "bathrooms", "area_sqm",
-            "status", "default_rent", "notes",
-            "created_at", "updated_at",
+            "id",
+            "public_id",
+            "property",
+            "property_code",
+            "property_name",
+            "unit_code",
+            "floor",
+            "unit_type",
+            "bedrooms",
+            "bathrooms",
+            "area_sqm",
+            "status",
+            "default_rent",
+            "notes",
+            "created_at",
+            "updated_at",
         ]
         read_only_fields = ["id", "public_id", "created_at", "updated_at"]
 
@@ -103,7 +132,9 @@ class UnitCreateSerializer(serializers.Serializer):
     bedrooms = serializers.IntegerField(required=False, allow_null=True, default=None)
     bathrooms = serializers.IntegerField(required=False, allow_null=True, default=None)
     area_sqm = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True, default=None)
-    default_rent = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, allow_null=True, default=None)
+    default_rent = serializers.DecimalField(
+        max_digits=18, decimal_places=2, required=False, allow_null=True, default=None
+    )
     notes = serializers.CharField(required=False, allow_blank=True, default="")
 
 
@@ -122,16 +153,28 @@ class UnitUpdateSerializer(serializers.Serializer):
 # Lessee Serializers
 # =============================================================================
 
+
 class LesseeSerializer(serializers.ModelSerializer):
     class Meta:
         model = Lessee
         fields = [
-            "id", "public_id", "code", "lessee_type",
-            "display_name", "display_name_ar",
-            "national_id", "phone", "whatsapp", "email",
-            "address", "emergency_contact",
-            "status", "risk_rating", "notes",
-            "created_at", "updated_at",
+            "id",
+            "public_id",
+            "code",
+            "lessee_type",
+            "display_name",
+            "display_name_ar",
+            "national_id",
+            "phone",
+            "whatsapp",
+            "email",
+            "address",
+            "emergency_contact",
+            "status",
+            "risk_rating",
+            "notes",
+            "created_at",
+            "updated_at",
         ]
         read_only_fields = ["id", "public_id", "created_at", "updated_at"]
 
@@ -146,8 +189,12 @@ class LesseeCreateSerializer(serializers.Serializer):
     whatsapp = serializers.CharField(max_length=30, required=False, allow_blank=True, allow_null=True, default=None)
     email = serializers.EmailField(required=False, allow_blank=True, allow_null=True, default=None)
     address = serializers.CharField(required=False, allow_blank=True, allow_null=True, default=None)
-    emergency_contact = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True, default=None)
-    risk_rating = serializers.ChoiceField(choices=Lessee.RiskRating.choices, required=False, allow_null=True, default=None)
+    emergency_contact = serializers.CharField(
+        max_length=100, required=False, allow_blank=True, allow_null=True, default=None
+    )
+    risk_rating = serializers.ChoiceField(
+        choices=Lessee.RiskRating.choices, required=False, allow_null=True, default=None
+    )
     notes = serializers.CharField(required=False, allow_blank=True, default="")
 
 
@@ -170,15 +217,25 @@ class LesseeUpdateSerializer(serializers.Serializer):
 # Lease Serializers
 # =============================================================================
 
+
 class RentScheduleLineSerializer(serializers.ModelSerializer):
     class Meta:
         model = RentScheduleLine
         fields = [
-            "id", "public_id", "installment_no",
-            "period_start", "period_end", "due_date",
-            "base_rent", "adjustments", "penalties",
-            "total_due", "total_allocated", "outstanding",
-            "status", "created_at",
+            "id",
+            "public_id",
+            "installment_no",
+            "period_start",
+            "period_end",
+            "due_date",
+            "base_rent",
+            "adjustments",
+            "penalties",
+            "total_due",
+            "total_allocated",
+            "outstanding",
+            "status",
+            "created_at",
         ]
         read_only_fields = fields
 
@@ -193,25 +250,51 @@ class LeaseSerializer(serializers.ModelSerializer):
     class Meta:
         model = Lease
         fields = [
-            "id", "public_id", "contract_no",
-            "property", "property_code", "property_name",
-            "unit", "unit_code",
-            "lessee", "lessee_name", "lessee_code",
-            "start_date", "end_date", "handover_date",
-            "payment_frequency", "rent_amount", "currency",
-            "grace_days", "due_day_rule", "specific_due_day",
-            "deposit_amount", "status",
-            "renewed_from_lease", "renewal_option",
-            "notice_period_days", "terms_summary", "document_ref",
-            "activated_at", "terminated_at", "termination_reason",
-            "created_at", "updated_at",
+            "id",
+            "public_id",
+            "contract_no",
+            "property",
+            "property_code",
+            "property_name",
+            "unit",
+            "unit_code",
+            "lessee",
+            "lessee_name",
+            "lessee_code",
+            "start_date",
+            "end_date",
+            "handover_date",
+            "payment_frequency",
+            "rent_amount",
+            "currency",
+            "grace_days",
+            "due_day_rule",
+            "specific_due_day",
+            "deposit_amount",
+            "status",
+            "renewed_from_lease",
+            "renewal_option",
+            "notice_period_days",
+            "terms_summary",
+            "document_ref",
+            "activated_at",
+            "terminated_at",
+            "termination_reason",
+            "created_at",
+            "updated_at",
         ]
         read_only_fields = [
-            "id", "public_id",
-            "property_code", "property_name", "unit_code",
-            "lessee_name", "lessee_code",
-            "activated_at", "terminated_at",
-            "created_at", "updated_at",
+            "id",
+            "public_id",
+            "property_code",
+            "property_name",
+            "unit_code",
+            "lessee_name",
+            "lessee_code",
+            "activated_at",
+            "terminated_at",
+            "created_at",
+            "updated_at",
         ]
 
 
@@ -224,10 +307,18 @@ class LeaseListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Lease
         fields = [
-            "id", "public_id", "contract_no",
-            "property_code", "property_name", "unit_code",
-            "lessee_name", "start_date", "end_date",
-            "rent_amount", "currency", "status",
+            "id",
+            "public_id",
+            "contract_no",
+            "property_code",
+            "property_name",
+            "unit_code",
+            "lessee_name",
+            "start_date",
+            "end_date",
+            "rent_amount",
+            "currency",
+            "status",
             "created_at",
         ]
         read_only_fields = fields
@@ -251,7 +342,9 @@ class LeaseCreateSerializer(serializers.Serializer):
     renewal_option = serializers.BooleanField(required=False, default=False)
     notice_period_days = serializers.IntegerField(required=False, allow_null=True, default=None)
     terms_summary = serializers.CharField(required=False, allow_blank=True, allow_null=True, default=None)
-    document_ref = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True, default=None)
+    document_ref = serializers.CharField(
+        max_length=255, required=False, allow_blank=True, allow_null=True, default=None
+    )
 
 
 class LeaseUpdateSerializer(serializers.Serializer):
@@ -283,17 +376,26 @@ class LeaseRenewSerializer(serializers.Serializer):
     new_contract_no = serializers.CharField(max_length=50)
     new_start_date = serializers.DateField()
     new_end_date = serializers.DateField()
-    new_rent_amount = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, allow_null=True, default=None)
-    new_payment_frequency = serializers.ChoiceField(choices=Lease.PaymentFrequency.choices, required=False, allow_null=True, default=None)
-    new_due_day_rule = serializers.ChoiceField(choices=Lease.DueDayRule.choices, required=False, allow_null=True, default=None)
+    new_rent_amount = serializers.DecimalField(
+        max_digits=18, decimal_places=2, required=False, allow_null=True, default=None
+    )
+    new_payment_frequency = serializers.ChoiceField(
+        choices=Lease.PaymentFrequency.choices, required=False, allow_null=True, default=None
+    )
+    new_due_day_rule = serializers.ChoiceField(
+        choices=Lease.DueDayRule.choices, required=False, allow_null=True, default=None
+    )
     new_specific_due_day = serializers.IntegerField(required=False, allow_null=True, default=None)
     new_grace_days = serializers.IntegerField(required=False, allow_null=True, default=None)
-    new_deposit_amount = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, allow_null=True, default=None)
+    new_deposit_amount = serializers.DecimalField(
+        max_digits=18, decimal_places=2, required=False, allow_null=True, default=None
+    )
 
 
 # =============================================================================
 # Payment Serializers
 # =============================================================================
+
 
 class PaymentReceiptSerializer(serializers.ModelSerializer):
     lessee_name = serializers.CharField(source="lessee.display_name", read_only=True)
@@ -302,18 +404,37 @@ class PaymentReceiptSerializer(serializers.ModelSerializer):
     class Meta:
         model = PaymentReceipt
         fields = [
-            "id", "public_id", "receipt_no",
-            "lessee", "lessee_name",
-            "lease", "lease_contract_no",
-            "payment_date", "amount", "currency",
-            "method", "reference_no", "notes",
-            "allocation_status", "voided", "voided_at", "voided_reason",
-            "created_at", "updated_at",
+            "id",
+            "public_id",
+            "receipt_no",
+            "lessee",
+            "lessee_name",
+            "lease",
+            "lease_contract_no",
+            "payment_date",
+            "amount",
+            "currency",
+            "method",
+            "reference_no",
+            "notes",
+            "allocation_status",
+            "voided",
+            "voided_at",
+            "voided_reason",
+            "created_at",
+            "updated_at",
         ]
         read_only_fields = [
-            "id", "public_id", "lessee_name", "lease_contract_no",
-            "allocation_status", "voided", "voided_at", "voided_reason",
-            "created_at", "updated_at",
+            "id",
+            "public_id",
+            "lessee_name",
+            "lease_contract_no",
+            "allocation_status",
+            "voided",
+            "voided_at",
+            "voided_reason",
+            "created_at",
+            "updated_at",
         ]
 
 
@@ -324,7 +445,9 @@ class PaymentCreateSerializer(serializers.Serializer):
     payment_date = serializers.DateField()
     method = serializers.ChoiceField(choices=PaymentReceipt.PaymentMethod.choices)
     currency = serializers.CharField(max_length=3, required=False, default=None, allow_null=True)
-    reference_no = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True, default=None)
+    reference_no = serializers.CharField(
+        max_length=100, required=False, allow_blank=True, allow_null=True, default=None
+    )
     notes = serializers.CharField(required=False, allow_blank=True, allow_null=True, default=None)
 
 
@@ -335,9 +458,14 @@ class PaymentAllocationSerializer(serializers.ModelSerializer):
     class Meta:
         model = PaymentAllocation
         fields = [
-            "id", "public_id", "payment", "schedule_line",
-            "installment_no", "due_date",
-            "allocated_amount", "created_at",
+            "id",
+            "public_id",
+            "payment",
+            "schedule_line",
+            "installment_no",
+            "due_date",
+            "allocated_amount",
+            "created_at",
         ]
         read_only_fields = fields
 
@@ -361,20 +489,32 @@ class WaiveScheduleLineSerializer(serializers.Serializer):
 # Deposit Serializers
 # =============================================================================
 
+
 class SecurityDepositTransactionSerializer(serializers.ModelSerializer):
     lease_contract_no = serializers.CharField(source="lease.contract_no", read_only=True)
 
     class Meta:
         model = SecurityDepositTransaction
         fields = [
-            "id", "public_id", "lease", "lease_contract_no",
-            "transaction_type", "amount", "currency",
-            "transaction_date", "reason", "reference",
-            "created_at", "updated_at",
+            "id",
+            "public_id",
+            "lease",
+            "lease_contract_no",
+            "transaction_type",
+            "amount",
+            "currency",
+            "transaction_date",
+            "reason",
+            "reference",
+            "created_at",
+            "updated_at",
         ]
         read_only_fields = [
-            "id", "public_id", "lease_contract_no",
-            "created_at", "updated_at",
+            "id",
+            "public_id",
+            "lease_contract_no",
+            "created_at",
+            "updated_at",
         ]
 
 
@@ -394,6 +534,7 @@ class DepositCreateSerializer(serializers.Serializer):
 # Expense Serializers
 # =============================================================================
 
+
 class PropertyExpenseSerializer(serializers.ModelSerializer):
     property_code = serializers.CharField(source="property.code", read_only=True)
     property_name = serializers.CharField(source="property.name", read_only=True)
@@ -402,17 +543,33 @@ class PropertyExpenseSerializer(serializers.ModelSerializer):
     class Meta:
         model = PropertyExpense
         fields = [
-            "id", "public_id",
-            "property", "property_code", "property_name",
-            "unit", "unit_code",
-            "category", "vendor_ref", "expense_date",
-            "amount", "currency", "payment_mode", "paid_status",
-            "description", "document_ref",
-            "created_at", "updated_at",
+            "id",
+            "public_id",
+            "property",
+            "property_code",
+            "property_name",
+            "unit",
+            "unit_code",
+            "category",
+            "vendor_ref",
+            "expense_date",
+            "amount",
+            "currency",
+            "payment_mode",
+            "paid_status",
+            "description",
+            "document_ref",
+            "created_at",
+            "updated_at",
         ]
         read_only_fields = [
-            "id", "public_id", "property_code", "property_name",
-            "unit_code", "created_at", "updated_at",
+            "id",
+            "public_id",
+            "property_code",
+            "property_name",
+            "unit_code",
+            "created_at",
+            "updated_at",
         ]
 
 
@@ -426,26 +583,25 @@ class ExpenseCreateSerializer(serializers.Serializer):
     currency = serializers.CharField(max_length=3, required=False, default=None, allow_null=True)
     payment_mode = serializers.ChoiceField(choices=PropertyExpense.PaymentMode.choices)
     description = serializers.CharField(required=False, allow_blank=True, allow_null=True, default=None)
-    document_ref = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True, default=None)
+    document_ref = serializers.CharField(
+        max_length=255, required=False, allow_blank=True, allow_null=True, default=None
+    )
 
 
 # =============================================================================
 # Account Mapping Serializer
 # =============================================================================
 
+
 class PropertyAccountMappingSerializer(serializers.ModelSerializer):
     rental_income_account_code = serializers.CharField(
         source="rental_income_account.code", read_only=True, default=None
     )
-    other_income_account_code = serializers.CharField(
-        source="other_income_account.code", read_only=True, default=None
-    )
+    other_income_account_code = serializers.CharField(source="other_income_account.code", read_only=True, default=None)
     accounts_receivable_account_code = serializers.CharField(
         source="accounts_receivable_account.code", read_only=True, default=None
     )
-    cash_bank_account_code = serializers.CharField(
-        source="cash_bank_account.code", read_only=True, default=None
-    )
+    cash_bank_account_code = serializers.CharField(source="cash_bank_account.code", read_only=True, default=None)
     unapplied_cash_account_code = serializers.CharField(
         source="unapplied_cash_account.code", read_only=True, default=None
     )
@@ -462,16 +618,26 @@ class PropertyAccountMappingSerializer(serializers.ModelSerializer):
     class Meta:
         model = PropertyAccountMapping
         fields = [
-            "id", "public_id",
-            "rental_income_account", "rental_income_account_code",
-            "other_income_account", "other_income_account_code",
-            "accounts_receivable_account", "accounts_receivable_account_code",
-            "cash_bank_account", "cash_bank_account_code",
-            "unapplied_cash_account", "unapplied_cash_account_code",
-            "security_deposit_account", "security_deposit_account_code",
-            "accounts_payable_account", "accounts_payable_account_code",
-            "property_expense_account", "property_expense_account_code",
-            "created_at", "updated_at",
+            "id",
+            "public_id",
+            "rental_income_account",
+            "rental_income_account_code",
+            "other_income_account",
+            "other_income_account_code",
+            "accounts_receivable_account",
+            "accounts_receivable_account_code",
+            "cash_bank_account",
+            "cash_bank_account_code",
+            "unapplied_cash_account",
+            "unapplied_cash_account_code",
+            "security_deposit_account",
+            "security_deposit_account_code",
+            "accounts_payable_account",
+            "accounts_payable_account_code",
+            "property_expense_account",
+            "property_expense_account_code",
+            "created_at",
+            "updated_at",
         ]
         read_only_fields = ["id", "public_id", "created_at", "updated_at"]
 

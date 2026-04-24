@@ -156,14 +156,14 @@ def parse_date(value: Any, format_str: str = "") -> str:
 
     # Try common date formats
     formats = [
-        "%Y-%m-%d",      # ISO format
-        "%m/%d/%Y",      # US format
-        "%d/%m/%Y",      # European format
+        "%Y-%m-%d",  # ISO format
+        "%m/%d/%Y",  # US format
+        "%d/%m/%Y",  # European format
         "%Y/%m/%d",
         "%m-%d-%Y",
         "%d-%m-%Y",
-        "%Y%m%d",        # Compact format
-        "%B %d, %Y",     # Long format
+        "%Y%m%d",  # Compact format
+        "%B %d, %Y",  # Long format
         "%b %d, %Y",
         "%d %B %Y",
         "%d %b %Y",

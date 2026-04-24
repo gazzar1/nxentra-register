@@ -14,6 +14,7 @@ Usage:
     # Cron / scheduled (combined)
     python manage.py reconciliation_check --json --strict
 """
+
 import json
 import logging
 import sys
@@ -68,11 +69,13 @@ class Command(BaseCommand):
             # Build a minimal actor for the reconciliation command
             actor = self._build_system_actor(company)
             if actor is None:
-                results.append({
-                    "company": company.slug,
-                    "status": "skipped",
-                    "reason": "No active owner membership found.",
-                })
+                results.append(
+                    {
+                        "company": company.slug,
+                        "status": "skipped",
+                        "reason": "No active owner membership found.",
+                    }
+                )
                 continue
 
             result = run_reconciliation_check(actor)
@@ -125,9 +128,7 @@ class Command(BaseCommand):
             self._print_table(results)
 
         if strict and any_imbalance:
-            self.stderr.write(
-                self.style.ERROR("STRICT MODE: Reconciliation imbalance detected.")
-            )
+            self.stderr.write(self.style.ERROR("STRICT MODE: Reconciliation imbalance detected."))
             sys.exit(1)
 
     def _build_system_actor(self, company):
@@ -138,17 +139,14 @@ class Command(BaseCommand):
 
         with rls_bypass():
             membership = (
-                CompanyMembership.objects
-                .filter(company=company, is_active=True, role=CompanyMembership.Role.OWNER)
+                CompanyMembership.objects.filter(company=company, is_active=True, role=CompanyMembership.Role.OWNER)
                 .select_related("user")
                 .first()
             )
             if not membership:
                 return None
 
-            perms = frozenset(
-                membership.permissions.values_list("code", flat=True)
-            )
+            perms = frozenset(membership.permissions.values_list("code", flat=True))
             # Add reports.view which is needed for reconciliation
             perms = perms | frozenset(["reports.view"])
 
@@ -199,8 +197,6 @@ class Command(BaseCommand):
         self.stdout.write("")
         balanced_count = sum(1 for r in results if r["status"] == "balanced")
         self.stdout.write(
-            f"  Total: {len(results)} companies, "
-            f"{balanced_count} balanced, "
-            f"{len(results) - balanced_count} issues"
+            f"  Total: {len(results)} companies, {balanced_count} balanced, {len(results) - balanced_count} issues"
         )
         self.stdout.write("")

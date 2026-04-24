@@ -1,4 +1,4 @@
-#accounts/tests/test_permissions_defaults.py
+# accounts/tests/test_permissions_defaults.py
 
 from django.apps import apps
 from django.contrib.auth import get_user_model
@@ -9,11 +9,10 @@ from accounts.commands import add_user_to_company
 from accounts.models import Company, CompanyMembership, CompanyMembershipPermission, NxPermission
 from accounts.permissions import grant_role_defaults
 
-#from events.models import BusinessEvent
+# from events.models import BusinessEvent
 from events.types import EventTypes
 
 EventModel = apps.get_model("events", "BusinessEvent")  # <-- replace BusinessEvent with your real model class name
-
 
 
 User = get_user_model()
@@ -26,9 +25,15 @@ class TestPermissionDefaults(TestCase):
         self.user = User.objects.create_user(email="u@test.com", password="pass12345")
         self.admin = User.objects.create_user(email="a@test.com", password="pass12345")
 
-        self.owner_m = CompanyMembership.objects.create(user=self.owner, company=self.company, role="OWNER", is_active=True)
-        self.user_m = CompanyMembership.objects.create(user=self.user, company=self.company, role="USER", is_active=True)
-        self.admin_m = CompanyMembership.objects.create(user=self.admin, company=self.company, role="ADMIN", is_active=True)
+        self.owner_m = CompanyMembership.objects.create(
+            user=self.owner, company=self.company, role="OWNER", is_active=True
+        )
+        self.user_m = CompanyMembership.objects.create(
+            user=self.user, company=self.company, role="USER", is_active=True
+        )
+        self.admin_m = CompanyMembership.objects.create(
+            user=self.admin, company=self.company, role="ADMIN", is_active=True
+        )
 
         grant_role_defaults(self.owner_m, granted_by=self.owner)
         grant_role_defaults(self.user_m, granted_by=self.owner)
@@ -55,7 +60,7 @@ class TestPermissionDefaults(TestCase):
         self.assertTrue(actor.has("company.manage_users"))
 
     def test_admin_revocation_actually_blocks(self):
-    # Remove a permission explicitly
+        # Remove a permission explicitly
         perm = NxPermission.objects.get(code="company.manage_users")
         CompanyMembershipPermission.objects.filter(membership=self.admin_m, permission=perm).delete()
 
@@ -90,6 +95,7 @@ class TestAddUserToCompanyGrantsDefaults(TestCase):
         self.assertIn("company.switch", codes)
         self.assertIn("company.view", codes)
         self.assertIn("journal.create", codes)
+
     def test_reactivate_emits_membership_reactivated(self):
         # 1) Create an inactive membership first
         m = CompanyMembership.objects.create(
@@ -108,15 +114,17 @@ class TestAddUserToCompanyGrantsDefaults(TestCase):
         self.assertTrue(m.is_active)
 
         # 4) Assert the emitted event type
-        ev = EventModel.objects.filter(
-            aggregate_type="CompanyMembership",
-            aggregate_id=str(m.public_id),
-            event_type=EventTypes.MEMBERSHIP_REACTIVATED,
-        ).order_by("-id").first()
+        ev = (
+            EventModel.objects.filter(
+                aggregate_type="CompanyMembership",
+                aggregate_id=str(m.public_id),
+                event_type=EventTypes.MEMBERSHIP_REACTIVATED,
+            )
+            .order_by("-id")
+            .first()
+        )
 
         self.assertIsNotNone(ev)
         self.assertEqual(ev.event_type, EventTypes.MEMBERSHIP_REACTIVATED)
         self.assertEqual(ev.aggregate_type, "CompanyMembership")
         self.assertEqual(ev.aggregate_id, str(m.public_id))
-
-

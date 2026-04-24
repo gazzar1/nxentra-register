@@ -26,12 +26,12 @@ logger = logging.getLogger(__name__)
 class BaseProjection(ABC):
     """
     Base class for all projections.
-    
+
     Subclasses must implement:
     - name: Unique identifier for this projection
     - consumes: List of event types this projection handles
     - handle(event): Process a single event
-    
+
     Optional overrides:
     - rebuild(): Custom rebuild logic
     - on_error(event, error): Custom error handling
@@ -53,13 +53,13 @@ class BaseProjection(ABC):
     def handle(self, event: BusinessEvent) -> None:
         """
         Process a single event.
-        
+
         MUST be idempotent: processing the same event twice
         should produce the same result.
-        
+
         Args:
             event: The event to process
-        
+
         Raises:
             Exception: Any error will be recorded and processing will stop
         """
@@ -68,12 +68,12 @@ class BaseProjection(ABC):
     def rebuild(self, company: Company) -> int:
         """
         Rebuild this projection from scratch for a company.
-        
+
         Default implementation:
         1. Reset bookmark to beginning
         2. Clear existing projected data
         3. Process all relevant events
-        
+
         Returns:
             Number of events processed
         """
@@ -146,17 +146,19 @@ class BaseProjection(ABC):
                 return 0
 
             # Get unprocessed events
-            events = list(bookmark.get_unprocessed_events(
-                event_types=self.consumes,
-                limit=limit,
-            ))
+            events = list(
+                bookmark.get_unprocessed_events(
+                    event_types=self.consumes,
+                    limit=limit,
+                )
+            )
 
             processed = 0
 
             for event in events:
                 try:
                     with transaction.atomic(), projection_writes_allowed():
-                        applied, created = ProjectionAppliedEvent.objects.get_or_create(
+                        _applied, created = ProjectionAppliedEvent.objects.get_or_create(
                             company=company,
                             projection_name=self.name,
                             event=event,
@@ -172,9 +174,7 @@ class BaseProjection(ABC):
                         processed += 1
 
                 except Exception as e:
-                    logger.exception(
-                        f"Error processing event {event.id} in {self.name}: {e}"
-                    )
+                    logger.exception(f"Error processing event {event.id} in {self.name}: {e}")
                     bookmark.mark_error(str(e))
                     self.on_error(event, e)
 
@@ -182,16 +182,14 @@ class BaseProjection(ABC):
                         break
 
             if processed > 0:
-                logger.info(
-                    f"Projection {self.name} processed {processed} events for {company.name}"
-                )
+                logger.info(f"Projection {self.name} processed {processed} events for {company.name}")
 
             return processed
 
     def on_error(self, event: BusinessEvent, error: Exception) -> None:
         """
         Called when an error occurs during event processing.
-        
+
         Override this to implement custom error handling
         (e.g., dead letter queue, alerting).
         """
@@ -210,7 +208,7 @@ class BaseProjection(ABC):
     def get_lag(self, company: Company) -> int:
         """
         Get number of unprocessed events for this projection.
-        
+
         Useful for monitoring projection health.
         """
         bookmark = self.get_bookmark(company)
@@ -230,11 +228,11 @@ class BaseProjection(ABC):
 class ProjectionRegistry:
     """
     Registry of all projections.
-    
+
     Usage:
         registry = ProjectionRegistry()
         registry.register(AccountBalanceProjection())
-        
+
         # Process all projections
         for projection in registry.all():
             projection.process_pending(company)

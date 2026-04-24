@@ -9,7 +9,6 @@ ROLE_DEFAULTS = {
         "company.manage_users",
         "company.manage_permissions",
         "company.invite_users",
-
         # Accounting
         "accounts.view",
         "accounts.manage",
@@ -18,7 +17,6 @@ ROLE_DEFAULTS = {
         "journal.edit_draft",
         "journal.post",
         "journal.reverse",
-
         # Inventory
         "inventory.warehouse.create",
         "inventory.warehouse.update",
@@ -26,21 +24,17 @@ ROLE_DEFAULTS = {
         "inventory.stock.issue",
         "inventory.adjustment.create",
         "inventory.opening_balance.create",
-
         # Periods
         "periods.view",
         "periods.close",
         "periods.reopen",
         "periods.configure",
-
         # Reports
         "reports.view",
         "reports.export",
-
         # Voice (admin can grant/revoke access and manage quotas)
         "voice.admin",
         "voice.view_usage",
-
         # EDIM (External Data Ingestion & Mapping)
         "edim.view",
         "edim.manage_sources",
@@ -56,7 +50,6 @@ ROLE_DEFAULTS = {
         "company.manage_users",
         "company.manage_permissions",
         "company.invite_users",
-
         "accounts.view",
         "accounts.manage",
         "journal.view",
@@ -64,7 +57,6 @@ ROLE_DEFAULTS = {
         "journal.edit_draft",
         "journal.post",
         "journal.reverse",
-
         # Inventory
         "inventory.warehouse.create",
         "inventory.warehouse.update",
@@ -72,15 +64,12 @@ ROLE_DEFAULTS = {
         "inventory.stock.issue",
         "inventory.adjustment.create",
         "inventory.opening_balance.create",
-
         "periods.view",
         "reports.view",
         "reports.export",
-
         # Voice (admin can grant/revoke access and manage quotas)
         "voice.admin",
         "voice.view_usage",
-
         # EDIM (External Data Ingestion & Mapping)
         "edim.view",
         "edim.manage_sources",
@@ -93,20 +82,16 @@ ROLE_DEFAULTS = {
     "USER": {
         "company.switch",
         "company.view",
-
         "accounts.view",
         "journal.view",
         "journal.create",
         "journal.edit_draft",
-
         # Inventory (limited)
         "inventory.stock.receive",
         "inventory.stock.issue",
         "inventory.adjustment.create",
-
         "periods.view",
         "reports.view",
-
         # EDIM (External Data Ingestion & Mapping)
         "edim.view",
         "edim.stage_data",
@@ -114,17 +99,15 @@ ROLE_DEFAULTS = {
     "VIEWER": {
         "company.switch",
         "company.view",
-
         "accounts.view",
         "journal.view",
-
         "periods.view",
         "reports.view",
-
         # EDIM (External Data Ingestion & Mapping)
         "edim.view",
     },
 }
+
 
 def all_permission_codes() -> set[str]:
     codes: set[str] = set()

@@ -36,6 +36,7 @@ MAX_LINES_PER_CHUNK = 500
 # Payload Origin
 # =============================================================================
 
+
 class PayloadOrigin(Enum):
     """
     Origin of the event payload.
@@ -46,28 +47,30 @@ class PayloadOrigin(Enum):
     - API: External API calls - vary in size, use standard thresholds
     """
 
-    HUMAN = 'human'
-    SYSTEM_BATCH = 'batch'
-    API = 'api'
+    HUMAN = "human"
+    SYSTEM_BATCH = "batch"
+    API = "api"
 
 
 # =============================================================================
 # Storage Strategy
 # =============================================================================
 
+
 class PayloadStrategy(Enum):
     """
     Storage strategy for event payloads.
     """
 
-    INLINE = 'inline'      # Store in BusinessEvent.data
-    EXTERNAL = 'external'  # Store in EventPayload table
-    CHUNKED = 'chunked'    # Split into multiple events
+    INLINE = "inline"  # Store in BusinessEvent.data
+    EXTERNAL = "external"  # Store in EventPayload table
+    CHUNKED = "chunked"  # Split into multiple events
 
 
 # =============================================================================
 # Policy Functions
 # =============================================================================
+
 
 def determine_storage_strategy(
     payload: dict[str, Any],
@@ -111,32 +114,26 @@ def determine_storage_strategy(
 
     # Small payloads: always inline
     if size <= INLINE_MAX_SIZE:
-        return (
-            PayloadStrategy.INLINE,
-            {'size': size, 'reason': 'below_threshold'}
-        )
+        return (PayloadStrategy.INLINE, {"size": size, "reason": "below_threshold"})
 
     # Check for chunking eligibility (batch imports with journal lines)
     if origin == PayloadOrigin.SYSTEM_BATCH:
-        lines = payload.get('lines', [])
+        lines = payload.get("lines", [])
         if isinstance(lines, list) and len(lines) > MAX_LINES_PER_CHUNK:
             chunk_count = (len(lines) + MAX_LINES_PER_CHUNK - 1) // MAX_LINES_PER_CHUNK
             return (
                 PayloadStrategy.CHUNKED,
                 {
-                    'size': size,
-                    'line_count': len(lines),
-                    'chunk_count': chunk_count,
-                    'chunk_size': MAX_LINES_PER_CHUNK,
-                    'reason': 'batch_lines',
-                }
+                    "size": size,
+                    "line_count": len(lines),
+                    "chunk_count": chunk_count,
+                    "chunk_size": MAX_LINES_PER_CHUNK,
+                    "reason": "batch_lines",
+                },
             )
 
     # Large payloads: external storage
-    return (
-        PayloadStrategy.EXTERNAL,
-        {'size': size, 'reason': 'above_threshold'}
-    )
+    return (PayloadStrategy.EXTERNAL, {"size": size, "reason": "above_threshold"})
 
 
 def should_use_chunking(
@@ -176,10 +173,7 @@ def chunk_lines(lines: list, chunk_size: int = MAX_LINES_PER_CHUNK) -> list:
         >>> len(chunks[0]), len(chunks[1]), len(chunks[2])
         (500, 500, 250)
     """
-    return [
-        lines[i:i + chunk_size]
-        for i in range(0, len(lines), chunk_size)
-    ]
+    return [lines[i : i + chunk_size] for i in range(0, len(lines), chunk_size)]
 
 
 def get_storage_thresholds() -> dict[str, int]:
@@ -190,7 +184,7 @@ def get_storage_thresholds() -> dict[str, int]:
         Dict with threshold values
     """
     return {
-        'inline_max_size': INLINE_MAX_SIZE,
-        'chunk_threshold': CHUNK_THRESHOLD,
-        'max_lines_per_chunk': MAX_LINES_PER_CHUNK,
+        "inline_max_size": INLINE_MAX_SIZE,
+        "chunk_threshold": CHUNK_THRESHOLD,
+        "max_lines_per_chunk": MAX_LINES_PER_CHUNK,
     }

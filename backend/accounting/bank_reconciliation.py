@@ -45,6 +45,7 @@ AUTO_MATCH_THRESHOLD = Decimal("80")
 # Statement Import
 # =============================================================================
 
+
 @transaction.atomic
 def import_bank_statement(
     actor: ActorContext,
@@ -70,7 +71,8 @@ def import_bank_statement(
 
     try:
         account = Account.objects.get(
-            id=account_id, company=actor.company,
+            id=account_id,
+            company=actor.company,
         )
     except Account.DoesNotExist:
         return CommandResult.fail("Account not found.")
@@ -122,13 +124,17 @@ def import_bank_statement(
 
     logger.info(
         "Imported bank statement %s for %s: %d lines",
-        statement.public_id, account.code, len(created_lines),
+        statement.public_id,
+        account.code,
+        len(created_lines),
     )
 
-    return CommandResult.ok(data={
-        "statement": statement,
-        "lines_created": len(created_lines),
-    })
+    return CommandResult.ok(
+        data={
+            "statement": statement,
+            "lines_created": len(created_lines),
+        }
+    )
 
 
 def parse_csv_statement(
@@ -155,9 +161,7 @@ def parse_csv_statement(
 
     for row in reader:
         try:
-            line_date = datetime.strptime(
-                row.get(date_column, "").strip(), date_format
-            ).date()
+            line_date = datetime.strptime(row.get(date_column, "").strip(), date_format).date()
         except (ValueError, AttributeError):
             continue
 
@@ -183,12 +187,14 @@ def parse_csv_statement(
         if amount == 0:
             continue
 
-        lines.append({
-            "line_date": line_date,
-            "description": description,
-            "reference": reference,
-            "amount": str(amount),
-        })
+        lines.append(
+            {
+                "line_date": line_date,
+                "description": description,
+                "reference": reference,
+                "amount": str(amount),
+            }
+        )
 
     return lines
 
@@ -196,6 +202,7 @@ def parse_csv_statement(
 # =============================================================================
 # Auto-Matching Algorithm
 # =============================================================================
+
 
 @transaction.atomic
 def auto_match_statement(
@@ -216,16 +223,19 @@ def auto_match_statement(
 
     try:
         statement = BankStatement.objects.get(
-            id=statement_id, company=actor.company,
+            id=statement_id,
+            company=actor.company,
         )
     except BankStatement.DoesNotExist:
         return CommandResult.fail("Statement not found.")
 
     # Get unmatched bank lines
-    unmatched_bank_lines = list(BankStatementLine.objects.filter(
-        statement=statement,
-        match_status=BankStatementLine.MatchStatus.UNMATCHED,
-    ))
+    unmatched_bank_lines = list(
+        BankStatementLine.objects.filter(
+            statement=statement,
+            match_status=BankStatementLine.MatchStatus.UNMATCHED,
+        )
+    )
 
     if not unmatched_bank_lines:
         return CommandResult.ok(data={"matched": 0, "total": 0})
@@ -234,14 +244,15 @@ def auto_match_statement(
     # Try to match bank lines against known platform payouts (e.g. Shopify)
     # before falling back to generic GL-level matching.
     platform_matched = _platform_prepass_match(
-        actor.company, statement, unmatched_bank_lines,
+        actor.company,
+        statement,
+        unmatched_bank_lines,
     )
 
     # Remove platform-matched lines from the unmatched list
     if platform_matched > 0:
         unmatched_bank_lines = [
-            bl for bl in unmatched_bank_lines
-            if bl.match_status == BankStatementLine.MatchStatus.UNMATCHED
+            bl for bl in unmatched_bank_lines if bl.match_status == BankStatementLine.MatchStatus.UNMATCHED
         ]
 
     # Get unreconciled journal lines for this account in the statement period
@@ -308,13 +319,18 @@ def auto_match_statement(
     matched_count += platform_matched
     logger.info(
         "Auto-matched %d/%d lines for statement %s (platform pre-pass: %d)",
-        matched_count, total, statement.public_id, platform_matched,
+        matched_count,
+        total,
+        statement.public_id,
+        platform_matched,
     )
 
-    return CommandResult.ok(data={
-        "matched": matched_count,
-        "total": total,
-    })
+    return CommandResult.ok(
+        data={
+            "matched": matched_count,
+            "total": total,
+        }
+    )
 
 
 def _platform_prepass_match(
@@ -338,12 +354,14 @@ def _platform_prepass_match(
 
     # Get all Shopify payouts in the statement period range
     date_buffer = timedelta(days=5)
-    payouts = list(ShopifyPayout.objects.filter(
-        company=company,
-        payout_date__gte=statement.period_start - date_buffer,
-        payout_date__lte=statement.period_end + date_buffer,
-        shopify_status="paid",
-    ))
+    payouts = list(
+        ShopifyPayout.objects.filter(
+            company=company,
+            payout_date__gte=statement.period_start - date_buffer,
+            payout_date__lte=statement.period_end + date_buffer,
+            shopify_status="paid",
+        )
+    )
 
     if not payouts:
         return 0
@@ -419,7 +437,8 @@ def _platform_prepass_match(
 
             logger.info(
                 "Platform pre-pass: matched bank line %s to Shopify payout %s",
-                bank_line.id, best_payout.shopify_payout_id,
+                bank_line.id,
+                best_payout.shopify_payout_id,
             )
 
     return matched
@@ -473,6 +492,7 @@ def _compute_match_confidence(
 # Manual Match / Unmatch
 # =============================================================================
 
+
 @transaction.atomic
 def manual_match(
     actor: ActorContext,
@@ -514,10 +534,12 @@ def manual_match(
         journal_line.reconciled_date = bank_line.statement.statement_date
         journal_line.save()
 
-    return CommandResult.ok(data={
-        "bank_line": bank_line,
-        "journal_line": journal_line,
-    })
+    return CommandResult.ok(
+        data={
+            "bank_line": bank_line,
+            "journal_line": journal_line,
+        }
+    )
 
 
 @transaction.atomic
@@ -591,6 +613,7 @@ def exclude_line(
 # Reconciliation Completion
 # =============================================================================
 
+
 @transaction.atomic
 def complete_reconciliation(
     actor: ActorContext,
@@ -607,7 +630,8 @@ def complete_reconciliation(
 
     try:
         statement = BankStatement.objects.get(
-            id=statement_id, company=actor.company,
+            id=statement_id,
+            company=actor.company,
         )
     except BankStatement.DoesNotExist:
         return CommandResult.fail("Statement not found.")
@@ -643,13 +667,17 @@ def complete_reconciliation(
 
     logger.info(
         "Completed reconciliation %s for %s (difference: %s)",
-        recon.public_id, statement.account.code, summary["difference"],
+        recon.public_id,
+        statement.account.code,
+        summary["difference"],
     )
 
-    return CommandResult.ok(data={
-        "reconciliation": recon,
-        "summary": summary,
-    })
+    return CommandResult.ok(
+        data={
+            "reconciliation": recon,
+            "summary": summary,
+        }
+    )
 
 
 def compute_reconciliation_summary(company, statement) -> dict:

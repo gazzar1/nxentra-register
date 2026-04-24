@@ -99,7 +99,8 @@ class ClinicAccountingProjection(BaseProjection):
         if not mapping:
             logger.warning(
                 "No ModuleAccountMapping for clinic module, company %s — skipping %s",
-                company, event.event_type,
+                company,
+                event.event_type,
             )
             return
 
@@ -116,8 +117,7 @@ class ClinicAccountingProjection(BaseProjection):
         """DR Accounts Receivable / CR Consultation Revenue."""
         ar = mapping.get(ROLE_ACCOUNTS_RECEIVABLE)
         revenue = mapping.get(ROLE_CONSULTATION_REVENUE)
-        if not self._check_accounts(event, ar, revenue,
-                                    ROLE_ACCOUNTS_RECEIVABLE, ROLE_CONSULTATION_REVENUE):
+        if not self._check_accounts(event, ar, revenue, ROLE_ACCOUNTS_RECEIVABLE, ROLE_CONSULTATION_REVENUE):
             return
 
         amount = Decimal(str(data.get("amount", "0")))
@@ -145,8 +145,7 @@ class ClinicAccountingProjection(BaseProjection):
         """DR Cash/Bank / CR Accounts Receivable."""
         cash = mapping.get(ROLE_CASH_BANK)
         ar = mapping.get(ROLE_ACCOUNTS_RECEIVABLE)
-        if not self._check_accounts(event, cash, ar,
-                                    ROLE_CASH_BANK, ROLE_ACCOUNTS_RECEIVABLE):
+        if not self._check_accounts(event, cash, ar, ROLE_CASH_BANK, ROLE_ACCOUNTS_RECEIVABLE):
             return
 
         amount = Decimal(str(data.get("amount", "0")))
@@ -174,8 +173,7 @@ class ClinicAccountingProjection(BaseProjection):
         """DR Accounts Receivable / CR Cash/Bank (reversal)."""
         ar = mapping.get(ROLE_ACCOUNTS_RECEIVABLE)
         cash = mapping.get(ROLE_CASH_BANK)
-        if not self._check_accounts(event, ar, cash,
-                                    ROLE_ACCOUNTS_RECEIVABLE, ROLE_CASH_BANK):
+        if not self._check_accounts(event, ar, cash, ROLE_ACCOUNTS_RECEIVABLE, ROLE_CASH_BANK):
             return
 
         amount = Decimal(str(data.get("amount", "0")))
@@ -203,8 +201,7 @@ class ClinicAccountingProjection(BaseProjection):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _check_accounts(self, event, debit_account, credit_account,
-                        debit_label, credit_label):
+    def _check_accounts(self, event, debit_account, credit_account, debit_label, credit_label):
         missing = []
         if not debit_account:
             missing.append(debit_label)
@@ -212,22 +209,26 @@ class ClinicAccountingProjection(BaseProjection):
             missing.append(credit_label)
         if missing:
             logger.warning(
-                "Clinic account mapping missing role(s) %s for company %s — "
-                "skipping %s (event %s)",
-                ", ".join(missing), event.company, event.event_type, event.id,
+                "Clinic account mapping missing role(s) %s for company %s — skipping %s (event %s)",
+                ", ".join(missing),
+                event.company,
+                event.event_type,
+                event.id,
             )
             return False
         return True
 
-    def _create_posted_entry(self, *, event, entry_date, memo,
-                             debit_account, credit_account, amount,
-                             dimension_context=None):
+    def _create_posted_entry(
+        self, *, event, entry_date, memo, debit_account, credit_account, amount, dimension_context=None
+    ):
         company = event.company
 
         if amount <= 0:
             logger.warning(
                 "Skipping %s — non-positive amount %s (event %s)",
-                event.event_type, amount, event.id,
+                event.event_type,
+                amount,
+                event.id,
             )
             return
 
@@ -240,7 +241,8 @@ class ClinicAccountingProjection(BaseProjection):
         ).exists():
             logger.info(
                 "Journal entry already exists for memo '%s' on %s — skipping",
-                memo, entry_date,
+                memo,
+                entry_date,
             )
             return
 
@@ -345,15 +347,17 @@ class ClinicAccountingProjection(BaseProjection):
 
         logger.info(
             "Created journal entry %s for %s (event %s): %s",
-            entry.public_id, event.event_type, event.id, memo,
+            entry.public_id,
+            event.event_type,
+            event.id,
+            memo,
         )
 
     # ------------------------------------------------------------------
     # Dimension derivation
     # ------------------------------------------------------------------
 
-    def _resolve_clinic_dimensions(self, company, patient_public_id=None,
-                                   visit_public_id=None, invoice_public_id=None):
+    def _resolve_clinic_dimensions(self, company, patient_public_id=None, visit_public_id=None, invoice_public_id=None):
         """
         Derive dimension context from clinic entities.
 
@@ -366,7 +370,8 @@ class ClinicAccountingProjection(BaseProjection):
         if patient_public_id:
             try:
                 patient = Patient.objects.get(
-                    company=company, public_id=patient_public_id,
+                    company=company,
+                    public_id=patient_public_id,
                 )
                 context["patient"] = patient.code
             except Patient.DoesNotExist:
@@ -376,18 +381,22 @@ class ClinicAccountingProjection(BaseProjection):
         doctor = None
         if visit_public_id:
             from clinic.models import Visit
+
             try:
                 visit = Visit.objects.select_related("doctor").get(
-                    company=company, public_id=visit_public_id,
+                    company=company,
+                    public_id=visit_public_id,
                 )
                 doctor = visit.doctor
             except Visit.DoesNotExist:
                 pass
         elif invoice_public_id:
             from clinic.models import Invoice
+
             try:
                 invoice = Invoice.objects.select_related("visit__doctor").get(
-                    company=company, public_id=invoice_public_id,
+                    company=company,
+                    public_id=invoice_public_id,
                 )
                 if invoice.visit:
                     doctor = invoice.visit.doctor
@@ -414,7 +423,8 @@ class ClinicAccountingProjection(BaseProjection):
         # Batch-fetch matching dimensions and values
         dim_codes = list(dimension_context.keys())
         dimensions = {
-            d.code: d for d in AnalysisDimension.objects.filter(
+            d.code: d
+            for d in AnalysisDimension.objects.filter(
                 company=company,
                 code__in=dim_codes,
                 is_active=True,
@@ -435,6 +445,7 @@ class ClinicAccountingProjection(BaseProjection):
             return
 
         from django.db.models import Q
+
         q = Q()
         for dim_id, val_code in value_lookups:
             q |= Q(dimension_id=dim_id, code=val_code)
@@ -455,20 +466,22 @@ class ClinicAccountingProjection(BaseProjection):
                 if not val:
                     logger.debug(
                         "Dimension value %s=%s not found for company %s — skipping",
-                        dim_code, val_code, company.name,
+                        dim_code,
+                        val_code,
+                        company.name,
                     )
                     continue
-                analysis_records.append(JournalLineAnalysis(
-                    journal_line=line,
-                    company=company,
-                    dimension=dim,
-                    dimension_value=val,
-                ))
+                analysis_records.append(
+                    JournalLineAnalysis(
+                        journal_line=line,
+                        company=company,
+                        dimension=dim,
+                        dimension_value=val,
+                    )
+                )
 
         if analysis_records:
-            JournalLineAnalysis.objects.projection().bulk_create(
-                analysis_records, ignore_conflicts=True
-            )
+            JournalLineAnalysis.objects.projection().bulk_create(analysis_records, ignore_conflicts=True)
 
     def _clear_projected_data(self, company) -> None:
         """Clear clinic-generated journal entries for rebuild."""

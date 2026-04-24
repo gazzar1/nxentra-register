@@ -51,21 +51,23 @@ class BankAccountListCreateView(APIView):
             tx_count = a.transactions.count()
             stmt_count = a.statements.count()
             unmatched = a.transactions.filter(status="UNMATCHED").count()
-            data.append({
-                "id": a.id,
-                "public_id": str(a.public_id),
-                "bank_name": a.bank_name,
-                "account_name": a.account_name,
-                "account_number_last4": a.account_number_last4,
-                "currency": a.currency,
-                "gl_account_id": a.gl_account_id,
-                "status": a.status,
-                "transaction_count": tx_count,
-                "statement_count": stmt_count,
-                "unmatched_count": unmatched,
-                "created_at": a.created_at.isoformat(),
-                "updated_at": a.updated_at.isoformat(),
-            })
+            data.append(
+                {
+                    "id": a.id,
+                    "public_id": str(a.public_id),
+                    "bank_name": a.bank_name,
+                    "account_name": a.account_name,
+                    "account_number_last4": a.account_number_last4,
+                    "currency": a.currency,
+                    "gl_account_id": a.gl_account_id,
+                    "status": a.status,
+                    "transaction_count": tx_count,
+                    "statement_count": stmt_count,
+                    "unmatched_count": unmatched,
+                    "created_at": a.created_at.isoformat(),
+                    "updated_at": a.updated_at.isoformat(),
+                }
+            )
         return Response(data)
 
     def post(self, request):
@@ -169,12 +171,14 @@ class BankStatementPreviewView(APIView):
         except Exception as e:
             return Response({"detail": f"Error reading CSV: {e!s}"}, status=400)
 
-        return Response({
-            "filename": uploaded_file.name,
-            "headers": result["headers"],
-            "preview_rows": result["preview_rows"],
-            "total_rows": result["total_rows"],
-        })
+        return Response(
+            {
+                "filename": uploaded_file.name,
+                "headers": result["headers"],
+                "preview_rows": result["preview_rows"],
+                "total_rows": result["total_rows"],
+            }
+        )
 
 
 class BankStatementImportView(APIView):
@@ -198,14 +202,13 @@ class BankStatementImportView(APIView):
             return Response({"detail": "bank_account_id is required."}, status=400)
 
         try:
-            bank_account = BankAccount.objects.get(
-                pk=bank_account_id, company=actor.company
-            )
+            bank_account = BankAccount.objects.get(pk=bank_account_id, company=actor.company)
         except BankAccount.DoesNotExist:
             return Response({"detail": "Bank account not found."}, status=404)
 
         # Parse column mapping from form data
         import json
+
         try:
             mapping = json.loads(request.data.get("column_mapping", "{}"))
         except (json.JSONDecodeError, TypeError):
@@ -321,18 +324,20 @@ class BankStatementImportView(APIView):
         statement.error_message = "\n".join(errors[:20]) if errors else ""
         statement.save()
 
-        return Response({
-            "statement_id": statement.id,
-            "created": created,
-            "skipped": skipped,
-            "errors": errors[:20],
-            "total_rows": len(mapped_rows),
-            "period_start": str(min_date) if min_date else None,
-            "period_end": str(max_date) if max_date else None,
-            "total_credits": str(total_credits),
-            "total_debits": str(total_debits),
-            "debug": debug_info,
-        })
+        return Response(
+            {
+                "statement_id": statement.id,
+                "created": created,
+                "skipped": skipped,
+                "errors": errors[:20],
+                "total_rows": len(mapped_rows),
+                "period_start": str(min_date) if min_date else None,
+                "period_end": str(max_date) if max_date else None,
+                "total_credits": str(total_credits),
+                "total_debits": str(total_debits),
+                "debug": debug_info,
+            }
+        )
 
 
 class BankStatementListView(APIView):
@@ -352,21 +357,23 @@ class BankStatementListView(APIView):
 
         data = []
         for s in qs.select_related("bank_account"):
-            data.append({
-                "id": s.id,
-                "public_id": str(s.public_id),
-                "bank_account_id": s.bank_account_id,
-                "bank_account_name": s.bank_account.account_name,
-                "filename": s.filename,
-                "period_start": str(s.period_start) if s.period_start else None,
-                "period_end": str(s.period_end) if s.period_end else None,
-                "transaction_count": s.transaction_count,
-                "total_debits": str(s.total_debits),
-                "total_credits": str(s.total_credits),
-                "status": s.status,
-                "error_message": s.error_message,
-                "created_at": s.created_at.isoformat(),
-            })
+            data.append(
+                {
+                    "id": s.id,
+                    "public_id": str(s.public_id),
+                    "bank_account_id": s.bank_account_id,
+                    "bank_account_name": s.bank_account.account_name,
+                    "filename": s.filename,
+                    "period_start": str(s.period_start) if s.period_start else None,
+                    "period_end": str(s.period_end) if s.period_end else None,
+                    "transaction_count": s.transaction_count,
+                    "total_debits": str(s.total_debits),
+                    "total_credits": str(s.total_credits),
+                    "status": s.status,
+                    "error_message": s.error_message,
+                    "created_at": s.created_at.isoformat(),
+                }
+            )
         return Response(data)
 
 
@@ -383,9 +390,7 @@ class BankTransactionListView(APIView):
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
 
-        qs = BankTransaction.objects.filter(company=actor.company).select_related(
-            "bank_account"
-        )
+        qs = BankTransaction.objects.filter(company=actor.company).select_related("bank_account")
 
         # Filters
         bank_account_id = request.query_params.get("bank_account_id")
@@ -402,45 +407,46 @@ class BankTransactionListView(APIView):
 
         search = request.query_params.get("search")
         if search:
-            qs = qs.filter(
-                Q(description__icontains=search)
-                | Q(reference__icontains=search)
-            )
+            qs = qs.filter(Q(description__icontains=search) | Q(reference__icontains=search))
 
         # Pagination
         limit = min(int(request.query_params.get("limit", 100)), 500)
         offset = int(request.query_params.get("offset", 0))
         total = qs.count()
-        transactions = qs[offset: offset + limit]
+        transactions = qs[offset : offset + limit]
 
         data = []
         for tx in transactions:
-            data.append({
-                "id": tx.id,
-                "public_id": str(tx.public_id),
-                "bank_account_id": tx.bank_account_id,
-                "bank_account_name": tx.bank_account.account_name,
-                "transaction_date": str(tx.transaction_date),
-                "value_date": str(tx.value_date) if tx.value_date else None,
-                "description": tx.description,
-                "reference": tx.reference,
-                "amount": str(tx.amount),
-                "transaction_type": tx.transaction_type,
-                "running_balance": str(tx.running_balance) if tx.running_balance is not None else None,
-                "status": tx.status,
-                "matched_content_type": tx.matched_content_type,
-                "matched_object_id": tx.matched_object_id,
-                "matched_at": tx.matched_at.isoformat() if tx.matched_at else None,
-                "matched_by": tx.matched_by,
-                "created_at": tx.created_at.isoformat(),
-            })
+            data.append(
+                {
+                    "id": tx.id,
+                    "public_id": str(tx.public_id),
+                    "bank_account_id": tx.bank_account_id,
+                    "bank_account_name": tx.bank_account.account_name,
+                    "transaction_date": str(tx.transaction_date),
+                    "value_date": str(tx.value_date) if tx.value_date else None,
+                    "description": tx.description,
+                    "reference": tx.reference,
+                    "amount": str(tx.amount),
+                    "transaction_type": tx.transaction_type,
+                    "running_balance": str(tx.running_balance) if tx.running_balance is not None else None,
+                    "status": tx.status,
+                    "matched_content_type": tx.matched_content_type,
+                    "matched_object_id": tx.matched_object_id,
+                    "matched_at": tx.matched_at.isoformat() if tx.matched_at else None,
+                    "matched_by": tx.matched_by,
+                    "created_at": tx.created_at.isoformat(),
+                }
+            )
 
-        return Response({
-            "results": data,
-            "total": total,
-            "limit": limit,
-            "offset": offset,
-        })
+        return Response(
+            {
+                "results": data,
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
 
 
 class BankTransactionUpdateView(APIView):
@@ -506,9 +512,7 @@ class BankSummaryView(APIView):
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
 
-        accounts = BankAccount.objects.filter(
-            company=actor.company, status="ACTIVE"
-        ).count()
+        accounts = BankAccount.objects.filter(company=actor.company, status="ACTIVE").count()
 
         tx_qs = BankTransaction.objects.filter(company=actor.company)
         total_transactions = tx_qs.count()
@@ -517,14 +521,16 @@ class BankSummaryView(APIView):
 
         statements = BankStatement.objects.filter(company=actor.company).count()
 
-        return Response({
-            "accounts": accounts,
-            "statements": statements,
-            "total_transactions": total_transactions,
-            "matched": matched,
-            "unmatched": unmatched,
-            "match_rate": round(matched / total_transactions * 100, 1) if total_transactions else 0,
-        })
+        return Response(
+            {
+                "accounts": accounts,
+                "statements": statements,
+                "total_transactions": total_transactions,
+                "matched": matched,
+                "unmatched": unmatched,
+                "match_rate": round(matched / total_transactions * 100, 1) if total_transactions else 0,
+            }
+        )
 
 
 # ─── Reconciliation ─────────────────────────────────────────────
@@ -557,6 +563,7 @@ class AutoMatchView(APIView):
             return Response({"detail": "No active company."}, status=400)
 
         from django.db import transaction
+
         bank_account_id = request.data.get("bank_account_id")
         with transaction.atomic(), projection_writes_allowed():
             result = auto_match_transactions(actor.company, bank_account_id)
@@ -600,10 +607,9 @@ class ManualMatchView(APIView):
             )
 
         from django.db import transaction
+
         with transaction.atomic(), projection_writes_allowed():
-            result = manual_match(
-                actor.company, int(bank_transaction_id), platform, int(payout_id)
-            )
+            result = manual_match(actor.company, int(bank_transaction_id), platform, int(payout_id))
         if "error" in result:
             return Response({"detail": result["error"]}, status=400)
         return Response(result)
@@ -704,23 +710,23 @@ class ExceptionListView(APIView):
         search = request.query_params.get("search")
         if search:
             qs = qs.filter(
-                Q(title__icontains=search)
-                | Q(description__icontains=search)
-                | Q(reference_label__icontains=search)
+                Q(title__icontains=search) | Q(description__icontains=search) | Q(reference_label__icontains=search)
             )
 
         # Pagination
         limit = min(int(request.query_params.get("limit", 50)), 200)
         offset = int(request.query_params.get("offset", 0))
         total = qs.count()
-        exceptions = qs[offset: offset + limit]
+        exceptions = qs[offset : offset + limit]
 
-        return Response({
-            "results": [_serialize_exception(e) for e in exceptions],
-            "total": total,
-            "limit": limit,
-            "offset": offset,
-        })
+        return Response(
+            {
+                "results": [_serialize_exception(e) for e in exceptions],
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
 
 
 class ExceptionScanView(APIView):
@@ -779,9 +785,15 @@ class ExceptionDetailView(APIView):
             exc.resolved_at = timezone.now()
             exc.resolved_by_id = request.user.id
             exc.resolution_note = request.data.get("resolution_note", "")
-            exc.save(update_fields=[
-                "status", "resolved_at", "resolved_by", "resolution_note", "updated_at",
-            ])
+            exc.save(
+                update_fields=[
+                    "status",
+                    "resolved_at",
+                    "resolved_by",
+                    "resolution_note",
+                    "updated_at",
+                ]
+            )
             return Response(_serialize_exception(exc))
 
         if action == "escalate":
@@ -794,9 +806,15 @@ class ExceptionDetailView(APIView):
             exc.resolved_at = timezone.now()
             exc.resolved_by_id = request.user.id
             exc.resolution_note = request.data.get("resolution_note", "")
-            exc.save(update_fields=[
-                "status", "resolved_at", "resolved_by", "resolution_note", "updated_at",
-            ])
+            exc.save(
+                update_fields=[
+                    "status",
+                    "resolved_at",
+                    "resolved_by",
+                    "resolution_note",
+                    "updated_at",
+                ]
+            )
             return Response(_serialize_exception(exc))
 
         if action == "reopen":
@@ -804,9 +822,15 @@ class ExceptionDetailView(APIView):
             exc.resolved_at = None
             exc.resolved_by = None
             exc.resolution_note = ""
-            exc.save(update_fields=[
-                "status", "resolved_at", "resolved_by", "resolution_note", "updated_at",
-            ])
+            exc.save(
+                update_fields=[
+                    "status",
+                    "resolved_at",
+                    "resolved_by",
+                    "resolution_note",
+                    "updated_at",
+                ]
+            )
             return Response(_serialize_exception(exc))
 
         return Response({"detail": "Unknown action."}, status=400)
@@ -841,14 +865,12 @@ class ExceptionSummaryView(APIView):
             if c > 0:
                 by_type[et] = c
 
-        return Response({
-            "total_open": open_qs.count(),
-            "by_severity": by_severity,
-            "by_type": by_type,
-            "total_resolved": qs.filter(
-                status=ReconciliationException.Status.RESOLVED
-            ).count(),
-            "total_dismissed": qs.filter(
-                status=ReconciliationException.Status.DISMISSED
-            ).count(),
-        })
+        return Response(
+            {
+                "total_open": open_qs.count(),
+                "by_severity": by_severity,
+                "by_type": by_type,
+                "total_resolved": qs.filter(status=ReconciliationException.Status.RESOLVED).count(),
+                "total_dismissed": qs.filter(status=ReconciliationException.Status.DISMISSED).count(),
+            }
+        )

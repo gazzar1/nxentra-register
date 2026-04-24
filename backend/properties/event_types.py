@@ -18,9 +18,11 @@ from events.types import BaseEventData, EventTypes
 # Property Events
 # =============================================================================
 
+
 @dataclass
 class PropertyCreatedData(BaseEventData):
     """Data for property.created event."""
+
     property_public_id: str
     company_public_id: str
     code: str
@@ -37,6 +39,7 @@ class PropertyCreatedData(BaseEventData):
 @dataclass
 class PropertyUpdatedData(BaseEventData):
     """Data for property.updated event."""
+
     property_public_id: str
     company_public_id: str
     changes: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -47,9 +50,11 @@ class PropertyUpdatedData(BaseEventData):
 # Unit Events
 # =============================================================================
 
+
 @dataclass
 class UnitCreatedData(BaseEventData):
     """Data for unit.created event."""
+
     unit_public_id: str
     property_public_id: str
     company_public_id: str
@@ -64,6 +69,7 @@ class UnitCreatedData(BaseEventData):
 @dataclass
 class UnitStatusChangedData(BaseEventData):
     """Data for unit.status_changed event."""
+
     unit_public_id: str
     property_public_id: str
     company_public_id: str
@@ -77,9 +83,11 @@ class UnitStatusChangedData(BaseEventData):
 # Lessee Events
 # =============================================================================
 
+
 @dataclass
 class LesseeCreatedData(BaseEventData):
     """Data for lessee.created event."""
+
     lessee_public_id: str
     company_public_id: str
     code: str
@@ -92,6 +100,7 @@ class LesseeCreatedData(BaseEventData):
 @dataclass
 class LesseeUpdatedData(BaseEventData):
     """Data for lessee.updated event."""
+
     lessee_public_id: str
     company_public_id: str
     changes: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -102,9 +111,11 @@ class LesseeUpdatedData(BaseEventData):
 # Lease Events
 # =============================================================================
 
+
 @dataclass
 class LeaseCreatedData(BaseEventData):
     """Data for lease.created event."""
+
     lease_public_id: str
     company_public_id: str
     contract_no: str
@@ -123,6 +134,7 @@ class LeaseCreatedData(BaseEventData):
 @dataclass
 class LeaseUpdatedData(BaseEventData):
     """Data for lease.updated event."""
+
     lease_public_id: str
     changes: dict[str, dict[str, Any]] = field(default_factory=dict)
     updated_by_email: str = ""
@@ -131,6 +143,7 @@ class LeaseUpdatedData(BaseEventData):
 @dataclass
 class LeaseActivatedData(BaseEventData):
     """Data for lease.activated event."""
+
     lease_public_id: str
     contract_no: str
     property_public_id: str
@@ -150,6 +163,7 @@ class LeaseActivatedData(BaseEventData):
 @dataclass
 class LeaseTerminatedData(BaseEventData):
     """Data for lease.terminated event."""
+
     lease_public_id: str
     contract_no: str
     property_public_id: str
@@ -163,6 +177,7 @@ class LeaseTerminatedData(BaseEventData):
 @dataclass
 class LeaseRenewedData(BaseEventData):
     """Data for lease.renewed event (old lease)."""
+
     lease_public_id: str
     contract_no: str
     new_lease_public_id: str = ""
@@ -174,9 +189,11 @@ class LeaseRenewedData(BaseEventData):
 # Rent Schedule Events
 # =============================================================================
 
+
 @dataclass
 class RentScheduleGeneratedData(BaseEventData):
     """Data for rent.schedule_generated event."""
+
     lease_public_id: str
     contract_no: str
     schedule_line_count: int = 0
@@ -189,6 +206,7 @@ class RentScheduleGeneratedData(BaseEventData):
 @dataclass
 class RentDuePostedData(BaseEventData):
     """Data for rent.due_posted event."""
+
     schedule_line_public_id: str
     lease_public_id: str
     contract_no: str
@@ -201,6 +219,7 @@ class RentDuePostedData(BaseEventData):
 @dataclass
 class RentOverdueDetectedData(BaseEventData):
     """Data for rent.overdue_detected event."""
+
     schedule_line_public_id: str
     lease_public_id: str
     contract_no: str
@@ -214,6 +233,7 @@ class RentOverdueDetectedData(BaseEventData):
 @dataclass
 class RentLineWaivedData(BaseEventData):
     """Data for rent.line_waived event."""
+
     schedule_line_public_id: str
     lease_public_id: str
     contract_no: str
@@ -227,9 +247,11 @@ class RentLineWaivedData(BaseEventData):
 # Payment Events
 # =============================================================================
 
+
 @dataclass
 class RentPaymentReceivedData(BaseEventData):
     """Data for rent.payment_received event."""
+
     payment_public_id: str
     lease_public_id: str
     lessee_public_id: str
@@ -244,6 +266,7 @@ class RentPaymentReceivedData(BaseEventData):
 @dataclass
 class RentPaymentAllocatedData(BaseEventData):
     """Data for rent.payment_allocated event."""
+
     allocation_public_id: str
     payment_public_id: str
     schedule_line_public_id: str
@@ -257,6 +280,7 @@ class RentPaymentAllocatedData(BaseEventData):
 @dataclass
 class RentPaymentVoidedData(BaseEventData):
     """Data for rent.payment_voided event."""
+
     payment_public_id: str
     lease_public_id: str
     receipt_no: str = ""
@@ -271,9 +295,11 @@ class RentPaymentVoidedData(BaseEventData):
 # Deposit Events
 # =============================================================================
 
+
 @dataclass
 class DepositReceivedData(BaseEventData):
     """Data for deposit.received event."""
+
     transaction_public_id: str
     lease_public_id: str
     contract_no: str = ""
@@ -285,6 +311,7 @@ class DepositReceivedData(BaseEventData):
 @dataclass
 class DepositAdjustedData(BaseEventData):
     """Data for deposit.adjusted event."""
+
     transaction_public_id: str
     lease_public_id: str
     contract_no: str = ""
@@ -297,6 +324,7 @@ class DepositAdjustedData(BaseEventData):
 @dataclass
 class DepositRefundedData(BaseEventData):
     """Data for deposit.refunded event."""
+
     transaction_public_id: str
     lease_public_id: str
     contract_no: str = ""
@@ -308,6 +336,7 @@ class DepositRefundedData(BaseEventData):
 @dataclass
 class DepositForfeitedData(BaseEventData):
     """Data for deposit.forfeited event."""
+
     transaction_public_id: str
     lease_public_id: str
     contract_no: str = ""
@@ -321,9 +350,11 @@ class DepositForfeitedData(BaseEventData):
 # Expense Events
 # =============================================================================
 
+
 @dataclass
 class PropertyExpenseRecordedData(BaseEventData):
     """Data for property.expense_recorded event."""
+
     expense_public_id: str
     property_public_id: str
     unit_public_id: str = ""
@@ -341,9 +372,11 @@ class PropertyExpenseRecordedData(BaseEventData):
 # Account Mapping Events
 # =============================================================================
 
+
 @dataclass
 class LeaseExpiryAlertData(BaseEventData):
     """Data for lease.expiry_alert event."""
+
     lease_public_id: str
     contract_no: str
     property_public_id: str
@@ -359,6 +392,7 @@ class LeaseExpiryAlertData(BaseEventData):
 @dataclass
 class PropertyAccountMappingUpdatedData(BaseEventData):
     """Data for property.account_mapping_updated event."""
+
     company_public_id: str
     changes: dict[str, dict[str, Any]] = field(default_factory=dict)
     updated_by_email: str = ""

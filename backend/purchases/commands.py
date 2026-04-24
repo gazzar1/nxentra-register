@@ -180,19 +180,21 @@ def create_purchase_bill(
             return CommandResult.fail(f"Line {idx}: Discount cannot exceed gross amount.")
 
         # Calculate line amounts
-        calculated = _calculate_line({
-            "line_number": idx,
-            "account": account,
-            "item": item,
-            "description": line.get("description", ""),
-            "description_ar": line.get("description_ar", ""),
-            "quantity": quantity,
-            "unit_price": unit_price,
-            "discount_amount": discount_amount,
-            "tax_code": tax_code,
-            "tax_rate": tax_rate,
-            "dimension_value_ids": line.get("dimension_value_ids", []),
-        })
+        calculated = _calculate_line(
+            {
+                "line_number": idx,
+                "account": account,
+                "item": item,
+                "description": line.get("description", ""),
+                "description_ar": line.get("description_ar", ""),
+                "quantity": quantity,
+                "unit_price": unit_price,
+                "discount_amount": discount_amount,
+                "tax_code": tax_code,
+                "tax_rate": tax_rate,
+                "dimension_value_ids": line.get("dimension_value_ids", []),
+            }
+        )
         calculated_lines.append(calculated)
 
     # Calculate totals
@@ -202,12 +204,13 @@ def create_purchase_bill(
     total_amount = sum(l["line_total"] for l in calculated_lines)
 
     # Resolve currency: explicit > vendor default > company default
-    bill_currency = currency or getattr(vendor, 'currency', '') or actor.company.default_currency
+    bill_currency = currency or getattr(vendor, "currency", "") or actor.company.default_currency
     functional_currency = actor.company.functional_currency or actor.company.default_currency
     if exchange_rate:
         bill_exchange_rate = Decimal(str(exchange_rate))
     elif bill_currency != functional_currency:
         from accounting.models import ExchangeRate
+
         looked_up = ExchangeRate.get_rate(actor.company, bill_currency, functional_currency, bill_date)
         bill_exchange_rate = looked_up if looked_up else Decimal("1")
     else:
@@ -261,24 +264,26 @@ def create_purchase_bill(
     # Build event line data
     event_lines = []
     for line in bill.lines.all():
-        event_lines.append(PurchaseBillLineData(
-            line_no=line.line_number,
-            item_public_id=str(line.item.public_id) if line.item else None,
-            description=line.description,
-            description_ar=line.description_ar,
-            quantity=str(line.quantity),
-            unit_price=str(line.unit_price),
-            discount_amount=str(line.discount_amount),
-            tax_code_public_id=str(line.tax_code.public_id) if line.tax_code else None,
-            tax_rate=str(line.tax_rate),
-            gross_amount=str(line.gross_amount),
-            net_amount=str(line.net_amount),
-            tax_amount=str(line.tax_amount),
-            line_total=str(line.line_total),
-            account_public_id=str(line.account.public_id),
-            account_code=line.account.code,
-            dimension_value_public_ids=[str(dv.public_id) for dv in line.dimension_values.all()],
-        ).to_dict())
+        event_lines.append(
+            PurchaseBillLineData(
+                line_no=line.line_number,
+                item_public_id=str(line.item.public_id) if line.item else None,
+                description=line.description,
+                description_ar=line.description_ar,
+                quantity=str(line.quantity),
+                unit_price=str(line.unit_price),
+                discount_amount=str(line.discount_amount),
+                tax_code_public_id=str(line.tax_code.public_id) if line.tax_code else None,
+                tax_rate=str(line.tax_rate),
+                gross_amount=str(line.gross_amount),
+                net_amount=str(line.net_amount),
+                tax_amount=str(line.tax_amount),
+                line_total=str(line.line_total),
+                account_public_id=str(line.account.public_id),
+                account_code=line.account.code,
+                dimension_value_public_ids=[str(dv.public_id) for dv in line.dimension_values.all()],
+            ).to_dict()
+        )
 
     event = emit_event(
         actor=actor,
@@ -333,9 +338,7 @@ def post_purchase_bill(actor: ActorContext, bill_id: int) -> CommandResult:
     require(actor, "purchases.bill.post")
 
     try:
-        bill = PurchaseBill.objects.select_for_update().get(
-            company=actor.company, pk=bill_id
-        )
+        bill = PurchaseBill.objects.select_for_update().get(company=actor.company, pk=bill_id)
     except PurchaseBill.DoesNotExist:
         return CommandResult.fail("Bill not found.")
 
@@ -361,27 +364,29 @@ def post_purchase_bill(actor: ActorContext, bill_id: int) -> CommandResult:
     je_lines = []
 
     # Credit AP Control (total amount with vendor counterparty)
-    je_lines.append({
-        "account_id": bill.posting_profile.control_account_id,
-        "description": f"Bill {bill.bill_number} - {bill.vendor.name}",
-        "debit": Decimal("0"),
-        "credit": bill.total_amount,
-        "vendor_public_id": str(bill.vendor.public_id),
-    })
+    je_lines.append(
+        {
+            "account_id": bill.posting_profile.control_account_id,
+            "description": f"Bill {bill.bill_number} - {bill.vendor.name}",
+            "debit": Decimal("0"),
+            "credit": bill.total_amount,
+            "vendor_public_id": str(bill.vendor.public_id),
+        }
+    )
 
     # Group debits by account (inventory or expense)
     inventory_by_account = {}  # {account_id: total_amount}
-    expense_by_account = {}    # {account_id: {total: Decimal, lines: list}}
+    expense_by_account = {}  # {account_id: {total: Decimal, lines: list}}
 
     # Track recoverable vs non-recoverable tax
-    recoverable_tax_by_account = {}   # {tax_account_id: amount}
+    recoverable_tax_by_account = {}  # {tax_account_id: amount}
     total_non_recoverable_tax = Decimal("0")
 
     for bill_line in bill.lines.all():
         # Determine if tax is recoverable
         is_recoverable = True  # Default
         if bill_line.tax_code:
-            is_recoverable = getattr(bill_line.tax_code, 'recoverable', True)
+            is_recoverable = getattr(bill_line.tax_code, "recoverable", True)
 
         # Calculate cost including non-recoverable tax
         line_cost = bill_line.net_amount
@@ -407,13 +412,15 @@ def post_purchase_bill(actor: ActorContext, bill_id: int) -> CommandResult:
             # Calculate unit cost for stock receipt
             unit_cost = line_cost / bill_line.quantity if bill_line.quantity else Decimal("0")
 
-            inventory_lines.append({
-                "item": bill_line.item,
-                "warehouse": None,  # Will use default warehouse
-                "qty": bill_line.quantity,
-                "unit_cost": unit_cost,
-                "source_line_id": str(bill_line.public_id),
-            })
+            inventory_lines.append(
+                {
+                    "item": bill_line.item,
+                    "warehouse": None,  # Will use default warehouse
+                    "qty": bill_line.quantity,
+                    "unit_cost": unit_cost,
+                    "source_line_id": str(bill_line.public_id),
+                }
+            )
         else:
             # Non-inventory: use the line's account (expense)
             account_id = bill_line.account_id
@@ -424,36 +431,46 @@ def post_purchase_bill(actor: ActorContext, bill_id: int) -> CommandResult:
 
     # Build journal entry lines for inventory accounts
     for inv_account_id, total_amount in inventory_by_account.items():
-        je_lines.append({
-            "account_id": inv_account_id,
-            "description": f"Inventory on Bill {bill.bill_number}",
-            "debit": total_amount,
-            "credit": Decimal("0"),
-        })
+        je_lines.append(
+            {
+                "account_id": inv_account_id,
+                "description": f"Inventory on Bill {bill.bill_number}",
+                "debit": total_amount,
+                "credit": Decimal("0"),
+            }
+        )
 
     # Build journal entry lines for expense accounts
     for account_id, data in expense_by_account.items():
         # Get first line for description context
         first_line = data["lines"][0]
-        je_lines.append({
-            "account_id": account_id,
-            "description": first_line.description if len(data["lines"]) == 1 else f"Expenses on Bill {bill.bill_number}",
-            "debit": data["total"],
-            "credit": Decimal("0"),
-            "analysis_tags": [
-                {"dimension_public_id": str(dv.dimension.public_id), "value_public_id": str(dv.public_id)}
-                for dv in first_line.dimension_values.all()
-            ] if len(data["lines"]) == 1 else [],
-        })
+        je_lines.append(
+            {
+                "account_id": account_id,
+                "description": first_line.description
+                if len(data["lines"]) == 1
+                else f"Expenses on Bill {bill.bill_number}",
+                "debit": data["total"],
+                "credit": Decimal("0"),
+                "analysis_tags": [
+                    {"dimension_public_id": str(dv.dimension.public_id), "value_public_id": str(dv.public_id)}
+                    for dv in first_line.dimension_values.all()
+                ]
+                if len(data["lines"]) == 1
+                else [],
+            }
+        )
 
     # Debit Input VAT (only recoverable tax)
     for tax_account_id, tax_amount in recoverable_tax_by_account.items():
-        je_lines.append({
-            "account_id": tax_account_id,
-            "description": f"Input VAT on Bill {bill.bill_number}",
-            "debit": tax_amount,
-            "credit": Decimal("0"),
-        })
+        je_lines.append(
+            {
+                "account_id": tax_account_id,
+                "description": f"Input VAT on Bill {bill.bill_number}",
+                "debit": tax_amount,
+                "credit": Decimal("0"),
+            }
+        )
 
     # Create journal entry (with currency if foreign)
     functional_currency = actor.company.functional_currency or actor.company.default_currency
@@ -471,6 +488,7 @@ def post_purchase_bill(actor: ActorContext, bill_id: int) -> CommandResult:
     # Fix any FX rounding imbalance before creating JE
     if is_foreign:
         from accounting.commands import _fix_fx_rounding_dicts
+
         _fix_fx_rounding_dicts(je_lines, actor.company, currency=bill_currency)
 
     je_kwargs = dict(
@@ -534,23 +552,25 @@ def post_purchase_bill(actor: ActorContext, bill_id: int) -> CommandResult:
     # Build event line data
     event_lines = []
     for line in bill.lines.all():
-        event_lines.append(PurchaseBillLineData(
-            line_no=line.line_number,
-            item_public_id=str(line.item.public_id) if line.item else None,
-            description=line.description,
-            description_ar=line.description_ar,
-            quantity=str(line.quantity),
-            unit_price=str(line.unit_price),
-            discount_amount=str(line.discount_amount),
-            tax_code_public_id=str(line.tax_code.public_id) if line.tax_code else None,
-            tax_rate=str(line.tax_rate),
-            gross_amount=str(line.gross_amount),
-            net_amount=str(line.net_amount),
-            tax_amount=str(line.tax_amount),
-            line_total=str(line.line_total),
-            account_public_id=str(line.account.public_id),
-            account_code=line.account.code,
-        ).to_dict())
+        event_lines.append(
+            PurchaseBillLineData(
+                line_no=line.line_number,
+                item_public_id=str(line.item.public_id) if line.item else None,
+                description=line.description,
+                description_ar=line.description_ar,
+                quantity=str(line.quantity),
+                unit_price=str(line.unit_price),
+                discount_amount=str(line.discount_amount),
+                tax_code_public_id=str(line.tax_code.public_id) if line.tax_code else None,
+                tax_rate=str(line.tax_rate),
+                gross_amount=str(line.gross_amount),
+                net_amount=str(line.net_amount),
+                tax_amount=str(line.tax_amount),
+                line_total=str(line.line_total),
+                account_public_id=str(line.account.public_id),
+                account_code=line.account.code,
+            ).to_dict()
+        )
 
     event = emit_event(
         actor=actor,
@@ -578,10 +598,7 @@ def post_purchase_bill(actor: ActorContext, bill_id: int) -> CommandResult:
         ).to_dict(),
     )
 
-    return CommandResult.ok(
-        data={"bill": bill, "journal_entry": journal_entry},
-        event=event
-    )
+    return CommandResult.ok(data={"bill": bill, "journal_entry": journal_entry}, event=event)
 
 
 @transaction.atomic
@@ -596,9 +613,7 @@ def void_purchase_bill(
     require(actor, "purchases.bill.void")
 
     try:
-        bill = PurchaseBill.objects.select_for_update().get(
-            company=actor.company, pk=bill_id
-        )
+        bill = PurchaseBill.objects.select_for_update().get(company=actor.company, pk=bill_id)
     except PurchaseBill.DoesNotExist:
         return CommandResult.fail("Bill not found.")
 
@@ -613,14 +628,16 @@ def void_purchase_bill(
     je_lines = []
 
     for original_line in original_je.lines.all():
-        je_lines.append({
-            "account_id": original_line.account_id,
-            "description": f"Reversal: {original_line.description}",
-            "debit": original_line.credit,  # Swap
-            "credit": original_line.debit,  # Swap
-            "customer_public_id": str(original_line.customer.public_id) if original_line.customer else None,
-            "vendor_public_id": str(original_line.vendor.public_id) if original_line.vendor else None,
-        })
+        je_lines.append(
+            {
+                "account_id": original_line.account_id,
+                "description": f"Reversal: {original_line.description}",
+                "debit": original_line.credit,  # Swap
+                "credit": original_line.debit,  # Swap
+                "customer_public_id": str(original_line.customer.public_id) if original_line.customer else None,
+                "vendor_public_id": str(original_line.vendor.public_id) if original_line.vendor else None,
+            }
+        )
 
     # Create reversal entry
     je_result = create_journal_entry(
@@ -674,15 +691,13 @@ def void_purchase_bill(
         ).to_dict(),
     )
 
-    return CommandResult.ok(
-        data={"bill": bill, "reversing_entry": reversal_je},
-        event=event
-    )
+    return CommandResult.ok(data={"bill": bill, "reversing_entry": reversal_je}, event=event)
 
 
 # =============================================================================
 # Purchase Order Commands
 # =============================================================================
+
 
 @transaction.atomic
 def create_purchase_order(
@@ -820,9 +835,7 @@ def approve_purchase_order(actor: ActorContext, order_id: int) -> CommandResult:
     require(actor, "purchases.order.approve")
 
     try:
-        order = PurchaseOrder.objects.select_for_update().get(
-            company=actor.company, pk=order_id
-        )
+        order = PurchaseOrder.objects.select_for_update().get(company=actor.company, pk=order_id)
     except PurchaseOrder.DoesNotExist:
         return CommandResult.fail("Purchase order not found.")
 
@@ -862,9 +875,7 @@ def cancel_purchase_order(actor: ActorContext, order_id: int, reason: str = "") 
     require(actor, "purchases.order.cancel")
 
     try:
-        order = PurchaseOrder.objects.select_for_update().get(
-            company=actor.company, pk=order_id
-        )
+        order = PurchaseOrder.objects.select_for_update().get(company=actor.company, pk=order_id)
     except PurchaseOrder.DoesNotExist:
         return CommandResult.fail("Purchase order not found.")
 
@@ -902,9 +913,7 @@ def close_purchase_order(actor: ActorContext, order_id: int) -> CommandResult:
     require(actor, "purchases.order.close")
 
     try:
-        order = PurchaseOrder.objects.select_for_update().get(
-            company=actor.company, pk=order_id
-        )
+        order = PurchaseOrder.objects.select_for_update().get(company=actor.company, pk=order_id)
     except PurchaseOrder.DoesNotExist:
         return CommandResult.fail("Purchase order not found.")
 
@@ -939,6 +948,7 @@ def close_purchase_order(actor: ActorContext, order_id: int) -> CommandResult:
 # =============================================================================
 # Goods Receipt Commands
 # =============================================================================
+
 
 @transaction.atomic
 def create_goods_receipt(
@@ -1059,9 +1069,7 @@ def post_goods_receipt(actor: ActorContext, receipt_id: int) -> CommandResult:
     require(actor, "purchases.receipt.post")
 
     try:
-        receipt = GoodsReceipt.objects.select_for_update().get(
-            company=actor.company, pk=receipt_id
-        )
+        receipt = GoodsReceipt.objects.select_for_update().get(company=actor.company, pk=receipt_id)
     except GoodsReceipt.DoesNotExist:
         return CommandResult.fail("Goods receipt not found.")
 
@@ -1094,13 +1102,15 @@ def post_goods_receipt(actor: ActorContext, receipt_id: int) -> CommandResult:
 
             # Collect inventory items for stock receipt
             if gr_line.item and gr_line.item.is_inventory_item:
-                inventory_lines.append({
-                    "item": gr_line.item,
-                    "warehouse": receipt.warehouse,
-                    "qty": gr_line.qty_received,
-                    "unit_cost": gr_line.unit_cost,
-                    "source_line_id": str(gr_line.public_id),
-                })
+                inventory_lines.append(
+                    {
+                        "item": gr_line.item,
+                        "warehouse": receipt.warehouse,
+                        "qty": gr_line.qty_received,
+                        "unit_cost": gr_line.unit_cost,
+                        "source_line_id": str(gr_line.public_id),
+                    }
+                )
 
         # Record stock receipts for inventory items
         if inventory_lines:
@@ -1167,9 +1177,7 @@ def void_goods_receipt(actor: ActorContext, receipt_id: int, reason: str = "") -
     require(actor, "purchases.receipt.void")
 
     try:
-        receipt = GoodsReceipt.objects.select_for_update().get(
-            company=actor.company, pk=receipt_id
-        )
+        receipt = GoodsReceipt.objects.select_for_update().get(company=actor.company, pk=receipt_id)
     except GoodsReceipt.DoesNotExist:
         return CommandResult.fail("Goods receipt not found.")
 
@@ -1192,12 +1200,14 @@ def void_goods_receipt(actor: ActorContext, receipt_id: int, reason: str = "") -
         inventory_lines = []
         for gr_line in receipt.lines.select_related("item"):
             if gr_line.item and gr_line.item.is_inventory_item:
-                inventory_lines.append({
-                    "item": gr_line.item,
-                    "warehouse": receipt.warehouse,
-                    "qty": gr_line.qty_received,
-                    "source_line_id": str(gr_line.public_id),
-                })
+                inventory_lines.append(
+                    {
+                        "item": gr_line.item,
+                        "warehouse": receipt.warehouse,
+                        "qty": gr_line.qty_received,
+                        "source_line_id": str(gr_line.public_id),
+                    }
+                )
 
         if inventory_lines:
             from inventory.commands import record_stock_issue
@@ -1246,6 +1256,7 @@ def void_goods_receipt(actor: ActorContext, receipt_id: int, reason: str = "") -
 # Create Bill from PO
 # =============================================================================
 
+
 @transaction.atomic
 def create_bill_from_po(
     actor: ActorContext,
@@ -1279,10 +1290,7 @@ def create_bill_from_po(
         return CommandResult.fail("Bills can only be created from APPROVED or RECEIVED orders.")
 
     # Find unbilled lines
-    unbilled_lines = [
-        line for line in order.lines.all()
-        if line.qty_unbilled > 0
-    ]
+    unbilled_lines = [line for line in order.lines.all() if line.qty_unbilled > 0]
     if not unbilled_lines:
         return CommandResult.fail("No unbilled quantities remaining on this PO.")
 
@@ -1297,17 +1305,19 @@ def create_bill_from_po(
     # Build lines for create_purchase_bill
     bill_lines = []
     for po_line in unbilled_lines:
-        bill_lines.append({
-            "account_id": po_line.account_id,
-            "item_id": po_line.item_id,
-            "description": po_line.description,
-            "description_ar": po_line.description_ar,
-            "quantity": str(po_line.qty_unbilled),
-            "unit_price": str(po_line.unit_price),
-            "discount_amount": str(po_line.discount_amount),
-            "tax_code_id": po_line.tax_code_id,
-            "po_line_id": po_line.id,
-        })
+        bill_lines.append(
+            {
+                "account_id": po_line.account_id,
+                "item_id": po_line.item_id,
+                "description": po_line.description,
+                "description_ar": po_line.description_ar,
+                "quantity": str(po_line.qty_unbilled),
+                "unit_price": str(po_line.unit_price),
+                "discount_amount": str(po_line.discount_amount),
+                "tax_code_id": po_line.tax_code_id,
+                "po_line_id": po_line.id,
+            }
+        )
 
     # Use existing create_purchase_bill with PO link
     bill_number = vendor_bill_number or f"From {order.order_number}"
@@ -1347,6 +1357,7 @@ def create_bill_from_po(
 # =============================================================================
 # Purchase Credit Note Commands
 # =============================================================================
+
 
 @transaction.atomic
 def create_purchase_credit_note(
@@ -1430,20 +1441,22 @@ def create_purchase_credit_note(
         if discount_amount > gross_amount:
             return CommandResult.fail(f"Line {idx}: Discount cannot exceed gross amount.")
 
-        calc = _calculate_line({
-            "line_number": idx,
-            "account": account,
-            "item": item,
-            "description": line.get("description", ""),
-            "description_ar": line.get("description_ar", ""),
-            "quantity": quantity,
-            "unit_price": unit_price,
-            "discount_amount": discount_amount,
-            "tax_code": tax_code,
-            "tax_rate": tax_rate,
-            "bill_line_id": line.get("bill_line_id"),
-            "dimension_value_ids": line.get("dimension_value_ids", []),
-        })
+        calc = _calculate_line(
+            {
+                "line_number": idx,
+                "account": account,
+                "item": item,
+                "description": line.get("description", ""),
+                "description_ar": line.get("description_ar", ""),
+                "quantity": quantity,
+                "unit_price": unit_price,
+                "discount_amount": discount_amount,
+                "tax_code": tax_code,
+                "tax_rate": tax_rate,
+                "bill_line_id": line.get("bill_line_id"),
+                "dimension_value_ids": line.get("dimension_value_ids", []),
+            }
+        )
         calculated_lines.append(calc)
 
     subtotal = sum(l["gross_amount"] for l in calculated_lines)
@@ -1453,9 +1466,7 @@ def create_purchase_credit_note(
 
     # Credit note total should not exceed bill total
     if total_amount > bill.total_amount:
-        return CommandResult.fail(
-            f"Credit note total ({total_amount}) exceeds bill total ({bill.total_amount})."
-        )
+        return CommandResult.fail(f"Credit note total ({total_amount}) exceeds bill total ({bill.total_amount}).")
 
     seq = _next_company_sequence(actor.company, "purchase_credit_note")
     cn_number = f"PCN-{seq:06d}"
@@ -1484,9 +1495,7 @@ def create_purchase_credit_note(
         for ld in calculated_lines:
             bill_line = None
             if ld.get("bill_line_id"):
-                bill_line = PurchaseBillLine.objects.filter(
-                    bill=bill, pk=ld["bill_line_id"]
-                ).first()
+                bill_line = PurchaseBillLine.objects.filter(bill=bill, pk=ld["bill_line_id"]).first()
 
             line_obj = PurchaseCreditNoteLine.objects.create(
                 credit_note=cn,
@@ -1512,23 +1521,25 @@ def create_purchase_credit_note(
 
     event_lines = []
     for line in cn.lines.all():
-        event_lines.append(PurchaseBillLineData(
-            line_no=line.line_number,
-            item_public_id=str(line.item.public_id) if line.item else None,
-            description=line.description,
-            description_ar=line.description_ar,
-            quantity=str(line.quantity),
-            unit_price=str(line.unit_price),
-            discount_amount=str(line.discount_amount),
-            tax_code_public_id=str(line.tax_code.public_id) if line.tax_code else None,
-            tax_rate=str(line.tax_rate),
-            gross_amount=str(line.gross_amount),
-            net_amount=str(line.net_amount),
-            tax_amount=str(line.tax_amount),
-            line_total=str(line.line_total),
-            account_public_id=str(line.account.public_id),
-            account_code=line.account.code,
-        ).to_dict())
+        event_lines.append(
+            PurchaseBillLineData(
+                line_no=line.line_number,
+                item_public_id=str(line.item.public_id) if line.item else None,
+                description=line.description,
+                description_ar=line.description_ar,
+                quantity=str(line.quantity),
+                unit_price=str(line.unit_price),
+                discount_amount=str(line.discount_amount),
+                tax_code_public_id=str(line.tax_code.public_id) if line.tax_code else None,
+                tax_rate=str(line.tax_rate),
+                gross_amount=str(line.gross_amount),
+                net_amount=str(line.net_amount),
+                tax_amount=str(line.tax_amount),
+                line_total=str(line.line_total),
+                account_public_id=str(line.account.public_id),
+                account_code=line.account.code,
+            ).to_dict()
+        )
 
     event = emit_event(
         actor=actor,
@@ -1573,9 +1584,7 @@ def post_purchase_credit_note(actor: ActorContext, credit_note_id: int) -> Comma
     require(actor, "purchases.credit_note.post")
 
     try:
-        cn = PurchaseCreditNote.objects.select_for_update().get(
-            company=actor.company, pk=credit_note_id
-        )
+        cn = PurchaseCreditNote.objects.select_for_update().get(company=actor.company, pk=credit_note_id)
     except PurchaseCreditNote.DoesNotExist:
         return CommandResult.fail("Purchase credit note not found.")
 
@@ -1589,13 +1598,15 @@ def post_purchase_credit_note(actor: ActorContext, credit_note_id: int) -> Comma
     je_lines = []
 
     # Debit AP Control (reduces payable — opposite of bill posting which credits AP)
-    je_lines.append({
-        "account_id": cn.posting_profile.control_account_id,
-        "description": f"Credit Note {cn.credit_note_number} - {cn.vendor.name}",
-        "debit": cn.total_amount,
-        "credit": Decimal("0"),
-        "vendor_public_id": str(cn.vendor.public_id),
-    })
+    je_lines.append(
+        {
+            "account_id": cn.posting_profile.control_account_id,
+            "description": f"Credit Note {cn.credit_note_number} - {cn.vendor.name}",
+            "debit": cn.total_amount,
+            "credit": Decimal("0"),
+            "vendor_public_id": str(cn.vendor.public_id),
+        }
+    )
 
     # Group credits by account
     expense_by_account = {}
@@ -1604,7 +1615,7 @@ def post_purchase_credit_note(actor: ActorContext, credit_note_id: int) -> Comma
     for cn_line in cn.lines.select_related("tax_code", "account"):
         is_recoverable = True
         if cn_line.tax_code:
-            is_recoverable = getattr(cn_line.tax_code, 'recoverable', True)
+            is_recoverable = getattr(cn_line.tax_code, "recoverable", True)
 
         line_cost = cn_line.net_amount
         if cn_line.tax_amount and not is_recoverable:
@@ -1624,22 +1635,27 @@ def post_purchase_credit_note(actor: ActorContext, credit_note_id: int) -> Comma
     # Credit expense/inventory accounts (reversal of bill debits)
     for account_id, data in expense_by_account.items():
         first_line = data["lines"][0]
-        je_lines.append({
-            "account_id": account_id,
-            "description": first_line.description if len(data["lines"]) == 1
+        je_lines.append(
+            {
+                "account_id": account_id,
+                "description": first_line.description
+                if len(data["lines"]) == 1
                 else f"Credit Note {cn.credit_note_number}",
-            "debit": Decimal("0"),
-            "credit": data["total"],
-        })
+                "debit": Decimal("0"),
+                "credit": data["total"],
+            }
+        )
 
     # Credit Input VAT (reversal of recoverable tax)
     for tax_account_id, tax_amount in recoverable_tax_by_account.items():
-        je_lines.append({
-            "account_id": tax_account_id,
-            "description": f"Input VAT reversal on {cn.credit_note_number}",
-            "debit": Decimal("0"),
-            "credit": tax_amount,
-        })
+        je_lines.append(
+            {
+                "account_id": tax_account_id,
+                "description": f"Input VAT reversal on {cn.credit_note_number}",
+                "debit": Decimal("0"),
+                "credit": tax_amount,
+            }
+        )
 
     # Handle foreign currency
     functional_currency = actor.company.functional_currency or actor.company.default_currency
@@ -1654,6 +1670,7 @@ def post_purchase_credit_note(actor: ActorContext, credit_note_id: int) -> Comma
             jl["currency"] = cn_currency
 
         from accounting.commands import _fix_fx_rounding_dicts
+
         _fix_fx_rounding_dicts(je_lines, actor.company, currency=cn_currency)
 
     je_kwargs = dict(
@@ -1694,23 +1711,25 @@ def post_purchase_credit_note(actor: ActorContext, credit_note_id: int) -> Comma
 
     event_lines = []
     for line in cn.lines.all():
-        event_lines.append(PurchaseBillLineData(
-            line_no=line.line_number,
-            item_public_id=str(line.item.public_id) if line.item else None,
-            description=line.description,
-            description_ar=line.description_ar,
-            quantity=str(line.quantity),
-            unit_price=str(line.unit_price),
-            discount_amount=str(line.discount_amount),
-            tax_code_public_id=str(line.tax_code.public_id) if line.tax_code else None,
-            tax_rate=str(line.tax_rate),
-            gross_amount=str(line.gross_amount),
-            net_amount=str(line.net_amount),
-            tax_amount=str(line.tax_amount),
-            line_total=str(line.line_total),
-            account_public_id=str(line.account.public_id),
-            account_code=line.account.code,
-        ).to_dict())
+        event_lines.append(
+            PurchaseBillLineData(
+                line_no=line.line_number,
+                item_public_id=str(line.item.public_id) if line.item else None,
+                description=line.description,
+                description_ar=line.description_ar,
+                quantity=str(line.quantity),
+                unit_price=str(line.unit_price),
+                discount_amount=str(line.discount_amount),
+                tax_code_public_id=str(line.tax_code.public_id) if line.tax_code else None,
+                tax_rate=str(line.tax_rate),
+                gross_amount=str(line.gross_amount),
+                net_amount=str(line.net_amount),
+                tax_amount=str(line.tax_amount),
+                line_total=str(line.line_total),
+                account_public_id=str(line.account.public_id),
+                account_code=line.account.code,
+            ).to_dict()
+        )
 
     event = emit_event(
         actor=actor,
@@ -1756,9 +1775,7 @@ def void_purchase_credit_note(
     require(actor, "purchases.credit_note.void")
 
     try:
-        cn = PurchaseCreditNote.objects.select_for_update().get(
-            company=actor.company, pk=credit_note_id
-        )
+        cn = PurchaseCreditNote.objects.select_for_update().get(company=actor.company, pk=credit_note_id)
     except PurchaseCreditNote.DoesNotExist:
         return CommandResult.fail("Purchase credit note not found.")
 
@@ -1773,19 +1790,22 @@ def void_purchase_credit_note(
     je_lines = []
 
     for original_line in original_je.lines.all():
-        je_lines.append({
-            "account_id": original_line.account_id,
-            "description": f"Reversal: {original_line.description}",
-            "debit": original_line.credit,
-            "credit": original_line.debit,
-            "vendor_public_id": str(original_line.vendor.public_id) if original_line.vendor else None,
-        })
+        je_lines.append(
+            {
+                "account_id": original_line.account_id,
+                "description": f"Reversal: {original_line.description}",
+                "debit": original_line.credit,
+                "credit": original_line.debit,
+                "vendor_public_id": str(original_line.vendor.public_id) if original_line.vendor else None,
+            }
+        )
 
     je_result = create_journal_entry(
         actor=actor,
         date=timezone.now().date(),
-        memo=f"Void Credit Note {cn.credit_note_number}: {reason}" if reason
-            else f"Void Credit Note {cn.credit_note_number}",
+        memo=f"Void Credit Note {cn.credit_note_number}: {reason}"
+        if reason
+        else f"Void Credit Note {cn.credit_note_number}",
         lines=je_lines,
         kind=JournalEntry.Kind.REVERSAL,
     )

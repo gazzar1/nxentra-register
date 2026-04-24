@@ -28,6 +28,7 @@ from shopify_connector.reconciliation import (
 
 # ── Fixtures ──────────────────────────────────────────────────────
 
+
 @pytest.fixture
 def store(db, company):
     return ShopifyStore.objects.create(
@@ -150,8 +151,8 @@ def payout_with_transactions(db, company, payout, order_1001, order_1002, refund
 
 # ── Unit Tests ────────────────────────────────────────────────────
 
-class TestReconcilePayout:
 
+class TestReconcilePayout:
     def test_no_transactions_returns_unverified(self, company, payout):
         result = reconcile_payout(company, payout)
         assert result.status == "no_transactions"
@@ -170,19 +171,13 @@ class TestReconcilePayout:
 
     def test_charge_matched_to_order(self, company, payout_with_transactions):
         result = reconcile_payout(company, payout_with_transactions)
-        charge_match = next(
-            m for m in result.transaction_matches
-            if m.shopify_transaction_id == 80001
-        )
+        charge_match = next(m for m in result.transaction_matches if m.shopify_transaction_id == 80001)
         assert charge_match.matched is True
         assert "#1001" in charge_match.matched_to
 
     def test_refund_matched_to_refund_record(self, company, payout_with_transactions):
         result = reconcile_payout(company, payout_with_transactions)
-        refund_match = next(
-            m for m in result.transaction_matches
-            if m.shopify_transaction_id == 80003
-        )
+        refund_match = next(m for m in result.transaction_matches if m.shopify_transaction_id == 80003)
         assert refund_match.matched is True
         assert "Refund" in refund_match.matched_to
 
@@ -261,7 +256,6 @@ class TestReconcilePayout:
 
 
 class TestReconciliationSummary:
-
     def test_summary_aggregates_payouts(self, company, payout_with_transactions):
         summary = reconciliation_summary(
             company,
@@ -294,7 +288,6 @@ class TestReconciliationSummary:
 
 
 class TestReconciliationAPI:
-
     def test_payouts_list(self, authenticated_client, company, payout, owner_membership):
         resp = authenticated_client.get("/api/shopify/payouts/")
         assert resp.status_code == 200
@@ -313,7 +306,9 @@ class TestReconciliationAPI:
         assert resp.status_code == 200
         assert resp.data["total_payouts"] == 1
 
-    def test_payout_detail_reconciliation(self, authenticated_client, company, payout_with_transactions, owner_membership):
+    def test_payout_detail_reconciliation(
+        self, authenticated_client, company, payout_with_transactions, owner_membership
+    ):
         resp = authenticated_client.get("/api/shopify/reconciliation/7001/")
         assert resp.status_code == 200
         assert resp.data["status"] == "verified"
@@ -323,8 +318,12 @@ class TestReconciliationAPI:
         resp = authenticated_client.get("/api/shopify/reconciliation/99999/")
         assert resp.status_code == 404
 
-    def test_transactions_include_variance(self, authenticated_client, company, payout_with_transactions, owner_membership):
-        resp = authenticated_client.get(f"/api/shopify/payouts/{payout_with_transactions.shopify_payout_id}/transactions/")
+    def test_transactions_include_variance(
+        self, authenticated_client, company, payout_with_transactions, owner_membership
+    ):
+        resp = authenticated_client.get(
+            f"/api/shopify/payouts/{payout_with_transactions.shopify_payout_id}/transactions/"
+        )
         assert resp.status_code == 200
         for txn in resp.data["transactions"]:
             assert "variance" in txn
@@ -376,38 +375,50 @@ class TestMultipleRefunds:
 
         # Two refunds on same order: $10 and $15
         ShopifyRefund.objects.create(
-            company=company, order=order_1001,
-            shopify_refund_id=5010, amount=Decimal("10.00"),
-            currency="USD", shopify_created_at=datetime(2026, 3, 3, tzinfo=UTC),
+            company=company,
+            order=order_1001,
+            shopify_refund_id=5010,
+            amount=Decimal("10.00"),
+            currency="USD",
+            shopify_created_at=datetime(2026, 3, 3, tzinfo=UTC),
         )
         ShopifyRefund.objects.create(
-            company=company, order=order_1001,
-            shopify_refund_id=5011, amount=Decimal("15.00"),
-            currency="USD", shopify_created_at=datetime(2026, 3, 4, tzinfo=UTC),
+            company=company,
+            order=order_1001,
+            shopify_refund_id=5011,
+            amount=Decimal("15.00"),
+            currency="USD",
+            shopify_created_at=datetime(2026, 3, 4, tzinfo=UTC),
         )
 
         payout = ShopifyPayout.objects.create(
-            company=company, store=store,
+            company=company,
+            store=store,
             shopify_payout_id=7300,
-            gross_amount=Decimal("75.00"), fees=Decimal("2.00"),
-            net_amount=Decimal("73.00"), currency="USD",
-            shopify_status="paid", payout_date=date(2026, 3, 10),
+            gross_amount=Decimal("75.00"),
+            fees=Decimal("2.00"),
+            net_amount=Decimal("73.00"),
+            currency="USD",
+            shopify_status="paid",
+            payout_date=date(2026, 3, 10),
         )
         # Refund txn for $15 — should match the $15 refund, not the $10 one
         txn = ShopifyPayoutTransaction.objects.create(
-            company=company, payout=payout,
+            company=company,
+            payout=payout,
             shopify_transaction_id=96001,
             transaction_type=ShopifyPayoutTransaction.TransactionType.REFUND,
-            amount=Decimal("-15.00"), fee=Decimal("0"), net=Decimal("-15.00"),
-            currency="USD", source_order_id=9001, source_type="refund",
+            amount=Decimal("-15.00"),
+            fee=Decimal("0"),
+            net=Decimal("-15.00"),
+            currency="USD",
+            source_order_id=9001,
+            source_type="refund",
             processed_at=datetime(2026, 3, 10, tzinfo=UTC),
         )
 
         result = reconcile_payout(company, payout)
-        refund_match = next(
-            m for m in result.transaction_matches
-            if m.shopify_transaction_id == 96001
-        )
+        refund_match = next(m for m in result.transaction_matches if m.shopify_transaction_id == 96001)
         assert refund_match.matched is True
         assert refund_match.variance == Decimal("0")
         assert "5011" in refund_match.matched_to

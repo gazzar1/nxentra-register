@@ -51,9 +51,7 @@ class Command(BaseCommand):
             return
 
         dims = sync_platform_dimensions(company)
-        self.stdout.write(self.style.SUCCESS(
-            f"  Dimensions: {', '.join(dims.keys())}"
-        ))
+        self.stdout.write(self.style.SUCCESS(f"  Dimensions: {', '.join(dims.keys())}"))
 
         # Sync store values from connected Shopify stores
         self._sync_shopify_stores(company)
@@ -61,6 +59,7 @@ class Command(BaseCommand):
     def _sync_shopify_stores(self, company):
         try:
             from shopify_connector.models import ShopifyStore
+
             stores = ShopifyStore.objects.filter(company=company).exclude(
                 status=ShopifyStore.Status.DISCONNECTED,
             )
@@ -77,11 +76,13 @@ class Command(BaseCommand):
 
     def _preview(self, company):
         from platform_connectors.registry import connector_registry
+
         for connector in connector_registry.all():
             self.stdout.write(f"  Would ensure platform value: {connector.platform_slug}")
 
         try:
             from shopify_connector.models import ShopifyStore
+
             stores = ShopifyStore.objects.filter(company=company).exclude(
                 status=ShopifyStore.Status.DISCONNECTED,
             )

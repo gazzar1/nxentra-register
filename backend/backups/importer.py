@@ -10,6 +10,7 @@ Usage:
     from backups.importer import restore_company
     result = restore_company(company, zip_file)
 """
+
 import io
 import json
 import logging
@@ -30,6 +31,7 @@ SUPPORTED_VERSIONS = {"1.0"}
 
 class RestoreError(Exception):
     """Raised when restore encounters an unrecoverable problem."""
+
     pass
 
 
@@ -69,10 +71,7 @@ def restore_company(company, zip_file):
 
     version = manifest.get("format_version")
     if version not in SUPPORTED_VERSIONS:
-        raise RestoreError(
-            f"Unsupported backup version '{version}'. "
-            f"Supported: {', '.join(SUPPORTED_VERSIONS)}"
-        )
+        raise RestoreError(f"Unsupported backup version '{version}'. Supported: {', '.join(SUPPORTED_VERSIONS)}")
 
     registry = get_export_registry()
     # Build set of model classes in registry for FK target detection
@@ -114,7 +113,12 @@ def restore_company(company, zip_file):
 
                     excluded = EXCLUDED_FIELDS.get(label, [])
                     count, model_deferred = _import_model_records(
-                        model_cls, company, records, pk_map, label, excluded,
+                        model_cls,
+                        company,
+                        records,
+                        pk_map,
+                        label,
+                        excluded,
                         registry_models,
                     )
                     deferred_fks.extend(model_deferred)
@@ -183,14 +187,13 @@ def _clear_company_data(company, registry):
 def _get_company_column(model_cls):
     """Get the database column name for the company FK."""
     for field in model_cls._meta.get_fields():
-        if isinstance(field, (models.ForeignKey, models.OneToOneField)):
+        if isinstance(field, models.ForeignKey | models.OneToOneField):
             if field.related_model and field.related_model.__name__ == "Company":
                 return field.column
     return None
 
 
-def _import_model_records(model_cls, company, records, pk_map, label, excluded_fields,
-                          registry_models):
+def _import_model_records(model_cls, company, records, pk_map, label, excluded_fields, registry_models):
     """
     Import a list of serialized records into the database.
 
@@ -233,7 +236,7 @@ def _import_model_records(model_cls, company, records, pk_map, label, excluded_f
             value = record[fname]
 
             # Company FK — point to target company
-            if isinstance(field, (models.ForeignKey, models.OneToOneField)):
+            if isinstance(field, models.ForeignKey | models.OneToOneField):
                 if field.related_model and field.related_model.__name__ == "Company":
                     field_values[field.attname] = company.id
                     continue
@@ -408,8 +411,9 @@ def _coerce_field_value(field, value):
         return value
     elif isinstance(field, models.BooleanField):
         return bool(value)
-    elif isinstance(field, (models.IntegerField, models.BigIntegerField,
-                            models.PositiveIntegerField, models.SmallIntegerField)):
+    elif isinstance(
+        field, models.IntegerField | models.BigIntegerField | models.PositiveIntegerField | models.SmallIntegerField
+    ):
         return int(value) if value is not None else None
 
     return value
@@ -421,13 +425,13 @@ def _update_company_settings(company, company_data):
         return
 
     update_fields = []
-    for attr in ("name", "name_ar", "default_currency", "functional_currency",
-                 "fiscal_year_start_month"):
+    for attr in ("name", "name_ar", "default_currency", "functional_currency", "fiscal_year_start_month"):
         if company_data.get(attr):
             setattr(company, attr, company_data[attr])
             update_fields.append(attr)
 
     if update_fields:
         from projections.write_barrier import bootstrap_writes_allowed
+
         with bootstrap_writes_allowed():
             company.save(update_fields=update_fields)

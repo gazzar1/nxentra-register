@@ -49,9 +49,7 @@ class ReadOnlyModelAdmin(admin.ModelAdmin):
         extra_context["show_save"] = False
         extra_context["show_save_and_continue"] = False
         extra_context["show_save_and_add_another"] = False
-        extra_context["readonly_message"] = (
-            "This is a read model. Use the API/command layer to make changes."
-        )
+        extra_context["readonly_message"] = "This is a read model. Use the API/command layer to make changes."
         return super().changeform_view(request, object_id, form_url, extra_context)
 
 
@@ -72,8 +70,10 @@ class ReadOnlyInline(admin.TabularInline):
 # Inline Admin Classes
 # =============================================================================
 
+
 class JournalLineInline(ReadOnlyInline):
     """Inline display of journal lines within journal entry (read-only)."""
+
     model = JournalLine
     extra = 0
     readonly_fields = ["line_no", "account", "description", "debit", "credit"]
@@ -82,6 +82,7 @@ class JournalLineInline(ReadOnlyInline):
 
 class AnalysisDimensionValueInline(ReadOnlyInline):
     """Inline display of dimension values within dimension (read-only)."""
+
     model = AnalysisDimensionValue
     extra = 0
     readonly_fields = ["code", "name", "name_ar", "parent", "is_active"]
@@ -90,6 +91,7 @@ class AnalysisDimensionValueInline(ReadOnlyInline):
 
 class AccountAnalysisDefaultInline(ReadOnlyInline):
     """Inline display of analysis defaults within account (read-only)."""
+
     model = AccountAnalysisDefault
     extra = 0
     readonly_fields = ["dimension", "default_value"]
@@ -98,6 +100,7 @@ class AccountAnalysisDefaultInline(ReadOnlyInline):
 
 class JournalLineAnalysisInline(ReadOnlyInline):
     """Inline display of analysis tags on journal lines (read-only)."""
+
     model = JournalLineAnalysis
     extra = 0
     readonly_fields = ["dimension", "dimension_value"]
@@ -108,13 +111,20 @@ class JournalLineAnalysisInline(ReadOnlyInline):
 # Account Admin
 # =============================================================================
 
+
 @admin.register(Account)
 class AccountAdmin(ReadOnlyModelAdmin):
     """Admin interface for Chart of Accounts (read-only)."""
 
     list_display = [
-        "code", "name", "account_type", "normal_balance",
-        "status", "is_header", "parent", "company",
+        "code",
+        "name",
+        "account_type",
+        "normal_balance",
+        "status",
+        "is_header",
+        "parent",
+        "company",
     ]
     list_filter = ["company", "account_type", "status", "is_header"]
     search_fields = ["code", "name", "name_ar", "description"]
@@ -122,32 +132,61 @@ class AccountAdmin(ReadOnlyModelAdmin):
     ordering = ["company", "code"]
 
     fieldsets = (
-        (None, {
-            "fields": ("company", "code", "name", "name_ar"),
-        }),
-        ("Classification", {
-            "fields": ("account_type", "normal_balance", "status", "is_header"),
-        }),
-        ("Hierarchy", {
-            "fields": ("parent",),
-        }),
-        ("Description", {
-            "fields": ("description", "description_ar"),
-        }),
-        ("Memo Account Settings", {
-            "fields": ("unit_of_measure",),
-            "classes": ("collapse",),
-        }),
-        ("Timestamps", {
-            "fields": ("created_at", "updated_at"),
-            "classes": ("collapse",),
-        }),
+        (
+            None,
+            {
+                "fields": ("company", "code", "name", "name_ar"),
+            },
+        ),
+        (
+            "Classification",
+            {
+                "fields": ("account_type", "normal_balance", "status", "is_header"),
+            },
+        ),
+        (
+            "Hierarchy",
+            {
+                "fields": ("parent",),
+            },
+        ),
+        (
+            "Description",
+            {
+                "fields": ("description", "description_ar"),
+            },
+        ),
+        (
+            "Memo Account Settings",
+            {
+                "fields": ("unit_of_measure",),
+                "classes": ("collapse",),
+            },
+        ),
+        (
+            "Timestamps",
+            {
+                "fields": ("created_at", "updated_at"),
+                "classes": ("collapse",),
+            },
+        ),
     )
 
     readonly_fields = [
-        "company", "code", "name", "name_ar", "account_type", "normal_balance",
-        "status", "is_header", "parent", "description", "description_ar",
-        "unit_of_measure", "created_at", "updated_at",
+        "company",
+        "code",
+        "name",
+        "name_ar",
+        "account_type",
+        "normal_balance",
+        "status",
+        "is_header",
+        "parent",
+        "description",
+        "description_ar",
+        "unit_of_measure",
+        "created_at",
+        "updated_at",
     ]
     inlines = [AccountAnalysisDefaultInline]
 
@@ -159,13 +198,21 @@ class AccountAdmin(ReadOnlyModelAdmin):
 # Journal Entry Admin
 # =============================================================================
 
+
 @admin.register(JournalEntry)
 class JournalEntryAdmin(ReadOnlyModelAdmin):
     """Admin interface for Journal Entries (read-only)."""
 
     list_display = [
-        "id", "entry_number", "date", "memo_truncated", "kind",
-        "status_colored", "total_debit", "total_credit", "company",
+        "id",
+        "entry_number",
+        "date",
+        "memo_truncated",
+        "kind",
+        "status_colored",
+        "total_debit",
+        "total_credit",
+        "company",
     ]
     list_filter = ["company", "status", "kind", "date"]
     search_fields = ["entry_number", "memo", "memo_ar"]
@@ -174,30 +221,59 @@ class JournalEntryAdmin(ReadOnlyModelAdmin):
     ordering = ["-date", "-id"]
 
     fieldsets = (
-        (None, {
-            "fields": ("company", "entry_number", "date", "period"),
-        }),
-        ("Content", {
-            "fields": ("memo", "memo_ar", "kind"),
-        }),
-        ("Status & Workflow", {
-            "fields": ("status", "posted_at", "posted_by", "reversed_at", "reversed_by"),
-        }),
-        ("Source", {
-            "fields": ("source_module", "source_document", "reverses_entry"),
-            "classes": ("collapse",),
-        }),
-        ("Audit", {
-            "fields": ("created_at", "created_by", "updated_at"),
-            "classes": ("collapse",),
-        }),
+        (
+            None,
+            {
+                "fields": ("company", "entry_number", "date", "period"),
+            },
+        ),
+        (
+            "Content",
+            {
+                "fields": ("memo", "memo_ar", "kind"),
+            },
+        ),
+        (
+            "Status & Workflow",
+            {
+                "fields": ("status", "posted_at", "posted_by", "reversed_at", "reversed_by"),
+            },
+        ),
+        (
+            "Source",
+            {
+                "fields": ("source_module", "source_document", "reverses_entry"),
+                "classes": ("collapse",),
+            },
+        ),
+        (
+            "Audit",
+            {
+                "fields": ("created_at", "created_by", "updated_at"),
+                "classes": ("collapse",),
+            },
+        ),
     )
 
     readonly_fields = [
-        "company", "entry_number", "date", "period", "memo", "memo_ar", "kind",
-        "status", "posted_at", "posted_by", "reversed_at", "reversed_by",
-        "source_module", "source_document", "reverses_entry",
-        "created_at", "created_by", "updated_at",
+        "company",
+        "entry_number",
+        "date",
+        "period",
+        "memo",
+        "memo_ar",
+        "kind",
+        "status",
+        "posted_at",
+        "posted_by",
+        "reversed_at",
+        "reversed_by",
+        "source_module",
+        "source_document",
+        "reverses_entry",
+        "created_at",
+        "created_by",
+        "updated_at",
     ]
     inlines = [JournalLineInline]
 
@@ -206,6 +282,7 @@ class JournalEntryAdmin(ReadOnlyModelAdmin):
         if len(obj.memo) > 50:
             return f"{obj.memo[:50]}..."
         return obj.memo
+
     memo_truncated.short_description = "Memo"
 
     def status_colored(self, obj):
@@ -222,6 +299,7 @@ class JournalEntryAdmin(ReadOnlyModelAdmin):
             color,
             obj.get_status_display(),
         )
+
     status_colored.short_description = "Status"
     status_colored.admin_order_field = "status"
 
@@ -231,8 +309,13 @@ class JournalLineAdmin(ReadOnlyModelAdmin):
     """Admin interface for Journal Lines (read-only)."""
 
     list_display = [
-        "entry", "line_no", "account", "description_truncated",
-        "debit", "credit", "entry_status",
+        "entry",
+        "line_no",
+        "account",
+        "description_truncated",
+        "debit",
+        "credit",
+        "entry_status",
     ]
     list_filter = ["entry__status", "entry__company", "account__account_type"]
     search_fields = ["description", "account__code", "account__name"]
@@ -246,10 +329,12 @@ class JournalLineAdmin(ReadOnlyModelAdmin):
         if len(obj.description) > 40:
             return f"{obj.description[:40]}..."
         return obj.description
+
     description_truncated.short_description = "Description"
 
     def entry_status(self, obj):
         return obj.entry.status
+
     entry_status.short_description = "Entry Status"
     entry_status.admin_order_field = "entry__status"
 
@@ -258,13 +343,19 @@ class JournalLineAdmin(ReadOnlyModelAdmin):
 # Analysis Dimension Admin
 # =============================================================================
 
+
 @admin.register(AnalysisDimension)
 class AnalysisDimensionAdmin(ReadOnlyModelAdmin):
     """Admin interface for Analysis Dimensions (read-only)."""
 
     list_display = [
-        "code", "name", "is_required_on_posting", "is_active",
-        "value_count", "display_order", "company",
+        "code",
+        "name",
+        "is_required_on_posting",
+        "is_active",
+        "value_count",
+        "display_order",
+        "company",
     ]
     list_filter = ["company", "is_required_on_posting", "is_active"]
     search_fields = ["code", "name", "name_ar"]
@@ -272,30 +363,52 @@ class AnalysisDimensionAdmin(ReadOnlyModelAdmin):
     ordering = ["company", "display_order", "code"]
 
     fieldsets = (
-        (None, {
-            "fields": ("company", "code", "name", "name_ar"),
-        }),
-        ("Description", {
-            "fields": ("description", "description_ar"),
-        }),
-        ("Configuration", {
-            "fields": ("is_required_on_posting", "applies_to_account_types", "display_order", "is_active"),
-        }),
-        ("Timestamps", {
-            "fields": ("created_at", "updated_at"),
-            "classes": ("collapse",),
-        }),
+        (
+            None,
+            {
+                "fields": ("company", "code", "name", "name_ar"),
+            },
+        ),
+        (
+            "Description",
+            {
+                "fields": ("description", "description_ar"),
+            },
+        ),
+        (
+            "Configuration",
+            {
+                "fields": ("is_required_on_posting", "applies_to_account_types", "display_order", "is_active"),
+            },
+        ),
+        (
+            "Timestamps",
+            {
+                "fields": ("created_at", "updated_at"),
+                "classes": ("collapse",),
+            },
+        ),
     )
 
     readonly_fields = [
-        "company", "code", "name", "name_ar", "description", "description_ar",
-        "is_required_on_posting", "applies_to_account_types", "display_order",
-        "is_active", "created_at", "updated_at",
+        "company",
+        "code",
+        "name",
+        "name_ar",
+        "description",
+        "description_ar",
+        "is_required_on_posting",
+        "applies_to_account_types",
+        "display_order",
+        "is_active",
+        "created_at",
+        "updated_at",
     ]
     inlines = [AnalysisDimensionValueInline]
 
     def value_count(self, obj):
         return obj.values.count()
+
     value_count.short_description = "Values"
 
 
@@ -304,7 +417,12 @@ class AnalysisDimensionValueAdmin(ReadOnlyModelAdmin):
     """Admin interface for Dimension Values (read-only)."""
 
     list_display = [
-        "code", "name", "dimension", "parent", "is_active", "full_path",
+        "code",
+        "name",
+        "dimension",
+        "parent",
+        "is_active",
+        "full_path",
     ]
     list_filter = ["dimension__company", "dimension", "is_active"]
     search_fields = ["code", "name", "name_ar"]
@@ -312,28 +430,50 @@ class AnalysisDimensionValueAdmin(ReadOnlyModelAdmin):
     ordering = ["dimension", "code"]
 
     fieldsets = (
-        (None, {
-            "fields": ("dimension", "code", "name", "name_ar"),
-        }),
-        ("Hierarchy", {
-            "fields": ("parent",),
-        }),
-        ("Description", {
-            "fields": ("description", "description_ar"),
-        }),
-        ("Status", {
-            "fields": ("is_active",),
-        }),
-        ("Timestamps", {
-            "fields": ("created_at", "updated_at"),
-            "classes": ("collapse",),
-        }),
+        (
+            None,
+            {
+                "fields": ("dimension", "code", "name", "name_ar"),
+            },
+        ),
+        (
+            "Hierarchy",
+            {
+                "fields": ("parent",),
+            },
+        ),
+        (
+            "Description",
+            {
+                "fields": ("description", "description_ar"),
+            },
+        ),
+        (
+            "Status",
+            {
+                "fields": ("is_active",),
+            },
+        ),
+        (
+            "Timestamps",
+            {
+                "fields": ("created_at", "updated_at"),
+                "classes": ("collapse",),
+            },
+        ),
     )
 
     readonly_fields = [
-        "dimension", "code", "name", "name_ar", "parent",
-        "description", "description_ar", "is_active",
-        "created_at", "updated_at",
+        "dimension",
+        "code",
+        "name",
+        "name_ar",
+        "parent",
+        "description",
+        "description_ar",
+        "is_active",
+        "created_at",
+        "updated_at",
     ]
 
 
@@ -342,7 +482,9 @@ class JournalLineAnalysisAdmin(ReadOnlyModelAdmin):
     """Admin interface for Journal Line Analysis (read-only)."""
 
     list_display = [
-        "journal_line", "dimension", "dimension_value",
+        "journal_line",
+        "dimension",
+        "dimension_value",
     ]
     list_filter = ["dimension"]
     list_select_related = ["journal_line", "dimension", "dimension_value"]
@@ -354,7 +496,9 @@ class AccountAnalysisDefaultAdmin(ReadOnlyModelAdmin):
     """Admin interface for Account Analysis Defaults (read-only)."""
 
     list_display = [
-        "account", "dimension", "default_value",
+        "account",
+        "dimension",
+        "default_value",
     ]
     list_filter = ["dimension", "account__company"]
     list_select_related = ["account", "dimension", "default_value"]

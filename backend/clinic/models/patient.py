@@ -34,7 +34,9 @@ class Patient(ProjectionWriteGuard):
         INACTIVE = "inactive", "Inactive"
 
     company = models.ForeignKey(
-        Company, on_delete=models.CASCADE, related_name="clinic_patients",
+        Company,
+        on_delete=models.CASCADE,
+        related_name="clinic_patients",
     )
     public_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     code = models.CharField(max_length=20)
@@ -87,7 +89,11 @@ class PatientDocument(ProjectionWriteGuard):
     public_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name="documents")
     visit = models.ForeignKey(
-        "clinic.Visit", on_delete=models.SET_NULL, null=True, blank=True, related_name="documents",
+        "clinic.Visit",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="documents",
     )
     document_type = models.CharField(max_length=20, choices=DocumentType.choices)
     title = models.CharField(max_length=255)
@@ -96,7 +102,10 @@ class PatientDocument(ProjectionWriteGuard):
     file_size = models.PositiveIntegerField(help_text="File size in bytes.")
     mime_type = models.CharField(max_length=100, blank=True, default="")
     uploaded_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="+",
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="+",
     )
     notes = models.TextField(blank=True, default="")
     uploaded_at = models.DateTimeField(auto_now_add=True)

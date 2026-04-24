@@ -29,31 +29,25 @@ urlpatterns = [
     # Event listing and detail
     path("", EventListView.as_view(), name="event-list"),
     path("<uuid:id>/", EventDetailView.as_view(), name="event-detail"),
-
     # Causation chain
     path("<uuid:event_id>/chain/", EventCausationChainView.as_view(), name="event-chain"),
-
     # Aggregate history
     path(
         "aggregate/<str:aggregate_type>/<str:aggregate_id>/",
         AggregateEventHistoryView.as_view(),
         name="aggregate-history",
     ),
-
     # Journal -> Events mapping
     path(
         "journal/<uuid:journal_public_id>/",
         JournalEventMappingView.as_view(),
         name="journal-events",
     ),
-
     # Integrity verification
     path("integrity-check/", IntegrityCheckView.as_view(), name="integrity-check"),
     path("integrity-summary/", IntegritySummaryView.as_view(), name="integrity-summary"),
-
     # Projection bookmarks
     path("bookmarks/", EventBookmarkListView.as_view(), name="bookmark-list"),
-
     # External event ingestion
     path("ingest/", EventIngestView.as_view(), name="event-ingest"),
 ]

@@ -32,6 +32,7 @@ from bank_connector.models import (
 # Fixtures
 # =============================================================================
 
+
 @pytest.fixture
 def bank_account(db, company):
     return BankAccount.objects.create(
@@ -86,6 +87,7 @@ def fresh_deposit(db, company, bank_account, bank_statement):
 # Test Exception Creation & Deduplication
 # =============================================================================
 
+
 class TestExceptionCreation:
     def test_create_exception(self, db, company):
         exc = _create_exception(
@@ -127,11 +129,14 @@ class TestExceptionCreation:
             reference_id=42,
         )
         assert exc1.id == exc2.id
-        assert ReconciliationException.objects.filter(
-            company=company,
-            reference_type="bank_transaction",
-            reference_id=42,
-        ).count() == 1
+        assert (
+            ReconciliationException.objects.filter(
+                company=company,
+                reference_type="bank_transaction",
+                reference_id=42,
+            ).count()
+            == 1
+        )
 
     def test_different_types_not_deduplicated(self, db, company):
         """Different exception types for same ref should create separate records."""
@@ -184,6 +189,7 @@ class TestExceptionCreation:
 # =============================================================================
 # Test Detection Logic
 # =============================================================================
+
 
 class TestDetection:
     def test_detect_stale_unmatched(self, db, company, unmatched_deposit, fresh_deposit):
@@ -244,6 +250,7 @@ class TestDetection:
 # Test Auto-Resolution
 # =============================================================================
 
+
 class TestAutoResolve:
     def test_auto_resolve_matched_bank_tx(self, db, company, unmatched_deposit):
         """When a bank tx is matched, its exception should auto-resolve."""
@@ -276,6 +283,7 @@ class TestAutoResolve:
 # Test Company Isolation (RLS)
 # =============================================================================
 
+
 class TestCompanyIsolation:
     def test_exceptions_scoped_to_company(self, db, company, second_company):
         """Exceptions for one company should not appear for another."""
@@ -303,8 +311,7 @@ class TestCompanyIsolation:
         assert c1 == 1
         assert c2 == 1
 
-    def test_scan_all_scoped(self, db, company, second_company,
-                              bank_account, bank_statement, unmatched_deposit):
+    def test_scan_all_scoped(self, db, company, second_company, bank_account, bank_statement, unmatched_deposit):
         """scan_all should only create exceptions for the target company."""
         result = scan_all(company)
         assert result["created"] >= 1
@@ -317,6 +324,7 @@ class TestCompanyIsolation:
 # =============================================================================
 # Test Status Transitions
 # =============================================================================
+
 
 class TestStatusTransitions:
     def test_resolve_sets_fields(self, db, company):

@@ -5,6 +5,7 @@ These endpoints are for infrastructure monitoring and should be:
 - Excluded from authentication middleware
 - Protected at network level (internal only) in production
 """
+
 from django.urls import path
 
 from ops.health import FullHealthView, LivenessView, ReadinessView

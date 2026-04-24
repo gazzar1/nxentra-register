@@ -58,38 +58,48 @@ def _check_required_fields(row: ScratchpadRow) -> list[dict[str, str]]:
     errors = []
 
     if not row.transaction_date:
-        errors.append({
-            "field": "transaction_date",
-            "code": "REQUIRED",
-            "message": "Transaction date is required.",
-        })
+        errors.append(
+            {
+                "field": "transaction_date",
+                "code": "REQUIRED",
+                "message": "Transaction date is required.",
+            }
+        )
 
     if row.amount is None:
-        errors.append({
-            "field": "amount",
-            "code": "REQUIRED",
-            "message": "Amount is required.",
-        })
+        errors.append(
+            {
+                "field": "amount",
+                "code": "REQUIRED",
+                "message": "Amount is required.",
+            }
+        )
     elif row.amount <= Decimal("0"):
-        errors.append({
-            "field": "amount",
-            "code": "POSITIVE_REQUIRED",
-            "message": "Amount must be greater than zero.",
-        })
+        errors.append(
+            {
+                "field": "amount",
+                "code": "POSITIVE_REQUIRED",
+                "message": "Amount must be greater than zero.",
+            }
+        )
 
     if not row.debit_account_id:
-        errors.append({
-            "field": "debit_account",
-            "code": "REQUIRED",
-            "message": "Debit account is required.",
-        })
+        errors.append(
+            {
+                "field": "debit_account",
+                "code": "REQUIRED",
+                "message": "Debit account is required.",
+            }
+        )
 
     if not row.credit_account_id:
-        errors.append({
-            "field": "credit_account",
-            "code": "REQUIRED",
-            "message": "Credit account is required.",
-        })
+        errors.append(
+            {
+                "field": "credit_account",
+                "code": "REQUIRED",
+                "message": "Credit account is required.",
+            }
+        )
 
     return errors
 
@@ -100,19 +110,23 @@ def _check_account_postability(row: ScratchpadRow) -> list[dict[str, str]]:
 
     if row.debit_account:
         if not row.debit_account.is_postable:
-            errors.append({
-                "field": "debit_account",
-                "code": "NOT_POSTABLE",
-                "message": f"Account {row.debit_account.code} cannot receive postings (header or inactive).",
-            })
+            errors.append(
+                {
+                    "field": "debit_account",
+                    "code": "NOT_POSTABLE",
+                    "message": f"Account {row.debit_account.code} cannot receive postings (header or inactive).",
+                }
+            )
 
     if row.credit_account:
         if not row.credit_account.is_postable:
-            errors.append({
-                "field": "credit_account",
-                "code": "NOT_POSTABLE",
-                "message": f"Account {row.credit_account.code} cannot receive postings (header or inactive).",
-            })
+            errors.append(
+                {
+                    "field": "credit_account",
+                    "code": "NOT_POSTABLE",
+                    "message": f"Account {row.credit_account.code} cannot receive postings (header or inactive).",
+                }
+            )
 
     return errors
 
@@ -128,22 +142,26 @@ def _check_dimension_rules(row: ScratchpadRow, company: Company) -> list[dict[st
     row_dimension_ids = {d.dimension_id for d in row_dims}
 
     if row.debit_account:
-        errors.extend(check_account_dimension_rules(
-            account=row.debit_account,
-            dimension_ids=row_dimension_ids,
-            dimension_entries=row_dims,
-            side="debit",
-            company=company,
-        ))
+        errors.extend(
+            check_account_dimension_rules(
+                account=row.debit_account,
+                dimension_ids=row_dimension_ids,
+                dimension_entries=row_dims,
+                side="debit",
+                company=company,
+            )
+        )
 
     if row.credit_account:
-        errors.extend(check_account_dimension_rules(
-            account=row.credit_account,
-            dimension_ids=row_dimension_ids,
-            dimension_entries=row_dims,
-            side="credit",
-            company=company,
-        ))
+        errors.extend(
+            check_account_dimension_rules(
+                account=row.credit_account,
+                dimension_ids=row_dimension_ids,
+                dimension_entries=row_dims,
+                side="credit",
+                company=company,
+            )
+        )
 
     return errors
 
@@ -163,16 +181,8 @@ def validate_group_balance(rows: list[ScratchpadRow]) -> dict[str, Any]:
             "errors": [...]
         }
     """
-    total_debit = sum(
-        row.amount or Decimal("0")
-        for row in rows
-        if row.debit_account_id
-    )
-    total_credit = sum(
-        row.amount or Decimal("0")
-        for row in rows
-        if row.credit_account_id
-    )
+    total_debit = sum(row.amount or Decimal("0") for row in rows if row.debit_account_id)
+    total_credit = sum(row.amount or Decimal("0") for row in rows if row.credit_account_id)
 
     # In the simple model, debit and credit are always equal per row
     # so total_debit should equal total_credit
@@ -180,11 +190,13 @@ def validate_group_balance(rows: list[ScratchpadRow]) -> dict[str, Any]:
 
     errors = []
     if not is_balanced:
-        errors.append({
-            "field": "group_balance",
-            "code": "UNBALANCED",
-            "message": f"Group is unbalanced. Total debit: {total_debit}, Total credit: {total_credit}",
-        })
+        errors.append(
+            {
+                "field": "group_balance",
+                "code": "UNBALANCED",
+                "message": f"Group is unbalanced. Total debit: {total_debit}, Total credit: {total_credit}",
+            }
+        )
 
     return {
         "is_balanced": is_balanced,

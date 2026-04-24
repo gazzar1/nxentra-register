@@ -67,14 +67,11 @@ class Command(BaseCommand):
 
     def _backfill_company(self, company, dry_run=False):
         """Assign entry numbers to posted entries that don't have one."""
-        entries = (
-            JournalEntry.objects.filter(
-                company=company,
-                entry_number="",
-                status=JournalEntry.Status.POSTED,
-            )
-            .order_by("date", "id")
-        )
+        entries = JournalEntry.objects.filter(
+            company=company,
+            entry_number="",
+            status=JournalEntry.Status.POSTED,
+        ).order_by("date", "id")
 
         count = entries.count()
         if count == 0:

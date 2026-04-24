@@ -21,6 +21,7 @@ Output format:
 For migration verification, the export includes a SHA-256 hash of the
 event stream that can be compared after import.
 """
+
 import hashlib
 import json
 from datetime import datetime
@@ -56,9 +57,7 @@ class Command(BaseCommand):
         group.add_argument("--tenant-id", type=int, help="Company ID")
         group.add_argument("--tenant-slug", type=str, help="Company slug")
 
-        parser.add_argument(
-            "--out", type=str, required=True, help="Output file path"
-        )
+        parser.add_argument("--out", type=str, required=True, help="Output file path")
         parser.add_argument(
             "--include-payloads",
             action="store_true",
@@ -92,9 +91,7 @@ class Command(BaseCommand):
                 with rls_bypass():
                     company = Company.objects.get(slug=options["tenant_slug"])
             except Company.DoesNotExist:
-                raise CommandError(
-                    f"Company with slug '{options['tenant_slug']}' not found"
-                )
+                raise CommandError(f"Company with slug '{options['tenant_slug']}' not found")
 
         # Get tenant config to determine source database
         tenant_entry = TenantDirectory.get_for_company(company.id)
@@ -105,9 +102,7 @@ class Command(BaseCommand):
             db_alias = "default"
             is_shared = True
 
-        self.stdout.write(
-            f"Exporting events from '{db_alias}' for company: {company.name} (ID: {company.id})"
-        )
+        self.stdout.write(f"Exporting events from '{db_alias}' for company: {company.name} (ID: {company.id})")
 
         # Set up export context
         with tenant_context(company.id, db_alias, is_shared), rls_bypass():
@@ -121,9 +116,7 @@ class Command(BaseCommand):
             self.stdout.write(f"Found {total_count} events to export")
 
             if total_count == 0:
-                self.stdout.write(
-                    self.style.WARNING("No events to export. Creating empty export file.")
-                )
+                self.stdout.write(self.style.WARNING("No events to export. Creating empty export file."))
 
             # Build export data
             export_data = {
@@ -195,18 +188,14 @@ class Command(BaseCommand):
                             event_dict["data"] = event.get_data()
                         except Exception as e:
                             self.stdout.write(
-                                self.style.WARNING(
-                                    f"  Could not reconstruct chunked payload for event {event.id}: {e}"
-                                )
+                                self.style.WARNING(f"  Could not reconstruct chunked payload for event {event.id}: {e}")
                             )
                             event_dict["data"] = event.data  # Header only
                     else:
                         event_dict["data"] = event.data  # Header only
 
                 # Update hash for verification
-                hasher.update(
-                    json.dumps(event_dict, cls=TenantExportEncoder, sort_keys=True).encode()
-                )
+                hasher.update(json.dumps(event_dict, cls=TenantExportEncoder, sort_keys=True).encode())
 
                 export_data["events"].append(event_dict)
 
@@ -218,11 +207,7 @@ class Command(BaseCommand):
             with open(options["out"], "w", encoding="utf-8") as f:
                 json.dump(export_data, f, cls=TenantExportEncoder, indent=indent)
 
-            self.stdout.write(
-                self.style.SUCCESS(
-                    f"\nExported {len(export_data['events'])} events to {options['out']}"
-                )
-            )
+            self.stdout.write(self.style.SUCCESS(f"\nExported {len(export_data['events'])} events to {options['out']}"))
             self.stdout.write(f"Export hash: {export_data['export_hash']}")
 
             # Update TenantDirectory if migrating
@@ -230,7 +215,5 @@ class Command(BaseCommand):
                 last_seq = export_data["events"][-1]["company_sequence"] if export_data["events"] else 0
                 tenant_entry.migration_event_sequence = last_seq
                 tenant_entry.migration_export_hash = export_data["export_hash"]
-                tenant_entry.save(
-                    update_fields=["migration_event_sequence", "migration_export_hash", "updated_at"]
-                )
+                tenant_entry.save(update_fields=["migration_event_sequence", "migration_export_hash", "updated_at"])
                 self.stdout.write("Updated TenantDirectory with export metadata")

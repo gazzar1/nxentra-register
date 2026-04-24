@@ -124,7 +124,8 @@ class PropertyAccountingProjection(BaseProjection):
         except PropertyAccountMapping.DoesNotExist:
             logger.warning(
                 "No PropertyAccountMapping for company %s — skipping %s",
-                company, event.event_type,
+                company,
+                event.event_type,
             )
             return
 
@@ -157,8 +158,7 @@ class PropertyAccountingProjection(BaseProjection):
         """DR Accounts Receivable / CR Rental Income."""
         debit_account = mapping.accounts_receivable_account
         credit_account = mapping.rental_income_account
-        if not self._check_accounts(event, debit_account, credit_account,
-                                    "accounts_receivable", "rental_income"):
+        if not self._check_accounts(event, debit_account, credit_account, "accounts_receivable", "rental_income"):
             return
 
         amount = Decimal(str(data.get("total_due", 0)))
@@ -168,7 +168,8 @@ class PropertyAccountingProjection(BaseProjection):
         entry_date = _parse_date(data.get("due_date")) or event.occurred_at.date()
 
         dimension_context = self._resolve_lease_dimensions(
-            event.company, data.get("lease_public_id"),
+            event.company,
+            data.get("lease_public_id"),
         )
         self._create_posted_entry(
             event=event,
@@ -184,8 +185,7 @@ class PropertyAccountingProjection(BaseProjection):
         """DR Cash/Bank / CR Unapplied Cash."""
         debit_account = mapping.cash_bank_account
         credit_account = mapping.unapplied_cash_account
-        if not self._check_accounts(event, debit_account, credit_account,
-                                    "cash_bank", "unapplied_cash"):
+        if not self._check_accounts(event, debit_account, credit_account, "cash_bank", "unapplied_cash"):
             return
 
         amount = Decimal(str(data.get("amount", 0)))
@@ -194,7 +194,8 @@ class PropertyAccountingProjection(BaseProjection):
         entry_date = _parse_date(data.get("payment_date")) or event.occurred_at.date()
 
         dimension_context = self._resolve_lease_dimensions(
-            event.company, data.get("lease_public_id"),
+            event.company,
+            data.get("lease_public_id"),
         )
         self._create_posted_entry(
             event=event,
@@ -210,8 +211,7 @@ class PropertyAccountingProjection(BaseProjection):
         """DR Unapplied Cash / CR Accounts Receivable."""
         debit_account = mapping.unapplied_cash_account
         credit_account = mapping.accounts_receivable_account
-        if not self._check_accounts(event, debit_account, credit_account,
-                                    "unapplied_cash", "accounts_receivable"):
+        if not self._check_accounts(event, debit_account, credit_account, "unapplied_cash", "accounts_receivable"):
             return
 
         amount = Decimal(str(data.get("allocated_amount", 0)))
@@ -221,7 +221,8 @@ class PropertyAccountingProjection(BaseProjection):
         entry_date = event.occurred_at.date()
 
         dimension_context = self._resolve_lease_dimensions(
-            event.company, data.get("lease_public_id"),
+            event.company,
+            data.get("lease_public_id"),
         )
         self._create_posted_entry(
             event=event,
@@ -237,8 +238,7 @@ class PropertyAccountingProjection(BaseProjection):
         """DR Unapplied Cash / CR Cash/Bank."""
         debit_account = mapping.unapplied_cash_account
         credit_account = mapping.cash_bank_account
-        if not self._check_accounts(event, debit_account, credit_account,
-                                    "unapplied_cash", "cash_bank"):
+        if not self._check_accounts(event, debit_account, credit_account, "unapplied_cash", "cash_bank"):
             return
 
         amount = Decimal(str(data.get("amount", 0)))
@@ -247,7 +247,8 @@ class PropertyAccountingProjection(BaseProjection):
         entry_date = event.occurred_at.date()
 
         dimension_context = self._resolve_lease_dimensions(
-            event.company, data.get("lease_public_id"),
+            event.company,
+            data.get("lease_public_id"),
         )
         self._create_posted_entry(
             event=event,
@@ -263,8 +264,7 @@ class PropertyAccountingProjection(BaseProjection):
         """DR Cash/Bank / CR Security Deposits."""
         debit_account = mapping.cash_bank_account
         credit_account = mapping.security_deposit_account
-        if not self._check_accounts(event, debit_account, credit_account,
-                                    "cash_bank", "security_deposit"):
+        if not self._check_accounts(event, debit_account, credit_account, "cash_bank", "security_deposit"):
             return
 
         amount = Decimal(str(data.get("amount", 0)))
@@ -273,7 +273,8 @@ class PropertyAccountingProjection(BaseProjection):
         entry_date = _parse_date(data.get("transaction_date")) or event.occurred_at.date()
 
         dimension_context = self._resolve_lease_dimensions(
-            event.company, data.get("lease_public_id"),
+            event.company,
+            data.get("lease_public_id"),
         )
         self._create_posted_entry(
             event=event,
@@ -289,8 +290,7 @@ class PropertyAccountingProjection(BaseProjection):
         """DR Security Deposits / CR Cash/Bank (or reverse for increase)."""
         security_account = mapping.security_deposit_account
         cash_account = mapping.cash_bank_account
-        if not self._check_accounts(event, security_account, cash_account,
-                                    "security_deposit", "cash_bank"):
+        if not self._check_accounts(event, security_account, cash_account, "security_deposit", "cash_bank"):
             return
 
         amount = Decimal(str(data.get("amount", 0)))
@@ -311,7 +311,8 @@ class PropertyAccountingProjection(BaseProjection):
             amount = abs(amount)
 
         dimension_context = self._resolve_lease_dimensions(
-            event.company, data.get("lease_public_id"),
+            event.company,
+            data.get("lease_public_id"),
         )
         self._create_posted_entry(
             event=event,
@@ -327,8 +328,7 @@ class PropertyAccountingProjection(BaseProjection):
         """DR Security Deposits / CR Cash/Bank."""
         debit_account = mapping.security_deposit_account
         credit_account = mapping.cash_bank_account
-        if not self._check_accounts(event, debit_account, credit_account,
-                                    "security_deposit", "cash_bank"):
+        if not self._check_accounts(event, debit_account, credit_account, "security_deposit", "cash_bank"):
             return
 
         amount = Decimal(str(data.get("amount", 0)))
@@ -337,7 +337,8 @@ class PropertyAccountingProjection(BaseProjection):
         entry_date = _parse_date(data.get("transaction_date")) or event.occurred_at.date()
 
         dimension_context = self._resolve_lease_dimensions(
-            event.company, data.get("lease_public_id"),
+            event.company,
+            data.get("lease_public_id"),
         )
         self._create_posted_entry(
             event=event,
@@ -353,8 +354,7 @@ class PropertyAccountingProjection(BaseProjection):
         """DR Security Deposits / CR Other Income."""
         debit_account = mapping.security_deposit_account
         credit_account = mapping.other_income_account
-        if not self._check_accounts(event, debit_account, credit_account,
-                                    "security_deposit", "other_income"):
+        if not self._check_accounts(event, debit_account, credit_account, "security_deposit", "other_income"):
             return
 
         amount = Decimal(str(data.get("amount", 0)))
@@ -363,7 +363,8 @@ class PropertyAccountingProjection(BaseProjection):
         entry_date = _parse_date(data.get("transaction_date")) or event.occurred_at.date()
 
         dimension_context = self._resolve_lease_dimensions(
-            event.company, data.get("lease_public_id"),
+            event.company,
+            data.get("lease_public_id"),
         )
         self._create_posted_entry(
             event=event,
@@ -390,8 +391,7 @@ class PropertyAccountingProjection(BaseProjection):
             credit_account = mapping.cash_bank_account
             account_label = "cash_bank"
 
-        if not self._check_accounts(event, debit_account, credit_account,
-                                    "property_expense", account_label):
+        if not self._check_accounts(event, debit_account, credit_account, "property_expense", account_label):
             return
 
         amount = Decimal(str(data.get("amount", 0)))
@@ -404,7 +404,9 @@ class PropertyAccountingProjection(BaseProjection):
             memo = f"Property expense: {category}"
 
         dimension_context = self._resolve_property_dimensions(
-            event.company, data.get("property_public_id"), data.get("unit_public_id"),
+            event.company,
+            data.get("property_public_id"),
+            data.get("unit_public_id"),
         )
         self._create_posted_entry(
             event=event,
@@ -420,8 +422,7 @@ class PropertyAccountingProjection(BaseProjection):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _check_accounts(self, event, debit_account, credit_account,
-                        debit_label, credit_label):
+    def _check_accounts(self, event, debit_account, credit_account, debit_label, credit_label):
         """
         Verify both accounts are configured. Logs a warning and returns
         False if either is missing.
@@ -433,9 +434,11 @@ class PropertyAccountingProjection(BaseProjection):
             missing.append(credit_label)
         if missing:
             logger.warning(
-                "PropertyAccountMapping missing account(s) %s for company %s — "
-                "skipping %s (event %s)",
-                ", ".join(missing), event.company, event.event_type, event.id,
+                "PropertyAccountMapping missing account(s) %s for company %s — skipping %s (event %s)",
+                ", ".join(missing),
+                event.company,
+                event.event_type,
+                event.id,
             )
             return False
         return True
@@ -450,9 +453,9 @@ class PropertyAccountingProjection(BaseProjection):
         if not lease_public_id:
             return {}
         try:
-            lease = Lease.objects.select_related(
-                "property", "unit", "lessee"
-            ).get(company=company, public_id=lease_public_id)
+            lease = Lease.objects.select_related("property", "unit", "lessee").get(
+                company=company, public_id=lease_public_id
+            )
         except Lease.DoesNotExist:
             logger.warning("Lease %s not found for dimension derivation", lease_public_id)
             return {}
@@ -498,7 +501,8 @@ class PropertyAccountingProjection(BaseProjection):
         # Batch-fetch matching dimensions and values
         dim_codes = list(dimension_context.keys())
         dimensions = {
-            d.code: d for d in AnalysisDimension.objects.filter(
+            d.code: d
+            for d in AnalysisDimension.objects.filter(
                 company=company,
                 code__in=dim_codes,
                 is_active=True,
@@ -519,6 +523,7 @@ class PropertyAccountingProjection(BaseProjection):
             return
 
         from django.db.models import Q
+
         q = Q()
         for dim_id, val_code in value_lookups:
             q |= Q(dimension_id=dim_id, code=val_code)
@@ -539,24 +544,26 @@ class PropertyAccountingProjection(BaseProjection):
                 if not val:
                     logger.debug(
                         "Dimension value %s=%s not found for company %s — skipping",
-                        dim_code, val_code, company.name,
+                        dim_code,
+                        val_code,
+                        company.name,
                     )
                     continue
-                analysis_records.append(JournalLineAnalysis(
-                    journal_line=line,
-                    company=company,
-                    dimension=dim,
-                    dimension_value=val,
-                ))
+                analysis_records.append(
+                    JournalLineAnalysis(
+                        journal_line=line,
+                        company=company,
+                        dimension=dim,
+                        dimension_value=val,
+                    )
+                )
 
         if analysis_records:
-            JournalLineAnalysis.objects.projection().bulk_create(
-                analysis_records, ignore_conflicts=True
-            )
+            JournalLineAnalysis.objects.projection().bulk_create(analysis_records, ignore_conflicts=True)
 
-    def _create_posted_entry(self, *, event, entry_date, memo,
-                             debit_account, credit_account, amount,
-                             dimension_context=None):
+    def _create_posted_entry(
+        self, *, event, entry_date, memo, debit_account, credit_account, amount, dimension_context=None
+    ):
         """
         Create a fully-posted JournalEntry with two lines (debit and credit).
 
@@ -573,7 +580,9 @@ class PropertyAccountingProjection(BaseProjection):
         if amount <= 0:
             logger.warning(
                 "Skipping %s — non-positive amount %s (event %s)",
-                event.event_type, amount, event.id,
+                event.event_type,
+                amount,
+                event.id,
             )
             return
 
@@ -586,7 +595,8 @@ class PropertyAccountingProjection(BaseProjection):
         ).exists():
             logger.info(
                 "Journal entry already exists for memo '%s' on %s — skipping",
-                memo, entry_date,
+                memo,
+                entry_date,
             )
             return
 
@@ -696,7 +706,10 @@ class PropertyAccountingProjection(BaseProjection):
 
         logger.info(
             "Created journal entry %s for %s (event %s): %s",
-            entry.public_id, event.event_type, event.id, memo,
+            entry.public_id,
+            event.event_type,
+            event.id,
+            memo,
         )
 
 

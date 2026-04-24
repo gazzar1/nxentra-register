@@ -30,7 +30,9 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument(
-            "--company-id", type=int, default=None,
+            "--company-id",
+            type=int,
+            default=None,
             help="Company ID (defaults to first company)",
         )
 

@@ -46,9 +46,8 @@ from .models import StockLedgerEntry, StockLedgerSequenceCounter, Warehouse
 
 def _get_next_sequence(company) -> int:
     """Get the next monotonic sequence number for stock ledger entries."""
-    counter, created = StockLedgerSequenceCounter.objects.select_for_update().get_or_create(
-        company=company,
-        defaults={"last_sequence": 0}
+    counter, _created = StockLedgerSequenceCounter.objects.select_for_update().get_or_create(
+        company=company, defaults={"last_sequence": 0}
     )
     counter.last_sequence += 1
     counter.save()
@@ -57,6 +56,7 @@ def _get_next_sequence(company) -> int:
 
 class NoWarehouseError(Exception):
     """Raised when no warehouse is available for a company."""
+
     pass
 
 
@@ -95,9 +95,7 @@ def create_warehouse(
         # If this is the first warehouse or is_default=True, handle default flag
         if is_default:
             # Unset any existing default
-            Warehouse.objects.filter(company=actor.company, is_default=True).update(
-                is_default=False
-            )
+            Warehouse.objects.filter(company=actor.company, is_default=True).update(is_default=False)
 
         # If no warehouses exist, make this one default
         is_first = not Warehouse.objects.filter(company=actor.company).exists()
@@ -148,9 +146,7 @@ def update_warehouse(
     require(actor, "inventory.warehouse.update")
 
     try:
-        warehouse = Warehouse.objects.select_for_update().get(
-            company=actor.company, pk=warehouse_id
-        )
+        warehouse = Warehouse.objects.select_for_update().get(company=actor.company, pk=warehouse_id)
     except Warehouse.DoesNotExist:
         return CommandResult.fail("Warehouse not found.")
 
@@ -168,9 +164,9 @@ def update_warehouse(
 
                 # Handle is_default: unset other defaults
                 if field == "is_default" and new_value:
-                    Warehouse.objects.filter(
-                        company=actor.company, is_default=True
-                    ).exclude(pk=warehouse_id).update(is_default=False)
+                    Warehouse.objects.filter(company=actor.company, is_default=True).exclude(pk=warehouse_id).update(
+                        is_default=False
+                    )
 
         if changes:
             warehouse.save()
@@ -221,8 +217,7 @@ def check_stock_availability(
             )
     except InventoryBalance.DoesNotExist:
         return False, (
-            f"No inventory record for {item.code} in {warehouse.code}. "
-            f"Required: {qty_required}, Available: 0"
+            f"No inventory record for {item.code} in {warehouse.code}. Required: {qty_required}, Available: 0"
         )
 
 
@@ -256,12 +251,16 @@ def _fifo_consume(company, item, warehouse, qty_to_issue: Decimal) -> tuple[Deci
     """
     from .models import FifoLayer
 
-    layers = FifoLayer.objects.filter(
-        company=company,
-        item=item,
-        warehouse=warehouse,
-        qty_remaining__gt=0,
-    ).order_by("sequence").select_for_update()
+    layers = (
+        FifoLayer.objects.filter(
+            company=company,
+            item=item,
+            warehouse=warehouse,
+            qty_remaining__gt=0,
+        )
+        .order_by("sequence")
+        .select_for_update()
+    )
 
     remaining = qty_to_issue
     total_value = Decimal("0")
@@ -344,7 +343,7 @@ def record_stock_receipt(
                     "qty_on_hand": Decimal("0"),
                     "avg_cost": Decimal("0"),
                     "stock_value": Decimal("0"),
-                }
+                },
             )
 
             # Calculate new weighted average
@@ -394,6 +393,7 @@ def record_stock_receipt(
             # Create FIFO layer if item uses FIFO costing
             if item.costing_method == "FIFO":
                 from .models import FifoLayer
+
                 FifoLayer.objects.create(
                     company=actor.company,
                     item=item,
@@ -405,15 +405,17 @@ def record_stock_receipt(
                     sequence=sequence,
                 )
 
-            event_entries.append(StockLedgerEntryData(
-                item_public_id=str(item.public_id),
-                warehouse_public_id=str(warehouse.public_id),
-                qty_delta=str(qty),
-                unit_cost=str(unit_cost),
-                value_delta=str(value_delta),
-                costing_method_snapshot=item.costing_method,
-                source_line_id=source_line_id,
-            ).to_dict())
+            event_entries.append(
+                StockLedgerEntryData(
+                    item_public_id=str(item.public_id),
+                    warehouse_public_id=str(warehouse.public_id),
+                    qty_delta=str(qty),
+                    unit_cost=str(unit_cost),
+                    value_delta=str(value_delta),
+                    costing_method_snapshot=item.costing_method,
+                    source_line_id=source_line_id,
+                ).to_dict()
+            )
 
     event = emit_event(
         actor=actor,
@@ -433,10 +435,7 @@ def record_stock_receipt(
         ).to_dict(),
     )
 
-    return CommandResult.ok(
-        data={"entries": created_entries},
-        event=event
-    )
+    return CommandResult.ok(data={"entries": created_entries}, event=event)
 
 
 @transaction.atomic
@@ -488,9 +487,7 @@ def record_stock_issue(
 
             # Check availability (unless negative inventory allowed)
             if not actor.company.allow_negative_inventory:
-                is_available, error = check_stock_availability(
-                    actor.company, item, warehouse, qty
-                )
+                is_available, error = check_stock_availability(actor.company, item, warehouse, qty)
                 if not is_available:
                     return CommandResult.fail(error)
 
@@ -502,16 +499,12 @@ def record_stock_issue(
                     warehouse=warehouse,
                 )
             except InventoryBalance.DoesNotExist:
-                return CommandResult.fail(
-                    f"No inventory record for {item.code} in {warehouse.code}."
-                )
+                return CommandResult.fail(f"No inventory record for {item.code} in {warehouse.code}.")
 
             # Determine issue cost based on costing method
             if item.costing_method == "FIFO":
                 # FIFO: consume oldest layers first
-                issue_cost, value_delta = _fifo_consume(
-                    actor.company, item, warehouse, qty
-                )
+                issue_cost, value_delta = _fifo_consume(actor.company, item, warehouse, qty)
             else:
                 # Weighted average (default)
                 issue_cost = balance.avg_cost
@@ -527,12 +520,17 @@ def record_stock_issue(
             new_avg_cost = balance.avg_cost
             if item.costing_method == "FIFO" and new_qty > 0:
                 from .models import FifoLayer
+
                 remaining_layers = FifoLayer.objects.filter(
-                    company=actor.company, item=item, warehouse=warehouse,
+                    company=actor.company,
+                    item=item,
+                    warehouse=warehouse,
                     qty_remaining__gt=0,
                 )
                 total_remaining_value = sum(l.qty_remaining * l.unit_cost for l in remaining_layers)
-                new_avg_cost = (total_remaining_value / new_qty).quantize(Decimal("0.000001")) if new_qty > 0 else Decimal("0")
+                new_avg_cost = (
+                    (total_remaining_value / new_qty).quantize(Decimal("0.000001")) if new_qty > 0 else Decimal("0")
+                )
                 new_value = total_remaining_value
 
             # Get next sequence
@@ -568,15 +566,17 @@ def record_stock_issue(
             balance.last_entry_date = posted_at.date()
             balance.save()
 
-            event_entries.append(StockLedgerEntryData(
-                item_public_id=str(item.public_id),
-                warehouse_public_id=str(warehouse.public_id),
-                qty_delta=str(-qty),
-                unit_cost=str(issue_cost),
-                value_delta=str(-value_delta),
-                costing_method_snapshot=item.costing_method,
-                source_line_id=source_line_id,
-            ).to_dict())
+            event_entries.append(
+                StockLedgerEntryData(
+                    item_public_id=str(item.public_id),
+                    warehouse_public_id=str(warehouse.public_id),
+                    qty_delta=str(-qty),
+                    unit_cost=str(issue_cost),
+                    value_delta=str(-value_delta),
+                    costing_method_snapshot=item.costing_method,
+                    source_line_id=source_line_id,
+                ).to_dict()
+            )
 
     event = emit_event(
         actor=actor,
@@ -602,7 +602,7 @@ def record_stock_issue(
             "entries": created_entries,
             "total_cogs": total_cogs,
         },
-        event=event
+        event=event,
     )
 
 
@@ -636,9 +636,7 @@ def adjust_inventory(
 
     # Validate adjustment account
     try:
-        adjustment_account = Account.objects.get(
-            company=actor.company, pk=adjustment_account_id
-        )
+        adjustment_account = Account.objects.get(company=actor.company, pk=adjustment_account_id)
     except Account.DoesNotExist:
         return CommandResult.fail("Adjustment account not found.")
 
@@ -681,7 +679,7 @@ def adjust_inventory(
                     "qty_on_hand": Decimal("0"),
                     "avg_cost": Decimal("0"),
                     "stock_value": Decimal("0"),
-                }
+                },
             )
 
             # Determine unit cost
@@ -703,53 +701,61 @@ def adjust_inventory(
                         f"Required: {required}, Available: {balance.qty_on_hand}"
                     )
 
-            processed_lines.append({
-                "item": item,
-                "warehouse": warehouse,
-                "qty_delta": qty_delta,
-                "unit_cost": unit_cost,
-                "value_delta": value_delta,
-                "balance": balance,
-                "source_line_id": line.get("source_line_id"),
-            })
+            processed_lines.append(
+                {
+                    "item": item,
+                    "warehouse": warehouse,
+                    "qty_delta": qty_delta,
+                    "unit_cost": unit_cost,
+                    "value_delta": value_delta,
+                    "balance": balance,
+                    "source_line_id": line.get("source_line_id"),
+                }
+            )
 
             # Accumulate by inventory account
             inv_account_id = item.inventory_account_id
-            inventory_by_account[inv_account_id] = (
-                inventory_by_account.get(inv_account_id, Decimal("0")) + value_delta
-            )
+            inventory_by_account[inv_account_id] = inventory_by_account.get(inv_account_id, Decimal("0")) + value_delta
 
     # Build journal entry lines
     for inv_account_id, total_value in inventory_by_account.items():
         if total_value > 0:
             # Increase: Dr Inventory, Cr Adjustment
-            je_lines.append({
-                "account_id": inv_account_id,
-                "description": f"Inventory Adjustment: {reason}",
-                "debit": total_value,
-                "credit": Decimal("0"),
-            })
-            je_lines.append({
-                "account_id": adjustment_account_id,
-                "description": f"Inventory Adjustment: {reason}",
-                "debit": Decimal("0"),
-                "credit": total_value,
-            })
+            je_lines.append(
+                {
+                    "account_id": inv_account_id,
+                    "description": f"Inventory Adjustment: {reason}",
+                    "debit": total_value,
+                    "credit": Decimal("0"),
+                }
+            )
+            je_lines.append(
+                {
+                    "account_id": adjustment_account_id,
+                    "description": f"Inventory Adjustment: {reason}",
+                    "debit": Decimal("0"),
+                    "credit": total_value,
+                }
+            )
         elif total_value < 0:
             # Decrease: Dr Adjustment, Cr Inventory
             abs_value = abs(total_value)
-            je_lines.append({
-                "account_id": adjustment_account_id,
-                "description": f"Inventory Adjustment: {reason}",
-                "debit": abs_value,
-                "credit": Decimal("0"),
-            })
-            je_lines.append({
-                "account_id": inv_account_id,
-                "description": f"Inventory Adjustment: {reason}",
-                "debit": Decimal("0"),
-                "credit": abs_value,
-            })
+            je_lines.append(
+                {
+                    "account_id": adjustment_account_id,
+                    "description": f"Inventory Adjustment: {reason}",
+                    "debit": abs_value,
+                    "credit": Decimal("0"),
+                }
+            )
+            je_lines.append(
+                {
+                    "account_id": inv_account_id,
+                    "description": f"Inventory Adjustment: {reason}",
+                    "debit": Decimal("0"),
+                    "credit": abs_value,
+                }
+            )
 
     # Create and post journal entry
     je_result = create_journal_entry(
@@ -838,15 +844,17 @@ def adjust_inventory(
                 item.last_cost = unit_cost
                 item.save(update_fields=["average_cost", "last_cost"])
 
-            event_entries.append(StockLedgerEntryData(
-                item_public_id=str(item.public_id),
-                warehouse_public_id=str(warehouse.public_id),
-                qty_delta=str(qty_delta),
-                unit_cost=str(unit_cost),
-                value_delta=str(value_delta),
-                costing_method_snapshot=item.costing_method,
-                source_line_id=pline.get("source_line_id"),
-            ).to_dict())
+            event_entries.append(
+                StockLedgerEntryData(
+                    item_public_id=str(item.public_id),
+                    warehouse_public_id=str(warehouse.public_id),
+                    qty_delta=str(qty_delta),
+                    unit_cost=str(unit_cost),
+                    value_delta=str(value_delta),
+                    costing_method_snapshot=item.costing_method,
+                    source_line_id=pline.get("source_line_id"),
+                ).to_dict()
+            )
 
     event = emit_event(
         actor=actor,
@@ -857,7 +865,9 @@ def adjust_inventory(
         data=InventoryAdjustedData(
             adjustment_public_id=adjustment_public_id,
             company_public_id=str(actor.company.public_id),
-            adjustment_date=adjustment_date.isoformat() if hasattr(adjustment_date, 'isoformat') else str(adjustment_date),
+            adjustment_date=adjustment_date.isoformat()
+            if hasattr(adjustment_date, "isoformat")
+            else str(adjustment_date),
             reason=reason,
             entries=[e for e in event_entries],
             journal_entry_public_id=str(journal_entry.public_id),
@@ -873,7 +883,7 @@ def adjust_inventory(
             "journal_entry": journal_entry,
             "adjustment_public_id": adjustment_public_id,
         },
-        event=event
+        event=event,
     )
 
 
@@ -903,9 +913,7 @@ def record_opening_balance(
 
     # Validate opening balance equity account
     try:
-        equity_account = Account.objects.get(
-            company=actor.company, pk=opening_balance_equity_account_id
-        )
+        equity_account = Account.objects.get(company=actor.company, pk=opening_balance_equity_account_id)
     except Account.DoesNotExist:
         return CommandResult.fail("Opening balance equity account not found.")
 
@@ -939,39 +947,43 @@ def record_opening_balance(
 
         value = qty * unit_cost
 
-        processed_lines.append({
-            "item": item,
-            "warehouse": warehouse,
-            "qty": qty,
-            "unit_cost": unit_cost,
-            "value": value,
-        })
+        processed_lines.append(
+            {
+                "item": item,
+                "warehouse": warehouse,
+                "qty": qty,
+                "unit_cost": unit_cost,
+                "value": value,
+            }
+        )
 
         inv_account_id = item.inventory_account_id
-        inventory_by_account[inv_account_id] = (
-            inventory_by_account.get(inv_account_id, Decimal("0")) + value
-        )
+        inventory_by_account[inv_account_id] = inventory_by_account.get(inv_account_id, Decimal("0")) + value
 
     # Build journal entry lines
     je_lines = []
     total_value = Decimal("0")
 
     for inv_account_id, value in inventory_by_account.items():
-        je_lines.append({
-            "account_id": inv_account_id,
-            "description": "Opening Inventory Balance",
-            "debit": value,
-            "credit": Decimal("0"),
-        })
+        je_lines.append(
+            {
+                "account_id": inv_account_id,
+                "description": "Opening Inventory Balance",
+                "debit": value,
+                "credit": Decimal("0"),
+            }
+        )
         total_value += value
 
     # Credit Opening Balance Equity
-    je_lines.append({
-        "account_id": opening_balance_equity_account_id,
-        "description": "Opening Inventory Balance",
-        "debit": Decimal("0"),
-        "credit": total_value,
-    })
+    je_lines.append(
+        {
+            "account_id": opening_balance_equity_account_id,
+            "description": "Opening Inventory Balance",
+            "debit": Decimal("0"),
+            "credit": total_value,
+        }
+    )
 
     # Create and post journal entry
     je_result = create_journal_entry(
@@ -1018,7 +1030,7 @@ def record_opening_balance(
                     "qty_on_hand": Decimal("0"),
                     "avg_cost": Decimal("0"),
                     "stock_value": Decimal("0"),
-                }
+                },
             )
 
             # Apply receipt
@@ -1063,14 +1075,16 @@ def record_opening_balance(
             item.last_cost = unit_cost
             item.save(update_fields=["average_cost", "last_cost"])
 
-            event_entries.append(StockLedgerEntryData(
-                item_public_id=str(item.public_id),
-                warehouse_public_id=str(warehouse.public_id),
-                qty_delta=str(qty),
-                unit_cost=str(unit_cost),
-                value_delta=str(value),
-                costing_method_snapshot=item.costing_method,
-            ).to_dict())
+            event_entries.append(
+                StockLedgerEntryData(
+                    item_public_id=str(item.public_id),
+                    warehouse_public_id=str(warehouse.public_id),
+                    qty_delta=str(qty),
+                    unit_cost=str(unit_cost),
+                    value_delta=str(value),
+                    costing_method_snapshot=item.costing_method,
+                ).to_dict()
+            )
 
     event = emit_event(
         actor=actor,
@@ -1080,7 +1094,7 @@ def record_opening_balance(
         idempotency_key=f"inventory.opening_balance:{opening_public_id}",
         data=InventoryOpeningBalanceData(
             company_public_id=str(actor.company.public_id),
-            as_of_date=as_of_date.isoformat() if hasattr(as_of_date, 'isoformat') else str(as_of_date),
+            as_of_date=as_of_date.isoformat() if hasattr(as_of_date, "isoformat") else str(as_of_date),
             entries=[e for e in event_entries],
             journal_entry_public_id=str(journal_entry.public_id),
             recorded_at=posted_at.isoformat(),
@@ -1095,5 +1109,5 @@ def record_opening_balance(
             "journal_entry": journal_entry,
             "opening_public_id": opening_public_id,
         },
-        event=event
+        event=event,
     )

@@ -70,11 +70,13 @@ from edim.serializers import (
 # Source System Views
 # =============================================================================
 
+
 class SourceSystemListCreateView(APIView):
     """
     GET /api/edim/source-systems/ -> list source systems
     POST /api/edim/source-systems/ -> create source system
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -112,6 +114,7 @@ class SourceSystemDetailView(APIView):
     PATCH /api/edim/source-systems/<pk>/ -> update source system
     DELETE /api/edim/source-systems/<pk>/ -> deactivate source system
     """
+
     permission_classes = [IsAuthenticated]
 
     def get_object(self, actor, pk):
@@ -119,6 +122,7 @@ class SourceSystemDetailView(APIView):
             return SourceSystem.objects.get(pk=pk, company=actor.company)
         except SourceSystem.DoesNotExist:
             from django.http import Http404
+
             raise Http404
 
     def get(self, request, pk):
@@ -138,9 +142,7 @@ class SourceSystemDetailView(APIView):
         input_serializer = SourceSystemUpdateSerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
 
-        result = update_source_system(
-            actor, source_system.id, **input_serializer.validated_data
-        )
+        result = update_source_system(actor, source_system.id, **input_serializer.validated_data)
 
         if not result.success:
             return Response(
@@ -172,21 +174,25 @@ class SourceSystemDetailView(APIView):
 # Mapping Profile Views
 # =============================================================================
 
+
 class MappingProfileListCreateView(APIView):
     """
     GET /api/edim/mapping-profiles/ -> list mapping profiles
     POST /api/edim/mapping-profiles/ -> create mapping profile
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         actor = resolve_actor(request)
         require(actor, "edim.view")
 
-        profiles = MappingProfile.objects.filter(
-            company=actor.company,
-        ).select_related("source_system", "created_by").order_by(
-            "source_system__name", "document_type", "-version"
+        profiles = (
+            MappingProfile.objects.filter(
+                company=actor.company,
+            )
+            .select_related("source_system", "created_by")
+            .order_by("source_system__name", "document_type", "-version")
         )
         serializer = MappingProfileSerializer(profiles, many=True)
         return Response(serializer.data)
@@ -215,15 +221,17 @@ class MappingProfileDetailView(APIView):
     GET /api/edim/mapping-profiles/<pk>/ -> retrieve mapping profile
     PATCH /api/edim/mapping-profiles/<pk>/ -> update mapping profile
     """
+
     permission_classes = [IsAuthenticated]
 
     def get_object(self, actor, pk):
         try:
-            return MappingProfile.objects.select_related(
-                "source_system", "created_by"
-            ).get(pk=pk, company=actor.company)
+            return MappingProfile.objects.select_related("source_system", "created_by").get(
+                pk=pk, company=actor.company
+            )
         except MappingProfile.DoesNotExist:
             from django.http import Http404
+
             raise Http404
 
     def get(self, request, pk):
@@ -243,9 +251,7 @@ class MappingProfileDetailView(APIView):
         input_serializer = MappingProfileUpdateSerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
 
-        result = update_mapping_profile(
-            actor, profile.id, **input_serializer.validated_data
-        )
+        result = update_mapping_profile(actor, profile.id, **input_serializer.validated_data)
 
         if not result.success:
             return Response(
@@ -259,6 +265,7 @@ class MappingProfileDetailView(APIView):
 
 class MappingProfileActivateView(APIView):
     """POST /api/edim/mapping-profiles/<pk>/activate/"""
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
@@ -287,6 +294,7 @@ class MappingProfileActivateView(APIView):
 
 class MappingProfileDeprecateView(APIView):
     """POST /api/edim/mapping-profiles/<pk>/deprecate/"""
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
@@ -317,11 +325,13 @@ class MappingProfileDeprecateView(APIView):
 # Identity Crosswalk Views
 # =============================================================================
 
+
 class CrosswalkListCreateView(APIView):
     """
     GET /api/edim/crosswalks/ -> list crosswalks
     POST /api/edim/crosswalks/ -> create crosswalk
     """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -344,9 +354,7 @@ class CrosswalkListCreateView(APIView):
         if status_filter:
             crosswalks = crosswalks.filter(status=status_filter)
 
-        crosswalks = crosswalks.order_by(
-            "source_system__name", "object_type", "external_id"
-        )
+        crosswalks = crosswalks.order_by("source_system__name", "object_type", "external_id")
         serializer = IdentityCrosswalkSerializer(crosswalks, many=True)
         return Response(serializer.data)
 
@@ -374,15 +382,17 @@ class CrosswalkDetailView(APIView):
     GET /api/edim/crosswalks/<pk>/ -> retrieve crosswalk
     PATCH /api/edim/crosswalks/<pk>/ -> update crosswalk
     """
+
     permission_classes = [IsAuthenticated]
 
     def get_object(self, actor, pk):
         try:
-            return IdentityCrosswalk.objects.select_related(
-                "source_system", "verified_by"
-            ).get(pk=pk, company=actor.company)
+            return IdentityCrosswalk.objects.select_related("source_system", "verified_by").get(
+                pk=pk, company=actor.company
+            )
         except IdentityCrosswalk.DoesNotExist:
             from django.http import Http404
+
             raise Http404
 
     def get(self, request, pk):
@@ -402,9 +412,7 @@ class CrosswalkDetailView(APIView):
         input_serializer = IdentityCrosswalkUpdateSerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
 
-        result = update_crosswalk(
-            actor, crosswalk.id, **input_serializer.validated_data
-        )
+        result = update_crosswalk(actor, crosswalk.id, **input_serializer.validated_data)
 
         if not result.success:
             return Response(
@@ -418,6 +426,7 @@ class CrosswalkDetailView(APIView):
 
 class CrosswalkVerifyView(APIView):
     """POST /api/edim/crosswalks/<pk>/verify/"""
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
@@ -446,6 +455,7 @@ class CrosswalkVerifyView(APIView):
 
 class CrosswalkRejectView(APIView):
     """POST /api/edim/crosswalks/<pk>/reject/"""
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
@@ -463,9 +473,7 @@ class CrosswalkRejectView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        result = reject_crosswalk(
-            actor, crosswalk.id, reason=input_serializer.validated_data.get("reason", "")
-        )
+        result = reject_crosswalk(actor, crosswalk.id, reason=input_serializer.validated_data.get("reason", ""))
 
         if not result.success:
             return Response(
@@ -481,8 +489,10 @@ class CrosswalkRejectView(APIView):
 # Ingestion Batch Views
 # =============================================================================
 
+
 class BatchListView(APIView):
     """GET /api/edim/batches/ -> list ingestion batches"""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -495,9 +505,7 @@ class BatchListView(APIView):
 
         batches = IngestionBatch.objects.filter(
             company=actor.company,
-        ).select_related(
-            "source_system", "mapping_profile", "staged_by", "committed_by", "rejected_by"
-        )
+        ).select_related("source_system", "mapping_profile", "staged_by", "committed_by", "rejected_by")
 
         if status_filter:
             batches = batches.filter(status=status_filter)
@@ -511,6 +519,7 @@ class BatchListView(APIView):
 
 class BatchUploadView(APIView):
     """POST /api/edim/batches/upload/ -> upload and stage a new batch"""
+
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
 
@@ -544,6 +553,7 @@ class BatchUploadView(APIView):
 
 class BatchDetailView(APIView):
     """GET /api/edim/batches/<pk>/ -> retrieve batch details"""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
@@ -566,6 +576,7 @@ class BatchDetailView(APIView):
 
 class BatchRecordsView(APIView):
     """GET /api/edim/batches/<pk>/records/ -> list staged records in batch"""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
@@ -585,20 +596,23 @@ class BatchRecordsView(APIView):
         page_size = int(request.query_params.get("page_size", 100))
         offset = (page - 1) * page_size
 
-        records = batch.records.all().order_by("row_number")[offset:offset + page_size]
+        records = batch.records.all().order_by("row_number")[offset : offset + page_size]
         total = batch.records.count()
 
         serializer = StagedRecordSerializer(records, many=True)
-        return Response({
-            "page": page,
-            "page_size": page_size,
-            "total": total,
-            "records": serializer.data,
-        })
+        return Response(
+            {
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+                "records": serializer.data,
+            }
+        )
 
 
 class BatchMapView(APIView):
     """POST /api/edim/batches/<pk>/map/ -> apply mapping to batch"""
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
@@ -634,6 +648,7 @@ class BatchMapView(APIView):
 
 class BatchValidateView(APIView):
     """POST /api/edim/batches/<pk>/validate/ -> validate batch"""
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
@@ -662,6 +677,7 @@ class BatchValidateView(APIView):
 
 class BatchPreviewView(APIView):
     """POST /api/edim/batches/<pk>/preview/ -> preview batch journal entries"""
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
@@ -685,14 +701,17 @@ class BatchPreviewView(APIView):
             )
 
         output_serializer = IngestionBatchSerializer(result.data["batch"])
-        return Response({
-            "batch": output_serializer.data,
-            "preview": result.data["preview"],
-        })
+        return Response(
+            {
+                "batch": output_serializer.data,
+                "preview": result.data["preview"],
+            }
+        )
 
 
 class BatchCommitView(APIView):
     """POST /api/edim/batches/<pk>/commit/ -> commit batch to journal entries"""
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
@@ -721,6 +740,7 @@ class BatchCommitView(APIView):
 
 class BatchRejectView(APIView):
     """POST /api/edim/batches/<pk>/reject/ -> reject batch"""
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
@@ -738,9 +758,7 @@ class BatchRejectView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        result = reject_batch(
-            actor, batch.id, reason=input_serializer.validated_data.get("reason", "")
-        )
+        result = reject_batch(actor, batch.id, reason=input_serializer.validated_data.get("reason", ""))
 
         if not result.success:
             return Response(
