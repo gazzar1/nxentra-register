@@ -1332,6 +1332,8 @@ class OnboardingSetupView(APIView):
             coa_template=data.get("coa_template", "minimal"),
             business_type=data.get("business_type", ""),
             modules=data.get("modules"),
+            import_mode=data.get("import_mode", "skip"),
+            import_from_date=data.get("import_from_date"),
         )
 
         if not result.success:

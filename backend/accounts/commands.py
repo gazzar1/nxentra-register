@@ -3330,6 +3330,9 @@ def complete_onboarding(
     business_type: str = "",
     # Step 4: Modules
     modules: list = None,
+    # Shopify historical import
+    import_mode: str = "skip",
+    import_from_date=None,
 ) -> CommandResult:
     """
     Complete the onboarding setup wizard.
@@ -3453,8 +3456,51 @@ def complete_onboarding(
     )
     _process_projections(company)
 
+    # ---- Shopify historical order import ----
+    if business_type == "shopify" and import_mode in ("all", "from_date"):
+        _enqueue_shopify_historical_import(company, import_mode, import_from_date)
+
     company.refresh_from_db()
     return CommandResult.ok({"company": company})
+
+
+def _enqueue_shopify_historical_import(company, import_mode: str, import_from_date) -> None:
+    """
+    Enqueue a Celery task to import historical Shopify orders.
+
+    Revenue-recognition caveat: the underlying _sync_orders filters on
+    financial_status=paid, so COD / pending orders are not imported here.
+    Handling those requires separate work on revenue recognition + AR booking.
+    """
+    from datetime import date, datetime, time
+
+    from django.utils import timezone as tz
+
+    from shopify_connector.models import ShopifyStore
+    from shopify_connector.tasks import sync_shopify_store_orders
+
+    store = ShopifyStore.objects.filter(company=company, status=ShopifyStore.Status.ACTIVE).order_by("-id").first()
+    if not store:
+        return
+
+    if import_mode == "all":
+        # Shopify predates 2015 but that's safely before any user's store.
+        created_at_min = datetime(2015, 1, 1).isoformat()
+    else:  # from_date
+        if not import_from_date:
+            return
+        if isinstance(import_from_date, date):
+            created_at_min = datetime.combine(import_from_date, time.min).isoformat()
+        else:
+            created_at_min = str(import_from_date)
+
+    created_at_max = tz.now().isoformat()
+
+    sync_shopify_store_orders.delay(
+        store_id=store.id,
+        created_at_min=created_at_min,
+        created_at_max=created_at_max,
+    )
 
 
 def _setup_shopify_accounts(company):

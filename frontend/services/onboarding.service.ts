@@ -45,6 +45,9 @@ export interface OnboardingSetupPayload {
   coa_template?: string;
   // Step 4
   modules?: { key: string; is_enabled: boolean }[];
+  // Shopify historical import
+  import_mode?: "all" | "from_date" | "skip";
+  import_from_date?: string; // ISO date (YYYY-MM-DD)
 }
 
 export const onboardingService = {

@@ -38,6 +38,7 @@ import {
   ShoppingBag,
   Briefcase,
   Link,
+  Download,
 } from "lucide-react";
 
 /* =========================================================================
@@ -49,6 +50,7 @@ const STEPS_SHOPIFY = [
   { key: "company", icon: Building2, label: "Company Profile" },
   { key: "fiscal", icon: Calendar, label: "Fiscal Year" },
   { key: "shopify", icon: Link, label: "Shopify Setup" },
+  { key: "import", icon: Download, label: "Import Orders" },
   { key: "ready", icon: Rocket, label: "Ready" },
 ];
 
@@ -125,6 +127,10 @@ export default function OnboardingSetupPage() {
   const [shopifyConnected, setShopifyConnected] = useState(false);
   const [shopifyStoreName, setShopifyStoreName] = useState("");
 
+  // Step: Historical order import
+  const [importMode, setImportMode] = useState<"all" | "from_date" | "skip">("all");
+  const [importFromDate, setImportFromDate] = useState<string>(""); // YYYY-MM-DD
+
   const steps = businessType === "shopify" ? STEPS_SHOPIFY : STEPS_GENERAL;
   const lastStepIndex = steps.length - 1;
   const submitStepIndex = lastStepIndex - 1; // Step before "Ready"
@@ -160,6 +166,8 @@ export default function OnboardingSetupPage() {
             if (draft.coaTemplate) setCoaTemplate(draft.coaTemplate);
             if (draft.shopifyConnected) setShopifyConnected(true);
             if (draft.shopifyStoreName) setShopifyStoreName(draft.shopifyStoreName);
+            if (draft.importMode) setImportMode(draft.importMode);
+            if (draft.importFromDate) setImportFromDate(draft.importFromDate);
           }
         } catch { /* sessionStorage unavailable */ }
         setLoading(false);
@@ -204,6 +212,9 @@ export default function OnboardingSetupPage() {
     try {
       const optionalModules = moduleList?.filter((m) => !m.is_core) ?? [];
 
+      const effectiveImportMode: "all" | "from_date" | "skip" =
+        businessType === "shopify" && shopifyConnected ? importMode : "skip";
+
       const payload: OnboardingSetupPayload = {
         business_type: businessType,
         company_name: companyName,
@@ -227,6 +238,9 @@ export default function OnboardingSetupPage() {
                 key: m.key,
                 is_enabled: selectedModules.has(m.key),
               })),
+        import_mode: effectiveImportMode,
+        import_from_date:
+          effectiveImportMode === "from_date" ? importFromDate : undefined,
       };
 
       await onboardingService.complete(payload);
@@ -267,6 +281,8 @@ export default function OnboardingSetupPage() {
         coaTemplate,
         shopifyConnected,
         shopifyStoreName,
+        importMode,
+        importFromDate,
       }));
     } catch { /* sessionStorage unavailable */ }
   };
@@ -418,6 +434,17 @@ export default function OnboardingSetupPage() {
                 selected={selectedModules}
                 onToggle={toggleModule}
                 isLoading={modulesLoading}
+              />
+            )}
+            {currentStepKey === "import" && (
+              <StepHistoricalImport
+                mode={importMode}
+                setMode={setImportMode}
+                fromDate={importFromDate}
+                setFromDate={setImportFromDate}
+                fiscalYear={fiscalYear}
+                fiscalStartMonth={fiscalStartMonth}
+                shopifyConnected={shopifyConnected}
               />
             )}
             {currentStepKey === "shopify" && (
@@ -683,6 +710,149 @@ function StepShopifySetup({
           You can also skip this and connect later from Settings &rarr; Integrations.
         </p>
       )}
+    </div>
+  );
+}
+
+function StepHistoricalImport({
+  mode,
+  setMode,
+  fromDate,
+  setFromDate,
+  fiscalYear,
+  fiscalStartMonth,
+  shopifyConnected,
+}: {
+  mode: "all" | "from_date" | "skip";
+  setMode: (v: "all" | "from_date" | "skip") => void;
+  fromDate: string;
+  setFromDate: (v: string) => void;
+  fiscalYear: number;
+  fiscalStartMonth: number;
+  shopifyConnected: boolean;
+}) {
+  const fiscalYearStartISO = `${fiscalYear}-${String(fiscalStartMonth).padStart(2, "0")}-01`;
+
+  const handleSelect = (v: "all" | "from_date" | "skip") => {
+    setMode(v);
+    if (v === "from_date" && !fromDate) {
+      setFromDate(fiscalYearStartISO);
+    }
+  };
+
+  const options: {
+    key: "all" | "from_date" | "skip";
+    title: string;
+    description: string;
+    badge?: string;
+  }[] = [
+    {
+      key: "all",
+      title: "Import all historical orders",
+      description:
+        "Pull every paid order your store has ever had. Best if you want a complete accounting history in Nxentra.",
+      badge: "Recommended",
+    },
+    {
+      key: "from_date",
+      title: "Import from a specific date",
+      description:
+        "Only pull orders placed on or after a date you choose. Good for a clean cutoff — e.g. the start of your fiscal year.",
+    },
+    {
+      key: "skip",
+      title: "Start fresh — only sync new orders from today",
+      description:
+        "Don't backfill anything. Use this if you already keep books elsewhere and don't want to double-count historical orders.",
+    },
+  ];
+
+  return (
+    <div>
+      <h2 className="text-xl font-semibold mb-1">Import Historical Orders</h2>
+      <p className="text-sm text-muted-foreground mb-6">
+        Choose how much of your Shopify order history you&apos;d like to bring
+        into Nxentra. You can always re-run an import later from Settings.
+      </p>
+
+      {!shopifyConnected && (
+        <div className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-amber-600 dark:text-amber-400">
+          Shopify isn&apos;t connected yet. You can finish onboarding and set up
+          the import later from Settings &rarr; Integrations.
+        </div>
+      )}
+
+      <div className="grid gap-3">
+        {options.map((opt) => {
+          const isSelected = mode === opt.key;
+          return (
+            <button
+              key={opt.key}
+              type="button"
+              onClick={() => handleSelect(opt.key)}
+              disabled={!shopifyConnected}
+              className={cn(
+                "flex items-start gap-4 rounded-xl border-2 p-4 text-start transition-all",
+                isSelected
+                  ? "border-accent bg-accent/5"
+                  : "border-border hover:border-muted-foreground/30",
+                !shopifyConnected && "opacity-50 cursor-not-allowed"
+              )}
+            >
+              <div
+                className={cn(
+                  "flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full border-2 mt-0.5 transition-colors",
+                  isSelected
+                    ? "border-accent bg-accent text-primary-foreground"
+                    : "border-muted-foreground/30"
+                )}
+              >
+                {isSelected && <Check className="h-3.5 w-3.5" />}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium">{opt.title}</span>
+                  {opt.badge && (
+                    <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-accent/10 text-accent">
+                      {opt.badge}
+                    </span>
+                  )}
+                </div>
+                <p className="text-sm text-muted-foreground mt-1">
+                  {opt.description}
+                </p>
+                {opt.key === "from_date" && isSelected && (
+                  <div className="mt-3" onClick={(e) => e.stopPropagation()}>
+                    <Label htmlFor="import-from-date" className="text-xs">
+                      Start date
+                    </Label>
+                    <Input
+                      id="import-from-date"
+                      type="date"
+                      value={fromDate}
+                      onChange={(e) => setFromDate(e.target.value)}
+                      className="mt-1 max-w-xs"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Defaulted to the start of your fiscal year.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="mt-6 rounded-lg bg-muted/50 p-4 text-xs text-muted-foreground">
+        <p>
+          <strong className="text-foreground">How this works:</strong> paid
+          orders (Paymob, PayPal, etc.) are booked to your ledger on import.
+          Pending orders — including cash-on-delivery — are captured for
+          visibility and will post to accounting automatically once Shopify
+          marks them paid.
+        </p>
+      </div>
     </div>
   );
 }

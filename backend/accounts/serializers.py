@@ -215,6 +215,14 @@ class OnboardingSetupInputSerializer(serializers.Serializer):
         default=None,
     )
 
+    # Shopify historical import (only used when business_type == "shopify" and store is connected)
+    import_mode = serializers.ChoiceField(
+        choices=["all", "from_date", "skip"],
+        required=False,
+        default="skip",
+    )
+    import_from_date = serializers.DateField(required=False, allow_null=True, default=None)
+
 
 class LoginInputSerializer(serializers.Serializer):
     """Input for login (extends simplejwt)."""
