@@ -127,6 +127,7 @@ describe('RegisterPage', () => {
     fireEvent.change(screen.getByTestId('name'), { target: { value: 'Test User' } });
     fireEvent.change(screen.getByTestId('password'), { target: { value: 'password123' } });
     fireEvent.change(screen.getByTestId('company_name'), { target: { value: 'acme' } });
+    fireEvent.click(screen.getByRole('checkbox'));
     fireEvent.click(screen.getByRole('button', { name: /launch workspace/i }));
 
     await waitFor(() => {
@@ -138,6 +139,7 @@ describe('RegisterPage', () => {
         company_name: 'acme',
         currency: 'USD',
         language: 'en',
+        tos_accepted: true,
       });
       expect(mockPush).toHaveBeenCalledWith('/verify-email?email=user%40test.com&sent=true');
     });
@@ -153,6 +155,7 @@ describe('RegisterPage', () => {
     fireEvent.change(screen.getByTestId('name'), { target: { value: 'User' } });
     fireEvent.change(screen.getByTestId('password'), { target: { value: 'password123' } });
     fireEvent.change(screen.getByTestId('company_name'), { target: { value: 'acme' } });
+    fireEvent.click(screen.getByRole('checkbox'));
     fireEvent.click(screen.getByRole('button', { name: /launch workspace/i }));
 
     await waitFor(() => {
@@ -168,6 +171,7 @@ describe('RegisterPage', () => {
     fireEvent.change(screen.getByTestId('name'), { target: { value: 'User' } });
     fireEvent.change(screen.getByTestId('password'), { target: { value: 'password123' } });
     fireEvent.change(screen.getByTestId('company_name'), { target: { value: 'acme' } });
+    fireEvent.click(screen.getByRole('checkbox'));
     fireEvent.click(screen.getByRole('button', { name: /launch workspace/i }));
 
     await waitFor(() => {
