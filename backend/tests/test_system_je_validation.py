@@ -378,6 +378,28 @@ def shopify_company(db):
         )
     _ensure_shopify_sales_setup(store)
 
+    # post_sales_invoice (called by the Shopify accounting projection) requires
+    # an OPEN FiscalPeriod covering the invoice date. Synthetic test events use
+    # today's date, so create a period covering the current month.
+    import calendar
+
+    from projections.models import FiscalPeriod
+
+    today = date.today()
+    last_day = calendar.monthrange(today.year, today.month)[1]
+    with projection_writes_allowed():
+        FiscalPeriod.objects.get_or_create(
+            company=company,
+            fiscal_year=today.year,
+            period=today.month,
+            defaults=dict(
+                period_type=FiscalPeriod.PeriodType.NORMAL,
+                start_date=today.replace(day=1),
+                end_date=today.replace(day=last_day),
+                status=FiscalPeriod.Status.OPEN,
+            ),
+        )
+
     return company
 
 
