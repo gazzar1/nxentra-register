@@ -362,6 +362,22 @@ def shopify_company(db):
             account=acct,
         )
 
+    # The Shopify accounting projection routes through the Sales module and
+    # requires an ACTIVE ShopifyStore with a default Customer + PostingProfile.
+    # Without this it silently no-ops, leaving JE count at 0.
+    from projections.write_barrier import command_writes_allowed
+    from shopify_connector.commands import _ensure_shopify_sales_setup
+    from shopify_connector.models import ShopifyStore
+
+    with command_writes_allowed():
+        store = ShopifyStore.objects.create(
+            company=company,
+            shop_domain=f"shopify-test-{uid}.myshopify.com",
+            access_token="test-token",
+            status=ShopifyStore.Status.ACTIVE,
+        )
+    _ensure_shopify_sales_setup(store)
+
     return company
 
 
