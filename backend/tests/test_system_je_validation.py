@@ -453,31 +453,37 @@ class TestShopifyReplayIdempotency:
 
     def test_replay_order_paid_no_duplicate_je(self, shopify_company):
         """Same SHOPIFY_ORDER_PAID event processed twice → only 1 JE created."""
-        from accounting.models import JournalEntry
+        from sales.models import SalesInvoice
         from shopify_connector.projections import ShopifyAccountingHandler
 
         handler = ShopifyAccountingHandler()
         event = _make_shopify_order_event(shopify_company, shopify_order_id=99001)
 
-        # First processing — should create a JE
+        # First processing — should create a SalesInvoice with a posted JE
         handler.handle(event)
 
-        je_count_after_first = JournalEntry.objects.filter(
+        invoices_with_je = SalesInvoice.objects.filter(
             company=shopify_company,
-            source_module="shopify_connector",
-            memo__contains="99001",
+            source="shopify",
+            source_document_id="99001",
+            posted_journal_entry__isnull=False,
         ).count()
-        assert je_count_after_first == 1, f"Expected 1 JE after first processing, got {je_count_after_first}"
+        assert invoices_with_je == 1, (
+            f"Expected 1 invoice with a posted JE after first processing, got {invoices_with_je}"
+        )
 
         # Second processing (replay) — should be idempotent
         handler.handle(event)
 
-        je_count_after_replay = JournalEntry.objects.filter(
+        invoices_with_je_after_replay = SalesInvoice.objects.filter(
             company=shopify_company,
-            source_module="shopify_connector",
-            memo__contains="99001",
+            source="shopify",
+            source_document_id="99001",
+            posted_journal_entry__isnull=False,
         ).count()
-        assert je_count_after_replay == 1, f"Expected 1 JE after replay, got {je_count_after_replay}"
+        assert invoices_with_je_after_replay == 1, (
+            f"Expected 1 invoice with a posted JE after replay, got {invoices_with_je_after_replay}"
+        )
 
     def test_replay_does_not_emit_duplicate_events(self, shopify_company):
         """Replay of order paid does not emit a second JOURNAL_ENTRY_POSTED event."""
@@ -505,7 +511,7 @@ class TestShopifyReplayIdempotency:
 
     def test_different_orders_create_separate_jes(self, shopify_company):
         """Two different orders → 2 separate JEs."""
-        from accounting.models import JournalEntry
+        from sales.models import SalesInvoice
         from shopify_connector.projections import ShopifyAccountingHandler
 
         handler = ShopifyAccountingHandler()
@@ -516,11 +522,13 @@ class TestShopifyReplayIdempotency:
         handler.handle(event1)
         handler.handle(event2)
 
-        je_count = JournalEntry.objects.filter(
+        invoice_count = SalesInvoice.objects.filter(
             company=shopify_company,
-            source_module="shopify_connector",
+            source="shopify",
+            source_document_id__in=["99003", "99004"],
+            posted_journal_entry__isnull=False,
         ).count()
-        assert je_count == 2, f"Expected 2 JEs for 2 different orders, got {je_count}"
+        assert invoice_count == 2, f"Expected 2 invoices with JEs for 2 different orders, got {invoice_count}"
 
     def test_closed_period_creates_incomplete_not_posted(self, shopify_company):
         """Late Shopify webhook into closed period → INCOMPLETE, no JOURNAL_ENTRY_POSTED event."""
@@ -561,11 +569,20 @@ class TestShopifyReplayIdempotency:
 
         handler.handle(event)
 
-        # JE should exist but be INCOMPLETE
+        # Locate the JE via its parent SalesInvoice rather than memo/source_module
+        # (post_sales_invoice tags JE memo as "Sales Invoice {invoice_number}",
+        #  not the order_id, and leaves source_module unset).
+        from sales.models import SalesInvoice
+
+        invoice = SalesInvoice.objects.filter(
+            company=shopify_company,
+            source="shopify",
+            source_document_id="99005",
+        ).first()
+        assert invoice is not None, "SalesInvoice should be created even for closed period"
         je = JournalEntry.objects.filter(
             company=shopify_company,
-            source_module="shopify_connector",
-            memo__contains="99005",
+            memo=f"Sales Invoice {invoice.invoice_number}",
         ).first()
         assert je is not None, "JE should be created even for closed period"
         assert je.status == JournalEntry.Status.INCOMPLETE, f"Expected INCOMPLETE for closed period, got {je.status}"
