@@ -295,6 +295,47 @@ class TestRegisterSignup:
         assert result.data["user_public_id"]
         assert result.data["membership_public_id"]
 
+    def test_register_persists_currency_to_both_fields(self, db):
+        # Why: the registration form's currency choice must drive both
+        # default_currency (new transactions) AND functional_currency
+        # (accounting/reporting). A prior bug set only default_currency,
+        # leaving functional_currency at its USD model-default — so an
+        # EGP merchant silently got a USD ledger.
+        result = register_signup(
+            email="egpmerchant@example.com",
+            password="securepass123",
+            name="EGP Merchant",
+            company_name="EGP Merchant Co",
+            default_currency="EGP",
+        )
+
+        assert result.success is True
+        company = Company.objects.get(name="EGP Merchant Co")
+        assert company.default_currency == "EGP"
+        assert company.functional_currency == "EGP"
+
+    def test_register_view_honors_currency_request_key(self, db, api_client):
+        # Why: the frontend register form posts the chosen currency under
+        # the key `currency`, not `default_currency`. The view must read
+        # that key (with `default_currency` as a backwards-compat fallback).
+        response = api_client.post(
+            "/api/auth/register/",
+            data={
+                "email": "viewcurrency@example.com",
+                "password": "securepass123",
+                "name": "View Currency",
+                "company_name": "View Currency Co",
+                "currency": "EGP",
+                "tos_accepted": True,
+            },
+            format="json",
+        )
+
+        assert response.status_code in (200, 201), response.content
+        company = Company.objects.get(name="View Currency Co")
+        assert company.default_currency == "EGP"
+        assert company.functional_currency == "EGP"
+
 
 # =============================================================================
 # Company Switching Tests

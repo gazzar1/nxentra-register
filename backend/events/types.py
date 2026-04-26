@@ -926,6 +926,7 @@ class CompanyCreatedData(BaseEventData):
     name_ar: str = ""
     slug: str = ""
     default_currency: str = "USD"
+    functional_currency: str = "USD"
     fiscal_year_start_month: int = 1
     is_active: bool = True
 

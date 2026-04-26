@@ -186,6 +186,7 @@ def register_signup(
                 slug=slug,
                 public_id=company_public_id,
                 default_currency=default_currency,
+                functional_currency=default_currency,
             )
 
             # Create TenantDirectory entry (same transaction as Company)
@@ -217,6 +218,8 @@ def register_signup(
                 company_public_id=str(company_public_id),
                 name=company_name.strip(),
                 slug=slug,
+                default_currency=default_currency,
+                functional_currency=default_currency,
             ).to_dict(),
         )
 
@@ -484,6 +487,7 @@ def create_company(user, company_name: str, default_currency: str = "USD") -> Co
                 slug=slug,
                 public_id=company_public_id,
                 default_currency=default_currency,
+                functional_currency=default_currency,
             )
 
             # Create TenantDirectory entry (same transaction as Company)
@@ -515,6 +519,8 @@ def create_company(user, company_name: str, default_currency: str = "USD") -> Co
                 company_public_id=str(company_public_id),
                 name=company_name.strip(),
                 slug=slug,
+                default_currency=default_currency,
+                functional_currency=default_currency,
             ).to_dict(),
         )
 

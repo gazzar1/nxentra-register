@@ -48,6 +48,7 @@ class CompanyProjection(BaseProjection):
                     "name_ar": data.get("name_ar", ""),
                     "slug": data.get("slug", ""),
                     "default_currency": data.get("default_currency", "USD"),
+                    "functional_currency": data.get("functional_currency", data.get("default_currency", "USD")),
                     "fiscal_year_start_month": data.get("fiscal_year_start_month", 1),
                     "is_active": data.get("is_active", True),
                 },

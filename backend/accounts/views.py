@@ -142,7 +142,7 @@ class RegisterView(APIView):
             company_name=data["company_name"],
             name=data.get("name", ""),
             phone=data.get("phone", ""),
-            default_currency=data.get("default_currency", "USD"),
+            default_currency=(data.get("currency") or data.get("default_currency") or "USD"),
             tos_accepted=data.get("tos_accepted", False),
         )
 
