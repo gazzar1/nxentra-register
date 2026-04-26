@@ -1702,12 +1702,13 @@ def _ensure_shopify_warehouse(store):
             )
             logger.info("Created fallback Shopify warehouse for %s", store.shop_domain)
 
-    # Ensure at least one default warehouse exists
-    if not Warehouse.objects.filter(company=store.company, is_default=True).exists():
-        first = Warehouse.objects.filter(company=store.company, is_active=True).first()
-        if first:
-            first.is_default = True
-            first.save(update_fields=["is_default"])
+        # Ensure at least one default warehouse exists (must stay inside
+        # command_writes_allowed — Warehouse is a projection-owned model).
+        if not Warehouse.objects.filter(company=store.company, is_default=True).exists():
+            first = Warehouse.objects.filter(company=store.company, is_active=True).first()
+            if first:
+                first.is_default = True
+                first.save(update_fields=["is_default"])
 
 
 def _get_shopify_warehouse(company):
