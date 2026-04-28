@@ -16,6 +16,7 @@ This ensures:
 
 import hashlib
 import json
+import logging
 import uuid
 
 from django.conf import settings
@@ -55,6 +56,8 @@ from events.types import (
     UserUpdatedData,
 )
 from projections.write_barrier import auth_writes_allowed, bootstrap_writes_allowed, command_writes_allowed
+
+logger = logging.getLogger(__name__)
 
 User = get_user_model()
 
@@ -3434,6 +3437,7 @@ def complete_onboarding(
     # ---- Shopify auto-configuration ----
     if business_type == "shopify":
         _setup_shopify_accounts(company)
+        _finalize_shopify_stores(actor, company)
 
     # ---- Step 5: Mark onboarding complete ----
     with command_writes_allowed():
@@ -3468,6 +3472,58 @@ def complete_onboarding(
 
     company.refresh_from_db()
     return CommandResult.ok({"company": company})
+
+
+def _finalize_shopify_stores(actor: ActorContext, company) -> None:
+    """
+    Wire up sales routing + webhooks for any active Shopify store on this company.
+
+    Why: at OAuth callback time the SHOPIFY_CLEARING GL account doesn't yet
+    exist (those are seeded by _setup_shopify_accounts during onboarding),
+    so _ensure_shopify_sales_setup short-circuits and the store ends up
+    with no default_customer / posting_profile. Without those, the
+    shopify_accounting projection silently no-ops on SHOPIFY_ORDER_PAID
+    events, leaving merchants with imported orders but no SalesInvoices /
+    JEs. This finalizer must run AFTER _setup_shopify_accounts and BEFORE
+    historical import is enqueued, so events emitted during sync find a
+    fully-configured store.
+
+    Both helpers are idempotent and best-effort: failures log a warning
+    rather than failing onboarding (the merchant can re-trigger from
+    Settings if Shopify's API is having a bad day).
+    """
+    from shopify_connector.commands import _ensure_shopify_sales_setup, register_webhooks
+    from shopify_connector.models import ShopifyStore
+
+    active_stores = ShopifyStore.objects.filter(
+        company=company,
+        status=ShopifyStore.Status.ACTIVE,
+    )
+    for store in active_stores:
+        try:
+            _ensure_shopify_sales_setup(store)
+        except Exception as exc:
+            logger.warning(
+                "Failed to set up sales routing for Shopify store %s during onboarding: %s",
+                store.shop_domain,
+                exc,
+            )
+        store.refresh_from_db()
+        if not store.webhooks_registered:
+            try:
+                result = register_webhooks(actor, store.id)
+                if not result.success:
+                    logger.warning(
+                        "Failed to register webhooks for Shopify store %s during onboarding: %s",
+                        store.shop_domain,
+                        result.error,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "register_webhooks raised for Shopify store %s during onboarding: %s",
+                    store.shop_domain,
+                    exc,
+                )
 
 
 def _enqueue_shopify_historical_import(company, import_mode: str, import_from_date) -> None:
