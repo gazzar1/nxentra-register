@@ -37,6 +37,20 @@ function statusBadge(status: ShopifyOrder["status"]) {
           Processed
         </Badge>
       );
+    case "PENDING_CAPTURE":
+      return (
+        <Badge variant="default" className="bg-amber-100 text-amber-800 hover:bg-amber-100">
+          <Clock className="me-1 h-3 w-3" />
+          Pending Capture
+        </Badge>
+      );
+    case "CANCELLED":
+      return (
+        <Badge variant="default" className="bg-gray-200 text-gray-700 hover:bg-gray-200">
+          <XCircle className="me-1 h-3 w-3" />
+          Cancelled
+        </Badge>
+      );
     case "ERROR":
       return (
         <Badge variant="destructive">

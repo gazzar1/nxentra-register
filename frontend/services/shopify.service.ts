@@ -32,7 +32,7 @@ export interface ShopifyOrder {
   financial_status: string;
   gateway: string;
   order_date: string;
-  status: "RECEIVED" | "PROCESSED" | "ERROR";
+  status: "RECEIVED" | "PENDING_CAPTURE" | "PROCESSED" | "CANCELLED" | "ERROR";
   journal_entry_id: string | null;
   error_message: string;
   created_at: string;
