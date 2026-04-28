@@ -10,6 +10,7 @@ import {
   CheckCircle2,
   XCircle,
   AlertCircle,
+  Clock,
   Loader2,
   ArrowRight,
   ReceiptText,
@@ -226,6 +227,10 @@ export default function ShopifyDashboardPage() {
                           </span>
                           {order.status === "PROCESSED" ? (
                             <CheckCircle2 className="h-4 w-4 text-green-500" />
+                          ) : order.status === "PENDING_CAPTURE" ? (
+                            <Clock className="h-4 w-4 text-amber-500" />
+                          ) : order.status === "CANCELLED" ? (
+                            <XCircle className="h-4 w-4 text-muted-foreground" />
                           ) : order.status === "ERROR" ? (
                             <XCircle className="h-4 w-4 text-destructive" />
                           ) : (
