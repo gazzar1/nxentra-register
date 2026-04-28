@@ -445,8 +445,10 @@ def _process_order_paid_inner(store: ShopifyStore, payload: dict) -> CommandResu
         if sku:
             _auto_create_item_from_line(store, sku, item)
 
-    # Extract customer info
-    customer = payload.get("customer", {})
+    # Extract customer info. Shopify sends "customer": null when the order
+    # has no customer attached (e.g. admin-created draft marked-as-paid),
+    # so dict.get's default doesn't help — coerce explicitly.
+    customer = payload.get("customer") or {}
 
     # Emit event for projection
     from events.emitter import emit_event_no_actor
