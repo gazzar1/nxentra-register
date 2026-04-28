@@ -115,6 +115,109 @@ def test_finalize_shopify_stores_wires_sales_routing_and_registers_webhooks(db, 
     assert store.webhooks_registered is True
 
 
+def test_auto_created_item_from_shopify_line_gets_all_four_gl_accounts(db, company, monkeypatch):
+    # Why: when a Shopify webhook order arrives with a SKU we don't yet
+    # have an Item for, _auto_create_item_from_line creates one. The
+    # newly-created Item must have sales / purchase / inventory / cogs
+    # accounts auto-filled from the company's shopify_connector
+    # ModuleAccountMapping — otherwise the merchant's books are
+    # incomplete: COGS won't book on fulfillment, the Item edit page
+    # shows None for all four, etc. The defaults are sensible starting
+    # points; the merchant can override per-item later by editing the Item.
+    #
+    # Surfaced live during A1 dry-run: HEAD-001 auto-created from
+    # Shopify orders had Sales/Purchase/Inventory/COGS = None across
+    # multiple test companies (Aljazeera2, 3, 4) because the previous
+    # implementation looked for accounts at codes 1300/5100 instead of
+    # the 13000/51000 created by _setup_shopify_accounts, AND the
+    # ModuleAccountMapping for INVENTORY/COGS roles was never read.
+    from accounting.mappings import ModuleAccountMapping
+    from accounting.models import Account
+    from projections.write_barrier import command_writes_allowed, projection_writes_allowed
+    from sales.models import Item
+    from shopify_connector.commands import _auto_create_item_from_line
+    from shopify_connector.models import ShopifyStore
+
+    # Seed the four accounts + mappings the way _setup_shopify_accounts would.
+    with projection_writes_allowed():
+        sales_acct = Account.objects.projection().create(
+            company=company,
+            code="41000",
+            name="Sales Revenue",
+            account_type=Account.AccountType.REVENUE,
+            status=Account.Status.ACTIVE,
+        )
+        clearing_acct = Account.objects.projection().create(
+            company=company,
+            code="11500",
+            name="Shopify Clearing",
+            account_type=Account.AccountType.ASSET,
+            status=Account.Status.ACTIVE,
+        )
+        inventory_acct = Account.objects.projection().create(
+            company=company,
+            code="13000",
+            name="Inventory",
+            account_type=Account.AccountType.ASSET,
+            status=Account.Status.ACTIVE,
+        )
+        cogs_acct = Account.objects.projection().create(
+            company=company,
+            code="51000",
+            name="Cost of Goods Sold",
+            account_type=Account.AccountType.EXPENSE,
+            status=Account.Status.ACTIVE,
+        )
+    for role, account in [
+        ("SALES_REVENUE", sales_acct),
+        ("SHOPIFY_CLEARING", clearing_acct),
+        ("INVENTORY", inventory_acct),
+        ("COGS", cogs_acct),
+    ]:
+        ModuleAccountMapping.objects.create(
+            company=company,
+            module="shopify_connector",
+            role=role,
+            account=account,
+        )
+
+    with command_writes_allowed():
+        store = ShopifyStore.objects.create(
+            company=company,
+            shop_domain="auto-item-test.myshopify.com",
+            access_token="test-token",
+            status=ShopifyStore.Status.ACTIVE,
+        )
+
+    # Skip the cost-fetch and currency-conversion API calls.
+    monkeypatch.setattr(
+        "shopify_connector.commands._fetch_variant_cost",
+        lambda *_a, **_kw: __import__("decimal").Decimal("250.00"),
+    )
+    monkeypatch.setattr(
+        "shopify_connector.commands._get_shopify_store_currency",
+        lambda _store: "EGP",
+    )
+
+    line_item = {
+        "title": "Head-phones",
+        "price": "500.00",
+        "sku": "HEAD-001",
+        "variant_id": 999,
+        "product_id": 888,
+    }
+    _auto_create_item_from_line(store, "HEAD-001", line_item)
+
+    item = Item.objects.get(company=company, code="HEAD-001")
+    assert item.sales_account_id == sales_acct.id, "Sales account should default from SALES_REVENUE mapping"
+    assert item.inventory_account_id == inventory_acct.id, "Inventory account should default from INVENTORY mapping"
+    assert item.cogs_account_id == cogs_acct.id, "COGS account should default from COGS mapping"
+    # Purchase defaults to inventory account for stocked items — user can override later.
+    assert item.purchase_account_id == inventory_acct.id, (
+        "Purchase account should default to inventory for stocked items"
+    )
+
+
 def test_finalize_shopify_stores_swallows_webhook_failures(db, company, owner_membership, monkeypatch):
     # Onboarding must not fail wholesale when Shopify's webhook API has a
     # bad day — we want the merchant's books to be set up regardless.

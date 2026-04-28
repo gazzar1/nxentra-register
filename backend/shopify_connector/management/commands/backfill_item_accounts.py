@@ -14,10 +14,7 @@ from accounts.models import Company
 from accounts.rls import rls_bypass
 from projections.write_barrier import command_writes_allowed
 from sales.models import Item
-from shopify_connector.commands import (
-    _ensure_inventory_accounts,
-    _resolve_default_item_accounts,
-)
+from shopify_connector.commands import _resolve_default_item_accounts
 
 
 class Command(BaseCommand):
@@ -47,38 +44,41 @@ class Command(BaseCommand):
             total_updated = 0
 
             for company in companies:
-                # Find INVENTORY items missing cogs or inventory account
-                items = Item.objects.filter(
-                    company=company,
-                    item_type="INVENTORY",
-                    is_active=True,
-                ).filter(
-                    # Missing at least one required account
-                    cogs_account__isnull=True,
-                ) | Item.objects.filter(
-                    company=company,
-                    item_type="INVENTORY",
-                    is_active=True,
-                    inventory_account__isnull=True,
+                # Find INVENTORY items missing any of the four GL accounts.
+                from django.db.models import Q
+
+                items = (
+                    Item.objects.filter(
+                        company=company,
+                        item_type="INVENTORY",
+                        is_active=True,
+                    )
+                    .filter(
+                        Q(cogs_account__isnull=True)
+                        | Q(inventory_account__isnull=True)
+                        | Q(sales_account__isnull=True)
+                        | Q(purchase_account__isnull=True)
+                    )
+                    .distinct()
                 )
-                items = items.distinct()
 
                 if not items.exists():
                     self.stdout.write(f"  {company.slug}: no items need backfill")
                     continue
 
-                _ensure_inventory_accounts(company)
                 defaults = _resolve_default_item_accounts(company)
 
                 inv_account = defaults.get("inventory")
                 cogs_account = defaults.get("cogs")
                 sales_account = defaults.get("sales")
+                purchase_account = defaults.get("purchase")
 
                 if not inv_account or not cogs_account:
                     self.stdout.write(
                         self.style.WARNING(
                             f"  {company.slug}: could not resolve "
-                            f"inventory ({inv_account}) or COGS ({cogs_account}) account"
+                            f"inventory ({inv_account}) or COGS ({cogs_account}) account "
+                            f"— ensure Shopify onboarding ran (_setup_shopify_accounts)"
                         )
                     )
                     continue
@@ -95,6 +95,9 @@ class Command(BaseCommand):
                     if not item.sales_account and sales_account:
                         item.sales_account = sales_account
                         changes.append("sales")
+                    if not item.purchase_account and purchase_account:
+                        item.purchase_account = purchase_account
+                        changes.append("purchase")
 
                     if changes:
                         if dry_run:
@@ -107,6 +110,7 @@ class Command(BaseCommand):
                                         "inventory_account_id" if "inventory" in changes else None,
                                         "cogs_account_id" if "cogs" in changes else None,
                                         "sales_account_id" if "sales" in changes else None,
+                                        "purchase_account_id" if "purchase" in changes else None,
                                     ]
                                     if f
                                 ],

@@ -1968,9 +1968,10 @@ def _auto_create_item_from_line(store, sku: str, line_item: dict):
     variant_id = line_item.get("variant_id")
     product_id = line_item.get("product_id")
 
-    # Resolve default accounts (COGS, Inventory, Sales) so fulfillment
-    # can generate COGS journal entries later.
-    _ensure_inventory_accounts(store.company)
+    # Resolve default accounts (Sales, Inventory, COGS, Purchase) so the
+    # merchant gets a usable Item out of the box and so fulfillment can
+    # generate COGS journal entries later. Driven by ModuleAccountMapping
+    # which is seeded by _setup_shopify_accounts during onboarding.
     defaults = _resolve_default_item_accounts(store.company)
 
     # Fetch cost from Shopify's product data (cost_per_item on variant)
@@ -2075,9 +2076,6 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
 
     # Ensure Shopify warehouse exists
     _ensure_shopify_warehouse(store)
-
-    # Ensure Inventory + COGS accounts exist
-    _ensure_inventory_accounts(store.company)
 
     company = store.company
 
@@ -2457,59 +2455,33 @@ def _fetch_inventory_item_costs(store, inventory_item_ids, headers):
     return cost_map
 
 
-def _ensure_inventory_accounts(company):
-    """Ensure Inventory and COGS GL accounts exist for the company."""
-    from accounting.models import Account
-    from projections.write_barrier import projection_writes_allowed
-
-    ACCOUNTS = [
-        ("1300", "Inventory", "المخزون", "ASSET", "INVENTORY"),
-        ("5100", "Cost of Goods Sold", "تكلفة البضاعة المباعة", "EXPENSE", "COGS"),
-    ]
-    with command_writes_allowed(), projection_writes_allowed():
-        for code, name, name_ar, acct_type, role in ACCOUNTS:
-            try:
-                Account.objects.get_or_create(
-                    company=company,
-                    code=code,
-                    defaults={
-                        "name": name,
-                        "name_ar": name_ar,
-                        "account_type": acct_type,
-                        "role": role,
-                        "ledger_domain": "FINANCIAL",
-                        "status": "ACTIVE",
-                        "normal_balance": "DEBIT",
-                    },
-                )
-            except Exception as exc:
-                logger.warning("Failed to ensure account %s: %s", code, exc)
-
-
 def _resolve_default_item_accounts(company):
-    """Resolve default accounts for new Items from module mappings and GL."""
+    """Resolve default GL accounts for newly auto-created Items.
+
+    All four accounts come from the company's shopify_connector
+    ModuleAccountMapping, which is seeded by accounts.commands._setup_shopify_accounts
+    during onboarding. The merchant can override any of them per-item later
+    by editing the Item — these are just sensible defaults so the books
+    don't end up incomplete the moment a Shopify webhook arrives.
+
+    purchase_account defaults to the inventory account: for stocked
+    inventory items, a purchase debits inventory (asset), so the same
+    account is the conventional default. The user can repoint it to a
+    dedicated purchase clearing account later if they want.
+    """
     from accounting.mappings import ModuleAccountMapping
-    from accounting.models import Account
 
-    result = {}
+    result = {"sales": None, "purchase": None, "inventory": None, "cogs": None}
 
-    # Sales account from Shopify module mapping
     mapping = ModuleAccountMapping.get_mapping(company, "shopify_connector")
-    if mapping:
-        result["sales"] = mapping.get("SALES_REVENUE")
-        result["purchase"] = mapping.get("SHOPIFY_CLEARING")
+    if not mapping:
+        return result
 
-    # Inventory + COGS by account code convention
-    result["inventory"] = Account.objects.filter(
-        company=company,
-        code="1300",
-        status="ACTIVE",
-    ).first()
-    result["cogs"] = Account.objects.filter(
-        company=company,
-        code="5100",
-        status="ACTIVE",
-    ).first()
+    result["sales"] = mapping.get("SALES_REVENUE")
+    result["inventory"] = mapping.get("INVENTORY")
+    result["cogs"] = mapping.get("COGS")
+    # Default purchase account to inventory for stocked items.
+    result["purchase"] = result["inventory"]
 
     return result
 
