@@ -218,6 +218,145 @@ def test_auto_created_item_from_shopify_line_gets_all_four_gl_accounts(db, compa
     )
 
 
+def test_auto_create_and_update_defaults_never_overwrite_user_customizations(db, company, monkeypatch):
+    # Why: a merchant may edit an auto-created Item and re-point its GL
+    # accounts to custom ones (e.g. "Headphones Revenue" instead of the
+    # generic "Sales Revenue", or a separate inventory sub-account per
+    # category). Subsequent Shopify activity — order webhooks bringing in
+    # the same SKU, manual product re-syncs — must NEVER overwrite those
+    # customizations. Defaults are sticky for new items, user changes are
+    # sticky for existing items: fill-if-empty, never overwrite.
+    from accounting.mappings import ModuleAccountMapping
+    from accounting.models import Account
+    from projections.write_barrier import command_writes_allowed, projection_writes_allowed
+    from sales.models import Item
+    from shopify_connector.commands import _auto_create_item_from_line, _update_item_defaults
+    from shopify_connector.models import ShopifyStore
+
+    # Seed Shopify default accounts + mappings (what onboarding would do).
+    with projection_writes_allowed():
+        default_sales = Account.objects.projection().create(
+            company=company,
+            code="41000",
+            name="Sales Revenue",
+            account_type=Account.AccountType.REVENUE,
+            status=Account.Status.ACTIVE,
+        )
+        default_inventory = Account.objects.projection().create(
+            company=company,
+            code="13000",
+            name="Inventory",
+            account_type=Account.AccountType.ASSET,
+            status=Account.Status.ACTIVE,
+        )
+        default_cogs = Account.objects.projection().create(
+            company=company,
+            code="51000",
+            name="Cost of Goods Sold",
+            account_type=Account.AccountType.EXPENSE,
+            status=Account.Status.ACTIVE,
+        )
+        # Custom user-chosen accounts that DIFFER from the defaults.
+        custom_sales = Account.objects.projection().create(
+            company=company,
+            code="41001",
+            name="Headphones Revenue",
+            account_type=Account.AccountType.REVENUE,
+            status=Account.Status.ACTIVE,
+        )
+        custom_inventory = Account.objects.projection().create(
+            company=company,
+            code="13001",
+            name="Audio Inventory",
+            account_type=Account.AccountType.ASSET,
+            status=Account.Status.ACTIVE,
+        )
+        custom_cogs = Account.objects.projection().create(
+            company=company,
+            code="51001",
+            name="Audio COGS",
+            account_type=Account.AccountType.EXPENSE,
+            status=Account.Status.ACTIVE,
+        )
+    for role, account in [
+        ("SALES_REVENUE", default_sales),
+        ("INVENTORY", default_inventory),
+        ("COGS", default_cogs),
+    ]:
+        ModuleAccountMapping.objects.create(
+            company=company,
+            module="shopify_connector",
+            role=role,
+            account=account,
+        )
+
+    with command_writes_allowed():
+        store = ShopifyStore.objects.create(
+            company=company,
+            shop_domain="preserve-test.myshopify.com",
+            access_token="test-token",
+            status=ShopifyStore.Status.ACTIVE,
+        )
+        # Merchant manually created (or edited) an Item with custom accounts.
+        existing_item = Item.objects.create(
+            company=company,
+            code="HEAD-001",
+            name="Head-phones (manually configured)",
+            item_type="INVENTORY",
+            default_unit_price=500,
+            sales_account=custom_sales,
+            inventory_account=custom_inventory,
+            cogs_account=custom_cogs,
+            purchase_account=custom_inventory,
+            costing_method="WEIGHTED_AVERAGE",
+            is_active=True,
+        )
+
+    monkeypatch.setattr(
+        "shopify_connector.commands._fetch_variant_cost",
+        lambda *_a, **_kw: __import__("decimal").Decimal("250.00"),
+    )
+    monkeypatch.setattr(
+        "shopify_connector.commands._get_shopify_store_currency",
+        lambda _store: "EGP",
+    )
+
+    # Path 1: a Shopify webhook comes in with HEAD-001. The auto-create
+    # helper must short-circuit because the Item already exists — it does
+    # not touch GL accounts on existing items.
+    _auto_create_item_from_line(
+        store,
+        "HEAD-001",
+        {
+            "title": "Head-phones",
+            "price": "500.00",
+            "sku": "HEAD-001",
+            "variant_id": 999,
+            "product_id": 888,
+        },
+    )
+
+    # Path 2: a manual product re-sync calls _update_item_defaults against
+    # the existing item with the company-level defaults. Each assignment
+    # is gated on `not item.<account>` — already-set fields stay put.
+    _update_item_defaults(
+        existing_item,
+        cost=__import__("decimal").Decimal("250.00"),
+        inv_account=default_inventory,
+        cogs_account=default_cogs,
+        sales_account=default_sales,
+        purchase_account=default_inventory,
+    )
+
+    existing_item.refresh_from_db()
+    assert existing_item.sales_account_id == custom_sales.id, "Custom sales account must survive auto-create + update"
+    assert existing_item.inventory_account_id == custom_inventory.id, "Custom inventory account must survive"
+    assert existing_item.cogs_account_id == custom_cogs.id, "Custom COGS account must survive"
+    assert existing_item.purchase_account_id == custom_inventory.id, "Custom purchase account must survive"
+    # And exactly one Item exists for this SKU — no duplicate created.
+    assert Item.objects.filter(company=company, code="HEAD-001").count() == 1
+
+
 def test_finalize_shopify_stores_swallows_webhook_failures(db, company, owner_membership, monkeypatch):
     # Onboarding must not fail wholesale when Shopify's webhook API has a
     # bad day — we want the merchant's books to be set up regardless.
