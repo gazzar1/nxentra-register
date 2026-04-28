@@ -492,7 +492,9 @@ class ShopifyAccountingHandler(BaseProjection):
             context["REFERRER"] = val_code
 
         # 12. CUST_SEGMENT — customer tags (Revenue + COGS)
-        customer = raw.get("customer", {})
+        # Shopify sends "customer": null when the order has no customer attached;
+        # dict.get default doesn't catch that, so coerce explicitly.
+        customer = raw.get("customer") or {}
         customer_tags = customer.get("tags", "")
         if customer_tags:
             first_tag = customer_tags.split(",")[0].strip()
