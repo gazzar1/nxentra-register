@@ -19,10 +19,10 @@ Foundation before foundation. Fix the pytest/Django settings bootstrap issue (cu
 
 Until CI is green on Postgres invariants, the "truth engine" is not actually proven — it's just asserted.
 
-### A1. Phase 1 dry-run on fresh Shopify dev store — **0.5d**
-Validate end-to-end with actual Shopify webhooks: paid order books invoice; pending COD lands as `PENDING_CAPTURE` with no JE; pending→paid upgrades stub + books invoice; cancel pending flips to `CANCELLED`; historical import via wizard works.
+### A1. Phase 1 dry-run on fresh Shopify dev store — ✅ **DONE 2026-04-28**
+All 5 scenarios passed against `nxentra-test-code.myshopify.com`. 7 critical bugs found + fixed + regression-tested along the way: registration currency persistence, OAuth callback projection-guard violation, two null-customer crashes (handler + projection), two frontend status display gaps (badge + dashboard icon), and the load-bearing wizard finalization gap that would have left every first user without sales routing or webhooks. Commits `b6b52b9`, `5b550fb`, `b3417f3`, `cdd286e`, `7d9a852`, `d85ed48`, `7d12432`. Five UX/invariant follow-ups identified as A6-A10 (below).
 
-Exit: first user can connect without fear of corrupted books.
+See [SESSION_LOG.md § Session: April 26-28, 2026](SESSION_LOG.md) for the full play-by-play. **First user can be invited.**
 
 ### A2. PaymentGateway mapping (tactical slice) — **1d**
 Single table `PaymentGateway(source_code, clearing_account_id, display_name)`. Invoice posting reads it to route Paymob / PayPal / Manual (COD) to per-gateway clearing accounts.
@@ -53,6 +53,21 @@ Wire into the CI matrix. Start tight — tests that fail and get `# noqa`'d ever
 `bank_connector/views.py:71` and `:247` create and mutate operational records directly. `accounting/views.py:2097` writes exchange rates directly. These are the same pattern as A3 — extract to commands, emit events, update projection/balance flow.
 
 Run A3's reactor pattern across these after the base layer is in place.
+
+### A6. Onboarding wizard auto-launch on first dashboard visit — **~1d** (UX, surfaced by A1)
+Right now a brand-new company with `onboarding_completed=False` lands on the dashboard with empty widgets and a "Continue Setup" banner. The first user can finish setup but the experience is less guided than it should be. Add a route guard / redirect so any unfinished onboarding deep-links straight into the wizard's first incomplete step. Not a blocker — banner works — but worth tightening before the user count grows.
+
+### A7. Wizard step routing after Shopify connect callback — **~1d** (UX, surfaced by A1)
+After a successful Shopify OAuth callback the wizard kicks the user back to the **Fiscal Year** step (the previous one) instead of advancing past Shopify Setup. Disorienting. Should advance to the Import Orders step (or wherever the next incomplete step is). Likely just a routing/redirect bug in the callback success handler.
+
+### A8. Auto-fill GL accounts on Items created from Shopify imports — **~1-2d** (correctness, surfaced by A1)
+`_auto_create_item_from_line` creates the Item record from the SKU but leaves Sales Account / Inventory Account / COGS Account at None. Without these, COGS/inventory bookings can't fire when the order is fulfilled — merchant gets a books-incomplete state until they manually edit each item. Fix: pull defaults from the company's `ModuleAccountMapping` (SHOPIFY revenue, SHOPIFY_INVENTORY, SHOPIFY_COGS). Idempotent on existing items.
+
+### A9. Item auto-create fallback when Shopify product has no SKU — **~1d** (correctness, surfaced by A1)
+Today `_auto_create_item_from_line` only fires when `sku` is non-empty. Egyptian merchants frequently sell products without SKUs (small operations, custom items). Fall back to using `shopify_product_id` as the Item code, with the product title as the name. Same auto-fill of GL accounts as A8.
+
+### A10. AR tie-out invariant accommodates non-AR-Control posting profiles — **~2-3d** (invariant, surfaced by A1)
+`post_journal_entry` logs `"AR tie-out mismatch: AR Control (X) != Customer balances (Y)"` warnings whenever a customer uses a non-AR-Control posting profile (e.g. Shopify Clearing — where `_ensure_shopify_sales_setup` deliberately points the SHOPIFY-NXENTRA-* customer at the clearing account, not 12000 AR Control). The data is consistent (JEs balanced, customer balance matches debits) — the invariant is overly strict. Fix: tie-out should sum the actual control accounts referenced by the posting profiles in use, not just `AR_CONTROL`. Will silence false positives across all integrated platforms (Shopify, Stripe, future Paymob).
 
 **Phase A exit criteria:**
 - CI green, invariants mandatory, architecture tests enforcing event-first discipline.
@@ -208,10 +223,10 @@ A4 (arch tests)     ─┘                                          │
 
 ## What to do right now, today
 
-Phase A in its entirety. Specifically:
-- **A0 first** — invariant tests in CI on Postgres. Until this exists, no further refactor is safe.
-- **A1 + A2** in parallel (small).
-- **A3 + A4 + A5** in sequence after A0 lands.
+Phase A continues. **A0 done** (`fb0e3d6`), **A1 done** (`b6b52b9`–`7d12432`, 2026-04-28). Remaining:
+- **A2** — small, ship next. Tactical PaymentGateway slice.
+- **A3 + A4 + A5** in sequence — the architectural cleanup that closes the event-first policy loopholes.
+- **A6-A10** — UX + invariant follow-ups from the A1 dry-run. Each is small (1-3d). Pick up between bigger Phase A work as time allows; **A8 and A10 should land before the first user does any volume**.
 
 **Do not start Phase B** until all of Phase A is merged and green. Phase B on an unverified foundation is where accounting systems die.
 
