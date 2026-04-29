@@ -60,14 +60,17 @@ Right now a brand-new company with `onboarding_completed=False` lands on the das
 ### A7. Wizard step routing after Shopify connect callback — **~1d** (UX, surfaced by A1)
 After a successful Shopify OAuth callback the wizard kicks the user back to the **Fiscal Year** step (the previous one) instead of advancing past Shopify Setup. Disorienting. Should advance to the Import Orders step (or wherever the next incomplete step is). Likely just a routing/redirect bug in the callback success handler.
 
-### A8. Auto-fill GL accounts on Items created from Shopify imports — **~1-2d** (correctness, surfaced by A1)
-`_auto_create_item_from_line` creates the Item record from the SKU but leaves Sales Account / Inventory Account / COGS Account at None. Without these, COGS/inventory bookings can't fire when the order is fulfilled — merchant gets a books-incomplete state until they manually edit each item. Fix: pull defaults from the company's `ModuleAccountMapping` (SHOPIFY revenue, SHOPIFY_INVENTORY, SHOPIFY_COGS). Idempotent on existing items.
+### A8. Auto-fill GL accounts on Items created from Shopify imports — ✅ **DONE 2026-04-29**
+Surfaced from A1: `_auto_create_item_from_line` was creating Items from Shopify SKUs but `_resolve_default_item_accounts` looked for accounts at the wrong codes (`1300`/`5100` instead of `13000`/`51000` that `_setup_shopify_accounts` actually creates), and the fallback `_ensure_inventory_accounts` used an invalid role string for ASSET accounts. Net result: every auto-created Item had Sales/Purchase/Inventory/COGS = None. Rewrote the resolver to read all four accounts from the company's shopify_connector ModuleAccountMapping (purchase defaults to inventory for stocked items). Deleted the broken fallback. Added two regression tests: defaults-on-create and preservation-on-update (proves merchant's manual GL account edits are never overwritten by future Shopify activity). Commits `71cb0d7`, `cd7f484`.
 
 ### A9. Item auto-create fallback when Shopify product has no SKU — **~1d** (correctness, surfaced by A1)
 Today `_auto_create_item_from_line` only fires when `sku` is non-empty. Egyptian merchants frequently sell products without SKUs (small operations, custom items). Fall back to using `shopify_product_id` as the Item code, with the product title as the name. Same auto-fill of GL accounts as A8.
 
 ### A10. AR tie-out invariant accommodates non-AR-Control posting profiles — **~2-3d** (invariant, surfaced by A1)
 `post_journal_entry` logs `"AR tie-out mismatch: AR Control (X) != Customer balances (Y)"` warnings whenever a customer uses a non-AR-Control posting profile (e.g. Shopify Clearing — where `_ensure_shopify_sales_setup` deliberately points the SHOPIFY-NXENTRA-* customer at the clearing account, not 12000 AR Control). The data is consistent (JEs balanced, customer balance matches debits) — the invariant is overly strict. Fix: tie-out should sum the actual control accounts referenced by the posting profiles in use, not just `AR_CONTROL`. Will silence false positives across all integrated platforms (Shopify, Stripe, future Paymob).
+
+### A11. Shopify JE should respect Item-level GL account overrides — **~2-3d** (correctness, surfaced by A8 review)
+The `shopify_accounting` projection's `_handle_order_paid` builds **one aggregate revenue line per order** posted to the company's `SALES_REVENUE` ModuleAccountMapping (account 41000) — it does not iterate line items or look up `Item.sales_account` per SKU. So if a merchant edits HEAD-001's Sales Account from "Sales Revenue" (41000) to "Headphones Revenue" (41001), manual invoices for HEAD-001 will credit 41001 but Shopify-imported orders for HEAD-001 will keep crediting 41000. Manual invoices respect Item.sales_account; Shopify-imported invoices don't. To fix: refactor `_handle_order_paid` to iterate `line_items`, look up Item by SKU, create one revenue line per item using `item.sales_account` (fall back to mapping if None). Need to think through tax + discount allocation per line. Not blocking the first user — company-level default works correctly until they want per-product revenue routing. Deferred deliberately so we can see whether the first user actually customizes per-item before pre-building.
 
 **Phase A exit criteria:**
 - CI green, invariants mandatory, architecture tests enforcing event-first discipline.
@@ -223,10 +226,10 @@ A4 (arch tests)     ─┘                                          │
 
 ## What to do right now, today
 
-Phase A continues. **A0 done** (`fb0e3d6`), **A1 done** (`b6b52b9`–`7d12432`, 2026-04-28). Remaining:
+Phase A continues. **A0 done** (`fb0e3d6`), **A1 done** (`b6b52b9`–`7d12432`, 2026-04-28), **A8 done** (`71cb0d7`, `cd7f484`, 2026-04-29). Remaining:
 - **A2** — small, ship next. Tactical PaymentGateway slice.
 - **A3 + A4 + A5** in sequence — the architectural cleanup that closes the event-first policy loopholes.
-- **A6-A10** — UX + invariant follow-ups from the A1 dry-run. Each is small (1-3d). Pick up between bigger Phase A work as time allows; **A8 and A10 should land before the first user does any volume**.
+- **A6, A7, A9, A10, A11** — UX + invariant + correctness follow-ups from A1/A8. Each is small (1-3d). Pick up between bigger Phase A work as time allows; **A10 and A11 land when first user signals they need them**.
 
 **Do not start Phase B** until all of Phase A is merged and green. Phase B on an unverified foundation is where accounting systems die.
 

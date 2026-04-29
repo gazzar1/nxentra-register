@@ -434,3 +434,78 @@ Final pytest tally on the affected suites: 116 passing (test_accounts: 31, test_
 - Frontend status display correctly differentiates pending COD from received ✓
 
 The first real user can now register fresh, connect their store, and have the integration work without intervention.
+
+---
+
+## Session: April 28-29, 2026 — A1 verification + A8 (Item GL account auto-fill)
+
+Continued from the A1 dry-run. Two goals: prove the wizard finalization fix from `7d12432` actually works against a fresh production user (not just the local mocked test), and close the A8 gap that was visible in every A1 test session — auto-created Items had Sales/Purchase/Inventory/COGS = None.
+
+### 1. Verified `7d12432` end-to-end on fresh production user
+
+Registered Aljazeera4 (mohamed.algazzar+test18@gmail.com). Walked the onboarding wizard cleanly. Surfaced and worked around two existing UX gaps already filed (A6 — wizard doesn't auto-launch on first dashboard visit; A7 — Shopify connect callback routes back to Fiscal Year step) and one new client-side bug:
+
+- **sessionStorage onboarding draft isn't company-scoped.** Key is `"onboarding_draft"`, not `"onboarding_draft:<company_id>"` — so when the user used Aljazeera3 first then Aljazeera4 in the same browser session, the wizard loaded Aljazeera3's "shopifyConnected: true" draft and falsely marked Aljazeera4's Shopify Setup step as complete (showing "Store Connected" panel even though Aljazeera4 had no store). API correctly returns `{connected: false}` for Aljazeera4, but the cached draft wins. Workaround: incognito window. Filed informally; not blocking.
+
+After clearing sessionStorage, walked the wizard end-to-end. **Result: HEAD-001 Item, INV-000001/2/3 SalesInvoices, JE-32-000001/2/3 Journal Entries all created automatically** — no manual `wire_aljazeera*` shell scripts needed. Final shell verification showed `webhooks=True cust=22 prof=23 status=ACTIVE` for Aljazeera4's store, exactly as the fix intended.
+
+`7d12432` is verified in production. The first user will get a clean, working integration without operator intervention.
+
+### 2. A8 — Auto-fill Item GL accounts from ModuleAccountMapping
+
+The Items page consistently showed Sales/Purchase/Inventory/COGS = None across every test company (Aljazeera2, 3, 4) for auto-created Items. Two parallel bugs:
+
+- `_resolve_default_item_accounts` looked up inventory/COGS by account code (`"1300"` and `"5100"`), but `_setup_shopify_accounts` during onboarding actually creates these at codes `"13000"` and `"51000"`. The lookup never matched.
+- Fallback `_ensure_inventory_accounts` tried to create code `"1300"` with `role="INVENTORY"` — but `"INVENTORY"` is not a valid choice for Asset accounts (only `"INVENTORY_VALUE"` is). Silent celery WARNING ("Failed to ensure account 1300: Value 'INVENTORY' is not a valid choice").
+
+Rewrote `_resolve_default_item_accounts` to read all four accounts from the company's `shopify_connector` ModuleAccountMapping (the canonical source seeded during onboarding). Defaults purchase to inventory account for stocked items — sensible default for inventory-typed items, merchant can override per-item later. Deleted the broken `_ensure_inventory_accounts` fallback entirely; no longer needed since `_finalize_shopify_stores` (`7d12432`) guarantees `_setup_shopify_accounts` runs first. Updated `backfill_item_accounts` management command to use the new resolver and to also backfill missing `purchase_account`. Commit `71cb0d7`.
+
+### 3. A8 follow-up — preservation regression test
+
+Confirmed by code reading that all three Item-touching code paths preserve user customizations:
+
+- `_auto_create_item_from_line` short-circuits at the top if an Item or ShopifyProduct mapping already exists for the SKU
+- `sync_products` for an existing mapping only updates `default_cost`, never GL accounts
+- `_update_item_defaults` gates every assignment on `not item.<account>` — fill-if-empty, never overwrite
+
+Pinned this contract with a regression test: create an Item with manually-customized accounts (different from the company defaults), run both `_auto_create_item_from_line` and `_update_item_defaults` against it, assert nothing changed. The behavior is correct in the code; the test prevents future refactors from silently breaking it. Commit `cd7f484`.
+
+### 4. A8 review surfaced A11 — Shopify JE bypasses Item-level account overrides
+
+While verifying A8 with the user, traced the JE-creation path to confirm whether item-level GL accounts actually flow into Shopify-imported journal entries. **They don't.** `shopify_accounting._handle_order_paid` builds one aggregate revenue line per order using the company's `SALES_REVENUE` ModuleAccountMapping — does not iterate line items or look up `Item.sales_account` per SKU. So if a merchant edits HEAD-001's Sales Account from the default to a custom "Headphones Revenue" account:
+
+- Manual sales invoices for HEAD-001 → credit the custom account ✓
+- Shopify-imported orders for HEAD-001 → still credit the company default ❌
+
+Filed as **A11** in NEXT_TASKS. Deliberately deferred (`a` chosen) — for the first user, there's no signal yet that per-item revenue routing matters. Real refactor (~2-3d) because line structure has to change from "one aggregate" to "per-item" and we need to think through tax + discount allocation per line. Not blocking.
+
+### 5. Files modified
+
+| File | Purpose |
+|---|---|
+| `backend/shopify_connector/commands.py` | `_resolve_default_item_accounts` reads all 4 accounts from ModuleAccountMapping; deleted broken `_ensure_inventory_accounts` |
+| `backend/shopify_connector/management/commands/backfill_item_accounts.py` | Use new resolver, backfill purchase_account too, broaden filter |
+| `backend/tests/test_shopify_oauth_setup.py` | Two new tests: defaults-on-create and preservation-on-update |
+
+### 6. Commits this session
+
+`71cb0d7`, `cd7f484`.
+
+### 7. Test counts
+
+117 passing across the affected suites (test_accounts: 31, test_shopify_oauth_setup: 5, test_shopify_webhook_handlers: 1, test_shopify_reconciliation: 19, test_system_je_validation: 13, test_events: 22, test_tenant_isolation: 27).
+
+---
+
+## Pending Work (Next Session)
+
+**Phase A continues:**
+
+1. ✅ A1, A8 done.
+2. **A2** — `PaymentGateway` mapping table. ~1 day. Tactical precursor to Phase B canonical work.
+3. **A3** — Reactor concept; migrate 3 projection-emits-event cases. ~4-5 days.
+4. **A4** — Architecture tests banning direct finance writes in views. 1-2 days.
+5. **A5** — Bank connector + FX direct-writes cleanup. 3-5 days.
+6. **A6, A7, A9, A10, A11** — UX + invariant + correctness follow-ups; pick up between bigger work. A10/A11 land when first user signals they need them.
+
+**First-user-invite preconditions are now over-met:** A1 validated, all critical bugs fixed, wizard finalization auto-wires sales routing + webhooks, Items get full GL account defaults on auto-create, user customizations are preservation-tested. Ready to invite.
