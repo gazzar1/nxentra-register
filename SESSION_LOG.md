@@ -581,7 +581,30 @@ Strategic recommendation accepted: defer A3-A5 (architectural cleanup) by ~3 wee
 
 **Week-4 strategic gates filed alongside the tickets** — four signals (clean onboarding, MVP query latency, first-user reaction to Control Center, CSV usability) determine whether the pivot was right or whether to course-correct before Phase B starts.
 
-Implementation begins next session. First step: invite the first user; in parallel, ship A12.
+### 8. Architectural review refined the rename and the COD model
+
+After the initial A12-A14 draft, two architectural review responses (forwarded by the user) sharpened three things:
+
+**(a) Rename the model now: PaymentGateway → SettlementProvider.** The model now covers Bosta, DHL, Aramex, bank transfer, and manual collection. Calling that a "PaymentGateway" actively misleads. Reviewer was correct that the "we'll remember what it means" pattern always fails — humans forget, AI agents definitely don't recover the implicit knowledge. Rename now (1-day-old model, bounded cost) before the wrong name spreads through A12-A14 wiring.
+
+**(b) Reconciliation pivots on "who holds/remits the money," not "how the customer paid."** Bosta-COD and DHL-COD are different reconciliation cases (different parties, different schedules, different bank deposits). The right primary identity is the *settlement provider*. `payment_method` (cash_on_delivery, card, wallet, bank_transfer) survives as a denormalized fact for analytics, but is not the reconciliation pivot. Drop `cash_on_delivery` as a provider value; keep it as a payment_method fact. Add `bosta` as a courier provider.
+
+**(c) FK over CharField for `default_cod_settlement_provider`.** A string field would create a parallel routing universe alongside the existing SettlementProvider table. FK with `on_delete=PROTECT` enforces referential integrity and surfaces config breakage loudly.
+
+**Two additional product decisions:**
+
+- **Default NULL, not seeded "bosta".** Reviewer's principle: *"do not hardcode the worldview that Egypt = Bosta."* The lazy-create + needs_review path exists for exactly this case — if a COD order arrives before the merchant configures, the row lazy-creates with `needs_review=True`, posts via fallback, surfaces in the Reconciliation Control Center. Smart suggestion in the wizard (driven by `company.default_currency`: EGP→Bosta, SAR→Mylerz, AED→Aramex) keeps friction low for the modal merchant without hiding the assumption.
+- **Radio (single-select), not checkboxes (multi-select).** The webhook from Shopify carries the gateway string but no courier identity; the projection has no resolution rule for picking among multiple checked couriers. Collecting data the system can't act on breaks trust. Single-select for Phase 1; checkboxes-with-primary + shipping-carrier resolution lands in A15 when first merchant has multi-courier volume.
+
+**Result — refined ticket structure in [NEXT_TASKS.md](NEXT_TASKS.md):**
+
+- **A2.5** — Rename PaymentGateway → SettlementProvider (~½d). Pure refactor; adds `provider_type` field (gateway/courier/bank_transfer/manual/marketplace). Bootstrap rows become paymob/paypal/shopify_payments/bosta/bank_transfer/manual/unknown.
+- **A12** — Settlement-provider dimension layer + COD wizard step (~2d). New `settlement_provider` AnalysisDimension; `SettlementProvider.dimension_value` FK; `ShopifyStore.default_cod_settlement_provider` FK (nullable, PROTECT, set via wizard); projection routes COD orders through `store.default_cod_settlement_provider` with lazy-create-on-NULL safety net.
+- **A13** — Reconciliation Control Center MVP (~5d). Drilldown is per-provider (Paymob, Bosta, …) instead of per-gateway. Tile icons follow `provider_type`.
+- **A14** — Manual settlement CSV import (~5-7d). Provider-agnostic `PAYMENT_SETTLEMENT_RECEIVED` event (renamed from `PAYMENT_GATEWAY_SETTLEMENT`); Paymob + Bosta parsers; Expected Bank Deposit clears regardless of which bank received it (multi-bank works through existing bank-account-per-GL pattern, no schema change).
+- **A15** — Multi-courier-per-store routing (~3-5d, deferred). Triggered when first merchant has multi-courier volume. Schema evolution: rename `default_cod_settlement_provider` → `primary_cod_settlement_provider`, add `cod_settlement_providers` M2M, resolution by `shipping_carrier` from fulfillment event.
+
+Implementation begins next session. First step: invite the first user; in parallel, ship A2.5 then A12.
 
 ---
 
