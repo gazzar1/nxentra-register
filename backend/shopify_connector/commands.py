@@ -1835,18 +1835,25 @@ def _ensure_shopify_sales_setup(store):
 
 # Default settlement-provider codes seen in Shopify payloads for MENA +
 # global merchants. Keep small and obvious — the lazy-create path handles
-# anything else. Note: `cash_on_delivery` is a transitional row preserved
-# from A2; A12 deactivates it and replaces with bosta (provider_type=courier)
-# once the COD wizard step ships and ShopifyStore.default_cod_settlement_provider
-# is wired in.
+# anything else. Note: `cash_on_delivery` is preserved as INACTIVE for
+# historical compatibility (A2 created it). A12 routes COD orders via
+# ShopifyStore.default_cod_settlement_provider (Bosta / DHL / Aramex /
+# Mylerz) instead of looking up by the raw "cash_on_delivery" gateway
+# string. Bosta is the suggested default for Egyptian merchants but is
+# not auto-selected for the store — explicit configuration only.
 _SHOPIFY_DEFAULT_PROVIDERS = (
-    ("paymob", "Paymob", "gateway"),
-    ("paypal", "PayPal", "gateway"),
-    ("manual", "Manual", "manual"),
-    ("shopify_payments", "Shopify Payments", "gateway"),
-    ("cash_on_delivery", "Cash on Delivery", "manual"),
-    ("bank_transfer", "Bank Transfer", "bank_transfer"),
-    ("unknown", "Unknown / Default", "manual"),
+    ("paymob", "Paymob", "gateway", True),
+    ("paypal", "PayPal", "gateway", True),
+    ("shopify_payments", "Shopify Payments", "gateway", True),
+    ("manual", "Manual", "manual", True),
+    ("bank_transfer", "Bank Transfer", "bank_transfer", True),
+    ("bosta", "Bosta", "courier", True),
+    ("unknown", "Unknown / Default", "manual", True),
+    # Transitional: A2 created cash_on_delivery as a provider; A12 routes
+    # COD orders via ShopifyStore.default_cod_settlement_provider instead.
+    # Kept inactive so it doesn't pollute reconciliation but historical
+    # JEs (already posted before A12) still resolve their dimension tag.
+    ("cash_on_delivery", "Cash on Delivery (deprecated)", "manual", False),
 )
 
 
@@ -1868,18 +1875,37 @@ def _bootstrap_shopify_settlement_providers(company, clearing_account, fallback_
     later edits to any one PostingProfile.control_account split a provider
     onto its own clearing sub-account.
 
+    A12: also creates the SETTLEMENT_PROVIDER AnalysisDimension + one
+    AnalysisDimensionValue per provider, and populates
+    SettlementProvider.dimension_value. The reconciliation engine pivots
+    JE lines on (clearing_account, dimension_value).
+
+    For SettlementProvider rows that already existed from A2 without the
+    dimension_value FK populated, this function backfills the FK on
+    re-run so the bootstrap is the canonical "make this state correct"
+    function.
+
     `fallback_profile` is reserved for the lazy-create path in projections
     (unknown gateway codes); we don't reference it here, but pass it
     through for symmetry / future use.
     """
-    from accounting.settlement_provider import SettlementProvider, normalize_gateway_code
+    from accounting.settlement_provider import (
+        SettlementProvider,
+        ensure_settlement_provider_dimension,
+        ensure_settlement_provider_dimension_value,
+        normalize_gateway_code,
+    )
     from sales.models import PostingProfile
 
+    # 1. Ensure the SETTLEMENT_PROVIDER AnalysisDimension exists.
+    dimension = ensure_settlement_provider_dimension(company)
+
     with command_writes_allowed(), projection_writes_allowed():
-        for raw_code, display_name, provider_type in _SHOPIFY_DEFAULT_PROVIDERS:
+        for raw_code, display_name, provider_type, is_active in _SHOPIFY_DEFAULT_PROVIDERS:
             normalized = normalize_gateway_code(raw_code)
             profile_code = _provider_profile_code(normalized)
 
+            # 2. PostingProfile per provider (anchored on clearing initially).
             provider_profile, _ = PostingProfile.objects.get_or_create(
                 company=company,
                 code=profile_code,
@@ -1898,7 +1924,15 @@ def _bootstrap_shopify_settlement_providers(company, clearing_account, fallback_
                 },
             )
 
-            SettlementProvider.objects.get_or_create(
+            # 3. AnalysisDimensionValue for the reconciliation tag.
+            dimension_value = ensure_settlement_provider_dimension_value(
+                dimension=dimension,
+                normalized_code=normalized,
+                display_name=display_name,
+            )
+
+            # 4. SettlementProvider row, with dimension_value populated.
+            provider, created = SettlementProvider.objects.get_or_create(
                 company=company,
                 external_system="shopify",
                 normalized_code=normalized,
@@ -1907,10 +1941,24 @@ def _bootstrap_shopify_settlement_providers(company, clearing_account, fallback_
                     "display_name": display_name,
                     "provider_type": provider_type,
                     "posting_profile": provider_profile,
-                    "is_active": True,
+                    "dimension_value": dimension_value,
+                    "is_active": is_active,
                     "needs_review": False,
                 },
             )
+            # Backfill on re-run: existing rows from A2 won't have
+            # dimension_value populated; set it now. Also enforce the
+            # is_active flag for cash_on_delivery (deprecated) so
+            # re-running bootstrap on an A2-era company deactivates it.
+            updates = []
+            if provider.dimension_value_id != dimension_value.id:
+                provider.dimension_value = dimension_value
+                updates.append("dimension_value")
+            if provider.is_active != is_active and normalized == "cash_on_delivery":
+                provider.is_active = is_active
+                updates.append("is_active")
+            if updates:
+                provider.save(update_fields=[*updates, "updated_at"])
 
 
 def _fetch_variant_cost(store, variant_id, convert_to_currency: str = "") -> Decimal:

@@ -1143,6 +1143,7 @@ def post_sales_invoice(
     actor: ActorContext,
     invoice_id: int,
     skip_cogs: bool = False,
+    control_line_analysis_tags: list | None = None,
 ) -> CommandResult:
     """
     Post a sales invoice, creating a journal entry and stock issues.
@@ -1153,6 +1154,11 @@ def post_sales_invoice(
     - Credit: VAT Payable (per tax code tax amounts)
     - Debit: COGS accounts (for inventory items, at current avg_cost)
     - Credit: Inventory accounts (for inventory items)
+
+    `control_line_analysis_tags` (A12): platform integrations pass dimension
+    tags here to tag the AR Control JE line with settlement_provider /
+    payout_batch_id. List of {dimension_public_id, value_public_id} dicts.
+    No-op for manual invoices (None default).
 
     For INVENTORY items:
     - Stock availability is checked (unless allow_negative_inventory is True)
@@ -1271,15 +1277,20 @@ def post_sales_invoice(
     line_no = 1
 
     # Debit AR Control (total amount with customer counterparty)
-    je_lines.append(
-        {
-            "account_id": invoice.posting_profile.control_account_id,
-            "description": f"Invoice {invoice.invoice_number} - {invoice.customer.name}",
-            "debit": invoice.total_amount,
-            "credit": Decimal("0"),
-            "customer_public_id": str(invoice.customer.public_id),
-        }
-    )
+    control_line: dict = {
+        "account_id": invoice.posting_profile.control_account_id,
+        "description": f"Invoice {invoice.invoice_number} - {invoice.customer.name}",
+        "debit": invoice.total_amount,
+        "credit": Decimal("0"),
+        "customer_public_id": str(invoice.customer.public_id),
+    }
+    # A12: tag the AR Control line with caller-supplied analysis dimensions
+    # (settlement_provider for platform-imported invoices). Reconciliation
+    # queries pivot on (control_account, dimension_value) — see
+    # ENGINEERING_PROTOCOL.md and the settlement-routing design.
+    if control_line_analysis_tags:
+        control_line["analysis_tags"] = list(control_line_analysis_tags)
+    je_lines.append(control_line)
     line_no += 1
 
     # Credit Revenue accounts (net amounts per line)
@@ -1958,6 +1969,7 @@ def create_and_post_invoice_for_platform(
     currency: str = "",
     exchange_rate=None,
     skip_cogs: bool = True,
+    control_line_analysis_tags: list | None = None,
 ) -> CommandResult:
     """
     Create and immediately post a SalesInvoice for a platform integration.
@@ -1977,6 +1989,9 @@ def create_and_post_invoice_for_platform(
         source: Platform identifier ("shopify", "stripe", etc.)
         source_document_id: External ID for idempotency (Shopify order ID, etc.)
         skip_cogs: If True, defer COGS to fulfillment (default for platforms)
+        control_line_analysis_tags: A12 — analysis dimension tags applied
+            to the AR Control JE line (e.g., settlement_provider value).
+            Reconciliation queries pivot on (clearing_account, dim_value).
 
     Returns:
         CommandResult with {"invoice": SalesInvoice, "journal_entry": JournalEntry}
@@ -2017,7 +2032,12 @@ def create_and_post_invoice_for_platform(
     invoice = create_result.data["invoice"]
 
     # Post immediately (creates JE, skips COGS if requested)
-    post_result = post_sales_invoice(actor, invoice.id, skip_cogs=skip_cogs)
+    post_result = post_sales_invoice(
+        actor,
+        invoice.id,
+        skip_cogs=skip_cogs,
+        control_line_analysis_tags=control_line_analysis_tags,
+    )
     if not post_result.success:
         return post_result
 

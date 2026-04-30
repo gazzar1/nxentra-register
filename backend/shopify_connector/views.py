@@ -217,6 +217,12 @@ class ShopifyStoreView(APIView):
     GET /api/shopify/store/
     Returns connected store(s) for the current company.
     Supports ?store_id=<public_id> for a specific store.
+
+    PATCH /api/shopify/store/
+    Updates mutable store config:
+    - default_cod_settlement_provider: SettlementProvider id (or null to unset)
+      The store's default COD courier (Bosta / DHL / Aramex / Mylerz / ...).
+      Drives JE tagging for orders with gateway='cash_on_delivery'.
     """
 
     permission_classes = [IsAuthenticated]
@@ -248,6 +254,67 @@ class ShopifyStoreView(APIView):
                 "stores": ShopifyStoreSerializer(stores, many=True).data,
             }
         )
+
+    def patch(self, request):
+        from accounting.settlement_provider import SettlementProvider
+        from projections.write_barrier import command_writes_allowed
+
+        actor = resolve_actor(request)
+        require(actor, "settings.update")
+
+        store_id = request.data.get("store_id") or request.query_params.get("store_id")
+        try:
+            if store_id:
+                store = ShopifyStore.objects.get(
+                    company=actor.company,
+                    public_id=store_id,
+                )
+            else:
+                store = (
+                    ShopifyStore.objects.filter(company=actor.company)
+                    .exclude(status=ShopifyStore.Status.DISCONNECTED)
+                    .first()
+                )
+                if not store:
+                    raise ShopifyStore.DoesNotExist
+        except ShopifyStore.DoesNotExist:
+            return Response({"error": "Store not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        update_fields: list[str] = []
+
+        # Only one mutable field today: default_cod_settlement_provider.
+        if "default_cod_settlement_provider" in request.data:
+            value = request.data.get("default_cod_settlement_provider")
+            if value in (None, ""):
+                store.default_cod_settlement_provider = None
+            else:
+                try:
+                    provider = SettlementProvider.objects.get(
+                        company=actor.company,
+                        pk=int(value),
+                        provider_type=SettlementProvider.ProviderType.COURIER,
+                        is_active=True,
+                    )
+                except (ValueError, SettlementProvider.DoesNotExist):
+                    return Response(
+                        {
+                            "error": (
+                                "default_cod_settlement_provider must be the id of an "
+                                "active SettlementProvider with provider_type='courier'."
+                            )
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                store.default_cod_settlement_provider = provider
+            update_fields.append("default_cod_settlement_provider")
+
+        if not update_fields:
+            return Response({"error": "No mutable fields supplied."}, status=status.HTTP_400_BAD_REQUEST)
+
+        with command_writes_allowed():
+            store.save(update_fields=[*update_fields, "updated_at"])
+
+        return Response(ShopifyStoreSerializer(store).data, status=status.HTTP_200_OK)
 
 
 class ShopifyRegisterWebhooksView(APIView):

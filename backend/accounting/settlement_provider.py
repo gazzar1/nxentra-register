@@ -55,10 +55,84 @@ import re
 from django.db import models
 
 from accounts.models import Company
-from projections.write_barrier import write_context_allowed
+from projections.write_barrier import projection_writes_allowed, write_context_allowed
 from sales.models import PostingProfile
 
 logger = logging.getLogger(__name__)
+
+
+# A12: AnalysisDimension code for the settlement-provider routing dimension.
+# JE lines tagged with this dimension support reconciliation queries that
+# pivot on (clearing_account, dimension_value).
+SETTLEMENT_PROVIDER_DIMENSION_CODE = "SETTLEMENT_PROVIDER"
+
+
+def _provider_dimension_value_code(normalized_code: str) -> str:
+    """Build a deterministic AnalysisDimensionValue.code (max 20 chars)."""
+    return normalized_code.upper()[:20]
+
+
+def ensure_settlement_provider_dimension(company):
+    """Get-or-create the SETTLEMENT_PROVIDER AnalysisDimension for a company.
+
+    Idempotent. AnalysisDimension is a projection-owned read model, so
+    creation is gated under projection_writes_allowed().
+    """
+    from accounting.models import AnalysisDimension
+
+    existing = AnalysisDimension.objects.filter(
+        company=company,
+        code=SETTLEMENT_PROVIDER_DIMENSION_CODE,
+    ).first()
+    if existing:
+        return existing
+
+    with projection_writes_allowed():
+        dimension = AnalysisDimension.objects.projection().create(
+            company=company,
+            code=SETTLEMENT_PROVIDER_DIMENSION_CODE,
+            name="Settlement Provider",
+            name_ar="بوابة التسوية",
+            description=(
+                "Identifies which external party holds or remits the money "
+                "for a given transaction (Paymob, PayPal, Bosta, DHL, etc.). "
+                "The reconciliation engine pivots on this dimension to "
+                "answer 'where is my money?'."
+            ),
+            dimension_kind=AnalysisDimension.DimensionKind.CONTEXT,
+            is_required_on_posting=False,
+            is_active=True,
+            applies_to_account_types=[],
+            display_order=10,
+        )
+    return dimension
+
+
+def ensure_settlement_provider_dimension_value(dimension, normalized_code: str, display_name: str):
+    """Get-or-create an AnalysisDimensionValue for a settlement provider.
+
+    Idempotent. The value's code mirrors the provider's normalized_code
+    (uppercased) so reconciliation queries can join cleanly.
+    """
+    from accounting.models import AnalysisDimensionValue
+
+    code = _provider_dimension_value_code(normalized_code)
+    existing = AnalysisDimensionValue.objects.filter(
+        dimension=dimension,
+        code=code,
+    ).first()
+    if existing:
+        return existing
+
+    with projection_writes_allowed():
+        value = AnalysisDimensionValue.objects.projection().create(
+            dimension=dimension,
+            company=dimension.company,
+            code=code,
+            name=display_name,
+            is_active=True,
+        )
+    return value
 
 
 def normalize_gateway_code(raw: str | None) -> str:
@@ -140,6 +214,21 @@ class SettlementProvider(models.Model):
         on_delete=models.PROTECT,
         related_name="settlement_providers",
         help_text=("Routing target. The clearing/control account used by the JE is this profile's control_account."),
+    )
+    dimension_value = models.ForeignKey(
+        "accounting.AnalysisDimensionValue",
+        on_delete=models.PROTECT,
+        related_name="+",
+        null=True,
+        blank=True,
+        help_text=(
+            "A12: AnalysisDimensionValue applied to the clearing JE line "
+            "when this provider routes an order. The reconciliation engine "
+            "pivots on (clearing_account, dimension_value) to surface "
+            "per-provider balances. Nullable to allow incremental population "
+            "during the A12 rollout; bootstrap and lazy-create paths fill "
+            "this FK so production rows are never missing it."
+        ),
     )
     is_active = models.BooleanField(default=True)
     needs_review = models.BooleanField(
@@ -268,6 +357,18 @@ class SettlementProvider(models.Model):
 
         from projections.write_barrier import command_writes_allowed
 
+        # A12: lazy-created rows also need a dimension_value so the
+        # reconciliation engine can pivot on them. Create the dimension
+        # (idempotent) and a matching value before the SettlementProvider
+        # row so the FK is populated atomically.
+        display_name = (raw_gateway or normalized).strip()[:255] or normalized
+        dimension = ensure_settlement_provider_dimension(company)
+        dimension_value = ensure_settlement_provider_dimension_value(
+            dimension=dimension,
+            normalized_code=normalized,
+            display_name=display_name,
+        )
+
         with command_writes_allowed():
             row, created = cls.objects.get_or_create(
                 company=company,
@@ -275,13 +376,19 @@ class SettlementProvider(models.Model):
                 normalized_code=normalized,
                 defaults={
                     "source_code": (raw_gateway or "").strip()[:100],
-                    "display_name": (raw_gateway or normalized).strip()[:255] or normalized,
+                    "display_name": display_name,
                     "provider_type": cls.ProviderType.MANUAL,
                     "posting_profile": fallback_posting_profile,
+                    "dimension_value": dimension_value,
                     "is_active": True,
                     "needs_review": True,
                 },
             )
+            # Backfill dimension_value on a pre-A12 row that already
+            # existed without the FK populated.
+            if not created and row.dimension_value_id is None:
+                row.dimension_value = dimension_value
+                row.save(update_fields=["dimension_value", "updated_at"])
         if created:
             logger.warning(
                 "Unknown settlement provider %r seen for company %s on %s — "

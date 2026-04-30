@@ -105,6 +105,28 @@ class ShopifyStore(models.Model):
         help_text="PostingProfile (Shopify Clearing as control account) for auto-invoices",
     )
 
+    # A12: which SettlementProvider is the merchant's default COD courier
+    # (Bosta / DHL / Aramex / Mylerz / ...).
+    # Shopify webhooks for `cash_on_delivery` orders carry no courier identity,
+    # so the projection routes via this FK. NULL until the merchant configures
+    # it via the wizard (new merchants) or settings page (existing). When NULL,
+    # COD orders lazy-create a `pending_cod_setup` SettlementProvider with
+    # needs_review=True — order still posts via the fallback profile but is
+    # operator-visible. Single FK by design (Phase 1); multi-courier-per-store
+    # routing ships in A15 with shipping-carrier resolution.
+    default_cod_settlement_provider = models.ForeignKey(
+        "accounting.SettlementProvider",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="+",
+        help_text=(
+            "Default COD courier for this store. Set in the onboarding wizard "
+            "or via Shopify Settings. Drives JE tagging for orders with "
+            "gateway='cash_on_delivery'. NULL → lazy-create needs_review row."
+        ),
+    )
+
     last_sync_at = models.DateTimeField(null=True, blank=True)
     error_message = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

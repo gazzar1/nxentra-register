@@ -88,70 +88,99 @@ def shopify_with_clearing(db, company):
     return {"store": store, "clearing": clearing}
 
 
-def test_bootstrap_creates_seven_default_providers(shopify_with_clearing, company):
-    # All seven default providers for Shopify get rows + dedicated profiles.
-    # Each profile initially points at the same SHOPIFY_CLEARING account;
-    # the merchant later edits any one to split a provider off.
+def test_bootstrap_creates_default_providers(shopify_with_clearing, company):
+    # Seven active providers + the deprecated cash_on_delivery row (inactive,
+    # preserved from A2 for historical compatibility). Each active row has
+    # its own PostingProfile and an AnalysisDimensionValue for reconciliation.
+    from accounting.models import AnalysisDimension, AnalysisDimensionValue
     from sales.models import PostingProfile
     from shopify_connector.commands import _ensure_shopify_sales_setup
 
     _ensure_shopify_sales_setup(shopify_with_clearing["store"])
 
-    expected_codes = {
+    expected_active_codes = {
         "paymob",
         "paypal",
-        "manual",
         "shopify_payments",
-        "cash_on_delivery",
+        "manual",
         "bank_transfer",
+        "bosta",
         "unknown",
     }
 
     rows = SettlementProvider.objects.filter(company=company, external_system="shopify")
-    assert {r.normalized_code for r in rows} == expected_codes
-    # All anchored on Shopify clearing initially
+    rows_by_code = {r.normalized_code: r for r in rows}
+
+    # All seven active providers present
+    active_codes = {r.normalized_code for r in rows if r.is_active}
+    assert active_codes == expected_active_codes
+
+    # cash_on_delivery row exists (from A2) but is deactivated by A12 — it
+    # is no longer a provider; cash_on_delivery is a payment method that
+    # routes to a real courier (Bosta / DHL / Aramex / ...) via
+    # ShopifyStore.default_cod_settlement_provider.
+    assert "cash_on_delivery" in rows_by_code
+    assert rows_by_code["cash_on_delivery"].is_active is False
+
+    # All providers anchored on Shopify clearing initially.
     for row in rows:
         assert row.posting_profile.control_account_id == shopify_with_clearing["clearing"].id
-        assert row.is_active is True
         assert row.needs_review is False
+        # A12: every bootstrap row carries a dimension_value for the
+        # reconciliation pivot.
+        assert row.dimension_value_id is not None
 
-    # provider_type populated correctly from bootstrap declaration
+    # provider_type populated correctly.
     expected_types = {
         "paymob": "gateway",
         "paypal": "gateway",
         "shopify_payments": "gateway",
         "manual": "manual",
-        "cash_on_delivery": "manual",  # transitional; A12 deactivates and adds bosta(courier)
         "bank_transfer": "bank_transfer",
+        "bosta": "courier",  # A12: bosta replaces cash_on_delivery as the routable COD provider
         "unknown": "manual",
+        "cash_on_delivery": "manual",
     }
-    rows_by_code = {r.normalized_code: r for r in rows}
     for code, expected_type in expected_types.items():
         assert rows_by_code[code].provider_type == expected_type, (
             f"{code} should be provider_type={expected_type}, got {rows_by_code[code].provider_type}"
         )
 
-    # Seven dedicated posting profiles created (PG-* prefix)
+    # PostingProfiles: one per provider including cash_on_delivery (deactivation
+    # of the SettlementProvider doesn't drop the PostingProfile — it's still
+    # referenced by historical JEs).
     pg_profiles = PostingProfile.objects.filter(company=company, code__startswith="PG-")
-    assert pg_profiles.count() == 7
+    assert pg_profiles.count() == 8  # 7 active + 1 cash_on_delivery (deprecated)
     for profile in pg_profiles:
         assert profile.profile_type == PostingProfile.ProfileType.CUSTOMER
         assert profile.control_account_id == shopify_with_clearing["clearing"].id
 
+    # A12: AnalysisDimension + values
+    dim = AnalysisDimension.objects.get(company=company, code="SETTLEMENT_PROVIDER")
+    assert dim.dimension_kind == AnalysisDimension.DimensionKind.CONTEXT
+    values = AnalysisDimensionValue.objects.filter(dimension=dim)
+    expected_value_codes = {c.upper() for c in expected_active_codes | {"cash_on_delivery"}}
+    assert {v.code for v in values} == expected_value_codes
+
 
 def test_bootstrap_is_idempotent(shopify_with_clearing, company):
     # Running setup twice must not create duplicate rows or profiles.
+    from accounting.models import AnalysisDimension, AnalysisDimensionValue
     from sales.models import PostingProfile
     from shopify_connector.commands import _ensure_shopify_sales_setup
 
     _ensure_shopify_sales_setup(shopify_with_clearing["store"])
-    first_count = SettlementProvider.objects.filter(company=company).count()
+    first_provider_count = SettlementProvider.objects.filter(company=company).count()
     first_profile_count = PostingProfile.objects.filter(company=company, code__startswith="PG-").count()
+    first_dim_count = AnalysisDimension.objects.filter(company=company).count()
+    first_value_count = AnalysisDimensionValue.objects.filter(company=company).count()
 
     _ensure_shopify_sales_setup(shopify_with_clearing["store"])
 
-    assert SettlementProvider.objects.filter(company=company).count() == first_count
+    assert SettlementProvider.objects.filter(company=company).count() == first_provider_count
     assert PostingProfile.objects.filter(company=company, code__startswith="PG-").count() == first_profile_count
+    assert AnalysisDimension.objects.filter(company=company).count() == first_dim_count
+    assert AnalysisDimensionValue.objects.filter(company=company).count() == first_value_count
 
 
 # =============================================================================
@@ -243,8 +272,9 @@ def _routing_capture(monkeypatch):
 
 def test_handle_order_paid_routes_to_paymob_profile(shopify_setup_with_revenue, company, monkeypatch):
     # When the order's gateway is "paymob" and a SettlementProvider row exists,
-    # the invoice is posted using the provider's dedicated PostingProfile —
-    # not the store-level default profile.
+    # the invoice is posted using the provider's dedicated PostingProfile and
+    # the AR Control JE line is tagged with the provider's
+    # AnalysisDimensionValue for reconciliation.
     from shopify_connector.projections import ShopifyAccountingHandler
 
     captured = _routing_capture(monkeypatch)
@@ -258,6 +288,7 @@ def test_handle_order_paid_routes_to_paymob_profile(shopify_setup_with_revenue, 
     assert provider.posting_profile_id != store.default_posting_profile_id, (
         "bootstrap must give each provider its own PostingProfile, not the store-level one"
     )
+    assert provider.dimension_value_id is not None, "bootstrap must populate dimension_value"
 
     proj = ShopifyAccountingHandler()
     event, data = _fake_event(company, gateway="paymob")
@@ -266,6 +297,90 @@ def test_handle_order_paid_routes_to_paymob_profile(shopify_setup_with_revenue, 
     proj._handle_order_paid(event, data, mapping)
 
     assert captured["kwargs"]["posting_profile_id"] == provider.posting_profile_id
+    # A12: clearing JE line is tagged with the paymob dimension value.
+    tags = captured["kwargs"]["control_line_analysis_tags"]
+    assert len(tags) == 1
+    assert tags[0]["value_public_id"] == str(provider.dimension_value.public_id)
+    assert tags[0]["dimension_public_id"] == str(provider.dimension_value.dimension.public_id)
+
+
+def test_handle_order_paid_cod_routes_via_default_cod_settlement_provider(
+    shopify_setup_with_revenue, company, monkeypatch
+):
+    # A12 contract: cash_on_delivery orders do NOT look up the deprecated
+    # cash_on_delivery SettlementProvider. They route via
+    # ShopifyStore.default_cod_settlement_provider — Bosta / DHL / Aramex.
+    # The clearing JE line is tagged with the courier's dimension value.
+    from projections.write_barrier import command_writes_allowed
+    from shopify_connector.projections import ShopifyAccountingHandler
+
+    captured = _routing_capture(monkeypatch)
+
+    bosta = SettlementProvider.objects.get(
+        company=company,
+        external_system="shopify",
+        normalized_code="bosta",
+    )
+    assert bosta.provider_type == "courier"
+    assert bosta.dimension_value_id is not None
+
+    store = shopify_setup_with_revenue["store"]
+    with command_writes_allowed():
+        store.default_cod_settlement_provider = bosta
+        store.save(update_fields=["default_cod_settlement_provider"])
+    store.refresh_from_db()
+
+    proj = ShopifyAccountingHandler()
+    event, data = _fake_event(company, gateway="cash_on_delivery")
+    mapping = {"SALES_REVENUE": shopify_setup_with_revenue["revenue"]}
+
+    proj._handle_order_paid(event, data, mapping)
+
+    assert captured["kwargs"]["posting_profile_id"] == bosta.posting_profile_id
+    tags = captured["kwargs"]["control_line_analysis_tags"]
+    assert len(tags) == 1
+    assert tags[0]["value_public_id"] == str(bosta.dimension_value.public_id)
+
+
+def test_handle_order_paid_cod_with_unset_default_lazy_creates_pending_setup(
+    shopify_setup_with_revenue, company, monkeypatch
+):
+    # A12 safety net: a cash_on_delivery order arriving before the merchant
+    # has configured ShopifyStore.default_cod_settlement_provider must NOT
+    # silently mis-route. Lazy-create a `pending_cod_setup` row flagged for
+    # review; order still posts via the fallback profile.
+    from shopify_connector.projections import ShopifyAccountingHandler
+
+    captured = _routing_capture(monkeypatch)
+
+    store = shopify_setup_with_revenue["store"]
+    assert store.default_cod_settlement_provider_id is None, (
+        "fixture default — merchant hasn't configured COD courier yet"
+    )
+
+    proj = ShopifyAccountingHandler()
+    event, data = _fake_event(company, gateway="cash_on_delivery")
+    mapping = {"SALES_REVENUE": shopify_setup_with_revenue["revenue"]}
+
+    proj._handle_order_paid(event, data, mapping)
+
+    pending = SettlementProvider.objects.get(
+        company=company,
+        external_system="shopify",
+        normalized_code="pending_cod_setup",
+    )
+    assert pending.needs_review is True
+    assert pending.is_active is True
+    assert pending.posting_profile_id == store.default_posting_profile_id
+    # A12: lazy-created rows also get a dimension_value populated so the
+    # JE line still carries a tag (operator can re-route later without
+    # losing the order's reconciliation lineage).
+    assert pending.dimension_value_id is not None
+
+    assert captured["kwargs"]["posting_profile_id"] == store.default_posting_profile_id
+    tags = captured["kwargs"]["control_line_analysis_tags"]
+    assert len(tags) == 1
+    assert tags[0]["value_public_id"] == str(pending.dimension_value.public_id)
 
 
 def test_handle_order_paid_lazy_creates_unknown_gateway(shopify_setup_with_revenue, company, monkeypatch):
@@ -296,6 +411,8 @@ def test_handle_order_paid_lazy_creates_unknown_gateway(shopify_setup_with_reven
     assert new_row.is_active is True
     assert new_row.source_code == "Tap Payments (KSA)"
     assert new_row.provider_type == "manual", "lazy-create defaults provider_type to manual until human review"
+    # A12: dimension_value populated even on lazy-create.
+    assert new_row.dimension_value_id is not None
     # Lazy-created row points at the store-level default fallback profile —
     # the order still posts, just visibly flagged for operator review.
     store = shopify_setup_with_revenue["store"]
@@ -306,7 +423,8 @@ def test_handle_order_paid_lazy_creates_unknown_gateway(shopify_setup_with_reven
 def test_handle_order_paid_with_empty_gateway_uses_default_profile(shopify_setup_with_revenue, company, monkeypatch):
     # Some early Shopify orders ship without a gateway at all (admin-paid
     # drafts, etc.). The router must fall back cleanly to the store-level
-    # default profile and NOT lazy-create an empty-named row.
+    # default profile and NOT lazy-create an empty-named row. No analysis
+    # tag is applied (no provider to attribute it to).
     from shopify_connector.projections import ShopifyAccountingHandler
 
     captured = _routing_capture(monkeypatch)
@@ -322,6 +440,7 @@ def test_handle_order_paid_with_empty_gateway_uses_default_profile(shopify_setup
     assert before == after, "empty gateway must not create a SettlementProvider row"
     store = shopify_setup_with_revenue["store"]
     assert captured["kwargs"]["posting_profile_id"] == store.default_posting_profile_id
+    assert captured["kwargs"]["control_line_analysis_tags"] == []
 
 
 # =============================================================================

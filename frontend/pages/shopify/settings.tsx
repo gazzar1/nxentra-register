@@ -66,24 +66,50 @@ export default function ShopifySettingsPage() {
   const [providerForm, setProviderForm] = useState<Record<number, number>>({});
   const [savingProviderId, setSavingProviderId] = useState<number | null>(null);
 
+  // A12: COD courier (Bosta / DHL / Aramex / ...) selection.
+  const [codProviderForm, setCodProviderForm] = useState<number | null>(null);
+  const [savingCodProvider, setSavingCodProvider] = useState(false);
+
   const fetchStore = async () => {
     setLoading(true);
     try {
       const { data } = await shopifyService.getStore();
       const d = data as any;
+      let resolvedStore: ShopifyStore | null = null;
       if (!d.connected) {
-        setStore(null);
+        resolvedStore = null;
       } else if (d.stores && d.stores.length > 0) {
-        setStore(d.stores[0] as ShopifyStore);
+        resolvedStore = d.stores[0] as ShopifyStore;
       } else if (d.status) {
-        setStore(d as ShopifyStore);
-      } else {
-        setStore(null);
+        resolvedStore = d as ShopifyStore;
       }
+      setStore(resolvedStore);
+      setCodProviderForm(resolvedStore?.default_cod_settlement_provider_id ?? null);
     } catch {
       setStore(null);
+      setCodProviderForm(null);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSaveCodProvider = async () => {
+    setSavingCodProvider(true);
+    try {
+      const { data } = await shopifyService.updateStore({
+        default_cod_settlement_provider: codProviderForm,
+      });
+      setStore(data);
+      setCodProviderForm(data.default_cod_settlement_provider_id);
+      toast({
+        title: data.default_cod_settlement_provider_name
+          ? `COD courier set to ${data.default_cod_settlement_provider_name}.`
+          : "COD courier cleared.",
+      });
+    } catch {
+      toast({ title: "Failed to update COD courier.", variant: "destructive" });
+    } finally {
+      setSavingCodProvider(false);
     }
   };
 
@@ -519,6 +545,73 @@ export default function ShopifySettingsPage() {
                     </select>
                   </div>
                 ))}
+              </CardContent>
+            </Card>
+
+            {/* COD Courier (A12) */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Wallet className="h-5 w-5" />
+                  Cash on Delivery Courier
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-sm text-muted-foreground">
+                  Shopify webhooks for COD orders don&apos;t identify which courier delivers
+                  them. Pick the courier you use most so Nxentra can tag those orders
+                  correctly for reconciliation. Multi-courier routing (Bosta for Cairo,
+                  DHL for international, etc.) ships in a later release. Until then, COD
+                  orders that arrive before this is set are flagged for review and route
+                  via the default profile.
+                </p>
+                {(() => {
+                  const courierProviders = providers.filter(
+                    (p) => p.provider_type === "courier" && p.is_active
+                  );
+                  const dirty =
+                    codProviderForm !== (store?.default_cod_settlement_provider_id ?? null);
+                  return (
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                      <div className="flex-1">
+                        <Label htmlFor="cod-courier">COD Courier</Label>
+                        <select
+                          id="cod-courier"
+                          className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+                          value={codProviderForm ?? ""}
+                          onChange={(e) =>
+                            setCodProviderForm(e.target.value ? Number(e.target.value) : null)
+                          }
+                          disabled={savingCodProvider || courierProviders.length === 0}
+                        >
+                          <option value="">— We don&apos;t use COD —</option>
+                          {courierProviders.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.display_name}
+                            </option>
+                          ))}
+                        </select>
+                        {courierProviders.length === 0 && (
+                          <p className="mt-1 text-xs text-muted-foreground italic">
+                            No couriers configured yet — they appear after the store
+                            connect bootstrap runs.
+                          </p>
+                        )}
+                      </div>
+                      <Button
+                        onClick={handleSaveCodProvider}
+                        disabled={!dirty || savingCodProvider}
+                      >
+                        {savingCodProvider ? (
+                          <Loader2 className="me-2 h-4 w-4 animate-spin" />
+                        ) : (
+                          <Save className="me-2 h-4 w-4" />
+                        )}
+                        Save
+                      </Button>
+                    </div>
+                  );
+                })()}
               </CardContent>
             </Card>
 

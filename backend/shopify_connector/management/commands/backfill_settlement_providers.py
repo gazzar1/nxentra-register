@@ -1,24 +1,22 @@
 """
 Backfill SettlementProvider rows for existing Shopify stores.
 
-For each ACTIVE ShopifyStore, run _ensure_shopify_sales_setup. The helper
-is idempotent — it short-circuits if both default_customer and
-default_posting_profile are set on the store, so re-running is safe.
+For each ACTIVE ShopifyStore, run the bootstrap which is idempotent:
+- Creates the SETTLEMENT_PROVIDER AnalysisDimension + values per provider
+- Creates per-provider PostingProfile + SettlementProvider rows (paymob,
+  paypal, shopify_payments, manual, bank_transfer, bosta, unknown).
+  Deactivates the deprecated cash_on_delivery row from A2.
+- Populates SettlementProvider.dimension_value FK on existing rows.
 
-The bootstrap step inside that helper creates the SettlementProvider +
-per-provider PostingProfile rows. Existing stores were connected before
-A2.5 landed, so they need this one-shot backfill.
-
-Optional `--cod-provider <code>` flag (currently inert; A12 wires
-ShopifyStore.default_cod_settlement_provider into the schema and this
-flag will set it for the named normalized_code, e.g.
-`--cod-provider bosta`). The flag is parsed today so deploy commands
-can be written ahead of A12 shipping.
+Optional `--cod-provider <code>` flag sets each store's
+default_cod_settlement_provider FK to the SettlementProvider with the
+matching normalized_code (e.g. `--cod-provider bosta`). Validates the
+provider exists for each company before assignment. Skipped on dry-run.
 
 Run on the droplet:
     python manage.py backfill_settlement_providers
     python manage.py backfill_settlement_providers --dry-run
-    python manage.py backfill_settlement_providers --cod-provider bosta   # A12+
+    python manage.py backfill_settlement_providers --cod-provider bosta
 """
 
 from django.core.management.base import BaseCommand
@@ -43,10 +41,10 @@ class Command(BaseCommand):
         parser.add_argument(
             "--cod-provider",
             help=(
-                "Normalized SettlementProvider code to use as the store's "
-                "default COD provider (e.g. 'bosta', 'aramex'). Inert until "
-                "A12 wires ShopifyStore.default_cod_settlement_provider; "
-                "accepted now so deploy scripts can be written ahead."
+                "Normalized SettlementProvider code to use as each store's "
+                "default COD courier (e.g. 'bosta', 'aramex'). Sets "
+                "ShopifyStore.default_cod_settlement_provider FK if a "
+                "matching SettlementProvider row exists for the company."
             ),
             default=None,
         )
@@ -94,28 +92,39 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS(f"    -> now {after} row(s) ({after - existing} added)"))
 
             if cod_provider_code:
-                # Forward-compat: --cod-provider is parsed but inert until A12
-                # adds ShopifyStore.default_cod_settlement_provider FK. Verify
-                # the named provider exists for this company so the deploy
-                # operator catches typos before A12 lands.
-                exists = SettlementProvider.objects.filter(
+                # Look up the SettlementProvider row for this company and
+                # set ShopifyStore.default_cod_settlement_provider. Skipped
+                # on dry-run.
+                from projections.write_barrier import command_writes_allowed
+
+                target = SettlementProvider.objects.filter(
                     company=company,
                     external_system="shopify",
                     normalized_code=cod_provider_code,
-                ).exists()
-                if exists:
-                    self.stdout.write(
-                        f"    note: --cod-provider {cod_provider_code} verified for {company.name}; "
-                        "will be applied when A12 ships the FK."
-                    )
-                else:
+                ).first()
+                if not target:
                     self.stdout.write(
                         self.style.WARNING(
                             f"    warn: --cod-provider {cod_provider_code} does NOT exist as a "
-                            f"SettlementProvider for {company.name}. Bootstrap may need extending "
-                            "before this can be assigned."
+                            f"SettlementProvider for {company.name}. Skipping FK assignment "
+                            "for this store."
                         )
                     )
+                else:
+                    if store.default_cod_settlement_provider_id == target.id:
+                        self.stdout.write(f"    cod provider already set to {target.display_name}")
+                    else:
+                        with command_writes_allowed():
+                            store.default_cod_settlement_provider = target
+                            store.save(
+                                update_fields=[
+                                    "default_cod_settlement_provider",
+                                    "updated_at",
+                                ]
+                            )
+                        self.stdout.write(
+                            self.style.SUCCESS(f"    -> default_cod_settlement_provider = {target.display_name}")
+                        )
 
         if dry_run:
             self.stdout.write(self.style.NOTICE("Dry-run — no writes made."))

@@ -6,6 +6,17 @@ from .models import ShopifyOrder, ShopifyRefund, ShopifyStore
 
 class ShopifyStoreSerializer(serializers.ModelSerializer):
     connected = serializers.SerializerMethodField()
+    default_cod_settlement_provider_id = serializers.IntegerField(read_only=True)
+    default_cod_settlement_provider_code = serializers.CharField(
+        source="default_cod_settlement_provider.normalized_code",
+        read_only=True,
+        default=None,
+    )
+    default_cod_settlement_provider_name = serializers.CharField(
+        source="default_cod_settlement_provider.display_name",
+        read_only=True,
+        default=None,
+    )
 
     class Meta:
         model = ShopifyStore
@@ -19,6 +30,9 @@ class ShopifyStoreSerializer(serializers.ModelSerializer):
             "last_sync_at",
             "error_message",
             "connected",
+            "default_cod_settlement_provider_id",
+            "default_cod_settlement_provider_code",
+            "default_cod_settlement_provider_name",
             "created_at",
             "updated_at",
         ]

@@ -711,34 +711,26 @@ class ShopifyAccountingHandler(BaseProjection):
             logger.warning("No invoice lines for Shopify order %s — skipping", order_name)
             return
 
-        # Resolve gateway-specific posting profile. The JE Debit AR Control
-        # is read from posting_profile.control_account at JE-build time, so
-        # routing per gateway is fully expressed by which profile we pick.
-        # Falls back to the store-level default profile when gateway is
-        # absent (early Shopify orders sometimes ship without it) or when
-        # the lazy-created row points at the same default anyway.
-        from accounting.settlement_provider import SettlementProvider
+        # Resolve which SettlementProvider routes this order's clearing line.
+        # The JE Debit AR Control is read from posting_profile.control_account
+        # at JE-build time, so per-provider routing is fully expressed by which
+        # profile we pick. The clearing line is also tagged with the provider's
+        # AnalysisDimensionValue so the reconciliation engine can pivot on
+        # (clearing_account, dimension_value) to surface per-provider balances.
+
+        provider = self._resolve_settlement_provider(event, data, store)
 
         posting_profile_id = store.default_posting_profile_id
-        raw_gateway = data.get("gateway") or ""
-        if raw_gateway:
-            provider = SettlementProvider.lookup(
-                company=event.company,
-                external_system="shopify",
-                raw_gateway=raw_gateway,
-            )
-            if provider is None:
-                # Unknown gateway code — lazy-create flagged for review so
-                # the operator sees it in the dashboard / mgmt command.
-                # Order still posts via the fallback profile.
-                provider = SettlementProvider.lookup_or_create_for_review(
-                    company=event.company,
-                    external_system="shopify",
-                    raw_gateway=raw_gateway,
-                    fallback_posting_profile=store.default_posting_profile,
-                )
-            if provider and provider.is_active and provider.posting_profile_id:
-                posting_profile_id = provider.posting_profile_id
+        control_line_analysis_tags: list = []
+        if provider and provider.is_active and provider.posting_profile_id:
+            posting_profile_id = provider.posting_profile_id
+        if provider and provider.dimension_value_id:
+            control_line_analysis_tags = [
+                {
+                    "dimension_public_id": str(provider.dimension_value.dimension.public_id),
+                    "value_public_id": str(provider.dimension_value.public_id),
+                }
+            ]
 
         # Create and post the SalesInvoice (skip COGS — handled at fulfillment)
         result = create_and_post_invoice_for_platform(
@@ -753,6 +745,7 @@ class ShopifyAccountingHandler(BaseProjection):
             notes=f"Shopify order: {order_name}",
             currency=currency,
             skip_cogs=True,
+            control_line_analysis_tags=control_line_analysis_tags,
         )
 
         if not result.success:
@@ -783,6 +776,72 @@ class ShopifyAccountingHandler(BaseProjection):
             order_name,
             event.id,
         )
+
+    def _resolve_settlement_provider(self, event, data, store):
+        """Resolve which SettlementProvider routes this order's clearing line.
+
+        Three branches:
+
+        1. **Cash on Delivery.** Shopify's webhook says `cash_on_delivery`
+           but doesn't carry the courier identity (Bosta vs DHL vs Aramex).
+           We route via `store.default_cod_settlement_provider`. If the
+           merchant hasn't configured it yet, lazy-create a
+           `pending_cod_setup` row with needs_review=True so the order
+           still posts (via fallback profile) but is operator-visible.
+
+        2. **Empty gateway.** Some early Shopify orders ship without a
+           gateway at all (admin-paid drafts, etc.). Return None — the
+           caller falls back to store.default_posting_profile and posts
+           with no analysis tag.
+
+        3. **Known prepaid gateway** (paymob, paypal, shopify_payments,
+           manual, bank_transfer). Look up by normalized gateway code; on
+           miss, lazy-create with needs_review=True.
+        """
+        from accounting.settlement_provider import SettlementProvider, normalize_gateway_code
+
+        raw_gateway = data.get("gateway") or ""
+        normalized = normalize_gateway_code(raw_gateway)
+
+        if not normalized:
+            return None
+
+        # Branch 1: COD orders route via the store's configured courier.
+        if normalized == "cash_on_delivery":
+            if store.default_cod_settlement_provider_id:
+                # Merchant has configured a courier — use it.
+                return (
+                    SettlementProvider.objects.select_related(
+                        "posting_profile",
+                        "dimension_value",
+                        "dimension_value__dimension",
+                    )
+                    .filter(pk=store.default_cod_settlement_provider_id)
+                    .first()
+                )
+            # Not configured — lazy-create a flagged row so the operator
+            # sees it. Order still posts via fallback profile.
+            return SettlementProvider.lookup_or_create_for_review(
+                company=event.company,
+                external_system="shopify",
+                raw_gateway="pending_cod_setup",
+                fallback_posting_profile=store.default_posting_profile,
+            )
+
+        # Branch 3: prepaid gateways — direct lookup, lazy-create on miss.
+        provider = SettlementProvider.lookup(
+            company=event.company,
+            external_system="shopify",
+            raw_gateway=raw_gateway,
+        )
+        if provider is None:
+            provider = SettlementProvider.lookup_or_create_for_review(
+                company=event.company,
+                external_system="shopify",
+                raw_gateway=raw_gateway,
+                fallback_posting_profile=store.default_posting_profile,
+            )
+        return provider
 
     def _handle_refund_created(self, event, data, mapping, dimension_context=None):
         """

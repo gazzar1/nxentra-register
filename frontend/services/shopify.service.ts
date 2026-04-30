@@ -14,6 +14,9 @@ export interface ShopifyStore {
   last_sync_at: string | null;
   error_message: string;
   connected: boolean;
+  default_cod_settlement_provider_id: number | null;
+  default_cod_settlement_provider_code: string | null;
+  default_cod_settlement_provider_name: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -64,6 +67,10 @@ export const shopifyService = {
   // Store management
   getStore: () =>
     apiClient.get<ShopifyStore | { connected: false }>("/shopify/store/"),
+
+  // A12: update mutable store config (currently only the COD courier FK).
+  updateStore: (data: { default_cod_settlement_provider: number | null }) =>
+    apiClient.patch<ShopifyStore>("/shopify/store/", data),
 
   install: (shop_domain: string) =>
     apiClient.post<ShopifyInstallResponse>("/shopify/install/", { shop_domain }),
