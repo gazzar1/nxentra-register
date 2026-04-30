@@ -24,10 +24,12 @@ All 5 scenarios passed against `nxentra-test-code.myshopify.com`. 7 critical bug
 
 See [SESSION_LOG.md § Session: April 26-28, 2026](SESSION_LOG.md) for the full play-by-play. **First user can be invited.**
 
-### A2. PaymentGateway mapping (tactical slice) — **1d**
-Single table `PaymentGateway(source_code, clearing_account_id, display_name)`. Invoice posting reads it to route Paymob / PayPal / Manual (COD) to per-gateway clearing accounts.
+### A2. PaymentGateway mapping (tactical slice) — ✅ **DONE 2026-04-30**
+Shipped Shape B: `PaymentGateway(company, external_system, source_code, normalized_code, display_name, posting_profile FK, is_active, needs_review)`. Clearing account is derived (`gateway.posting_profile.control_account`) — JE construction in `sales/commands.py` unchanged. Bootstrap on `_ensure_shopify_sales_setup` creates 7 default rows + 7 dedicated `PG-*` PostingProfiles (paymob/paypal/manual/shopify_payments/cash_on_delivery/bank_transfer/unknown), all initially anchored on the same SHOPIFY_CLEARING; merchant edits a single profile's `control_account` to split a gateway off. Unknown gateway codes lazy-create with `needs_review=True` (operator visibility via API filter + `list_review_payment_gateways` mgmt command, per [ENGINEERING_PROTOCOL.md](ENGINEERING_PROTOCOL.md) §2.4). Frontend: "Payment Gateway Routing" card on `/shopify/settings`. 19 new tests + 28 regression tests pass. Commit `d0dd0d2`.
 
-Tactical precursor to Phase B canonical work — build now because the alternative is re-posting every invoice later.
+External arch review (forwarded by user before coding) added the load-bearing refinements: `external_system` scoping, `normalized_code` for Shopify casing/spacing variance, `needs_review` flag for unknown gateways, and `accounting/` over `platform_connectors/` as the home (connectors detect facts; accounting decides meaning).
+
+A2 deliberately does NOT migrate historical invoices to per-gateway clearing accounts — only routes future imports. If first user wants per-gateway re-posting of historical Shopify invoices, that's a separate corrective JE (out of scope).
 
 ### A3. Introduce Reactor concept; migrate 3 projection-emits-event cases — **~4-5d**
 **Reframed per review:** this isn't "move 3 files." It's introducing a distinct architectural concept — **reactors** (aka process managers) as separate from projections — because conflating them muddies CQRS and replay semantics.
@@ -226,8 +228,7 @@ A4 (arch tests)     ─┘                                          │
 
 ## What to do right now, today
 
-Phase A continues. **A0 done** (`fb0e3d6`), **A1 done** (`b6b52b9`–`7d12432`, 2026-04-28), **A8 done** (`71cb0d7`, `cd7f484`, 2026-04-29). Remaining:
-- **A2** — small, ship next. Tactical PaymentGateway slice.
+Phase A continues. **A0 done** (`fb0e3d6`), **A1 done** (`b6b52b9`–`7d12432`, 2026-04-28), **A8 done** (`71cb0d7`, `cd7f484`, 2026-04-29), **A2 done** (`d0dd0d2`, 2026-04-30). Remaining:
 - **A3 + A4 + A5** in sequence — the architectural cleanup that closes the event-first policy loopholes.
 - **A6, A7, A9, A10, A11** — UX + invariant + correctness follow-ups from A1/A8. Each is small (1-3d). Pick up between bigger Phase A work as time allows; **A10 and A11 land when first user signals they need them**.
 

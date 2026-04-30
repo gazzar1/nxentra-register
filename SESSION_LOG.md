@@ -497,15 +497,77 @@ Filed as **A11** in NEXT_TASKS. Deliberately deferred (`a` chosen) — for the f
 
 ---
 
+## Session: April 30, 2026 — A2 (PaymentGateway routing primitive)
+
+User chose A2 over inviting the first user, on the rationale from the original A1 briefing: build the routing table now so we don't re-post every invoice when the merchant's Paymob / PayPal / Bosta-COD payouts come into play. Tactical precursor to Phase B canonical platform models.
+
+### 1. Architectural review before coding
+
+Two design proposals went through external review before any code landed:
+
+- **Shape A** (literal brief) — `PaymentGateway(source_code, clearing_account_id, display_name)`. Forces either a new `control_account` field on `SalesInvoice` (override at JE-build) or a sync layer keeping `gateway.clearing_account` and a synthesized profile aligned. Both create a second source of truth for AR routing.
+- **Shape B** (refined) — `PaymentGateway(source_code, posting_profile_id, display_name)`. The clearing account is derived (`gateway.posting_profile.control_account`). PostingProfile is exactly the right level of abstraction — it's already the AR-side of JE construction. Strictly additive: zero changes to `sales/commands.py`.
+
+Picked Shape B. External review (forwarded by the user) confirmed and added the load-bearing refinements that shaped the final design:
+
+- **`external_system` field** — non-negotiable. `paypal` from Shopify and `paypal` from a future WooCommerce/Noon connector are not the same routing decision. Unique constraint: `(company, external_system, normalized_code)`.
+- **`normalized_code` stored alongside `source_code`** — Shopify emits "Paymob", "paymob", "Paymob Accept", "Cash on Delivery (COD)" inconsistently. Normalize on write; raw preserved for audit.
+- **`needs_review = True` on lazy-create** — silent fallback for unknown gateway codes violates [ENGINEERING_PROTOCOL.md](ENGINEERING_PROTOCOL.md) §2.4. Lazy-create still happens (so the order posts), but the row is flagged for human review.
+- **`accounting/`, not `platform_connectors/`** — connectors detect facts ("gateway = Paymob"); accounting decides meaning ("Paymob routes here"). Putting it in a connector app would scatter financial-routing logic across connectors as Stripe/Paymob/Amazon arrive.
+
+### 2. Implementation
+
+| File | Purpose |
+|---|---|
+| `backend/accounting/payment_gateway.py` | `PaymentGateway` model + `normalize_gateway_code` helper + `lookup` / `lookup_or_create_for_review` query helpers. Same write-barrier pattern as `ModuleAccountMapping` |
+| `backend/accounting/migrations/0025_add_payment_gateway.py` | Table + unique constraint + 2 indexes |
+| `backend/accounting/payment_gateway_views.py` | `PaymentGatewayListView` + `PaymentGatewayDetailView` (PATCH only). `?needs_review=true` filter. Create/Delete intentionally not exposed |
+| `backend/accounting/urls.py` | Mount at `/api/accounting/payment-gateways/` |
+| `backend/accounting/models.py` | One-line import so Django discovers the model |
+| `backend/shopify_connector/commands.py` | `_ensure_shopify_sales_setup` extended with `_bootstrap_shopify_payment_gateways` — creates 7 default PaymentGateway rows + 7 dedicated CUSTOMER PostingProfiles (`PG-PAYMOB`, `PG-PAYPAL`, `PG-MANUAL`, `PG-SHOPIFY_PAYMENTS`, `PG-CASH_ON_DELIVERY`, `PG-BANK_TRANSFER`, `PG-UNKNOWN`) all initially anchored on the same SHOPIFY_CLEARING |
+| `backend/shopify_connector/projections.py` | `_handle_order_paid` resolves `data.gateway` → PaymentGateway → `posting_profile_id`; falls back to `store.default_posting_profile` when gateway is empty; lazy-creates `needs_review=True` row for unknown gateway codes |
+| `backend/accounting/management/commands/list_review_payment_gateways.py` | Operator visibility — prints all `needs_review=True` rows |
+| `backend/shopify_connector/management/commands/backfill_payment_gateways.py` | One-shot backfill for existing stores (idempotent; `--dry-run` supported) |
+| `backend/tests/test_payment_gateway.py` | 19 tests (model write-barrier, bootstrap idempotency, projection routing, lazy-create + needs_review, empty-gateway fallback, unique constraint, external_system scoping) |
+| `frontend/services/payment-gateways.service.ts` | `paymentGatewaysService` — list + update |
+| `frontend/pages/shopify/settings.tsx` | "Payment Gateway Routing" card under Account Mappings — per-row PostingProfile dropdown, needs-review badge, "Mark reviewed" button |
+
+Commit: `d0dd0d2`.
+
+### 3. What did NOT change
+
+- `sales/commands.py` JE construction. `invoice.posting_profile.control_account` remains the single source of truth.
+- `SalesInvoice` schema. The `control_account` override field that Shape A would have required was explicitly rejected — would create a second routing path and weaken explainability.
+- Historical posted invoices. A2 only routes future imports; per-gateway re-posting of prior invoices is out of scope.
+
+### 4. Known interactions
+
+- **A10 AR tie-out invariant noise unchanged.** The PG-* PostingProfiles use SHOPIFY_CLEARING (not AR_CONTROL) just like today's store-level profile, so the existing false-positive warning rate is unchanged. A10 silences it when it lands.
+- **Frontend testing limitation.** Did not exercise the routing card in a live browser — it only renders inside the `isConnected` Shopify branch, which needs a real OAuth token. Typecheck + lint clean. Will validate end-to-end against Aljazeera5 on the droplet after `backfill_payment_gateways` runs.
+
+### 5. Test counts
+
+47 passing across the affected suites — 19 new + 28 existing shopify/write-barrier (no regression).
+
+### 6. Deploy steps
+
+1. `git pull` on droplet
+2. `python manage.py migrate accounting`
+3. `python manage.py backfill_payment_gateways` (creates 7 rows + 7 profiles for Aljazeera5)
+4. `cd frontend && npm run build && pm2 restart nxentra-web`
+5. `pm2 restart nxentra-api && pm2 restart nxentra-celery`
+6. Spot-check `/shopify/settings` renders the new card; click through one re-route to verify PATCH works.
+
+---
+
 ## Pending Work (Next Session)
 
 **Phase A continues:**
 
-1. ✅ A1, A8 done.
-2. **A2** — `PaymentGateway` mapping table. ~1 day. Tactical precursor to Phase B canonical work.
-3. **A3** — Reactor concept; migrate 3 projection-emits-event cases. ~4-5 days.
-4. **A4** — Architecture tests banning direct finance writes in views. 1-2 days.
-5. **A5** — Bank connector + FX direct-writes cleanup. 3-5 days.
-6. **A6, A7, A9, A10, A11** — UX + invariant + correctness follow-ups; pick up between bigger work. A10/A11 land when first user signals they need them.
+1. ✅ A1, A2, A8 done.
+2. **A3** — Reactor concept; migrate 3 projection-emits-event cases. ~4-5 days.
+3. **A4** — Architecture tests banning direct finance writes in views. 1-2 days.
+4. **A5** — Bank connector + FX direct-writes cleanup. 3-5 days.
+5. **A6, A7, A9, A10, A11** — UX + invariant + correctness follow-ups; pick up between bigger work. A10/A11 land when first user signals they need them.
 
-**First-user-invite preconditions are now over-met:** A1 validated, all critical bugs fixed, wizard finalization auto-wires sales routing + webhooks, Items get full GL account defaults on auto-create, user customizations are preservation-tested. Ready to invite.
+**First-user-invite preconditions are still over-met.** A2 strengthens payout reconciliation but isn't a precondition — a first user could ship today, have all gateways collapsed onto one clearing account, and split them later by editing the per-gateway PostingProfiles. The choice between (A) invite now or (B) ship one more pre-emptive fix remains live for the next session.
