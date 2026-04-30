@@ -3581,7 +3581,22 @@ def _setup_shopify_accounts(company):
         ("CASH_BANK", "11000", "Cash and Bank", "ASSET", "LIQUIDITY"),
         ("CHARGEBACK_EXPENSE", "52100", "Chargeback Expense", "EXPENSE", "OTHER_EXPENSE"),
         ("COGS", "51000", "Cost of Goods Sold", "EXPENSE", "COGS"),
-        ("INVENTORY", "13000", "Inventory", "ASSET", "INVENTORY"),
+        # Inventory account_role is INVENTORY_VALUE (not "INVENTORY") — the
+        # role choice "INVENTORY" is invalid for ASSET-type accounts; the
+        # validation catches this in any fresh-onboarding test fixture.
+        # (Latent bug surfaced by A14's full-stack settlement test.)
+        ("INVENTORY", "13000", "Inventory", "ASSET", "INVENTORY_VALUE"),
+        # A14: settlement-import support.
+        # Expected Bank Deposit holds money that gateways/couriers have
+        # remitted but that hasn't yet hit the merchant's actual bank
+        # statement. When the bank deposit lands and bank-rec matches it,
+        # the line on this account clears.
+        ("EXPECTED_BANK_DEPOSIT", "11600", "Expected Bank Deposit", "ASSET", "LIQUIDITY"),
+        # Sales Returns / Failed Delivery captures COD orders the courier
+        # tried to deliver but couldn't collect on (returned, refused,
+        # not-home). Posts as part of the courier settlement JE. Different
+        # from a refund — the merchant never got paid.
+        ("SALES_RETURNS", "41200", "Sales Returns / Failed Delivery", "REVENUE", "CONTRA_REVENUE"),
     ]
 
     with projection_writes_allowed():

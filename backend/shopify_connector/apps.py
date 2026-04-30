@@ -23,6 +23,9 @@ class ShopifyConnectorConfig(AppConfig):
         "COGS",
         "INVENTORY",
         "CHARGEBACK_EXPENSE",
+        # A14: settlement-import support.
+        "EXPECTED_BANK_DEPOSIT",
+        "SALES_RETURNS",
     ]
 
     def ready(self):

@@ -34,6 +34,7 @@ from .reconciliation_views import (
     ReconciliationDrilldownView,
     ReconciliationSummaryView,
 )
+from .settlement_import_views import SettlementCSVImportView
 from .settlement_provider_views import (
     SettlementProviderDetailView,
     SettlementProviderListView,
@@ -347,5 +348,13 @@ urlpatterns = [
         "reconciliation/drilldown/",
         ReconciliationDrilldownView.as_view(),
         name="reconciliation-drilldown",
+    ),
+    # ==========================================================================
+    # Settlement CSV Import (A14)
+    # ==========================================================================
+    path(
+        "settlements/import/",
+        SettlementCSVImportView.as_view(),
+        name="settlement-csv-import",
     ),
 ]

@@ -50,6 +50,7 @@ class AccountsConfig(AppConfig):
             order=10,
             nav_items=[
                 {"label": "Reconciliation", "href": "/finance/reconciliation", "icon": "Scale"},
+                {"label": "Import Settlements", "href": "/finance/settlements/import", "icon": "Upload"},
                 {"label": "Journal Entries", "href": "/accounting/journal-entries", "icon": "FileText"},
                 {"label": "Bank Reconciliation", "href": "/accounting/bank-reconciliation", "icon": "Building2"},
                 {"label": "Scratchpad", "href": "/accounting/scratchpad", "icon": "ClipboardList"},

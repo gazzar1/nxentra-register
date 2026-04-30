@@ -23,3 +23,9 @@ export type {
   ReconciliationProviderRow,
   AgingBucket,
 } from './reconciliation.service';
+export { settlementImportsService } from './settlement-imports.service';
+export type {
+  SettlementImportResponse,
+  SettlementImportBatch,
+  SettlementProviderCode,
+} from './settlement-imports.service';

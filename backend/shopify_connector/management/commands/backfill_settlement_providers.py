@@ -22,6 +22,7 @@ Run on the droplet:
 from django.core.management.base import BaseCommand
 
 from accounting.settlement_provider import SettlementProvider
+from accounts.commands import _setup_shopify_accounts
 from shopify_connector.commands import (
     _bootstrap_shopify_settlement_providers,
     _ensure_shopify_sales_setup,
@@ -72,6 +73,11 @@ class Command(BaseCommand):
 
             if dry_run:
                 continue
+
+            # A14: ensure all the GL accounts the settlement-import projection
+            # depends on exist (Expected Bank Deposit, Sales Returns,
+            # Payment Processing Fees, etc.). Idempotent via get_or_create.
+            _setup_shopify_accounts(company)
 
             if not store.default_posting_profile_id:
                 # Setup never ran; let the full helper create the customer + profile + providers.

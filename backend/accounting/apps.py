@@ -11,6 +11,13 @@ class AccountingConfig(AppConfig):
     name = "accounting"
     verbose_name = "Accounting"
 
+    # A14: PaymentSettlementProjection consumes PAYMENT_SETTLEMENT_RECEIVED
+    # events emitted by the manual-CSV importer (and, eventually, automated
+    # Paymob/Bosta connectors).
+    projections = [
+        "accounting.payment_settlement_projection.PaymentSettlementProjection",
+    ]
+
     def ready(self):
         """Initialize app when Django starts."""
         # Import signal handlers here if needed in the future

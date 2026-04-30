@@ -2345,6 +2345,12 @@ class EventTypes:
     PLATFORM_DISPUTE_CREATED = "platform.dispute_created"
     PLATFORM_FULFILLMENT_CREATED = "platform.fulfillment_created"
 
+    # A14: provider-agnostic settlement event emitted by manual CSV imports
+    # (Paymob, Bosta) and — eventually — by Paymob/Bosta automated connectors.
+    # The projection drains the matching provider's clearing balance and
+    # debits Expected Bank Deposit + Fees.
+    PAYMENT_SETTLEMENT_RECEIVED = "payment.settlement_received"
+
 
 # =============================================================================
 # Platform-agnostic Event Data Classes
@@ -2426,6 +2432,57 @@ class PlatformFulfillmentCreatedData(FinancialEventData):
     total_cogs: str = "0"
     cogs_lines: list = field(default_factory=list)
     unmatched_skus: list = field(default_factory=list)
+
+
+@dataclass
+class PaymentSettlementReceivedData(FinancialEventData):
+    """A14: provider-agnostic settlement event.
+
+    Emitted when a settlement statement (Paymob payout, Bosta COD batch,
+    PayPal release, …) is imported either via CSV upload or — eventually —
+    via an automated connector. Drives a JE that drains the provider's
+    clearing balance:
+
+        DR Expected Bank Deposit  net_amount
+        DR Gateway/Courier Fees   fees
+        DR Sales Returns / Failed (uncollected, if non-zero)
+            CR <Provider> Clearing  gross_amount  [tagged with settlement_provider dim]
+
+    Fields:
+        provider_normalized_code: e.g. "paymob", "bosta", "paypal".
+            Resolves to a SettlementProvider via
+            (company, external_system, normalized_code).
+        external_system: connector that owns the provider routing
+            ("shopify" today; "woocommerce"/"manual" later).
+        payout_batch_id: the gateway/courier's batch identifier.
+            Combines with provider_normalized_code for idempotency:
+            re-importing the same CSV emits the same event with the
+            same idempotency_key → projection skips dup.
+        gross_amount: total amount the provider holds for this batch.
+        fees: gateway/courier fees deducted.
+        net_amount: gross - fees - uncollected (= what hits the bank).
+        uncollected_amount: COD-only — orders attempted but not collected.
+            Posts to a Sales Returns / Failed Delivery account.
+        payment_method: denormalized fact for analytics ("card", "cod",
+            "bank_transfer", …). Reconciliation pivots on
+            settlement_provider; analytics can pivot on payment_method.
+        line_items: per-order breakdown for audit/drilldown. List of
+            {order_id, gross, fee, net, status}. Optional — header
+            totals drive the JE.
+        source_filename: filename of the uploaded CSV, for audit.
+    """
+
+    provider_normalized_code: str = ""
+    external_system: str = "shopify"
+    payout_batch_id: str = ""
+    gross_amount: str = "0"
+    fees: str = "0"
+    net_amount: str = "0"
+    uncollected_amount: str = "0"
+    payment_method: str = ""
+    payout_date: str = ""
+    line_items: list = field(default_factory=list)
+    source_filename: str = ""
 
 
 # =============================================================================
@@ -2550,6 +2607,7 @@ EVENT_DATA_CLASSES = {
     EventTypes.PLATFORM_PAYOUT_SETTLED: PlatformPayoutSettledData,
     EventTypes.PLATFORM_DISPUTE_CREATED: PlatformDisputeCreatedData,
     EventTypes.PLATFORM_FULFILLMENT_CREATED: PlatformFulfillmentCreatedData,
+    EventTypes.PAYMENT_SETTLEMENT_RECEIVED: PaymentSettlementReceivedData,
 }
 
 # =============================================================================
