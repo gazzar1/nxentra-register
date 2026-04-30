@@ -1824,63 +1824,67 @@ def _ensure_shopify_sales_setup(store):
         profile.code,
     )
 
-    # 5. Bootstrap per-gateway PaymentGateway rows. Each row gets its own
-    #    PostingProfile, all initially anchored on the same SHOPIFY_CLEARING
-    #    account. The merchant can later edit any one profile's
-    #    control_account to point at a distinct sub-account (e.g.
-    #    Paymob Clearing 11501) — at which point Paymob orders begin
+    # 5. Bootstrap per-provider SettlementProvider rows. Each row gets its
+    #    own PostingProfile, all initially anchored on the same
+    #    SHOPIFY_CLEARING account. The merchant can later edit any one
+    #    profile's control_account to point at a distinct sub-account
+    #    (e.g. Paymob Clearing 11501) — at which point Paymob orders begin
     #    routing there, and historical postings stay where they were.
-    _bootstrap_shopify_payment_gateways(company, clearing_account, profile)
+    _bootstrap_shopify_settlement_providers(company, clearing_account, profile)
 
 
-# Default gateway codes seen in Shopify payloads for MENA + global merchants.
-# Keep small and obvious — the lazy-create path handles anything else.
-_SHOPIFY_DEFAULT_GATEWAYS = (
-    ("paymob", "Paymob"),
-    ("paypal", "PayPal"),
-    ("manual", "Manual"),
-    ("shopify_payments", "Shopify Payments"),
-    ("cash_on_delivery", "Cash on Delivery"),
-    ("bank_transfer", "Bank Transfer"),
-    ("unknown", "Unknown / Default"),
+# Default settlement-provider codes seen in Shopify payloads for MENA +
+# global merchants. Keep small and obvious — the lazy-create path handles
+# anything else. Note: `cash_on_delivery` is a transitional row preserved
+# from A2; A12 deactivates it and replaces with bosta (provider_type=courier)
+# once the COD wizard step ships and ShopifyStore.default_cod_settlement_provider
+# is wired in.
+_SHOPIFY_DEFAULT_PROVIDERS = (
+    ("paymob", "Paymob", "gateway"),
+    ("paypal", "PayPal", "gateway"),
+    ("manual", "Manual", "manual"),
+    ("shopify_payments", "Shopify Payments", "gateway"),
+    ("cash_on_delivery", "Cash on Delivery", "manual"),
+    ("bank_transfer", "Bank Transfer", "bank_transfer"),
+    ("unknown", "Unknown / Default", "manual"),
 )
 
 
-def _gateway_profile_code(normalized_code: str) -> str:
-    """Build a deterministic PostingProfile.code for a gateway.
+def _provider_profile_code(normalized_code: str) -> str:
+    """Build a deterministic PostingProfile.code for a settlement provider.
 
     PostingProfile.code is max 20 chars and unique per company. Use a
-    short prefix so gateway profiles don't collide with the store-level
+    short prefix so provider profiles don't collide with the store-level
     default profile (`SHOPIFY-<store_label>`).
     """
     return f"PG-{normalized_code.upper()}"[:20]
 
 
-def _bootstrap_shopify_payment_gateways(company, clearing_account, fallback_profile):
-    """Create per-gateway PostingProfile + PaymentGateway rows.
+def _bootstrap_shopify_settlement_providers(company, clearing_account, fallback_profile):
+    """Create per-provider PostingProfile + SettlementProvider rows.
 
-    Idempotent — uses get_or_create on both. Initially every gateway points
+    Idempotent — uses get_or_create on both. Initially every provider points
     at the same `clearing_account` (via its dedicated PostingProfile);
-    later edits to any one PostingProfile.control_account split a gateway
+    later edits to any one PostingProfile.control_account split a provider
     onto its own clearing sub-account.
 
     `fallback_profile` is reserved for the lazy-create path in projections
     (unknown gateway codes); we don't reference it here, but pass it
     through for symmetry / future use.
     """
-    from accounting.payment_gateway import PaymentGateway, normalize_gateway_code
+    from accounting.settlement_provider import SettlementProvider, normalize_gateway_code
     from sales.models import PostingProfile
 
     with command_writes_allowed(), projection_writes_allowed():
-        for raw_code, display_name in _SHOPIFY_DEFAULT_GATEWAYS:
+        for raw_code, display_name, provider_type in _SHOPIFY_DEFAULT_PROVIDERS:
             normalized = normalize_gateway_code(raw_code)
-            profile_code = _gateway_profile_code(normalized)
+            profile_code = _provider_profile_code(normalized)
 
-            gateway_profile, _ = PostingProfile.objects.get_or_create(
+            provider_profile, _ = PostingProfile.objects.get_or_create(
                 company=company,
                 code=profile_code,
                 defaults={
-                    "name": f"Shopify Gateway: {display_name}",
+                    "name": f"Shopify Provider: {display_name}",
                     "name_ar": f"بوابة شوبيفاي: {display_name}",
                     "profile_type": PostingProfile.ProfileType.CUSTOMER,
                     "control_account": clearing_account,
@@ -1888,20 +1892,21 @@ def _bootstrap_shopify_payment_gateways(company, clearing_account, fallback_prof
                     "description": (
                         f"Auto-created for {display_name} routing. Initially "
                         f"points at the same Shopify Clearing account; edit "
-                        f"control_account here to split this gateway onto "
+                        f"control_account here to split this provider onto "
                         f"its own clearing sub-account."
                     ),
                 },
             )
 
-            PaymentGateway.objects.get_or_create(
+            SettlementProvider.objects.get_or_create(
                 company=company,
                 external_system="shopify",
                 normalized_code=normalized,
                 defaults={
                     "source_code": raw_code,
                     "display_name": display_name,
-                    "posting_profile": gateway_profile,
+                    "provider_type": provider_type,
+                    "posting_profile": provider_profile,
                     "is_active": True,
                     "needs_review": False,
                 },

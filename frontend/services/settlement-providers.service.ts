@@ -4,12 +4,20 @@ import apiClient from "@/lib/api-client";
 // Types
 // =============================================================================
 
-export interface PaymentGateway {
+export type ProviderType =
+  | "gateway"
+  | "courier"
+  | "bank_transfer"
+  | "manual"
+  | "marketplace";
+
+export interface SettlementProvider {
   id: number;
   external_system: string;
   source_code: string;
   normalized_code: string;
   display_name: string;
+  provider_type: ProviderType;
   posting_profile: number;
   posting_profile_code: string;
   posting_profile_name: string;
@@ -21,24 +29,26 @@ export interface PaymentGateway {
   updated_at: string;
 }
 
-export interface PaymentGatewayUpdatePayload {
+export interface SettlementProviderUpdatePayload {
   posting_profile?: number;
   display_name?: string;
+  provider_type?: ProviderType;
   is_active?: boolean;
   needs_review?: boolean;
 }
 
-export interface PaymentGatewayListParams {
+export interface SettlementProviderListParams {
   needs_review?: boolean;
   external_system?: string;
+  provider_type?: ProviderType;
 }
 
 // =============================================================================
 // Service
 // =============================================================================
 
-export const paymentGatewaysService = {
-  list: (params?: PaymentGatewayListParams) => {
+export const settlementProvidersService = {
+  list: (params?: SettlementProviderListParams) => {
     const query: Record<string, string> = {};
     if (params?.needs_review !== undefined) {
       query.needs_review = params.needs_review ? "true" : "false";
@@ -46,11 +56,14 @@ export const paymentGatewaysService = {
     if (params?.external_system) {
       query.external_system = params.external_system;
     }
-    return apiClient.get<PaymentGateway[]>("/accounting/payment-gateways/", {
+    if (params?.provider_type) {
+      query.provider_type = params.provider_type;
+    }
+    return apiClient.get<SettlementProvider[]>("/accounting/settlement-providers/", {
       params: query,
     });
   },
 
-  update: (id: number, data: PaymentGatewayUpdatePayload) =>
-    apiClient.patch<PaymentGateway>(`/accounting/payment-gateways/${id}/`, data),
+  update: (id: number, data: SettlementProviderUpdatePayload) =>
+    apiClient.patch<SettlementProvider>(`/accounting/settlement-providers/${id}/`, data),
 };

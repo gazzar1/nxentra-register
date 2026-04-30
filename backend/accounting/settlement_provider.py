@@ -1,37 +1,50 @@
-# accounting/payment_gateway.py
+# accounting/settlement_provider.py
 """
-PaymentGateway routing primitive.
+SettlementProvider routing primitive.
 
-Maps an external payment source (Paymob, PayPal, Manual COD, Shopify Payments,
-bank transfer, etc.) to an internal PostingProfile. The PostingProfile already
-carries the AR / clearing control account used by JE construction in
-sales.commands.post_sales_invoice — so this table chooses which profile a
-given platform-imported invoice posts under, and the JE side stays unchanged.
+Maps an external payment source (Paymob, PayPal, Bosta, DHL, Aramex,
+Shopify Payments, bank transfer, manual collection) to an internal
+PostingProfile. The PostingProfile already carries the AR / clearing
+control account used by JE construction in
+sales.commands.post_sales_invoice — so this table chooses which profile
+a given platform-imported invoice posts under, and the JE side stays
+unchanged.
 
-Conceptually this is a *mapping* (PaymentGatewayMapping would be more
-accurate) — but the simpler `PaymentGateway` name is used because the brief
-and roadmap reference it that way. The row is a routing primitive, not the
-gateway itself.
+Conceptually this is a *mapping* (SettlementProviderMapping would be
+more precise) — but for Phase 1 the row IS the provider entity AND the
+mapping rule. When multi-courier-per-store routing arrives (A15), the
+two concerns split into distinct tables.
+
+Why "settlement provider" not "payment gateway":
+    Reconciliation pivots on "who holds or remits the money," not "how
+    the customer paid." Bosta-COD and DHL-COD are different
+    reconciliation cases (different parties, different schedules,
+    different bank deposits) — so the right primary identity is the
+    *settlement provider*, not the payment method. payment_method
+    survives as a denormalized fact on settlement events for analytics
+    ("COD vs card refund rate"); reconciliation queries pivot on
+    settlement_provider.
 
 Why this lives in `accounting/` rather than `platform_connectors/`:
-    Connectors detect facts (gateway = "Paymob"). Accounting decides meaning
-    (this gateway routes to that posting profile). Putting the table in a
-    connector app would scatter financial-routing logic across connector
-    folders as Stripe / Paymob / WooCommerce / Amazon are added.
+    Connectors detect facts (gateway = "Paymob"). Accounting decides
+    meaning (this provider routes to that posting profile). Putting
+    the table in a connector app would scatter financial-routing logic
+    across connector folders as Stripe / Paymob / WooCommerce / Amazon
+    / Bosta / DHL are added.
 
 External-system scoping:
-    `paypal` from Shopify and `paypal` from WooCommerce are not the same
-    routing decision. The unique constraint is
-    (company, external_system, normalized_code).
+    `paypal` from Shopify and `paypal` from a future WooCommerce
+    connector are not the same routing decision. The unique constraint
+    is (company, external_system, normalized_code).
 
-Unknown gateways:
-    On first sight of an unmapped gateway code, the projection lazy-creates
-    a row with `needs_review=True` and points it at the connector's default
-    posting profile so the order still posts. The flag is operator-visible
-    via the API (?needs_review=true) and the
-    `list_review_payment_gateways` management command — silent fallback
-    would violate ENGINEERING_PROTOCOL.md §2.4 "any skipped or partial
-    posting must surface visibly to operators."
+Unknown providers:
+    On first sight of an unmapped gateway code, the projection
+    lazy-creates a row with `needs_review=True` and points it at the
+    connector's default posting profile so the order still posts. The
+    flag is operator-visible via the API (?needs_review=true) and the
+    `list_review_settlement_providers` management command — silent
+    fallback would violate ENGINEERING_PROTOCOL.md §2.4 "any skipped
+    or partial posting must surface visibly to operators."
 """
 
 from __future__ import annotations
@@ -70,24 +83,31 @@ def normalize_gateway_code(raw: str | None) -> str:
     return s
 
 
-class PaymentGateway(models.Model):
+class SettlementProvider(models.Model):
     """
-    Per-company mapping of an external payment source to a PostingProfile.
+    Per-company mapping of an external settlement source to a PostingProfile.
 
     Bootstrap creates the common rows on connector setup. Unknown gateway
     codes lazy-create a row with `needs_review=True` and point at the
     connector's default profile.
 
     The clearing/control account is *derived* — read it as
-    `payment_gateway.posting_profile.control_account`. Do not duplicate it
-    on this row; that would create a second source of truth and force sync
-    logic.
+    `settlement_provider.posting_profile.control_account`. Do not duplicate
+    it on this row; that would create a second source of truth and force
+    sync logic.
     """
+
+    class ProviderType(models.TextChoices):
+        GATEWAY = "gateway", "Payment Gateway"
+        COURIER = "courier", "Courier (COD)"
+        BANK_TRANSFER = "bank_transfer", "Bank Transfer"
+        MANUAL = "manual", "Manual / Other"
+        MARKETPLACE = "marketplace", "Marketplace"
 
     company = models.ForeignKey(
         Company,
         on_delete=models.CASCADE,
-        related_name="payment_gateways",
+        related_name="settlement_providers",
     )
     external_system = models.CharField(
         max_length=50,
@@ -106,10 +126,19 @@ class PaymentGateway(models.Model):
         max_length=255,
         help_text="Human-readable label shown in UI / reports.",
     )
+    provider_type = models.CharField(
+        max_length=20,
+        choices=ProviderType.choices,
+        default=ProviderType.MANUAL,
+        help_text=(
+            "Kind of settlement entity. Drives UI iconography, analytics "
+            "slicing, and (later) divergent reconciliation logic."
+        ),
+    )
     posting_profile = models.ForeignKey(
         PostingProfile,
         on_delete=models.PROTECT,
-        related_name="payment_gateways",
+        related_name="settlement_providers",
         help_text=("Routing target. The clearing/control account used by the JE is this profile's control_account."),
     )
     is_active = models.BooleanField(default=True)
@@ -128,15 +157,21 @@ class PaymentGateway(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=("company", "external_system", "normalized_code"),
-                name="uniq_payment_gateway_per_company_system_code",
+                name="uniq_settlement_provider_per_company_system_code",
             ),
         ]
         indexes = [
-            models.Index(fields=("company", "external_system", "is_active")),
-            models.Index(fields=("company", "needs_review")),
+            models.Index(
+                fields=("company", "external_system", "is_active"),
+                name="accounting__company_8b7ee8_idx",
+            ),
+            models.Index(
+                fields=("company", "needs_review"),
+                name="accounting__company_204d43_idx",
+            ),
         ]
-        verbose_name = "Payment Gateway"
-        verbose_name_plural = "Payment Gateways"
+        verbose_name = "Settlement Provider"
+        verbose_name_plural = "Settlement Providers"
 
     def __str__(self):
         flag = " [REVIEW]" if self.needs_review else ""
@@ -153,7 +188,7 @@ class PaymentGateway(models.Model):
 
         if not write_context_allowed(self._ALLOWED_WRITE_CONTEXTS) and not getattr(settings, "TESTING", False):
             raise RuntimeError(
-                "PaymentGateway is a configuration model. "
+                "SettlementProvider is a configuration model. "
                 "Direct saves are only allowed within command/projection/bootstrap/migration contexts."
             )
         super().save(*args, **kwargs)
@@ -163,7 +198,7 @@ class PaymentGateway(models.Model):
 
         if not write_context_allowed(self._ALLOWED_WRITE_CONTEXTS) and not getattr(settings, "TESTING", False):
             raise RuntimeError(
-                "PaymentGateway is a configuration model. "
+                "SettlementProvider is a configuration model. "
                 "Direct deletes are only allowed within an allowed write context."
             )
         return super().delete(*args, **kwargs)
@@ -178,9 +213,9 @@ class PaymentGateway(models.Model):
         company: Company,
         external_system: str,
         raw_gateway: str | None,
-    ) -> PaymentGateway | None:
+    ) -> SettlementProvider | None:
         """
-        Resolve a raw gateway string to a PaymentGateway row, or None.
+        Resolve a raw gateway string to a SettlementProvider row, or None.
 
         Caller decides what to do on miss (typically: lazy-create via
         `lookup_or_create_for_review`).
@@ -206,9 +241,9 @@ class PaymentGateway(models.Model):
         external_system: str,
         raw_gateway: str | None,
         fallback_posting_profile: PostingProfile,
-    ) -> PaymentGateway | None:
+    ) -> SettlementProvider | None:
         """
-        Resolve gateway → row, or lazy-create one flagged for review.
+        Resolve provider, or lazy-create one flagged for review.
 
         Used by projections that have just received an event with a gateway
         we don't recognize. The order still posts (using the fallback
@@ -241,6 +276,7 @@ class PaymentGateway(models.Model):
                 defaults={
                     "source_code": (raw_gateway or "").strip()[:100],
                     "display_name": (raw_gateway or normalized).strip()[:255] or normalized,
+                    "provider_type": cls.ProviderType.MANUAL,
                     "posting_profile": fallback_posting_profile,
                     "is_active": True,
                     "needs_review": True,
@@ -248,7 +284,7 @@ class PaymentGateway(models.Model):
             )
         if created:
             logger.warning(
-                "Unknown payment gateway %r seen for company %s on %s — "
+                "Unknown settlement provider %r seen for company %s on %s — "
                 "lazy-created row pointing at fallback profile %s, needs_review=True",
                 raw_gateway,
                 company.id,

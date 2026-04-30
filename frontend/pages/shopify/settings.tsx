@@ -32,9 +32,9 @@ import {
   ShopifyAccountMapping,
 } from "@/services/shopify.service";
 import {
-  paymentGatewaysService,
-  type PaymentGateway,
-} from "@/services/payment-gateways.service";
+  settlementProvidersService,
+  type SettlementProvider,
+} from "@/services/settlement-providers.service";
 import { postingProfilesService } from "@/services/sales.service";
 import type { PostingProfile } from "@/types/sales";
 import { useAccounts } from "@/queries/useAccounts";
@@ -60,11 +60,11 @@ export default function ShopifySettingsPage() {
   const [mappingForm, setMappingForm] = useState<Record<string, number | null>>({});
   const [savingMappings, setSavingMappings] = useState(false);
 
-  // Payment gateway routing
-  const [gateways, setGateways] = useState<PaymentGateway[]>([]);
+  // Settlement provider routing
+  const [providers, setProviders] = useState<SettlementProvider[]>([]);
   const [customerProfiles, setCustomerProfiles] = useState<PostingProfile[]>([]);
-  const [gatewayForm, setGatewayForm] = useState<Record<number, number>>({});
-  const [savingGatewayId, setSavingGatewayId] = useState<number | null>(null);
+  const [providerForm, setProviderForm] = useState<Record<number, number>>({});
+  const [savingProviderId, setSavingProviderId] = useState<number | null>(null);
 
   const fetchStore = async () => {
     setLoading(true);
@@ -115,13 +115,13 @@ export default function ShopifySettingsPage() {
     }
   };
 
-  const fetchGateways = async () => {
+  const fetchProviders = async () => {
     try {
-      const { data } = await paymentGatewaysService.list({ external_system: "shopify" });
-      setGateways(data);
+      const { data } = await settlementProvidersService.list({ external_system: "shopify" });
+      setProviders(data);
       const initial: Record<number, number> = {};
-      data.forEach((g) => { initial[g.id] = g.posting_profile; });
-      setGatewayForm(initial);
+      data.forEach((p) => { initial[p.id] = p.posting_profile; });
+      setProviderForm(initial);
     } catch {
       // Empty until bootstrap runs / store connects
     }
@@ -139,47 +139,47 @@ export default function ShopifySettingsPage() {
     }
   };
 
-  const handleSaveGateway = async (gatewayId: number) => {
-    const target = gateways.find((g) => g.id === gatewayId);
+  const handleSaveProvider = async (providerId: number) => {
+    const target = providers.find((p) => p.id === providerId);
     if (!target) return;
-    const newProfileId = gatewayForm[gatewayId];
+    const newProfileId = providerForm[providerId];
     if (!newProfileId || newProfileId === target.posting_profile) return;
-    setSavingGatewayId(gatewayId);
+    setSavingProviderId(providerId);
     try {
-      const { data: updated } = await paymentGatewaysService.update(gatewayId, {
+      const { data: updated } = await settlementProvidersService.update(providerId, {
         posting_profile: newProfileId,
         // Saving an explicit profile is implicit acknowledgement.
         needs_review: false,
       });
-      setGateways((prev) => prev.map((g) => (g.id === gatewayId ? updated : g)));
-      setGatewayForm((prev) => ({ ...prev, [gatewayId]: updated.posting_profile }));
+      setProviders((prev) => prev.map((p) => (p.id === providerId ? updated : p)));
+      setProviderForm((prev) => ({ ...prev, [providerId]: updated.posting_profile }));
       toast({ title: `${updated.display_name} re-routed.` });
     } catch {
       toast({ title: "Failed to update routing.", variant: "destructive" });
     } finally {
-      setSavingGatewayId(null);
+      setSavingProviderId(null);
     }
   };
 
-  const handleDismissReview = async (gatewayId: number) => {
-    setSavingGatewayId(gatewayId);
+  const handleDismissReview = async (providerId: number) => {
+    setSavingProviderId(providerId);
     try {
-      const { data: updated } = await paymentGatewaysService.update(gatewayId, {
+      const { data: updated } = await settlementProvidersService.update(providerId, {
         needs_review: false,
       });
-      setGateways((prev) => prev.map((g) => (g.id === gatewayId ? updated : g)));
+      setProviders((prev) => prev.map((p) => (p.id === providerId ? updated : p)));
       toast({ title: "Review flag cleared." });
     } catch {
       toast({ title: "Failed to clear review flag.", variant: "destructive" });
     } finally {
-      setSavingGatewayId(null);
+      setSavingProviderId(null);
     }
   };
 
   useEffect(() => {
     fetchStore();
     fetchMappings();
-    fetchGateways();
+    fetchProviders();
     fetchPostingProfiles();
 
     // Check for OAuth callback result
@@ -522,80 +522,90 @@ export default function ShopifySettingsPage() {
               </CardContent>
             </Card>
 
-            {/* Payment Gateway Routing */}
+            {/* Settlement Provider Routing */}
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Wallet className="h-5 w-5" />
-                  Payment Gateway Routing
+                  Settlement Provider Routing
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <p className="text-sm text-muted-foreground">
-                  Each Shopify gateway (Paymob, PayPal, COD, etc.) routes incoming orders
-                  to a Posting Profile, which determines the clearing / control account
-                  that the JE debits. By default every gateway is anchored on the same
-                  Shopify Clearing account. Create a new clearing sub-account and re-route
-                  individual gateways to split payouts cleanly for reconciliation.
+                  Each settlement provider (Paymob, PayPal, COD courier, bank transfer, …)
+                  routes incoming orders to a Posting Profile, which determines the
+                  clearing / control account the JE debits. By default every provider is
+                  anchored on the same Shopify Clearing account. Create a new clearing
+                  sub-account and re-route individual providers to split payouts cleanly
+                  for reconciliation.
                 </p>
 
-                {gateways.length === 0 ? (
+                {providers.length === 0 ? (
                   <p className="text-sm text-muted-foreground italic">
-                    No payment gateways yet — they appear here once the store connect bootstrap runs.
+                    No settlement providers yet — they appear here once the store connect bootstrap runs.
                   </p>
                 ) : (
                   <div className="space-y-3">
-                    {gateways.map((g) => {
+                    {providers.map((p) => {
                       const dirty =
-                        gatewayForm[g.id] !== undefined && gatewayForm[g.id] !== g.posting_profile;
-                      const saving = savingGatewayId === g.id;
+                        providerForm[p.id] !== undefined && providerForm[p.id] !== p.posting_profile;
+                      const saving = savingProviderId === p.id;
+                      const typeBadgeVariant =
+                        p.provider_type === "gateway"
+                          ? "info"
+                          : p.provider_type === "courier"
+                          ? "success"
+                          : p.provider_type === "bank_transfer"
+                          ? "secondary"
+                          : "outline";
                       return (
                         <div
-                          key={g.id}
+                          key={p.id}
                           className="flex flex-col gap-2 rounded-md border p-3 sm:flex-row sm:items-center sm:gap-4"
                         >
                           <div className="min-w-0 flex-1">
                             <div className="flex flex-wrap items-center gap-2">
-                              <span className="font-medium">{g.display_name}</span>
-                              {g.needs_review && (
+                              <span className="font-medium">{p.display_name}</span>
+                              <Badge variant={typeBadgeVariant}>{p.provider_type}</Badge>
+                              {p.needs_review && (
                                 <Badge variant="warning">Needs review</Badge>
                               )}
-                              {!g.is_active && (
+                              {!p.is_active && (
                                 <Badge variant="outline">Inactive</Badge>
                               )}
                             </div>
                             <div className="font-mono text-xs text-muted-foreground">
-                              raw: {g.source_code || g.normalized_code} · normalized:{" "}
-                              {g.normalized_code}
+                              raw: {p.source_code || p.normalized_code} · normalized:{" "}
+                              {p.normalized_code}
                             </div>
                             <div className="text-xs text-muted-foreground">
                               currently posts to{" "}
-                              <span className="font-mono">{g.posting_profile_code}</span>{" "}
-                              → {g.control_account_code} {g.control_account_name}
+                              <span className="font-mono">{p.posting_profile_code}</span>{" "}
+                              → {p.control_account_code} {p.control_account_name}
                             </div>
                           </div>
                           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                             <select
                               className="rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
-                              value={gatewayForm[g.id] ?? g.posting_profile}
+                              value={providerForm[p.id] ?? p.posting_profile}
                               onChange={(e) =>
-                                setGatewayForm({
-                                  ...gatewayForm,
-                                  [g.id]: Number(e.target.value),
+                                setProviderForm({
+                                  ...providerForm,
+                                  [p.id]: Number(e.target.value),
                                 })
                               }
                               disabled={saving}
                             >
-                              {customerProfiles.map((p) => (
-                                <option key={p.id} value={p.id}>
-                                  {p.code} — {p.name}
+                              {customerProfiles.map((profile) => (
+                                <option key={profile.id} value={profile.id}>
+                                  {profile.code} — {profile.name}
                                 </option>
                               ))}
                             </select>
                             <div className="flex gap-2">
                               <Button
                                 size="sm"
-                                onClick={() => handleSaveGateway(g.id)}
+                                onClick={() => handleSaveProvider(p.id)}
                                 disabled={!dirty || saving}
                               >
                                 {saving ? (
@@ -605,11 +615,11 @@ export default function ShopifySettingsPage() {
                                 )}
                                 Save
                               </Button>
-                              {g.needs_review && !dirty && (
+                              {p.needs_review && !dirty && (
                                 <Button
                                   size="sm"
                                   variant="outline"
-                                  onClick={() => handleDismissReview(g.id)}
+                                  onClick={() => handleDismissReview(p.id)}
                                   disabled={saving}
                                 >
                                   Mark reviewed

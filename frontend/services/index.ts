@@ -10,5 +10,9 @@ export { eventsService } from './events.service';
 export { scratchpadService } from './scratchpad.service';
 export { itemsService, taxCodesService, postingProfilesService, salesInvoicesService } from './sales.service';
 export { purchaseBillsService } from './purchases.service';
-export { paymentGatewaysService } from './payment-gateways.service';
-export type { PaymentGateway, PaymentGatewayUpdatePayload } from './payment-gateways.service';
+export { settlementProvidersService } from './settlement-providers.service';
+export type {
+  SettlementProvider,
+  SettlementProviderUpdatePayload,
+  ProviderType,
+} from './settlement-providers.service';

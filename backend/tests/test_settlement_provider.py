@@ -1,19 +1,19 @@
-# tests/test_payment_gateway.py
+# tests/test_settlement_provider.py
 """
-Tests for A2 — PaymentGateway routing primitive.
+Tests for A2 + A2.5 — SettlementProvider routing primitive.
 
 Covers:
 - normalize_gateway_code canonical-form behavior
-- bootstrap creates per-gateway PostingProfile + PaymentGateway rows for
-  the seven default Shopify gateway codes
+- bootstrap creates per-provider PostingProfile + SettlementProvider rows
+  for the seven default Shopify provider codes, with provider_type set
 - bootstrap is idempotent (re-run = no duplicates)
-- _handle_order_paid routes to the gateway's posting profile when the
-  Shopify payload's gateway matches a known PaymentGateway row
+- _handle_order_paid routes to the provider's posting profile when the
+  Shopify payload's gateway matches a known SettlementProvider row
 - _handle_order_paid lazy-creates a needs_review row when the gateway is
   unknown, and posts via the fallback profile
 - _handle_order_paid falls back to store.default_posting_profile when the
   payload carries no gateway at all
-- PaymentGateway unique constraint is enforced
+- SettlementProvider unique constraint is enforced
 - Lookup helpers behave consistently across raw / normalized inputs
 """
 
@@ -21,7 +21,7 @@ from datetime import UTC
 
 import pytest
 
-from accounting.payment_gateway import PaymentGateway, normalize_gateway_code
+from accounting.settlement_provider import SettlementProvider, normalize_gateway_code
 
 # =============================================================================
 # normalize_gateway_code
@@ -81,17 +81,17 @@ def shopify_with_clearing(db, company):
     )
     store = ShopifyStore.objects.create(
         company=company,
-        shop_domain="pg-bootstrap.myshopify.com",
+        shop_domain="sp-bootstrap.myshopify.com",
         access_token="test-token",
         status=ShopifyStore.Status.ACTIVE,
     )
     return {"store": store, "clearing": clearing}
 
 
-def test_bootstrap_creates_seven_default_gateways(shopify_with_clearing, company):
-    # All seven default gateways for Shopify get rows + dedicated profiles.
+def test_bootstrap_creates_seven_default_providers(shopify_with_clearing, company):
+    # All seven default providers for Shopify get rows + dedicated profiles.
     # Each profile initially points at the same SHOPIFY_CLEARING account;
-    # the merchant later edits any one to split a gateway off.
+    # the merchant later edits any one to split a provider off.
     from sales.models import PostingProfile
     from shopify_connector.commands import _ensure_shopify_sales_setup
 
@@ -107,13 +107,29 @@ def test_bootstrap_creates_seven_default_gateways(shopify_with_clearing, company
         "unknown",
     }
 
-    rows = PaymentGateway.objects.filter(company=company, external_system="shopify")
+    rows = SettlementProvider.objects.filter(company=company, external_system="shopify")
     assert {r.normalized_code for r in rows} == expected_codes
     # All anchored on Shopify clearing initially
     for row in rows:
         assert row.posting_profile.control_account_id == shopify_with_clearing["clearing"].id
         assert row.is_active is True
         assert row.needs_review is False
+
+    # provider_type populated correctly from bootstrap declaration
+    expected_types = {
+        "paymob": "gateway",
+        "paypal": "gateway",
+        "shopify_payments": "gateway",
+        "manual": "manual",
+        "cash_on_delivery": "manual",  # transitional; A12 deactivates and adds bosta(courier)
+        "bank_transfer": "bank_transfer",
+        "unknown": "manual",
+    }
+    rows_by_code = {r.normalized_code: r for r in rows}
+    for code, expected_type in expected_types.items():
+        assert rows_by_code[code].provider_type == expected_type, (
+            f"{code} should be provider_type={expected_type}, got {rows_by_code[code].provider_type}"
+        )
 
     # Seven dedicated posting profiles created (PG-* prefix)
     pg_profiles = PostingProfile.objects.filter(company=company, code__startswith="PG-")
@@ -129,12 +145,12 @@ def test_bootstrap_is_idempotent(shopify_with_clearing, company):
     from shopify_connector.commands import _ensure_shopify_sales_setup
 
     _ensure_shopify_sales_setup(shopify_with_clearing["store"])
-    first_count = PaymentGateway.objects.filter(company=company).count()
+    first_count = SettlementProvider.objects.filter(company=company).count()
     first_profile_count = PostingProfile.objects.filter(company=company, code__startswith="PG-").count()
 
     _ensure_shopify_sales_setup(shopify_with_clearing["store"])
 
-    assert PaymentGateway.objects.filter(company=company).count() == first_count
+    assert SettlementProvider.objects.filter(company=company).count() == first_count
     assert PostingProfile.objects.filter(company=company, code__startswith="PG-").count() == first_profile_count
 
 
@@ -226,21 +242,21 @@ def _routing_capture(monkeypatch):
 
 
 def test_handle_order_paid_routes_to_paymob_profile(shopify_setup_with_revenue, company, monkeypatch):
-    # When the order's gateway is "paymob" and a PaymentGateway row exists,
-    # the invoice is posted using the gateway's dedicated PostingProfile —
+    # When the order's gateway is "paymob" and a SettlementProvider row exists,
+    # the invoice is posted using the provider's dedicated PostingProfile —
     # not the store-level default profile.
     from shopify_connector.projections import ShopifyAccountingHandler
 
     captured = _routing_capture(monkeypatch)
 
-    pg = PaymentGateway.objects.get(
+    provider = SettlementProvider.objects.get(
         company=company,
         external_system="shopify",
         normalized_code="paymob",
     )
     store = shopify_setup_with_revenue["store"]
-    assert pg.posting_profile_id != store.default_posting_profile_id, (
-        "bootstrap must give each gateway its own PostingProfile, not the store-level one"
+    assert provider.posting_profile_id != store.default_posting_profile_id, (
+        "bootstrap must give each provider its own PostingProfile, not the store-level one"
     )
 
     proj = ShopifyAccountingHandler()
@@ -249,12 +265,12 @@ def test_handle_order_paid_routes_to_paymob_profile(shopify_setup_with_revenue, 
 
     proj._handle_order_paid(event, data, mapping)
 
-    assert captured["kwargs"]["posting_profile_id"] == pg.posting_profile_id
+    assert captured["kwargs"]["posting_profile_id"] == provider.posting_profile_id
 
 
 def test_handle_order_paid_lazy_creates_unknown_gateway(shopify_setup_with_revenue, company, monkeypatch):
     # An order with a gateway code we've never seen lazy-creates a
-    # PaymentGateway row with needs_review=True, and routes the invoice
+    # SettlementProvider row with needs_review=True, and routes the invoice
     # via that row's posting profile (which equals the fallback default).
     from shopify_connector.projections import ShopifyAccountingHandler
 
@@ -264,14 +280,14 @@ def test_handle_order_paid_lazy_creates_unknown_gateway(shopify_setup_with_reven
     event, data = _fake_event(company, gateway="Tap Payments (KSA)")
     mapping = {"SALES_REVENUE": shopify_setup_with_revenue["revenue"]}
 
-    assert not PaymentGateway.objects.filter(
+    assert not SettlementProvider.objects.filter(
         company=company,
         normalized_code="tap_payments_ksa",
-    ).exists(), "fixture must not pre-create the gateway under test"
+    ).exists(), "fixture must not pre-create the provider under test"
 
     proj._handle_order_paid(event, data, mapping)
 
-    new_row = PaymentGateway.objects.get(
+    new_row = SettlementProvider.objects.get(
         company=company,
         external_system="shopify",
         normalized_code="tap_payments_ksa",
@@ -279,6 +295,7 @@ def test_handle_order_paid_lazy_creates_unknown_gateway(shopify_setup_with_reven
     assert new_row.needs_review is True
     assert new_row.is_active is True
     assert new_row.source_code == "Tap Payments (KSA)"
+    assert new_row.provider_type == "manual", "lazy-create defaults provider_type to manual until human review"
     # Lazy-created row points at the store-level default fallback profile —
     # the order still posts, just visibly flagged for operator review.
     store = shopify_setup_with_revenue["store"]
@@ -298,11 +315,11 @@ def test_handle_order_paid_with_empty_gateway_uses_default_profile(shopify_setup
     event, data = _fake_event(company, gateway="")
     mapping = {"SALES_REVENUE": shopify_setup_with_revenue["revenue"]}
 
-    before = PaymentGateway.objects.filter(company=company).count()
+    before = SettlementProvider.objects.filter(company=company).count()
     proj._handle_order_paid(event, data, mapping)
-    after = PaymentGateway.objects.filter(company=company).count()
+    after = SettlementProvider.objects.filter(company=company).count()
 
-    assert before == after, "empty gateway must not create a PaymentGateway row"
+    assert before == after, "empty gateway must not create a SettlementProvider row"
     store = shopify_setup_with_revenue["store"]
     assert captured["kwargs"]["posting_profile_id"] == store.default_posting_profile_id
 
@@ -317,13 +334,13 @@ def test_lookup_or_create_for_review_is_idempotent(shopify_setup_with_revenue, c
     # — no duplicate, no constraint violation.
     store = shopify_setup_with_revenue["store"]
 
-    row1 = PaymentGateway.lookup_or_create_for_review(
+    row1 = SettlementProvider.lookup_or_create_for_review(
         company=company,
         external_system="shopify",
         raw_gateway="Some New Wallet",
         fallback_posting_profile=store.default_posting_profile,
     )
-    row2 = PaymentGateway.lookup_or_create_for_review(
+    row2 = SettlementProvider.lookup_or_create_for_review(
         company=company,
         external_system="shopify",
         raw_gateway="some new wallet",  # different casing — same normalized form
@@ -336,7 +353,7 @@ def test_lookup_or_create_for_review_is_idempotent(shopify_setup_with_revenue, c
 def test_lookup_returns_none_for_unknown_or_empty(shopify_setup_with_revenue, company):
     # `lookup` must NOT auto-create — that's `lookup_or_create_for_review`.
     assert (
-        PaymentGateway.lookup(
+        SettlementProvider.lookup(
             company=company,
             external_system="shopify",
             raw_gateway="never_seen_before",
@@ -344,7 +361,7 @@ def test_lookup_returns_none_for_unknown_or_empty(shopify_setup_with_revenue, co
         is None
     )
     assert (
-        PaymentGateway.lookup(
+        SettlementProvider.lookup(
             company=company,
             external_system="shopify",
             raw_gateway="",
@@ -358,19 +375,19 @@ def test_unique_constraint_per_company_external_system_normalized(shopify_setup_
     # must violate the unique constraint.
     from django.db import IntegrityError, transaction
 
-    pg = PaymentGateway.objects.get(
+    provider = SettlementProvider.objects.get(
         company=company,
         external_system="shopify",
         normalized_code="paymob",
     )
     with pytest.raises(IntegrityError), transaction.atomic():
-        PaymentGateway.objects.create(
+        SettlementProvider.objects.create(
             company=company,
             external_system="shopify",
             source_code="paymob",
             normalized_code="paymob",
             display_name="Duplicate",
-            posting_profile=pg.posting_profile,
+            posting_profile=provider.posting_profile,
         )
 
 
@@ -378,17 +395,17 @@ def test_external_system_scoping_allows_same_code_across_systems(shopify_setup_w
     # paypal-from-Shopify and paypal-from-WooCommerce are not the same
     # routing decision. Same normalized_code under a different
     # external_system must coexist.
-    pg_shopify_paypal = PaymentGateway.objects.get(
+    shopify_paypal = SettlementProvider.objects.get(
         company=company,
         external_system="shopify",
         normalized_code="paypal",
     )
-    woo_paypal = PaymentGateway.objects.create(
+    woo_paypal = SettlementProvider.objects.create(
         company=company,
         external_system="woocommerce",
         source_code="paypal",
         normalized_code="paypal",
         display_name="WooCommerce PayPal",
-        posting_profile=pg_shopify_paypal.posting_profile,
+        posting_profile=shopify_paypal.posting_profile,
     )
-    assert woo_paypal.id != pg_shopify_paypal.id
+    assert woo_paypal.id != shopify_paypal.id

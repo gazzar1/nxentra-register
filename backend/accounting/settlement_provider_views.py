@@ -1,20 +1,21 @@
-# accounting/payment_gateway_views.py
+# accounting/settlement_provider_views.py
 """
-Views + serializer for PaymentGateway routing rows.
+Views + serializer for SettlementProvider routing rows.
 
 Exposed operations (intentionally limited):
-- GET   /payment-gateways/             list rows for the active company
-- PATCH /payment-gateways/<id>/        update mutable fields (posting_profile, display_name, is_active, needs_review)
+- GET   /settlement-providers/             list rows for the active company
+- PATCH /settlement-providers/<id>/        update mutable fields (posting_profile, display_name, provider_type, is_active, needs_review)
 
 Create is bootstrap-only (`_ensure_shopify_sales_setup` and the projection
-lazy-create path) and Delete is forbidden — payment gateway routing is
+lazy-create path) and Delete is forbidden — settlement-provider routing is
 config that flows from connector setup, not user CRUD. The PROTECT FK on
 posting_profile also means you can't accidentally drop a profile that
-gateways depend on.
+providers depend on.
 
 Filter:
-- ?needs_review=true   show only operator-attention rows
+- ?needs_review=true     show only operator-attention rows
 - ?external_system=shopify
+- ?provider_type=courier
 """
 
 from rest_framework import serializers, status
@@ -26,23 +27,24 @@ from accounts.authz import resolve_actor
 from projections.write_barrier import command_writes_allowed
 from sales.models import PostingProfile
 
-from .payment_gateway import PaymentGateway
+from .settlement_provider import SettlementProvider
 
 
-class PaymentGatewaySerializer(serializers.ModelSerializer):
+class SettlementProviderSerializer(serializers.ModelSerializer):
     posting_profile_code = serializers.CharField(source="posting_profile.code", read_only=True)
     posting_profile_name = serializers.CharField(source="posting_profile.name", read_only=True)
     control_account_code = serializers.CharField(source="posting_profile.control_account.code", read_only=True)
     control_account_name = serializers.CharField(source="posting_profile.control_account.name", read_only=True)
 
     class Meta:
-        model = PaymentGateway
+        model = SettlementProvider
         fields = (
             "id",
             "external_system",
             "source_code",
             "normalized_code",
             "display_name",
+            "provider_type",
             "posting_profile",
             "posting_profile_code",
             "posting_profile_name",
@@ -63,8 +65,8 @@ class PaymentGatewaySerializer(serializers.ModelSerializer):
         )
 
 
-class PaymentGatewayListView(APIView):
-    """List payment gateway rows for the active company."""
+class SettlementProviderListView(APIView):
+    """List settlement-provider rows for the active company."""
 
     permission_classes = [IsAuthenticated]
 
@@ -73,7 +75,7 @@ class PaymentGatewayListView(APIView):
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
 
-        qs = PaymentGateway.objects.filter(company=actor.company).select_related(
+        qs = SettlementProvider.objects.filter(company=actor.company).select_related(
             "posting_profile", "posting_profile__control_account"
         )
 
@@ -88,11 +90,15 @@ class PaymentGatewayListView(APIView):
         if external_system:
             qs = qs.filter(external_system=external_system)
 
-        return Response(PaymentGatewaySerializer(qs, many=True).data)
+        provider_type = request.query_params.get("provider_type")
+        if provider_type:
+            qs = qs.filter(provider_type=provider_type)
+
+        return Response(SettlementProviderSerializer(qs, many=True).data)
 
 
-class PaymentGatewayDetailView(APIView):
-    """Update mutable fields on a payment gateway row."""
+class SettlementProviderDetailView(APIView):
+    """Update mutable fields on a settlement-provider row."""
 
     permission_classes = [IsAuthenticated]
 
@@ -102,12 +108,12 @@ class PaymentGatewayDetailView(APIView):
             return Response({"detail": "No active company."}, status=400)
 
         try:
-            gateway = PaymentGateway.objects.select_related("posting_profile").get(
+            provider = SettlementProvider.objects.select_related("posting_profile").get(
                 company=actor.company,
                 pk=pk,
             )
-        except PaymentGateway.DoesNotExist:
-            return Response({"detail": "Payment gateway not found."}, status=404)
+        except SettlementProvider.DoesNotExist:
+            return Response({"detail": "Settlement provider not found."}, status=404)
 
         data = request.data or {}
         update_fields = []
@@ -127,25 +133,35 @@ class PaymentGatewayDetailView(APIView):
                     {"detail": "PostingProfile not found, or not a CUSTOMER profile."},
                     status=400,
                 )
-            gateway.posting_profile = new_profile
+            provider.posting_profile = new_profile
             update_fields.append("posting_profile")
 
         if "display_name" in data:
-            gateway.display_name = (data.get("display_name") or "").strip()[:255]
+            provider.display_name = (data.get("display_name") or "").strip()[:255]
             update_fields.append("display_name")
 
+        if "provider_type" in data:
+            new_type = data.get("provider_type")
+            if new_type not in SettlementProvider.ProviderType.values:
+                return Response(
+                    {"detail": f"provider_type must be one of {SettlementProvider.ProviderType.values}."},
+                    status=400,
+                )
+            provider.provider_type = new_type
+            update_fields.append("provider_type")
+
         if "is_active" in data:
-            gateway.is_active = bool(data.get("is_active"))
+            provider.is_active = bool(data.get("is_active"))
             update_fields.append("is_active")
 
         if "needs_review" in data:
-            gateway.needs_review = bool(data.get("needs_review"))
+            provider.needs_review = bool(data.get("needs_review"))
             update_fields.append("needs_review")
 
         if not update_fields:
             return Response({"detail": "No mutable fields supplied."}, status=400)
 
         with command_writes_allowed():
-            gateway.save(update_fields=[*update_fields, "updated_at"])
+            provider.save(update_fields=[*update_fields, "updated_at"])
 
-        return Response(PaymentGatewaySerializer(gateway).data, status=status.HTTP_200_OK)
+        return Response(SettlementProviderSerializer(provider).data, status=status.HTTP_200_OK)
