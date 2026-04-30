@@ -1824,6 +1824,89 @@ def _ensure_shopify_sales_setup(store):
         profile.code,
     )
 
+    # 5. Bootstrap per-gateway PaymentGateway rows. Each row gets its own
+    #    PostingProfile, all initially anchored on the same SHOPIFY_CLEARING
+    #    account. The merchant can later edit any one profile's
+    #    control_account to point at a distinct sub-account (e.g.
+    #    Paymob Clearing 11501) — at which point Paymob orders begin
+    #    routing there, and historical postings stay where they were.
+    _bootstrap_shopify_payment_gateways(company, clearing_account, profile)
+
+
+# Default gateway codes seen in Shopify payloads for MENA + global merchants.
+# Keep small and obvious — the lazy-create path handles anything else.
+_SHOPIFY_DEFAULT_GATEWAYS = (
+    ("paymob", "Paymob"),
+    ("paypal", "PayPal"),
+    ("manual", "Manual"),
+    ("shopify_payments", "Shopify Payments"),
+    ("cash_on_delivery", "Cash on Delivery"),
+    ("bank_transfer", "Bank Transfer"),
+    ("unknown", "Unknown / Default"),
+)
+
+
+def _gateway_profile_code(normalized_code: str) -> str:
+    """Build a deterministic PostingProfile.code for a gateway.
+
+    PostingProfile.code is max 20 chars and unique per company. Use a
+    short prefix so gateway profiles don't collide with the store-level
+    default profile (`SHOPIFY-<store_label>`).
+    """
+    return f"PG-{normalized_code.upper()}"[:20]
+
+
+def _bootstrap_shopify_payment_gateways(company, clearing_account, fallback_profile):
+    """Create per-gateway PostingProfile + PaymentGateway rows.
+
+    Idempotent — uses get_or_create on both. Initially every gateway points
+    at the same `clearing_account` (via its dedicated PostingProfile);
+    later edits to any one PostingProfile.control_account split a gateway
+    onto its own clearing sub-account.
+
+    `fallback_profile` is reserved for the lazy-create path in projections
+    (unknown gateway codes); we don't reference it here, but pass it
+    through for symmetry / future use.
+    """
+    from accounting.payment_gateway import PaymentGateway, normalize_gateway_code
+    from sales.models import PostingProfile
+
+    with command_writes_allowed(), projection_writes_allowed():
+        for raw_code, display_name in _SHOPIFY_DEFAULT_GATEWAYS:
+            normalized = normalize_gateway_code(raw_code)
+            profile_code = _gateway_profile_code(normalized)
+
+            gateway_profile, _ = PostingProfile.objects.get_or_create(
+                company=company,
+                code=profile_code,
+                defaults={
+                    "name": f"Shopify Gateway: {display_name}",
+                    "name_ar": f"بوابة شوبيفاي: {display_name}",
+                    "profile_type": PostingProfile.ProfileType.CUSTOMER,
+                    "control_account": clearing_account,
+                    "is_active": True,
+                    "description": (
+                        f"Auto-created for {display_name} routing. Initially "
+                        f"points at the same Shopify Clearing account; edit "
+                        f"control_account here to split this gateway onto "
+                        f"its own clearing sub-account."
+                    ),
+                },
+            )
+
+            PaymentGateway.objects.get_or_create(
+                company=company,
+                external_system="shopify",
+                normalized_code=normalized,
+                defaults={
+                    "source_code": raw_code,
+                    "display_name": display_name,
+                    "posting_profile": gateway_profile,
+                    "is_active": True,
+                    "needs_review": False,
+                },
+            )
+
 
 def _fetch_variant_cost(store, variant_id, convert_to_currency: str = "") -> Decimal:
     """Fetch cost_per_item for a single variant from Shopify API.

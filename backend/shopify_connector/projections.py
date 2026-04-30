@@ -711,11 +711,40 @@ class ShopifyAccountingHandler(BaseProjection):
             logger.warning("No invoice lines for Shopify order %s — skipping", order_name)
             return
 
+        # Resolve gateway-specific posting profile. The JE Debit AR Control
+        # is read from posting_profile.control_account at JE-build time, so
+        # routing per gateway is fully expressed by which profile we pick.
+        # Falls back to the store-level default profile when gateway is
+        # absent (early Shopify orders sometimes ship without it) or when
+        # the lazy-created row points at the same default anyway.
+        from accounting.payment_gateway import PaymentGateway
+
+        posting_profile_id = store.default_posting_profile_id
+        raw_gateway = data.get("gateway") or ""
+        if raw_gateway:
+            pg = PaymentGateway.lookup(
+                company=event.company,
+                external_system="shopify",
+                raw_gateway=raw_gateway,
+            )
+            if pg is None:
+                # Unknown gateway code — lazy-create flagged for review so
+                # the operator sees it in the dashboard / mgmt command.
+                # Order still posts via the fallback profile.
+                pg = PaymentGateway.lookup_or_create_for_review(
+                    company=event.company,
+                    external_system="shopify",
+                    raw_gateway=raw_gateway,
+                    fallback_posting_profile=store.default_posting_profile,
+                )
+            if pg and pg.is_active and pg.posting_profile_id:
+                posting_profile_id = pg.posting_profile_id
+
         # Create and post the SalesInvoice (skip COGS — handled at fulfillment)
         result = create_and_post_invoice_for_platform(
             company=event.company,
             customer_id=store.default_customer_id,
-            posting_profile_id=store.default_posting_profile_id,
+            posting_profile_id=posting_profile_id,
             lines=invoice_lines,
             invoice_date=entry_date,
             source="shopify",

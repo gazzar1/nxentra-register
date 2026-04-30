@@ -30,6 +30,10 @@ from .bank_views import (
     BankUnreconciledLinesView,
     CommerceReconciliationView,
 )
+from .payment_gateway_views import (
+    PaymentGatewayDetailView,
+    PaymentGatewayListView,
+)
 from .views import (
     AccountAnalysisDefaultDeleteView,
     AccountAnalysisDefaultView,
@@ -313,5 +317,18 @@ urlpatterns = [
         "core-account-mapping/",
         CoreAccountMappingView.as_view(),
         name="core-account-mapping",
+    ),
+    # ==========================================================================
+    # Payment Gateway Routing (gateway -> posting profile -> clearing account)
+    # ==========================================================================
+    path(
+        "payment-gateways/",
+        PaymentGatewayListView.as_view(),
+        name="payment-gateway-list",
+    ),
+    path(
+        "payment-gateways/<int:pk>/",
+        PaymentGatewayDetailView.as_view(),
+        name="payment-gateway-detail",
     ),
 ]

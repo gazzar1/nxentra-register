@@ -2837,3 +2837,6 @@ class BankReconciliation(models.Model):
 
 # Import ModuleAccountMapping so Django discovers it for migrations.
 from accounting.mappings import ModuleAccountMapping  # noqa: F401
+
+# Import PaymentGateway so Django discovers it for migrations.
+from accounting.payment_gateway import PaymentGateway  # noqa: F401

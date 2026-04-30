@@ -16,8 +16,10 @@ import {
   Settings,
   RefreshCw,
   Package,
+  Wallet,
 } from "lucide-react";
 import { AppLayout } from "@/components/layout";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -29,6 +31,12 @@ import {
   ShopifyStore,
   ShopifyAccountMapping,
 } from "@/services/shopify.service";
+import {
+  paymentGatewaysService,
+  type PaymentGateway,
+} from "@/services/payment-gateways.service";
+import { postingProfilesService } from "@/services/sales.service";
+import type { PostingProfile } from "@/types/sales";
 import { useAccounts } from "@/queries/useAccounts";
 
 export default function ShopifySettingsPage() {
@@ -51,6 +59,12 @@ export default function ShopifySettingsPage() {
   const [mappings, setMappings] = useState<ShopifyAccountMapping[]>([]);
   const [mappingForm, setMappingForm] = useState<Record<string, number | null>>({});
   const [savingMappings, setSavingMappings] = useState(false);
+
+  // Payment gateway routing
+  const [gateways, setGateways] = useState<PaymentGateway[]>([]);
+  const [customerProfiles, setCustomerProfiles] = useState<PostingProfile[]>([]);
+  const [gatewayForm, setGatewayForm] = useState<Record<number, number>>({});
+  const [savingGatewayId, setSavingGatewayId] = useState<number | null>(null);
 
   const fetchStore = async () => {
     setLoading(true);
@@ -101,9 +115,72 @@ export default function ShopifySettingsPage() {
     }
   };
 
+  const fetchGateways = async () => {
+    try {
+      const { data } = await paymentGatewaysService.list({ external_system: "shopify" });
+      setGateways(data);
+      const initial: Record<number, number> = {};
+      data.forEach((g) => { initial[g.id] = g.posting_profile; });
+      setGatewayForm(initial);
+    } catch {
+      // Empty until bootstrap runs / store connects
+    }
+  };
+
+  const fetchPostingProfiles = async () => {
+    try {
+      const { data } = await postingProfilesService.list({
+        profile_type: "CUSTOMER",
+        is_active: true,
+      });
+      setCustomerProfiles(data);
+    } catch {
+      // Non-fatal — dropdown will be empty
+    }
+  };
+
+  const handleSaveGateway = async (gatewayId: number) => {
+    const target = gateways.find((g) => g.id === gatewayId);
+    if (!target) return;
+    const newProfileId = gatewayForm[gatewayId];
+    if (!newProfileId || newProfileId === target.posting_profile) return;
+    setSavingGatewayId(gatewayId);
+    try {
+      const { data: updated } = await paymentGatewaysService.update(gatewayId, {
+        posting_profile: newProfileId,
+        // Saving an explicit profile is implicit acknowledgement.
+        needs_review: false,
+      });
+      setGateways((prev) => prev.map((g) => (g.id === gatewayId ? updated : g)));
+      setGatewayForm((prev) => ({ ...prev, [gatewayId]: updated.posting_profile }));
+      toast({ title: `${updated.display_name} re-routed.` });
+    } catch {
+      toast({ title: "Failed to update routing.", variant: "destructive" });
+    } finally {
+      setSavingGatewayId(null);
+    }
+  };
+
+  const handleDismissReview = async (gatewayId: number) => {
+    setSavingGatewayId(gatewayId);
+    try {
+      const { data: updated } = await paymentGatewaysService.update(gatewayId, {
+        needs_review: false,
+      });
+      setGateways((prev) => prev.map((g) => (g.id === gatewayId ? updated : g)));
+      toast({ title: "Review flag cleared." });
+    } catch {
+      toast({ title: "Failed to clear review flag.", variant: "destructive" });
+    } finally {
+      setSavingGatewayId(null);
+    }
+  };
+
   useEffect(() => {
     fetchStore();
     fetchMappings();
+    fetchGateways();
+    fetchPostingProfiles();
 
     // Check for OAuth callback result
     if (router.query.connected === "true") {
@@ -442,6 +519,109 @@ export default function ShopifySettingsPage() {
                     </select>
                   </div>
                 ))}
+              </CardContent>
+            </Card>
+
+            {/* Payment Gateway Routing */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Wallet className="h-5 w-5" />
+                  Payment Gateway Routing
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-sm text-muted-foreground">
+                  Each Shopify gateway (Paymob, PayPal, COD, etc.) routes incoming orders
+                  to a Posting Profile, which determines the clearing / control account
+                  that the JE debits. By default every gateway is anchored on the same
+                  Shopify Clearing account. Create a new clearing sub-account and re-route
+                  individual gateways to split payouts cleanly for reconciliation.
+                </p>
+
+                {gateways.length === 0 ? (
+                  <p className="text-sm text-muted-foreground italic">
+                    No payment gateways yet — they appear here once the store connect bootstrap runs.
+                  </p>
+                ) : (
+                  <div className="space-y-3">
+                    {gateways.map((g) => {
+                      const dirty =
+                        gatewayForm[g.id] !== undefined && gatewayForm[g.id] !== g.posting_profile;
+                      const saving = savingGatewayId === g.id;
+                      return (
+                        <div
+                          key={g.id}
+                          className="flex flex-col gap-2 rounded-md border p-3 sm:flex-row sm:items-center sm:gap-4"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-medium">{g.display_name}</span>
+                              {g.needs_review && (
+                                <Badge variant="warning">Needs review</Badge>
+                              )}
+                              {!g.is_active && (
+                                <Badge variant="outline">Inactive</Badge>
+                              )}
+                            </div>
+                            <div className="font-mono text-xs text-muted-foreground">
+                              raw: {g.source_code || g.normalized_code} · normalized:{" "}
+                              {g.normalized_code}
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              currently posts to{" "}
+                              <span className="font-mono">{g.posting_profile_code}</span>{" "}
+                              → {g.control_account_code} {g.control_account_name}
+                            </div>
+                          </div>
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                            <select
+                              className="rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+                              value={gatewayForm[g.id] ?? g.posting_profile}
+                              onChange={(e) =>
+                                setGatewayForm({
+                                  ...gatewayForm,
+                                  [g.id]: Number(e.target.value),
+                                })
+                              }
+                              disabled={saving}
+                            >
+                              {customerProfiles.map((p) => (
+                                <option key={p.id} value={p.id}>
+                                  {p.code} — {p.name}
+                                </option>
+                              ))}
+                            </select>
+                            <div className="flex gap-2">
+                              <Button
+                                size="sm"
+                                onClick={() => handleSaveGateway(g.id)}
+                                disabled={!dirty || saving}
+                              >
+                                {saving ? (
+                                  <Loader2 className="me-2 h-4 w-4 animate-spin" />
+                                ) : (
+                                  <Save className="me-2 h-4 w-4" />
+                                )}
+                                Save
+                              </Button>
+                              {g.needs_review && !dirty && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => handleDismissReview(g.id)}
+                                  disabled={saving}
+                                >
+                                  Mark reviewed
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </CardContent>
             </Card>
 
