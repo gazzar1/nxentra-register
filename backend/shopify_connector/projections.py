@@ -717,20 +717,12 @@ class ShopifyAccountingHandler(BaseProjection):
         # profile we pick. The clearing line is also tagged with the provider's
         # AnalysisDimensionValue so the reconciliation engine can pivot on
         # (clearing_account, dimension_value) to surface per-provider balances.
-
-        provider = self._resolve_settlement_provider(event, data, store)
+        provider = self._resolve_settlement_provider(event, store, data.get("gateway") or "")
+        control_line_analysis_tags = self._build_provider_tags(provider)
 
         posting_profile_id = store.default_posting_profile_id
-        control_line_analysis_tags: list = []
         if provider and provider.is_active and provider.posting_profile_id:
             posting_profile_id = provider.posting_profile_id
-        if provider and provider.dimension_value_id:
-            control_line_analysis_tags = [
-                {
-                    "dimension_public_id": str(provider.dimension_value.dimension.public_id),
-                    "value_public_id": str(provider.dimension_value.public_id),
-                }
-            ]
 
         # Create and post the SalesInvoice (skip COGS — handled at fulfillment)
         result = create_and_post_invoice_for_platform(
@@ -777,7 +769,39 @@ class ShopifyAccountingHandler(BaseProjection):
             event.id,
         )
 
-    def _resolve_settlement_provider(self, event, data, store):
+    def _build_provider_tags(self, provider) -> list:
+        """Shape a SettlementProvider's dimension_value as analysis_tags
+        for the JE clearing line. Empty list if the provider has no
+        dimension_value (shouldn't happen post-A12 but defensive)."""
+        if not provider or not provider.dimension_value_id:
+            return []
+        return [
+            {
+                "dimension_public_id": str(provider.dimension_value.dimension.public_id),
+                "value_public_id": str(provider.dimension_value.public_id),
+            }
+        ]
+
+    def _build_shopify_payments_tags(self, company) -> list:
+        """Build the analysis_tags for Shopify-Payments-relayed events
+        (payouts, disputes). Shopify only relays payouts and disputes
+        for its own payment processor — Paymob/PayPal/Bosta arrive via
+        A14 manual CSV import — so the tag is always shopify_payments."""
+        from accounting.settlement_provider import SettlementProvider
+
+        provider = (
+            SettlementProvider.objects.filter(
+                company=company,
+                external_system="shopify",
+                normalized_code="shopify_payments",
+                is_active=True,
+            )
+            .select_related("dimension_value", "dimension_value__dimension")
+            .first()
+        )
+        return self._build_provider_tags(provider)
+
+    def _resolve_settlement_provider(self, event, store, raw_gateway: str):
         """Resolve which SettlementProvider routes this order's clearing line.
 
         Three branches:
@@ -797,10 +821,15 @@ class ShopifyAccountingHandler(BaseProjection):
         3. **Known prepaid gateway** (paymob, paypal, shopify_payments,
            manual, bank_transfer). Look up by normalized gateway code; on
            miss, lazy-create with needs_review=True.
+
+        `raw_gateway` is passed in (rather than read from `data`) so
+        non-order events — refund_created, payout_settled — can resolve
+        a provider too: refund handler reads the original ShopifyOrder's
+        gateway; payout/dispute handlers pass "shopify_payments" since
+        Shopify only relays its own payouts.
         """
         from accounting.settlement_provider import SettlementProvider, normalize_gateway_code
 
-        raw_gateway = data.get("gateway") or ""
         normalized = normalize_gateway_code(raw_gateway)
 
         if not normalized:
@@ -855,7 +884,7 @@ class ShopifyAccountingHandler(BaseProjection):
         """
         from sales.commands import create_and_post_credit_note_for_platform
         from sales.models import SalesInvoice
-        from shopify_connector.models import ShopifyRefund
+        from shopify_connector.models import ShopifyOrder, ShopifyRefund, ShopifyStore
 
         revenue_account = mapping.get(ROLE_SALES_REVENUE)
         if not revenue_account:
@@ -889,6 +918,32 @@ class ShopifyAccountingHandler(BaseProjection):
             )
             return
 
+        # A12 follow-up: tag the credit-note clearing line with the same
+        # settlement provider the original order posted under, so the
+        # refund drains the correct provider's clearing balance. We
+        # re-resolve via the original ShopifyOrder's gateway. For COD
+        # orders this resolves through ShopifyStore.default_cod_settlement_provider —
+        # if the merchant changed couriers between order and refund the
+        # refund tags the *current* courier (acceptable; differences
+        # show up via needs_review on lazy-create).
+        original_order = ShopifyOrder.objects.filter(
+            company=event.company,
+            shopify_order_id=data.get("shopify_order_id"),
+        ).first()
+        order_gateway = original_order.gateway if original_order else ""
+        refund_store = (
+            ShopifyStore.objects.filter(
+                company=event.company,
+                status=ShopifyStore.Status.ACTIVE,
+            )
+            .select_related("default_cod_settlement_provider")
+            .first()
+        )
+        refund_provider = (
+            self._resolve_settlement_provider(event, refund_store, order_gateway) if refund_store else None
+        )
+        refund_tags = self._build_provider_tags(refund_provider)
+
         # Build credit note lines — single revenue reversal line
         cn_lines = [
             {
@@ -910,6 +965,7 @@ class ShopifyAccountingHandler(BaseProjection):
             reason="RETURN",
             reason_notes=data.get("reason", ""),
             reference=f"Order {order_number}",
+            control_line_analysis_tags=refund_tags,
         )
 
         if not result.success:
@@ -1185,6 +1241,13 @@ class ShopifyAccountingHandler(BaseProjection):
             logger.warning("Skipping Shopify payout %s — zero gross amount", payout_id)
             return
 
+        # A12 follow-up: tag the clearing JE line with shopify_payments.
+        # Shopify only relays its OWN payouts (Shopify Payments-processed
+        # money); Paymob/PayPal/Bosta payouts come via A14 manual import.
+        # Without the tag, the credit to clearing wouldn't drain the
+        # right provider's reconciliation balance.
+        clearing_tags = self._build_shopify_payments_tags(event.company)
+
         result = create_and_post_settlement(
             company=event.company,
             platform="shopify",
@@ -1196,6 +1259,7 @@ class ShopifyAccountingHandler(BaseProjection):
             currency=currency,
             settlement_date=entry_date,
             reference=f"Payout {payout_id}",
+            clearing_line_analysis_tags=clearing_tags,
         )
 
         if not result.success:
@@ -1258,6 +1322,7 @@ class ShopifyAccountingHandler(BaseProjection):
             currency=currency,
             settlement_date=entry_date,
             reference=f"Dispute {dispute_id} ({order_name})",
+            clearing_line_analysis_tags=self._build_shopify_payments_tags(event.company),
         )
 
         if not result.success:
@@ -1305,6 +1370,7 @@ class ShopifyAccountingHandler(BaseProjection):
             currency=currency,
             settlement_date=entry_date,
             reference=f"Dispute won {dispute_id} ({order_name})",
+            clearing_line_analysis_tags=self._build_shopify_payments_tags(event.company),
         )
 
         if not result.success:

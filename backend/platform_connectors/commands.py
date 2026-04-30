@@ -85,6 +85,7 @@ def create_and_post_settlement(
     settlement_date,
     reference: str = "",
     notes: str = "",
+    clearing_line_analysis_tags: list | None = None,
 ) -> CommandResult:
     """
     Create and post a PlatformSettlement with its journal entry.
@@ -309,6 +310,19 @@ def create_and_post_settlement(
                 "credit": str(abs(net_amount)),
             }
         )
+
+    # A12 follow-up: inject the caller-supplied analysis tags onto every
+    # JE line that hits the clearing account. This is the line that the
+    # reconciliation engine pivots on — we tag it so settlements drain the
+    # correct provider's clearing balance. Tagging is account-keyed so the
+    # right line is found regardless of which settlement-type branch built
+    # it (PAYOUT credit, DISPUTE credit, DISPUTE_WON debit, ...).
+    if clearing_line_analysis_tags:
+        clearing_account = mapping.get(clearing_role)
+        if clearing_account:
+            for line in je_lines:
+                if line.get("account_id") == clearing_account.id:
+                    line["analysis_tags"] = list(clearing_line_analysis_tags)
 
     # Create and post the JE
     actor = system_actor_for_company(company)

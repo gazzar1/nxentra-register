@@ -1730,7 +1730,11 @@ def create_credit_note(
 
 
 @transaction.atomic
-def post_credit_note(actor: ActorContext, credit_note_id: int) -> CommandResult:
+def post_credit_note(
+    actor: ActorContext,
+    credit_note_id: int,
+    control_line_analysis_tags: list | None = None,
+) -> CommandResult:
     """
     Post a credit note, creating a reversing journal entry.
 
@@ -1738,6 +1742,11 @@ def post_credit_note(actor: ActorContext, credit_note_id: int) -> CommandResult:
     - Credit: AR Control (reduces customer balance)
     - Debit: Revenue accounts (reverses revenue)
     - Debit: VAT Payable (reverses tax)
+
+    `control_line_analysis_tags` (A12 follow-up): platform integrations
+    pass settlement_provider tags here so the AR Control credit line
+    drains the correct provider's clearing balance for reconciliation.
+    No-op for manual credit notes (None default).
     """
     require(actor, "sales.invoice.post")
 
@@ -1756,15 +1765,19 @@ def post_credit_note(actor: ActorContext, credit_note_id: int) -> CommandResult:
     je_lines = []
 
     # Credit AR Control (reduces customer receivable)
-    je_lines.append(
-        {
-            "account_id": cn.posting_profile.control_account_id,
-            "description": f"Credit Note {cn.credit_note_number} - {cn.customer.name}",
-            "debit": Decimal("0"),
-            "credit": cn.total_amount,
-            "customer_public_id": str(cn.customer.public_id),
-        }
-    )
+    control_line: dict = {
+        "account_id": cn.posting_profile.control_account_id,
+        "description": f"Credit Note {cn.credit_note_number} - {cn.customer.name}",
+        "debit": Decimal("0"),
+        "credit": cn.total_amount,
+        "customer_public_id": str(cn.customer.public_id),
+    }
+    # A12 follow-up: tag the AR Control line with caller-supplied analysis
+    # dimensions so the reconciliation engine sees the credit drain the
+    # right provider's clearing balance.
+    if control_line_analysis_tags:
+        control_line["analysis_tags"] = list(control_line_analysis_tags)
+    je_lines.append(control_line)
 
     # Debit Revenue accounts (reverses revenue recognition)
     for line in cn.lines.all():
@@ -2055,6 +2068,7 @@ def create_and_post_credit_note_for_platform(
     reason: str = "RETURN",
     reason_notes: str = "",
     reference: str = "",
+    control_line_analysis_tags: list | None = None,
 ) -> CommandResult:
     """
     Create and immediately post a CreditNote for a platform refund.
@@ -2066,6 +2080,9 @@ def create_and_post_credit_note_for_platform(
         credit_note_date: Date of the refund
         source: Platform identifier ("shopify", etc.)
         source_document_id: External refund ID for idempotency
+        control_line_analysis_tags: A12 — analysis dimension tags applied
+            to the AR Control credit line (settlement_provider value).
+            Drains the correct provider's clearing balance.
 
     Returns:
         CommandResult with {"credit_note": SalesCreditNote, "journal_entry": JournalEntry}
@@ -2104,7 +2121,11 @@ def create_and_post_credit_note_for_platform(
     credit_note = create_result.data["credit_note"]
 
     # Post immediately
-    post_result = post_credit_note(actor, credit_note.id)
+    post_result = post_credit_note(
+        actor,
+        credit_note.id,
+        control_line_analysis_tags=control_line_analysis_tags,
+    )
     if not post_result.success:
         return post_result
 

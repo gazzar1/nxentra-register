@@ -1889,6 +1889,7 @@ def _bootstrap_shopify_settlement_providers(company, clearing_account, fallback_
     (unknown gateway codes); we don't reference it here, but pass it
     through for symmetry / future use.
     """
+    from accounting.models import AccountDimensionRule
     from accounting.settlement_provider import (
         SettlementProvider,
         ensure_settlement_provider_dimension,
@@ -1899,6 +1900,18 @@ def _bootstrap_shopify_settlement_providers(company, clearing_account, fallback_
 
     # 1. Ensure the SETTLEMENT_PROVIDER AnalysisDimension exists.
     dimension = ensure_settlement_provider_dimension(company)
+
+    # 1b. Require the SETTLEMENT_PROVIDER dimension on the clearing account.
+    # A12 follow-up: any JE line touching this clearing account must carry
+    # the dimension tag so reconciliation queries are complete. Manual JEs
+    # to clearing without the tag get rejected by post_journal_entry's
+    # validate_line_dimensions check. Idempotent via update_or_create.
+    AccountDimensionRule.objects.update_or_create(
+        company=company,
+        account=clearing_account,
+        dimension=dimension,
+        defaults={"rule_type": AccountDimensionRule.RuleType.REQUIRED},
+    )
 
     with command_writes_allowed(), projection_writes_allowed():
         for raw_code, display_name, provider_type, is_active in _SHOPIFY_DEFAULT_PROVIDERS:

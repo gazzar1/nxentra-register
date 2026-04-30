@@ -166,35 +166,40 @@ def validate_line_dimensions(
             company=company,
         )
 
-    # Resolve public IDs to database IDs
+    # Resolve public IDs to database IDs.
+    # Note: cast UUIDs to strings when building the lookup dicts because
+    # the input tags carry public_ids as strings, while values_list()
+    # returns UUID objects — string vs UUID dict lookups don't match.
     dim_public_ids = [t.get("dimension_public_id") for t in analysis_tags if t.get("dimension_public_id")]
     val_public_ids = [t.get("value_public_id") for t in analysis_tags if t.get("value_public_id")]
 
-    dim_map = {}
+    dim_map: dict[str, int] = {}
     if dim_public_ids:
-        dim_map = dict(
-            AnalysisDimension.objects.filter(
+        dim_map = {
+            str(public_id): pk
+            for public_id, pk in AnalysisDimension.objects.filter(
                 company=company,
                 public_id__in=dim_public_ids,
             ).values_list("public_id", "id")
-        )
+        }
 
-    val_map = {}
+    val_map: dict[str, int] = {}
     if val_public_ids:
-        val_map = dict(
-            AnalysisDimensionValue.objects.filter(
+        val_map = {
+            str(public_id): pk
+            for public_id, pk in AnalysisDimensionValue.objects.filter(
                 company=company,
                 public_id__in=val_public_ids,
             ).values_list("public_id", "id")
-        )
+        }
 
     # Build resolved entries
     entries = []
     for tag in analysis_tags:
         dim_pub = tag.get("dimension_public_id")
         val_pub = tag.get("value_public_id")
-        dim_id = dim_map.get(dim_pub) if dim_pub else None
-        val_id = val_map.get(val_pub) if val_pub else None
+        dim_id = dim_map.get(str(dim_pub)) if dim_pub else None
+        val_id = val_map.get(str(val_pub)) if val_pub else None
         if dim_id:
             entries.append(_ResolvedTag(dim_id, val_id))
 
