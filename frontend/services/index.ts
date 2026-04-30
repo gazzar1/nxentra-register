@@ -16,3 +16,10 @@ export type {
   SettlementProviderUpdatePayload,
   ProviderType,
 } from './settlement-providers.service';
+export { reconciliationService } from './reconciliation.service';
+export type {
+  ReconciliationSummary,
+  ReconciliationDrilldown,
+  ReconciliationProviderRow,
+  AgingBucket,
+} from './reconciliation.service';

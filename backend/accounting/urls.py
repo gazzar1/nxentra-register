@@ -30,6 +30,10 @@ from .bank_views import (
     BankUnreconciledLinesView,
     CommerceReconciliationView,
 )
+from .reconciliation_views import (
+    ReconciliationDrilldownView,
+    ReconciliationSummaryView,
+)
 from .settlement_provider_views import (
     SettlementProviderDetailView,
     SettlementProviderListView,
@@ -330,5 +334,18 @@ urlpatterns = [
         "settlement-providers/<int:pk>/",
         SettlementProviderDetailView.as_view(),
         name="settlement-provider-detail",
+    ),
+    # ==========================================================================
+    # Reconciliation Control Center (A13)
+    # ==========================================================================
+    path(
+        "reconciliation/summary/",
+        ReconciliationSummaryView.as_view(),
+        name="reconciliation-summary",
+    ),
+    path(
+        "reconciliation/drilldown/",
+        ReconciliationDrilldownView.as_view(),
+        name="reconciliation-drilldown",
     ),
 ]

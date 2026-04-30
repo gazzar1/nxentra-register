@@ -49,6 +49,7 @@ class AccountsConfig(AppConfig):
             tab=SidebarTab.WORK,
             order=10,
             nav_items=[
+                {"label": "Reconciliation", "href": "/finance/reconciliation", "icon": "Scale"},
                 {"label": "Journal Entries", "href": "/accounting/journal-entries", "icon": "FileText"},
                 {"label": "Bank Reconciliation", "href": "/accounting/bank-reconciliation", "icon": "Building2"},
                 {"label": "Scratchpad", "href": "/accounting/scratchpad", "icon": "ClipboardList"},
