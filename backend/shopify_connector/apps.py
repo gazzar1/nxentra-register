@@ -52,7 +52,12 @@ class ShopifyConnectorConfig(AppConfig):
             order=5,  # Above Finance (10) — primary nav for Shopify merchants
             module_key="shopify_connector",
             nav_items=[
-                {"label": "Reconciliation", "href": "/shopify/reconciliation", "icon": "Scale"},
+                # "Reconciliation" used to live here (legacy three-column
+                # payout-centric view). A13 supersedes it with the
+                # provider-agnostic Finance -> Reconciliation Control
+                # Center; the legacy page stays accessible at
+                # /shopify/reconciliation but is no longer in the sidebar
+                # to avoid confusion with the new master view.
                 {"label": "Orders", "href": "/shopify/orders", "icon": "ShoppingBag"},
                 {"label": "Payouts", "href": "/shopify/payouts", "icon": "Banknote"},
                 {"label": "Dashboard", "href": "/shopify", "icon": "LayoutDashboard"},
