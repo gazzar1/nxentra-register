@@ -74,11 +74,75 @@ Today `_auto_create_item_from_line` only fires when `sku` is non-empty. Egyptian
 ### A11. Shopify JE should respect Item-level GL account overrides — **~2-3d** (correctness, surfaced by A8 review)
 The `shopify_accounting` projection's `_handle_order_paid` builds **one aggregate revenue line per order** posted to the company's `SALES_REVENUE` ModuleAccountMapping (account 41000) — it does not iterate line items or look up `Item.sales_account` per SKU. So if a merchant edits HEAD-001's Sales Account from "Sales Revenue" (41000) to "Headphones Revenue" (41001), manual invoices for HEAD-001 will credit 41001 but Shopify-imported orders for HEAD-001 will keep crediting 41000. Manual invoices respect Item.sales_account; Shopify-imported invoices don't. To fix: refactor `_handle_order_paid` to iterate `line_items`, look up Item by SKU, create one revenue line per item using `item.sales_account` (fall back to mapping if None). Need to think through tax + discount allocation per line. Not blocking the first user — company-level default works correctly until they want per-product revenue routing. Deferred deliberately so we can see whether the first user actually customizes per-item before pre-building.
 
+### A12. Payment-gateway dimension layer (structural retrofit on A2) — **~2d**
+Strategic decision driven by reconciliation-product framing (see [SESSION_LOG.md § Session: April 30, 2026 — Reconciliation strategy](SESSION_LOG.md)): instead of merchants splitting `SHOPIFY_CLEARING` into seven sibling GL accounts (Paymob Clearing, PayPal Clearing, COD Clearing, …), keep one clearing account and use an `AnalysisDimension` to distinguish gateways. Trial balance stays clean; reconciliation queries pivot on `(account, dimension_value)`; adding WooCommerce/Amazon/Noon later costs N dimension values, not N new accounts.
+
+**Scope:**
+- New `payment_gateway` AnalysisDimension per company (created during onboarding alongside default cost centers).
+- AnalysisDimensionValue rows seeded for the seven default codes (paymob, paypal, manual, shopify_payments, cash_on_delivery, bank_transfer, unknown). Bootstrapped by `_ensure_shopify_sales_setup` + `backfill_payment_gateways` to retrofit existing stores.
+- New FK `PaymentGateway.dimension_value` (PROTECT, populated by bootstrap; lazy-create path for unknown gateways also creates a matching dimension value).
+- Projection wiring: `_handle_order_paid` injects `payment_gateway.dimension_value` into the clearing JE line's `analysis_tags`.
+- `is_required_on_posting=True` registered on the clearing account specifically (verify per-account requirement is supported via `AccountAnalysisDefault`; if not, scope at the dimension level + add a save-time validator on clearing-account JE lines).
+- Refund / settlement / payout JEs that touch the clearing account also tag with the dimension (preserves the cross-stage reconciliation chain).
+- Migration: additive only. No backfill of historical JE lines (deliberately — those orders are already settled and rerunning the projection is out of scope).
+- Tests: dimension created on bootstrap, JE line carries the tag, manual JE on the clearing account without the tag rejects, lazy-create unknown gateway also creates the unknown dimension value.
+
+**Why now:** A2 just shipped with seven `PG-*` PostingProfiles all anchored on `11500`. The seven profiles preserve the *splitting* affordance for power users; the dimension is what makes the *default* path queryable for reconciliation. Doing this while A2 is fresh avoids fighting the topology in every reconciliation query for the next two years. Both modes coexist — split-by-account works alongside split-by-dimension; reconciliation engine groups by `(account, dimension_value)` either way.
+
+### A13. Reconciliation Control Center MVP — **~5d**
+The merchant-visible product spine. New page at `/finance/reconciliation` answering one painful question: **where is my money?**
+
+**Scope:**
+- Three top-level sections, one per stage of the truth-matching chain:
+  1. **Sales → Clearing.** Per-gateway clearing balances, aging buckets (0-7d / 7-30d / 30+d), unsettled-orders count.
+  2. **Clearing → Settlement.** Per-gateway expected vs settled vs deposited deltas. Empty until A14 is in place; renders with a "no settlement data" state until then.
+  3. **Bank Match.** Matched vs unmatched bank deposits. Surfaces the existing bank-rec data here so the merchant doesn't have to context-switch.
+- Each tile clickable → drilldown table per gateway: Order # | Date | Shopify Paid | Gateway Settled | Bank Received | Diff | Status.
+- Status derivation at query time (no new aggregate yet — pure projection over JournalLine + dimension):
+  - `matched` if `(account, dim_value)` balance has zeroed
+  - `expected` if balance > 0 AND age ≤ 7d
+  - `unsettled` if balance > 0 AND age > 7d
+  - `short_paid` / `over_paid` once A14's settlement events flow in
+- Backing API: `GET /api/finance/reconciliation/summary/` and `GET /api/finance/reconciliation/drilldown/?gateway=…`.
+- Frontend: card-based, color-coded aging (green/yellow/red), drilldown modal or sub-page.
+- Top-nav entry: "Reconciliation" or "Money" — visible at app root, not buried.
+
+**Non-goals (deliberately out of scope):**
+- The full `ReconciliationCase` aggregate from the long-term vision. That comes in Phase C, after MVP signal validates the framing. Building it now is over-engineering.
+- AI explanation / suggested resolution. Phase E territory.
+- Cross-company / cross-gateway analytics. Single-company view first.
+
+**Why now:** Validates the core product hypothesis with the first user before Phase B's 5-7 week canonical refactor. The data is already there (clearing balances, dimension tags from A12, existing bank-rec); MVP is a query + a screen. ~5 days. Real merchant signal beats another sprint of architecture.
+
+### A14. Manual settlement CSV import + Expected Bank Deposit convention — **~5-7d**
+Bridges Stage 2 (Gateway → Bank) for Egyptian merchants without waiting for the Paymob (B7) or Bosta (E3) connector code. Critical because most of the first user's payouts (Paymob, PayPal, Bosta-COD) don't have automated settlement events today.
+
+**Scope:**
+- New gateway-agnostic event type: `PAYMENT_GATEWAY_SETTLEMENT` (replaces the Shopify-specific shape; Shopify Payments adapter remaps onto it for consistency).
+- New page: `/finance/settlements/import` with two CSV uploaders — Paymob settlement statement + Bosta COD report. Mappable column schemas per gateway.
+- CSV parsers:
+  - **Paymob:** `order_id, gross, fee, net, payout_batch_id, payout_date`
+  - **Bosta:** `shipment_id (mappable to order_id), collected, courier_fee, net, batch_id, payout_date, status (delivered/returned)`
+- Generates `PAYMENT_GATEWAY_SETTLEMENT` events; projection posts:
+  ```
+  Dr Expected Bank Deposit  net
+  Dr Gateway Fees           fee
+  Dr Sales Returns / Failed (Bosta returned/uncollected only)
+      Cr Gateway Clearing   gross   [tagged with gateway dimension]
+  ```
+- New account convention: `Expected Bank Deposit` (asset, sub-control). Created by `_setup_shopify_accounts` on Shopify connect; mapped via a new `EXPECTED_BANK_DEPOSIT` role in ModuleAccountMapping.
+- Bank reconciliation matcher learns to match `payout_batch_id` → Expected Bank Deposit clearance. When the bank deposit lands, it clears the Expected Bank Deposit balance for that batch.
+- Idempotency: CSV re-import is safe (events keyed by `gateway + payout_batch_id + order_id`).
+- Tests: Paymob + Bosta CSV import, JE shape, dimension tag preservation, idempotency, returned-COD line creates a Sales Returns hit, bank match against Expected Bank Deposit.
+
+**Why now:** Without this, the reconciliation MVP from A13 has empty Stage-2 tiles for everything except Shopify Payments. The first user's books require this to feel complete. The event is gateway-agnostic so when Paymob (B7) and Bosta (E3) connectors land, they emit the same event type — A14's CSV path gracefully retires.
+
 **Phase A exit criteria:**
 - CI green, invariants mandatory, architecture tests enforcing event-first discipline.
 - First user can import orders safely.
 - Zero projection-emits-event cases; zero direct-write cases in views.
 - Foundation is ready for the bigger refactor.
+- **Reconciliation Control Center MVP shipped and validated against first user's real data.** Strategic addition: foundation-only is not a product; A12-A14 ensure the merchant sees "where is my money?" answered before Phase B's longer refactor begins.
 
 ---
 
@@ -193,27 +257,48 @@ Things the review flagged as real concerns but not blocking today. Set a thresho
 
 ## Critical path and parallelism
 
+**Strategic reorder (2026-04-30):** A12-A14 (dimension layer + Reconciliation MVP + manual settlement bridge) jumped ahead of A3-A5 to validate the merchant-facing product before Phase B's long refactor begins. Foundation cleanup (A3-A5) is genuinely load-bearing for long-term correctness, but the merchant cannot tell the difference between "good foundation" and "no product" — A12-A14 close that gap with ~2 weeks of work. A3-A5 resume after first-merchant signal validates (or invalidates) the framing.
+
 ```
-A0 (CI/invariants) ─┐
-A1 (dry-run)        ─┤
-A2 (PaymentGateway) ─┼─► A3 (reactors) ─► A5 (bank/FX cleanup) ─┐
-A4 (arch tests)     ─┘                                          │
-                                                                 ▼
-                    B1 (inbox)    ──────────────────┐
-                    B2 (schema evo, parallel B1) ───┤
-                                                    ▼
-                    B3 (canonical design) ─► B4 (build) ─► B5 (Shopify) ─► B6 (Stripe) ─► B7 (Paymob)
+A0, A1, A2, A8 ✓ ──► A12 (dim layer) ──► A13 (recon MVP) ──┐
+                                                            │
+              invite first user (in parallel with A13) ─────┤
+                                                            ▼
+                                              A14 (CSV bridge for Stage 2)
+                                                            │
+                                                            ▼
+                                              Week-4 gate: real merchant signal
+                                                            │
+                                  ┌─────────────────────────┴──────────────────┐
+                                  ▼                                            ▼
+                  A3 (reactors) ─► A4 (arch tests) ─► A5 (FX cleanup)     B1 (inbox) ──► B2 (schema evo)
+                                                          │                                │
+                                                          └──────────────────┬─────────────┘
+                                                                             ▼
+                                                          B3 (canonical design) ─► B4 (build)
+                                                                                     │
+                                                                                     ▼
+                                                          B5 (Shopify) ─► B6 (Stripe) ─► B7 (Paymob)
                                                                                               │
                                                                                               ▼
-                                                                       C1 ─► C2 ─► C3 (reconciliation UI)
+                                                          C1 ─► C2 ─► C3 (reconciliation engine v2 — formalizes A13)
                                                                                               │
                                                                                               ▼
                                                                                         E1, E2, E3 …
 
-                    D1 ─► D2 ─► D3 (can start at B4, run parallel to B-tail and C)
+                                              D1 ─► D2 ─► D3 (can start at B4, run parallel to B-tail and C)
 ```
 
-**Longest pole:** B5 (Shopify-to-canonical migration). Everything downstream waits.
+**Longest pole still:** B5 (Shopify-to-canonical migration). Everything downstream of B waits — but A12-A14 ship merchant-visible product *before* B starts, so the long pole is on engine evolution, not on user value.
+
+### Week-4 strategic gates
+
+After A12-A14 ship and the first user has the MVP for a week, four signals decide whether the strategy is right:
+
+1. **First merchant onboarded cleanly within 48h of invite.** If not — Phase A had a blind spot; fix before MVP iteration.
+2. **MVP backing query <200ms on real merchant data.** If not — balance projections need work *now*, not in C.
+3. **First merchant looks at the Control Center and says "yes, this is my problem."** If not — vision needs sharpening before more code; do not start Phase B.
+4. **Manual CSV import is usable weekly without friction.** If not — Paymob connector becomes urgent; pull B7 forward, defer B5.
 
 ---
 
@@ -228,9 +313,21 @@ A4 (arch tests)     ─┘                                          │
 
 ## What to do right now, today
 
-Phase A continues. **A0 done** (`fb0e3d6`), **A1 done** (`b6b52b9`–`7d12432`, 2026-04-28), **A8 done** (`71cb0d7`, `cd7f484`, 2026-04-29), **A2 done** (`d0dd0d2`, 2026-04-30). Remaining:
-- **A3 + A4 + A5** in sequence — the architectural cleanup that closes the event-first policy loopholes.
-- **A6, A7, A9, A10, A11** — UX + invariant + correctness follow-ups from A1/A8. Each is small (1-3d). Pick up between bigger Phase A work as time allows; **A10 and A11 land when first user signals they need them**.
+Phase A continues. **A0 done** (`fb0e3d6`), **A1 done** (`b6b52b9`–`7d12432`, 2026-04-28), **A8 done** (`71cb0d7`, `cd7f484`, 2026-04-29), **A2 done** (`d0dd0d2`, 2026-04-30).
+
+**Strategic pivot 2026-04-30:** the architectural cleanup (A3-A5) is deliberately deferred ~3 weeks while the merchant-facing reconciliation product gets built and validated. Foundation work resumes after first-merchant signal. See the "Critical path and parallelism" section above for the full sequence and the week-4 gates that test whether the strategy is right.
+
+**Immediate next steps (in order):**
+1. **Invite the first user** (Egyptian Shopify merchant, acquired 2026-04-22). A1's exit criterion is met; further pre-emptive work has diminishing returns vs real-world signal.
+2. **A12** — Payment-gateway dimension layer. ~2d. Locks in the right topology before the chart of accounts grows. Done while waiting for first-user signal.
+3. **A13** — Reconciliation Control Center MVP. ~5d. The merchant-visible product spine. Validates the "where is my money?" framing against the first user's real Shopify/Paymob/Bosta data.
+4. **A14** — Manual settlement CSV import for Paymob + Bosta + Expected Bank Deposit account convention. ~5-7d. Closes Stage 2 (Gateway → Bank) for Egyptian merchants without waiting for B7/E3 connector code.
+
+**Then after week-4 gate:**
+5. **A3 + A4 + A5** in sequence — architectural cleanup that closes the event-first policy loopholes. Now informed by what the reconciliation MVP actually needs.
+6. **A6, A7, A9, A10, A11** — UX + invariant + correctness follow-ups from A1/A8. Each is small (1-3d). Pick up between bigger Phase A work as time allows; **A10 and A11 land when first user signals they need them**.
+
+**Then Phase B** — canonical platform models — but grounded in real merchant feedback rather than speculation.
 
 **Do not start Phase B** until all of Phase A is merged and green. Phase B on an unverified foundation is where accounting systems die.
 

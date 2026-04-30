@@ -558,6 +558,31 @@ Commit: `d0dd0d2`.
 5. `pm2 restart nxentra-api && pm2 restart nxentra-celery`
 6. Spot-check `/shopify/settings` renders the new card; click through one re-route to verify PATCH works.
 
+✅ Deployed 2026-04-30; Aljazeera5 dashboard verifies all seven gateways routing to `11500 Shopify Clearing` correctly.
+
+### 7. Strategic review post-A2 — reordered priorities for the next 3 weeks
+
+After A2 deployed, the user shared a long architectural piece reframing Nxentra as a "truth-matching engine between four worlds: Shopify says / Gateway says / Bank says / Nxentra accounting says." Key thesis: the painful merchant question is *"Where is my money?"* and Nxentra's product spine should be a Reconciliation Control Center that answers it visibly. Without that screen, Nxentra is "an impressive accounting engine but not yet a business."
+
+Honest gap assessment (before any new code):
+- Stage 1 (Shopify → Gateway Clearing): ~70% there. Plumbing works post-A2. Missing: aging on clearing balances, "unsettled orders" surfaces.
+- Stage 2 (Gateway → Bank): ~30% Shopify, 0% Paymob/PayPal/Bosta. No connectors, no Expected Bank Deposit convention.
+- Stage 3 (Bank → Match): ~50%. Bank rec exists; Shopify-only commerce reconciliation view exists.
+- Reconciliation Control Center as a product: ~10%. Data is in the system, screen and framing are not.
+
+User then proposed a sharper structural decision: instead of giving each gateway its own GL clearing account (Paymob Clearing, PayPal Clearing, COD Clearing, …), keep one `SHOPIFY_CLEARING` account and tag JE lines with an `AnalysisDimension`. Cleaner trial balance, no chart-of-accounts bloat as platforms grow, reconciliation queries pivot on `(account, dimension_value)`. Both modes coexist — split-by-account is still available for power users; default path is split-by-dimension.
+
+Strategic recommendation accepted: defer A3-A5 (architectural cleanup) by ~3 weeks, ship merchant-facing product first, validate framing with the first real user before the 5-7 week Phase B refactor.
+
+**Filed three new tickets in [NEXT_TASKS.md](NEXT_TASKS.md):**
+- **A12** — Payment-gateway dimension layer (~2d). Structural retrofit on A2: new `payment_gateway` AnalysisDimension, dimension values per gateway, `PaymentGateway.dimension_value` FK, projection tagging on the clearing JE line, `is_required_on_posting` on the clearing account.
+- **A13** — Reconciliation Control Center MVP (~5d). New `/finance/reconciliation` page; three sections (Sales→Clearing, Clearing→Settlement, Bank Match); per-gateway drilldown with aging; backing API queries pivot on dimension. No `ReconciliationCase` aggregate yet — pure projection over JournalLine + dimension.
+- **A14** — Manual settlement CSV import + Expected Bank Deposit (~5-7d). Gateway-agnostic `PAYMENT_GATEWAY_SETTLEMENT` event, Paymob + Bosta CSV parsers, new Expected Bank Deposit account convention, bank-rec match against payout_batch_id.
+
+**Week-4 strategic gates filed alongside the tickets** — four signals (clean onboarding, MVP query latency, first-user reaction to Control Center, CSV usability) determine whether the pivot was right or whether to course-correct before Phase B starts.
+
+Implementation begins next session. First step: invite the first user; in parallel, ship A12.
+
 ---
 
 ## Pending Work (Next Session)
