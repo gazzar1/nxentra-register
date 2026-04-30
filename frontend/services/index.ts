@@ -21,6 +21,9 @@ export type {
   ReconciliationSummary,
   ReconciliationDrilldown,
   ReconciliationProviderRow,
+  ReconciliationOrders,
+  ReconciliationOrderRow,
+  OrderReconciliationStatus,
   AgingBucket,
 } from './reconciliation.service';
 export { settlementImportsService } from './settlement-imports.service';

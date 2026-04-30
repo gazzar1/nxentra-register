@@ -259,6 +259,205 @@ class ReconciliationSummaryView(APIView):
         )
 
 
+class ReconciliationOrdersView(APIView):
+    """
+    A14c: GET /api/accounting/reconciliation/orders/?provider_id=<id>
+
+    Per-Shopify-order rows for the given provider. For each order that
+    routed clearing through this provider:
+
+      Order # | Date | Shopify Paid | Settled Batch | Settled $ | Bank Received | Status
+
+    Status derivation (no new aggregate — pure projection at query time):
+    - **expected** — order's clearing debit exists but no PaymentSettlement
+      event with this order_id has been imported yet
+    - **settled** — settlement event imported (batch_id known) but the
+      clearance JE hasn't been created yet (bank deposit not matched)
+    - **banked** — clearance JE exists for this batch (bank match landed)
+
+    The per-order pivot joins:
+    - `SalesInvoice` (source='shopify', posted_journal_entry FK) — order
+      identity + Shopify-paid amount
+    - `JournalLine` (account=clearing, dim_value=provider.dim) — only Shopify
+      orders for THIS provider
+    - `BusinessEvent` (PAYMENT_SETTLEMENT_RECEIVED) — line_items maps
+      shopify_order_id → batch_id + per-order settled amounts (A14)
+    - `JournalEntry` (source_module='payment_settlement_clearance') —
+      bank-rec matched batches (A14b)
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        provider_id = request.query_params.get("provider_id")
+        if not provider_id:
+            return Response(
+                {"detail": "provider_id query param is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            provider = SettlementProvider.objects.select_related(
+                "dimension_value", "posting_profile", "posting_profile__control_account"
+            ).get(company=actor.company, pk=int(provider_id))
+        except (ValueError, SettlementProvider.DoesNotExist):
+            return Response({"detail": "Provider not found."}, status=404)
+
+        if not provider.dimension_value_id or not provider.posting_profile:
+            return Response(
+                {"detail": ("Provider has no dimension_value/posting_profile; run backfill_settlement_providers.")},
+                status=400,
+            )
+
+        rows = _per_order_drilldown(actor.company, provider)
+        return Response(
+            {
+                "provider": {
+                    "id": provider.id,
+                    "display_name": provider.display_name,
+                    "provider_type": provider.provider_type,
+                    "normalized_code": provider.normalized_code,
+                },
+                "orders": rows,
+                "totals": _per_order_totals(rows),
+            }
+        )
+
+
+def _per_order_drilldown(company, provider) -> list[dict]:
+    """Build the per-order rows for a provider. Pure projection — no
+    new aggregate. Performance is bounded by Shopify volume per provider;
+    optimize if a merchant exceeds ~10k orders per provider per period."""
+    from events.models import BusinessEvent
+    from events.types import EventTypes
+    from sales.models import SalesInvoice
+
+    clearing_account = provider.posting_profile.control_account
+    if not clearing_account:
+        return []
+
+    # 1) Clearing-side debit lines tagged with this provider's dim value.
+    #    These are the DR AR Control lines on Shopify-imported SalesInvoices.
+    clearing_debits = (
+        JournalLine.objects.filter(
+            company=company,
+            account=clearing_account,
+            entry__status=JournalEntry.Status.POSTED,
+            analysis_tags__dimension_value=provider.dimension_value,
+            debit__gt=0,
+        )
+        .select_related("entry")
+        .order_by("-entry__date", "-entry_id")
+    )
+
+    entry_ids = list({line.entry_id for line in clearing_debits})
+    if not entry_ids:
+        return []
+
+    # 2) Map JE id → SalesInvoice (only shopify-sourced ones).
+    invoices_by_entry: dict = {}
+    for inv in SalesInvoice.objects.filter(
+        company=company,
+        source="shopify",
+        posted_journal_entry_id__in=entry_ids,
+    ).only(
+        "id",
+        "invoice_number",
+        "reference",
+        "invoice_date",
+        "total_amount",
+        "source_document_id",
+        "posted_journal_entry_id",
+    ):
+        invoices_by_entry[inv.posted_journal_entry_id] = inv
+
+    # 3) Build {shopify_order_id → (batch_id, gross, net, status)} from
+    #    PaymentSettlement events for this provider. Single scan; events
+    #    are small (one per batch) so memory is fine.
+    order_to_settlement: dict = {}
+    settlement_events = BusinessEvent.objects.filter(
+        company=company,
+        event_type=EventTypes.PAYMENT_SETTLEMENT_RECEIVED,
+    )
+    for event in settlement_events:
+        data = event.get_data()
+        if data.get("provider_normalized_code") != provider.normalized_code:
+            continue
+        batch_id = data.get("payout_batch_id") or ""
+        for li in data.get("line_items", []) or []:
+            order_id = (li.get("order_id") or "").strip()
+            if order_id:
+                order_to_settlement[order_id] = {
+                    "batch_id": batch_id,
+                    "gross": str(li.get("gross", "0")),
+                    "net": str(li.get("net", "0")),
+                    "status": li.get("status", "settled"),
+                }
+
+    # 4) Set of cleared batches (bank-matched) — A14b clearance JEs.
+    clearance_docs = JournalEntry.objects.filter(
+        company=company,
+        source_module="payment_settlement_clearance",
+        status=JournalEntry.Status.POSTED,
+        source_document__startswith=f"{provider.normalized_code}:",
+    ).values_list("source_document", flat=True)
+    cleared_batches = {doc.split(":", 1)[1] for doc in clearance_docs if ":" in doc}
+
+    # 5) Stitch per-order rows.
+    results: list[dict] = []
+    for line in clearing_debits:
+        invoice = invoices_by_entry.get(line.entry_id)
+        if not invoice:
+            continue  # non-Shopify clearing entry (manual, etc.) — skip
+        order_id = invoice.source_document_id or ""
+        settlement = order_to_settlement.get(order_id)
+        if settlement:
+            batch_id = settlement["batch_id"]
+            settled_amount = settlement["gross"]
+            is_banked = batch_id in cleared_batches
+            order_status = "banked" if is_banked else "settled"
+        else:
+            batch_id = None
+            settled_amount = None
+            is_banked = False
+            order_status = "expected"
+
+        results.append(
+            {
+                "shopify_order_id": order_id,
+                "order_number": invoice.reference or invoice.invoice_number,
+                "order_date": invoice.invoice_date.isoformat() if invoice.invoice_date else None,
+                "shopify_paid": _money_str(line.debit),
+                "invoice_total": _money_str(invoice.total_amount),
+                "settled_batch_id": batch_id,
+                "settled_amount": settled_amount,
+                "is_banked": is_banked,
+                "status": order_status,
+            }
+        )
+
+    return results
+
+
+def _per_order_totals(rows: list[dict]) -> dict:
+    """Top-line summary of the per-order rows for the drilldown header."""
+    by_status = {"expected": 0, "settled": 0, "banked": 0}
+    paid_by_status = {"expected": Decimal("0"), "settled": Decimal("0"), "banked": Decimal("0")}
+    for row in rows:
+        s = row["status"]
+        by_status[s] = by_status.get(s, 0) + 1
+        paid_by_status[s] = paid_by_status.get(s, Decimal("0")) + Decimal(row["shopify_paid"])
+    return {
+        "order_count": len(rows),
+        "by_status": by_status,
+        "shopify_paid_by_status": {k: _money_str(v) for k, v in paid_by_status.items()},
+    }
+
+
 class ReconciliationDrilldownView(APIView):
     """
     GET /api/accounting/reconciliation/drilldown/?provider_id=<id>&account_id=<id>

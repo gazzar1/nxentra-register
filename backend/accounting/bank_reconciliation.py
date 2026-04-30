@@ -255,6 +255,20 @@ def auto_match_statement(
             bl for bl in unmatched_bank_lines if bl.match_status == BankStatementLine.MatchStatus.UNMATCHED
         ]
 
+    # ---- Settlement-aware pre-pass (A14b) ----
+    # Match bank lines against PaymentSettlement JEs (Paymob/Bosta/PayPal
+    # CSV imports). On match, create the clearance JE that drains the
+    # Expected Bank Deposit balance into the merchant's actual bank.
+    settlement_matched = _settlement_prepass_match(
+        actor.company,
+        statement,
+        unmatched_bank_lines,
+    )
+    if settlement_matched > 0:
+        unmatched_bank_lines = [
+            bl for bl in unmatched_bank_lines if bl.match_status == BankStatementLine.MatchStatus.UNMATCHED
+        ]
+
     # Get unreconciled journal lines for this account in the statement period
     # Expand date range slightly for date proximity matching
     date_buffer = timedelta(days=5)
@@ -316,19 +330,23 @@ def auto_match_statement(
             statement.status = BankStatement.Status.IN_PROGRESS
             statement.save()
 
-    matched_count += platform_matched
+    matched_count += platform_matched + settlement_matched
+    total += settlement_matched
     logger.info(
-        "Auto-matched %d/%d lines for statement %s (platform pre-pass: %d)",
+        "Auto-matched %d/%d lines for statement %s (platform: %d, settlement: %d)",
         matched_count,
         total,
         statement.public_id,
         platform_matched,
+        settlement_matched,
     )
 
     return CommandResult.ok(
         data={
             "matched": matched_count,
             "total": total,
+            "platform_matched": platform_matched,
+            "settlement_matched": settlement_matched,
         }
     )
 
@@ -442,6 +460,236 @@ def _platform_prepass_match(
             )
 
     return matched
+
+
+def _settlement_prepass_match(
+    company,
+    statement: BankStatement,
+    unmatched_bank_lines: list,
+) -> int:
+    """A14b: match bank lines against PaymentSettlement JEs (Paymob /
+    Bosta / PayPal CSV imports).
+
+    The settlement JE shape from A14:
+        DR Expected Bank Deposit  net_amount
+        DR Fees / DR Sales Returns
+            CR Provider Clearing  gross_amount
+
+    Bank-rec match runs in two parts:
+    1. Find the settlement JE for this bank deposit (by amount + date,
+       boosted if `payout_batch_id` substring appears in the bank line
+       description — Paymob/Bosta typically include the batch ID in the
+       wire-transfer reference).
+    2. Create a clearance JE: `DR statement.account / CR EBD` for net.
+       Link the bank line to the clearance JE's DR Bank line. Mark the
+       original settlement JE's EBD line as reconciled (it's no longer
+       "expected").
+
+    Returns the number of bank lines matched (and clearance JEs created).
+    """
+    from accounting.mappings import ModuleAccountMapping
+
+    if not unmatched_bank_lines:
+        return 0
+
+    # Find POSTED PaymentSettlement JEs in the period whose EBD DR line
+    # has not yet been reconciled. Each JE has source_module="payment_settlement"
+    # and source_document="{provider}:{batch_id}".
+    date_buffer = timedelta(days=7)
+    settlement_entries = list(
+        JournalEntry.objects.filter(
+            company=company,
+            source_module="payment_settlement",
+            status=JournalEntry.Status.POSTED,
+            date__gte=statement.period_start - date_buffer,
+            date__lte=statement.period_end + date_buffer,
+        ).order_by("date")
+    )
+    if not settlement_entries:
+        return 0
+
+    # Build (entry, ebd_line, net_amount, batch_id) tuples for unmatched
+    # entries. EBD is the only DR-debit asset line whose account has the
+    # EXPECTED_BANK_DEPOSIT role on the company's mapping.
+    ebd_account = ModuleAccountMapping.get_account(company, "shopify_connector", "EXPECTED_BANK_DEPOSIT")
+    if not ebd_account:
+        return 0
+
+    # Pre-collect candidates: (entry, ebd_line, net, batch_id)
+    candidates: list[tuple] = []
+    for entry in settlement_entries:
+        ebd_line = entry.lines.filter(account=ebd_account, reconciled=False).first()
+        if not ebd_line:
+            continue
+        # Source document = "{provider}:{batch_id}"
+        source_doc = entry.source_document or ""
+        batch_id = source_doc.split(":", 1)[1] if ":" in source_doc else source_doc
+        candidates.append((entry, ebd_line, ebd_line.debit, batch_id))
+
+    if not candidates:
+        return 0
+
+    matched = 0
+
+    for bank_line in unmatched_bank_lines:
+        if bank_line.match_status != BankStatementLine.MatchStatus.UNMATCHED:
+            continue
+
+        # Filter candidates by amount equality
+        amount_matches = [c for c in candidates if c[2] == bank_line.amount]
+        if not amount_matches:
+            continue
+
+        # Prefer batch-id-in-description match if available (highest
+        # confidence: even if multiple deposits have the same amount on
+        # close dates, the batch ID disambiguates).
+        descr = (bank_line.description or "").lower()
+        batch_match = next(
+            (c for c in amount_matches if c[3] and c[3].lower() in descr),
+            None,
+        )
+        if batch_match:
+            entry, ebd_line, _, batch_id = batch_match
+            confidence = CONFIDENCE_EXACT
+        else:
+            # Fall back to amount + date proximity (single best within 7 days).
+            best, best_days = None, 999
+            for c in amount_matches:
+                days = abs((bank_line.line_date - c[0].date).days)
+                if days < best_days:
+                    best_days = days
+                    best = c
+            if not best or best_days > 7:
+                continue
+            entry, ebd_line, _, batch_id = best
+            confidence = CONFIDENCE_AMOUNT_DATE if best_days <= 2 else CONFIDENCE_AMOUNT_ONLY
+
+        if confidence < AUTO_MATCH_THRESHOLD:
+            continue
+
+        # Create the clearance JE: DR statement.account / CR EBD.
+        clearance_je_line = _create_settlement_clearance_je(
+            company=company,
+            settlement_entry=entry,
+            bank_account=statement.account,
+            ebd_account=ebd_account,
+            net_amount=bank_line.amount,
+            batch_id=batch_id,
+            statement_date=statement.statement_date,
+            value_date=bank_line.line_date,
+        )
+        if not clearance_je_line:
+            logger.warning(
+                "Settlement match: failed to create clearance JE for batch %s — skipping bank line %s",
+                batch_id,
+                bank_line.id,
+            )
+            continue
+
+        with command_writes_allowed():
+            bank_line.matched_journal_line = clearance_je_line
+            bank_line.match_status = BankStatementLine.MatchStatus.AUTO_MATCHED
+            bank_line.match_confidence = confidence
+            bank_line.save()
+
+            clearance_je_line.reconciled = True
+            clearance_je_line.reconciled_date = statement.statement_date
+            clearance_je_line.save()
+
+            ebd_line.reconciled = True
+            ebd_line.reconciled_date = statement.statement_date
+            ebd_line.save()
+
+        # Remove this candidate from future loop iterations.
+        candidates = [c for c in candidates if c[0].id != entry.id]
+        matched += 1
+
+        logger.info(
+            "Settlement match: bank line %s -> clearance JE for batch %s (confidence=%s)",
+            bank_line.id,
+            batch_id,
+            confidence,
+        )
+
+    return matched
+
+
+def _create_settlement_clearance_je(
+    company,
+    settlement_entry: JournalEntry,
+    bank_account: Account,
+    ebd_account: Account,
+    net_amount: Decimal,
+    batch_id: str,
+    statement_date: date,
+    value_date: date,
+) -> JournalLine | None:
+    """A14b: create the second-stage clearance JE that drains Expected
+    Bank Deposit into the merchant's actual bank.
+
+    Posted via the standard command chain so it goes through period
+    validation, dimension checks (none on EBD/Bank), and event emission.
+    Returns the DR Bank JournalLine (the one bank-rec should mark
+    reconciled), or None if the JE failed to post.
+
+    Stamps source_module='payment_settlement_clearance' and
+    source_document=settlement_entry.source_document for traceability.
+    """
+    from accounting.commands import (
+        create_journal_entry,
+        post_journal_entry,
+        save_journal_entry_complete,
+    )
+    from accounts.authz import system_actor_for_company
+
+    actor = system_actor_for_company(company)
+    memo = f"Bank deposit clearance: settlement batch {batch_id}"
+
+    create_result = create_journal_entry(
+        actor=actor,
+        date=value_date,
+        memo=memo,
+        lines=[
+            {
+                "account_id": bank_account.id,
+                "description": f"{memo} — bank deposit",
+                "debit": str(net_amount),
+                "credit": "0",
+            },
+            {
+                "account_id": ebd_account.id,
+                "description": f"{memo} — clear EBD",
+                "debit": "0",
+                "credit": str(net_amount),
+            },
+        ],
+        kind=JournalEntry.Kind.NORMAL,
+    )
+    if not create_result.success:
+        logger.error("Settlement clearance create failed: %s", create_result.error)
+        return None
+    entry = create_result.data
+
+    save_result = save_journal_entry_complete(actor, entry.id)
+    if not save_result.success:
+        logger.error("Settlement clearance save_complete failed: %s", save_result.error)
+        return None
+    entry = save_result.data
+
+    post_result = post_journal_entry(actor, entry.id)
+    if not post_result.success:
+        logger.error("Settlement clearance post failed: %s", post_result.error)
+        return None
+    entry = post_result.data
+
+    # Stamp source for traceability + idempotency on rebuild.
+    with command_writes_allowed():
+        JournalEntry.objects.filter(pk=entry.pk).update(
+            source_module="payment_settlement_clearance",
+            source_document=settlement_entry.source_document or batch_id,
+        )
+
+    return entry.lines.filter(account=bank_account).first()
 
 
 def _compute_match_confidence(

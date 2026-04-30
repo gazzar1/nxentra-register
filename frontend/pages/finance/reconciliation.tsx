@@ -22,8 +22,10 @@ import { useToast } from "@/components/ui/toaster";
 import {
   reconciliationService,
   type AgingBucket,
+  type OrderReconciliationStatus,
   type ProviderType,
   type ReconciliationDrilldown,
+  type ReconciliationOrders,
   type ReconciliationProviderRow,
   type ReconciliationSummary,
 } from "@/services/reconciliation.service";
@@ -70,8 +72,14 @@ export default function ReconciliationPage() {
   const [drilldownByProvider, setDrilldownByProvider] = useState<
     Record<number, ReconciliationDrilldown | null>
   >({});
+  const [ordersByProvider, setOrdersByProvider] = useState<
+    Record<number, ReconciliationOrders | null>
+  >({});
   const [expandedProvider, setExpandedProvider] = useState<number | null>(null);
   const [drilldownLoading, setDrilldownLoading] = useState<number | null>(null);
+  const [drilldownTabByProvider, setDrilldownTabByProvider] = useState<
+    Record<number, "orders" | "lines">
+  >({});
 
   const fetchSummary = async (showSpinner = true) => {
     if (showSpinner) setLoading(true);
@@ -101,21 +109,68 @@ export default function ReconciliationPage() {
       return;
     }
     setExpandedProvider(row.provider_id);
-    if (drilldownByProvider[row.provider_id]) return;
-    setDrilldownLoading(row.provider_id);
-    try {
-      const { data } = await reconciliationService.drilldown(row.provider_id, row.account_id);
-      setDrilldownByProvider((prev) => ({
-        ...prev,
-        [row.provider_id as number]: data,
-      }));
-    } catch {
-      toast({
-        title: `Failed to load ${row.provider_name} drilldown.`,
-        variant: "destructive",
-      });
-    } finally {
-      setDrilldownLoading(null);
+    if (!drilldownTabByProvider[row.provider_id]) {
+      setDrilldownTabByProvider((prev) => ({ ...prev, [row.provider_id as number]: "orders" }));
+    }
+    // Fetch the orders view by default. JE-lines view fetches lazily on tab switch.
+    if (!ordersByProvider[row.provider_id]) {
+      setDrilldownLoading(row.provider_id);
+      try {
+        const { data } = await reconciliationService.orders(row.provider_id);
+        setOrdersByProvider((prev) => ({
+          ...prev,
+          [row.provider_id as number]: data,
+        }));
+      } catch {
+        toast({
+          title: `Failed to load ${row.provider_name} orders.`,
+          variant: "destructive",
+        });
+      } finally {
+        setDrilldownLoading(null);
+      }
+    }
+  };
+
+  const handleSetTab = async (
+    row: ReconciliationProviderRow,
+    tab: "orders" | "lines"
+  ) => {
+    if (!row.provider_id) return;
+    setDrilldownTabByProvider((prev) => ({ ...prev, [row.provider_id as number]: tab }));
+    if (tab === "lines" && !drilldownByProvider[row.provider_id]) {
+      setDrilldownLoading(row.provider_id);
+      try {
+        const { data } = await reconciliationService.drilldown(row.provider_id, row.account_id);
+        setDrilldownByProvider((prev) => ({
+          ...prev,
+          [row.provider_id as number]: data,
+        }));
+      } catch {
+        toast({
+          title: `Failed to load ${row.provider_name} JE lines.`,
+          variant: "destructive",
+        });
+      } finally {
+        setDrilldownLoading(null);
+      }
+    }
+    if (tab === "orders" && !ordersByProvider[row.provider_id]) {
+      setDrilldownLoading(row.provider_id);
+      try {
+        const { data } = await reconciliationService.orders(row.provider_id);
+        setOrdersByProvider((prev) => ({
+          ...prev,
+          [row.provider_id as number]: data,
+        }));
+      } catch {
+        toast({
+          title: `Failed to load ${row.provider_name} orders.`,
+          variant: "destructive",
+        });
+      } finally {
+        setDrilldownLoading(null);
+      }
     }
   };
 
@@ -227,6 +282,12 @@ export default function ReconciliationPage() {
                           const drill = row.provider_id
                             ? drilldownByProvider[row.provider_id]
                             : null;
+                          const orders = row.provider_id
+                            ? ordersByProvider[row.provider_id]
+                            : null;
+                          const tab = row.provider_id
+                            ? drilldownTabByProvider[row.provider_id] ?? "orders"
+                            : "orders";
                           return (
                             <ProviderRow
                               key={`${row.account_id}-${row.dimension_value_id}`}
@@ -234,7 +295,10 @@ export default function ReconciliationPage() {
                               isExpanded={isExpanded}
                               isLoading={drilldownLoading === row.provider_id}
                               drilldown={drill ?? null}
+                              orders={orders ?? null}
+                              tab={tab}
                               onToggle={() => handleToggleProvider(row)}
+                              onSetTab={(t) => handleSetTab(row, t)}
                             />
                           );
                         })}
@@ -355,18 +419,36 @@ function SummaryTile({
   );
 }
 
+const ORDER_STATUS_VARIANT: Record<OrderReconciliationStatus, "secondary" | "warning" | "success"> = {
+  expected: "warning",
+  settled: "secondary",
+  banked: "success",
+};
+
+const ORDER_STATUS_LABEL: Record<OrderReconciliationStatus, string> = {
+  expected: "Expected",
+  settled: "Settled",
+  banked: "Banked",
+};
+
 function ProviderRow({
   row,
   isExpanded,
   isLoading,
   drilldown,
+  orders,
+  tab,
   onToggle,
+  onSetTab,
 }: {
   row: ReconciliationProviderRow;
   isExpanded: boolean;
   isLoading: boolean;
   drilldown: ReconciliationDrilldown | null;
+  orders: ReconciliationOrders | null;
+  tab: "orders" | "lines";
   onToggle: () => void;
+  onSetTab: (t: "orders" | "lines") => void;
 }) {
   const open = Number(row.open_balance);
   return (
@@ -409,10 +491,60 @@ function ProviderRow({
       {isExpanded && (
         <tr>
           <td colSpan={8} className="bg-muted/30 px-3 py-3">
+            {/* Tab bar — Orders (merchant-friendly) / JE lines (auditor view) */}
+            <div className="mb-3 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSetTab("orders");
+                }}
+                className={`rounded-md border px-3 py-1 text-xs ${
+                  tab === "orders"
+                    ? "border-primary bg-primary/10 font-semibold"
+                    : "border-input text-muted-foreground hover:bg-muted/50"
+                }`}
+              >
+                Orders
+                {orders && (
+                  <span className="ml-1 text-[10px] text-muted-foreground">
+                    ({orders.totals.order_count})
+                  </span>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSetTab("lines");
+                }}
+                className={`rounded-md border px-3 py-1 text-xs ${
+                  tab === "lines"
+                    ? "border-primary bg-primary/10 font-semibold"
+                    : "border-input text-muted-foreground hover:bg-muted/50"
+                }`}
+              >
+                JE Lines
+                {drilldown && (
+                  <span className="ml-1 text-[10px] text-muted-foreground">
+                    ({drilldown.lines.length})
+                  </span>
+                )}
+              </button>
+            </div>
+
             {isLoading ? (
               <div className="flex items-center justify-center py-4">
                 <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
               </div>
+            ) : tab === "orders" ? (
+              orders && orders.orders.length > 0 ? (
+                <OrdersTable orders={orders} />
+              ) : (
+                <p className="py-2 text-xs text-muted-foreground italic">
+                  No orders for this provider.
+                </p>
+              )
             ) : drilldown && drilldown.lines.length > 0 ? (
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
@@ -455,6 +587,70 @@ function ProviderRow({
         </tr>
       )}
     </>
+  );
+}
+
+function OrdersTable({ orders }: { orders: ReconciliationOrders }) {
+  return (
+    <>
+      <div className="mb-2 grid grid-cols-3 gap-3 text-[11px]">
+        <StatusTile status="expected" totals={orders.totals} />
+        <StatusTile status="settled" totals={orders.totals} />
+        <StatusTile status="banked" totals={orders.totals} />
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead className="border-b text-left uppercase text-muted-foreground">
+            <tr>
+              <th className="py-1 pr-3">Order #</th>
+              <th className="py-1 pr-3">Date</th>
+              <th className="py-1 pr-3 text-right">Shopify Paid</th>
+              <th className="py-1 pr-3">Settlement Batch</th>
+              <th className="py-1 pr-3 text-right">Settled</th>
+              <th className="py-1 pr-3">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {orders.orders.map((o) => (
+              <tr key={`${o.shopify_order_id}-${o.order_number}`} className="border-b last:border-0">
+                <td className="py-1 pr-3 font-mono">{o.order_number}</td>
+                <td className="py-1 pr-3">{o.order_date ?? "—"}</td>
+                <td className="py-1 pr-3 text-right">{formatMoney(o.shopify_paid)}</td>
+                <td className="py-1 pr-3 font-mono">{o.settled_batch_id ?? "—"}</td>
+                <td className="py-1 pr-3 text-right">
+                  {o.settled_amount ? formatMoney(o.settled_amount) : "—"}
+                </td>
+                <td className="py-1 pr-3">
+                  <Badge variant={ORDER_STATUS_VARIANT[o.status]}>
+                    {ORDER_STATUS_LABEL[o.status]}
+                  </Badge>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+function StatusTile({
+  status,
+  totals,
+}: {
+  status: OrderReconciliationStatus;
+  totals: ReconciliationOrders["totals"];
+}) {
+  const count = totals.by_status[status];
+  const paid = totals.shopify_paid_by_status[status];
+  return (
+    <div className="rounded border bg-background p-2">
+      <div className="flex items-center gap-1">
+        <Badge variant={ORDER_STATUS_VARIANT[status]}>{ORDER_STATUS_LABEL[status]}</Badge>
+        <span className="text-muted-foreground">×{count}</span>
+      </div>
+      <div className="mt-1 font-mono">{formatMoney(paid)}</div>
+    </div>
   );
 }
 

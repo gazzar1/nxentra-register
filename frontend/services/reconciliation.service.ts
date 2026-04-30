@@ -90,6 +90,35 @@ export interface ReconciliationDrilldown {
   open_balance: string;
 }
 
+export type OrderReconciliationStatus = "expected" | "settled" | "banked";
+
+export interface ReconciliationOrderRow {
+  shopify_order_id: string;
+  order_number: string;
+  order_date: string | null;
+  shopify_paid: string;
+  invoice_total: string;
+  settled_batch_id: string | null;
+  settled_amount: string | null;
+  is_banked: boolean;
+  status: OrderReconciliationStatus;
+}
+
+export interface ReconciliationOrders {
+  provider: {
+    id: number;
+    display_name: string;
+    provider_type: ProviderType;
+    normalized_code: string;
+  };
+  orders: ReconciliationOrderRow[];
+  totals: {
+    order_count: number;
+    by_status: Record<OrderReconciliationStatus, number>;
+    shopify_paid_by_status: Record<OrderReconciliationStatus, string>;
+  };
+}
+
 // =============================================================================
 // Service
 // =============================================================================
@@ -106,4 +135,9 @@ export const reconciliationService = {
       { params }
     );
   },
+
+  orders: (providerId: number) =>
+    apiClient.get<ReconciliationOrders>("/accounting/reconciliation/orders/", {
+      params: { provider_id: String(providerId) },
+    }),
 };
