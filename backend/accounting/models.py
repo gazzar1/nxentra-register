@@ -2733,7 +2733,7 @@ class BankStatementLine(models.Model):
 
     # Matching
     match_status = models.CharField(
-        max_length=20,
+        max_length=24,
         choices=MatchStatus.choices,
         default=MatchStatus.UNMATCHED,
     )
