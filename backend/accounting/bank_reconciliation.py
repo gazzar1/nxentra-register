@@ -10,6 +10,7 @@ Provides:
 """
 
 import csv
+import hashlib
 import io
 import logging
 from datetime import date, timedelta
@@ -80,6 +81,20 @@ def import_bank_statement(
     if not lines_data:
         return CommandResult.fail("No transaction lines provided.")
 
+    # A17: load every dedup_hash already imported for this account so we
+    # can skip duplicates when an overlapping period gets re-uploaded
+    # (e.g. April 1-30 after April 1-15 was already imported). Scoped to
+    # (company, account) — legitimately identical lines on a different
+    # bank account still import.
+    existing_hashes = set(
+        BankStatementLine.objects.filter(
+            company=actor.company,
+            statement__account=account,
+        )
+        .exclude(dedup_hash="")
+        .values_list("dedup_hash", flat=True)
+    )
+
     with command_writes_allowed():
         statement = BankStatement.objects.create(
             company=actor.company,
@@ -96,11 +111,31 @@ def import_bank_statement(
         )
 
         created_lines = []
+        skipped_duplicate = 0
+        # A17: track hashes seen within THIS file so the same row appearing
+        # twice in the upload itself dedups too (some bank exports emit
+        # the same transaction twice if the merchant runs the report
+        # across overlapping date filters).
+        seen_in_batch: set[str] = set()
         for ld in lines_data:
             try:
                 amount = Decimal(str(ld["amount"]))
             except (KeyError, InvalidOperation):
                 continue
+
+            line_date_value = ld.get("line_date", statement_date)
+            description = ld.get("description", "")
+            reference_str = ld.get("reference", "")
+            dedup_hash = _compute_line_dedup_hash(
+                line_date=line_date_value,
+                amount=amount,
+                reference=reference_str,
+                description=description,
+            )
+            if dedup_hash in existing_hashes or dedup_hash in seen_in_batch:
+                skipped_duplicate += 1
+                continue
+            seen_in_batch.add(dedup_hash)
 
             # Infer transaction type from amount
             txn_type = ld.get("transaction_type", "")
@@ -114,27 +149,50 @@ def import_bank_statement(
             line = BankStatementLine.objects.create(
                 statement=statement,
                 company=actor.company,
-                line_date=ld.get("line_date", statement_date),
-                description=ld.get("description", ""),
-                reference=ld.get("reference", ""),
+                line_date=line_date_value,
+                description=description,
+                reference=reference_str,
                 amount=amount,
                 transaction_type=txn_type,
+                dedup_hash=dedup_hash,
             )
             created_lines.append(line)
 
     logger.info(
-        "Imported bank statement %s for %s: %d lines",
+        "Imported bank statement %s for %s: %d lines created, %d duplicates skipped",
         statement.public_id,
         account.code,
         len(created_lines),
+        skipped_duplicate,
     )
 
     return CommandResult.ok(
         data={
             "statement": statement,
             "lines_created": len(created_lines),
+            "lines_skipped_duplicate": skipped_duplicate,
         }
     )
+
+
+def _compute_line_dedup_hash(
+    line_date,
+    amount: Decimal,
+    reference: str,
+    description: str,
+) -> str:
+    """A17: SHA-256 hex digest of the canonicalised line content.
+
+    Matches the rule used in migration 0030's backfill. Reference and
+    description are .strip()ed (banks vary whitespace between exports);
+    case is preserved (some refs are case-sensitive identifiers).
+    """
+    if hasattr(line_date, "isoformat"):
+        date_str = line_date.isoformat()
+    else:
+        date_str = str(line_date or "")
+    payload = f"{date_str}|{amount}|{(reference or '').strip()}|{(description or '').strip()}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def parse_csv_statement(

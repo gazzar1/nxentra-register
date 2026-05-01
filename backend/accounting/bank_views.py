@@ -125,6 +125,12 @@ class BankStatementListCreateView(APIView):
                 "id": result.data["statement"].id,
                 "public_id": str(result.data["statement"].public_id),
                 "lines_created": result.data["lines_created"],
+                # A17: how many incoming rows were skipped because their
+                # dedup_hash already existed for this account. Frontend
+                # surfaces this as "Skipped X duplicate transactions" so
+                # the merchant understands why row counts can differ from
+                # what they uploaded.
+                "lines_skipped_duplicate": result.data.get("lines_skipped_duplicate", 0),
             },
             status=status.HTTP_201_CREATED,
         )

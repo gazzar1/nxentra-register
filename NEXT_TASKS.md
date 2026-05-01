@@ -167,6 +167,13 @@ Shipped commits `ced05ad` + `63d8888` (max_length hotfix). Detects near-match ba
 - Frontend: narrative banner at top of `/finance/reconciliation`; Needs Review card with per-row reason dropdown + notes input + Resolve button; "Needs review" tile in Stage 3.
 - 15 new tests covering tolerance math, near-match detection, outside-tolerance non-match, short/over paid adjustment direction, rejection paths, narrative content, queue inclusion/exclusion. All passing.
 
+### A17. Bank statement CSV idempotent re-import — ✅ **DONE 2026-05-01**
+Surfaced by user question "if the merchant uploads April 1-15 then April 1-30, do duplicates appear?". Verified the gap: Paymob/Bosta CSV import was already idempotent at batch level (`payment.settlement.received:{provider}:{batch_id}`), but `import_bank_statement` had no overlap detection — every upload created fresh `BankStatementLine` rows, so partial-overlap re-upload silently doubled the bank-line count for the overlapping period. No financial damage (the `journal_line.reconciled` flag still protected JE lines from double-matching) but Stage 3 reconciliation counts were polluted.
+
+Shipped option 2 (line-level hash dedup): new `dedup_hash` field on `BankStatementLine` (SHA-256 of `line_date | amount | reference | description`), backfilled for existing rows in migration 0030, indexed on `(company, dedup_hash)` for fast lookup. `import_bank_statement` now scans existing hashes for the `(company, account)` pair before inserting and skips duplicates — both cross-import (April 1-15 then April 1-30) and intra-file (same row appearing twice in one upload). Response payload returns `lines_skipped_duplicate` so the frontend can surface "Skipped X duplicate transactions" to the merchant. Scope: `(company, account)` — same row on a different bank account (e.g. internal transfer) still imports.
+
+11 new tests in `tests/test_a17_bank_statement_dedup.py` covering: hash determinism + field sensitivity + whitespace normalization, single-import baseline, intra-file collapse, full-overlap re-upload, partial-overlap re-upload (the merchant's actual scenario), cross-account isolation, cross-company isolation, legitimately-different-on-same-day handling, statement-row created even on full-dup re-upload. All passing.
+
 ### A14 (historical scope retained below for context):
 Bridges Stage 2 (Gateway → Bank) for Egyptian merchants without waiting for the Paymob (B7) or Bosta (E3) connector code. Critical because most of the first user's payouts (Paymob, PayPal, Bosta-COD) don't have automated settlement events today.
 

@@ -2791,6 +2791,23 @@ class BankStatementLine(models.Model):
         help_text="Free-text note on the difference (e.g. 'Paymob support ticket #...').",
     )
 
+    # A17: line-level dedup so that re-uploading an overlapping bank
+    # statement (e.g. April 1-30 after April 1-15 was already imported)
+    # skips lines already present on the same account instead of creating
+    # silent duplicates that pollute Stage 3 of the Reconciliation
+    # Control Center. Hash content: line_date | amount | reference |
+    # description (no account_id — scope comes from the (company, account,
+    # dedup_hash) lookup, not the hash content). NOT a unique constraint —
+    # legitimately identical lines on different accounts (e.g. an internal
+    # transfer) must coexist; the application-level check at import time
+    # is scoped to a single account.
+    dedup_hash = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="SHA-256 hex digest of (line_date|amount|reference|description). Empty for legacy rows from before A17.",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -2801,6 +2818,8 @@ class BankStatementLine(models.Model):
             models.Index(fields=["statement", "match_status"]),
             # A16: queue lookup for unresolved differences.
             models.Index(fields=["company", "difference_reason"]),
+            # A17: fast dedup lookup at import time.
+            models.Index(fields=["company", "dedup_hash"]),
         ]
 
     def __str__(self):
