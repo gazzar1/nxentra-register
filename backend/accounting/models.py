@@ -2673,7 +2673,24 @@ class BankStatementLine(models.Model):
         UNMATCHED = "UNMATCHED", "Unmatched"
         AUTO_MATCHED = "AUTO_MATCHED", "Auto-Matched"
         MANUAL_MATCHED = "MANUAL_MATCHED", "Manual Match"
+        # A16: matched within tolerance, but the bank deposit didn't equal
+        # the expected EBD line amount. The merchant must categorize the
+        # difference (extra fee / bank charge / chargeback / etc.) which
+        # generates the adjustment JE that drains the EBD residual.
+        MATCHED_WITH_DIFFERENCE = "MATCHED_WITH_DIFFERENCE", "Matched (Difference)"
         EXCLUDED = "EXCLUDED", "Excluded"
+
+    class DifferenceReason(models.TextChoices):
+        # A16: reason codes for matched-with-difference bank lines.
+        # Each maps to an account role used when the operator categorizes
+        # the difference and the adjustment JE is posted.
+        UNRESOLVED = "UNRESOLVED", "Needs review"
+        EXTRA_FEE = "EXTRA_FEE", "Extra gateway/courier fee"
+        BANK_CHARGE = "BANK_CHARGE", "Bank wire/transfer fee"
+        CHARGEBACK = "CHARGEBACK", "Chargeback / dispute"
+        WRITE_OFF = "WRITE_OFF", "Write-off / failed delivery"
+        ROUNDING = "ROUNDING", "Rounding / FX"
+        OTHER = "OTHER", "Other (manually noted)"
 
     class TransactionType(models.TextChoices):
         DEPOSIT = "DEPOSIT", "Deposit"
@@ -2736,6 +2753,44 @@ class BankStatementLine(models.Model):
         help_text="Auto-match confidence score (0-100)",
     )
 
+    # A16: difference tracking for MATCHED_WITH_DIFFERENCE rows. When the
+    # bank deposit lands within tolerance of an expected EBD line but
+    # not exactly equal, _settlement_prepass_match still creates the
+    # clearance JE for the actual bank amount and records the gap here.
+    # The merchant categorizes via the reason picker; that selection
+    # triggers the adjustment JE that drains the EBD residual.
+    difference_amount = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        default=Decimal("0"),
+        help_text=(
+            "expected_ebd_amount - bank_amount. Positive = bank short paid; "
+            "negative = bank over paid. Zero for normal matches."
+        ),
+    )
+    difference_reason = models.CharField(
+        max_length=24,
+        choices=DifferenceReason.choices,
+        default=DifferenceReason.UNRESOLVED,
+        blank=True,
+        help_text="Operator-selected reason for the difference. Drives the adjustment JE.",
+    )
+    difference_resolved_at = models.DateTimeField(null=True, blank=True)
+    difference_adjustment_entry = models.ForeignKey(
+        JournalEntry,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="difference_adjustments",
+        help_text="The adjustment JE that drains the EBD residual once a reason is selected.",
+    )
+    difference_notes = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Free-text note on the difference (e.g. 'Paymob support ticket #...').",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -2744,6 +2799,8 @@ class BankStatementLine(models.Model):
         indexes = [
             models.Index(fields=["company", "match_status"]),
             models.Index(fields=["statement", "match_status"]),
+            # A16: queue lookup for unresolved differences.
+            models.Index(fields=["company", "difference_reason"]),
         ]
 
     def __str__(self):

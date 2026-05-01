@@ -535,10 +535,25 @@ def _settlement_prepass_match(
         if bank_line.match_status != BankStatementLine.MatchStatus.UNMATCHED:
             continue
 
-        # Filter candidates by amount equality
-        amount_matches = [c for c in candidates if c[2] == bank_line.amount]
+        # A16: near-match. Try exact-amount first; if none, look for a
+        # candidate within tolerance (max 2% of expected, capped at 500
+        # of the company's currency unit). Bank deposits don't always
+        # equal the expected EBD because of extra gateway fees, bank
+        # wire fees, chargebacks, etc. We still match within tolerance
+        # and record the difference for the merchant to categorize.
+        exact_matches = [c for c in candidates if c[2] == bank_line.amount]
+        near_matches = []
+        if not exact_matches:
+            for c in candidates:
+                tolerance = _difference_tolerance(c[2])
+                gap = abs(c[2] - bank_line.amount)
+                if gap > 0 and gap <= tolerance:
+                    near_matches.append(c)
+
+        amount_matches = exact_matches or near_matches
         if not amount_matches:
             continue
+        is_near = not exact_matches
 
         # Prefer batch-id-in-description match if available (highest
         # confidence: even if multiple deposits have the same amount on
@@ -549,7 +564,7 @@ def _settlement_prepass_match(
             None,
         )
         if batch_match:
-            entry, ebd_line, _, batch_id = batch_match
+            entry, ebd_line, expected_amount, batch_id = batch_match
             confidence = CONFIDENCE_EXACT
         else:
             # Fall back to amount + date proximity (single best within 7 days).
@@ -561,13 +576,20 @@ def _settlement_prepass_match(
                     best = c
             if not best or best_days > 7:
                 continue
-            entry, ebd_line, _, batch_id = best
+            entry, ebd_line, expected_amount, batch_id = best
             confidence = CONFIDENCE_AMOUNT_DATE if best_days <= 2 else CONFIDENCE_AMOUNT_ONLY
 
+        # A16: near-matches always require operator review even when the
+        # amount/date confidence is high. Knock confidence below
+        # AUTO_MATCH_THRESHOLD if it'd otherwise pass — but DON'T skip
+        # the match, just flag the row.
         if confidence < AUTO_MATCH_THRESHOLD:
             continue
 
-        # Create the clearance JE: DR statement.account / CR EBD.
+        # Create the clearance JE for the ACTUAL bank amount (what really
+        # arrived). For near-matches the EBD residual stays open until
+        # the merchant categorizes the difference and the adjustment JE
+        # is posted. For exact matches, EBD drains in one shot.
         clearance_je_line = _create_settlement_clearance_je(
             company=company,
             settlement_entry=entry,
@@ -586,32 +608,282 @@ def _settlement_prepass_match(
             )
             continue
 
+        difference = (expected_amount - bank_line.amount) if is_near else Decimal("0")
+        new_status = (
+            BankStatementLine.MatchStatus.MATCHED_WITH_DIFFERENCE
+            if is_near
+            else BankStatementLine.MatchStatus.AUTO_MATCHED
+        )
+
         with command_writes_allowed():
             bank_line.matched_journal_line = clearance_je_line
-            bank_line.match_status = BankStatementLine.MatchStatus.AUTO_MATCHED
+            bank_line.match_status = new_status
             bank_line.match_confidence = confidence
+            bank_line.difference_amount = difference
+            bank_line.difference_reason = BankStatementLine.DifferenceReason.UNRESOLVED
             bank_line.save()
 
             clearance_je_line.reconciled = True
             clearance_je_line.reconciled_date = statement.statement_date
             clearance_je_line.save()
 
-            ebd_line.reconciled = True
-            ebd_line.reconciled_date = statement.statement_date
-            ebd_line.save()
+            # For exact match: EBD line is fully drained, mark reconciled.
+            # For near match: EBD line still has a residual — leave
+            # reconciled=False until the merchant categorizes the diff.
+            if not is_near:
+                ebd_line.reconciled = True
+                ebd_line.reconciled_date = statement.statement_date
+                ebd_line.save()
 
         # Remove this candidate from future loop iterations.
         candidates = [c for c in candidates if c[0].id != entry.id]
         matched += 1
 
         logger.info(
-            "Settlement match: bank line %s -> clearance JE for batch %s (confidence=%s)",
+            "Settlement match: bank line %s -> clearance JE for batch %s (confidence=%s, near=%s, diff=%s)",
             bank_line.id,
             batch_id,
             confidence,
+            is_near,
+            difference,
         )
 
     return matched
+
+
+def _difference_tolerance(expected: Decimal) -> Decimal:
+    """A16: near-match tolerance for bank deposits vs expected EBD lines.
+
+    2% of the expected amount, capped at 500 currency units (EGP, USD…).
+    Below this gap we still match and ask the operator to categorize the
+    difference; above it we leave both lines unmatched (likely a wrong
+    pairing rather than a real near-match).
+    """
+    pct = (abs(expected) * Decimal("0.02")).quantize(Decimal("0.01"))
+    return min(pct, Decimal("500"))
+
+
+# A16: reason → ModuleAccountMapping role, used when posting the adjustment
+# JE that drains the EBD residual after the operator categorizes a
+# matched-with-difference bank line.
+_DIFFERENCE_REASON_ROLE = {
+    BankStatementLine.DifferenceReason.EXTRA_FEE: "PAYMENT_PROCESSING_FEES",
+    BankStatementLine.DifferenceReason.BANK_CHARGE: "PAYMENT_PROCESSING_FEES",
+    BankStatementLine.DifferenceReason.CHARGEBACK: "CHARGEBACK_EXPENSE",
+    BankStatementLine.DifferenceReason.WRITE_OFF: "SALES_RETURNS",
+    BankStatementLine.DifferenceReason.ROUNDING: "PAYMENT_PROCESSING_FEES",
+    BankStatementLine.DifferenceReason.OTHER: "PAYMENT_PROCESSING_FEES",
+}
+
+
+def resolve_difference(
+    actor: ActorContext,
+    bank_line_id: int,
+    reason: str,
+    notes: str = "",
+) -> CommandResult:
+    """A16: operator picks a reason for a matched-with-difference bank line.
+
+    Posts the adjustment JE that drains the EBD residual:
+      - If difference_amount > 0 (bank short paid):
+            DR <reason_account>  diff
+                CR Expected Bank Deposit  diff
+        Books an additional fee/charge/expense to explain the shortage.
+      - If difference_amount < 0 (bank over paid):
+            DR Expected Bank Deposit  |diff|
+                CR <reason_account>  |diff|
+        Books an income/credit to explain the overage.
+
+    After posting:
+      - Bank line's difference_reason is set, difference_resolved_at set,
+        difference_adjustment_entry FK populated.
+      - The original settlement JE's EBD line is marked reconciled (it's
+        finally drained: clearance JE for actual bank amount + adjustment
+        JE for the difference == full expected EBD amount).
+    """
+    require(actor, "accounting.reconciliation")
+
+    valid_reasons = {
+        r.value for r in BankStatementLine.DifferenceReason if r != BankStatementLine.DifferenceReason.UNRESOLVED
+    }
+    if reason not in valid_reasons:
+        return CommandResult.fail(f"Reason must be one of: {sorted(valid_reasons)}. UNRESOLVED is the unset state.")
+
+    try:
+        bank_line = BankStatementLine.objects.select_related(
+            "matched_journal_line",
+            "matched_journal_line__entry",
+            "statement",
+            "statement__account",
+        ).get(pk=bank_line_id, company=actor.company)
+    except BankStatementLine.DoesNotExist:
+        return CommandResult.fail("Bank statement line not found.")
+
+    if bank_line.match_status != BankStatementLine.MatchStatus.MATCHED_WITH_DIFFERENCE:
+        return CommandResult.fail("Bank line is not in MATCHED_WITH_DIFFERENCE state — nothing to resolve.")
+    if bank_line.difference_reason != BankStatementLine.DifferenceReason.UNRESOLVED:
+        return CommandResult.fail("Difference is already resolved.")
+
+    diff = bank_line.difference_amount or Decimal("0")
+    if diff == 0:
+        return CommandResult.fail("Bank line has no recorded difference.")
+
+    # Find the original settlement JE (the matched JE is the *clearance*,
+    # whose source_document mirrors the settlement's). Walk back via the
+    # source_document.
+    clearance_je = bank_line.matched_journal_line.entry if bank_line.matched_journal_line else None
+    if not clearance_je or clearance_je.source_module != "payment_settlement_clearance":
+        return CommandResult.fail(
+            "Bank line is not linked to a settlement clearance JE — A16 reason "
+            "picker only operates on settlement-matched bank lines."
+        )
+
+    settlement_je = JournalEntry.objects.filter(
+        company=actor.company,
+        source_module="payment_settlement",
+        source_document=clearance_je.source_document,
+        status=JournalEntry.Status.POSTED,
+    ).first()
+    if not settlement_je:
+        return CommandResult.fail(
+            "Could not locate the original settlement JE for this clearance — "
+            "data may be inconsistent. Investigate before resolving."
+        )
+
+    from accounting.commands import (
+        create_journal_entry,
+        post_journal_entry,
+        save_journal_entry_complete,
+    )
+    from accounting.mappings import ModuleAccountMapping
+    from accounts.authz import system_actor_for_company
+
+    # Resolve the reason's offsetting account.
+    role = _DIFFERENCE_REASON_ROLE.get(reason)
+    if not role:
+        return CommandResult.fail(f"No account mapping registered for reason {reason!r}.")
+    reason_account = ModuleAccountMapping.get_account(actor.company, "shopify_connector", role)
+    if not reason_account:
+        return CommandResult.fail(
+            f"Module mapping missing for role {role!r}. Run "
+            "backfill_settlement_providers and ensure all settlement accounts exist."
+        )
+
+    ebd_account = ModuleAccountMapping.get_account(actor.company, "shopify_connector", "EXPECTED_BANK_DEPOSIT")
+    if not ebd_account:
+        return CommandResult.fail("EXPECTED_BANK_DEPOSIT account mapping missing.")
+
+    sys_actor = system_actor_for_company(actor.company)
+    batch_id = (
+        clearance_je.source_document.split(":", 1)[1]
+        if ":" in (clearance_je.source_document or "")
+        else clearance_je.source_document or "unknown"
+    )
+    abs_diff = abs(diff)
+    label = BankStatementLine.DifferenceReason(reason).label
+    memo = f"Reconciliation difference: batch {batch_id} — {label}"
+    if notes:
+        memo = f"{memo} ({notes[:120]})"
+
+    if diff > 0:
+        # Bank short paid: extra fee / charge / chargeback / write-off
+        # absorbs the shortage. DR reason_account / CR EBD.
+        je_lines = [
+            {
+                "account_id": reason_account.id,
+                "description": memo,
+                "debit": str(abs_diff),
+                "credit": "0",
+            },
+            {
+                "account_id": ebd_account.id,
+                "description": memo,
+                "debit": "0",
+                "credit": str(abs_diff),
+            },
+        ]
+    else:
+        # Bank over paid: book the overage as income/refund into the
+        # reason account. DR EBD / CR reason_account.
+        je_lines = [
+            {
+                "account_id": ebd_account.id,
+                "description": memo,
+                "debit": str(abs_diff),
+                "credit": "0",
+            },
+            {
+                "account_id": reason_account.id,
+                "description": memo,
+                "debit": "0",
+                "credit": str(abs_diff),
+            },
+        ]
+
+    create_result = create_journal_entry(
+        actor=sys_actor,
+        date=bank_line.line_date,
+        memo=memo,
+        lines=je_lines,
+        kind=JournalEntry.Kind.NORMAL,
+    )
+    if not create_result.success:
+        return CommandResult.fail(f"Failed to create adjustment JE: {create_result.error}")
+    entry = create_result.data
+
+    save_result = save_journal_entry_complete(sys_actor, entry.id)
+    if not save_result.success:
+        return CommandResult.fail(f"Failed to complete adjustment JE: {save_result.error}")
+    entry = save_result.data
+
+    post_result = post_journal_entry(sys_actor, entry.id)
+    if not post_result.success:
+        return CommandResult.fail(f"Failed to post adjustment JE: {post_result.error}")
+    entry = post_result.data
+
+    with command_writes_allowed():
+        # Stamp source for traceability + idempotency on rebuild.
+        JournalEntry.objects.filter(pk=entry.pk).update(
+            source_module="payment_settlement_difference",
+            source_document=clearance_je.source_document,
+        )
+
+        bank_line.difference_reason = reason
+        bank_line.difference_notes = notes[:255] if notes else ""
+        bank_line.difference_resolved_at = timezone.now()
+        bank_line.difference_adjustment_entry = entry
+        bank_line.save(
+            update_fields=[
+                "difference_reason",
+                "difference_notes",
+                "difference_resolved_at",
+                "difference_adjustment_entry",
+            ]
+        )
+
+        # Now drain the original settlement JE's EBD line — both the
+        # clearance (for actual bank amount) and the adjustment (for the
+        # difference) are posted, so the EBD line is fully reconciled.
+        ebd_line = settlement_je.lines.filter(account=ebd_account).first()
+        if ebd_line and not ebd_line.reconciled:
+            ebd_line.reconciled = True
+            ebd_line.reconciled_date = bank_line.statement.statement_date
+            ebd_line.save(update_fields=["reconciled", "reconciled_date"])
+
+    logger.info(
+        "Difference resolved: bank_line=%s reason=%s diff=%s adjustment_je=%s",
+        bank_line.id,
+        reason,
+        diff,
+        entry.public_id,
+    )
+    return CommandResult.ok(
+        data={
+            "bank_line_id": bank_line.id,
+            "adjustment_entry_id": entry.id,
+            "adjustment_entry_public_id": str(entry.public_id),
+        }
+    )
 
 
 def _create_settlement_clearance_je(

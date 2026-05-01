@@ -217,12 +217,145 @@ def _stage3_summary(company) -> dict:
     lines = BankStatementLine.objects.filter(company=company)
     total = lines.count()
     unmatched = lines.filter(match_status=BankStatementLine.MatchStatus.UNMATCHED).count()
+    with_diff = lines.filter(
+        match_status=BankStatementLine.MatchStatus.MATCHED_WITH_DIFFERENCE,
+        difference_reason=BankStatementLine.DifferenceReason.UNRESOLVED,
+    ).count()
     matched = total - unmatched
     return {
         "available": True,
         "total_lines": total,
         "matched_lines": matched,
         "unmatched_lines": unmatched,
+        "matched_with_unresolved_difference": with_diff,
+    }
+
+
+def _build_narrative(
+    stage1_totals: dict,
+    stage2: dict,
+    stage3: dict,
+    needs_review: dict,
+    company_currency: str,
+) -> str:
+    """A16: 'Tell me the story' — a single sentence summarizing the
+    merchant's reconciliation position.
+
+    Example output:
+        Shopify says 150,000.00 EGP sold. After 5,900.00 in fees and
+        2,000.00 in failed deliveries, the bank should show 142,100.00.
+        Bank shows 141,600.00. Unexplained difference: 500.00 EGP needs
+        review.
+    """
+
+    def _fmt(amount: str) -> str:
+        try:
+            n = Decimal(amount)
+        except (ValueError, ArithmeticError):
+            return amount
+        return f"{n:,.2f}"
+
+    expected = Decimal(stage1_totals.get("total_expected") or "0")
+    if expected <= 0:
+        return (
+            "No Shopify activity yet. Connect a store and import orders to start tracking your reconciliation position."
+        )
+
+    settled = Decimal(stage1_totals.get("total_settled") or "0")
+    open_balance = Decimal(stage1_totals.get("open_balance") or "0")
+    unresolved = needs_review.get("unresolved_difference_count", 0)
+    unresolved_amount = Decimal(needs_review.get("unresolved_difference_amount") or "0")
+
+    parts = [f"Shopify says {_fmt(stage1_totals.get('total_expected'))} {company_currency} sold."]
+
+    if settled > 0:
+        parts.append(
+            f"{_fmt(stage1_totals.get('total_settled'))} has been drained from clearing via provider settlements"
+        )
+        if open_balance > 0:
+            parts[-1] += f"; {_fmt(stage1_totals.get('open_balance'))} is still expected from providers."
+        else:
+            parts[-1] += "."
+    elif open_balance > 0:
+        parts.append(
+            f"{_fmt(stage1_totals.get('open_balance'))} is still expected from providers — no settlements imported yet."
+        )
+
+    aged = Decimal(stage1_totals.get("aged_30_plus") or "0")
+    if aged > 0:
+        parts.append(
+            f"{_fmt(stage1_totals.get('aged_30_plus'))} {company_currency} is over 30 days old and needs investigation."
+        )
+
+    if unresolved > 0:
+        parts.append(
+            f"{unresolved} bank deposit{'s' if unresolved != 1 else ''} matched within tolerance "
+            f"but with an unexplained difference totalling {_fmt(str(unresolved_amount))} "
+            f"{company_currency} — please categorize them in the Needs Review queue."
+        )
+
+    return " ".join(parts)
+
+
+def _needs_review_queue(company) -> dict:
+    """A16: unified 'needs review' queue.
+
+    For now: bank statement lines with MATCHED_WITH_DIFFERENCE +
+    UNRESOLVED reason. Future expansion (filed): aged-unsettled orders,
+    refunds without matching gateway deduction, unknown gateway codes.
+    """
+    from accounting.models import BankStatementLine
+
+    rows = (
+        BankStatementLine.objects.filter(
+            company=company,
+            match_status=BankStatementLine.MatchStatus.MATCHED_WITH_DIFFERENCE,
+            difference_reason=BankStatementLine.DifferenceReason.UNRESOLVED,
+        )
+        .select_related("statement", "matched_journal_line", "matched_journal_line__entry")
+        .order_by("line_date")
+    )
+
+    items = []
+    total_diff = Decimal("0")
+    for row in rows:
+        diff = row.difference_amount or Decimal("0")
+        total_diff += abs(diff)
+        # Pull the batch_id out of the matched clearance JE's source_document.
+        clearance = row.matched_journal_line.entry if row.matched_journal_line else None
+        source_doc = (clearance.source_document if clearance else "") or ""
+        provider_code, batch_id = ("", "")
+        if ":" in source_doc:
+            provider_code, batch_id = source_doc.split(":", 1)
+
+        # Expected = bank amount + difference (since difference = expected - bank).
+        expected = (row.amount or Decimal("0")) + diff
+        items.append(
+            {
+                "kind": "bank_line_difference",
+                "bank_line_id": row.id,
+                "bank_line_public_id": str(row.public_id),
+                "line_date": row.line_date.isoformat(),
+                "description": row.description,
+                "provider_code": provider_code,
+                "batch_id": batch_id,
+                "expected": _money_str(expected),
+                "received": _money_str(row.amount),
+                "difference": _money_str(diff),
+                "difference_direction": "short_paid" if diff > 0 else "over_paid",
+                "age_days": (date.today() - row.line_date).days,
+                "available_reasons": [
+                    {"value": r.value, "label": r.label}
+                    for r in BankStatementLine.DifferenceReason
+                    if r != BankStatementLine.DifferenceReason.UNRESOLVED
+                ],
+            }
+        )
+
+    return {
+        "items": items,
+        "unresolved_difference_count": len(items),
+        "unresolved_difference_amount": _money_str(total_diff),
     }
 
 
@@ -245,16 +378,29 @@ class ReconciliationSummaryView(APIView):
 
         today = date.today()
         stage1_rows = _stage1_per_provider(actor.company, today)
+        stage1_totals = _stage1_totals(stage1_rows)
+        stage2 = _stage2_summary(actor.company)
+        stage3 = _stage3_summary(actor.company)
+        needs_review = _needs_review_queue(actor.company)
+        narrative = _build_narrative(
+            stage1_totals=stage1_totals,
+            stage2=stage2,
+            stage3=stage3,
+            needs_review=needs_review,
+            company_currency=actor.company.default_currency or "",
+        )
 
         return Response(
             {
                 "as_of": today.isoformat(),
+                "narrative": narrative,
                 "stage1": {
                     "providers": stage1_rows,
-                    "totals": _stage1_totals(stage1_rows),
+                    "totals": stage1_totals,
                 },
-                "stage2": _stage2_summary(actor.company),
-                "stage3": _stage3_summary(actor.company),
+                "stage2": stage2,
+                "stage3": stage3,
+                "needs_review": needs_review,
             }
         )
 

@@ -11,6 +11,8 @@ import {
   ChevronRight,
   ChevronDown,
   RefreshCw,
+  ScrollText,
+  ClipboardCheck,
 } from "lucide-react";
 
 import { AppLayout } from "@/components/layout";
@@ -22,6 +24,8 @@ import { useToast } from "@/components/ui/toaster";
 import {
   reconciliationService,
   type AgingBucket,
+  type DifferenceReason,
+  type NeedsReviewItem,
   type OrderReconciliationStatus,
   type ProviderType,
   type ReconciliationDrilldown,
@@ -79,6 +83,10 @@ export default function ReconciliationPage() {
   const [drilldownLoading, setDrilldownLoading] = useState<number | null>(null);
   const [drilldownTabByProvider, setDrilldownTabByProvider] = useState<
     Record<number, "orders" | "lines">
+  >({});
+
+  const [pendingResolveByLine, setPendingResolveByLine] = useState<
+    Record<number, { reason: DifferenceReason | ""; notes: string; submitting: boolean }>
   >({});
 
   const fetchSummary = async (showSpinner = true) => {
@@ -176,6 +184,54 @@ export default function ReconciliationPage() {
 
   const stage1Rows = useMemo(() => summary?.stage1.providers ?? [], [summary]);
   const totals = summary?.stage1.totals;
+  const needsReview = summary?.needs_review;
+
+  const updateResolve = (
+    lineId: number,
+    patch: Partial<{ reason: DifferenceReason | ""; notes: string; submitting: boolean }>
+  ) => {
+    setPendingResolveByLine((prev) => ({
+      ...prev,
+      [lineId]: {
+        reason: prev[lineId]?.reason ?? "",
+        notes: prev[lineId]?.notes ?? "",
+        submitting: prev[lineId]?.submitting ?? false,
+        ...patch,
+      },
+    }));
+  };
+
+  const handleResolve = async (item: NeedsReviewItem) => {
+    const draft = pendingResolveByLine[item.bank_line_id];
+    if (!draft?.reason) {
+      toast({
+        title: "Pick a reason for the difference first.",
+        variant: "destructive",
+      });
+      return;
+    }
+    updateResolve(item.bank_line_id, { submitting: true });
+    try {
+      await reconciliationService.resolveDifference(item.bank_line_id, {
+        reason: draft.reason,
+        notes: draft.notes || undefined,
+      });
+      toast({ title: `Difference resolved for batch ${item.batch_id || item.bank_line_id}.` });
+      // Refresh the summary so the row leaves the queue and Stage 3 totals update.
+      await fetchSummary(false);
+      setPendingResolveByLine((prev) => {
+        const next = { ...prev };
+        delete next[item.bank_line_id];
+        return next;
+      });
+    } catch (err) {
+      const detail =
+        (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
+        "Could not post the adjustment JE.";
+      toast({ title: detail, variant: "destructive" });
+      updateResolve(item.bank_line_id, { submitting: false });
+    }
+  };
 
   return (
     <AppLayout>
@@ -215,6 +271,30 @@ export default function ReconciliationPage() {
           </Card>
         ) : (
           <>
+            {/* A16: 'Tell me the story' narrative banner */}
+            {summary.narrative && (
+              <Card className="border-primary/30 bg-primary/5">
+                <CardContent className="py-4 text-sm leading-relaxed">
+                  <p className="text-xs uppercase text-muted-foreground mb-1">
+                    Tell me the story
+                  </p>
+                  {summary.narrative}
+                </CardContent>
+              </Card>
+            )}
+
+            {/* A16: Needs Review queue — bank deposits matched within tolerance
+               but with an unexplained difference. Operator picks a reason
+               which posts the adjustment JE that drains the EBD residual. */}
+            {needsReview && needsReview.items.length > 0 && (
+              <NeedsReviewCard
+                items={needsReview.items}
+                pending={pendingResolveByLine}
+                onChange={updateResolve}
+                onResolve={handleResolve}
+              />
+            )}
+
             {/* Top-line totals */}
             {totals && (
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -370,6 +450,16 @@ export default function ReconciliationPage() {
                       <p className="text-xs uppercase text-muted-foreground">Unmatched</p>
                       <p className="text-lg font-semibold">{summary.stage3.unmatched_lines ?? 0}</p>
                     </div>
+                    {(summary.stage3.matched_with_unresolved_difference ?? 0) > 0 && (
+                      <div>
+                        <p className="text-xs uppercase text-muted-foreground">
+                          Needs review
+                        </p>
+                        <p className="text-lg font-semibold text-amber-600">
+                          {summary.stage3.matched_with_unresolved_difference}
+                        </p>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <p className="text-muted-foreground italic">No bank statement lines imported yet.</p>
@@ -651,6 +741,138 @@ function StatusTile({
       </div>
       <div className="mt-1 font-mono">{formatMoney(paid)}</div>
     </div>
+  );
+}
+
+function NeedsReviewCard({
+  items,
+  pending,
+  onChange,
+  onResolve,
+}: {
+  items: NeedsReviewItem[];
+  pending: Record<number, { reason: DifferenceReason | ""; notes: string; submitting: boolean }>;
+  onChange: (
+    lineId: number,
+    patch: Partial<{ reason: DifferenceReason | ""; notes: string; submitting: boolean }>
+  ) => void;
+  onResolve: (item: NeedsReviewItem) => void | Promise<void>;
+}) {
+  return (
+    <Card className="border-amber-500/40 bg-amber-50/30 dark:bg-amber-500/5">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <ClipboardCheck className="h-5 w-5 text-amber-600" />
+          Needs Review ({items.length})
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <p className="mb-3 text-xs text-muted-foreground">
+          Bank deposits matched within tolerance but not equal to the
+          expected settlement amount. Pick a reason to post the adjustment
+          journal entry that drains the residual.
+        </p>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="border-b text-left text-xs uppercase text-muted-foreground">
+              <tr>
+                <th className="py-2 pr-3">Date</th>
+                <th className="py-2 pr-3">Provider</th>
+                <th className="py-2 pr-3">Batch</th>
+                <th className="py-2 pr-3 text-right">Expected</th>
+                <th className="py-2 pr-3 text-right">Received</th>
+                <th className="py-2 pr-3 text-right">Difference</th>
+                <th className="py-2 pr-3">Reason</th>
+                <th className="py-2 pr-3">Notes</th>
+                <th className="py-2"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((item) => {
+                const draft = pending[item.bank_line_id] ?? {
+                  reason: "",
+                  notes: "",
+                  submitting: false,
+                };
+                const directionLabel =
+                  item.difference_direction === "short_paid"
+                    ? "Short paid"
+                    : "Over paid";
+                return (
+                  <tr key={item.bank_line_id} className="border-b last:border-0 align-top">
+                    <td className="py-2 pr-3 text-xs">
+                      <div>{item.line_date}</div>
+                      <div className="text-muted-foreground">
+                        {item.age_days}d ago
+                      </div>
+                    </td>
+                    <td className="py-2 pr-3 font-mono text-xs">
+                      {item.provider_code || "—"}
+                    </td>
+                    <td className="py-2 pr-3 font-mono text-xs">
+                      {item.batch_id || "—"}
+                    </td>
+                    <td className="py-2 pr-3 text-right">{formatMoney(item.expected)}</td>
+                    <td className="py-2 pr-3 text-right">{formatMoney(item.received)}</td>
+                    <td className="py-2 pr-3 text-right">
+                      <div className="font-semibold">{formatMoney(item.difference)}</div>
+                      <div className="text-[10px] uppercase text-amber-600">
+                        {directionLabel}
+                      </div>
+                    </td>
+                    <td className="py-2 pr-3">
+                      <select
+                        className="h-9 w-full min-w-[10rem] rounded-md border border-input bg-background px-2 text-xs"
+                        value={draft.reason}
+                        disabled={draft.submitting}
+                        onChange={(e) =>
+                          onChange(item.bank_line_id, {
+                            reason: e.target.value as DifferenceReason | "",
+                          })
+                        }
+                      >
+                        <option value="">Pick a reason…</option>
+                        {item.available_reasons.map((r) => (
+                          <option key={r.value} value={r.value}>
+                            {r.label}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td className="py-2 pr-3">
+                      <input
+                        type="text"
+                        placeholder="Optional note"
+                        maxLength={255}
+                        className="h-9 w-full min-w-[10rem] rounded-md border border-input bg-background px-2 text-xs"
+                        value={draft.notes}
+                        disabled={draft.submitting}
+                        onChange={(e) =>
+                          onChange(item.bank_line_id, { notes: e.target.value })
+                        }
+                      />
+                    </td>
+                    <td className="py-2 text-right">
+                      <Button
+                        size="sm"
+                        disabled={!draft.reason || draft.submitting}
+                        onClick={() => onResolve(item)}
+                      >
+                        {draft.submitting ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          "Resolve"
+                        )}
+                      </Button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 

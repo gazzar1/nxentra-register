@@ -54,16 +54,54 @@ export interface Stage3Summary {
   total_lines?: number;
   matched_lines?: number;
   unmatched_lines?: number;
+  matched_with_unresolved_difference?: number;
+}
+
+export type DifferenceReason =
+  | "EXTRA_FEE"
+  | "BANK_CHARGE"
+  | "CHARGEBACK"
+  | "WRITE_OFF"
+  | "ROUNDING"
+  | "OTHER";
+
+export interface DifferenceReasonOption {
+  value: DifferenceReason;
+  label: string;
+}
+
+export interface NeedsReviewItem {
+  kind: "bank_line_difference";
+  bank_line_id: number;
+  bank_line_public_id: string;
+  line_date: string;
+  description: string;
+  provider_code: string;
+  batch_id: string;
+  expected: string;
+  received: string;
+  difference: string;
+  difference_direction: "short_paid" | "over_paid";
+  age_days: number;
+  available_reasons: DifferenceReasonOption[];
+}
+
+export interface NeedsReviewQueue {
+  items: NeedsReviewItem[];
+  unresolved_difference_count: number;
+  unresolved_difference_amount: string;
 }
 
 export interface ReconciliationSummary {
   as_of: string;
+  narrative: string;
   stage1: {
     providers: ReconciliationProviderRow[];
     totals: Stage1Totals;
   };
   stage2: Stage2Summary;
   stage3: Stage3Summary;
+  needs_review: NeedsReviewQueue;
 }
 
 export interface ReconciliationDrilldownLine {
@@ -140,4 +178,17 @@ export const reconciliationService = {
     apiClient.get<ReconciliationOrders>("/accounting/reconciliation/orders/", {
       params: { provider_id: String(providerId) },
     }),
+
+  resolveDifference: (
+    bankLineId: number,
+    payload: { reason: DifferenceReason; notes?: string }
+  ) =>
+    apiClient.patch<{
+      bank_line_id: number;
+      adjustment_entry_id: number;
+      adjustment_entry_public_id: string;
+    }>(
+      `/accounting/bank-statements/lines/${bankLineId}/difference/`,
+      payload
+    ),
 };

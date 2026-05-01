@@ -23,6 +23,7 @@ from .bank_views import (
     BankExcludeLineView,
     BankManualMatchView,
     BankReconcileView,
+    BankResolveDifferenceView,
     BankStatementCSVImportView,
     BankStatementDetailView,
     BankStatementListCreateView,
@@ -287,6 +288,12 @@ urlpatterns = [
         "bank-statements/exclude/",
         BankExcludeLineView.as_view(),
         name="bank-statement-exclude",
+    ),
+    # A16: difference reason picker for MATCHED_WITH_DIFFERENCE bank lines.
+    path(
+        "bank-statements/lines/<int:pk>/difference/",
+        BankResolveDifferenceView.as_view(),
+        name="bank-statement-line-resolve-difference",
     ),
     path(
         "bank-statements/<int:pk>/",

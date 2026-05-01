@@ -376,6 +376,46 @@ class BankExcludeLineView(APIView):
         return Response({"status": "excluded"})
 
 
+class BankResolveDifferenceView(APIView):
+    """
+    A16: PATCH /api/accounting/bank-statements/lines/<pk>/difference/
+
+    Operator picks a reason for a MATCHED_WITH_DIFFERENCE bank line.
+    Posts the adjustment JE that drains the EBD residual:
+      - difference > 0 (bank short paid): DR <reason_account> / CR EBD
+      - difference < 0 (bank over paid):  DR EBD / CR <reason_account>
+
+    Body:
+        reason (required): one of EXTRA_FEE, BANK_CHARGE, CHARGEBACK,
+            WRITE_OFF, ROUNDING, OTHER. UNRESOLVED is rejected.
+        notes (optional): free-text note (max 255 chars).
+
+    On success: returns the bank line public_id, the adjustment JE id,
+    and a 200. The frontend should refresh the Reconciliation Control
+    Center summary to see the new posting.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        actor = resolve_actor(request)
+
+        reason = (request.data.get("reason") or "").strip().upper()
+        notes = (request.data.get("notes") or "").strip()
+        if not reason:
+            return Response({"error": "reason is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        result = recon.resolve_difference(
+            actor=actor,
+            bank_line_id=int(pk),
+            reason=reason,
+            notes=notes,
+        )
+        if not result.success:
+            return Response({"error": result.error}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(result.data, status=status.HTTP_200_OK)
+
+
 # =============================================================================
 # Reconciliation Completion
 # =============================================================================
