@@ -74,7 +74,10 @@ Today `_auto_create_item_from_line` only fires when `sku` is non-empty. Egyptian
 ### A11. Shopify JE should respect Item-level GL account overrides — **~2-3d** (correctness, surfaced by A8 review)
 The `shopify_accounting` projection's `_handle_order_paid` builds **one aggregate revenue line per order** posted to the company's `SALES_REVENUE` ModuleAccountMapping (account 41000) — it does not iterate line items or look up `Item.sales_account` per SKU. So if a merchant edits HEAD-001's Sales Account from "Sales Revenue" (41000) to "Headphones Revenue" (41001), manual invoices for HEAD-001 will credit 41001 but Shopify-imported orders for HEAD-001 will keep crediting 41000. Manual invoices respect Item.sales_account; Shopify-imported invoices don't. To fix: refactor `_handle_order_paid` to iterate `line_items`, look up Item by SKU, create one revenue line per item using `item.sales_account` (fall back to mapping if None). Need to think through tax + discount allocation per line. Not blocking the first user — company-level default works correctly until they want per-product revenue routing. Deferred deliberately so we can see whether the first user actually customizes per-item before pre-building.
 
-### A2.5. Rename PaymentGateway → SettlementProvider — **~½d**
+### A2.5. Rename PaymentGateway → SettlementProvider — ✅ **DONE 2026-04-30**
+Shipped commit `caa1ab9`. `accounting/payment_gateway.py` → `settlement_provider.py`; new `provider_type` field; URL `/api/accounting/settlement-providers/`; bootstrap rows now paymob/paypal/shopify_payments/bosta/bank_transfer/manual/unknown; `cash_on_delivery` deactivated as a transitional row. Aljazeera5 backfilled via `backfill_settlement_providers --cod-provider bosta`.
+
+(historical scope retained below for context):
 Pre-A12 cleanup driven by the architectural review: the model now needs to cover Bosta, DHL, Aramex, bank transfer, and manual collection — calling that a "PaymentGateway" actively misleads. Rename now, while the model is one day old, before any of the dimension layer or reconciliation work hardens around the wrong name.
 
 **Reconciliation pivots on "who holds or remits the money," not "how the customer paid."** Bosta-COD and DHL-COD are different reconciliation cases because different parties hold money on different schedules. The right primary identity is the *settlement provider*. `payment_method` (cash_on_delivery, card, wallet, bank_transfer) is preserved as a denormalized fact for analytics, but is not the reconciliation pivot.
@@ -91,7 +94,10 @@ Pre-A12 cleanup driven by the architectural review: the model now needs to cover
 
 **Why this is half a day, not 2:** the model is 1 day old; no production data yet beyond Aljazeera5; 19 tests rename mechanically; the rename has no data-shape change. Cost is bounded; the confusion-tax of keeping the wrong name forever is not.
 
-### A12. Settlement-provider dimension layer (structural retrofit on A2.5) — **~2d**
+### A12. Settlement-provider dimension layer (structural retrofit on A2.5) — ✅ **DONE 2026-05-01**
+Shipped commits `86d62d2` (core) + `6a09473` (follow-ups: refund/payout/dispute JEs tag clearing, AccountDimensionRule REQUIRED on clearing, dimension_validation UUID/string bug fix). Wizard COD step renders with currency-driven default suggestion; `ShopifyStore.default_cod_settlement_provider` FK; projection routes COD orders through it with lazy-create-on-NULL safety net; `_resolve_settlement_provider` and `_build_provider_tags` helpers; `sales/commands.py` and `platform_connectors/commands.py` thread `control_line_analysis_tags` / `clearing_line_analysis_tags` kwargs through.
+
+(historical scope retained below for context):
 Strategic decision driven by reconciliation-product framing (see [SESSION_LOG.md](SESSION_LOG.md) Session April 30): instead of merchants splitting `SHOPIFY_CLEARING` into seven sibling GL accounts (Paymob Clearing, PayPal Clearing, Bosta Clearing, …), keep one clearing account and use an `AnalysisDimension` to distinguish *settlement providers*. Trial balance stays clean; reconciliation queries pivot on `(account, dimension_value)`; adding WooCommerce/Amazon/Noon later costs N dimension values, not N new accounts.
 
 **Scope:**
@@ -113,7 +119,10 @@ Strategic decision driven by reconciliation-product framing (see [SESSION_LOG.md
 
 **Why now:** A2.5 just renamed the model; the seven `PG-*` PostingProfiles preserve the *splitting* affordance for power users; the dimension is what makes the *default* path queryable for reconciliation. Both modes coexist — split-by-account works alongside split-by-dimension; reconciliation engine groups by `(account, dimension_value)` either way.
 
-### A13. Reconciliation Control Center MVP — **~5d**
+### A13. Reconciliation Control Center MVP — ✅ **DONE 2026-05-01**
+Shipped commit `b24065b`. New page at `/finance/reconciliation` with three-stage layout (Sales→Clearing, Clearing→Settlement, Bank Match), per-provider drilldown with aging buckets and JE-line history, top-line totals tiles. Backing endpoints `GET /api/accounting/reconciliation/summary/` and `GET /api/accounting/reconciliation/drilldown/?provider_id=`. Sidebar entry under Finance.
+
+(historical scope retained below for context):
 The merchant-visible product spine. New page at `/finance/reconciliation` answering one painful question: **where is my money?**
 
 **Scope:**
@@ -138,7 +147,27 @@ The merchant-visible product spine. New page at `/finance/reconciliation` answer
 
 **Why now:** Validates the core product hypothesis with the first user before Phase B's 5-7 week canonical refactor. The data is already there (clearing balances, dimension tags from A12, existing bank-rec); MVP is a query + a screen. ~5 days. Real merchant signal beats another sprint of architecture.
 
-### A14. Manual settlement CSV import + Expected Bank Deposit convention — **~5-7d**
+### A14. Manual settlement CSV import + Expected Bank Deposit convention — ✅ **DONE 2026-05-01**
+Shipped commit `238d0a9`. New `PAYMENT_SETTLEMENT_RECEIVED` event + `PaymentSettlementReceivedData` dataclass; Paymob + Bosta CSV parsers in `accounting/settlement_imports.py`; `import_settlement_csv` with idempotency key `payment.settlement.received:{provider}:{batch_id}`; `/finance/settlements/import` page with side-by-side uploaders; new accounts `EXPECTED_BANK_DEPOSIT` (11600) and `SALES_RETURNS` (41200); `PaymentSettlementProjection` posts the four-line settlement JE with provider dimension tag on clearing. Surfaced and fixed a latent A8 bug: `INVENTORY` role string was wrong (should be `INVENTORY_VALUE`).
+
+### A14b. Bank-rec auto-match for settlements — ✅ **DONE 2026-05-01**
+Shipped commit `3445bc0`. New `_settlement_prepass_match` in `auto_match_statement` runs before the generic GL-level matcher. Matches bank lines to PaymentSettlement JEs via batch-id-in-description (high confidence) or amount + date proximity (fallback); posts a clearance JE `DR Bank / CR Expected Bank Deposit` for the actual bank amount; stamps `source_module='payment_settlement_clearance'`; marks the original settlement JE's EBD line reconciled.
+
+### A14c. Per-Shopify-order drilldown — ✅ **DONE 2026-05-01**
+Shipped commit `3445bc0`. New endpoint `GET /api/accounting/reconciliation/orders/?provider_id=`: per-order rows with Shopify Paid / Settled Batch / Settled Amount / Bank Received / Status (`expected` / `settled` / `banked`). Frontend: per-provider drilldown gains an "Orders" tab (merchant-friendly) alongside the "JE Lines" tab (auditor view).
+
+### A16. Reconciliation Difference Engine — ✅ **DONE 2026-05-01**
+Shipped commits `ced05ad` + `63d8888` (max_length hotfix). Detects near-match bank deposits (within 2% / capped at 500 currency units) and routes them to a Needs Review queue with a reason picker (extra fee / bank charge / chargeback / write-off / rounding / other). Selecting a reason posts the adjustment JE that drains the EBD residual.
+
+- New `BankStatementLine.MatchStatus.MATCHED_WITH_DIFFERENCE` + `DifferenceReason` TextChoices + difference fields (migration 0028, max_length widen 0029).
+- `_settlement_prepass_match` updated with tolerance-based detection; clearance JE posts for actual bank amount, EBD residual stays open until categorized.
+- New `resolve_difference(actor, bank_line_id, reason, notes)` posts adjustment JE (DR reason / CR EBD short paid; reverse for over paid), stamps `source_module='payment_settlement_difference'`, drains EBD line.
+- New endpoint `PATCH /api/accounting/bank-statements/lines/<pk>/difference/`.
+- Reconciliation summary now returns `narrative` ("Tell me the story" sentence) and `needs_review` queue with available reason options per row.
+- Frontend: narrative banner at top of `/finance/reconciliation`; Needs Review card with per-row reason dropdown + notes input + Resolve button; "Needs review" tile in Stage 3.
+- 15 new tests covering tolerance math, near-match detection, outside-tolerance non-match, short/over paid adjustment direction, rejection paths, narrative content, queue inclusion/exclusion. All passing.
+
+### A14 (historical scope retained below for context):
 Bridges Stage 2 (Gateway → Bank) for Egyptian merchants without waiting for the Paymob (B7) or Bosta (E3) connector code. Critical because most of the first user's payouts (Paymob, PayPal, Bosta-COD) don't have automated settlement events today.
 
 **Scope:**
@@ -351,23 +380,26 @@ After A12-A14 ship and the first user has the MVP for a week, four signals decid
 
 ## What to do right now, today
 
-Phase A continues. **A0 done** (`fb0e3d6`), **A1 done** (`b6b52b9`–`7d12432`, 2026-04-28), **A8 done** (`71cb0d7`, `cd7f484`, 2026-04-29), **A2 done** (`d0dd0d2`, 2026-04-30).
+Phase A continues. **A0 done** (`fb0e3d6`), **A1 done** (`b6b52b9`–`7d12432`, 2026-04-28), **A2 done** (`d0dd0d2`, 2026-04-30), **A2.5 done** (`caa1ab9`, 2026-04-30), **A8 done** (`71cb0d7`, `cd7f484`, 2026-04-29), **A12 done** (`86d62d2` + `6a09473`, 2026-05-01), **A13 done** (`b24065b`, 2026-05-01), **A14 done** (`238d0a9`, 2026-05-01), **A14b/A14c done** (`3445bc0`, 2026-05-01), **A16 done** (`ced05ad` + hotfix `63d8888`, 2026-05-01).
 
-**Strategic pivot 2026-04-30:** the architectural cleanup (A3-A5) is deliberately deferred ~3 weeks while the merchant-facing reconciliation product gets built and validated. Foundation work resumes after first-merchant signal. See the "Critical path and parallelism" section above for the full sequence and the week-4 gates that test whether the strategy is right.
+**Phase A engine complete on the merchant-facing side.** The Reconciliation Control Center exists end-to-end: Sales→Clearing per-provider with aging, Clearing→Settlement via manual CSV import, Bank Match with auto-clearance JEs, near-match difference engine with reason picker, "Tell me the story" narrative, Needs Review queue. Outstanding for Phase A exit is **first-user validation** — manual UI pass + live Phase 1 dry-run + invite — not more code.
 
 **Immediate next steps (in order):**
-1. **Invite the first user** (Egyptian Shopify merchant, acquired 2026-04-22). A1's exit criterion is met; further pre-emptive work has diminishing returns vs real-world signal.
-2. **A2.5** — Rename PaymentGateway → SettlementProvider. ~½d. Non-negotiable before A12 — the model now covers Bosta/DHL/Aramex/bank-transfer/manual; keeping the gateway name creates immediate technical debt.
-3. **A12** — Settlement-provider dimension layer + COD wizard step. ~2d. Locks in the right topology before the chart of accounts grows. Done while waiting for first-user signal.
-4. **A13** — Reconciliation Control Center MVP. ~5d. The merchant-visible product spine. Validates the "where is my money?" framing against the first user's real Shopify/Paymob/Bosta data.
-5. **A14** — Manual settlement CSV import for Paymob + Bosta + Expected Bank Deposit account convention. ~5-7d. Closes Stage 2 (Gateway → Bank) for Egyptian merchants without waiting for B7/E3 connector code.
 
-**Then after week-4 gate:**
-6. **A3 + A4 + A5** in sequence — architectural cleanup that closes the event-first policy loopholes. Now informed by what the reconciliation MVP actually needs.
-7. **A6, A7, A9, A10, A11** — UX + invariant + correctness follow-ups from A1/A8. Each is small (1-3d). Pick up between bigger Phase A work as time allows; **A10 and A11 land when first user signals they need them**.
+1. **Manual UI pass on `/finance/reconciliation`** in a browser. Verify narrative banner renders; Needs Review card renders when queue is non-empty; reason picker dropdown works; Resolve button posts the PATCH endpoint and refreshes the summary cleanly. Test against a company with at least one `MATCHED_WITH_DIFFERENCE` bank line — easiest seed is Paymob CSV (1455 expected) + bank statement line (1450 received) → trips the 2% tolerance. Fix any visual or wiring bugs.
+
+2. **Live Phase 1 dry-run on a fresh Shopify dev store.** End-to-end smoke test through the new product spine: connect store, import orders, upload Paymob + Bosta CSVs (test fixtures from A14 tests are good seeds), import bank statement, run auto-match (expect at least one near-match with the seeds), resolve the difference via the new reason picker, confirm the EBD line drains. Document any bugs as new tickets. Memory has the dry-run flagged as blocking before the first real user; we've shipped six tickets since the last attempt without re-validating.
+
+3. **Invite the first user** (Egyptian Shopify merchant, acquired 2026-04-22) once 1+2 are green. Further pre-emptive work has diminishing returns vs real-world signal.
+
+**Then after week-4 gate (first-merchant signal):**
+
+4. **A3 + A4 + A5** in sequence — architectural cleanup that closes the event-first policy loopholes. Now informed by what the reconciliation MVP actually needed.
+5. **A6, A7, A9, A10, A11** — UX + invariant + correctness follow-ups from A1/A8. Each is small (1-3d). Pick up between bigger Phase A work as time allows; **A10 and A11 land when first user signals they need them**.
 
 **Pulled forward only if signal demands:**
-8. **A15** — Multi-courier-per-store routing. Currently deferred; pulled forward only if first merchant has multi-courier volume or single-courier limit becomes a workflow burden.
+
+6. **A15** — Multi-courier-per-store routing. Currently deferred; pulled forward only if first merchant has multi-courier volume or single-courier limit becomes a workflow burden.
 
 **Then Phase B** — canonical platform models — but grounded in real merchant feedback rather than speculation.
 
