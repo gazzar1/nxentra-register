@@ -374,10 +374,14 @@ def auto_match_statement(
                 bank_line.match_confidence = best_confidence
                 bank_line.save()
 
-                # Mark journal line as reconciled
-                best_match.reconciled = True
-                best_match.reconciled_date = statement.statement_date
-                best_match.save()
+                # Mark journal line as reconciled. JournalLine is a read
+                # model — direct .save() is rejected outside projections,
+                # so we use .update() which bypasses the save-guard the
+                # same way line 904 below does for JournalEntry.
+                JournalLine.objects.filter(pk=best_match.pk).update(
+                    reconciled=True,
+                    reconciled_date=statement.statement_date,
+                )
 
                 # Remove from candidates to prevent double-matching
                 candidates.remove(best_match)
@@ -503,9 +507,10 @@ def _platform_prepass_match(
             bank_line.match_confidence = CONFIDENCE_EXACT  # High confidence — platform match
             bank_line.save()
 
-            payout_je_line.reconciled = True
-            payout_je_line.reconciled_date = statement.statement_date
-            payout_je_line.save()
+            JournalLine.objects.filter(pk=payout_je_line.pk).update(
+                reconciled=True,
+                reconciled_date=statement.statement_date,
+            )
 
             # Remove payout from candidates to prevent double-matching
             candidates.remove(best_payout)
@@ -681,17 +686,19 @@ def _settlement_prepass_match(
             bank_line.difference_reason = BankStatementLine.DifferenceReason.UNRESOLVED
             bank_line.save()
 
-            clearance_je_line.reconciled = True
-            clearance_je_line.reconciled_date = statement.statement_date
-            clearance_je_line.save()
+            JournalLine.objects.filter(pk=clearance_je_line.pk).update(
+                reconciled=True,
+                reconciled_date=statement.statement_date,
+            )
 
             # For exact match: EBD line is fully drained, mark reconciled.
             # For near match: EBD line still has a residual — leave
             # reconciled=False until the merchant categorizes the diff.
             if not is_near:
-                ebd_line.reconciled = True
-                ebd_line.reconciled_date = statement.statement_date
-                ebd_line.save()
+                JournalLine.objects.filter(pk=ebd_line.pk).update(
+                    reconciled=True,
+                    reconciled_date=statement.statement_date,
+                )
 
         # Remove this candidate from future loop iterations.
         candidates = [c for c in candidates if c[0].id != entry.id]
@@ -924,9 +931,10 @@ def resolve_difference(
         # difference) are posted, so the EBD line is fully reconciled.
         ebd_line = settlement_je.lines.filter(account=ebd_account).first()
         if ebd_line and not ebd_line.reconciled:
-            ebd_line.reconciled = True
-            ebd_line.reconciled_date = bank_line.statement.statement_date
-            ebd_line.save(update_fields=["reconciled", "reconciled_date"])
+            JournalLine.objects.filter(pk=ebd_line.pk).update(
+                reconciled=True,
+                reconciled_date=bank_line.statement.statement_date,
+            )
 
     logger.info(
         "Difference resolved: bank_line=%s reason=%s diff=%s adjustment_je=%s",
@@ -1108,9 +1116,10 @@ def manual_match(
         bank_line.match_confidence = CONFIDENCE_EXACT
         bank_line.save()
 
-        journal_line.reconciled = True
-        journal_line.reconciled_date = bank_line.statement.statement_date
-        journal_line.save()
+        JournalLine.objects.filter(pk=journal_line.pk).update(
+            reconciled=True,
+            reconciled_date=bank_line.statement.statement_date,
+        )
 
     return CommandResult.ok(
         data={
@@ -1148,9 +1157,10 @@ def unmatch_line(
         bank_line.save()
 
         if journal_line:
-            journal_line.reconciled = False
-            journal_line.reconciled_date = None
-            journal_line.save()
+            JournalLine.objects.filter(pk=journal_line.pk).update(
+                reconciled=False,
+                reconciled_date=None,
+            )
 
     return CommandResult.ok()
 
@@ -1174,10 +1184,10 @@ def exclude_line(
     with command_writes_allowed():
         # Unmatch first if needed
         if bank_line.matched_journal_line:
-            jl = bank_line.matched_journal_line
-            jl.reconciled = False
-            jl.reconciled_date = None
-            jl.save()
+            JournalLine.objects.filter(pk=bank_line.matched_journal_line_id).update(
+                reconciled=False,
+                reconciled_date=None,
+            )
 
         bank_line.matched_journal_line = None
         bank_line.match_status = BankStatementLine.MatchStatus.EXCLUDED
