@@ -185,7 +185,13 @@ export const bankReconciliationService = {
       amount: string;
       reference?: string;
     }>;
-  }) => apiClient.post("/accounting/bank-statements/", data),
+  }) =>
+    apiClient.post<{
+      id: number;
+      public_id: string;
+      lines_created: number;
+      lines_skipped_duplicate: number;
+    }>("/accounting/bank-statements/", data),
 
   getStatement: (id: number) =>
     apiClient.get<BankStatementDetail>(`/accounting/bank-statements/${id}/`),

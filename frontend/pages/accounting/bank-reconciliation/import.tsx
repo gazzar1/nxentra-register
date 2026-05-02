@@ -88,7 +88,13 @@ export default function ImportStatementPage() {
         source: "CSV",
         lines: parsedLines,
       });
-      toast({ title: `Statement imported with ${data.lines_created} lines.` });
+      const skipped = data.lines_skipped_duplicate ?? 0;
+      toast({
+        title:
+          skipped > 0
+            ? `Imported ${data.lines_created} transactions, skipped ${skipped} duplicates.`
+            : `Imported ${data.lines_created} transactions.`,
+      });
       router.push(`/accounting/bank-reconciliation/${data.id}`);
     } catch {
       toast({ title: "Failed to import statement.", variant: "destructive" });
