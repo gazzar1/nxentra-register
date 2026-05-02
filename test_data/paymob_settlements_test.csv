@@ -1,0 +1,7 @@
+﻿settlement_id,settlement_date,payout_batch_id,gateway,order_id,gross_amount,gateway_fee,refund_or_chargeback_amount,net_amount,currency,status,notes
+PMB-555,2026-05-02,PAYMOB-BATCH-APR30-A,Paymob,1001,1100,30,0,1070,EGP,settled,Happy path
+PMB-555,2026-05-02,PAYMOB-BATCH-APR30-A,Paymob,1003,1500,50,0,1450,EGP,settled,Expected fee maybe 30; tests fee mismatch/difference
+PMB-556,2026-05-03,PAYMOB-BATCH-MAY01-A,Paymob,1004,800,24,500,276,EGP,settled,Partial refund deducted
+PMB-557,2026-05-04,PAYMOB-BATCH-MAY01-B,Paymob,1008,3000,90,0,2910,EGP,settled,Happy path May 1
+PMB-557,2026-05-04,PAYMOB-BATCH-MAY01-B,Paymob Accept,1009,1000,30,0,970,EGP,settled,Gateway alias normalization test
+PMB-558,2026-05-04,PAYMOB-BATCH-MAY01-C,Paymob,9999,700,21,0,679,EGP,settled,Gateway settlement with no Shopify order

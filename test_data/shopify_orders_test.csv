@@ -1,0 +1,11 @@
+﻿order_id,order_date,customer_name,financial_status,fulfillment_status,payment_method,gateway,subtotal_amount,shipping_amount,discount_amount,tax_amount,total_amount,currency,order_type,refund_amount,notes
+1001,2026-04-30,Ahmed Hassan,paid,fulfilled,card,Paymob,1000,100,0,0,1100,EGP,printed_tshirt,0,Happy path Paymob
+1002,2026-04-30,Mona Ali,paid,fulfilled,card,Paymob,2000,0,0,0,2000,EGP,plain_tshirt,0,Paid but no settlement yet
+1003,2026-04-30,Omar Said,paid,fulfilled,card,Paymob,1500,0,0,0,1500,EGP,printed_tshirt,0,Fee/difference test
+1004,2026-04-30,Sara Nabil,paid,fulfilled,card,Paymob,800,0,0,0,800,EGP,plain_tshirt,500,Partial refund after settlement
+1005,2026-04-30,Khaled Adel,paid,fulfilled,cod,Bosta,1500,0,0,0,1500,EGP,printed_tshirt,0,COD happy path
+1006,2026-04-30,Laila Samir,paid,fulfilled,cod,Bosta,2200,0,0,0,2200,EGP,printed_tshirt,0,COD short payment test
+1007,2026-04-30,Youssef Tarek,paid,returned,cod,Bosta,1200,0,0,0,1200,EGP,plain_tshirt,1200,COD failed delivery / returned
+1008,2026-05-01,Nour Mohamed,paid,fulfilled,card,Paymob,3000,150,150,0,3000,EGP,printed_tshirt,0,Discount + shipping
+1009,2026-05-01,Hany Fathy,paid,fulfilled,card,Paymob Accept,900,100,0,0,1000,EGP,plain_tshirt,0,Gateway alias normalization test
+1010,2026-05-01,Dina Adel,paid,fulfilled,cod,Bosta,2500,0,0,0,2500,EGP,printed_tshirt,0,COD deposit missing from bank

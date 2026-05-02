@@ -1,0 +1,8 @@
+﻿bank_txn_id,transaction_date,description,reference,debit_amount,credit_amount,currency,bank_account,notes
+BNK-001,2026-05-02,Paymob settlement PAYMOB-BATCH-APR30-A,PAYMOB-BATCH-APR30-A,0,2520,EGP,QNB-Current,"1070 + 1450, matches Paymob batch"
+BNK-002,2026-05-03,Bosta COD settlement BST-700,BST-700,0,1400,EGP,QNB-Current,Matches Bosta order 1005
+BNK-003,2026-05-03,Bosta COD settlement BST-701,BST-701,0,1850,EGP,QNB-Current,"Expected 2050, short by 200"
+BNK-004,2026-05-03,Paymob settlement PAYMOB-BATCH-MAY01-A,PAYMOB-BATCH-MAY01-A,0,276,EGP,QNB-Current,Matches refund-adjusted order 1004
+BNK-005,2026-05-04,Paymob settlement PAYMOB-BATCH-MAY01-B,PAYMOB-BATCH-MAY01-B,0,3880,EGP,QNB-Current,"2910 + 970, matches Paymob batch"
+BNK-006,2026-05-04,Unknown incoming transfer,UNKNOWN-TRF-001,0,500,EGP,QNB-Current,Unmatched deposit
+BNK-007,2026-05-04,Monthly bank charges,BANK-FEE-MAY,25,0,EGP,QNB-Current,Bank fee withdrawal
