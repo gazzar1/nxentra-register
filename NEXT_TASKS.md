@@ -385,28 +385,108 @@ After A12-A14 ship and the first user has the MVP for a week, four signals decid
 
 ---
 
+## Phase A continues — Tier-1 fix list before first-user invite (surfaced by 2026-05-02/03 dry-run)
+
+The Aljazeera7 dry-run drove the full reconciliation chain end-to-end (onboarding → Shopify Connect → seeded orders → Paymob CSV → Bosta CSV → bank statement → auto-match → manual match) and surfaced the items below. **Each is real data-loss or accounting-correctness, not polish.** The first-user invite is blocked on shipping A18-A26. Conservative estimate: 5-8 days of focused work, then re-run the dry-run, then send the invite. See [SESSION_LOG.md § Session: May 2-3, 2026](SESSION_LOG.md) for the full play-by-play.
+
+### A18. Frontend deploy hygiene + atomic-deploy script — **~0.5d** (BLOCKER, surfaced by dry-run §2)
+The droplet was serving HTML referencing one Next.js build ID with `_next/static/<build-id>/_buildManifest.js` 404'ing because the static folder had a different ID — a partially-applied prior deploy. Every page on `app.nxentra.com` was broken. No hygiene runbook exists. Ship: a documented atomic-deploy script (`rm -rf .next && git pull && npm ci && npm run build && pm2 restart nxentra-web`) wrapped to fail-fast if any step errors, plus a 1-page runbook covering build-ID validation, rollback, and "what to check when prod looks broken." Without this, every future deploy risks the same silent partial-state failure.
+
+### A19. Bank-rec unmatch / exclude must reverse the clearance JE — **~1d** (BLOCKER, surfaced by dry-run §7)
+When the user clicks the unmatch (X) or exclude action on a previously auto-matched bank line, the bank line + EBD `reconciled` flag get reset, but **the clearance JE that was posted at match time stays posted**. Result: bank account 11200 retains the DR amount with no matching bank line, and the audit trail (which clearance JE drains which EBD line) breaks. Real merchants will hit this within their first month — anyone who clicks unmatch by accident gets orphan accounting and no way to recover. Fix: `unmatch_line` + `exclude_line` must reverse the clearance JE (post a contra entry tagged with `source_module='bank_reconciliation'` and a "reversed by unmatch" memo, OR delete-and-replace the original — the contra approach preserves audit trail). Add tests covering the reversal balance.
+
+### A20. A14 refund-during-settlement: importer must reject unbalanced batch with clear error — **~0.5-1d** (BLOCKER, surfaced by dry-run §5)
+Test pack scenario `PAYMOB-BATCH-MAY01-A`: gross 800, fees 24, refund_or_chargeback 500, net 276. The Paymob importer reads gross/fees/net, ignores `refund_or_chargeback`, and emits an event. The `payment_settlement` projection's defensive guard (correctly) detects `gross != net + fees + uncollected` and skips the JE post (Sentry log: *"PaymentSettlement paymob:PAYMOB-BATCH-MAY01-A imbalance: gross=800.00, net+fees+uncollected=300.00. Skipping JE — fix the CSV / parser first."*). But the import event stays in the system marked as "Imported" in the UI, so the merchant believes the data was processed. Worst-of-both: silent data loss with no merchant-visible error. Fix at the importer level: parse `refund_or_chargeback` (or any 4th money column) and either (a) include it in `uncollected_amount` so the math reconciles + the JE posts a Sales Returns line, or (b) reject the row at parse time with a specific error pointing at the problematic CSV column. Path (a) is correct accounting; (b) is fast to ship. Pair with UX: failed batches should show a red "Rejected" badge in the import-result list with the projection's error message inline.
+
+### A21. A14 Bosta `returned_uncollected_amount` column reader — **~0.5d** (BLOCKER, surfaced by dry-run §6)
+Real Bosta CSV exports include a `returned_uncollected_amount` column for failed-delivery line items (separate from `collected_amount`). The Nxentra importer reads only `collected` with status-driven routing (delivered → revenue path; otherwise → uncollected via inferred math). For order 1007 with `collected_amount=0, returned_uncollected_amount=1200, status=returned`, the importer routes 0 to uncollected and silently drops 1,200 EGP. JE posts without any `DR Sales Returns 1,200` line. Fix: extend `_BOSTA_HEADER_ALIASES` with a `returned_uncollected_amount` field, route status=returned rows' returned_uncollected_amount to `uncollected_amount` for the batch (regardless of collected_amount being 0). Test: BST-701 batch with mixed delivered/returned should produce JE with separate Sales Returns line equal to sum of returned amounts.
+
+### A22. A14 settlement importer per-row provider routing (alias normalization at settlement) — **~1-2d** (BLOCKER, surfaced by dry-run §5)
+Test scenario: payout batch MAY01-B contains rows for orders 1008 (`gateway=Paymob`) + 1009 (`gateway=Paymob Accept`). Both orders' clearing was correctly tagged with their respective settlement providers via A12 (Paymob and Paymob_Accept dimensions). But the Paymob settlement CSV importer aggregates the batch by `payout_batch_id` and posts a single JE that drains "Paymob Clearing" for the full gross — leaving Paymob Accept clearing untouched while Paymob clearing is over-drained by the Paymob Accept portion. Fix: settlement importer must group rows within a batch by their original order's `gateway` normalization, post a separate clearing-drain line per provider (or one JE with multiple `CR <provider> Clearing` lines tagged with the proper dimension). Real merchants using mixed gateways (Paymob standard + Paymob Accept, or Stripe + Stripe Connect) will hit this on every payout. Tests: dual-provider batch produces correctly-tagged multi-line clearing drain.
+
+### A23. Refund handler projection race — **~1-2d** (BLOCKER, architectural; surfaced by dry-run §4)
+2 ShopifyRefundCreatedData events emitted in the same projection pass as the corresponding ShopifyOrderPaidData events. The refund handler queries `SalesInvoice.objects.filter(... status=POSTED)` for the original order — but in the projection's pass, the order_paid handler's transaction (which posts the invoice) hadn't committed by the time the refund handler ran. Refund handler hits its silent early-return and `ProjectionAppliedEvent` records "processed" with no JE. ~1.5h later, invoking the same handler manually works fine because by then the SalesInvoice is fully visible.
+
+This affects ANY merchant whose Shopify webhooks deliver an order + refund close together (within the same projection pass). Real-world frequency: low but not zero — refunds-same-day-as-order happen, especially with COD failed deliveries. Fix options: (a) wait-with-retry in the refund handler if original invoice not POSTED yet, with bounded retries before logging unrecoverable; (b) commit transaction boundary between events of different aggregate types within `process_pending`; (c) re-architect: refund handler emits an "awaiting invoice" event, separate reactor catches up when invoice posts. Option (a) is cheapest; (c) is cleanest. Pick (a) for the Tier-1 fix and add idempotency on credit-note creation; pursue (c) post-first-user.
+
+### A24. Bank statement frontend column-mapper UI — **~1-2d** (BLOCKER, surfaced by dry-run §7)
+Backend supports `date_column / description_column / amount_column / reference_column / debit_column / credit_column / date_format` configs on the bank-import endpoint. Frontend hard-codes defaults (`Date / Description / Amount / Reference`) and provides no mapping UI. Real merchants get "Parsed 0 lines from CSV" and have no recourse without code-level CSV editing. Fix: expose a 2-step import flow on `/accounting/bank-reconciliation/import`: (1) upload + parse-headers preview shows detected columns; (2) merchant maps columns to logical fields with smart pre-fill from filename/column-name heuristics (most banks export `transaction_date` not `Date`); persist mapping per (company, bank_account) for repeat uploads. Ship the unified `<CsvMappingDialog>` component the broader vision discussed in this session calls for — bank-rec is the highest-friction surface; settlement-import comes next.
+
+### A25. Manual-match picker filter — surface settlement EBD lines as candidates — **~0.5d** (BLOCKER, surfaced by dry-run §7)
+The bank-line manual-match picker only surfaces `source_module='bank_reconciliation'` clearance JEs as candidates. To trigger the A16 difference-resolution flow from the UI, the merchant needs to manually link a bank line to the **original settlement JE's EBD line** (`source_module='payment_settlement'`) so the difference engine fires when amounts disagree. Fix the picker query to include un-reconciled JournalLines on the EBD account from any source module, sorted by amount-proximity to the bank line. Without this, A16's full flow (Reason picker → Resolve → adjustment JE) is unreachable from the UI even though all the engine logic ships. Pair with A19 — the picker shouldn't show orphan clearance JEs that exist only because of the unmatch bug.
+
+### A26. Settlement-without-original-order rejection or warning — **~0.5d** (correctness, surfaced by dry-run §5/§6)
+Test pack `PAYMOB-BATCH-MAY01-C` (order 9999) and `BST-703` (order 8888) reference order_ids that don't exist in the system — but the settlement JE posts anyway, draining the provider's clearing for an amount that was never deposited there. Result: clearing goes negative on the orphaned portion. Fix: at settlement-import time, validate that referenced order_ids exist in `ShopifyOrder` for the company; either (a) reject the row with merchant-visible error pointing at the unknown order_id, or (b) post the JE but route the orphaned drain to a "Settlement without order — needs review" suspense account. Path (b) is more forgiving for merchants whose Shopify history is incomplete; path (a) is stricter and surfaces real data issues earlier. Pair with A35 — narrative banner should warn when any clearing balance goes negative regardless of source.
+
+### A27. (reserved)
+
+### A28. Wizard "You're All Set!" final screen UX — **~0.5d** (UX, surfaced by dry-run §8)
+After the user clicks Finish on the last wizard step, they land on a celebration screen with three optional next-steps and a "Go to Reconciliation" button. Functional but feels like a dead-end — the merchant expects the dashboard. Fix: auto-redirect to `/finance/reconciliation` after a brief celebration toast, OR strengthen the CTA hierarchy with "Go to Dashboard" as primary alongside "Go to Reconciliation."
+
+### A29. Date format consistency across views — **~1d** (UX, surfaced by dry-run §8)
+Merchant chooses DD/MM/YYYY at registration but most views render YYYY-MM-DD (statement detail page, drilldown order tables, JE list) or MM/DD/YYYY (form date inputs default placeholder). Per-merchant locale preference exists in the User profile but isn't applied app-wide. Fix: thread the format through a single utility `formatDate(date, user)` and replace direct `.toISOString().split('T')[0]` and `toLocaleDateString()` calls. Likely 30+ call sites. Ship as one focused PR.
+
+### A30. Bank statement import UX polish — **~1-2d** (UX, surfaced by dry-run §7)
+Collective ticket for the rough edges on `/accounting/bank-reconciliation/import`:
+- Currency field is free-text; should be a dropdown defaulting to the merchant's functional currency, OR read from the selected bank account.
+- "Please fill in all required fields" error toast doesn't say which field is missing — even though Statement Date has a `*` marker, the error doesn't reference it. Add field-specific error messaging.
+- Bank-account picker dropdown options render in low-contrast (unselected items appear grayed out / hard to read) — CSS contrast bug.
+- Selected-row highlight on the bank-rec page renders text unreadable (foreground/background contrast).
+- Help text mentions "Date, Description, Amount, Reference (optional)" but doesn't tell the merchant how to map their own column names — solved properly by A24, but a one-line note would help in the interim.
+
+### A31. Chart of Accounts — cash/bank accounts should carry their own currency — **~2-3d** (correctness, surfaced by dry-run §7)
+Currently the CoA has a single company-level `default_currency`. A merchant with EGP operations + a USD reserve account (common for Egyptian merchants who hold inventory deposits in USD) can't represent that without manual gymnastics. Add `currency` field to `Account`, default to company currency, surface in account-edit form. Bank statement import currency dropdown should populate from the selected bank account's currency. FK ripple: FX revaluation already handles per-account currency; the model just doesn't carry it explicitly today.
+
+### A32. (reserved)
+
+### A33. Account-mapping seed labels — Payment Processing Fees → wrong account name — **~0.5d** (correctness, surfaced by dry-run §8)
+The Shopify auto-seed maps the `PAYMENT_PROCESSING_FEES` role to GL account `52000 — Shipping Expense`. Wrong label — should be `52000 — Payment Processing Fees` (or a separate account). Likely a copy-paste error in the seed. Fix the seed and add a migration to update existing companies' mappings (Aljazeera7, Aljazeera5, demo).
+
+### A34. (reserved)
+
+### A35. Reconciliation polish — collective ticket — **~1-2d** (UX/correctness, surfaced by dry-run §5/§6/§7)
+Group of small but real items on `/finance/reconciliation`:
+- **Stage 2 widget** still shows "Settlements Posted: 0" and outdated banner *"Manual CSV import is on the roadmap (A14)"* — A14 shipped. Widget reads only `ShopifyPayout` rows, not manual settlement JEs. Update query + remove banner.
+- **Narrative banner** ("Tell me the story") doesn't surface negative-clearing as a warning. When any provider's clearing < 0, prepend a red callout: *"Bosta clearing is negative (-1,000 EGP) — likely a settlement for an order with no original sale, or duplicate settlement import. Investigate Bosta drilldown."*
+- **Auto-match tolerance** is 2%. Real-merchant short-payments are commonly 5-15%. Widen the *candidate-surfacing* tolerance to 15% (still mark within-2% as MATCHED_EXACT and 2-15% as `MATCHED_WITH_DIFFERENCE` for human review). Outside 15% remains Unmatched. Configurable per-merchant later.
+- **"Imported" vs "Already imported"** label mismatch between Paymob and Bosta tabs after CSV upload. Standardize.
+- **Dimension Analysis page** for SETTLEMENT_PROVIDER shows 0 P&L because the dimension is tagged on clearing (asset) lines. Add balance-sheet mode for context-typed dimensions, OR add SETTLEMENT_PROVIDER to the BS rendering path.
+- **Hide deprecated `Cash on Delivery` provider row** in Settlement Provider Routing settings (leftover from pre-A12 schema; A2.5 deactivated it but didn't hide it).
+
+### A36. Drilldown order-status accuracy — **~0.5d** (UX, surfaced by dry-run §7)
+In Stage 1 drilldown, individual orders show "Settled" status when there's an import row for them, regardless of whether the settlement JE actually posted. Order 1004 showed "Settled" despite MAY01-A's JE silently failing (A20 cascade). Fix: derive order status from the actual JE state (clearance JE exists + EBD reconciled), not from the import row's existence. Pair with A20 — once unbalanced batches are rejected at import time, the cascade goes away.
+
+### A37. Subledger tieout cleanup — **~1d** (correctness, surfaced by Cash Flow fix in dry-run §2)
+While fixing the Cash Flow report, noticed `SubledgerTieOutView` at `projections/views.py:3673` and `:3757` has the same `journal_entry__` FK-alias bug (FK name is `entry`, not `journal_entry`) plus uses non-existent `line.debit_amount` / `line.credit_amount` (the model has `debit` / `credit`). Likely silent failures producing false-positive "Subledger mismatch" warnings — possibly the same warning A10 was filed for. Fix mechanically (same pattern as Cash Flow), then verify whether A10's complaint goes away.
+
+### A38. nxentra-web PM2 process restart investigation — **~0.5d** (production hygiene, surfaced by dry-run §2)
+PM2 status shows `nxentra-web` restarted 272 times in 31 hours uptime — ~9 restarts/hour. Indicates a memory leak, OOM kill, or unhandled exception triggering automatic respawn. Run `pm2 logs nxentra-web --lines 500 --err` to capture recent crashes. Likely candidates: Next.js dev-mode reloader still on in production (gunicorn logs show `Reloader is on. Use in development only!`), memory leak in a long-running route, or a recurring 5xx that the harness surfaces as a process failure. Stop-gap: bump PM2 max-memory-restart threshold; root cause is whatever's leaking.
+
+---
+
 ## What to do right now, today
 
-Phase A continues. **A0 done** (`fb0e3d6`), **A1 done** (`b6b52b9`–`7d12432`, 2026-04-28), **A2 done** (`d0dd0d2`, 2026-04-30), **A2.5 done** (`caa1ab9`, 2026-04-30), **A8 done** (`71cb0d7`, `cd7f484`, 2026-04-29), **A12 done** (`86d62d2` + `6a09473`, 2026-05-01), **A13 done** (`b24065b`, 2026-05-01), **A14 done** (`238d0a9`, 2026-05-01), **A14b/A14c done** (`3445bc0`, 2026-05-01), **A16 done** (`ced05ad` + hotfix `63d8888`, 2026-05-01).
+Phase A continues. **A0 done** (`fb0e3d6`), **A1 done** (`b6b52b9`–`7d12432`, 2026-04-28), **A2 done** (`d0dd0d2`, 2026-04-30), **A2.5 done** (`caa1ab9`, 2026-04-30), **A8 done** (`71cb0d7`, `cd7f484`, 2026-04-29), **A12 done** (`86d62d2` + `6a09473`, 2026-05-01), **A13 done** (`b24065b`, 2026-05-01), **A14 done** (`238d0a9`, 2026-05-01), **A14b/A14c done** (`3445bc0`, 2026-05-01), **A16 done** (`ced05ad` + hotfix `63d8888`, 2026-05-01), **A17 done** (`faf5b52`, 2026-05-01), **plus 5 commits 2026-05-02/03** (`7425bbc`, `b074164`, `96dd1e6`, `5df4d1e`, `e9a0ddd`) shipping settlement-importer aliases + A17 toast follow-up + seed_test_csv_pack tooling + Cash Flow ImportError fix + bank-rec auto-match crash fix.
 
-**Phase A engine complete on the merchant-facing side.** The Reconciliation Control Center exists end-to-end: Sales→Clearing per-provider with aging, Clearing→Settlement via manual CSV import, Bank Match with auto-clearance JEs, near-match difference engine with reason picker, "Tell me the story" narrative, Needs Review queue. Outstanding for Phase A exit is **first-user validation** — manual UI pass + live Phase 1 dry-run + invite — not more code.
+**Phase A engine complete on the merchant-facing side.** The Aljazeera7 dry-run surfaced a substantive Tier-1 fix list before the first-user invite — see A18-A26 above. Outstanding for Phase A exit is **shipping the Tier-1 list, re-running the dry-run, then sending the invite** — not more new feature work.
 
 **Immediate next steps (in order):**
 
-1. **Manual UI pass on `/finance/reconciliation`** in a browser. Verify narrative banner renders; Needs Review card renders when queue is non-empty; reason picker dropdown works; Resolve button posts the PATCH endpoint and refreshes the summary cleanly. Test against a company with at least one `MATCHED_WITH_DIFFERENCE` bank line — easiest seed is Paymob CSV (1455 expected) + bank statement line (1450 received) → trips the 2% tolerance. Fix any visual or wiring bugs.
+1. **Ship A18-A26** in roughly the priority order listed (A19 → A20 → A21 → A23 → A22 → A25 → A24 → A18 → A26). Conservative estimate: 5-8 days focused work. Each is unit-testable; aim for tests-first to lock the fix before any UI verification.
 
-2. **Live Phase 1 dry-run on a fresh Shopify dev store.** End-to-end smoke test through the new product spine: connect store, import orders, upload Paymob + Bosta CSVs (test fixtures from A14 tests are good seeds), import bank statement, run auto-match (expect at least one near-match with the seeds), resolve the difference via the new reason picker, confirm the EBD line drains. Document any bugs as new tickets. Memory has the dry-run flagged as blocking before the first real user; we've shipped six tickets since the last attempt without re-validating.
+2. **Re-run the Aljazeera7 dry-run end-to-end.** Use the existing `seed_test_csv_pack` + uploaded CSVs. Verify all 4 Paymob batches post (including MAY01-A after A20), Bosta BST-701 produces a Sales Returns line (after A21), Paymob Accept clearing drains correctly (after A22), refunds post credit notes during the projection pass (after A23), bank-rec column-mapper works (after A24), and BNK-003 manual-match → A16 Needs Review → Resolve produces an adjustment JE (after A25). All flows green = ready for invite.
 
-3. **Invite the first user** (Egyptian Shopify merchant, acquired 2026-04-22) once 1+2 are green. Further pre-emptive work has diminishing returns vs real-world signal.
+3. **Invite the first user** (Egyptian Shopify merchant, acquired 2026-04-22) once 1+2 are green. The invite kit (Calendly link, WhatsApp Business number, [docs/onboarding/welcome.md](docs/onboarding/welcome.md)) needs the user's pre-flight prep before sending.
 
 **Then after week-4 gate (first-merchant signal):**
 
-4. **A3 + A4 + A5** in sequence — architectural cleanup that closes the event-first policy loopholes. Now informed by what the reconciliation MVP actually needed.
-5. **A6, A7, A9, A10, A11** — UX + invariant + correctness follow-ups from A1/A8. Each is small (1-3d). Pick up between bigger Phase A work as time allows; **A10 and A11 land when first user signals they need them**.
+4. **A28-A36 (Tier-2 UX), A37 (Subledger tieout cleanup), A38 (PM2 restart investigation)** — pull forward only as merchant feedback demands.
+5. **A3 + A4 + A5** in sequence — architectural cleanup that closes the event-first policy loopholes. Now informed by what the reconciliation MVP actually needed.
+6. **A6, A7, A9, A10, A11** — UX + invariant + correctness follow-ups from A1/A8. Each is small (1-3d). A10 may already be partially solved by A37; verify.
 
 **Pulled forward only if signal demands:**
 
-6. **A15** — Multi-courier-per-store routing. Currently deferred; pulled forward only if first merchant has multi-courier volume or single-courier limit becomes a workflow burden.
+7. **A15** — Multi-courier-per-store routing. Currently deferred; pulled forward only if first merchant has multi-courier volume or single-courier limit becomes a workflow burden.
 
 **Then Phase B** — canonical platform models — but grounded in real merchant feedback rather than speculation.
 
