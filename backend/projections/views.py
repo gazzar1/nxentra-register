@@ -4897,7 +4897,7 @@ class CashFlowStatementView(APIView):
 
     def _calculate_net_income(self, actor, start_date, end_date):
         """Calculate net income for the period from journal entries."""
-        from accounting.models import Account, JournalEntryLine
+        from accounting.models import Account, JournalLine
 
         # Get all revenue and expense accounts
         income_accounts = Account.objects.filter(
@@ -4915,11 +4915,11 @@ class CashFlowStatementView(APIView):
 
         for account in income_accounts:
             # Sum up posted journal entry lines for this period
-            lines = JournalEntryLine.objects.filter(
-                journal_entry__company=actor.company,
-                journal_entry__status="POSTED",
-                journal_entry__date__gte=start_date,
-                journal_entry__date__lte=end_date,
+            lines = JournalLine.objects.filter(
+                entry__company=actor.company,
+                entry__status="POSTED",
+                entry__date__gte=start_date,
+                entry__date__lte=end_date,
                 account=account,
             )
 
@@ -4939,13 +4939,13 @@ class CashFlowStatementView(APIView):
 
     def _get_account_period_change(self, actor, account, start_date, end_date):
         """Calculate the change in an account balance during the period."""
-        from accounting.models import JournalEntryLine
+        from accounting.models import JournalLine
 
-        lines = JournalEntryLine.objects.filter(
-            journal_entry__company=actor.company,
-            journal_entry__status="POSTED",
-            journal_entry__date__gte=start_date,
-            journal_entry__date__lte=end_date,
+        lines = JournalLine.objects.filter(
+            entry__company=actor.company,
+            entry__status="POSTED",
+            entry__date__gte=start_date,
+            entry__date__lte=end_date,
             account=account,
         )
 
