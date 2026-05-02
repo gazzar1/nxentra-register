@@ -96,7 +96,7 @@ def _read_csv(file_content: bytes | str) -> csv.DictReader:
 _PAYMOB_HEADER_ALIASES = {
     "order_id": ("order_id", "order id", "merchant_order_id", "reference"),
     "gross": ("gross", "gross_amount", "amount"),
-    "fee": ("fee", "fees", "paymob_fee", "transaction_fee"),
+    "fee": ("fee", "fees", "paymob_fee", "transaction_fee", "gateway_fee"),
     "net": ("net", "net_amount", "settled_amount", "payout"),
     "payout_batch_id": ("payout_batch_id", "batch_id", "payout_id", "settlement_id"),
     "payout_date": ("payout_date", "settlement_date", "date"),
@@ -199,9 +199,9 @@ def parse_paymob_csv(file_content: bytes | str) -> list[dict]:
 _BOSTA_HEADER_ALIASES = {
     "shipment_id": ("shipment_id", "shipment id", "tracking_number", "tracking", "awb"),
     "order_id": ("order_id", "order id", "merchant_order_id", "reference"),
-    "collected": ("collected", "cod_amount", "amount", "gross", "cash_collected"),
+    "collected": ("collected", "cod_amount", "amount", "gross", "cash_collected", "collected_amount"),
     "courier_fee": ("courier_fee", "fee", "fees", "shipping_fee", "delivery_fee"),
-    "net": ("net", "net_amount", "settled_amount", "payout"),
+    "net": ("net", "net_amount", "settled_amount", "payout", "net_due"),
     "batch_id": ("batch_id", "payout_batch_id", "settlement_id", "payout_id"),
     "payout_date": ("payout_date", "settlement_date", "date"),
     "status": ("status", "delivery_status", "shipment_status"),
