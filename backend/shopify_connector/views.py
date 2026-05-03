@@ -102,10 +102,24 @@ class ShopifyCallbackView(APIView):
         result = commands.complete_oauth(store.company, shop, code, state)
 
         if not result.success:
-            # Redirect to frontend with error
+            # Redirect to frontend with error.
+            # A7: error path also branches on onboarding state so the
+            # merchant lands back where they started (wizard or
+            # standalone settings).
+            if not store.company.onboarding_completed:
+                return HttpResponseRedirect(f"/onboarding/setup?shopify_error={result.error}")
             return HttpResponseRedirect(f"/shopify/settings?error={result.error}")
 
-        # Redirect to frontend settings page on success
+        # A7: route post-callback by where the merchant came from.
+        # Onboarding-incomplete companies are mid-wizard at the Shopify
+        # step — return them to the wizard with the connected signal so
+        # it advances to the next step (Import Orders) instead of
+        # dumping them on /shopify/settings (which feels like leaving
+        # the wizard mid-flow). Already-onboarded companies adding an
+        # additional store land on the standalone settings page as
+        # before.
+        if not store.company.onboarding_completed:
+            return HttpResponseRedirect("/onboarding/setup?shopify_connected=true")
         return HttpResponseRedirect("/shopify/settings?connected=true")
 
 

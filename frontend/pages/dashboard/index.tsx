@@ -42,6 +42,22 @@ export default function DashboardPage() {
 
   const showOnboardingBanner =
     company && membership && membership.role === "OWNER" && !company.onboarding_completed;
+
+  // A6: auto-launch the wizard the FIRST time an OWNER lands on the
+  // dashboard while onboarding is incomplete. Tracked in sessionStorage
+  // so we don't loop on every refresh — once the user has seen the
+  // wizard this session, subsequent dashboard visits show only the
+  // banner (existing behavior). Membership role check ensures we don't
+  // bounce non-owners (e.g., invited accountants whose owner hasn't
+  // finished setup).
+  useEffect(() => {
+    if (!showOnboardingBanner) return;
+    if (typeof window === "undefined") return;
+    const key = `nx_onboarding_auto_launched_${company?.id ?? "current"}`;
+    if (window.sessionStorage.getItem(key)) return;
+    window.sessionStorage.setItem(key, "1");
+    router.push("/onboarding/setup");
+  }, [showOnboardingBanner, company?.id, router]);
   const { data: trialBalance } = useTrialBalance();
   const { data: recentEntries } = useJournalEntries({ status: "POSTED" });
   const { data: chartData, isLoading: chartsLoading } = useDashboardCharts();
