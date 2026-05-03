@@ -93,6 +93,90 @@ class TestSubledgerTieout:
         is_valid, errors = validate_subledger_tieout(company)
         assert is_valid, f"Empty company should be balanced: {errors}"
 
+    def test_a10_tieout_includes_non_ar_control_posting_profile_accounts(
+        self, actor_context, company, ar_control, revenue_account, customers
+    ):
+        """A10: a CUSTOMER PostingProfile may point at a control_account
+        whose role is NOT RECEIVABLE_CONTROL (e.g. SHOPIFY_CLEARING with
+        role=LIQUIDITY — Shopify SalesInvoices DR that account, not the
+        AR Control account). Pre-A10 the validation summed only
+        RECEIVABLE_CONTROL accounts on the AR side, so every Shopify
+        clearing JE produced a permanent false-positive 'AR Control !=
+        Customer balances' warning. A37 fixed the report endpoint that
+        used the same logic; A10 fixes the policy validation that fires
+        on every JE post.
+        """
+        from projections.write_barrier import command_writes_allowed
+        from sales.models import PostingProfile
+
+        # Create a non-AR-Control account that a CUSTOMER posting profile
+        # will point at — mirrors SHOPIFY_CLEARING (role=LIQUIDITY).
+        clearing = Account.objects.create(
+            public_id=uuid4(),
+            company=company,
+            code="11500",
+            name="Platform Clearing",
+            account_type=Account.AccountType.ASSET,
+            normal_balance=Account.NormalBalance.DEBIT,
+            role=Account.AccountRole.LIQUIDITY,
+            status=Account.Status.ACTIVE,
+        )
+        with command_writes_allowed():
+            PostingProfile.objects.create(
+                company=company,
+                code="A10-CLEAR-PROFILE",
+                name="A10 Clearing Profile",
+                profile_type=PostingProfile.ProfileType.CUSTOMER,
+                control_account=clearing,
+                is_active=True,
+            )
+
+        # Post a JE that DRs the clearing account (with customer tag)
+        # and CRs revenue. Mirrors a Shopify SalesInvoice posting.
+        amount = Decimal("500.00")
+        result = create_journal_entry(
+            actor_context,
+            date=date.today(),
+            memo="Shopify-style invoice via clearing",
+            lines=[
+                {
+                    "account_id": clearing.id,
+                    "description": f"Clearing for {customers[0].code}",
+                    "debit": amount,
+                    "credit": Decimal("0"),
+                    "customer_public_id": str(customers[0].public_id),
+                },
+                {
+                    "account_id": revenue_account.id,
+                    "description": "Revenue",
+                    "debit": Decimal("0"),
+                    "credit": amount,
+                },
+            ],
+        )
+        assert result.success, f"Failed to create entry: {result.error}"
+        entry = result.data
+        save_result = save_journal_entry_complete(actor_context, entry.id)
+        assert save_result.success
+        post_result = post_journal_entry(actor_context, entry.id)
+        assert post_result.success
+
+        # AR Control balance is 0 (no posting hit the RECEIVABLE_CONTROL
+        # account ar_control). Customer balance is 500 (from clearing
+        # JE's customer tag). Pre-A10: false-positive mismatch fires.
+        # Post-A10: clearing's balance is included in the AR sum because
+        # the CUSTOMER PostingProfile points at it.
+        is_valid, errors = validate_subledger_tieout(company)
+        assert is_valid, f"A10 expected balanced; got errors: {errors}"
+
+        # Sanity: the underlying numbers ARE what we said they were.
+        ar_balance = AccountBalance.objects.filter(company=company, account=ar_control).first()
+        assert ar_balance is None or ar_balance.balance == Decimal("0")
+        clearing_balance = AccountBalance.objects.get(company=company, account=clearing)
+        assert clearing_balance.balance == amount
+        customer_total = sum(CustomerBalance.objects.filter(company=company).values_list("balance", flat=True))
+        assert customer_total == amount
+
     def test_ar_tieout_after_customer_invoices(self, actor_context, company, ar_control, revenue_account, customers):
         """AR control should match sum of customer balances after invoices."""
         # Create invoices for multiple customers

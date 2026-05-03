@@ -848,19 +848,38 @@ def validate_subledger_tieout(company) -> tuple[bool, list[str]]:
 
     from accounting.models import Account
     from projections.models import AccountBalance, CustomerBalance, VendorBalance
+    from sales.models import PostingProfile
 
     errors = []
 
-    # AR Check: Find AR control accounts and sum their balances
-    ar_control_accounts = Account.objects.filter(
-        company=company,
-        role=Account.AccountRole.RECEIVABLE_CONTROL,
-    ).values_list("id", flat=True)
+    # A10: include both accounts with role=RECEIVABLE_CONTROL AND any
+    # account that's the control_account of a CUSTOMER-type
+    # PostingProfile, even if its role is something else (e.g.
+    # SHOPIFY_CLEARING which has role=LIQUIDITY but receives invoice
+    # debits because the Shopify posting profile points at it).
+    # Pre-A10 the validation only summed RECEIVABLE_CONTROL accounts,
+    # so every Shopify clearing flow surfaced a permanent false-positive
+    # 'AR Control != Customer balances' warning. The 2026-05-04 dry-run
+    # logged this on every settlement JE post.
+    ar_control_account_ids = set(
+        Account.objects.filter(
+            company=company,
+            role=Account.AccountRole.RECEIVABLE_CONTROL,
+        ).values_list("id", flat=True)
+    )
+    ar_control_account_ids.update(
+        PostingProfile.objects.filter(
+            company=company,
+            profile_type=PostingProfile.ProfileType.CUSTOMER,
+            is_active=True,
+            control_account__isnull=False,
+        ).values_list("control_account_id", flat=True)
+    )
 
-    if ar_control_accounts:
+    if ar_control_account_ids:
         ar_control_balance = AccountBalance.objects.filter(
             company=company,
-            account_id__in=ar_control_accounts,
+            account_id__in=ar_control_account_ids,
         ).aggregate(total=Sum("balance"))["total"] or Decimal("0")
 
         customer_total = CustomerBalance.objects.filter(
@@ -874,16 +893,27 @@ def validate_subledger_tieout(company) -> tuple[bool, list[str]]:
                 f"Customer balances ({customer_total}). Difference: {diff}"
             )
 
-    # AP Check: Find AP control accounts and sum their balances
-    ap_control_accounts = Account.objects.filter(
-        company=company,
-        role=Account.AccountRole.PAYABLE_CONTROL,
-    ).values_list("id", flat=True)
+    # A10: same expansion for AP — include accounts that are
+    # control_account on any VENDOR-type PostingProfile.
+    ap_control_account_ids = set(
+        Account.objects.filter(
+            company=company,
+            role=Account.AccountRole.PAYABLE_CONTROL,
+        ).values_list("id", flat=True)
+    )
+    ap_control_account_ids.update(
+        PostingProfile.objects.filter(
+            company=company,
+            profile_type=PostingProfile.ProfileType.VENDOR,
+            is_active=True,
+            control_account__isnull=False,
+        ).values_list("control_account_id", flat=True)
+    )
 
-    if ap_control_accounts:
+    if ap_control_account_ids:
         ap_control_balance = AccountBalance.objects.filter(
             company=company,
-            account_id__in=ap_control_accounts,
+            account_id__in=ap_control_account_ids,
         ).aggregate(total=Sum("balance"))["total"] or Decimal("0")
 
         vendor_total = VendorBalance.objects.filter(
