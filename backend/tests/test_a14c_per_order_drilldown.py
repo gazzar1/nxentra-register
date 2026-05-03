@@ -154,6 +154,59 @@ ORD-1,1000.00,30.00,970.00,PMB-555,2026-04-25
     assert body["totals"]["by_status"]["settled"] == 1
 
 
+def test_a36_orders_endpoint_status_when_settlement_event_exists_but_je_did_not_post(
+    shopify_setup, company, owner_membership, authenticated_client
+):
+    """A36: pre-A36 the drilldown derived status from the settlement
+    EVENT's existence in line_items, so an order with a settlement
+    import but no posted JE (defensive math guard rejected it pre-A20,
+    or the projection just hasn't run yet) showed 'Settled' even
+    though clearing hadn't drained. Post-A36 the status is derived
+    from the JournalEntry state, so the order correctly shows
+    'expected' until the JE actually posts."""
+    paymob = SettlementProvider.objects.get(company=company, normalized_code="paymob")
+    _create_shopify_invoice(company, "ORD-1", Decimal("1000.00"))
+
+    csv = b"""order_id,gross,fee,net,payout_batch_id,payout_date
+ORD-1,1000.00,30.00,970.00,PMB-A36,2026-04-25
+"""
+    # Import the CSV — settlement event lands in the queue with line_items
+    # mapping ORD-1 to PMB-A36. But DON'T run the projection, so no JE
+    # posts. This mirrors the pre-A20 silent-failure scenario where the
+    # event existed but the projection rejected the JE.
+    import_settlement_csv(
+        company=company,
+        provider_normalized_code="paymob",
+        file_content=csv,
+        source_filename="paymob.csv",
+    )
+
+    response = authenticated_client.get(f"/api/accounting/reconciliation/orders/?provider_id={paymob.id}")
+    body = response.json()
+    by_order = {o["shopify_order_id"]: o for o in body["orders"]}
+
+    # ORD-1 status MUST be 'expected' because no settlement JE has
+    # posted yet — clearing hasn't drained. Pre-A36 this would have
+    # incorrectly reported 'settled' based on the event's existence.
+    assert by_order["ORD-1"]["status"] == "expected"
+    # The settled_batch_id and amount fields stay populated from the
+    # event's line_items so the merchant can see the IMPORT happened
+    # — they're not status signals, they're audit context.
+    assert by_order["ORD-1"]["settled_batch_id"] == "PMB-A36"
+    assert by_order["ORD-1"]["is_banked"] is False
+    assert body["totals"]["by_status"]["expected"] == 1
+    assert body["totals"]["by_status"]["settled"] == 0
+
+    # Now run the projection — JE posts. Status flips to 'settled'.
+    PaymentSettlementProjection().process_pending(company)
+
+    response = authenticated_client.get(f"/api/accounting/reconciliation/orders/?provider_id={paymob.id}")
+    body = response.json()
+    by_order = {o["shopify_order_id"]: o for o in body["orders"]}
+    assert by_order["ORD-1"]["status"] == "settled"
+    assert body["totals"]["by_status"]["settled"] == 1
+
+
 def test_orders_endpoint_returns_banked_status_after_bank_match(
     shopify_setup, company, owner_membership, user, authenticated_client
 ):

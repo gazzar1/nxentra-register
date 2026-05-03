@@ -599,6 +599,24 @@ def _per_order_drilldown(company, provider) -> list[dict]:
     ).values_list("source_document", flat=True)
     cleared_batches = {doc.split(":", 1)[1] for doc in clearance_docs if ":" in doc}
 
+    # A36: Set of batches whose settlement JE actually POSTED. The
+    # presence of a settlement event in `order_to_settlement` only
+    # proves the import row was created; the projection's defensive
+    # math guard (or any other validation) may have rejected the JE.
+    # An order whose batch event exists but JE didn't post is still
+    # "expected" — clearing hasn't drained — not "settled". Pre-A36
+    # we used event existence as the status signal, so order 1004 in
+    # the dry-run showed "Settled" despite MAY01-A's JE silently
+    # failing the gross-vs-net+fees+uncollected balance check (A20
+    # cascade).
+    posted_settlement_docs = JournalEntry.objects.filter(
+        company=company,
+        source_module="payment_settlement",
+        status=JournalEntry.Status.POSTED,
+        source_document__startswith=f"{provider.normalized_code}:",
+    ).values_list("source_document", flat=True)
+    posted_settlement_batches = {doc.split(":", 1)[1] for doc in posted_settlement_docs if ":" in doc}
+
     # 5) Stitch per-order rows.
     results: list[dict] = []
     for line in clearing_debits:
@@ -610,8 +628,23 @@ def _per_order_drilldown(company, provider) -> list[dict]:
         if settlement:
             batch_id = settlement["batch_id"]
             settled_amount = settlement["gross"]
+            # A36: status reflects JE state, not import-event state.
+            # The settlement JE must actually have posted for the order
+            # to count as "settled". A clearance JE on top promotes it
+            # to "banked".
+            je_posted = batch_id in posted_settlement_batches
             is_banked = batch_id in cleared_batches
-            order_status = "banked" if is_banked else "settled"
+            if is_banked:
+                order_status = "banked"
+            elif je_posted:
+                order_status = "settled"
+            else:
+                # Import event exists but the projection rejected the JE
+                # (most commonly: gross/net/fees imbalance — pre-A20
+                # silent failure). Treat as "expected" so the merchant
+                # sees the import didn't actually clear, and pair with
+                # A20's import-time error to surface the cause.
+                order_status = "expected"
         else:
             batch_id = None
             settled_amount = None
