@@ -1129,12 +1129,109 @@ def manual_match(
     )
 
 
+def _reverse_match_side_effects(
+    actor: ActorContext,
+    bank_line: BankStatementLine,
+) -> tuple[bool, str | None, JournalLine | None]:
+    """A19: reverse any JEs that were synthesized by the bank-rec
+    match step (clearance JE + A16 difference adjustment), so unmatch
+    or exclude doesn't leave orphan accounting on the bank account.
+
+    Pre-existing JEs (platform payouts, manually-posted entries used
+    via manual_match) are left untouched — those have independent
+    meaning and only the reconciled flag should flip.
+
+    Returns (success, error_or_None, settlement_ebd_line_or_None).
+    The EBD line is returned so the caller can flip its reconciled
+    flag back inside command_writes_allowed.
+    """
+    from accounting.commands import reverse_journal_entry
+    from accounting.mappings import ModuleAccountMapping
+
+    journal_line = bank_line.matched_journal_line
+    adjustment_entry = bank_line.difference_adjustment_entry
+
+    clearance_je = None
+    settlement_ebd_line = None
+    if journal_line and journal_line.entry.source_module == "payment_settlement_clearance":
+        clearance_je = journal_line.entry
+        settlement_je = JournalEntry.objects.filter(
+            company=actor.company,
+            source_module="payment_settlement",
+            source_document=clearance_je.source_document,
+        ).first()
+        if settlement_je:
+            ebd_account = ModuleAccountMapping.get_account(actor.company, "shopify_connector", "EXPECTED_BANK_DEPOSIT")
+            if ebd_account:
+                settlement_ebd_line = settlement_je.lines.filter(account=ebd_account).first()
+
+    # Reverse the A16 difference adjustment first so EBD is back to its
+    # post-clearance state before we reverse the clearance itself.
+    if adjustment_entry and adjustment_entry.status == JournalEntry.Status.POSTED:
+        rev = reverse_journal_entry(actor, adjustment_entry.id)
+        if not rev.success:
+            return False, f"Could not reverse difference adjustment: {rev.error}", None
+
+    if clearance_je and clearance_je.status == JournalEntry.Status.POSTED:
+        rev = reverse_journal_entry(actor, clearance_je.id)
+        if not rev.success:
+            return False, f"Could not reverse clearance entry: {rev.error}", None
+
+    return True, None, settlement_ebd_line
+
+
+def _clear_match_state(
+    bank_line: BankStatementLine,
+    settlement_ebd_line: JournalLine | None,
+    *,
+    final_status: str,
+) -> None:
+    """Apply the read-model side of unmatch/exclude under
+    command_writes_allowed: detach the bank line, drop A16 difference
+    state, and resurrect the EBD residual if a clearance JE was
+    reversed."""
+    journal_line_id = bank_line.matched_journal_line_id
+    statement_date = bank_line.statement.statement_date  # captured before refresh
+
+    with command_writes_allowed():
+        bank_line.matched_journal_line = None
+        bank_line.match_status = final_status
+        bank_line.match_confidence = None
+        bank_line.difference_amount = Decimal("0")
+        bank_line.difference_reason = BankStatementLine.DifferenceReason.UNRESOLVED
+        bank_line.difference_notes = ""
+        bank_line.difference_resolved_at = None
+        bank_line.difference_adjustment_entry = None
+        bank_line.save()
+
+        if journal_line_id:
+            JournalLine.objects.filter(pk=journal_line_id).update(
+                reconciled=False,
+                reconciled_date=None,
+            )
+
+        if settlement_ebd_line is not None:
+            JournalLine.objects.filter(pk=settlement_ebd_line.pk).update(
+                reconciled=False,
+                reconciled_date=None,
+            )
+
+    # Quiet the lint warning — captured intentionally for future use.
+    _ = statement_date
+
+
 @transaction.atomic
 def unmatch_line(
     actor: ActorContext,
     bank_line_id: int,
 ) -> CommandResult:
-    """Unmatch a previously matched bank statement line."""
+    """Unmatch a previously matched bank statement line.
+
+    A19: when the match created a clearance JE (settlement prepass) or
+    posted an A16 difference adjustment, both must be reversed so the
+    bank account doesn't carry an orphan DR after unmatch. The original
+    settlement JE's EBD residual is restored too.
+    """
     require(actor, "accounting.reconciliation")
 
     try:
@@ -1148,19 +1245,15 @@ def unmatch_line(
     if bank_line.match_status == BankStatementLine.MatchStatus.UNMATCHED:
         return CommandResult.fail("Line is not matched.")
 
-    journal_line = bank_line.matched_journal_line
+    ok, err, settlement_ebd_line = _reverse_match_side_effects(actor, bank_line)
+    if not ok:
+        return CommandResult.fail(err)
 
-    with command_writes_allowed():
-        bank_line.matched_journal_line = None
-        bank_line.match_status = BankStatementLine.MatchStatus.UNMATCHED
-        bank_line.match_confidence = None
-        bank_line.save()
-
-        if journal_line:
-            JournalLine.objects.filter(pk=journal_line.pk).update(
-                reconciled=False,
-                reconciled_date=None,
-            )
+    _clear_match_state(
+        bank_line,
+        settlement_ebd_line,
+        final_status=BankStatementLine.MatchStatus.UNMATCHED,
+    )
 
     return CommandResult.ok()
 
@@ -1170,7 +1263,12 @@ def exclude_line(
     actor: ActorContext,
     bank_line_id: int,
 ) -> CommandResult:
-    """Exclude a bank statement line from reconciliation."""
+    """Exclude a bank statement line from reconciliation.
+
+    A19: same reversal semantics as unmatch_line — any clearance or
+    adjustment JE synthesized by the prior match must be reversed
+    before the line is marked EXCLUDED.
+    """
     require(actor, "accounting.reconciliation")
 
     try:
@@ -1181,18 +1279,15 @@ def exclude_line(
     except BankStatementLine.DoesNotExist:
         return CommandResult.fail("Bank statement line not found.")
 
-    with command_writes_allowed():
-        # Unmatch first if needed
-        if bank_line.matched_journal_line:
-            JournalLine.objects.filter(pk=bank_line.matched_journal_line_id).update(
-                reconciled=False,
-                reconciled_date=None,
-            )
+    ok, err, settlement_ebd_line = _reverse_match_side_effects(actor, bank_line)
+    if not ok:
+        return CommandResult.fail(err)
 
-        bank_line.matched_journal_line = None
-        bank_line.match_status = BankStatementLine.MatchStatus.EXCLUDED
-        bank_line.match_confidence = None
-        bank_line.save()
+    _clear_match_state(
+        bank_line,
+        settlement_ebd_line,
+        final_status=BankStatementLine.MatchStatus.EXCLUDED,
+    )
 
     return CommandResult.ok()
 
