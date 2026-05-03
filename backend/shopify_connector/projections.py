@@ -15,6 +15,7 @@ Account roles used by this module:
 """
 
 import logging
+import time
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
@@ -53,6 +54,49 @@ def _parse_date(value):
     if isinstance(value, str):
         return datetime.fromisoformat(value).date()
     return value
+
+
+# A23: bounded retry for the refund-handler projection race.
+#
+# When a Shopify order_paid event and its corresponding refund_created
+# event land in the same projection pass (or close together), the refund
+# handler's SalesInvoice POSTED lookup can fail to see the order_paid
+# handler's commit due to transaction-isolation lag. Pre-A23, the refund
+# handler silently early-returned and `ProjectionAppliedEvent` recorded
+# the event as "processed" — permanent data loss with no merchant signal.
+#
+# This helper retries the lookup a few times with short sleeps so the
+# common case (within-pass race) self-heals without any external
+# intervention. If the invoice truly never arrives (the order predates
+# the integration, or the webhook arrived without a corresponding paid
+# event), retries exhaust and the caller can log a warning the same way
+# it always did.
+_INVOICE_LOOKUP_MAX_ATTEMPTS = 5
+_INVOICE_LOOKUP_DELAY_SECONDS = 0.1
+
+
+def _find_posted_shopify_invoice(company, shopify_order_id, *, max_attempts=None, delay=None):
+    """Locate the POSTED SalesInvoice for a Shopify order, retrying on miss.
+
+    Returns the SalesInvoice or None after `max_attempts` exhausts.
+    """
+    from sales.models import SalesInvoice
+
+    attempts = max_attempts if max_attempts is not None else _INVOICE_LOOKUP_MAX_ATTEMPTS
+    sleep_for = delay if delay is not None else _INVOICE_LOOKUP_DELAY_SECONDS
+
+    for attempt in range(attempts):
+        invoice = SalesInvoice.objects.filter(
+            company=company,
+            source="shopify",
+            source_document_id=shopify_order_id,
+            status=SalesInvoice.Status.POSTED,
+        ).first()
+        if invoice:
+            return invoice
+        if attempt < attempts - 1:
+            time.sleep(sleep_for)
+    return None
 
 
 def _resolve_period(company, entry_date):
@@ -883,7 +927,6 @@ class ShopifyAccountingHandler(BaseProjection):
         separately (kept as direct JE until Phase 6 moves it to StockLedger).
         """
         from sales.commands import create_and_post_credit_note_for_platform
-        from sales.models import SalesInvoice
         from shopify_connector.models import ShopifyOrder, ShopifyRefund, ShopifyStore
 
         revenue_account = mapping.get(ROLE_SALES_REVENUE)
@@ -901,20 +944,19 @@ class ShopifyAccountingHandler(BaseProjection):
         if amount <= 0:
             return
 
-        # Find the original SalesInvoice for this Shopify order
-        original_invoice = SalesInvoice.objects.filter(
-            company=event.company,
-            source="shopify",
-            source_document_id=shopify_order_id,
-            status=SalesInvoice.Status.POSTED,
-        ).first()
+        # A23: lookup with bounded retry — the order_paid handler's
+        # SalesInvoice commit may not yet be visible to this transaction
+        # if both events land in the same projection pass.
+        original_invoice = _find_posted_shopify_invoice(event.company, shopify_order_id)
 
         if not original_invoice:
             logger.warning(
                 "Cannot create CreditNote for Shopify refund %s — original invoice not found "
-                "for order %s. The order may predate the module-routing refactor.",
+                "for order %s after %d retries. The order may predate the module-routing "
+                "refactor, or the order_paid event has not yet been processed.",
                 refund_id,
                 shopify_order_id,
+                _INVOICE_LOOKUP_MAX_ATTEMPTS,
             )
             return
 
