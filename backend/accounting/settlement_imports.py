@@ -221,6 +221,18 @@ _BOSTA_HEADER_ALIASES = {
     "collected": ("collected", "cod_amount", "amount", "gross", "cash_collected", "collected_amount"),
     "courier_fee": ("courier_fee", "fee", "fees", "shipping_fee", "delivery_fee"),
     "net": ("net", "net_amount", "settled_amount", "payout", "net_due"),
+    # A21: real Bosta exports include a separate column for the original
+    # sale value of failed-delivery rows (collected_amount is 0 in that
+    # case because nothing was actually collected from the customer).
+    # Pre-A21 the parser only read `collected`, silently dropping the
+    # uncollected amount on returned rows.
+    "returned_uncollected": (
+        "returned_uncollected_amount",
+        "returned_uncollected",
+        "returned_amount",
+        "uncollected_amount",
+        "uncollected",
+    ),
     "batch_id": ("batch_id", "payout_batch_id", "settlement_id", "payout_id"),
     "payout_date": ("payout_date", "settlement_date", "date"),
     "status": ("status", "delivery_status", "shipment_status"),
@@ -265,6 +277,9 @@ def parse_bosta_csv(file_content: bytes | str) -> list[dict]:
         gross = _to_decimal(row.get(columns["collected"]))
         fee = _to_decimal(row.get(columns["courier_fee"])) if columns["courier_fee"] else Decimal("0")
         net = _to_decimal(row.get(columns["net"]))
+        returned_uncollected = (
+            _to_decimal(row.get(columns["returned_uncollected"])) if columns["returned_uncollected"] else Decimal("0")
+        )
         order_id = (row.get(columns["order_id"]) or "").strip() if columns["order_id"] else ""
         if not order_id and columns["shipment_id"]:
             order_id = (row.get(columns["shipment_id"]) or "").strip()
@@ -285,11 +300,16 @@ def parse_bosta_csv(file_content: bytes | str) -> list[dict]:
             batch["gross_amount"] += gross
             batch["fees"] += fee
             batch["net_amount"] += net
+            row_uncollected = Decimal("0")
         else:
             # Failed delivery — the merchant's clearing balance for this
             # order will NOT drain (it stays open). Tracked for audit but
-            # the JE doesn't include it.
-            batch["uncollected_amount"] += gross
+            # the JE doesn't include it. A21: prefer the dedicated
+            # returned_uncollected column when present (real Bosta exports
+            # set collected=0 on failed deliveries); fall back to gross
+            # for legacy CSVs that omit the column.
+            row_uncollected = returned_uncollected if returned_uncollected > 0 else gross
+            batch["uncollected_amount"] += row_uncollected
 
         if not batch["payout_date"] and payout_date:
             batch["payout_date"] = payout_date
@@ -299,6 +319,7 @@ def parse_bosta_csv(file_content: bytes | str) -> list[dict]:
                 "gross": str(gross.quantize(_MONEY)),
                 "fee": str(fee.quantize(_MONEY)),
                 "net": str(net.quantize(_MONEY)),
+                "uncollected": str(row_uncollected.quantize(_MONEY)),
                 "status": "delivered" if is_delivered else (status or "returned"),
             }
         )

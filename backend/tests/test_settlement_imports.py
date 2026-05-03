@@ -158,6 +158,99 @@ TRK-1,500,30,470,X,2026-04-26,delivered
 
 
 # =============================================================================
+# A21 — Bosta returned_uncollected_amount column reader
+# =============================================================================
+# Real Bosta CSVs include `returned_uncollected_amount` as a separate column
+# from `collected_amount`. For a failed-delivery row the courier reports
+# collected=0 (nothing was actually collected from the customer) and the
+# original sale amount in `returned_uncollected_amount`. Pre-A21 the parser
+# only read `collected`, routing 0 to uncollected and silently dropping the
+# real amount. The BST-701 scenario in the test pack lost 1,200 EGP this
+# way — JE posted with no DR Sales Returns line.
+
+
+BOSTA_BST701_CSV = b"""order_id,collected_amount,courier_fee,returned_uncollected_amount,net_due,batch_id,payout_date,status
+1006,2200,150,0,2050,BST-701,2026-05-03,settled
+1007,0,0,1200,0,BST-701,2026-05-03,returned
+"""
+
+
+def test_parse_bosta_returned_uncollected_column_routes_to_uncollected():
+    """The returned_uncollected_amount column on a status=returned row
+    must populate the batch's uncollected_amount, even when the row's
+    collected_amount is 0."""
+    batches = parse_bosta_csv(BOSTA_BST701_CSV)
+    assert len(batches) == 1
+    batch = batches[0]
+    assert batch["payout_batch_id"] == "BST-701"
+
+    # Delivered row: collected=2200, fee=150, net=2050.
+    # Returned row: collected=0, returned_uncollected=1200.
+    # Aggregate gross (full) = delivered.collected (2200) + uncollected (1200)
+    # = 3400. Net = 2050 (only the delivered side wires money). Fees = 150.
+    assert batch["net_amount"] == "2050.00"
+    assert batch["fees"] == "150.00"
+    assert batch["uncollected_amount"] == "1200.00"
+    assert batch["gross_amount"] == "3400.00"
+
+    # Math reconciles for the projection: gross == net + fees + uncollected.
+    gross = Decimal(batch["gross_amount"])
+    expected = Decimal(batch["net_amount"]) + Decimal(batch["fees"]) + Decimal(batch["uncollected_amount"])
+    assert gross == expected
+
+
+def test_parse_bosta_returned_uncollected_back_compat_when_column_absent():
+    """Bosta CSVs from older exports without the returned_uncollected
+    column still treat status=returned rows by routing the collected
+    amount to uncollected (existing behavior preserved)."""
+    csv = b"""order_id,collected,courier_fee,net,batch_id,payout_date,status
+ORD-X,800,0,0,LEGACY,2026-04-26,returned
+"""
+    batches = parse_bosta_csv(csv)
+    assert batches[0]["uncollected_amount"] == "800.00"
+
+
+def test_parse_bosta_returned_with_zero_returned_uncollected_back_compat():
+    """If the column exists but is 0 for a returned row, fall back to
+    using collected_amount as uncollected (handles non-Bosta exports
+    that have the column but don't populate it)."""
+    csv = b"""order_id,collected_amount,courier_fee,returned_uncollected_amount,net_due,batch_id,payout_date,status
+ORD-X,800,0,0,0,LEGACY,2026-04-26,returned
+"""
+    batches = parse_bosta_csv(csv)
+    assert batches[0]["uncollected_amount"] == "800.00"
+
+
+def test_bst701_batch_posts_je_with_sales_returns_line(shopify_setup, company):
+    """End-to-end: BST-701 with a returned row and a delivered row posts
+    a JE that includes a DR Sales Returns line for 1200 (not silently
+    dropped) and drains Bosta clearing for the full 3400."""
+    import_settlement_csv(
+        company=company,
+        provider_normalized_code="bosta",
+        file_content=BOSTA_BST701_CSV,
+        source_filename="bosta_may.csv",
+    )
+    PaymentSettlementProjection().process_pending(company)
+
+    je = JournalEntry.objects.get(
+        company=company,
+        source_module="payment_settlement",
+        source_document="bosta:BST-701",
+    )
+    assert je.status == JournalEntry.Status.POSTED
+
+    sales_returns = Account.objects.get(company=company, code="41200")
+    returns_line = je.lines.get(account=sales_returns)
+    assert returns_line.debit == Decimal("1200.00")
+
+    bosta = SettlementProvider.objects.get(company=company, normalized_code="bosta")
+    clearing = bosta.posting_profile.control_account
+    clearing_line = je.lines.get(account=clearing)
+    assert clearing_line.credit == Decimal("3400.00")
+
+
+# =============================================================================
 # import_settlement_csv (event emission + idempotency)
 # =============================================================================
 
