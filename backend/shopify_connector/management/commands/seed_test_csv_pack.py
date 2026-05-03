@@ -95,7 +95,20 @@ class Command(BaseCommand):
 
                 self._set_default_cod_provider(company, store, options["cod_courier"])
                 seeded = self._seed_from_csv(company, store, csv_path)
-                self._emit_events(company, store, seeded)
+
+                # A40: emit + project orders FIRST, then emit refunds. The
+                # refund handler retries the SalesInvoice POSTED lookup
+                # (A23), but its retry budget is bounded — if order_paid
+                # events haven't reached the projection by the time the
+                # refund handler runs, the lookup exhausts and the credit
+                # note silently drops. Splitting the emission into two
+                # phases (with a projection pass between them) guarantees
+                # every order's invoice is POSTED before its refund's
+                # handler ever runs, regardless of Celery beat racing the
+                # synchronous _run_projections call below.
+                self._emit_orders(company, store, seeded["orders"])
+                self._run_projections(company)
+                self._emit_refunds(company, store, seeded["refunds"])
                 self._run_projections(company)
 
         self.stdout.write(
@@ -280,8 +293,8 @@ class Command(BaseCommand):
     # Event emission → projections create the JEs
     # -----------------------------------------------------------------------
 
-    def _emit_events(self, company: Company, store: ShopifyStore, seeded: dict) -> None:
-        for order, ctx in seeded["orders"]:
+    def _emit_orders(self, company: Company, store: ShopifyStore, orders: list) -> None:
+        for order, ctx in orders:
             emit_event_no_actor(
                 company=company,
                 event_type=EventTypes.SHOPIFY_ORDER_PAID,
@@ -309,7 +322,9 @@ class Command(BaseCommand):
                     customer_name="",
                 ),
             )
-        for refund in seeded["refunds"]:
+
+    def _emit_refunds(self, company: Company, store: ShopifyStore, refunds: list) -> None:
+        for refund in refunds:
             emit_event_no_actor(
                 company=company,
                 event_type=EventTypes.SHOPIFY_REFUND_CREATED,
