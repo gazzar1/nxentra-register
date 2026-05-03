@@ -23,7 +23,10 @@ JE shape (covered by other tests).
 """
 
 from datetime import date
+from decimal import Decimal
 from unittest.mock import patch
+
+import pytest
 
 from sales.models import SalesCreditNote, SalesInvoice
 from shopify_connector.projections import (
@@ -210,6 +213,262 @@ def test_find_invoice_skips_unposted_invoices(db, company, owner_membership):
 # =============================================================================
 # Credit-note idempotency (existing behavior — A23 just confirms it)
 # =============================================================================
+
+
+# =============================================================================
+# A41 — DeferEvent semantics: refund handler defers when order_paid hasn't
+#       arrived yet, projection re-attempts on next pass
+# =============================================================================
+
+
+def test_a41_refund_handler_defers_when_invoice_missing_and_event_fresh(db, company, owner_membership):
+    """A41: when the SalesInvoice POSTED lookup retries exhaust AND the
+    refund event is < 24h old, the handler must raise DeferEvent so the
+    projection rewinds the bookmark and re-attempts on the next pass —
+    instead of silently dropping the refund (pre-A41 behavior).
+    """
+    from accounts.commands import _setup_shopify_accounts
+    from events.emitter import emit_event_no_actor
+    from events.types import EventTypes
+    from projections.base import DeferEvent
+    from shopify_connector.commands import _ensure_shopify_sales_setup
+    from shopify_connector.event_types import ShopifyRefundCreatedData
+    from shopify_connector.models import ShopifyStore
+    from shopify_connector.projections import ShopifyAccountingHandler
+
+    _setup_shopify_accounts(company)
+    store = ShopifyStore.objects.create(
+        company=company,
+        shop_domain="a41-test.myshopify.com",
+        access_token="t",
+        status=ShopifyStore.Status.ACTIVE,
+    )
+    _ensure_shopify_sales_setup(store)
+
+    # Emit a refund event for an order that doesn't exist yet (no
+    # order_paid emitted in this test). With A23 retry helper exhausting
+    # in 500ms and event age ~0 seconds, the handler should DEFER.
+    event = emit_event_no_actor(
+        company=company,
+        event_type=EventTypes.SHOPIFY_REFUND_CREATED,
+        aggregate_type="ShopifyRefund",
+        aggregate_id="A41-REFUND-1",
+        idempotency_key="shopify.refund_created:A41-REFUND-1",
+        data=ShopifyRefundCreatedData(
+            shopify_order_id="999991",
+            shopify_refund_id="A41-REFUND-1",
+            order_number="A41-1",
+            transaction_date="2026-05-04",
+            currency="EGP",
+            amount="50.00",
+            reason="customer_changed_mind",
+        ),
+    )
+
+    handler = ShopifyAccountingHandler()
+    # Speed up the per-event retry to make this test fast.
+    import shopify_connector.projections as proj_module
+
+    original = proj_module._INVOICE_LOOKUP_DELAY_SECONDS
+    proj_module._INVOICE_LOOKUP_DELAY_SECONDS = 0.001
+    try:
+        with pytest.raises(DeferEvent) as exc:
+            handler.handle(event)
+    finally:
+        proj_module._INVOICE_LOOKUP_DELAY_SECONDS = original
+
+    assert "999991" in str(exc.value)
+
+
+def test_a41_old_orphan_refund_logs_warning_does_not_defer(db, company, owner_membership):
+    """A41: refund events older than 24h with no matching invoice are
+    treated as truly orphan — log a warning and accept (pre-A41 silent-
+    return behavior). Otherwise we'd loop forever on an order that
+    really doesn't exist (e.g. predates the module-routing refactor).
+    """
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from accounts.commands import _setup_shopify_accounts
+    from events.emitter import emit_event_no_actor
+    from events.models import BusinessEvent
+    from events.types import EventTypes
+    from shopify_connector.commands import _ensure_shopify_sales_setup
+    from shopify_connector.event_types import ShopifyRefundCreatedData
+    from shopify_connector.models import ShopifyStore
+    from shopify_connector.projections import ShopifyAccountingHandler
+
+    _setup_shopify_accounts(company)
+    store = ShopifyStore.objects.create(
+        company=company,
+        shop_domain="a41-test.myshopify.com",
+        access_token="t",
+        status=ShopifyStore.Status.ACTIVE,
+    )
+    _ensure_shopify_sales_setup(store)
+
+    event = emit_event_no_actor(
+        company=company,
+        event_type=EventTypes.SHOPIFY_REFUND_CREATED,
+        aggregate_type="ShopifyRefund",
+        aggregate_id="A41-REFUND-OLD",
+        idempotency_key="shopify.refund_created:A41-REFUND-OLD",
+        data=ShopifyRefundCreatedData(
+            shopify_order_id="999992",
+            shopify_refund_id="A41-REFUND-OLD",
+            order_number="A41-OLD",
+            transaction_date="2026-05-04",
+            currency="EGP",
+            amount="100.00",
+            reason="customer_changed_mind",
+        ),
+    )
+
+    # Backdate the event to 25h ago so the 24h freshness check fails.
+    BusinessEvent.objects.filter(pk=event.pk).update(
+        recorded_at=timezone.now() - timedelta(hours=25),
+    )
+    event.refresh_from_db()
+
+    handler = ShopifyAccountingHandler()
+    import shopify_connector.projections as proj_module
+
+    original = proj_module._INVOICE_LOOKUP_DELAY_SECONDS
+    proj_module._INVOICE_LOOKUP_DELAY_SECONDS = 0.001
+    try:
+        # Should NOT raise — old orphan returns silently per legacy.
+        handler.handle(event)
+    finally:
+        proj_module._INVOICE_LOOKUP_DELAY_SECONDS = original
+
+
+def test_a41_process_pending_rewinds_bookmark_on_defer(db, company, owner_membership):
+    """End-to-end A41: process_pending catches DeferEvent, doesn't mark
+    the event processed, and rewinds the bookmark so the next pass
+    re-attempts. After the order_paid event arrives + processes, the
+    refund succeeds on the second pass."""
+    from accounts.commands import _setup_shopify_accounts
+    from events.emitter import emit_event_no_actor
+    from events.models import EventBookmark
+    from events.types import EventTypes
+    from sales.models import SalesCreditNote
+    from shopify_connector.commands import _ensure_shopify_sales_setup
+    from shopify_connector.event_types import (
+        ShopifyOrderPaidData,
+        ShopifyRefundCreatedData,
+    )
+    from shopify_connector.models import ShopifyOrder, ShopifyStore
+    from shopify_connector.projections import ShopifyAccountingHandler
+
+    _setup_shopify_accounts(company)
+    store = ShopifyStore.objects.create(
+        company=company,
+        shop_domain="a41-e2e.myshopify.com",
+        access_token="t",
+        status=ShopifyStore.Status.ACTIVE,
+    )
+    _ensure_shopify_sales_setup(store)
+
+    ShopifyOrder.objects.create(
+        company=company,
+        store=store,
+        shopify_order_id=4141,
+        shopify_order_number="4141",
+        shopify_order_name="#4141",
+        total_price=Decimal("200.00"),
+        subtotal_price=Decimal("200.00"),
+        currency="EGP",
+        gateway="Paymob",
+        order_date=date(2026, 5, 4),
+        shopify_created_at="2026-05-04T00:00:00Z",
+    )
+
+    # Emit refund FIRST — simulates Shopify webhook re-ordering or seed
+    # bug. Refund handler will defer because no SalesInvoice exists yet.
+    emit_event_no_actor(
+        company=company,
+        event_type=EventTypes.SHOPIFY_REFUND_CREATED,
+        aggregate_type="ShopifyRefund",
+        aggregate_id="999941",
+        idempotency_key="shopify.refund_created:999941",
+        data=ShopifyRefundCreatedData(
+            shopify_order_id="4141",
+            shopify_refund_id="999941",
+            order_number="4141",
+            transaction_date="2026-05-04",
+            currency="EGP",
+            amount="50.00",
+            reason="partial",
+        ),
+    )
+
+    handler = ShopifyAccountingHandler()
+    import shopify_connector.projections as proj_module
+
+    original = proj_module._INVOICE_LOOKUP_DELAY_SECONDS
+    proj_module._INVOICE_LOOKUP_DELAY_SECONDS = 0.001
+    try:
+        # Pass 1: only the refund is in the queue. Handler defers.
+        # process_pending catches it and rewinds the bookmark.
+        handler.process_pending(company)
+    finally:
+        proj_module._INVOICE_LOOKUP_DELAY_SECONDS = original
+
+    # No credit note yet — refund deferred, not silently dropped.
+    assert SalesCreditNote.objects.filter(company=company, source="shopify").count() == 0
+
+    # The bookmark wasn't advanced past the deferred refund event.
+    bookmark = EventBookmark.objects.get(consumer_name=handler.name, company=company)
+    if bookmark.last_event:
+        # last_event must be strictly BEFORE the refund event's sequence
+        # so the next pass picks it up.
+        from events.models import BusinessEvent
+
+        refund = BusinessEvent.objects.get(idempotency_key="shopify.refund_created:A41-E2E-REFUND")
+        assert bookmark.last_event.company_sequence < refund.company_sequence
+
+    # Now emit the order_paid event (the precondition the refund was
+    # waiting on).
+    emit_event_no_actor(
+        company=company,
+        event_type=EventTypes.SHOPIFY_ORDER_PAID,
+        aggregate_type="ShopifyOrder",
+        aggregate_id="A41-E2E-ORDER",
+        idempotency_key="shopify.order_paid:A41-E2E-ORDER",
+        data=ShopifyOrderPaidData(
+            shopify_order_id="4141",
+            order_number="4141",
+            order_name="#4141",
+            transaction_date="2026-05-04",
+            currency="EGP",
+            amount="200.00",
+            subtotal="200.00",
+            total_tax="0",
+            total_shipping="0",
+            gateway="Paymob",
+            store_public_id=str(store.public_id),
+        ),
+    )
+
+    proj_module._INVOICE_LOOKUP_DELAY_SECONDS = 0.001
+    try:
+        # Pass 2 onwards: each call simulates a Celery beat tick. Refund
+        # may defer once or twice more; eventually the SalesInvoice is
+        # POSTED and the refund handler succeeds.
+        for _ in range(5):
+            handler.process_pending(company)
+            from sales.models import SalesCreditNote as _SCN
+
+            if _SCN.objects.filter(company=company, source="shopify").exists():
+                break
+    finally:
+        proj_module._INVOICE_LOOKUP_DELAY_SECONDS = original
+
+    # Credit note should now exist.
+    credit_notes = SalesCreditNote.objects.filter(company=company, source="shopify")
+    assert credit_notes.count() == 1
+    assert credit_notes.first().source_document_id == "999941"
 
 
 def test_credit_note_idempotent_on_repeat_invocation(db, company, owner_membership):

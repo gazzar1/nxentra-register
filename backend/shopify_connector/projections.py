@@ -950,13 +950,36 @@ class ShopifyAccountingHandler(BaseProjection):
         original_invoice = _find_posted_shopify_invoice(event.company, shopify_order_id)
 
         if not original_invoice:
+            # A41: the in-pass retry exhausted, but the order_paid event
+            # may still be pending in the queue (Shopify webhook
+            # re-ordering, or a worker restart split the batch). If the
+            # event is fresh (< 24h), raise DeferEvent so process_pending
+            # rewinds the bookmark and re-attempts on the next pass.
+            # Older events are treated as truly orphan (the order really
+            # doesn't exist) — log warning and accept, matching pre-A41
+            # behavior.
+            from datetime import timedelta
+
+            from django.utils import timezone as _tz
+
+            from projections.base import DeferEvent
+
+            event_age = _tz.now() - event.recorded_at
+            if event_age < timedelta(hours=24):
+                raise DeferEvent(
+                    f"Awaiting order_paid for Shopify order {shopify_order_id} "
+                    f"(refund {refund_id} aged {event_age.total_seconds():.0f}s)"
+                )
+
             logger.warning(
                 "Cannot create CreditNote for Shopify refund %s — original invoice not found "
-                "for order %s after %d retries. The order may predate the module-routing "
-                "refactor, or the order_paid event has not yet been processed.",
+                "for order %s after %d retries and %s of waiting. Treating as orphan; the "
+                "order may predate the module-routing refactor or the order_paid webhook "
+                "may have been lost.",
                 refund_id,
                 shopify_order_id,
                 _INVOICE_LOOKUP_MAX_ATTEMPTS,
+                event_age,
             )
             return
 

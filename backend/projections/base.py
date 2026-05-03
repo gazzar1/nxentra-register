@@ -14,6 +14,7 @@ import logging
 from abc import ABC, abstractmethod
 
 from django.db import transaction
+from django.utils import timezone
 
 from accounts.models import Company
 from events.models import BusinessEvent, EventBookmark
@@ -21,6 +22,34 @@ from projections.models import ProjectionAppliedEvent
 from projections.write_barrier import projection_writes_allowed
 
 logger = logging.getLogger(__name__)
+
+
+class DeferEvent(Exception):
+    """A41: raised by a projection handler when the event can't be processed
+    yet but isn't a permanent failure — typically a precondition that's
+    expected to become true shortly (e.g. the refund handler waiting for
+    the order_paid handler to commit a SalesInvoice POSTED).
+
+    `process_pending` catches this specifically:
+    - Logs at INFO (not ERROR — defer isn't a failure)
+    - Rolls back the per-event transaction (so ProjectionAppliedEvent
+      is not created and the event remains "unprocessed")
+    - Continues to the next event in the same pass — does NOT halt
+      processing the way generic exceptions do under stop_on_error=True
+    - At end of the pass, rewinds the bookmark to one BEFORE the earliest
+      deferred event so the next call reprocesses it. Any events that
+      successfully processed in the same pass are protected by the
+      ProjectionAppliedEvent idempotency check on the second pass.
+
+    Handlers should attach a short reason via the exception message for
+    log readability and a `defer_until` attribute (datetime or None) to
+    support future deadline enforcement (e.g. Sentry alert if a deferred
+    event ages past 24h).
+    """
+
+    def __init__(self, message: str = "", defer_until=None):
+        super().__init__(message)
+        self.defer_until = defer_until
 
 
 class BaseProjection(ABC):
@@ -154,6 +183,12 @@ class BaseProjection(ABC):
             )
 
             processed = 0
+            # A41: events that the handler raised DeferEvent on. We track
+            # the lowest-sequence one so we can rewind the bookmark below
+            # — guaranteeing the next pass re-attempts it. Already-
+            # processed events in the same pass remain idempotent via the
+            # ProjectionAppliedEvent unique constraint.
+            earliest_deferred: BusinessEvent | None = None
 
             for event in events:
                 try:
@@ -173,6 +208,25 @@ class BaseProjection(ABC):
                         bookmark.mark_processed(event)
                         processed += 1
 
+                except DeferEvent as defer:
+                    # A41: precondition not met yet (e.g. refund handler
+                    # waiting on order_paid). Transaction rolled back, so
+                    # ProjectionAppliedEvent for THIS event was not
+                    # created — the event remains unprocessed. We keep
+                    # going through the rest of the batch; subsequent
+                    # successful events will also advance the bookmark,
+                    # so we'll rewind below to ensure the deferred event
+                    # is revisited.
+                    logger.info(
+                        "Projection %s deferred event %s: %s",
+                        self.name,
+                        event.id,
+                        defer or "no reason given",
+                    )
+                    if earliest_deferred is None or event.company_sequence < earliest_deferred.company_sequence:
+                        earliest_deferred = event
+                    continue
+
                 except Exception as e:
                     logger.exception(f"Error processing event {event.id} in {self.name}: {e}")
                     bookmark.mark_error(str(e))
@@ -180,6 +234,30 @@ class BaseProjection(ABC):
 
                     if stop_on_error:
                         break
+
+            # A41: if any event was deferred, rewind the bookmark to the
+            # event immediately preceding the earliest deferred one. This
+            # guarantees the next process_pending pass reprocesses it.
+            # Successfully-processed events in this pass stay idempotent
+            # via the ProjectionAppliedEvent unique constraint — they'll
+            # short-circuit on the get_or_create check on the second pass.
+            if earliest_deferred is not None:
+                predecessor = (
+                    BusinessEvent.objects.filter(
+                        company=company,
+                        company_sequence__lt=earliest_deferred.company_sequence,
+                    )
+                    .order_by("-company_sequence")
+                    .first()
+                )
+                # Refresh bookmark from DB — recursive _process_projections
+                # calls may have advanced it. We need the current row to
+                # update_fields against, otherwise our save() races against
+                # the inner advancements.
+                bookmark.refresh_from_db()
+                bookmark.last_event = predecessor
+                bookmark.last_processed_at = timezone.now()
+                bookmark.save(update_fields=["last_event", "last_processed_at", "updated_at"])
 
             if processed > 0:
                 logger.info(f"Projection {self.name} processed {processed} events for {company.name}")
