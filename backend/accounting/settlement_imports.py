@@ -112,6 +112,13 @@ _PAYMOB_HEADER_ALIASES = {
         "chargeback",
         "chargeback_amount",
     ),
+    # A22: per-row gateway lets the projection drain the correct
+    # provider clearing account when a single Paymob payout consolidates
+    # rows from multiple gateways (e.g. 'Paymob' + 'Paymob Accept').
+    # Without this, the JE drains the umbrella provider's clearing for
+    # the full batch gross, leaving sub-providers' clearing balances
+    # stuck and the umbrella provider over-drained.
+    "gateway": ("gateway", "payment_method", "method", "channel"),
     "payout_batch_id": ("payout_batch_id", "batch_id", "payout_id", "settlement_id"),
     "payout_date": ("payout_date", "settlement_date", "date"),
 }
@@ -155,7 +162,12 @@ def parse_paymob_csv(file_content: bytes | str) -> list[dict]:
             f"Paymob CSV missing required columns: {', '.join(missing)}. Found headers: {list(reader.fieldnames)}"
         )
 
-    # Aggregate by batch
+    from accounting.settlement_provider import normalize_gateway_code
+
+    # Aggregate by batch + per-gateway sub-totals within each batch.
+    # provider_breakdown is built when rows in a batch span multiple
+    # normalized gateways; the projection uses it to post one CR
+    # clearing line per provider instead of one umbrella line.
     batches: dict[str, dict] = {}
     for row in rows:
         batch_id = (row.get(columns["payout_batch_id"]) or "").strip()
@@ -167,6 +179,8 @@ def parse_paymob_csv(file_content: bytes | str) -> list[dict]:
         refund = (
             _to_decimal(row.get(columns["refund_or_chargeback"])) if columns["refund_or_chargeback"] else Decimal("0")
         )
+        gateway_raw = (row.get(columns["gateway"]) or "").strip() if columns["gateway"] else ""
+        gateway_normalized = normalize_gateway_code(gateway_raw)
         order_id = (row.get(columns["order_id"]) or "").strip() if columns["order_id"] else ""
         payout_date = (row.get(columns["payout_date"]) or "").strip() if columns["payout_date"] else ""
 
@@ -179,12 +193,29 @@ def parse_paymob_csv(file_content: bytes | str) -> list[dict]:
                 "net_amount": Decimal("0"),
                 "uncollected_amount": Decimal("0"),
                 "line_items": [],
+                "_per_gateway": {},  # normalized_code -> {gross, fees, net, uncollected}
             }
         batch = batches[batch_id]
         batch["gross_amount"] += gross
         batch["fees"] += fee
         batch["net_amount"] += net
         batch["uncollected_amount"] += refund
+
+        if gateway_normalized:
+            sub = batch["_per_gateway"].setdefault(
+                gateway_normalized,
+                {
+                    "gross_amount": Decimal("0"),
+                    "fees": Decimal("0"),
+                    "net_amount": Decimal("0"),
+                    "uncollected_amount": Decimal("0"),
+                },
+            )
+            sub["gross_amount"] += gross
+            sub["fees"] += fee
+            sub["net_amount"] += net
+            sub["uncollected_amount"] += refund
+
         if not batch["payout_date"] and payout_date:
             batch["payout_date"] = payout_date
         batch["line_items"].append(
@@ -194,20 +225,40 @@ def parse_paymob_csv(file_content: bytes | str) -> list[dict]:
                 "fee": str(fee.quantize(_MONEY)),
                 "net": str(net.quantize(_MONEY)),
                 "refund": str(refund.quantize(_MONEY)),
+                "gateway": gateway_normalized,
                 "status": "refunded" if refund > 0 else "settled",
             }
         )
 
-    return [
-        {
-            **batch,
-            "gross_amount": str(batch["gross_amount"].quantize(_MONEY)),
-            "fees": str(batch["fees"].quantize(_MONEY)),
-            "net_amount": str(batch["net_amount"].quantize(_MONEY)),
-            "uncollected_amount": str(batch["uncollected_amount"].quantize(_MONEY)),
-        }
-        for batch in batches.values()
-    ]
+    results = []
+    for batch in batches.values():
+        per_gateway = batch.pop("_per_gateway", {})
+        # Only emit a breakdown when the batch actually spans multiple
+        # gateways. A single-gateway batch leaves provider_breakdown
+        # empty so the projection takes the legacy single-clearing path.
+        breakdown = []
+        if len(per_gateway) > 1:
+            breakdown = [
+                {
+                    "gateway_normalized_code": code,
+                    "gross_amount": str(sub["gross_amount"].quantize(_MONEY)),
+                    "fees": str(sub["fees"].quantize(_MONEY)),
+                    "net_amount": str(sub["net_amount"].quantize(_MONEY)),
+                    "uncollected_amount": str(sub["uncollected_amount"].quantize(_MONEY)),
+                }
+                for code, sub in sorted(per_gateway.items())
+            ]
+        results.append(
+            {
+                **batch,
+                "gross_amount": str(batch["gross_amount"].quantize(_MONEY)),
+                "fees": str(batch["fees"].quantize(_MONEY)),
+                "net_amount": str(batch["net_amount"].quantize(_MONEY)),
+                "uncollected_amount": str(batch["uncollected_amount"].quantize(_MONEY)),
+                "provider_breakdown": breakdown,
+            }
+        )
+    return results
 
 
 # =============================================================================
@@ -406,6 +457,7 @@ def import_settlement_csv(
             payment_method=method,
             payout_date=batch["payout_date"],
             line_items=batch["line_items"],
+            provider_breakdown=batch.get("provider_breakdown") or [],
             source_filename=source_filename,
         )
         event = emit_event_no_actor(

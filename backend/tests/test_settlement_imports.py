@@ -221,6 +221,157 @@ ORD-X,800,0,0,0,LEGACY,2026-04-26,returned
     assert batches[0]["uncollected_amount"] == "800.00"
 
 
+# =============================================================================
+# A22 — Per-row provider routing (mixed-gateway payout batch)
+# =============================================================================
+# MAY01-B scenario from the test pack: a single Paymob payout batch
+# consolidating one row from gateway "Paymob" (3000 gross) and one row
+# from gateway "Paymob Accept" (1000 gross). Pre-A22 the parser ignored
+# `gateway` and the projection drained the umbrella Paymob clearing for
+# the full 4000 — over-draining Paymob and leaving Paymob Accept's 1000
+# clearing balance stuck. After A22 the parser builds a per-gateway
+# breakdown and the projection posts one CR clearing line per provider.
+
+
+PAYMOB_MIXED_GATEWAY_CSV = b"""order_id,gateway,gross_amount,gateway_fee,refund_or_chargeback_amount,net_amount,payout_batch_id,payout_date
+1008,Paymob,3000,90,0,2910,PAYMOB-MAY01-B,2026-05-04
+1009,Paymob Accept,1000,30,0,970,PAYMOB-MAY01-B,2026-05-04
+"""
+
+
+def test_parse_paymob_mixed_gateway_batch_emits_provider_breakdown():
+    """When rows in a batch span multiple gateways, the parser populates
+    provider_breakdown with one entry per normalized gateway. The
+    aggregate batch totals still reflect everything for back-compat."""
+    batches = parse_paymob_csv(PAYMOB_MIXED_GATEWAY_CSV)
+    assert len(batches) == 1
+    batch = batches[0]
+    assert batch["payout_batch_id"] == "PAYMOB-MAY01-B"
+
+    # Aggregate totals match the sum of all rows.
+    assert batch["gross_amount"] == "4000.00"
+    assert batch["fees"] == "120.00"
+    assert batch["net_amount"] == "3880.00"
+
+    # Per-gateway breakdown is populated and sums match.
+    breakdown = batch["provider_breakdown"]
+    by_code = {b["gateway_normalized_code"]: b for b in breakdown}
+    assert set(by_code) == {"paymob", "paymob_accept"}
+    assert by_code["paymob"]["gross_amount"] == "3000.00"
+    assert by_code["paymob"]["fees"] == "90.00"
+    assert by_code["paymob"]["net_amount"] == "2910.00"
+    assert by_code["paymob_accept"]["gross_amount"] == "1000.00"
+    assert by_code["paymob_accept"]["fees"] == "30.00"
+    assert by_code["paymob_accept"]["net_amount"] == "970.00"
+
+
+def test_parse_paymob_single_gateway_batch_leaves_breakdown_empty():
+    """A single-gateway batch (the common case) keeps provider_breakdown
+    empty so the projection takes the legacy single-clearing path."""
+    csv = b"""order_id,gateway,gross,fee,net,payout_batch_id,payout_date
+ORD-1,Paymob,1000.00,30.00,970.00,BATCH-SINGLE,2026-04-25
+ORD-2,Paymob,500.00,15.00,485.00,BATCH-SINGLE,2026-04-25
+"""
+    batches = parse_paymob_csv(csv)
+    assert batches[0]["provider_breakdown"] == []
+
+
+def test_parse_paymob_no_gateway_column_back_compat():
+    """CSVs without a gateway column emit no breakdown — back-compat
+    for the original Paymob format that test_parse_paymob_aggregates_by_batch
+    exercises."""
+    batches = parse_paymob_csv(PAYMOB_CSV)  # no gateway column
+    for batch in batches:
+        assert batch["provider_breakdown"] == []
+
+
+def test_mixed_gateway_batch_posts_je_with_per_provider_clearing(shopify_setup, company):
+    """End-to-end MAY01-B: the projection posts one JE with two CR
+    clearing lines (Paymob 3000 + Paymob Accept 1000), each tagged with
+    the right settlement_provider dimension. Bank deposit (3880) still
+    matches a single EBD DR line for the total net."""
+    # Set up Paymob Accept with its OWN clearing account + posting
+    # profile so the JE produces visibly separate credit lines per
+    # provider. (In production a merchant might leave Paymob Accept
+    # pointing at the Paymob umbrella clearing — same account, separate
+    # dimension tags — but for the assertion we want the cleanest
+    # signal: distinct accounts.)
+    from accounting.models import Account
+    from accounting.settlement_provider import (
+        SettlementProvider,
+        ensure_settlement_provider_dimension,
+        ensure_settlement_provider_dimension_value,
+    )
+    from projections.write_barrier import command_writes_allowed, projection_writes_allowed
+    from sales.models import PostingProfile
+
+    with projection_writes_allowed():
+        accept_clearing_account = Account.objects.projection().create(
+            company=company,
+            code="11502",
+            name="Paymob Accept Clearing",
+            account_type=Account.AccountType.ASSET,
+            role=Account.AccountRole.LIQUIDITY,
+            status=Account.Status.ACTIVE,
+        )
+    with command_writes_allowed():
+        accept_profile = PostingProfile.objects.create(
+            company=company,
+            code="PAYMOB-ACCEPT-PROFILE",
+            name="Paymob Accept Profile",
+            profile_type=PostingProfile.ProfileType.CUSTOMER,
+            control_account=accept_clearing_account,
+        )
+        dimension = ensure_settlement_provider_dimension(company)
+        dim_value = ensure_settlement_provider_dimension_value(
+            dimension=dimension,
+            normalized_code="paymob_accept",
+            display_name="Paymob Accept",
+        )
+        SettlementProvider.objects.create(
+            company=company,
+            external_system="shopify",
+            source_code="Paymob Accept",
+            normalized_code="paymob_accept",
+            display_name="Paymob Accept",
+            provider_type=SettlementProvider.ProviderType.GATEWAY,
+            posting_profile=accept_profile,
+            dimension_value=dim_value,
+            is_active=True,
+        )
+
+    import_settlement_csv(
+        company=company,
+        provider_normalized_code="paymob",
+        file_content=PAYMOB_MIXED_GATEWAY_CSV,
+        source_filename="paymob_may01b.csv",
+    )
+    PaymentSettlementProjection().process_pending(company)
+
+    je = JournalEntry.objects.get(
+        company=company,
+        source_module="payment_settlement",
+        source_document="paymob:PAYMOB-MAY01-B",
+    )
+    assert je.status == JournalEntry.Status.POSTED
+
+    # Locate each provider's clearing account via SettlementProvider.
+    paymob_provider = SettlementProvider.objects.get(company=company, normalized_code="paymob")
+    paymob_clearing = paymob_provider.posting_profile.control_account
+    accept_provider = SettlementProvider.objects.get(company=company, normalized_code="paymob_accept")
+    accept_clearing = accept_provider.posting_profile.control_account
+
+    # Both providers receive their own CR drain — Paymob 3000, Paymob
+    # Accept 1000. Pre-A22, only Paymob would have a 4000 CR.
+    assert je.lines.get(account=paymob_clearing).credit == Decimal("3000.00")
+    assert je.lines.get(account=accept_clearing).credit == Decimal("1000.00")
+
+    # Single EBD DR line carries the full net (so bank-rec matches the
+    # full 3880 deposit against a single JE).
+    ebd = Account.objects.get(company=company, code="11600")
+    assert je.lines.get(account=ebd).debit == Decimal("3880.00")
+
+
 def test_bst701_batch_posts_je_with_sales_returns_line(shopify_setup, company):
     """End-to-end: BST-701 with a returned row and a delivered row posts
     a JE that includes a DR Sales Returns line for 1200 (not silently

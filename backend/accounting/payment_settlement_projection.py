@@ -172,19 +172,84 @@ class PaymentSettlementProjection(BaseProjection):
             )
             return
 
-        clearing_account = provider.posting_profile.control_account if provider.posting_profile else None
-        if not clearing_account:
-            logger.error(
-                "PaymentSettlement: provider %s has no posting_profile/clearing account — batch %s skipped.",
-                provider.normalized_code,
-                payout_batch_id,
-            )
-            return
+        # A22: when a payout batch consolidates rows from multiple
+        # gateways (e.g. 'Paymob' umbrella + 'Paymob Accept' sub-method),
+        # we resolve a SettlementProvider per breakdown entry and post
+        # one CR clearing line per provider. Otherwise the legacy single-
+        # clearing path applies (back-compat for parsers that don't emit
+        # a breakdown, and for batches that span only one gateway).
+        provider_breakdown = data.get("provider_breakdown") or []
+        clearing_lines: list[dict] = []
 
-        # Build JE lines.
         memo = (
             f"Settlement: {provider.display_name} batch {payout_batch_id} ({data.get('source_filename') or 'manual'})"
         )
+
+        if provider_breakdown:
+            for sub in provider_breakdown:
+                sub_code = (sub.get("gateway_normalized_code") or "").strip().lower()
+                sub_gross = Decimal(str(sub.get("gross_amount", "0")))
+                if sub_gross <= 0:
+                    continue
+                sub_provider = (
+                    SettlementProvider.objects.filter(
+                        company=company,
+                        external_system=external_system,
+                        normalized_code=sub_code,
+                        is_active=True,
+                    )
+                    .select_related("posting_profile", "dimension_value", "dimension_value__dimension")
+                    .first()
+                )
+                if not sub_provider or not sub_provider.posting_profile:
+                    logger.error(
+                        "PaymentSettlement: provider_breakdown references unknown gateway %r "
+                        "for batch %s — skipping JE. Run backfill_settlement_providers or "
+                        "let the lazy-create path resolve it on next order.",
+                        sub_code,
+                        payout_batch_id,
+                    )
+                    return
+                sub_clearing = sub_provider.posting_profile.control_account
+                line = {
+                    "account_id": sub_clearing.id,
+                    "description": f"{memo} — {sub_provider.display_name} clearing",
+                    "debit": "0",
+                    "credit": str(sub_gross),
+                }
+                if sub_provider.dimension_value_id:
+                    line["analysis_tags"] = [
+                        {
+                            "dimension_public_id": str(sub_provider.dimension_value.dimension.public_id),
+                            "value_public_id": str(sub_provider.dimension_value.public_id),
+                        }
+                    ]
+                clearing_lines.append(line)
+        else:
+            clearing_account = provider.posting_profile.control_account if provider.posting_profile else None
+            if not clearing_account:
+                logger.error(
+                    "PaymentSettlement: provider %s has no posting_profile/clearing account — batch %s skipped.",
+                    provider.normalized_code,
+                    payout_batch_id,
+                )
+                return
+            line = {
+                "account_id": clearing_account.id,
+                "description": f"{memo} — clearing",
+                "debit": "0",
+                "credit": str(gross),
+            }
+            if provider.dimension_value_id:
+                line["analysis_tags"] = [
+                    {
+                        "dimension_public_id": str(provider.dimension_value.dimension.public_id),
+                        "value_public_id": str(provider.dimension_value.public_id),
+                    }
+                ]
+            clearing_lines.append(line)
+
+        # Build JE lines.
         je_lines: list[dict] = [
             {
                 "account_id": expected_bank.id,
@@ -225,21 +290,7 @@ class PaymentSettlementProjection(BaseProjection):
                     "credit": "0",
                 }
             )
-        # Clearing line — credit, tagged with the provider's dimension value.
-        clearing_line: dict = {
-            "account_id": clearing_account.id,
-            "description": f"{memo} — clearing",
-            "debit": "0",
-            "credit": str(gross),
-        }
-        if provider.dimension_value_id:
-            clearing_line["analysis_tags"] = [
-                {
-                    "dimension_public_id": str(provider.dimension_value.dimension.public_id),
-                    "value_public_id": str(provider.dimension_value.public_id),
-                }
-            ]
-        je_lines.append(clearing_line)
+        je_lines.extend(clearing_lines)
 
         actor = system_actor_for_company(company)
         currency = data.get("currency") or company.default_currency or "USD"

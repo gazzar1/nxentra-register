@@ -2469,6 +2469,15 @@ class PaymentSettlementReceivedData(FinancialEventData):
         line_items: per-order breakdown for audit/drilldown. List of
             {order_id, gross, fee, net, status}. Optional — header
             totals drive the JE.
+        provider_breakdown: A22 — per-gateway split for batches that
+            consolidate multiple payment methods (e.g. a Paymob payout
+            covering both 'Paymob' and 'Paymob Accept' orders). When
+            non-empty, the projection posts one JE with one CR clearing
+            line per breakdown entry, each tagged with the matching
+            provider's dimension value. Each entry is a dict:
+            {gateway_normalized_code, gross_amount, fees, net_amount,
+             uncollected_amount}. Empty list = legacy single-provider
+            behavior (back-compat).
         source_filename: filename of the uploaded CSV, for audit.
     """
 
@@ -2482,6 +2491,7 @@ class PaymentSettlementReceivedData(FinancialEventData):
     payment_method: str = ""
     payout_date: str = ""
     line_items: list = field(default_factory=list)
+    provider_breakdown: list = field(default_factory=list)
     source_filename: str = ""
 
 
