@@ -372,6 +372,114 @@ def test_mixed_gateway_batch_posts_je_with_per_provider_clearing(shopify_setup, 
     assert je.lines.get(account=ebd).debit == Decimal("3880.00")
 
 
+# =============================================================================
+# A26 — Orphan order detection (settlement-without-Shopify-order)
+# =============================================================================
+# Test pack PAYMOB-MAY01-C (order 9999) and BST-703 (order 8888) reference
+# order_ids that don't exist in the system. Pre-A26 the JE posted silently,
+# draining provider clearing for amounts that were never deposited there
+# (clearing goes negative on the orphaned portion). A26 detects orphans at
+# import time and surfaces them in the result so the UI can flag for review.
+
+
+PAYMOB_ORPHAN_CSV = b"""order_id,gateway,gross_amount,gateway_fee,refund_or_chargeback_amount,net_amount,payout_batch_id,payout_date
+9999,Paymob,700.00,21.00,0,679.00,PAYMOB-ORPHAN,2026-05-04
+"""
+
+
+def test_import_surfaces_unknown_order_ids_in_result(shopify_setup, company):
+    """Settlement rows referencing order_ids that don't match any
+    ShopifyOrder must surface in the import result so the UI can
+    badge the batch as 'needs review'."""
+    results = import_settlement_csv(
+        company=company,
+        provider_normalized_code="paymob",
+        file_content=PAYMOB_ORPHAN_CSV,
+        source_filename="paymob_orphan.csv",
+    )
+    assert len(results) == 1
+    result = results[0]
+    assert result["unknown_order_ids"] == ["9999"]
+    # JE still posts so the merchant isn't blocked.
+    PaymentSettlementProjection().process_pending(company)
+    je = JournalEntry.objects.get(
+        company=company,
+        source_module="payment_settlement",
+        source_document="paymob:PAYMOB-ORPHAN",
+    )
+    assert je.status == JournalEntry.Status.POSTED
+
+
+def test_import_with_known_order_id_has_empty_unknown_list(shopify_setup, company):
+    """When every referenced order_id matches a ShopifyOrder, the
+    unknown_order_ids list is empty — the UI should NOT badge."""
+    from datetime import date as _date
+
+    from shopify_connector.models import ShopifyOrder, ShopifyStore
+
+    store = ShopifyStore.objects.get(company=company)
+    ShopifyOrder.objects.create(
+        company=company,
+        store=store,
+        shopify_order_id=12345,
+        shopify_order_number="12345",
+        shopify_order_name="#12345",
+        total_price=Decimal("1000.00"),
+        subtotal_price=Decimal("1000.00"),
+        currency="EGP",
+        gateway="Paymob",
+        order_date=_date(2026, 5, 4),
+        shopify_created_at="2026-05-04T00:00:00Z",
+    )
+
+    csv = b"""order_id,gateway,gross_amount,gateway_fee,refund_or_chargeback_amount,net_amount,payout_batch_id,payout_date
+12345,Paymob,1000.00,30.00,0,970.00,KNOWN-BATCH,2026-05-04
+"""
+    results = import_settlement_csv(
+        company=company,
+        provider_normalized_code="paymob",
+        file_content=csv,
+        source_filename="paymob_known.csv",
+    )
+    assert results[0]["unknown_order_ids"] == []
+
+
+def test_import_mixed_known_and_unknown_orders(shopify_setup, company):
+    """A batch with one known + one unknown order surfaces ONLY the
+    unknown id. The merchant sees the gap explicitly without losing
+    the known portion."""
+    from datetime import date as _date
+
+    from shopify_connector.models import ShopifyOrder, ShopifyStore
+
+    store = ShopifyStore.objects.get(company=company)
+    ShopifyOrder.objects.create(
+        company=company,
+        store=store,
+        shopify_order_id=22222,
+        shopify_order_number="22222",
+        shopify_order_name="#22222",
+        total_price=Decimal("500.00"),
+        subtotal_price=Decimal("500.00"),
+        currency="EGP",
+        gateway="Paymob",
+        order_date=_date(2026, 5, 4),
+        shopify_created_at="2026-05-04T00:00:00Z",
+    )
+
+    csv = b"""order_id,gross,fee,net,payout_batch_id,payout_date
+22222,500.00,15.00,485.00,MIXED-BATCH,2026-05-04
+33333,300.00,9.00,291.00,MIXED-BATCH,2026-05-04
+"""
+    results = import_settlement_csv(
+        company=company,
+        provider_normalized_code="paymob",
+        file_content=csv,
+        source_filename="paymob_mixed.csv",
+    )
+    assert results[0]["unknown_order_ids"] == ["33333"]
+
+
 def test_bst701_batch_posts_je_with_sales_returns_line(shopify_setup, company):
     """End-to-end: BST-701 with a returned row and a delivered row posts
     a JE that includes a DR Sales Returns line for 1200 (not silently

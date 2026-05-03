@@ -428,6 +428,35 @@ def import_settlement_csv(
     if not batches:
         return []
 
+    # A26: validate referenced order_ids against ShopifyOrder per company.
+    # Settlement rows that reference orders we never saw still post a JE
+    # (so the merchant isn't blocked on Shopify history gaps), but the
+    # import result surfaces the unknown order IDs so the merchant can
+    # investigate. Without this signal, an orphan row silently drains
+    # provider clearing for a sale that was never recorded — provider
+    # clearing goes negative on the orphaned portion.
+    known_order_ids: set[str] = set()
+    if external_system == "shopify":
+        try:
+            from shopify_connector.models import ShopifyOrder
+
+            referenced_ids = {
+                str(li.get("order_id")).strip()
+                for batch in batches
+                for li in batch.get("line_items") or []
+                if li.get("order_id")
+            }
+            if referenced_ids:
+                known_order_ids = {
+                    str(oid)
+                    for oid in ShopifyOrder.objects.filter(
+                        company=company,
+                        shopify_order_id__in=[oid for oid in referenced_ids if oid.isdigit()],
+                    ).values_list("shopify_order_id", flat=True)
+                }
+        except ImportError:
+            known_order_ids = set()
+
     from events.models import BusinessEvent
 
     emitted: list[dict] = []
@@ -440,6 +469,15 @@ def import_settlement_csv(
             company=company,
             idempotency_key=idempotency_key,
         ).exists()
+
+        # A26: collect orphan order ids in this batch for the result.
+        unknown_order_ids = sorted(
+            {
+                str(li["order_id"]).strip()
+                for li in batch.get("line_items") or []
+                if li.get("order_id") and str(li["order_id"]).strip() not in known_order_ids
+            }
+        )
 
         currency = company.default_currency or "USD"
         event_data = PaymentSettlementReceivedData(
@@ -480,7 +518,21 @@ def import_settlement_csv(
                 "uncollected": batch["uncollected_amount"],
                 "line_count": len(batch["line_items"]),
                 "deduplicated": already_existed,
+                # A26: orphan order_ids for this batch — non-empty list
+                # is a UI signal to surface a "needs review" badge so
+                # the merchant can investigate before reconciling.
+                "unknown_order_ids": unknown_order_ids,
             }
         )
+
+        if unknown_order_ids:
+            logger.warning(
+                "Settlement import %s:%s references %d unknown order_ids: %s. "
+                "JE posts but provider clearing may go negative on the orphaned portion.",
+                code,
+                batch["payout_batch_id"],
+                len(unknown_order_ids),
+                ", ".join(unknown_order_ids[:10]),
+            )
 
     return emitted
