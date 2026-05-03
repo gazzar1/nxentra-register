@@ -717,15 +717,27 @@ def _settlement_prepass_match(
 
 
 def _difference_tolerance(expected: Decimal) -> Decimal:
-    """A16: near-match tolerance for bank deposits vs expected EBD lines.
+    """A16/A35: near-match tolerance for bank deposits vs expected EBD lines.
 
-    2% of the expected amount, capped at 500 currency units (EGP, USD…).
-    Below this gap we still match and ask the operator to categorize the
-    difference; above it we leave both lines unmatched (likely a wrong
+    15% of the expected amount, capped at 10,000 currency units (EGP, USD…).
+    Below this gap we still match — the bank line lands as
+    MATCHED_WITH_DIFFERENCE and the operator categorizes via the A16
+    Resolve flow, which posts the adjustment JE that drains the EBD
+    residual. Above the cap we leave both lines unmatched (likely a wrong
     pairing rather than a real near-match).
+
+    A35 widened the original 2% / 500 tolerance to 15% / 10000 because
+    the 2% threshold left real-merchant short-payments (5-15% gap is
+    common for Egyptian COD couriers) unmatched, requiring manual
+    intervention via the A25 picker. With 15%, the BNK-003-style
+    scenario (200 EGP short on a 2,050 EGP deposit = 9.76% gap) now
+    auto-flags as MATCHED_WITH_DIFFERENCE and surfaces in the Needs
+    Review queue. A merchant who wants stricter behavior can resolve
+    each entry manually; A45 (deferred) adds a per-merchant
+    configurable threshold.
     """
-    pct = (abs(expected) * Decimal("0.02")).quantize(Decimal("0.01"))
-    return min(pct, Decimal("500"))
+    pct = (abs(expected) * Decimal("0.15")).quantize(Decimal("0.01"))
+    return min(pct, Decimal("10000"))
 
 
 # A16: reason → ModuleAccountMapping role, used when posting the adjustment

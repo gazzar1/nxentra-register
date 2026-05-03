@@ -797,3 +797,37 @@ def test_paymob_refund_batch_posts_je_with_sales_returns_line(shopify_setup, com
     clearing = paymob.posting_profile.control_account
     clearing_line = je.lines.get(account=clearing)
     assert clearing_line.credit == Decimal("800.00")
+
+
+# =============================================================================
+# A35 — Stage 2 widget counts manual settlement JEs
+# =============================================================================
+
+
+def test_stage2_summary_counts_manual_settlement_jes(shopify_setup, company):
+    """Pre-A35 _stage2_summary read only ShopifyPayout rows so the widget
+    showed `Settlements Posted: 0` for any merchant relying on manual CSV
+    import even after A14 shipped. After A35 the widget counts both
+    automated payouts AND manual JEs from source_module='payment_settlement'."""
+    from accounting.reconciliation_views import _stage2_summary
+
+    # Pre-state: nothing settled yet.
+    pre = _stage2_summary(company)
+    assert pre["settled_count"] == 0
+    assert Decimal(pre["settled_total"]) == Decimal("0")
+    # The outdated "coming with A14" banner is gone.
+    assert "pending_csv_import_note" not in pre
+
+    # Import a Paymob CSV → 2 batches → 2 settlement JEs post.
+    import_settlement_csv(
+        company=company,
+        provider_normalized_code="paymob",
+        file_content=PAYMOB_CSV,
+        source_filename="paymob.csv",
+    )
+    PaymentSettlementProjection().process_pending(company)
+
+    post = _stage2_summary(company)
+    assert post["settled_count"] == 2  # BATCH-A + BATCH-B
+    # 2 JEs drained EBD by their net amounts: 1455 + 1940 = 3395.
+    assert Decimal(post["settled_total"]) == Decimal("3395.00")

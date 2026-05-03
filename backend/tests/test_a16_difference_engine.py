@@ -129,13 +129,16 @@ def _make_statement(company, actor, merchant_bank, *, line_amount, line_descript
 # =============================================================================
 
 
-def test_difference_tolerance_uses_2_percent_capped_at_500():
-    # 2% of 1,000 = 20 → use 20 (under cap).
-    assert _difference_tolerance(Decimal("1000")) == Decimal("20.00")
-    # 2% of 30,000 = 600 → cap at 500.
-    assert _difference_tolerance(Decimal("30000")) == Decimal("500")
-    # 2% of 25,000 = 500 → exactly the cap.
-    assert _difference_tolerance(Decimal("25000")) == Decimal("500.00")
+def test_difference_tolerance_uses_15_percent_capped_at_10000():
+    # A35 widened tolerance from 2%/500 to 15%/10000 so real-merchant
+    # short-payments (5-15% gap is common for Egyptian COD couriers)
+    # auto-flag as MATCHED_WITH_DIFFERENCE instead of staying Unmatched.
+    # 15% of 1,000 = 150 → use 150 (under cap).
+    assert _difference_tolerance(Decimal("1000")) == Decimal("150.00")
+    # 15% of 100,000 = 15,000 → cap at 10,000.
+    assert _difference_tolerance(Decimal("100000")) == Decimal("10000")
+    # 15% of 66,667 ≈ 10,000 → exactly the cap.
+    assert _difference_tolerance(Decimal("66667")) == Decimal("10000")
 
 
 # =============================================================================
@@ -182,16 +185,51 @@ def test_near_match_within_tolerance_creates_matched_with_difference(shopify_set
     assert settlement_ebd.reconciled is False
 
 
-def test_outside_tolerance_does_not_match(shopify_setup, company, actor, merchant_bank):
-    _import_paymob_and_post(company)
+def test_a35_widened_tolerance_catches_realistic_short_payment(shopify_setup, company, actor, merchant_bank):
+    """A35: BNK-003-style scenario — 200 EGP gap on a 2050 EGP expected
+    (~9.76%) used to fall outside the old 2% tolerance and stay
+    Unmatched. After widening to 15%, it auto-flags as
+    MATCHED_WITH_DIFFERENCE so the merchant can resolve via A16."""
+    # Use a 9550 EGP expected so 950 short = 9.95% gap. The default
+    # paymob CSV in this file expects 1455; create a custom one.
+    from accounting.payment_settlement_projection import PaymentSettlementProjection
 
-    # 1455 expected, bank shows 1400 → 55.00 gap. Tolerance = 2% of 1455
-    # = 29.10. 55 > 29.10 → must NOT match.
+    big_csv = b"""order_id,gross,fee,net,payout_batch_id,payout_date
+ORD-X,10000.00,450.00,9550.00,PMB-BIG,2026-04-25
+"""
+    import_settlement_csv(
+        company=company,
+        provider_normalized_code="paymob",
+        file_content=big_csv,
+        source_filename="paymob.csv",
+    )
+    PaymentSettlementProjection().process_pending(company)
+
+    # Bank short by 950 (9.95%, would have been outside 2% tolerance).
     statement = _make_statement(
         company,
         actor,
         merchant_bank,
-        line_amount=Decimal("1400.00"),
+        line_amount=Decimal("8600.00"),
+        line_description="PMB-BIG wire",
+        line_date=date(2026, 4, 26),
+    )
+    auto_match_statement(actor, statement.id)
+    bank_line = BankStatementLine.objects.get(statement=statement)
+    assert bank_line.match_status == BankStatementLine.MatchStatus.MATCHED_WITH_DIFFERENCE
+    assert bank_line.difference_amount == Decimal("950.00")
+
+
+def test_outside_tolerance_does_not_match(shopify_setup, company, actor, merchant_bank):
+    _import_paymob_and_post(company)
+
+    # A35: 1455 expected, bank shows 1000 → 455.00 gap. Tolerance =
+    # 15% of 1455 = 218.25. 455 > 218.25 → must NOT match.
+    statement = _make_statement(
+        company,
+        actor,
+        merchant_bank,
+        line_amount=Decimal("1000.00"),
         line_description="PMB-A16 wire",
         line_date=date(2026, 4, 26),
     )
@@ -461,6 +499,62 @@ def test_narrative_flags_aged_open_balance():
     needs_review = {"unresolved_difference_count": 0, "unresolved_difference_amount": "0.00"}
     text = _build_narrative(stage1_totals, {}, {}, needs_review, "USD")
     assert "8,000.00 USD is over 30 days old" in text
+
+
+def test_narrative_warns_on_negative_clearing():
+    """A35: when any provider's clearing has been over-drained
+    (settlement-without-original-order or refund-already-credit-noted),
+    the narrative banner must lead with a red callout."""
+    stage1_totals = {
+        "total_expected": "16950.00",
+        "total_settled": "18200.00",
+        "open_balance": "-1250.00",
+        "aged_30_plus": "0.00",
+    }
+    needs_review = {"unresolved_difference_count": 0, "unresolved_difference_amount": "0.00"}
+    stage1_rows = [
+        {"provider_name": "Bosta", "open_balance": "-2200.00"},
+        {"provider_name": "Paymob", "open_balance": "950.00"},
+        {"provider_name": "Paymob Accept", "open_balance": "0.00"},
+    ]
+    text = _build_narrative(
+        stage1_totals,
+        {},
+        {},
+        needs_review,
+        "EGP",
+        stage1_rows=stage1_rows,
+    )
+    assert "Bosta clearing is negative" in text
+    assert "2,200.00 EGP" in text
+    assert "Investigate Bosta drilldown" in text
+    # Paymob (positive open) should NOT be flagged.
+    assert "Paymob clearing is negative" not in text
+
+
+def test_narrative_no_negative_warning_when_all_providers_positive():
+    """When every open balance is >= 0, the warning callout doesn't fire."""
+    stage1_totals = {
+        "total_expected": "10000.00",
+        "total_settled": "5000.00",
+        "open_balance": "5000.00",
+        "aged_30_plus": "0.00",
+    }
+    needs_review = {"unresolved_difference_count": 0, "unresolved_difference_amount": "0.00"}
+    stage1_rows = [
+        {"provider_name": "Paymob", "open_balance": "5000.00"},
+        {"provider_name": "Bosta", "open_balance": "0.00"},
+    ]
+    text = _build_narrative(
+        stage1_totals,
+        {},
+        {},
+        needs_review,
+        "EGP",
+        stage1_rows=stage1_rows,
+    )
+    assert "is negative" not in text
+    assert "Investigate" not in text
 
 
 # =============================================================================

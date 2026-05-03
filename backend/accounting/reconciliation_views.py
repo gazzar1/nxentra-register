@@ -178,35 +178,60 @@ def _stage1_totals(rows: list[dict]) -> dict:
 def _stage2_summary(company) -> dict:
     """Stage 2 — Clearing → Settlement.
 
-    Today this is partially populated:
-    - Shopify Payments → existing `PlatformSettlement` model
-    - Paymob / PayPal / Bosta → empty until A14 (manual CSV import)
+    Counts every settlement that has drained provider clearing into the
+    Expected Bank Deposit account, regardless of source:
+    - Automated Shopify Payments payouts → `PlatformSettlement` rows
+    - Manual Paymob / Bosta / PayPal CSV imports (A14) → JournalEntry
+      rows with source_module='payment_settlement'
 
-    The MVP returns a placeholder structure so the frontend can render a
-    "coming with A14" state while still showing whatever Shopify Payments
-    data exists.
+    A35: pre-A35 this only read PlatformSettlement, leaving Stage 2
+    showing "Settlements Posted: 0" for any merchant relying on
+    manual CSV import even after A14 shipped. The widget now reads
+    both sources and removes the outdated "coming with A14" banner.
     """
+    settled_count = 0
+    settled_total = Decimal("0")
+
+    # Source 1: automated Shopify Payments payouts.
     try:
         from platform_connectors.models import PlatformSettlement
-    except ImportError:
-        return {"available": False, "reason": "platform_connectors not installed"}
 
-    settlements = PlatformSettlement.objects.filter(
+        platform_qs = PlatformSettlement.objects.filter(
+            company=company,
+            status=PlatformSettlement.Status.POSTED,
+            settlement_type=PlatformSettlement.SettlementType.PAYOUT,
+        )
+        settled_count += platform_qs.count()
+        settled_total += platform_qs.aggregate(total=Sum("net_amount"))["total"] or Decimal("0")
+    except ImportError:
+        pass
+
+    # Source 2: manual settlement JEs from A14 CSV imports.
+    from accounting.mappings import ModuleAccountMapping
+    from accounting.models import JournalEntry, JournalLine
+
+    manual_je_qs = JournalEntry.objects.filter(
         company=company,
-        status=PlatformSettlement.Status.POSTED,
-        settlement_type=PlatformSettlement.SettlementType.PAYOUT,
+        source_module="payment_settlement",
+        status=JournalEntry.Status.POSTED,
     )
-    settled_count = settlements.count()
-    settled_total = settlements.aggregate(total=Sum("net_amount"))["total"] or Decimal("0")
+    settled_count += manual_je_qs.count()
+    # Per-batch "settled" amount = the DR Expected Bank Deposit line on
+    # the JE. That's what hit the EBD account; gross may differ when
+    # there are uncollected/refund lines.
+    ebd_account = ModuleAccountMapping.get_account(company, "shopify_connector", "EXPECTED_BANK_DEPOSIT")
+    if ebd_account:
+        manual_total = JournalLine.objects.filter(
+            company=company,
+            account=ebd_account,
+            entry__in=manual_je_qs,
+        ).aggregate(total=Sum("debit"))["total"] or Decimal("0")
+        settled_total += manual_total
+
     return {
         "available": True,
         "settled_count": settled_count,
         "settled_total": _money_str(settled_total),
-        "pending_csv_import_note": (
-            "Manual CSV import for Paymob / PayPal / Bosta is on the roadmap "
-            "(A14). Until then, Stage 2 only reflects automated payouts "
-            "from Shopify Payments."
-        ),
     }
 
 
@@ -237,6 +262,7 @@ def _build_narrative(
     stage3: dict,
     needs_review: dict,
     company_currency: str,
+    stage1_rows: list[dict] | None = None,
 ) -> str:
     """A16: 'Tell me the story' — a single sentence summarizing the
     merchant's reconciliation position.
@@ -266,7 +292,26 @@ def _build_narrative(
     unresolved = needs_review.get("unresolved_difference_count", 0)
     unresolved_amount = Decimal(needs_review.get("unresolved_difference_amount") or "0")
 
-    parts = [f"Shopify says {_fmt(stage1_totals.get('total_expected'))} {company_currency} sold."]
+    parts: list[str] = []
+
+    # A35: prepend negative-clearing warning. When any provider's clearing
+    # balance has been over-drained — typically settlement-without-original-
+    # order (A26) or refund-already-credit-noted (A39) — the merchant needs
+    # to investigate before trusting the rest of the narrative.
+    if stage1_rows:
+        negative_providers = [r for r in stage1_rows if Decimal(r.get("open_balance") or "0") < 0]
+        if negative_providers:
+            for row in negative_providers:
+                deficit = abs(Decimal(row["open_balance"]))
+                parts.append(
+                    f"⚠ {row['provider_name']} clearing is negative ("
+                    f"-{_fmt(str(deficit))} {company_currency}) — likely a "
+                    f"settlement for an order with no original sale, or a "
+                    f"refund that was already credit-noted in Shopify. "
+                    f"Investigate {row['provider_name']} drilldown."
+                )
+
+    parts.append(f"Shopify says {_fmt(stage1_totals.get('total_expected'))} {company_currency} sold.")
 
     if settled > 0:
         parts.append(
@@ -388,6 +433,7 @@ class ReconciliationSummaryView(APIView):
             stage3=stage3,
             needs_review=needs_review,
             company_currency=actor.company.default_currency or "",
+            stage1_rows=stage1_rows,
         )
 
         return Response(
