@@ -21,6 +21,7 @@ from django.urls import path
 from .bank_views import (
     BankAutoMatchView,
     BankExcludeLineView,
+    BankLineMatchCandidatesView,
     BankManualMatchView,
     BankReconcileView,
     BankResolveDifferenceView,
@@ -314,6 +315,11 @@ urlpatterns = [
         "bank-reconciliation/unreconciled/",
         BankUnreconciledLinesView.as_view(),
         name="bank-reconciliation-unreconciled",
+    ),
+    path(
+        "bank-statements/lines/<int:pk>/candidates/",
+        BankLineMatchCandidatesView.as_view(),
+        name="bank-line-match-candidates",
     ),
     # ==========================================================================
     # Commerce Reconciliation (Three-Column View)

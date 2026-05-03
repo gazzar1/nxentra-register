@@ -523,6 +523,61 @@ class BankUnreconciledLinesView(APIView):
         return Response(data)
 
 
+class BankLineMatchCandidatesView(APIView):
+    """A25: GET /api/accounting/bank-statements/lines/<pk>/candidates/
+
+    Return the list of un-reconciled JournalLines a merchant can
+    manually match against this bank statement line. Includes lines on
+    the bank account itself AND un-reconciled EBD lines from settlement
+    JEs (so the operator can hand-link a deposit to its expected
+    settlement when auto-match's tolerance/date heuristic missed it,
+    triggering A16's difference-resolution flow).
+
+    Sorted by amount-proximity to the bank line, capped at 200.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk: int):
+        actor = resolve_actor(request)
+        require(actor, "accounting.view")
+
+        try:
+            bank_line = BankStatementLine.objects.select_related(
+                "statement",
+                "statement__account",
+            ).get(id=pk, company=actor.company)
+        except BankStatementLine.DoesNotExist:
+            return Response(
+                {"error": "Bank statement line not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        candidates = recon.get_match_candidates_for_bank_line(bank_line)
+        data = []
+        for jl in candidates:
+            data.append(
+                {
+                    "id": jl.id,
+                    "entry_id": jl.entry_id,
+                    "entry_date": str(jl.entry.date),
+                    "entry_number": jl.entry.entry_number,
+                    "entry_memo": jl.entry.memo,
+                    "source_module": jl.entry.source_module,
+                    "source_document": jl.entry.source_document,
+                    "account_id": jl.account_id,
+                    "account_code": jl.account.code,
+                    "account_name": jl.account.name,
+                    "description": jl.description,
+                    "debit": str(jl.debit),
+                    "credit": str(jl.credit),
+                    "net_amount": str(jl.debit - jl.credit),
+                }
+            )
+
+        return Response(data)
+
+
 class CommerceReconciliationView(APIView):
     """
     GET /api/accounting/commerce-reconciliation/?period_start=...&period_end=...

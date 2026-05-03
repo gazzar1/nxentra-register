@@ -1444,3 +1444,58 @@ def get_unreconciled_journal_lines(company, account, as_of_date=None):
         qs = qs.filter(entry__date__lte=as_of_date)
 
     return qs.order_by("entry__date", "entry__id")
+
+
+def get_match_candidates_for_bank_line(bank_line, limit: int = 200) -> list:
+    """A25: candidate JournalLines a merchant could manually match to
+    this bank line. Returns the union of:
+
+    - Un-reconciled JLs on the bank line's bank account (legacy
+      manual-match target — direct payments, manual JEs, etc.).
+    - Un-reconciled JLs on the EBD account from
+      `source_module='payment_settlement'` JEs (lets the merchant link
+      a bank deposit to its expected settlement when auto-match's
+      tolerance/date-proximity heuristic missed it). This is what
+      surfaces the A16 difference-resolution flow from the UI.
+
+    Sorted by amount-proximity to the bank line first, date-proximity
+    second. Capped at `limit` to keep the picker UI responsive.
+    """
+    from accounting.mappings import ModuleAccountMapping
+
+    company = bank_line.company
+    bank_amount = bank_line.amount
+    bank_date = bank_line.line_date
+
+    bank_jls = list(
+        JournalLine.objects.filter(
+            company=company,
+            account=bank_line.statement.account,
+            reconciled=False,
+            entry__status=JournalEntry.Status.POSTED,
+        ).select_related("entry")
+    )
+
+    ebd_account = ModuleAccountMapping.get_account(company, "shopify_connector", "EXPECTED_BANK_DEPOSIT")
+    ebd_jls: list = []
+    if ebd_account:
+        ebd_jls = list(
+            JournalLine.objects.filter(
+                company=company,
+                account=ebd_account,
+                reconciled=False,
+                entry__status=JournalEntry.Status.POSTED,
+                entry__source_module="payment_settlement",
+            ).select_related("entry")
+        )
+
+    candidates = bank_jls + ebd_jls
+
+    def _proximity_key(jl):
+        signed_amount = jl.debit - jl.credit
+        amount_gap = abs(signed_amount - bank_amount)
+        date_gap = abs((jl.entry.date - bank_date).days) if bank_date else 0
+        return (amount_gap, date_gap, jl.entry.id)
+
+    candidates.sort(key=_proximity_key)
+    return candidates[:limit]
