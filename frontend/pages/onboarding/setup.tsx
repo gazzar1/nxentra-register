@@ -301,8 +301,16 @@ export default function OnboardingSetupPage() {
   };
 
   const handleGoToDashboard = () => {
-    const dest = businessType === "shopify" ? "/shopify/reconciliation" : "/dashboard";
-    window.location.href = dest;
+    // A28: always /dashboard now (was: routed Shopify users to
+    // /shopify/reconciliation, which felt like a dead-end since the
+    // celebration screen lists reconciliation as a recommended next
+    // step). The dashboard is the merchant's home; reconciliation has
+    // its own button below for Shopify users.
+    window.location.href = "/dashboard";
+  };
+
+  const handleGoToReconciliation = () => {
+    window.location.href = "/shopify/reconciliation";
   };
 
   const handleSkip = () => {
@@ -477,6 +485,7 @@ export default function OnboardingSetupPage() {
                 businessType={businessType}
                 shopifyConnected={shopifyConnected}
                 onGoToDashboard={handleGoToDashboard}
+                onGoToReconciliation={handleGoToReconciliation}
               />
             )}
           </CardContent>
@@ -1269,10 +1278,12 @@ function StepReady({
   businessType,
   shopifyConnected,
   onGoToDashboard,
+  onGoToReconciliation,
 }: {
   businessType: string;
   shopifyConnected: boolean;
   onGoToDashboard: () => void;
+  onGoToReconciliation: () => void;
 }) {
   const isShopify = businessType === "shopify";
   const router = useRouter();
@@ -1379,11 +1390,35 @@ function StepReady({
         </div>
       </div>
 
+      {/* A28: For Shopify merchants, present BOTH "Go to Dashboard"
+          (primary — the merchant's home) and "Go to Reconciliation"
+          (secondary — the workflow recommended in the next-steps
+          list above). Pre-A28 the wizard offered only Reconciliation,
+          which felt like a dead-end since merchants expected the
+          dashboard. Non-Shopify merchants still see one button. */}
       <div className="flex flex-col items-center gap-3">
-        <Button size="lg" onClick={onGoToDashboard} className="min-w-[200px]">
-          {isShopify ? "Go to Reconciliation" : "Go to Dashboard"}
-          <ArrowRight className="h-4 w-4 ms-2" />
-        </Button>
+        {isShopify ? (
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+            <Button size="lg" onClick={onGoToDashboard} className="min-w-[200px]">
+              Go to Dashboard
+              <ArrowRight className="h-4 w-4 ms-2" />
+            </Button>
+            <Button
+              size="lg"
+              variant="outline"
+              onClick={onGoToReconciliation}
+              className="min-w-[200px]"
+            >
+              Go to Reconciliation
+              <ArrowRight className="h-4 w-4 ms-2" />
+            </Button>
+          </div>
+        ) : (
+          <Button size="lg" onClick={onGoToDashboard} className="min-w-[200px]">
+            Go to Dashboard
+            <ArrowRight className="h-4 w-4 ms-2" />
+          </Button>
+        )}
         <p className="text-xs text-muted-foreground">
           You can always access these from the sidebar.
         </p>
