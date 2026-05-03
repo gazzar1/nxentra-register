@@ -3669,10 +3669,16 @@ class SubledgerTieOutView(APIView):
         # Group by customer, sum debits - credits on AR control accounts
         customer_balances = {}
 
-        # Get all posted journal lines on AR control accounts with customers
+        # Get all posted journal lines on AR control accounts with customers.
+        # A37: FK alias is `entry` (not `journal_entry`); fields are `debit`
+        # / `credit` (not `debit_amount` / `credit_amount`). The pre-A37
+        # filter raised FieldError under PG and silently returned the empty
+        # queryset on the broken local SQLite — leaving subledger_total at
+        # 0 and producing a permanent false-positive AR-discrepancy
+        # warning on every Shopify clearing flow (A10).
         ar_lines = JournalLine.objects.filter(
-            journal_entry__company=company,
-            journal_entry__status="POSTED",
+            entry__company=company,
+            entry__status="POSTED",
             account__in=ar_control_accounts,
             customer__isnull=False,
         ).select_related("customer")
@@ -3687,8 +3693,8 @@ class SubledgerTieOutView(APIView):
                     "credit_total": Decimal("0.00"),
                 }
 
-            customer_balances[customer_code]["debit_total"] += line.debit_amount or Decimal("0.00")
-            customer_balances[customer_code]["credit_total"] += line.credit_amount or Decimal("0.00")
+            customer_balances[customer_code]["debit_total"] += line.debit or Decimal("0.00")
+            customer_balances[customer_code]["credit_total"] += line.credit or Decimal("0.00")
 
         # Calculate customer balances (AR is debit-normal)
         for _code, data in customer_balances.items():
@@ -3753,10 +3759,11 @@ class SubledgerTieOutView(APIView):
         # Compute vendor subledger balances from journal lines
         vendor_balances = {}
 
-        # Get all posted journal lines on AP control accounts with vendors
+        # Get all posted journal lines on AP control accounts with vendors.
+        # A37: same FK-alias + field-name fix as the AR path above.
         ap_lines = JournalLine.objects.filter(
-            journal_entry__company=company,
-            journal_entry__status="POSTED",
+            entry__company=company,
+            entry__status="POSTED",
             account__in=ap_control_accounts,
             vendor__isnull=False,
         ).select_related("vendor")
@@ -3771,8 +3778,8 @@ class SubledgerTieOutView(APIView):
                     "credit_total": Decimal("0.00"),
                 }
 
-            vendor_balances[vendor_code]["debit_total"] += line.debit_amount or Decimal("0.00")
-            vendor_balances[vendor_code]["credit_total"] += line.credit_amount or Decimal("0.00")
+            vendor_balances[vendor_code]["debit_total"] += line.debit or Decimal("0.00")
+            vendor_balances[vendor_code]["credit_total"] += line.credit or Decimal("0.00")
 
         # Calculate vendor balances (AP is credit-normal)
         for _code, data in vendor_balances.items():
