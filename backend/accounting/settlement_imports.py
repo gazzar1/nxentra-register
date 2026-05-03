@@ -98,6 +98,20 @@ _PAYMOB_HEADER_ALIASES = {
     "gross": ("gross", "gross_amount", "amount"),
     "fee": ("fee", "fees", "paymob_fee", "transaction_fee", "gateway_fee"),
     "net": ("net", "net_amount", "settled_amount", "payout"),
+    # A20: refund/chargeback deducted from a payout batch. When set, the
+    # row's gross stays at the original sale amount but only (gross - fee
+    # - refund) is wired to the merchant's bank. We route this to
+    # uncollected_amount so gross = net + fees + uncollected reconciles
+    # for the projection's defensive guard, and the JE posts a separate
+    # DR Sales Returns line.
+    "refund_or_chargeback": (
+        "refund_or_chargeback",
+        "refund_or_chargeback_amount",
+        "refund",
+        "refund_amount",
+        "chargeback",
+        "chargeback_amount",
+    ),
     "payout_batch_id": ("payout_batch_id", "batch_id", "payout_id", "settlement_id"),
     "payout_date": ("payout_date", "settlement_date", "date"),
 }
@@ -150,6 +164,9 @@ def parse_paymob_csv(file_content: bytes | str) -> list[dict]:
         gross = _to_decimal(row.get(columns["gross"]))
         fee = _to_decimal(row.get(columns["fee"])) if columns["fee"] else Decimal("0")
         net = _to_decimal(row.get(columns["net"]))
+        refund = (
+            _to_decimal(row.get(columns["refund_or_chargeback"])) if columns["refund_or_chargeback"] else Decimal("0")
+        )
         order_id = (row.get(columns["order_id"]) or "").strip() if columns["order_id"] else ""
         payout_date = (row.get(columns["payout_date"]) or "").strip() if columns["payout_date"] else ""
 
@@ -160,13 +177,14 @@ def parse_paymob_csv(file_content: bytes | str) -> list[dict]:
                 "gross_amount": Decimal("0"),
                 "fees": Decimal("0"),
                 "net_amount": Decimal("0"),
-                "uncollected_amount": Decimal("0"),  # Paymob has no uncollected
+                "uncollected_amount": Decimal("0"),
                 "line_items": [],
             }
         batch = batches[batch_id]
         batch["gross_amount"] += gross
         batch["fees"] += fee
         batch["net_amount"] += net
+        batch["uncollected_amount"] += refund
         if not batch["payout_date"] and payout_date:
             batch["payout_date"] = payout_date
         batch["line_items"].append(
@@ -175,7 +193,8 @@ def parse_paymob_csv(file_content: bytes | str) -> list[dict]:
                 "gross": str(gross.quantize(_MONEY)),
                 "fee": str(fee.quantize(_MONEY)),
                 "net": str(net.quantize(_MONEY)),
-                "status": "settled",
+                "refund": str(refund.quantize(_MONEY)),
+                "status": "refunded" if refund > 0 else "settled",
             }
         )
 
@@ -185,7 +204,7 @@ def parse_paymob_csv(file_content: bytes | str) -> list[dict]:
             "gross_amount": str(batch["gross_amount"].quantize(_MONEY)),
             "fees": str(batch["fees"].quantize(_MONEY)),
             "net_amount": str(batch["net_amount"].quantize(_MONEY)),
-            "uncollected_amount": "0.00",
+            "uncollected_amount": str(batch["uncollected_amount"].quantize(_MONEY)),
         }
         for batch in batches.values()
     ]

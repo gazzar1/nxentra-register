@@ -350,3 +350,98 @@ def test_projection_idempotent_on_rebuild(shopify_setup, company):
         status=JournalEntry.Status.POSTED,
     ).count()
     assert second_count == first_count, "rebuild must not duplicate JEs"
+
+
+# =============================================================================
+# A20 — Paymob refund_or_chargeback handling
+# =============================================================================
+# MAY01-A scenario from the test pack: gross 800, fee 24, refund 500, net 276.
+# Pre-A20 the parser dropped the refund column, the projection's defensive
+# guard caught the imbalance and skipped the JE post — but the import row
+# stayed in the UI marked "Imported". Worst-of-both: silent data loss.
+# A20 routes refund_or_chargeback to uncollected_amount so the math
+# reconciles and a Sales Returns line posts.
+
+
+PAYMOB_REFUND_CSV = b"""order_id,gross_amount,gateway_fee,refund_or_chargeback_amount,net_amount,payout_batch_id,payout_date
+1004,800.00,24.00,500.00,276.00,PAYMOB-MAY01-A,2026-05-03
+"""
+
+
+def test_parse_paymob_routes_refund_to_uncollected():
+    """The refund_or_chargeback column must populate uncollected_amount
+    so gross = net + fees + uncollected reconciles for the projection."""
+    batches = parse_paymob_csv(PAYMOB_REFUND_CSV)
+    assert len(batches) == 1
+    batch = batches[0]
+    assert batch["payout_batch_id"] == "PAYMOB-MAY01-A"
+    assert batch["gross_amount"] == "800.00"
+    assert batch["fees"] == "24.00"
+    assert batch["net_amount"] == "276.00"
+    assert batch["uncollected_amount"] == "500.00"
+
+    # Math reconciles — projection's guard will accept this.
+    gross = Decimal(batch["gross_amount"])
+    expected = Decimal(batch["net_amount"]) + Decimal(batch["fees"]) + Decimal(batch["uncollected_amount"])
+    assert gross == expected
+
+
+def test_parse_paymob_refund_line_item_status_is_refunded():
+    """Per-row refund detail survives in line_items so the merchant can
+    audit which orders had refunds."""
+    batches = parse_paymob_csv(PAYMOB_REFUND_CSV)
+    line = batches[0]["line_items"][0]
+    assert line["order_id"] == "1004"
+    assert line["status"] == "refunded"
+
+
+def test_parse_paymob_no_refund_column_back_compat():
+    """Existing CSVs without the refund column still parse with
+    uncollected_amount=0."""
+    csv = b"""order_id,gross,fee,net,payout_batch_id,payout_date
+ORD-1,1000.00,30.00,970.00,BATCH-X,2026-04-25
+"""
+    batches = parse_paymob_csv(csv)
+    assert batches[0]["uncollected_amount"] == "0.00"
+    assert batches[0]["line_items"][0]["status"] == "settled"
+
+
+def test_parse_paymob_zero_refund_treated_as_settled():
+    """A row with a populated refund column but value 0 still counts as
+    a normal settled row, not 'refunded'."""
+    csv = b"""order_id,gross_amount,gateway_fee,refund_or_chargeback_amount,net_amount,payout_batch_id,payout_date
+ORD-1,1000.00,30.00,0.00,970.00,BATCH-Y,2026-04-25
+"""
+    batches = parse_paymob_csv(csv)
+    assert batches[0]["uncollected_amount"] == "0.00"
+    assert batches[0]["line_items"][0]["status"] == "settled"
+
+
+def test_paymob_refund_batch_posts_je_with_sales_returns_line(shopify_setup, company):
+    """End-to-end: a Paymob batch with a refund posts a JE that includes
+    a DR Sales Returns line for the refund amount, draining the provider
+    clearing for the full gross."""
+    import_settlement_csv(
+        company=company,
+        provider_normalized_code="paymob",
+        file_content=PAYMOB_REFUND_CSV,
+        source_filename="paymob_refund.csv",
+    )
+    PaymentSettlementProjection().process_pending(company)
+
+    je = JournalEntry.objects.get(
+        company=company,
+        source_module="payment_settlement",
+        source_document="paymob:PAYMOB-MAY01-A",
+    )
+    assert je.status == JournalEntry.Status.POSTED
+
+    sales_returns = Account.objects.get(company=company, code="41200")
+    refund_line = je.lines.get(account=sales_returns)
+    assert refund_line.debit == Decimal("500.00")
+
+    # Provider clearing drained for full gross 800.
+    paymob = SettlementProvider.objects.get(company=company, normalized_code="paymob")
+    clearing = paymob.posting_profile.control_account
+    clearing_line = je.lines.get(account=clearing)
+    assert clearing_line.credit == Decimal("800.00")
