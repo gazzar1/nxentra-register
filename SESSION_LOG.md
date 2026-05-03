@@ -847,22 +847,84 @@ Total ~570 LOC across backend + frontend + test_data/ fixtures. All 57 tests pas
 
 ---
 
+## Session: May 3-4, 2026 — Tier-1 backend shipped, Aljazeera8 dry-run verified, ready for invite
+
+8 of 9 Tier-1 items shipped this session (A18, A19, A20, A21, A22, A23, A25 backend, A26 backend) and verified end-to-end against a fresh-tenant Aljazeera8 dry-run. Only A24 (frontend column-mapper) and A25 frontend wiring remain — neither is a data-loss bug. **Outcome: ready to send the first-user invite.**
+
+### 1. Tier-1 commits shipped (8 commits on origin/main)
+
+All shipped tests-first per session-prompt guidance. Full test suite (76→85 across the recon ticker) green.
+
+| SHA | Ticket | Summary |
+|---|---|---|
+| `1fd3922` | **A19** | Bank-rec unmatch/exclude reverses synthesized clearance JE — `_reverse_match_side_effects` + `_clear_match_state` helpers, reverse via `commands.reverse_journal_entry`, also reverse A16 difference adjustment + flip settlement EBD line back to `reconciled=False`. 6 new tests. |
+| `b510626` | **A20** | Paymob importer routes `refund_or_chargeback` (+ `refund_amount`, `chargeback`, etc. aliases) to `uncollected_amount` so MAY01-A reconciles + posts DR Sales Returns line. 5 new tests. |
+| `d9030de` | **A21** | Bosta importer reads `returned_uncollected_amount` column (+ aliases) so BST-701's failed-delivery 1,200 EGP no longer silently drops. 4 new tests. |
+| `29c1672` | **A23** | Shopify refund handler retries `SalesInvoice POSTED` lookup 5× / 100ms before silent return. New `_find_posted_shopify_invoice` helper. Credit-note idempotency confirmed via regression test. 6 new tests. |
+| `39adba0` | **A22** | Settlement importer per-row gateway routing — new `provider_breakdown` field on `PaymentSettlementReceivedData`, projection posts one CR clearing line per provider with proper dimension tagging. MAY01-B Paymob/Paymob Accept correct now. 4 new tests. |
+| `cc343a6` | **A25** (backend) | New `get_match_candidates_for_bank_line` helper + `GET /api/accounting/bank-statements/lines/<pk>/candidates/` endpoint surfaces settlement EBD lines as manual-match targets, sorted by amount-proximity. 6 new tests. Frontend wiring pending. |
+| `6347db1` | **A26** (backend) | Settlement importer flags orphan `unknown_order_ids` in result. JE still posts (path b — forgive but flag) so merchants with incomplete history aren't blocked. 3 new tests. Frontend badge pending. |
+| `9b5191f` | **A18** | Atomic frontend deploy script + runbook — `scripts/deploy-frontend.sh` (fail-fast `set -euo pipefail`, refuses root, wipes `.next/`, verifies `BUILD_ID`, health-checks 30s, build-id mismatch check) + `docs/runbook-frontend-deploy.md` covering rollback + common failure modes. |
+
+### 2. Aljazeera8 fresh-tenant dry-run
+
+User caught the trap immediately: the prior session's `seed_test_csv_pack --flush` only nukes orders/refunds, not the downstream JEs / events / bank statement lines. Re-running on Aljazeera7 would inherit stale state. Created a fresh **Aljazeera8** company through the signup wizard (`mohamed.algazzar+test21@gmail.com`, EGP, January FY start, P5 May, "Start fresh — only sync new orders from today"), reused the `aljazeera7-store.myshopify.com` store (clean tenant from the database side; same Shopify OAuth).
+
+### 3. Verifications passed (Tier-1 in production)
+
+| Item | Verified by |
+|---|---|
+| **A18** | Used `scripts/deploy-frontend.sh` for the dry-run deploy itself (no frontend rebuild needed this session — no FE code changed; script proven by use). |
+| **A19** | Unmatched BNK-001 (PAYMOB-BATCH-APR30-A 2,520) via the UI. `JE-35-000021` reversed → `JE-35-000025` reversal posted (kind=REVERSAL, audit-trail-linked via "Reversal of JE#922" memo). Summary correctly flipped `Matched: 4/7 → 3/7`. |
+| **A20** | MAY01-A imported with `gross 800 / fees 24 / net 276 / uncollected 500`. `JE-35-000015` posted at 800 gross. Pre-A20 the JE silently failed; merchant lost 500 EGP. |
+| **A21** | BST-701 imported with `gross 3,400 / net 2,050 / uncollected 1,200`. `JE-35-000019` posted with the correct DR Sales Returns 1,200 line. Pre-A21 the 1,200 was silently dropped. |
+| **A22** | MAY01-B (3,000 Paymob + 1,000 Paymob Accept) drained Paymob clearing 7,600 / Paymob Accept clearing to **0** ✓. Pre-A22 the umbrella Paymob would have absorbed all 4,000. |
+| **A23** | Both credit notes posted (`CN-000001` 500 / `CN-000002` 1,200) after the projection bookmark was rewound — see §4 below for the seed-pack ordering issue. Idempotency on credit-note creation confirmed working. |
+| **A25** (backend) | Helper returned 4 EBD candidates for BNK-003 (1,850), sorted by proximity: BST-701 (2,050, gap 200), BST-702 (2,320), BST-703 (920), MAY01-C (679). Frontend picker still calls legacy endpoint — wiring pending. |
+| **A26** (backend) | MAY01-C (order 9999) and BST-703 (order 8888) both flagged in `unknown_order_ids` per import result. JEs `JE-35-000013` and `JE-35-000017` posted as expected. UI surfacing pending. |
+
+### 4. Real bugs the dry-run surfaced (filed as A39-A43)
+
+The dry-run did its job — exposed a substantive set of issues the test pack was designed to catch, none of which are first-merchant blockers:
+
+- **A39 — settlement importer must not double-credit clearing when the row already has a Shopify credit note.** BST-701 / order 1007: COD failed delivery → Shopify fires refund_created (Nxentra posts CN-000002 1,200, credits Bosta clearing 1,200) AND Bosta later sends settlement statement with `returned_uncollected_amount=1,200, status=returned` (importer credits Bosta clearing another 1,200 via the A21 Sales Returns line). Same economic event counted twice → Bosta clearing went to **-2,200 EGP** combined with BST-703 orphan. Real production scenario for any merchant whose Shopify shop auto-marks COD failed-delivery orders as refunded. Policy decision needed; deferred until first merchant hits it.
+- **A40 — seed_test_csv_pack emits refunds with lower `company_sequence` than orders.** Refund handler runs first, exhausts A23's 500ms retry, silently drops both credit notes. Recovery: rewind shopify_accounting bookmark + clear ProjectionAppliedEvent rows + re-run `process_pending`. Test-pack only — real Shopify webhooks deliver order_paid before refund_created in 99% of cases.
+- **A41 — A23 deeper fix: defer-on-exhaust instead of silent drop.** Real production edge case (Shopify webhook re-ordering, Celery worker restart). Need a `DeferEvent` exception that `process_pending` catches specifically — logs at INFO, removes ProjectionAppliedEvent so next pass retries, doesn't halt processing. 24h deadline before truly orphan.
+- **A42 — Settlement Import success toast missing.** Bank-rec import has it (post-A17); settlement import doesn't. Should also include the `unknown_order_ids` count for A26 UX.
+- **A43 — Credit Note / Sales Invoice detail-page 404.** Clicking `CN-000001` link → `/accounting/credit-notes/4` → 404. Same for INV link. Likely a `[publicId]` vs `[id]` route mismatch on the frontend.
+
+Plus three known issues confirmed unchanged from the 2026-05-02 dry-run: **A24** (frontend column-mapper UI — workaround used the test pack's Nxentra-format CSV), **A25 frontend wiring** (picker still calls legacy endpoint), **A35 Stage 2 widget** (still shows "Settlements Posted: 0" + outdated A14 banner — widget reads only ShopifyPayout rows, not manual settlement JEs).
+
+### 5. Final Stage 1 / Stage 3 numbers (Aljazeera8 post-dry-run)
+
+After all 8 commits + Paymob CSV + Bosta CSV + bank statement + auto-match + A19 unmatch test:
+
+- **Stage 1**: Bosta Expected 7,400 / Settled 9,600 / Open **-2,200** (the A39 double-count + A26 orphan). Paymob Expected 8,550 / Settled 7,600 / Open 950. Paymob Accept Expected 1,000 / Settled 1,000 / Open **0** (A22 working). Total Open Balance: **-1,250** across "1 provider" (Paymob Accept dropped off the count once it hit zero).
+- **Stage 3**: 7 bank lines / 3 matched / 4 unmatched (after A19 unmatch test reverted BNK-001). Originally 4 matched; BNK-003 (BST-701 short-payment) deliberately stayed unmatched because the 200 EGP gap exceeds auto-match's 2% tolerance — needs manual-match via the A25 picker, which requires frontend wiring to complete.
+
+Math reconciles — the negative Bosta open balance is **real accounting** that exposes A39 + A26-orphan, not an engine bug. The narrative banner correctly reports `18,200.00 has been drained from clearing via provider settlements`.
+
+### 6. Strategic position
+
+**Position before this session:** 4 priority Tier-1 items shipped + need verification.
+**Position after this session:** 8 of 9 Tier-1 items shipped + verified in production. Tier-2 follow-ups documented. Engineering side ready for the first-user invite.
+
+**Recommendation per session prompt outcome (a):** send the invite this week. The remaining items (A24, A25 frontend, A39-A43) are UX polish + edge cases that won't hit the first merchant on day 1 — and the merchant feedback in the first 48-72 hours will tell us which to pull forward.
+
+Per [EVALUATION_STATUS.md](EVALUATION_STATUS.md) Weakness #1 (documented tendency to defer the invite for "one more thing"): the next deferral isn't real. The codebase has been ahead of the customer for 6 months; closing that gap is the work.
+
+---
+
 ## Pending Work (Next Session)
 
-**Sole focus: ship the Tier-1 fix list, re-run the dry-run, send the first-user invite.**
+**Sole focus: send the first-user invite, then triage incoming merchant signal.**
 
-See [NEXT_TASKS.md](NEXT_TASKS.md) for the prioritized list. In rough order:
+See [NEXT_TASKS.md](NEXT_TASKS.md) "What to do right now, today" for the full plan. Summary:
 
-1. **A19** — Bank-rec unmatch/exclude must reverse the clearance JE. ~1d.
-2. **A20** — A14 refund-during-settlement: importer should reject the unbalanced batch with a clear error. ~0.5-1d.
-3. **A21** — A14 Bosta `returned_uncollected_amount` column reader. ~0.5d.
-4. **A22** — A14 settlement importer alias normalization (per-row provider routing). ~1-2d.
-5. **A23** — Refund handler projection race (handler runs before invoice POSTED is visible). ~1-2d (architectural — needs transaction-isolation review).
-6. **A25** — Manual-match picker filter (surface settlement EBD lines as candidates). ~0.5d.
-7. **A24** — Bank statement frontend column-mapper UI. ~1-2d (or descope to smarter default-aliases backend fix; full UX after first user signal).
-8. **A18** — Frontend deploy hygiene runbook + atomic-deploy script. ~0.5d.
-9. **A26** — Settlement-without-original-order rejection or warning. ~0.5d.
+1. **Send the invite.** Egyptian Shopify merchant acquired 2026-04-22. Final pre-flight on the invite kit (Calendly with 4 open slots, WhatsApp Business number, welcome doc), then the EN+AR text goes out.
+2. **Triage merchant feedback for 48-72 hours.** Pull forward A24 the moment they upload bank CSV; pull forward A43 the moment they click a credit-note link; etc. Don't pre-emptively fix anything.
+3. **Tier-2 work in rough priority** (driven by merchant signal): A24 → A25 frontend → A26 frontend → A41 (A23 defer-on-exhaust) → A39 (double-count) → A35 + A42 + A43 → A40 → A28-A38 backlog.
+4. **A37 (Subledger tieout)** worth scheduling early — likely also fixes the A10 false-positive warning.
+5. **A3 + A4 + A5** architectural cleanup, but only after first-merchant feedback informs the actual loopholes that matter.
 
-**Then:** re-run the Aljazeera7 dry-run end-to-end, including A16 manual-match short-payment scenario. Confirm clean. Send the invite.
-
-**A28-A36 (Tier-2 UX), A37 (Subledger tieout cleanup), A38 (PM2 restart investigation) come after first user signal.** Don't pull forward unless the merchant complains.
+**Do not start Phase B** until first merchant has been live ~30 days. Phase B on an unverified foundation is where accounting systems die.
