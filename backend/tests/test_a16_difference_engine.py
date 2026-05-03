@@ -275,7 +275,7 @@ def test_resolve_difference_extra_fee_short_paid_posts_adjustment_je(shopify_set
     assert adj.source_document == "paymob:PMB-A16"
 
     ebd = Account.objects.get(company=company, code="11600")
-    fee_account = Account.objects.get(company=company, code="52000")  # PAYMENT_PROCESSING_FEES
+    fee_account = Account.objects.get(company=company, code="53000")  # PAYMENT_PROCESSING_FEES
     assert adj.lines.get(account=fee_account).debit == Decimal("5.00")
     assert adj.lines.get(account=ebd).credit == Decimal("5.00")
 
@@ -321,7 +321,7 @@ def test_resolve_difference_over_paid_reverses_je_direction(shopify_setup, compa
 
     adj = JournalEntry.objects.get(pk=result.data["adjustment_entry_id"])
     ebd = Account.objects.get(company=company, code="11600")
-    fee_account = Account.objects.get(company=company, code="52000")
+    fee_account = Account.objects.get(company=company, code="53000")
 
     # Over-paid: DR EBD / CR reason_account for |diff| = 5.00.
     assert adj.lines.get(account=ebd).debit == Decimal("5.00")

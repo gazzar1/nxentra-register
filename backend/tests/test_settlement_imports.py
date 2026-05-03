@@ -618,7 +618,7 @@ def test_projection_posts_je_with_clearing_dimension_tag(shopify_setup, company)
     assert "11600" in debit_lines
     assert debit_lines["11600"].debit == Decimal("1455.00")
 
-    fees_line = next((line for line in lines if line.account.code == "52000"), None)
+    fees_line = next((line for line in lines if line.account.code == "53000"), None)
     assert fees_line is not None
     assert fees_line.debit == Decimal("45.00")
 
@@ -659,7 +659,7 @@ def test_projection_bosta_uncollected_debits_sales_returns(shopify_setup, compan
     # Expected Bank Deposit = net = 2520
     assert lines["11600"].debit == Decimal("2520.00")
     # Fees = 180
-    assert lines["52000"].debit == Decimal("180.00")
+    assert lines["53000"].debit == Decimal("180.00")
     # Clearing credit = full gross = 3500
     bosta = SettlementProvider.objects.get(company=company, normalized_code="bosta")
     bosta_clearing = bosta.posting_profile.control_account

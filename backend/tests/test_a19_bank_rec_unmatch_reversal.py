@@ -353,7 +353,7 @@ def test_unmatch_manual_match_does_not_reverse_existing_je(shopify_setup, compan
         save_journal_entry_complete,
     )
 
-    fees_account = Account.objects.get(company=company, code="52000")
+    fees_account = Account.objects.get(company=company, code="53000")
     create_res = create_journal_entry(
         actor=actor,
         date=date(2026, 4, 26),

@@ -3574,7 +3574,14 @@ def _setup_shopify_accounts(company):
     SHOPIFY_ACCOUNTS = [
         ("SALES_REVENUE", "41000", "Sales Revenue", "REVENUE", "SALES"),
         ("SHOPIFY_CLEARING", "11500", "Shopify Clearing", "ASSET", "LIQUIDITY"),
-        ("PAYMENT_PROCESSING_FEES", "52000", "Payment Processing Fees", "EXPENSE", "OPERATING_EXPENSE"),
+        # A33: code 53000 (not 52000). The retail chart-of-accounts template
+        # at accounting/seeds.py:185 already creates `52000 — Shipping
+        # Expense` during onboarding; pointing PAYMENT_PROCESSING_FEES at
+        # 52000 via get_or_create silently mapped the role to the wrong
+        # account. 53000 already exists in the retail template as
+        # `Payment Processing Fees` (accounting/seeds.py:187), so this seed
+        # finds + reuses it instead of needing a new account.
+        ("PAYMENT_PROCESSING_FEES", "53000", "Payment Processing Fees", "EXPENSE", "OPERATING_EXPENSE"),
         ("SALES_TAX_PAYABLE", "22000", "Sales Tax Payable", "LIABILITY", "TAX_PAYABLE"),
         ("SHIPPING_REVENUE", "42000", "Shipping Revenue", "REVENUE", "SALES"),
         ("SALES_DISCOUNTS", "41100", "Sales Discounts", "REVENUE", "CONTRA_REVENUE"),
