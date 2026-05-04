@@ -25,6 +25,7 @@ from .bank_views import (
     BankManualMatchView,
     BankReconcileView,
     BankResolveDifferenceView,
+    BankStatementCSVHeadersView,
     BankStatementCSVImportView,
     BankStatementDetailView,
     BankStatementListCreateView,
@@ -269,6 +270,11 @@ urlpatterns = [
         "bank-statements/",
         BankStatementListCreateView.as_view(),
         name="bank-statement-list-create",
+    ),
+    path(
+        "bank-statements/parse-csv-headers/",
+        BankStatementCSVHeadersView.as_view(),
+        name="bank-statement-parse-csv-headers",
     ),
     path(
         "bank-statements/parse-csv/",

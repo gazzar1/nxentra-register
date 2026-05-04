@@ -136,6 +136,39 @@ class BankStatementListCreateView(APIView):
         )
 
 
+class BankStatementCSVHeadersView(APIView):
+    """
+    POST /api/accounting/bank-statements/parse-csv-headers/
+
+    A24: peek at a CSV's headers + a few sample rows so the frontend can
+    show a column-mapper dialog before doing a full parse. Real merchants'
+    bank exports use wildly different column names ("Date" vs "Trans
+    Date" vs "Posted Date" vs "تاريخ العملية"); the hardcoded defaults
+    in parse_csv_statement only worked for our own seed CSV.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        actor = resolve_actor(request)
+        require(actor, "accounting.reconciliation")
+
+        csv_file = request.FILES.get("file")
+        if not csv_file:
+            return Response(
+                {"error": "No file uploaded"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            csv_content = csv_file.read().decode("utf-8-sig")
+        except UnicodeDecodeError:
+            csv_content = csv_file.read().decode("latin-1")
+
+        result = recon.parse_csv_headers(csv_content)
+        return Response(result)
+
+
 class BankStatementCSVImportView(APIView):
     """
     POST /api/accounting/bank-statements/parse-csv/

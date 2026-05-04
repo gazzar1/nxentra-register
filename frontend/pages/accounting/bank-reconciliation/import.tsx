@@ -1,17 +1,41 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useRouter } from "next/router";
-import { ArrowLeft, Upload, Loader2 } from "lucide-react";
+import { ArrowLeft, Upload, Loader2, Settings2 } from "lucide-react";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { PageHeader } from "@/components/common";
+import { PageHeader, CsvMappingDialog, type ColumnMapping } from "@/components/common";
 import { useToast } from "@/components/ui/toaster";
 import { useAccounts } from "@/queries/useAccounts";
 import { bankReconciliationService } from "@/services/bank-reconciliation.service";
+
+const MAPPING_STORAGE_KEY = "nxentra:bank-import-mapping";
+
+function loadSavedMapping(accountId: string): Partial<ColumnMapping> | undefined {
+  if (!accountId || typeof window === "undefined") return undefined;
+  try {
+    const raw = window.localStorage.getItem(`${MAPPING_STORAGE_KEY}:${accountId}`);
+    return raw ? (JSON.parse(raw) as Partial<ColumnMapping>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function saveMapping(accountId: string, mapping: ColumnMapping) {
+  if (!accountId || typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      `${MAPPING_STORAGE_KEY}:${accountId}`,
+      JSON.stringify(mapping),
+    );
+  } catch {
+    // localStorage can be disabled — silently ignore.
+  }
+}
 
 export default function ImportStatementPage() {
   const router = useRouter();
@@ -29,11 +53,16 @@ export default function ImportStatementPage() {
   });
 
   const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [headers, setHeaders] = useState<string[]>([]);
+  const [sampleRows, setSampleRows] = useState<Array<Record<string, string>>>([]);
+  const [mapping, setMapping] = useState<ColumnMapping | null>(null);
   const [parsedLines, setParsedLines] = useState<
     Array<{ line_date: string; description: string; amount: string; reference: string }>
   >([]);
-  const [parsing, setParsing] = useState(false);
+  const [parsingHeaders, setParsingHeaders] = useState(false);
+  const [parsingLines, setParsingLines] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [mapDialogOpen, setMapDialogOpen] = useState(false);
 
   // Bank/cash accounts only
   const bankAccounts =
@@ -41,12 +70,46 @@ export default function ImportStatementPage() {
       (a) => !a.is_header && a.status === "ACTIVE" && a.account_type === "ASSET",
     ) || [];
 
-  const handleParseCSV = async () => {
+  // Reset parsed state when account changes — saved mapping is per-account.
+  useEffect(() => {
+    setHeaders([]);
+    setSampleRows([]);
+    setMapping(null);
+    setParsedLines([]);
+  }, [form.account_id]);
+
+  const handleParseHeaders = async () => {
     if (!csvFile) return;
-    setParsing(true);
+    setParsingHeaders(true);
     try {
       const formData = new FormData();
       formData.append("file", csvFile);
+      const { data } = await bankReconciliationService.parseCSVHeaders(formData);
+      setHeaders(data.headers);
+      setSampleRows(data.sample_rows);
+      setMapDialogOpen(true);
+    } catch {
+      toast({ title: "Failed to read CSV headers.", variant: "destructive" });
+    } finally {
+      setParsingHeaders(false);
+    }
+  };
+
+  const handleConfirmMapping = async (m: ColumnMapping) => {
+    setMapping(m);
+    saveMapping(form.account_id, m);
+    if (!csvFile) return;
+    setParsingLines(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", csvFile);
+      formData.append("date_column", m.date_column);
+      formData.append("description_column", m.description_column);
+      formData.append("amount_column", m.amount_column);
+      formData.append("reference_column", m.reference_column);
+      formData.append("debit_column", m.debit_column);
+      formData.append("credit_column", m.credit_column);
+      formData.append("date_format", m.date_format);
 
       const { data } = await bankReconciliationService.parseCSV(formData);
       setParsedLines(
@@ -57,11 +120,20 @@ export default function ImportStatementPage() {
           reference: l.reference || "",
         })),
       );
-      toast({ title: `Parsed ${data.count} lines from CSV.` });
+      if (data.count === 0) {
+        toast({
+          title: "Parsed 0 lines",
+          description:
+            "Check the column mapping — the date column may not match the date format.",
+          variant: "destructive",
+        });
+      } else {
+        toast({ title: `Parsed ${data.count} lines from CSV.` });
+      }
     } catch {
       toast({ title: "Failed to parse CSV.", variant: "destructive" });
     } finally {
-      setParsing(false);
+      setParsingLines(false);
     }
   };
 
@@ -105,6 +177,8 @@ export default function ImportStatementPage() {
 
   const updateForm = (key: string, value: string) =>
     setForm((prev) => ({ ...prev, [key]: value }));
+
+  const savedMapping = loadSavedMapping(form.account_id);
 
   return (
     <AppLayout>
@@ -209,26 +283,50 @@ export default function ImportStatementPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             <p className="text-sm text-muted-foreground">
-              Upload a CSV file with columns: Date, Description, Amount, Reference (optional).
-              The first row should be column headers.
+              Upload your bank&apos;s CSV export. We&apos;ll detect the columns
+              automatically; you can review and adjust the mapping before
+              parsing. Mappings are remembered per bank account.
             </p>
             <div className="flex gap-3 items-end">
               <div className="flex-1">
                 <Input
                   type="file"
                   accept=".csv"
-                  onChange={(e) => setCsvFile(e.target.files?.[0] || null)}
+                  onChange={(e) => {
+                    setCsvFile(e.target.files?.[0] || null);
+                    setHeaders([]);
+                    setSampleRows([]);
+                    setParsedLines([]);
+                  }}
                 />
               </div>
-              <Button onClick={handleParseCSV} disabled={!csvFile || parsing}>
-                {parsing ? (
+              <Button onClick={handleParseHeaders} disabled={!csvFile || parsingHeaders}>
+                {parsingHeaders ? (
                   <Loader2 className="me-2 h-4 w-4 animate-spin" />
                 ) : (
                   <Upload className="me-2 h-4 w-4" />
                 )}
-                Parse
+                Map columns
               </Button>
+              {mapping && headers.length > 0 && (
+                <Button
+                  variant="outline"
+                  onClick={() => setMapDialogOpen(true)}
+                  disabled={parsingLines}
+                  title="Re-map columns"
+                >
+                  <Settings2 className="me-2 h-4 w-4" />
+                  Re-map
+                </Button>
+              )}
             </div>
+
+            {parsingLines && (
+              <p className="text-sm text-muted-foreground flex items-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Parsing rows...
+              </p>
+            )}
 
             {parsedLines.length > 0 && (
               <div className="mt-4">
@@ -286,6 +384,15 @@ export default function ImportStatementPage() {
           </div>
         )}
       </div>
+
+      <CsvMappingDialog
+        open={mapDialogOpen}
+        onOpenChange={setMapDialogOpen}
+        headers={headers}
+        sampleRows={sampleRows}
+        initialMapping={savedMapping}
+        onConfirm={handleConfirmMapping}
+      />
     </AppLayout>
   );
 }

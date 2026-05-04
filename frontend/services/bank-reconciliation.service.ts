@@ -203,6 +203,14 @@ export const bankReconciliationService = {
       { headers: { "Content-Type": "multipart/form-data" } },
     ),
 
+  parseCSVHeaders: (formData: FormData) =>
+    apiClient.post<{
+      headers: string[];
+      sample_rows: Array<Record<string, string>>;
+    }>("/accounting/bank-statements/parse-csv-headers/", formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+    }),
+
   // Matching
   autoMatch: (statementId: number) =>
     apiClient.post<{ matched: number; total: number }>(

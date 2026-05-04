@@ -195,6 +195,28 @@ def _compute_line_dedup_hash(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def parse_csv_headers(csv_content: str, sample_size: int = 5) -> dict:
+    """A24: read just the headers + a few sample rows from a CSV.
+
+    Lets the frontend show a column-mapper dialog before commiting to a
+    full parse. Returns ``{"headers": [...], "sample_rows": [...]}``;
+    sample_rows are kept as raw dicts (column name -> raw cell value),
+    NOT canonicalized — the merchant needs to see the literal values to
+    decide which column carries which logical field.
+    """
+    reader = csv.DictReader(io.StringIO(csv_content))
+    headers = list(reader.fieldnames or [])
+    sample_rows = []
+    for i, row in enumerate(reader):
+        if i >= sample_size:
+            break
+        # csv.DictReader can put None into the column name when the row has
+        # extra fields beyond the header — drop those keys; they confuse
+        # the frontend dropdowns.
+        sample_rows.append({k: v for k, v in row.items() if k is not None})
+    return {"headers": headers, "sample_rows": sample_rows}
+
+
 def parse_csv_statement(
     csv_content: str,
     date_column: str = "Date",

@@ -11,3 +11,5 @@ export { ResponsiveTable, MobileCardView, DataCard } from './ResponsiveTable';
 export type { ColumnDef } from './ResponsiveTable';
 export { PaginatedTable } from './PaginatedTable';
 export type { ColumnDef as PaginatedColumnDef } from './PaginatedTable';
+export { CsvMappingDialog, suggestMapping } from './CsvMappingDialog';
+export type { ColumnMapping } from './CsvMappingDialog';
