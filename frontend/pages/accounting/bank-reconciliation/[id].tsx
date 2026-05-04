@@ -292,7 +292,9 @@ export default function BankStatementDetailPage() {
                       <tr
                         key={line.id}
                         className={`border-b last:border-0 ${
-                          selectedBankLine === line.id ? "bg-blue-50" : ""
+                          selectedBankLine === line.id
+                            ? "bg-accent text-accent-foreground"
+                            : ""
                         }`}
                       >
                         <td className="py-2">{line.line_date}</td>

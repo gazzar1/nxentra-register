@@ -11,6 +11,8 @@ import { Label } from "@/components/ui/label";
 import { PageHeader, CsvMappingDialog, type ColumnMapping } from "@/components/common";
 import { useToast } from "@/components/ui/toaster";
 import { useAccounts } from "@/queries/useAccounts";
+import { useAuth } from "@/contexts/AuthContext";
+import { currencyOptions } from "@/lib/constants";
 import { bankReconciliationService } from "@/services/bank-reconciliation.service";
 
 const MAPPING_STORAGE_KEY = "nxentra:bank-import-mapping";
@@ -41,6 +43,8 @@ export default function ImportStatementPage() {
   const router = useRouter();
   const { toast } = useToast();
   const { data: accounts } = useAccounts();
+  const { company } = useAuth();
+  const companyCurrency = company?.default_currency || "USD";
 
   const [form, setForm] = useState({
     account_id: "",
@@ -49,8 +53,18 @@ export default function ImportStatementPage() {
     period_end: "",
     opening_balance: "",
     closing_balance: "",
-    currency: "USD",
+    currency: companyCurrency,
   });
+
+  // Pick up the company default once auth context loads (initial state
+  // can land before the profile fetch resolves).
+  useEffect(() => {
+    setForm((prev) =>
+      prev.currency === "USD" && companyCurrency !== "USD"
+        ? { ...prev, currency: companyCurrency }
+        : prev,
+    );
+  }, [companyCurrency]);
 
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [headers, setHeaders] = useState<string[]>([]);
@@ -138,8 +152,15 @@ export default function ImportStatementPage() {
   };
 
   const handleImport = async () => {
-    if (!form.account_id || !form.statement_date) {
-      toast({ title: "Please fill in all required fields.", variant: "destructive" });
+    const missing: string[] = [];
+    if (!form.account_id) missing.push("Bank Account");
+    if (!form.statement_date) missing.push("Statement Date");
+    if (missing.length > 0) {
+      toast({
+        title: "Missing required fields",
+        description: missing.join(", "),
+        variant: "destructive",
+      });
       return;
     }
     if (parsedLines.length === 0) {
@@ -207,7 +228,7 @@ export default function ImportStatementPage() {
               <div className="space-y-1.5">
                 <Label>Bank Account *</Label>
                 <select
-                  className="w-full border rounded-md px-3 py-2 text-sm"
+                  className="w-full border rounded-md px-3 py-2 text-sm bg-background text-foreground"
                   value={form.account_id}
                   onChange={(e) => updateForm("account_id", e.target.value)}
                 >
@@ -229,10 +250,17 @@ export default function ImportStatementPage() {
               </div>
               <div className="space-y-1.5">
                 <Label>Currency</Label>
-                <Input
+                <select
+                  className="w-full border rounded-md px-3 py-2 text-sm bg-background text-foreground"
                   value={form.currency}
                   onChange={(e) => updateForm("currency", e.target.value)}
-                />
+                >
+                  {currencyOptions.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div className="space-y-1.5">
                 <Label>Period Start</Label>
