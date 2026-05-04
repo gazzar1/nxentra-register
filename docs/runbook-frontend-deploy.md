@@ -113,3 +113,58 @@ serving correctly.
 - Watch `pm2 status` for 5 minutes — stable memory and zero restarts is the bar.
 - If a Sentry alert fires within 10 minutes, treat it as a deploy regression
   and roll back before debugging.
+
+---
+
+## 6. Diagnosing a `nxentra-web` Restart Loop (A38)
+
+The 2026-05-04 dry-run found `pm2 status` showing 272 restarts on `nxentra-web`
+in 31 hours — ~9/hour. That's not normal: a healthy production Next.js process
+restarts on deploy and OOM, nothing else. If `↺` keeps incrementing without
+deploys, treat it as a recurring crash and triage the root cause.
+
+### 6.1 First, switch to the codified ecosystem config (one-time)
+
+`frontend/ecosystem.config.js` defines the canonical PM2 invocation with
+guardrails: `max_restarts=10` + `min_uptime=10s` (a real crash loop now surfaces
+as `errored`/`stopped` instead of burning CPU forever), `max_memory_restart=768M`
+(catches a leak before swap thrash), explicit `NODE_ENV=production`, no watch
+mode. Switch over once:
+
+```bash
+cd /var/www/nxentra_app/frontend
+pm2 delete nxentra-web
+pm2 start ecosystem.config.js
+pm2 save                    # persist across droplet reboots
+```
+
+After the switch, `↺` resets to 0; meaningful crash counts start from there.
+
+### 6.2 Triage the crashes
+
+```bash
+# Bound the question — the LAST 200 error-stream lines, with timestamps:
+pm2 logs nxentra-web --err --lines 200 --nostream
+
+# Then narrow on common signal:
+pm2 logs nxentra-web --err --lines 500 --nostream | \
+  grep -E "(SIGTERM|SIGKILL|out of memory|FATAL|TypeError|UnhandledPromiseRejection|Cannot find module)"
+```
+
+### 6.3 Match the symptom to a likely cause
+
+| Symptom in logs | Likely cause | Fix |
+|---|---|---|
+| `JavaScript heap out of memory` | leak in a route or a giant SSR payload | Bump `max_memory_restart` only as a stop-gap; chase the route. Heap snapshot via `node --inspect` if needed. |
+| `SIGTERM` with no error trail | external killer (cron, log rotate, `pm2 reload all`) | Check `crontab -l`, `systemctl list-timers`, and `pm2 reload` history (`pm2 logs pm2 --lines 50`). |
+| `Cannot find module 'XXX'` | partial deploy — a `node_modules/` entry got pruned without rebuild | Re-run `./scripts/deploy-frontend.sh` (it wipes `.next/` + reinstalls). |
+| Repeating `TypeError: Cannot read properties of undefined` | a Next.js page handler throws on a specific request | Find the URL in the access log (`pm2 logs nxentra-web --out --lines 500`), reproduce locally, fix the handler. |
+| `EADDRINUSE :::3000` | another process holding the port (often a stale `next start`) | `lsof -i :3000` then `kill -9 <pid>`, restart pm2. |
+| `Reloader is on. Use in development only!` | started in dev mode despite `NODE_ENV=production` | Switch to the ecosystem.config.js above. |
+
+### 6.4 If `↺` hits 10 and the process goes `errored`
+
+That means real crash-looping. The pm2 `max_restarts` guard intentionally
+stopped retrying so the issue surfaces. Don't blindly `pm2 restart` — read
+the err log first, fix the cause, then `pm2 start ecosystem.config.js` to
+reset the restart counter.
