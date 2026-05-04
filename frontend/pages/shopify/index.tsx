@@ -20,6 +20,7 @@ import { AppLayout } from "@/components/layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/common";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 import {
   shopifyService,
   ShopifyStore,
@@ -28,6 +29,7 @@ import {
 
 export default function ShopifyDashboardPage() {
   const { t } = useTranslation(["common"]);
+  const { formatDate } = useCompanyFormat();
 
   const [store, setStore] = useState<ShopifyStore | null>(null);
   const [orders, setOrders] = useState<ShopifyOrder[]>([]);
@@ -216,7 +218,7 @@ export default function ShopifyDashboardPage() {
                               {order.shopify_order_name || `#${order.shopify_order_number}`}
                             </p>
                             <p className="text-xs text-muted-foreground">
-                              {new Date(order.order_date).toLocaleDateString()}
+                              {formatDate(order.order_date)}
                               {order.gateway ? ` · ${order.gateway}` : ""}
                             </p>
                           </div>

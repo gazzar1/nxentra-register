@@ -24,6 +24,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useToast } from "@/components/ui/toaster";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 import { INVOICE_STATUS_COLORS, INVOICE_STATUS_LABELS } from "@/types/sales";
 import { cn } from "@/lib/cn";
 import {
@@ -45,6 +46,7 @@ export default function SalesInvoiceDetailPage() {
   const { data: invoice, isLoading } = useSalesInvoice(parseInt(id as string));
   const postInvoice = usePostSalesInvoice();
   const voidInvoice = useVoidSalesInvoice();
+  const { formatDate } = useCompanyFormat();
   const [postDialog, setPostDialog] = useState(false);
   const [voidDialog, setVoidDialog] = useState(false);
   const [emailDialog, setEmailDialog] = useState(false);
@@ -120,15 +122,6 @@ export default function SalesInvoiceDetailPage() {
     } finally {
       setEmailSending(false);
     }
-  };
-
-  const formatDate = (dateStr: string | null) => {
-    if (!dateStr) return "—";
-    return new Date(dateStr).toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-    });
   };
 
   if (isLoading) {

@@ -26,6 +26,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/common";
 import { useToast } from "@/components/ui/toaster";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 import {
   shopifyService,
   ShopifyStore,
@@ -43,6 +44,7 @@ export default function ShopifySettingsPage() {
   const { t } = useTranslation(["common"]);
   const router = useRouter();
   const { toast } = useToast();
+  const { formatDate } = useCompanyFormat();
 
   const [store, setStore] = useState<ShopifyStore | null>(null);
   const [loading, setLoading] = useState(true);
@@ -443,7 +445,7 @@ export default function ShopifySettingsPage() {
                     <p className="text-sm text-muted-foreground">Last Sync</p>
                     <p className="font-medium">
                       {store.last_sync_at
-                        ? new Date(store.last_sync_at).toLocaleDateString()
+                        ? formatDate(store.last_sync_at)
                         : "Never"}
                     </p>
                   </div>

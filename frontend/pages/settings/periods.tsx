@@ -20,6 +20,7 @@ import {
 import { PageHeader, LoadingSpinner, ConfirmDialog } from "@/components/common";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/components/ui/toaster";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 import {
   periodsService,
   fiscalYearService,
@@ -38,6 +39,7 @@ export default function PeriodsPage() {
   const { t } = useTranslation(["common", "settings"]);
   const { toast } = useToast();
   const { hasPermission } = useAuth();
+  const { formatDate } = useCompanyFormat();
   const [periods, setPeriods] = useState<FiscalPeriod[]>([]);
   const [config, setConfig] = useState<FiscalPeriodConfig | null>(null);
   const [fiscalYearStatus, setFiscalYearStatus] = useState<FiscalYearStatus | null>(null);
@@ -294,10 +296,6 @@ export default function PeriodsPage() {
     }
   };
 
-  const formatDate = (dateStr: string) => {
-    return new Date(dateStr).toLocaleDateString();
-  };
-
   // --- Fiscal Year Close Wizard ---
   const handleCheckReadiness = async () => {
     setCheckingReadiness(true);
@@ -498,7 +496,7 @@ export default function PeriodsPage() {
                         {fiscalYearStatus.status === "CLOSED"
                           ? t("settings:periods.yearClosedAt", "Closed on {{date}}", {
                               date: fiscalYearStatus.closed_at
-                                ? new Date(fiscalYearStatus.closed_at).toLocaleDateString()
+                                ? formatDate(fiscalYearStatus.closed_at)
                                 : "N/A",
                             })
                           : t("settings:periods.yearOpen", "Year is open for posting")}

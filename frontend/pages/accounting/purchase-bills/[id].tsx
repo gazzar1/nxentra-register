@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { PageHeader, LoadingSpinner } from "@/components/common";
 import { usePurchaseBill, usePostPurchaseBill, useVoidPurchaseBill } from "@/queries/usePurchases";
 import { useToast } from "@/components/ui/toaster";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 import { BILL_STATUS_COLORS, BILL_STATUS_LABELS } from "@/types/purchases";
 import { cn } from "@/lib/cn";
 import {
@@ -33,6 +34,7 @@ export default function PurchaseBillDetailPage() {
   const { data: bill, isLoading } = usePurchaseBill(parseInt(id as string));
   const postBill = usePostPurchaseBill();
   const voidBill = useVoidPurchaseBill();
+  const { formatDate } = useCompanyFormat();
   const [postDialog, setPostDialog] = useState(false);
   const [voidDialog, setVoidDialog] = useState(false);
 
@@ -74,15 +76,6 @@ export default function PurchaseBillDetailPage() {
     } finally {
       setVoidDialog(false);
     }
-  };
-
-  const formatDate = (dateStr: string | null) => {
-    if (!dateStr) return "—";
-    return new Date(dateStr).toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-    });
   };
 
   if (isLoading) {

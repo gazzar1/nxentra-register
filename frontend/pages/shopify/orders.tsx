@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/table";
 import { PageHeader, EmptyState, LoadingSpinner } from "@/components/common";
 import { useToast } from "@/components/ui/toaster";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 import { shopifyService, ShopifyOrder } from "@/services/shopify.service";
 
 function statusBadge(status: ShopifyOrder["status"]) {
@@ -71,6 +72,7 @@ function statusBadge(status: ShopifyOrder["status"]) {
 export default function ShopifyOrdersPage() {
   const { t } = useTranslation(["common"]);
   const { toast } = useToast();
+  const { formatDate } = useCompanyFormat();
 
   const [orders, setOrders] = useState<ShopifyOrder[]>([]);
   const [loading, setLoading] = useState(true);
@@ -167,7 +169,7 @@ export default function ShopifyOrdersPage() {
                           {order.shopify_order_name || `#${order.shopify_order_number}`}
                         </TableCell>
                         <TableCell>
-                          {new Date(order.order_date).toLocaleDateString()}
+                          {formatDate(order.order_date)}
                         </TableCell>
                         <TableCell className="text-right font-mono">
                           {order.currency} {Number(order.total_price).toLocaleString(undefined, { minimumFractionDigits: 2 })}

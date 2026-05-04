@@ -22,11 +22,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 
 export default function CustomerDetailPage() {
   const { t } = useTranslation(["common", "accounting"]);
   const router = useRouter();
   const { toast } = useToast();
+  const { formatDate } = useCompanyFormat();
   const code = router.query.code as string;
   const { data: customer, isLoading } = useCustomer(code);
   const { data: balance, isLoading: balanceLoading } = useCustomerBalance(code);
@@ -274,19 +276,19 @@ export default function CustomerDetailPage() {
                     {balance.last_invoice_date && (
                       <div>
                         <p className="text-sm text-muted-foreground">Last Invoice</p>
-                        <p>{new Date(balance.last_invoice_date).toLocaleDateString()}</p>
+                        <p>{formatDate(balance.last_invoice_date)}</p>
                       </div>
                     )}
                     {balance.last_payment_date && (
                       <div>
                         <p className="text-sm text-muted-foreground">Last Payment</p>
-                        <p>{new Date(balance.last_payment_date).toLocaleDateString()}</p>
+                        <p>{formatDate(balance.last_payment_date)}</p>
                       </div>
                     )}
                     {balance.oldest_open_date && (
                       <div>
                         <p className="text-sm text-muted-foreground">Oldest Open Item</p>
-                        <p>{new Date(balance.oldest_open_date).toLocaleDateString()}</p>
+                        <p>{formatDate(balance.oldest_open_date)}</p>
                       </div>
                     )}
                   </div>

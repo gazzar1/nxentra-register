@@ -63,7 +63,8 @@ export function useCompanyFormat() {
    * Supports: YYYY-MM-DD, DD/MM/YYYY, MM/DD/YYYY, DD-MM-YYYY, DD.MM.YYYY
    */
   const fmtDate = useCallback(
-    (value: string | Date) => {
+    (value: string | Date | null | undefined) => {
+      if (value === null || value === undefined || value === "") return "—";
       const d = typeof value === "string" ? new Date(value) : value;
       if (isNaN(d.getTime())) return String(value);
 
