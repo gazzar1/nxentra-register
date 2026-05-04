@@ -86,7 +86,7 @@ class Command(BaseCommand):
             else:
                 with transaction.atomic():
                     sequence_value = _next_company_sequence(company, "journal_entry_number")
-                    entry_number = f"JE-{company.id}-{sequence_value:06d}"
+                    entry_number = f"JE-{sequence_value:06d}"
                     with projection_writes_allowed():
                         entry.entry_number = entry_number
                         entry.save(update_fields=["entry_number"])

@@ -1227,7 +1227,7 @@ class ShopifyAccountingHandler(BaseProjection):
 
         # Assign proper entry number
         seq = _next_company_sequence(event.company, "journal_entry_number")
-        entry_number = f"JE-{event.company_id}-{seq:06d}"
+        entry_number = f"JE-{seq:06d}"
         entry.entry_number = entry_number
         entry.save(update_fields=["entry_number"])
 

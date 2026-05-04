@@ -606,7 +606,7 @@ class PropertyAccountingProjection(BaseProjection):
 
         # Generate proper entry number using the same sequence as manual entries
         sequence_value = _next_company_sequence(company, "journal_entry_number")
-        entry_number = f"JE-{company.id}-{sequence_value:06d}"
+        entry_number = f"JE-{sequence_value:06d}"
 
         entry = JournalEntry.objects.projection().create(
             company=company,

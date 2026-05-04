@@ -71,7 +71,7 @@ class Command(BaseCommand):
 
         if dry_run:
             for i, entry in enumerate(entries, 1):
-                new_number = f"JE-{company.id}-{i:06d}"
+                new_number = f"JE-{i:06d}"
                 changed = " (changed)" if entry.entry_number != new_number else ""
                 self.stdout.write(
                     f"    {entry.entry_number or '#' + str(entry.id):>16} → {new_number}  "
@@ -83,7 +83,7 @@ class Command(BaseCommand):
         with transaction.atomic():
             # Assign new sequential numbers
             for i, entry in enumerate(entries, 1):
-                new_number = f"JE-{company.id}-{i:06d}"
+                new_number = f"JE-{i:06d}"
                 if entry.entry_number != new_number:
                     with projection_writes_allowed():
                         entry.entry_number = new_number
@@ -100,6 +100,4 @@ class Command(BaseCommand):
                 seq.next_value = next_value
                 seq.save(update_fields=["next_value"])
 
-        self.stdout.write(
-            self.style.SUCCESS(f"  Resequenced {len(entries)} entries. Next number: JE-{company.id}-{next_value:06d}")
-        )
+        self.stdout.write(self.style.SUCCESS(f"  Resequenced {len(entries)} entries. Next number: JE-{next_value:06d}"))

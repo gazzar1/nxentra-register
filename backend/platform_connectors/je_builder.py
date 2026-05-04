@@ -330,7 +330,7 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
 
     # Assign proper entry number
     seq = _next_company_sequence(req.company, "journal_entry_number")
-    entry_number = f"JE-{req.company.id}-{seq:06d}"
+    entry_number = f"JE-{seq:06d}"
     entry.entry_number = entry_number
     entry.save(update_fields=["entry_number"])
 

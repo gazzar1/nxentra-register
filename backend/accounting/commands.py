@@ -1118,7 +1118,7 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
     posted_at = timezone.now()
 
     sequence_value = _next_company_sequence(entry.company, "journal_entry_number")
-    entry_number = f"JE-{entry.company_id}-{sequence_value:06d}"
+    entry_number = f"JE-{sequence_value:06d}"
 
     # Build line data for event (including analysis tags and counterparty)
     line_data = []
@@ -1345,7 +1345,7 @@ def reverse_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
         return CommandResult.fail(reason)
 
     sequence_value = _next_company_sequence(original.company, "journal_entry_number")
-    reversal_entry_number = f"JE-{original.company_id}-{sequence_value:06d}"
+    reversal_entry_number = f"JE-{sequence_value:06d}"
 
     reversal_line_data = []
     for line in aggregate.lines:
@@ -3704,7 +3704,7 @@ def record_customer_receipt(
     # We'll use the existing post_journal_entry flow
     from events.types import JournalEntryPostedData, JournalLineData
 
-    entry_number = f"JE-{actor.company.id}-{entry_sequence:06d}"
+    entry_number = f"JE-{entry_sequence:06d}"
 
     # Recalculate totals (may have changed due to FX/rounding lines)
     total_debit = sum(Decimal(l["debit"]) for l in lines)
@@ -4154,7 +4154,7 @@ def record_vendor_payment(
     # Create the journal entry
     from events.types import JournalEntryPostedData, JournalLineData
 
-    entry_number = f"JE-{actor.company.id}-{entry_sequence:06d}"
+    entry_number = f"JE-{entry_sequence:06d}"
 
     # Recalculate totals (may have changed due to FX/rounding lines)
     total_debit = sum(Decimal(l["debit"]) for l in lines)
