@@ -357,6 +357,114 @@ def test_auto_create_and_update_defaults_never_overwrite_user_customizations(db,
     assert Item.objects.filter(company=company, code="HEAD-001").count() == 1
 
 
+def test_a9_auto_create_falls_back_to_variant_id_when_sku_empty(db, company, monkeypatch):
+    # Why (A9): Egyptian merchants frequently sell products without SKUs
+    # (small operations, custom items). Pre-A9 the caller guarded the
+    # auto-create call on `if sku:`, so empty-SKU line items silently
+    # skipped Item creation — leaving Shopify-imported orders unable to
+    # resolve an Item, post COGS, or track inventory. The fallback uses
+    # the Shopify variant_id (durable per-company unique identity) as
+    # the synthetic Item code.
+    from accounting.mappings import ModuleAccountMapping
+    from accounting.models import Account
+    from projections.write_barrier import command_writes_allowed, projection_writes_allowed
+    from sales.models import Item
+    from shopify_connector.commands import _auto_create_item_from_line
+    from shopify_connector.models import ShopifyProduct, ShopifyStore
+
+    with projection_writes_allowed():
+        sales_acct = Account.objects.projection().create(
+            company=company,
+            code="41000",
+            name="Sales Revenue",
+            account_type=Account.AccountType.REVENUE,
+            status=Account.Status.ACTIVE,
+        )
+        inv_acct = Account.objects.projection().create(
+            company=company,
+            code="13000",
+            name="Inventory",
+            account_type=Account.AccountType.ASSET,
+            status=Account.Status.ACTIVE,
+        )
+        cogs_acct = Account.objects.projection().create(
+            company=company,
+            code="51000",
+            name="Cost of Goods Sold",
+            account_type=Account.AccountType.EXPENSE,
+            status=Account.Status.ACTIVE,
+        )
+    for role, account in [
+        ("SALES_REVENUE", sales_acct),
+        ("INVENTORY", inv_acct),
+        ("COGS", cogs_acct),
+    ]:
+        ModuleAccountMapping.objects.create(
+            company=company,
+            module="shopify_connector",
+            role=role,
+            account=account,
+        )
+
+    with command_writes_allowed():
+        store = ShopifyStore.objects.create(
+            company=company,
+            shop_domain="a9-no-sku.myshopify.com",
+            access_token="test-token",
+            status=ShopifyStore.Status.ACTIVE,
+        )
+
+    monkeypatch.setattr(
+        "shopify_connector.commands._fetch_variant_cost",
+        lambda *_a, **_kw: __import__("decimal").Decimal("100.00"),
+    )
+    monkeypatch.setattr(
+        "shopify_connector.commands._get_shopify_store_currency",
+        lambda _store: "EGP",
+    )
+
+    # First call — empty SKU, but variant_id present. Item gets created
+    # under the synthetic code SHOP-{variant_id}.
+    line_item_a = {
+        "title": "Custom mug",
+        "price": "200.00",
+        "sku": "",
+        "variant_id": 12345,
+        "product_id": 678,
+    }
+    _auto_create_item_from_line(store, "", line_item_a)
+
+    item = Item.objects.get(company=company, code="SHOP-12345")
+    assert item.name == "Custom mug"
+    assert item.sales_account_id == sales_acct.id
+    assert item.inventory_account_id == inv_acct.id
+    assert item.cogs_account_id == cogs_acct.id
+    assert ShopifyProduct.objects.filter(company=company, shopify_variant_id=12345).exists()
+
+    # Second call — SAME variant_id, still no SKU, different product on
+    # paper. Must NOT create a duplicate (the variant_id check matches
+    # the existing mapping; pre-A9 the empty-string SKU lookup would
+    # also have false-positived against ANY empty-SKU product).
+    _auto_create_item_from_line(store, "", line_item_a)
+    assert Item.objects.filter(company=company, code="SHOP-12345").count() == 1
+
+    # Third call — DIFFERENT variant, also no SKU. Must create a fresh
+    # Item under its own synthetic code, not collide with the first.
+    line_item_b = {
+        "title": "Custom poster",
+        "price": "50.00",
+        "sku": "",
+        "variant_id": 99999,
+        "product_id": 4321,
+    }
+    _auto_create_item_from_line(store, "", line_item_b)
+
+    item_b = Item.objects.get(company=company, code="SHOP-99999")
+    assert item_b.name == "Custom poster"
+    # Two distinct Items now — proves empty-SKU products don't collide.
+    assert Item.objects.filter(company=company, code__startswith="SHOP-").count() == 2
+
+
 def test_finalize_shopify_stores_swallows_webhook_failures(db, company, owner_membership, monkeypatch):
     # Onboarding must not fail wholesale when Shopify's webhook API has a
     # bad day — we want the merchant's books to be set up regardless.

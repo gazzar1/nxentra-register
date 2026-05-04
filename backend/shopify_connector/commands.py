@@ -441,9 +441,11 @@ def _process_order_paid_inner(store: ShopifyStore, payload: dict) -> CommandResu
             }
         )
 
-        # Auto-create Item if SKU exists but no matching Item in Nxentra
-        if sku:
-            _auto_create_item_from_line(store, sku, item)
+        # Auto-create Item if no matching Item in Nxentra. Egyptian
+        # merchants frequently sell items without SKUs (custom / one-off
+        # products); the helper falls back to a synthetic code derived
+        # from the Shopify variant_id when sku is empty (A9).
+        _auto_create_item_from_line(store, sku, item)
 
     # Extract customer info. Shopify sends "customer": null when the order
     # has no customer attached (e.g. admin-created draft marked-as-paid),
@@ -2101,21 +2103,44 @@ def _get_shopify_store_currency(store, headers=None) -> str:
 
 
 def _auto_create_item_from_line(store, sku: str, line_item: dict):
-    """Auto-create a Nxentra Item from a Shopify order line item if no match exists."""
+    """Auto-create a Nxentra Item from a Shopify order line item if no match exists.
+
+    A9: when sku is empty (common for Egyptian merchants selling custom /
+    one-off products), fall back to a synthetic code derived from the
+    Shopify variant_id (or product_id). The variant_id check below is the
+    durable identity — re-orders for the same variant find the existing
+    mapping and skip, regardless of whether the SKU is set.
+    """
     from sales.models import Item
     from shopify_connector.models import ShopifyProduct
 
-    # Skip if Item already exists for this SKU
-    if Item.objects.filter(company=store.company, code=sku).exists():
-        return
-    # Skip if ShopifyProduct mapping already exists
-    if ShopifyProduct.objects.filter(company=store.company, sku=sku).exists():
-        return
-
-    title = line_item.get("title", sku)
-    price = Decimal(str(line_item.get("price", "0")))
+    sku = (sku or "").strip()
     variant_id = line_item.get("variant_id")
     product_id = line_item.get("product_id")
+
+    if sku:
+        code = sku
+    elif variant_id:
+        code = f"SHOP-{variant_id}"
+    elif product_id:
+        code = f"SHOP-PROD-{product_id}"
+    else:
+        # No identifiable handle — nothing we can create deterministically.
+        return
+
+    # Skip if Item already exists for this code
+    if Item.objects.filter(company=store.company, code=code).exists():
+        return
+    # Skip if ShopifyProduct mapping already exists for this variant.
+    # variant_id is the per-company unique identity; sku-keyed lookup
+    # would false-positive across multiple empty-SKU products.
+    if variant_id and ShopifyProduct.objects.filter(company=store.company, shopify_variant_id=variant_id).exists():
+        return
+    if sku and ShopifyProduct.objects.filter(company=store.company, sku=sku).exists():
+        return
+
+    title = line_item.get("title", code)
+    price = Decimal(str(line_item.get("price", "0")))
 
     # Resolve default accounts (Sales, Inventory, COGS, Purchase) so the
     # merchant gets a usable Item out of the box and so fulfillment can
@@ -2149,7 +2174,7 @@ def _auto_create_item_from_line(store, sku: str, line_item: dict):
             with command_writes_allowed():
                 item = Item.objects.create(
                     company=store.company,
-                    code=sku,
+                    code=code,
                     name=title,
                     item_type="INVENTORY",
                     default_unit_price=price,
@@ -2176,14 +2201,14 @@ def _auto_create_item_from_line(store, sku: str, line_item: dict):
                 )
             logger.info(
                 "Auto-created Item %s (%s) cost=%s (inventory=%s, cogs=%s)",
-                sku,
+                code,
                 title,
                 cost,
                 defaults.get("inventory"),
                 defaults.get("cogs"),
             )
     except Exception as exc:
-        logger.warning("Failed to auto-create Item for SKU %s: %s", sku, exc)
+        logger.warning("Failed to auto-create Item %s: %s", code, exc)
 
 
 def _extract_gateway(payload: dict) -> str:
