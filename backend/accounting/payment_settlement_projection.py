@@ -156,6 +156,52 @@ class PaymentSettlementProjection(BaseProjection):
             )
             return
 
+        # A39: detect lines whose order already has a posted credit note from
+        # the platform's own refund flow. Canonical case: BST-701 / order
+        # 1007 — Shopify fires refund_created on COD failed delivery
+        # (CN-000002 credits Bosta clearing 1,200), then Bosta's settlement
+        # statement later reports the same order as `returned_uncollected`
+        # (the importer would credit clearing another 1,200 via the Sales
+        # Returns line). Same economic event, counted twice — drove
+        # Aljazeera8's Bosta clearing to -2,200 EGP. We subtract the
+        # already-credited rows from `gross` + `uncollected` (and from any
+        # per-gateway breakdown) so the JE lands a balanced reduction:
+        # DR Sales Returns drops, CR Clearing drops, net + fees unchanged.
+        line_items = data.get("line_items") or []
+        provider_breakdown = data.get("provider_breakdown") or []
+        skipped_total, skipped_count, skipped_per_gateway = _detect_already_credited_lines(company, line_items)
+        if skipped_total > 0:
+            logger.info(
+                "PaymentSettlement %s: A39 dropping %d already-credited line(s) "
+                "totaling %s — credit notes posted via platform refund flow.",
+                source_document,
+                skipped_count,
+                skipped_total,
+            )
+            uncollected -= skipped_total
+            gross -= skipped_total
+            for sub in provider_breakdown:
+                gw = (sub.get("gateway_normalized_code") or "").strip().lower()
+                sub_skip = skipped_per_gateway.get(gw, Decimal("0"))
+                if sub_skip > 0:
+                    sub["gross_amount"] = str(
+                        (Decimal(str(sub.get("gross_amount", "0"))) - sub_skip).quantize(Decimal("0.01"))
+                    )
+                    sub["uncollected_amount"] = str(
+                        (Decimal(str(sub.get("uncollected_amount", "0"))) - sub_skip).quantize(Decimal("0.01"))
+                    )
+
+            # If the entire batch was already credited via CNs, every JE line
+            # would be zero — there's nothing to post. Stamp the source
+            # document anyway so the idempotency guard recognizes the batch
+            # as "handled" on replay.
+            if gross <= 0:
+                logger.info(
+                    "PaymentSettlement %s: every line already credited via CN — no JE needed.",
+                    source_document,
+                )
+                return
+
         # Resolve accounts.
         module = _MODULE_BY_EXTERNAL_SYSTEM.get(external_system, f"{external_system}_connector")
         mapping = ModuleAccountMapping.get_mapping(company, module)
@@ -178,7 +224,7 @@ class PaymentSettlementProjection(BaseProjection):
         # one CR clearing line per provider. Otherwise the legacy single-
         # clearing path applies (back-compat for parsers that don't emit
         # a breakdown, and for batches that span only one gateway).
-        provider_breakdown = data.get("provider_breakdown") or []
+        # provider_breakdown is read above (A39 pre-pass mutates it).
         clearing_lines: list[dict] = []
 
         memo = (
@@ -351,3 +397,58 @@ class PaymentSettlementProjection(BaseProjection):
             fees,
             uncollected,
         )
+
+
+def _detect_already_credited_lines(
+    company,
+    line_items: list,
+) -> tuple[Decimal, int, dict[str, Decimal]]:
+    """A39: which settlement-statement lines have already been credited?
+
+    A failed-delivery COD order can land in the books twice — once as a
+    Shopify-fired ``refund_created`` event (CreditNote credits clearing)
+    and again as the courier's settlement statement reporting the same
+    order as ``returned_uncollected`` (settlement projection would credit
+    clearing a second time). This helper returns which lines should be
+    dropped from the settlement JE.
+
+    Returns ``(total_skipped, count, per_gateway)`` so the caller can
+    subtract from gross/uncollected/breakdown before posting.
+
+    Detection key: ``SalesCreditNote.invoice.source_document_id`` matches
+    the settlement line's ``order_id``. The CN must be POSTED (DRAFT
+    credit notes haven't hit the GL yet, so they don't double-count).
+    """
+    from sales.models import SalesCreditNote
+
+    skipped_total = Decimal("0")
+    skipped_count = 0
+    skipped_per_gateway: dict[str, Decimal] = {}
+
+    for line in line_items or []:
+        status = (line.get("status") or "").lower()
+        if status not in ("returned", "refunded", "uncollected"):
+            continue
+        order_id = str(line.get("order_id") or "").strip()
+        if not order_id:
+            continue
+        # Bosta line_items use "uncollected"; Paymob line_items use "refund".
+        row_amount = Decimal(str(line.get("uncollected") or line.get("refund") or "0"))
+        if row_amount <= 0:
+            continue
+        cn_exists = SalesCreditNote.objects.filter(
+            company=company,
+            invoice__company=company,
+            invoice__source="shopify",
+            invoice__source_document_id=order_id,
+            status=SalesCreditNote.Status.POSTED,
+        ).exists()
+        if not cn_exists:
+            continue
+        skipped_total += row_amount
+        skipped_count += 1
+        gw = (line.get("gateway") or "").strip().lower()
+        if gw:
+            skipped_per_gateway[gw] = skipped_per_gateway.get(gw, Decimal("0")) + row_amount
+
+    return skipped_total, skipped_count, skipped_per_gateway
