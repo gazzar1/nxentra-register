@@ -66,17 +66,56 @@ Once your tenant + Shopify store are connected, message me. I'll:
   - `bosta_cod.csv` (courier COD reconciliation report)
   - `bank_statement.csv` (matching bank deposits)
 
-### 4. Upload the three CSVs in this order
+### 4. Upload the three CSVs in order — and watch what changes
 
-1. Paymob settlement → `Finance → Import Settlements`
-2. Bosta COD report → `Finance → Import Settlements`
-3. Bank statement → `Accounting → Bank Reconciliation → Import Statement`
+Upload one CSV at a time, and **after each upload visit `Finance → Reconciliation` and skim what changed**. The dashboard answers the "where is my money?" question — half the test is whether each upload's effect is visible there.
 
-Each upload walks you through a column-mapping step before parsing.
+**Before any upload** — `Finance → Reconciliation` should show your Shopify clearing balances on the left ("expected") and 0.00 settled. Take a quick look so you know the baseline.
 
-### 5. Open the Reconciliation dashboard
+**Upload 1: Paymob settlement**
+- Go to `Finance → Import Settlements`
+- Drop `paymob_settlement.csv` into the **Paymob** uploader (left side)
+- Click **Import Paymob CSV**
+- Then back to `Finance → Reconciliation` — Paymob's "Settled" column should jump, "Open Balance" should drop. You may see a `Review` badge next to "Paymob Accept" — that's deliberate; flag whether the badge is self-explanatory or confusing.
 
-`Finance → Reconciliation`. Try to answer the merchant's question: *"did all my Shopify revenue make it to the bank?"* If you can answer it through the platform, the workflow works. If you can't, where you got stuck is the feedback I need.
+**Upload 2: Bosta COD settlement**
+- Same page (`Finance → Import Settlements`)
+- Drop `bosta_cod.csv` into the **Bosta** uploader (right side)
+- Click **Import Bosta CSV**
+- Back to `Finance → Reconciliation` — Bosta's settled jumps. **You'll likely see a red warning banner** ("Bosta clearing is negative") — that's intentional in the test data: one settlement line refers to an order that doesn't exist in the system. Tell me whether the warning makes sense or feels alarming.
+
+**Upload 3: Bank statement** — `Accounting → Bank Reconciliation → Import Statement`
+
+Form fields:
+- **Bank Account**: pick **`11000 — Cash and Bank`** (don't pick Shopify Clearing or Expected Bank Deposit — those are intermediate accounts; the deposit lands in your actual bank account)
+- **Statement Date**: set to the latest date in the CSV (e.g. 2026-05-09)
+- **Period Start / Period End**: span the dates in the CSV (e.g. 2026-04-30 to 2026-05-09)
+- **Currency**: should default to EGP — confirm
+- **Opening Balance / Closing Balance**: leave at 0
+
+Then upload the file:
+
+1. Choose `bank_statement.csv` from the file picker
+2. Click the **"Map columns"** button (the import doesn't auto-start — this opens the column-mapper dialog)
+3. The dialog shows what we auto-detected for each column (Date / Description / Amount / Reference / Debit / Credit) plus a date format. **Trust the auto-detection** — it sniffs the first row of your file. If you override the date format and the import fails ("Parsed 0 lines"), the error message will tell you to revisit the mapping.
+4. Click **"Parse with these columns"**
+5. Review the parsed-lines preview at the bottom — does it look right? (Date, description, amount, sign of amounts)
+6. Click **"Import N lines"**
+
+You'll land on the bank statement detail page with all the imported lines marked **Unmatched**. Don't click "Complete Reconciliation" yet — first:
+
+7. Click the **"Auto-Match"** button at the top of the page. The system tries to match each bank deposit against the settlement JEs you posted earlier. Some will match cleanly (status: `Auto`), some will fall into a **Needs Review** queue (matched within tolerance but the bank received a different amount than expected — e.g. a short-payment), and some will stay **Unmatched** (bank fees, mystery transfers, etc.).
+8. Now go to `Finance → Reconciliation`. Stage 3 (Bank Match) shows the result. If anything is in **Needs Review**, you'll see a queue with a reason picker — pick the reason that fits ("Bank charge", "Chargeback", "Rounding", etc.) and click **Resolve**. The system posts an adjustment JE to drain the residual.
+
+**Only after Auto-Match + Needs Review are clean** should you go back to the bank statement page and click "Complete Reconciliation" — that's the final closeout button that locks the period.
+
+### 5. Open the Reconciliation dashboard one more time
+
+`Finance → Reconciliation`. Now try to answer the merchant's question end-to-end:
+
+> *"Did all my Shopify revenue make it to the bank? If anything's missing, where is it sitting?"*
+
+The "Tell me the story" banner at the top of the page should give you a one-sentence answer. If it does — the workflow works. If you can't make sense of what it tells you, or you have to dig through three drilldowns to feel confident, that's exactly the feedback I need.
 
 ---
 
