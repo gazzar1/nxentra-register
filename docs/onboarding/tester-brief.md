@@ -68,21 +68,30 @@ Once your tenant + Shopify store are connected, message me. I'll:
 
 ### 4. Upload the three CSVs in order — and watch what changes
 
-Upload one CSV at a time, and **after each upload visit `Finance → Reconciliation` and skim what changed**. The dashboard answers the "where is my money?" question — half the test is whether each upload's effect is visible there.
+Upload one CSV at a time, then **observe the cause-and-effect across multiple pages**. Each upload triggers a chain: settlement event → projection runs → JEs post → reconciliation dashboard updates. You'll learn most by following that chain end-to-end after each upload.
 
-**Before any upload** — `Finance → Reconciliation` should show your Shopify clearing balances on the left ("expected") and 0.00 settled. Take a quick look so you know the baseline.
+**Before any upload** — visit these pages and note the baseline:
+- `Finance → Reconciliation` — Shopify clearing balances on the left, 0.00 settled
+- `Accounting → Journal Entries` — about 12 entries (sales invoices + 2 credit notes from the seed)
+- `Setup → Dimensions` — should already have `SETTLEMENT_PROVIDER` dimension with provider codes (Paymob, Bosta, etc.) auto-created during onboarding
 
 **Upload 1: Paymob settlement**
 - Go to `Finance → Import Settlements`
 - Drop `paymob_settlement.csv` into the **Paymob** uploader (left side)
 - Click **Import Paymob CSV**
-- Then back to `Finance → Reconciliation` — Paymob's "Settled" column should jump, "Open Balance" should drop. You may see a `Review` badge next to "Paymob Accept" — that's deliberate; flag whether the badge is self-explanatory or confusing.
+
+What to check after:
+- `Finance → Reconciliation` — Paymob's "Settled" column jumps; "Open Balance" drops. You may see a `Review` badge next to "Paymob Accept" — flag whether the badge is self-explanatory or confusing.
+- `Accounting → Journal Entries` — 4 new JEs with memos like *"Settlement: Paymob batch PAYMOB-BATCH-..."*. Click one to see the JE structure (DR Expected Bank Deposit + DR Fees + CR Paymob Clearing).
 
 **Upload 2: Bosta COD settlement**
 - Same page (`Finance → Import Settlements`)
 - Drop `bosta_cod.csv` into the **Bosta** uploader (right side)
 - Click **Import Bosta CSV**
-- Back to `Finance → Reconciliation` — Bosta's settled jumps. **You'll likely see a red warning banner** ("Bosta clearing is negative") — that's intentional in the test data: one settlement line refers to an order that doesn't exist in the system. Tell me whether the warning makes sense or feels alarming.
+
+What to check after:
+- `Finance → Reconciliation` — Bosta's settled jumps. **You'll likely see a red warning banner** ("Bosta clearing is negative") — that's intentional in the test data: one settlement line references an order that doesn't exist in the system. Tell me whether the warning makes sense or feels alarming.
+- `Accounting → Journal Entries` — 4 new Bosta settlement JEs.
 
 **Upload 3: Bank statement** — `Accounting → Bank Reconciliation → Import Statement`
 
@@ -105,7 +114,15 @@ Then upload the file:
 You'll land on the bank statement detail page with all the imported lines marked **Unmatched**. Don't click "Complete Reconciliation" yet — first:
 
 7. Click the **"Auto-Match"** button at the top of the page. The system tries to match each bank deposit against the settlement JEs you posted earlier. Some will match cleanly (status: `Auto`), some will fall into a **Needs Review** queue (matched within tolerance but the bank received a different amount than expected — e.g. a short-payment), and some will stay **Unmatched** (bank fees, mystery transfers, etc.).
-8. Now go to `Finance → Reconciliation`. Stage 3 (Bank Match) shows the result. If anything is in **Needs Review**, you'll see a queue with a reason picker — pick the reason that fits ("Bank charge", "Chargeback", "Rounding", etc.) and click **Resolve**. The system posts an adjustment JE to drain the residual.
+
+   What to check after Auto-Match:
+   - `Accounting → Journal Entries` — new "Bank deposit clearance" JEs (DR Cash and Bank / CR Expected Bank Deposit). One JE per matched bank line.
+
+8. Now go to `Finance → Reconciliation`. Stage 3 (Bank Match) shows the result. If anything is in **Needs Review** queue (top of page, above Stage 1), you'll see a row with the difference + a **"Pick a reason..."** dropdown. Pick the reason that fits ("Extra gateway/courier fee", "Bank charge", "Chargeback", "Rounding", etc.) and click **Resolve**.
+
+   What to check after Resolve:
+   - `Accounting → Journal Entries` — a new adjustment JE (memo: *"Reconciliation difference: batch ... — <reason>"*) drains the residual.
+   - The narrative banner at the top updates — drops the "1 bank deposit matched within tolerance" sentence.
 
 **Only after Auto-Match + Needs Review are clean** should you go back to the bank statement page and click "Complete Reconciliation" — that's the final closeout button that locks the period.
 
@@ -146,6 +163,7 @@ If something's not where you expect it to be, that's worth flagging — discover
 - Missing features that don't block the scenario above
 - Performance on huge datasets
 - Mobile layout (desktop-first for now)
+- **`Records → Items` will be empty.** The seed creates orders + invoices but doesn't auto-populate the product catalog (real Shopify webhooks do; the seed bypasses that path). Don't read this as a bug; just skip the Items page for this test.
 
 ---
 
