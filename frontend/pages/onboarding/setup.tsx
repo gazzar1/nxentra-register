@@ -136,6 +136,13 @@ export default function OnboardingSetupPage() {
   const submitStepIndex = lastStepIndex - 1; // Step before "Ready"
 
   useEffect(() => {
+    // A7: when returning from Shopify OAuth, the synchronous setStep below
+    // races against the async draft restore inside getStatus().then() — the
+    // async path wins and the user lands on the previous step (Fiscal Year)
+    // instead of Shopify Setup. We skip restoring `step` from the draft on
+    // OAuth return so the synchronous assignment lower in this effect wins.
+    const isShopifyReturn = router.query.shopify_connected === "true";
+
     onboardingService
       .getStatus()
       .then((data) => {
@@ -159,7 +166,8 @@ export default function OnboardingSetupPage() {
           const raw = sessionStorage.getItem("onboarding_draft");
           if (raw) {
             const draft = JSON.parse(raw);
-            if (draft.step != null) setStep(draft.step);
+            // A7: don't override the OAuth-return step assignment.
+            if (!isShopifyReturn && draft.step != null) setStep(draft.step);
             if (draft.fiscalYear) setFiscalYear(draft.fiscalYear);
             if (draft.numPeriods) setNumPeriods(draft.numPeriods);
             if (draft.currentPeriod) setCurrentPeriod(draft.currentPeriod);
@@ -189,7 +197,7 @@ export default function OnboardingSetupPage() {
     }).catch(() => { /* no store yet */ });
 
     // If returning from Shopify OAuth, jump to the shopify step
-    if (router.query.shopify_connected === "true") {
+    if (isShopifyReturn) {
       setBusinessType("shopify");
       const shopifyStepIdx = STEPS_SHOPIFY.findIndex((s) => s.key === "shopify");
       if (shopifyStepIdx >= 0) setStep(shopifyStepIdx);
@@ -470,6 +478,12 @@ export default function OnboardingSetupPage() {
                   setShopifyConnecting(true);
                   try {
                     const { data } = await shopifyService.install(shopifyDomain.trim());
+                    // A7: persist the current step (Shopify Setup) before
+                    // leaving for OAuth. Without this, the draft still has
+                    // the previous step (saved by handleNext when user
+                    // advanced INTO this step) and the post-OAuth restore
+                    // sends us back there.
+                    saveDraft();
                     // Save return point so we come back to onboarding after OAuth
                     sessionStorage.setItem("shopify_return_to", "onboarding");
                     window.location.href = data.url;
