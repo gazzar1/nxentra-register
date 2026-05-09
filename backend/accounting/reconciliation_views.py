@@ -318,7 +318,28 @@ def _build_narrative(
             f"{_fmt(stage1_totals.get('total_settled'))} has been drained from clearing via provider settlements"
         )
         if open_balance > 0:
-            parts[-1] += f"; {_fmt(stage1_totals.get('open_balance'))} is still expected from providers."
+            # When providers have BOTH positive (still owed) and negative
+            # (over-credited) balances, the net "X expected from providers"
+            # phrasing is misleading — it sounds like providers collectively
+            # owe X, but really one owes more and another was over-credited.
+            # Break it down explicitly. Surfaced 2026-05-09 dogfood: net
+            # 450 expected = Paymob 1,450 owed + Bosta -1,000 over-credit;
+            # merchant reads "450" and misses the actual position.
+            has_negative = any(Decimal(r.get("open_balance") or "0") < 0 for r in (stage1_rows or []))
+            owed_clauses = [
+                f"{r['provider_name']} owes {_fmt(r['open_balance'])}"
+                for r in (stage1_rows or [])
+                if Decimal(r.get("open_balance") or "0") > 0
+            ]
+            if has_negative and owed_clauses:
+                parts[-1] += (
+                    ". "
+                    + "; ".join(owed_clauses)
+                    + f" — net {_fmt(stage1_totals.get('open_balance'))} {company_currency} "
+                    "expected after the negative balance(s) flagged above."
+                )
+            else:
+                parts[-1] += f"; {_fmt(stage1_totals.get('open_balance'))} is still expected from providers."
         else:
             parts[-1] += "."
     elif open_balance > 0:
@@ -570,6 +591,21 @@ def _per_order_drilldown(company, provider) -> list[dict]:
     # 3) Build {shopify_order_id → (batch_id, gross, net, status)} from
     #    PaymentSettlement events for this provider. Single scan; events
     #    are small (one per batch) so memory is fine.
+    #
+    #    Multi-gateway batches (A22): a Paymob settlement event may roll
+    #    up multiple gateways (e.g. parent "paymob" with a
+    #    provider_breakdown including "paymob_accept"). Such an event's
+    #    top-level `provider_normalized_code` is the parent ("paymob"),
+    #    so a naive `== provider.normalized_code` filter would skip the
+    #    event when drilling down for "paymob_accept" — leaving every
+    #    Paymob-Accept order showing as "Expected" even though Stage 1
+    #    knows it settled. We accept the event when EITHER the top-level
+    #    matches OR the provider appears in the breakdown; in the
+    #    breakdown case we further filter line_items by the per-row
+    #    `gateway` field so we don't misattribute a Paymob line to
+    #    Paymob Accept (or vice-versa). Surfaced 2026-05-09 dogfood:
+    #    order #1009 (Paymob Accept) showed Expected in the drilldown
+    #    despite Stage 1 reading Settled 1,000 / Open 0.
     order_to_settlement: dict = {}
     settlement_events = BusinessEvent.objects.filter(
         company=company,
@@ -577,27 +613,51 @@ def _per_order_drilldown(company, provider) -> list[dict]:
     )
     for event in settlement_events:
         data = event.get_data()
-        if data.get("provider_normalized_code") != provider.normalized_code:
+        event_provider = data.get("provider_normalized_code") or ""
+        breakdown = data.get("provider_breakdown") or []
+        is_top_level_match = event_provider == provider.normalized_code
+        is_breakdown_match = any(
+            (sub.get("gateway_normalized_code") or "") == provider.normalized_code for sub in breakdown
+        )
+        if not (is_top_level_match or is_breakdown_match):
             continue
         batch_id = data.get("payout_batch_id") or ""
         for li in data.get("line_items", []) or []:
             order_id = (li.get("order_id") or "").strip()
-            if order_id:
-                order_to_settlement[order_id] = {
-                    "batch_id": batch_id,
-                    "gross": str(li.get("gross", "0")),
-                    "net": str(li.get("net", "0")),
-                    "status": li.get("status", "settled"),
-                }
+            if not order_id:
+                continue
+            # Top-level match: every line in the batch belongs to this
+            # provider (single-gateway batch). Breakdown-only match:
+            # only include lines whose per-row gateway matches the
+            # drilldown provider.
+            if not is_top_level_match:
+                line_gateway = (li.get("gateway") or "").strip().lower()
+                if line_gateway != provider.normalized_code:
+                    continue
+            order_to_settlement[order_id] = {
+                "batch_id": batch_id,
+                "gross": str(li.get("gross", "0")),
+                "net": str(li.get("net", "0")),
+                "status": li.get("status", "settled"),
+            }
 
-    # 4) Set of cleared batches (bank-matched) — A14b clearance JEs.
+    # 4) Set of batch_ids whose JEs we care about (i.e. batches the orders
+    #    in this drilldown belong to). The settlement JE's source_document
+    #    is `f"{parent_provider}:{batch_id}"` — for multi-gateway batches
+    #    the parent_provider may not equal this drilldown's provider
+    #    (e.g. JE source "paymob:PAYMOB-BATCH-MAY01-B" but we're drilling
+    #    Paymob Accept). Match on batch_id, not on the provider stamp.
+    relevant_batch_ids = {s["batch_id"] for s in order_to_settlement.values() if s.get("batch_id")}
+
+    # Set of cleared batches (bank-matched) — A14b clearance JEs.
     clearance_docs = JournalEntry.objects.filter(
         company=company,
         source_module="payment_settlement_clearance",
         status=JournalEntry.Status.POSTED,
-        source_document__startswith=f"{provider.normalized_code}:",
     ).values_list("source_document", flat=True)
-    cleared_batches = {doc.split(":", 1)[1] for doc in clearance_docs if ":" in doc}
+    cleared_batches = {
+        doc.split(":", 1)[1] for doc in clearance_docs if ":" in doc and doc.split(":", 1)[1] in relevant_batch_ids
+    }
 
     # A36: Set of batches whose settlement JE actually POSTED. The
     # presence of a settlement event in `order_to_settlement` only
@@ -613,9 +673,12 @@ def _per_order_drilldown(company, provider) -> list[dict]:
         company=company,
         source_module="payment_settlement",
         status=JournalEntry.Status.POSTED,
-        source_document__startswith=f"{provider.normalized_code}:",
     ).values_list("source_document", flat=True)
-    posted_settlement_batches = {doc.split(":", 1)[1] for doc in posted_settlement_docs if ":" in doc}
+    posted_settlement_batches = {
+        doc.split(":", 1)[1]
+        for doc in posted_settlement_docs
+        if ":" in doc and doc.split(":", 1)[1] in relevant_batch_ids
+    }
 
     # 5) Stitch per-order rows.
     results: list[dict] = []

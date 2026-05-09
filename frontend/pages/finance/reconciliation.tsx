@@ -451,14 +451,24 @@ export default function ReconciliationPage() {
                       <p className="text-lg font-semibold">{summary.stage3.unmatched_lines ?? 0}</p>
                     </div>
                     {(summary.stage3.matched_with_unresolved_difference ?? 0) > 0 && (
-                      <div>
+                      <a
+                        href="#needs-review-queue"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          document
+                            .getElementById("needs-review-queue")
+                            ?.scrollIntoView({ behavior: "smooth", block: "start" });
+                        }}
+                        className="rounded-md p-1 -m-1 hover:bg-amber-500/10 transition-colors cursor-pointer"
+                        title="Jump to the Needs Review queue"
+                      >
                         <p className="text-xs uppercase text-muted-foreground">
                           Needs review
                         </p>
-                        <p className="text-lg font-semibold text-amber-600">
+                        <p className="text-lg font-semibold text-amber-600 underline-offset-2 hover:underline">
                           {summary.stage3.matched_with_unresolved_difference}
                         </p>
-                      </div>
+                      </a>
                     )}
                   </div>
                 ) : (
@@ -759,7 +769,10 @@ function NeedsReviewCard({
   onResolve: (item: NeedsReviewItem) => void | Promise<void>;
 }) {
   return (
-    <Card className="border-amber-500/40 bg-amber-50/30 dark:bg-amber-500/5">
+    <Card
+      id="needs-review-queue"
+      className="border-amber-500/40 bg-amber-50/30 dark:bg-amber-500/5 scroll-mt-4"
+    >
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <ClipboardCheck className="h-5 w-5 text-amber-600" />

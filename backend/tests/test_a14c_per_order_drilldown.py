@@ -292,6 +292,85 @@ def test_orders_endpoint_filters_to_provider(shopify_setup, company, owner_membe
     assert {o["shopify_order_id"] for o in paypal_resp["orders"]} == {"ORD-PAYPAL"}
 
 
+def test_orders_endpoint_multi_gateway_batch_attributes_to_sub_provider(
+    shopify_setup, company, owner_membership, authenticated_client
+):
+    """When a Paymob settlement batch rolls up multiple gateways via
+    provider_breakdown (e.g. parent 'paymob' with 'paymob' + 'paymob_accept'
+    sub-rows), the drilldown for the SUB-gateway must still attribute its
+    order to the multi-gateway batch.
+
+    Pre-fix (2026-05-09 dogfood): the drilldown filtered settlement events
+    by exact-match top-level provider_normalized_code, so an event whose
+    parent was 'paymob' was skipped when drilling 'paymob_accept'. Result:
+    order #1009 (Paymob Accept) showed status='Expected' even though
+    Stage 1 read Settled 1,000 / Open 0 (because the dimension-tagged CR
+    on Paymob Accept clearing came from the multi-gateway settlement JE).
+
+    Post-fix: events match if EITHER top-level provider OR breakdown
+    contains the drilldown provider. Lines are then filtered by per-row
+    `gateway` field so a 'paymob' line in a multi-gateway batch doesn't
+    leak into the 'paymob_accept' drilldown (and vice-versa).
+    """
+    paymob = SettlementProvider.objects.get(company=company, normalized_code="paymob")
+
+    # paymob_accept isn't in the bootstrap rows; create it via the same
+    # lazy-create helper the production lazy-create path uses (mimics what
+    # happens when a Shopify order brings in a new gateway). This gives
+    # the provider a proper PostingProfile + dimension_value so the
+    # drilldown query has a clearing account to filter on.
+    from accounting.settlement_provider import SettlementProvider as SP
+
+    paymob_accept = SP.lookup_or_create_for_review(
+        company=company,
+        external_system="shopify",
+        raw_gateway="Paymob Accept",
+        fallback_posting_profile=paymob.posting_profile,
+    )
+    assert paymob_accept is not None and paymob_accept.normalized_code == "paymob_accept"
+
+    # Two real test orders, one routed via each sub-gateway.
+    _create_shopify_invoice(company, "ORD-PMB", Decimal("3000.00"), gateway="paymob")
+    _create_shopify_invoice(company, "ORD-PMA", Decimal("1000.00"), gateway="paymob_accept")
+
+    # Multi-gateway Paymob CSV — both gateways under one parent batch.
+    csv = b"""order_id,gross,fee,net,gateway,payout_batch_id,payout_date
+ORD-PMB,3000.00,90.00,2910.00,Paymob,MULTIGW-001,2026-04-26
+ORD-PMA,1000.00,30.00,970.00,Paymob Accept,MULTIGW-001,2026-04-26
+"""
+    import_settlement_csv(
+        company=company,
+        provider_normalized_code="paymob",
+        file_content=csv,
+        source_filename="multigw.csv",
+    )
+    PaymentSettlementProjection().process_pending(company)
+
+    # Drill down for Paymob Accept — order ORD-PMA must show 'settled',
+    # NOT 'expected', and must reference MULTIGW-001 even though that
+    # batch's parent provider was 'paymob'.
+    pma_resp = authenticated_client.get(f"/api/accounting/reconciliation/orders/?provider_id={paymob_accept.id}").json()
+    pma_orders = {o["shopify_order_id"]: o for o in pma_resp["orders"]}
+
+    # Bootstrap order shouldn't appear here — it has no Shopify SalesInvoice.
+    assert "ORD-PMA" in pma_orders
+    assert pma_orders["ORD-PMA"]["status"] == "settled"
+    assert pma_orders["ORD-PMA"]["settled_batch_id"] == "MULTIGW-001"
+
+    # Cross-attribution check: ORD-PMB is a Paymob (parent) order — it
+    # must NOT appear in the Paymob Accept drilldown. The line-level
+    # `gateway` filter ensures multi-gateway batch lines don't leak.
+    assert "ORD-PMB" not in pma_orders
+
+    # Inverse check: drill down for Paymob — ORD-PMB must appear and be
+    # 'settled', and ORD-PMA must NOT appear there.
+    pmb_resp = authenticated_client.get(f"/api/accounting/reconciliation/orders/?provider_id={paymob.id}").json()
+    pmb_orders = {o["shopify_order_id"]: o for o in pmb_resp["orders"]}
+    assert pmb_orders["ORD-PMB"]["status"] == "settled"
+    assert pmb_orders["ORD-PMB"]["settled_batch_id"] == "MULTIGW-001"
+    assert "ORD-PMA" not in pmb_orders
+
+
 def test_orders_endpoint_400_without_provider_id(authenticated_client, owner_membership):
     response = authenticated_client.get("/api/accounting/reconciliation/orders/")
     assert response.status_code == 400
