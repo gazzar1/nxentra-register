@@ -56,6 +56,60 @@ def test_parse_csv_headers_drops_extra_unnamed_fields():
     assert set(result["sample_rows"][0].keys()) == {"Date", "Description"}
 
 
+def test_parse_csv_debit_credit_handles_literal_zero_in_unused_cell():
+    """Real-world banks export with ``0`` (literal zero string) in the
+    unused column rather than leaving it blank. A naive truthiness
+    check on the string treats "0" as non-empty and takes the debit
+    branch, multiplying by -1 and yielding -0 = 0, which then gets
+    skipped by the amount==0 filter. Result pre-fix (2026-05-09):
+    every credit row dropped.
+
+    Surfaced live during heba_dry dogfood — 6 of 7 rows silently
+    skipped, only the bank-fee debit row parsed. The fix parses both
+    columns to Decimal first then derives a signed net.
+    """
+    csv_content = (
+        "trans_date,desc,reference,debit_amount,credit_amount\n"
+        "2026-05-02,Paymob settlement,SETTLE-001,0,2520\n"
+        "2026-05-04,Bank fee,BANK-FEE,25,0\n"
+        "2026-05-05,Customer deposit,DEP-001,0,1000\n"
+    )
+    lines = parse_csv_statement(
+        csv_content,
+        date_column="trans_date",
+        description_column="desc",
+        reference_column="reference",
+        debit_column="debit_amount",
+        credit_column="credit_amount",
+        date_format="%Y-%m-%d",
+    )
+    assert len(lines) == 3, f"Expected 3 rows parsed, got {len(lines)}"
+    assert lines[0]["amount"] == "2520"
+    assert lines[1]["amount"] == "-25"
+    assert lines[2]["amount"] == "1000"
+
+
+def test_parse_csv_debit_credit_handles_blank_unused_cell():
+    """Sanity: the older convention (blank cell when unused) still works."""
+    csv_content = (
+        "trans_date,desc,reference,debit_amount,credit_amount\n"
+        "2026-05-02,Deposit,REF1,,2520\n"
+        "2026-05-04,Withdrawal,REF2,25,\n"
+    )
+    lines = parse_csv_statement(
+        csv_content,
+        date_column="trans_date",
+        description_column="desc",
+        reference_column="reference",
+        debit_column="debit_amount",
+        credit_column="credit_amount",
+        date_format="%Y-%m-%d",
+    )
+    assert len(lines) == 2
+    assert lines[0]["amount"] == "2520"
+    assert lines[1]["amount"] == "-25"
+
+
 def test_parse_csv_with_merchant_supplied_columns_rejects_default_assumption():
     # The backbone of A24: when the merchant maps non-default column
     # names, parse_csv_statement honors them. This is the path the

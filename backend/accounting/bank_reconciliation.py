@@ -249,13 +249,21 @@ def parse_csv_statement(
         reference = row.get(reference_column, "").strip()
 
         if debit_column and credit_column:
-            # Separate debit/credit columns
+            # Separate debit/credit columns. Parse both to Decimal first
+            # then derive a signed net — many bank exports use "0" (literal
+            # zero) in the unused column rather than leaving it blank, and
+            # a naive truthiness check on the string would treat "0" as
+            # non-empty and take the debit branch, dropping every credit row.
+            # (Surfaced 2026-05-09 dry-run: 6 of 7 rows silently dropped.)
             debit = row.get(debit_column, "").strip().replace(",", "")
             credit = row.get(credit_column, "").strip().replace(",", "")
             try:
-                amount = -Decimal(debit) if debit else Decimal(credit) if credit else Decimal("0")
+                debit_val = Decimal(debit) if debit else Decimal("0")
+                credit_val = Decimal(credit) if credit else Decimal("0")
             except InvalidOperation:
                 continue
+            # Net: credit - debit. Positive = deposit, negative = withdrawal.
+            amount = credit_val - debit_val
         else:
             # Single amount column
             raw = row.get(amount_column, "").strip().replace(",", "")
