@@ -2065,7 +2065,7 @@ def _bootstrap_shopify_settlement_providers(company, clearing_account, fallback_
             )
 
             # 4. SettlementProvider row, with dimension_value populated.
-            provider, created = SettlementProvider.objects.get_or_create(
+            provider, _ = SettlementProvider.objects.get_or_create(
                 company=company,
                 external_system="shopify",
                 normalized_code=normalized,
