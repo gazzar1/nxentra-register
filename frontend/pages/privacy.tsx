@@ -139,7 +139,7 @@ export default function PrivacyPolicyPage() {
               </ul>
               <p className="mt-3">
                 To exercise any of these rights, contact us at{" "}
-                <a href="mailto:support@nxentra.com" className="text-accent underline">support@nxentra.com</a>.
+                <a href="mailto:admin@nxentra.com" className="text-accent underline">admin@nxentra.com</a>.
                 We will respond within 30 days.
               </p>
               <p className="mt-3">
@@ -194,8 +194,8 @@ export default function PrivacyPolicyPage() {
               <p>
                 If you have questions or concerns about this Privacy Policy or our data practices,
                 please contact us at:{" "}
-                <a href="mailto:support@nxentra.com" className="text-accent underline">
-                  support@nxentra.com
+                <a href="mailto:admin@nxentra.com" className="text-accent underline">
+                  admin@nxentra.com
                 </a>
               </p>
             </section>
