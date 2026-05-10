@@ -17,7 +17,7 @@ export default function PrivacyPolicyPage() {
 
           <h1 className="text-3xl font-bold mb-2">Privacy Policy</h1>
           <p className="text-sm text-muted-foreground mb-8">
-            Version 1.0 &mdash; Effective Date: April 12, 2026
+            Version 1.1 &mdash; Effective Date: May 10, 2026
           </p>
 
           <div className="prose prose-sm dark:prose-invert max-w-none space-y-6">
@@ -42,7 +42,25 @@ export default function PrivacyPolicyPage() {
                 <li><strong>Voice data:</strong> Audio recordings submitted through the voice entry feature (processed by OpenAI Whisper, not stored permanently)</li>
               </ul>
 
-              <h3 className="text-lg font-medium mt-4 mb-2">2.2 Information Collected Automatically</h3>
+              <h3 className="text-lg font-medium mt-4 mb-2">2.2 Information We Receive From Connected Platforms</h3>
+              <p className="mb-2">
+                When you connect a third-party platform (e.g. Shopify, Stripe), we receive operational
+                data needed to produce your accounting records. This includes data about your
+                customers as well as your business:
+              </p>
+              <ul className="list-disc pl-6 space-y-1">
+                <li><strong>Order data:</strong> Order numbers, line items, prices, taxes, currencies, payment status, fulfillment status, timestamps</li>
+                <li><strong>Customer data:</strong> Customer names, email addresses, phone numbers, billing and shipping addresses, and order history. This data is collected from your store and used solely to produce financial reports for you (the merchant). We do not market to your customers, sell their data, or share it outside the scope of providing our Service to you.</li>
+                <li><strong>Payout and settlement data:</strong> Gateway payouts, fees, refund amounts, dispute records</li>
+                <li><strong>Shop metadata:</strong> Shop domain, store currency, plan, locations, products</li>
+              </ul>
+              <p className="mt-2">
+                For Shopify specifically, we comply with Shopify&apos;s mandatory privacy compliance
+                webhooks (<code>customers/data_request</code>, <code>customers/redact</code>,
+                <code>shop/redact</code>) — see Section 6 and Section 7.
+              </p>
+
+              <h3 className="text-lg font-medium mt-4 mb-2">2.3 Information Collected Automatically</h3>
               <ul className="list-disc pl-6 space-y-1">
                 <li><strong>Usage data:</strong> Pages visited, features used, actions performed (for product improvement)</li>
                 <li><strong>Device information:</strong> Browser type, operating system, IP address</li>
@@ -99,6 +117,13 @@ export default function PrivacyPolicyPage() {
                 <li>We may retain anonymized, aggregated data for analytics purposes</li>
                 <li>Audit trail events may be retained longer where required by applicable financial regulations</li>
               </ul>
+
+              <h3 className="text-lg font-medium mt-4 mb-2">6.1 Shopify-specific retention</h3>
+              <ul className="list-disc pl-6 space-y-1">
+                <li><strong>Customer data deletion (<code>customers/redact</code>):</strong> When you (or Shopify on your behalf) request deletion of a specific customer&apos;s data, we will purge that customer&apos;s personally identifiable information from our systems within 30 days, except where retention is required by financial regulation (in which case the data is anonymized).</li>
+                <li><strong>Customer data export (<code>customers/data_request</code>):</strong> When you request a copy of a specific customer&apos;s data on their behalf, we will deliver it within 30 days.</li>
+                <li><strong>Shop data deletion (<code>shop/redact</code>):</strong> When you uninstall the Nxentra app from your Shopify store, we receive Shopify&apos;s redaction webhook 48 hours later. We will purge your shop&apos;s personally identifiable data within 30 days of that webhook, except for journal entries and audit trail records required by financial regulation (which we retain in anonymized form).</li>
+              </ul>
             </section>
 
             <section>
@@ -114,8 +139,15 @@ export default function PrivacyPolicyPage() {
               </ul>
               <p className="mt-3">
                 To exercise any of these rights, contact us at{" "}
-                <a href="mailto:admin@nxentra.com" className="text-accent underline">admin@nxentra.com</a>.
+                <a href="mailto:support@nxentra.com" className="text-accent underline">support@nxentra.com</a>.
                 We will respond within 30 days.
+              </p>
+              <p className="mt-3">
+                <strong>Shopify merchants:</strong> you can also trigger a deletion or data-export
+                request directly through Shopify&apos;s privacy compliance flow in your Shopify admin.
+                Shopify will dispatch the request to us via the <code>customers/redact</code>,
+                <code>customers/data_request</code>, or <code>shop/redact</code> webhooks, which
+                we honor within 30 days as described in Section 6.1.
               </p>
             </section>
 
@@ -162,8 +194,8 @@ export default function PrivacyPolicyPage() {
               <p>
                 If you have questions or concerns about this Privacy Policy or our data practices,
                 please contact us at:{" "}
-                <a href="mailto:admin@nxentra.com" className="text-accent underline">
-                  admin@nxentra.com
+                <a href="mailto:support@nxentra.com" className="text-accent underline">
+                  support@nxentra.com
                 </a>
               </p>
             </section>
