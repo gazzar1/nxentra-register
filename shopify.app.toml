@@ -1,0 +1,25 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "2258d6303a3672a381fe7606c2d2917b"
+name = "Nxentra Sync"
+application_url = "https://app.nxentra.com"
+embedded = false
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "read_customers,read_discounts,read_fulfillments,read_inventory,read_locations,read_orders,read_products,read_returns,read_shopify_payments_payouts"
+optional_scopes = [ ]
+use_legacy_install_flow = false
+
+[auth]
+redirect_urls = [ "https://app.nxentra.com/api/shopify/callback/" ]
+
+[webhooks]
+api_version = "2026-04"
+
+# A44: Shopify-mandatory GDPR compliance webhooks. All three point at the
+# same endpoint; our router branches on the X-Shopify-Topic header.
+[webhooks.privacy_compliance]
+customer_data_request_url = "https://app.nxentra.com/api/shopify/webhooks/"
+customer_deletion_url     = "https://app.nxentra.com/api/shopify/webhooks/"
+shop_deletion_url         = "https://app.nxentra.com/api/shopify/webhooks/"
