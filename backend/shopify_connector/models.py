@@ -716,3 +716,62 @@ class ShopifyProduct(models.Model):
         if self.sku:
             label += f" ({self.sku})"
         return label
+
+
+class GdprRequest(models.Model):
+    """
+    Audit log for Shopify GDPR mandatory compliance webhooks.
+
+    Shopify sends three GDPR webhooks (customers/data_request,
+    customers/redact, shop/redact) and requires a 200 response within ~5s.
+    The actual data export / deletion work happens asynchronously after the
+    audit row is written; Shopify only requires the 200 ack on the webhook.
+
+    Idempotency: Shopify retries on non-200. Dedupe on
+    (topic, payload_signature) where payload_signature is the SHA-256 of
+    the canonical request body. A retry of an identical webhook posts a row
+    with the same signature and trips the unique constraint.
+    """
+
+    class Topic(models.TextChoices):
+        CUSTOMERS_DATA_REQUEST = "customers/data_request", "Customer Data Request"
+        CUSTOMERS_REDACT = "customers/redact", "Customer Redact"
+        SHOP_REDACT = "shop/redact", "Shop Redact"
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        COMPLETED = "COMPLETED", "Completed"
+        FAILED = "FAILED", "Failed"
+
+    topic = models.CharField(max_length=40, choices=Topic.choices)
+    shop_domain = models.CharField(max_length=255, db_index=True)
+    shop_id = models.BigIntegerField(null=True, blank=True)
+
+    # Populated for customers/* topics; null for shop/redact.
+    customer_id = models.BigIntegerField(null=True, blank=True)
+    customer_email = models.EmailField(blank=True)
+
+    payload = models.JSONField(default=dict)
+    payload_signature = models.CharField(max_length=64, db_index=True)
+
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+    )
+    received_at = models.DateTimeField(auto_now_add=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+    processing_notes = models.TextField(blank=True)
+
+    class Meta:
+        db_table = "shopify_gdpr_request"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["topic", "payload_signature"],
+                name="uniq_gdpr_request_idempotent",
+            ),
+        ]
+        ordering = ["-received_at"]
+
+    def __str__(self):
+        return f"{self.topic} {self.shop_domain} ({self.status})"

@@ -483,6 +483,39 @@ Clicking the credit-note number link (`CN-000001`) on `/accounting/credit-notes`
 
 ---
 
+## Merchant-readiness — required before first paying merchant (post-Heba beta)
+
+Surfaced 2026-05-10 after switching the Shopify app from Custom (Plus-org-scoped) to Public distribution so Heba's dev store could install. Public distribution lets *any* store install via direct OAuth link without App Store listing — adequate for closed-beta testers, but a real paying merchant on a real production store puts the app under Shopify's full compliance regime. The items below are Shopify-policy-mandatory or security-baseline gaps that don't affect Heba's beta but **must** ship before the first paying merchant.
+
+App Store *listing* (Built for Shopify checklist, public discoverability) remains deferred — we don't need it for closed beta or even for the first dozen direct-link installs. Public distribution + the items below are the gate.
+
+### A44. GDPR mandatory compliance webhooks — **DONE 2026-05-10** (Shopify policy-mandatory, blocks app long-term)
+Shopify requires every app — public *or* unlisted — to handle three GDPR webhooks: `customers/data_request`, `customers/redact`, `shop/redact`. Shopify pings them periodically with test payloads; an app that doesn't respond 200 gets disabled silently. **Shipped:** `GdprRequest` audit model ([models.py](backend/shopify_connector/models.py)) + migration `0013_add_gdpr_request.py` + three handlers in [commands.py](backend/shopify_connector/commands.py) (`process_customers_data_request`, `process_customers_redact`, `process_shop_redact`) + webhook router branch in [views.py](backend/shopify_connector/views.py#L170-L191) that bypasses the store-lookup (since `shop/redact` arrives 48h after uninstall and the store record may already be gone) + 5 tests in [tests/test_a44_gdpr_webhooks.py](backend/tests/test_a44_gdpr_webhooks.py) covering 200-on-valid-sig, 401-on-bad-sig, audit row written, idempotent retry, missing-store handling. Actual data work (export / deletion) intentionally left as `PENDING` status — Shopify only requires the 200 ack on the webhook itself; build the async jobs out when there's volume. **Manual step still required (operator):** configure the three webhook URLs in **Partners Dashboard → App setup → Compliance webhooks** (`https://app.nxentra.com/api/shopify/webhooks/` for all three; topic header is what Shopify sends). Until that's done, Shopify won't actually call our endpoints in production.
+
+### A45. Privacy policy page + support email — **~2h** (Shopify policy-mandatory, surfaced on install screen) — *partially DONE per 2026-05-10 verification*
+Partners Dashboard requires a `Privacy policy URL` and `Support email` on the app config — fields are visible to merchants on the install consent screen. **2026-05-10 verification:** [frontend/pages/privacy.tsx](frontend/pages/privacy.tsx) already exists with substantive v1.0 content (data collected, OAuth-token clause, account info, voice data, etc.). What remains: (1) audit page for explicit Shopify-specific GDPR rights coverage (matches A44's `customers/data_request` / `customers/redact` / `shop/redact` semantics), (2) set up `support@nxentra.com` (forwarding to `mohamed.algazzar@gmail.com` until a help desk exists), (3) wire both URL + email into Partners Dashboard. Original ~0.5d estimate downscoped to ~2h since the page itself is built.
+
+### A46. Webhook HMAC signature verification — **DONE** (verified 2026-05-10)
+Verified at [backend/shopify_connector/views.py:144-153](backend/shopify_connector/views.py#L144-L153) (rejects 401 on missing/invalid signature *before* parsing the payload) and [backend/shopify_connector/commands.py:308-321](backend/shopify_connector/commands.py#L308-L321) (computes `hmac.new(SHOPIFY_API_SECRET, body, sha256)` and uses `hmac.compare_digest` for constant-time comparison). Pattern matches Shopify's prescribed verification exactly. No code change needed; closing as DONE per the doc's own predicted outcome.
+
+### A47. Access token storage encryption at rest — **~0.5d** (security baseline)
+`ShopifyStore.access_token` is stored plaintext in Postgres ([models.py:41-45](backend/shopify_connector/models.py#L41-L45) is plain `CharField(max_length=255)` — note the help_text claims *"encrypted at rest in production"* but no encryption layer exists; **fix the misleading help_text when implementing**). A DB breach (backup leak, rogue read replica, SQL injection elsewhere) hands an attacker every connected merchant's full Shopify API access — orders, customers, payouts, ability to refund / fulfill / push fake orders. Encrypt with `cryptography.fernet` keyed off a `SHOPIFY_TOKEN_KEY` env var. Migration encrypts existing rows in place. Read path decrypts on attribute access. Add a key-rotation runbook (re-encrypt all tokens with a new key, no Shopify-side re-auth needed). Tests: round-trip encrypt/decrypt, old-key tokens still readable during rotation, ciphertext different across rows (Fernet IV randomness).
+
+### A48. app/uninstalled webhook handler — **~1h remaining** (lifecycle correctness) — *mostly DONE per 2026-05-10 verification*
+**2026-05-10 verification:** handler exists at [commands.py:678-704](backend/shopify_connector/commands.py#L678-L704) and is wired in the webhook router at [views.py:198](backend/shopify_connector/views.py#L198). Already does: HMAC-verify (via the shared verifier upstream), set `status=DISCONNECTED`, blank `access_token`, set `webhooks_registered=False`, emit `SHOPIFY_STORE_DISCONNECTED` event (the audit trail). The "halt scheduled syncs" requirement is also satisfied for free — [tasks.py:51](backend/shopify_connector/tasks.py#L51) only iterates `status=ACTIVE` stores, and [tasks.py:96-97](backend/shopify_connector/tasks.py#L96-L97) early-returns `skipped` for non-ACTIVE stores. **Remaining:** add `uninstalled_at = models.DateTimeField(null=True, blank=True)` to `ShopifyStore` and stamp it in the handler — gives us a clean retention boundary and lets future GDPR `shop/redact` cleanup query "stores uninstalled >30d ago." Original ~2h estimate downscoped to ~1h.
+
+### A49. Re-auth flow on token expiry / scope rotation — **~0.5d** (lifecycle correctness)
+If a merchant's Shopify session token is revoked (Shopify password change, suspicious activity flag, manual revocation) or we add a new scope in a future release, every Shopify API call returns 401 / 403 and the connector silently fails — the merchant just sees stale data with no signal that re-auth is needed. Add: 401/403 from Shopify flips `ShopifyStore.needs_reauth = True`; the wizard's Shopify Setup step (and a banner in the connected-store settings) detects the flag and shows "Reconnect to Shopify" instead of "Connected"; OAuth retry path reuses the existing flow. Pair with A48 (uninstall) so both abnormal states surface the same UX pattern.
+
+**Merchant-readiness exit criteria** (revised 2026-05-10 after code verification + A44 ship):
+- **A44: DONE 2026-05-10** — code shipped + tested. **Manual operator step still pending:** wire the three webhook URLs into Partners Dashboard → App setup → Compliance webhooks.
+- **A46: DONE** — already implemented; verified above.
+- **A45 (remaining): tier-1** — must ship **before** the first paying merchant invite. Privacy page exists but Partners Dashboard config + support email are still unset. **Remaining tier-1 effort: ~2h.**
+- **A47 + A48 (remaining) + A49: tier-2** — ship in the first 1-2 weeks **after** first paid signup. None block install; all are pre-emptive hardening before the second/third merchant. **Tier-2 effort: ~0.5d + ~1h + ~0.5d ≈ 1.25 days.**
+- **App Store listing** (Built for Shopify checklist, public discoverability): deferred until 5-10 happy paying merchants and product polish reaches submission-grade. Months out, not weeks. Distinct from public OAuth distribution (already enabled).
+
+---
+
 ## What to do right now, today
 
 Phase A continues. **A0 done** (`fb0e3d6`), **A1 done** (`b6b52b9`–`7d12432`, 2026-04-28), **A2 done** (`d0dd0d2`, 2026-04-30), **A2.5 done** (`caa1ab9`, 2026-04-30), **A8 done** (`71cb0d7`, `cd7f484`, 2026-04-29), **A12 done** (`86d62d2` + `6a09473`, 2026-05-01), **A13 done** (`b24065b`, 2026-05-01), **A14 done** (`238d0a9`, 2026-05-01), **A14b/A14c done** (`3445bc0`, 2026-05-01), **A16 done** (`ced05ad` + hotfix `63d8888`, 2026-05-01), **A17 done** (`faf5b52`, 2026-05-01), **5 commits 2026-05-02/03** (`7425bbc`, `b074164`, `96dd1e6`, `5df4d1e`, `e9a0ddd`) for settlement-importer aliases + A17 toast follow-up + seed_test_csv_pack tooling + Cash Flow ImportError fix + bank-rec auto-match crash fix, **8 Tier-1 commits 2026-05-03/04** for A18-A23 / A22 / A25 / A26 (`1fd3922 b510626 d9030de 29c1672 39adba0 cc343a6 6347db1 9b5191f`).
@@ -505,15 +538,20 @@ Phase A continues. **A0 done** (`fb0e3d6`), **A1 done** (`b6b52b9`–`7d12432`, 
    - **A40** — seed pack ordering (test-pack only).
    - **A28-A38** — Tier-2 UX backlog from prior dry-run, pulled forward only as merchant signals demand.
 
+**Before first PAYING merchant (post-Heba beta, pre-paid-invite):**
+
+4. **A45 (remaining only)** — Shopify-policy-mandatory tier-1, **~2h**. A44 + A46 both DONE 2026-05-10. A45 only needs Partners Dashboard config (privacy URL + support email) and `support@nxentra.com` forwarding. Plus the manual A44 follow-up: register the three GDPR webhook URLs in Partners Dashboard → App setup → Compliance webhooks.
+
 **Then after week-4 gate (first-merchant signal):**
 
-4. **A37 (Subledger tieout cleanup)** — pull forward early because it likely also fixes the noisy A10 false-positive warning that has been firing on every Shopify clearing flow for weeks.
-5. **A3 + A4 + A5** in sequence — architectural cleanup that closes the event-first policy loopholes. Now informed by what the reconciliation MVP actually needed.
-6. **A6, A7, A9, A10, A11** — UX + invariant + correctness follow-ups from A1/A8. Each is small (1-3d). A10 may already be partially solved by A37; verify.
+5. **A47 + A48 (remaining) + A49** — token encryption, `uninstalled_at` field, re-auth flow. Tier-2 merchant-readiness, **~1.25 days** after verification (A48 was mostly done in code). Ship in the first 1-2 weeks after first paid signup.
+6. **A37 (Subledger tieout cleanup)** — pull forward early because it likely also fixes the noisy A10 false-positive warning that has been firing on every Shopify clearing flow for weeks.
+7. **A3 + A4 + A5** in sequence — architectural cleanup that closes the event-first policy loopholes. Now informed by what the reconciliation MVP actually needed.
+8. **A6, A7, A9, A10, A11** — UX + invariant + correctness follow-ups from A1/A8. Each is small (1-3d). A10 may already be partially solved by A37; verify.
 
 **Pulled forward only if signal demands:**
 
-7. **A15** — Multi-courier-per-store routing. Currently deferred; pulled forward only if first merchant has multi-courier volume or single-courier limit becomes a workflow burden.
+9. **A15** — Multi-courier-per-store routing. Currently deferred; pulled forward only if first merchant has multi-courier volume or single-courier limit becomes a workflow burden.
 
 **Then Phase B** — canonical platform models — but grounded in real merchant feedback rather than speculation.
 

@@ -5,6 +5,7 @@ Shopify connector API views.
 OAuth endpoints, webhook receiver, and store management.
 """
 
+import hashlib
 import json
 import logging
 
@@ -160,6 +161,35 @@ class ShopifyWebhookView(APIView):
             logger.warning("Shopify webhook missing topic or shop domain headers")
             return HttpResponse(status=400)
 
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            logger.error("Invalid JSON in Shopify webhook body")
+            return HttpResponse(status=400)
+
+        # GDPR mandatory compliance webhooks (A44) — route before the store
+        # lookup. shop/redact fires 48h after uninstall and may arrive when
+        # no ShopifyStore record exists; the customers/* topics may arrive
+        # for shops we never connected to. Audit-log and 200.
+        gdpr_handler = {
+            "customers/data_request": commands.process_customers_data_request,
+            "customers/redact": commands.process_customers_redact,
+            "shop/redact": commands.process_shop_redact,
+        }.get(topic)
+        if gdpr_handler:
+            payload_signature = hashlib.sha256(body).hexdigest()
+            try:
+                gdpr_handler(shop_domain, payload, payload_signature)
+            except Exception:
+                logger.exception(
+                    "Error processing Shopify GDPR webhook %s for %s",
+                    topic,
+                    shop_domain,
+                )
+                # Still 200 — Shopify only requires the ack; the audit row
+                # captures whatever we managed to write.
+            return HttpResponse(status=200)
+
         # Find the store
         try:
             store = ShopifyStore.objects.get(
@@ -177,12 +207,6 @@ class ShopifyWebhookView(APIView):
             else:
                 logger.warning("No active store for %s", shop_domain)
                 return HttpResponse(status=200)
-
-        try:
-            payload = json.loads(body)
-        except json.JSONDecodeError:
-            logger.error("Invalid JSON in Shopify webhook body")
-            return HttpResponse(status=400)
 
         # Route by topic
         handler = {

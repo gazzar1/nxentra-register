@@ -705,6 +705,124 @@ def process_app_uninstalled(store: ShopifyStore, payload: dict) -> CommandResult
 
 
 # =============================================================================
+# GDPR Compliance Webhook Handlers (A44)
+# =============================================================================
+#
+# Shopify-mandatory: customers/data_request, customers/redact, shop/redact.
+# Every app — public or unlisted — must respond 200 to all three or Shopify
+# disables the app silently.
+#
+# These handlers only write the audit row; the actual data work (customer
+# data export, customer record deletion, shop data wipe) runs asynchronously
+# and stays in PENDING status until implemented downstream. Shopify only
+# requires the 200 ack on the webhook itself.
+#
+# Idempotency: dedupe on (topic, payload_signature). The webhook view passes
+# the SHA-256 of the raw body, so a retry of an identical webhook trips the
+# unique constraint and we return success without re-processing.
+
+
+def _record_gdpr_request(
+    topic: str,
+    shop_domain: str,
+    payload: dict,
+    payload_signature: str,
+    customer_id: int | None = None,
+    customer_email: str = "",
+) -> CommandResult:
+    """Insert (or no-op on retry) a GdprRequest audit row."""
+    from .models import GdprRequest
+
+    shop_id = payload.get("shop_id")
+
+    with command_writes_allowed():
+        try:
+            with transaction.atomic():
+                req = GdprRequest.objects.create(
+                    topic=topic,
+                    shop_domain=shop_domain,
+                    shop_id=shop_id,
+                    customer_id=customer_id,
+                    customer_email=customer_email or "",
+                    payload=payload,
+                    payload_signature=payload_signature,
+                    status=GdprRequest.Status.PENDING,
+                )
+        except IntegrityError:
+            # Shopify retry of an identical body — already audited.
+            logger.info(
+                "GDPR webhook retry deduped: topic=%s shop=%s",
+                topic,
+                shop_domain,
+            )
+            return CommandResult.ok(data={"deduped": True})
+
+    return CommandResult.ok(data={"gdpr_request_id": req.id})
+
+
+def process_customers_data_request(
+    shop_domain: str,
+    payload: dict,
+    payload_signature: str,
+) -> CommandResult:
+    """
+    Handle customers/data_request — merchant requested data of one of their customers.
+
+    We have 30 days to deliver the data; for now we only audit the request.
+    Actual export job is a future task.
+    """
+    customer = payload.get("customer") or {}
+    return _record_gdpr_request(
+        topic="customers/data_request",
+        shop_domain=shop_domain,
+        payload=payload,
+        payload_signature=payload_signature,
+        customer_id=customer.get("id"),
+        customer_email=customer.get("email", ""),
+    )
+
+
+def process_customers_redact(
+    shop_domain: str,
+    payload: dict,
+    payload_signature: str,
+) -> CommandResult:
+    """
+    Handle customers/redact — merchant requested deletion of a customer's data.
+
+    Audited only; actual deletion job is a future task.
+    """
+    customer = payload.get("customer") or {}
+    return _record_gdpr_request(
+        topic="customers/redact",
+        shop_domain=shop_domain,
+        payload=payload,
+        payload_signature=payload_signature,
+        customer_id=customer.get("id"),
+        customer_email=customer.get("email", ""),
+    )
+
+
+def process_shop_redact(
+    shop_domain: str,
+    payload: dict,
+    payload_signature: str,
+) -> CommandResult:
+    """
+    Handle shop/redact — fires 48h after app uninstall; merchant data must be deleted.
+
+    Audited only; actual wipe job is a future task. Note this webhook may arrive
+    after the ShopifyStore record itself has been deleted, so we don't look one up.
+    """
+    return _record_gdpr_request(
+        topic="shop/redact",
+        shop_domain=shop_domain,
+        payload=payload,
+        payload_signature=payload_signature,
+    )
+
+
+# =============================================================================
 # Payout Sync
 # =============================================================================
 
