@@ -9,7 +9,6 @@ export interface ShopifyStore {
   public_id: string;
   shop_domain: string;
   status: "PENDING" | "ACTIVE" | "DISCONNECTED" | "ERROR";
-  webhooks_registered: boolean;
   scopes: string;
   last_sync_at: string | null;
   error_message: string;
@@ -46,12 +45,6 @@ export interface ShopifyInstallResponse {
   nonce: string;
 }
 
-export interface ShopifyWebhookResult {
-  registered: string[];
-  errors?: string[];
-  webhooks_registered: boolean;
-}
-
 export interface ShopifyAccountMapping {
   role: string;
   account_id: number | null;
@@ -74,9 +67,6 @@ export const shopifyService = {
 
   install: (shop_domain: string) =>
     apiClient.post<ShopifyInstallResponse>("/shopify/install/", { shop_domain }),
-
-  registerWebhooks: () =>
-    apiClient.post<ShopifyWebhookResult>("/shopify/register-webhooks/"),
 
   disconnect: () =>
     apiClient.post<{ status: string }>("/shopify/disconnect/"),

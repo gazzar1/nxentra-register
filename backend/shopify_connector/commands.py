@@ -54,20 +54,6 @@ SHOPIFY_SCOPES = getattr(
 )
 SHOPIFY_APP_URL = getattr(settings, "SHOPIFY_APP_URL", "")
 
-# Required webhooks to register
-SHOPIFY_WEBHOOK_TOPICS = [
-    "orders/create",
-    "orders/paid",
-    "orders/cancelled",
-    "refunds/create",
-    "fulfillments/create",
-    "disputes/create",
-    "disputes/update",
-    "products/create",
-    "products/update",
-    "app/uninstalled",
-]
-
 
 # =============================================================================
 # OAuth Commands
@@ -162,77 +148,15 @@ def complete_oauth(company, shop_domain: str, code: str, nonce: str) -> CommandR
     # Auto-create Customer + PostingProfile for Sales Invoice routing
     _ensure_shopify_sales_setup(store)
 
-    return CommandResult.ok(data={"store": store})
+    # A51 (2026-05-15): emit SHOPIFY_STORE_CONNECTED on successful OAuth.
+    # Previously this event was emitted from register_webhooks (now removed
+    # — webhooks are subscribed declaratively in shopify.app.toml). The
+    # natural emission point is here, when the store transitions
+    # PENDING → ACTIVE with a valid access token.
+    from events.emitter import emit_event_no_actor
 
-
-@transaction.atomic
-def register_webhooks(actor: ActorContext, store_id: int) -> CommandResult:
-    """Register Shopify webhooks for the connected store."""
-    require(actor, "settings.edit")
-
-    try:
-        store = ShopifyStore.objects.get(
-            company=actor.company,
-            pk=store_id,
-        )
-    except ShopifyStore.DoesNotExist:
-        return CommandResult.fail("Store not found.")
-
-    if store.status != ShopifyStore.Status.ACTIVE:
-        return CommandResult.fail("Store is not active.")
-
-    if not store.access_token:
-        return CommandResult.fail("No access token — reconnect the store.")
-
-    webhook_url = f"{SHOPIFY_APP_URL}/api/shopify/webhooks/"
-    headers = {
-        "X-Shopify-Access-Token": store.access_token,
-        "Content-Type": "application/json",
-    }
-
-    registered = []
-    errors = []
-    for topic in SHOPIFY_WEBHOOK_TOPICS:
-        try:
-            resp = requests.post(
-                f"https://{store.shop_domain}/admin/api/2025-01/webhooks.json",
-                headers=headers,
-                json={
-                    "webhook": {
-                        "topic": topic,
-                        "address": webhook_url,
-                        "format": "json",
-                    }
-                },
-                timeout=15,
-            )
-            if resp.status_code in (200, 201):
-                registered.append(topic)
-            elif resp.status_code == 422:
-                # Already exists — that's fine
-                registered.append(topic)
-            else:
-                errors.append(f"{topic}: {resp.status_code} {resp.text[:200]}")
-        except requests.RequestException as e:
-            errors.append(f"{topic}: {e}")
-
-    with command_writes_allowed():
-        store.webhooks_registered = len(errors) == 0
-        store.save()
-
-    if errors:
-        logger.warning("Webhook registration errors for %s: %s", store.shop_domain, errors)
-        return CommandResult.ok(
-            data={
-                "registered": registered,
-                "errors": errors,
-                "store": store,
-            }
-        )
-
-    # Emit connection event
-    emit_event(
-        actor=actor,
+    emit_event_no_actor(
+        company=company,
         event_type=EventTypes.SHOPIFY_STORE_CONNECTED,
         aggregate_type="ShopifyStore",
         aggregate_id=str(store.public_id),
@@ -240,17 +164,12 @@ def register_webhooks(actor: ActorContext, store_id: int) -> CommandResult:
         data=ShopifyStoreConnectedData(
             store_public_id=str(store.public_id),
             shop_domain=store.shop_domain,
-            company_public_id=str(actor.company.public_id),
-            connected_by_email=actor.user.email,
+            company_public_id=str(company.public_id),
+            connected_by_email="",
         ),
     )
 
-    return CommandResult.ok(
-        data={
-            "registered": registered,
-            "store": store,
-        }
-    )
+    return CommandResult.ok(data={"store": store})
 
 
 @transaction.atomic
@@ -280,7 +199,6 @@ def disconnect_store(actor: ActorContext, store_public_id: str = None) -> Comman
     with command_writes_allowed():
         store.status = ShopifyStore.Status.DISCONNECTED
         store.access_token = ""
-        store.webhooks_registered = False
         store.save()
 
     emit_event(
@@ -681,7 +599,6 @@ def process_app_uninstalled(store: ShopifyStore, payload: dict) -> CommandResult
     with command_writes_allowed():
         store.status = ShopifyStore.Status.DISCONNECTED
         store.access_token = ""
-        store.webhooks_registered = False
         store.error_message = "App uninstalled by merchant"
         store.save()
 

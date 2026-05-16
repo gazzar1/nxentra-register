@@ -141,23 +141,13 @@ class Command(BaseCommand):
                 "No active Shopify store connected.",
             )
 
-        issues = []
-        for s in stores:
-            if not s.webhooks_registered:
-                issues.append(f"{s.shop_domain}: webhooks not registered")
-
-        if issues:
-            return self._result(
-                "shopify_store",
-                "WARN",
-                f"Store connected but: {'; '.join(issues)}",
-                detail={"stores": len(stores), "issues": issues},
-            )
-
+        # A51 (2026-05-15): webhooks_registered field removed — webhooks
+        # are declared in shopify.app.toml and registered by Shopify on
+        # `shopify app deploy`. No per-store check needed.
         return self._result(
             "shopify_store",
             "PASS",
-            f"{len(stores)} store(s) connected, webhooks OK.",
+            f"{len(stores)} store(s) connected.",
             detail={"stores": len(stores)},
         )
 

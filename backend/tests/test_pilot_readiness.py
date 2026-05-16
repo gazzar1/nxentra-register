@@ -26,7 +26,6 @@ def store(db, company):
         company=company,
         shop_domain="pilot-store.myshopify.com",
         status=ShopifyStore.Status.ACTIVE,
-        webhooks_registered=True,
     )
 
 

@@ -311,7 +311,6 @@ class Command(BaseCommand):
             defaults={
                 "access_token": "demo-token-not-real",
                 "status": "ACTIVE",
-                "webhooks_registered": True,
                 "scopes": "read_orders,read_payouts",
             },
         )

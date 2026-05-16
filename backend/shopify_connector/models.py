@@ -53,7 +53,6 @@ class ShopifyStore(models.Model):
         choices=Status.choices,
         default=Status.PENDING,
     )
-    webhooks_registered = models.BooleanField(default=False)
 
     # EDIM source system link (created during connection)
     source_system_id = models.IntegerField(

@@ -3488,11 +3488,16 @@ def _finalize_shopify_stores(actor: ActorContext, company) -> None:
     historical import is enqueued, so events emitted during sync find a
     fully-configured store.
 
-    Both helpers are idempotent and best-effort: failures log a warning
+    Sales-setup is idempotent and best-effort: failures log a warning
     rather than failing onboarding (the merchant can re-trigger from
     Settings if Shopify's API is having a bad day).
+
+    A51 (2026-05-15): webhook registration was previously done here via a
+    REST POST to Shopify Admin requiring `write_webhooks` scope we don't
+    grant. Webhooks now subscribed declaratively in shopify.app.toml and
+    registered by Shopify on `shopify app deploy` — no per-store call.
     """
-    from shopify_connector.commands import _ensure_shopify_sales_setup, register_webhooks
+    from shopify_connector.commands import _ensure_shopify_sales_setup
     from shopify_connector.models import ShopifyStore
 
     active_stores = ShopifyStore.objects.filter(
@@ -3508,22 +3513,6 @@ def _finalize_shopify_stores(actor: ActorContext, company) -> None:
                 store.shop_domain,
                 exc,
             )
-        store.refresh_from_db()
-        if not store.webhooks_registered:
-            try:
-                result = register_webhooks(actor, store.id)
-                if not result.success:
-                    logger.warning(
-                        "Failed to register webhooks for Shopify store %s during onboarding: %s",
-                        store.shop_domain,
-                        result.error,
-                    )
-            except Exception as exc:
-                logger.warning(
-                    "register_webhooks raised for Shopify store %s during onboarding: %s",
-                    store.shop_domain,
-                    exc,
-                )
 
 
 def _enqueue_shopify_historical_import(company, import_mode: str, import_from_date) -> None:
@@ -3533,8 +3522,15 @@ def _enqueue_shopify_historical_import(company, import_mode: str, import_from_da
     Revenue-recognition caveat: the underlying _sync_orders filters on
     financial_status=paid, so COD / pending orders are not imported here.
     Handling those requires separate work on revenue recognition + AR booking.
+
+    Scope caveat (A50, 2026-05-15): the `read_orders` scope only grants
+    access to orders from the last 60 days. Without `read_all_orders`
+    (which requires separate Shopify approval), an older `created_at_min`
+    returns 403. Both `all` and `from_date` modes are clamped to a 59-day
+    floor (1-day buffer against clock skew) until `read_all_orders` is
+    added to the scope set in shopify.app.toml.
     """
-    from datetime import date, datetime, time
+    from datetime import date, datetime, time, timedelta
 
     from django.utils import timezone as tz
 
@@ -3545,16 +3541,21 @@ def _enqueue_shopify_historical_import(company, import_mode: str, import_from_da
     if not store:
         return
 
+    earliest_allowed = (tz.now() - timedelta(days=59)).replace(tzinfo=None).isoformat()
+
     if import_mode == "all":
-        # Shopify predates 2015 but that's safely before any user's store.
-        created_at_min = datetime(2015, 1, 1).isoformat()
+        created_at_min = earliest_allowed
     else:  # from_date
         if not import_from_date:
             return
-        if isinstance(import_from_date, date):
-            created_at_min = datetime.combine(import_from_date, time.min).isoformat()
+        if isinstance(import_from_date, datetime):
+            requested = import_from_date.replace(tzinfo=None).isoformat()
+        elif isinstance(import_from_date, date):
+            requested = datetime.combine(import_from_date, time.min).isoformat()
         else:
-            created_at_min = str(import_from_date)
+            requested = str(import_from_date)
+        # Both are naive ISO-8601 strings — lexical compare gives chronological order.
+        created_at_min = max(requested, earliest_allowed)
 
     created_at_max = tz.now().isoformat()
 

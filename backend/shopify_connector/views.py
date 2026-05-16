@@ -355,56 +355,6 @@ class ShopifyStoreView(APIView):
         return Response(ShopifyStoreSerializer(store).data, status=status.HTTP_200_OK)
 
 
-class ShopifyRegisterWebhooksView(APIView):
-    """
-    POST /api/shopify/register-webhooks/
-    Registers webhooks with Shopify for the connected store.
-    """
-
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        actor = resolve_actor(request)
-
-        store_id = request.data.get("store_id") or request.query_params.get("store_id")
-        try:
-            if store_id:
-                store = ShopifyStore.objects.get(
-                    company=actor.company,
-                    public_id=store_id,
-                )
-            else:
-                store = (
-                    ShopifyStore.objects.filter(
-                        company=actor.company,
-                    )
-                    .exclude(status=ShopifyStore.Status.DISCONNECTED)
-                    .first()
-                )
-                if not store:
-                    raise ShopifyStore.DoesNotExist
-        except ShopifyStore.DoesNotExist:
-            return Response(
-                {"error": "No connected store"},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
-        result = commands.register_webhooks(actor, store.id)
-        if not result.success:
-            return Response(
-                {"error": result.error},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        return Response(
-            {
-                "registered": result.data.get("registered", []),
-                "errors": result.data.get("errors", []),
-                "webhooks_registered": store.webhooks_registered,
-            }
-        )
-
-
 class ShopifyDisconnectView(APIView):
     """
     POST /api/shopify/disconnect/

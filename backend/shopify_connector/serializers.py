@@ -25,7 +25,6 @@ class ShopifyStoreSerializer(serializers.ModelSerializer):
             "public_id",
             "shop_domain",
             "status",
-            "webhooks_registered",
             "scopes",
             "last_sync_at",
             "error_message",

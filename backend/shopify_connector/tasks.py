@@ -182,7 +182,20 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
         "limit": 250,
     }
 
+    # A52 (2026-05-15): diagnostic logging while we hunt down why re-sync(7d)
+    # returns 0 orders despite orders existing in the store. Log entry shows
+    # the exact request shape; per-page logs show what Shopify returns.
+    logger.info(
+        "[A52] _sync_orders start shop=%s store_id=%s created_at_min=%s created_at_max=%s",
+        store.shop_domain,
+        store.id,
+        created_at_min,
+        created_at_max,
+    )
+
+    page_num = 0
     while page_url:
+        page_num += 1
         try:
             resp = requests.get(page_url, headers=headers, params=params, timeout=30)
             resp.raise_for_status()
@@ -197,7 +210,17 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
             }
 
         orders_data = resp.json().get("orders", [])
-        fetched += len(orders_data)
+        page_count = len(orders_data)
+        fetched += page_count
+
+        logger.info(
+            "[A52] _sync_orders page=%d shop=%s status=%d page_orders=%d url=%s",
+            page_num,
+            store.shop_domain,
+            resp.status_code,
+            page_count,
+            resp.url,
+        )
 
         for order_payload in orders_data:
             shopify_order_id = order_payload.get("id")
@@ -251,6 +274,27 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
         # Pagination: follow Link header for next page
         params = {}  # Clear params for subsequent pages (URL contains them)
         page_url = _get_next_page_url(resp)
+
+    # A52: warning when fetch returns nothing — likely indicates token/date/
+    # API-version issue rather than a "genuinely zero orders" situation.
+    if fetched == 0:
+        logger.warning(
+            "[A52] _sync_orders fetched zero orders shop=%s created_at_min=%s created_at_max=%s "
+            "(check: access_token valid? store has orders in this date range? "
+            "API version 2025-01 still supported by shop?)",
+            store.shop_domain,
+            created_at_min,
+            created_at_max,
+        )
+    else:
+        logger.info(
+            "[A52] _sync_orders done shop=%s fetched=%d created=%d skipped=%d errors=%d",
+            store.shop_domain,
+            fetched,
+            created,
+            skipped,
+            errors,
+        )
 
     return {
         "status": "ok",

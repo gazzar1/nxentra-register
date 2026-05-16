@@ -23,3 +23,23 @@ api_version = "2026-04"
 customer_data_request_url = "https://app.nxentra.com/api/shopify/webhooks/"
 customer_deletion_url     = "https://app.nxentra.com/api/shopify/webhooks/"
 shop_deletion_url         = "https://app.nxentra.com/api/shopify/webhooks/"
+
+# A51 (2026-05-15): declarative webhook subscriptions. Replaces the broken
+# programmatic POST to /admin/api/.../webhooks.json which required a
+# `write_webhooks` scope we don't grant. Declarative subscriptions are
+# registered by Shopify on `shopify app deploy` — no scope needed, no
+# per-store registration call. Router in views.py branches on X-Shopify-Topic.
+[[webhooks.subscriptions]]
+uri = "https://app.nxentra.com/api/shopify/webhooks/"
+topics = [
+  "orders/create",
+  "orders/paid",
+  "orders/cancelled",
+  "refunds/create",
+  "fulfillments/create",
+  "disputes/create",
+  "disputes/update",
+  "products/create",
+  "products/update",
+  "app/uninstalled",
+]

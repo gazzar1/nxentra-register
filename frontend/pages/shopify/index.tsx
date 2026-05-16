@@ -124,9 +124,7 @@ export default function ShopifyDashboardPage() {
                     <div>
                       <p className="font-semibold">Connected to {store.shop_domain}</p>
                       <p className="text-sm text-muted-foreground">
-                        {store.webhooks_registered
-                          ? "Webhooks active — orders sync automatically"
-                          : "Webhooks not registered — go to Settings to register"}
+                        Orders sync automatically via webhooks
                       </p>
                     </div>
                   </div>

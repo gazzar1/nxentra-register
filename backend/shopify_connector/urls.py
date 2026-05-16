@@ -11,7 +11,6 @@ urlpatterns = [
     path("webhooks/", views.ShopifyWebhookView.as_view(), name="shopify-webhooks"),
     # Store management
     path("store/", views.ShopifyStoreView.as_view(), name="shopify-store"),
-    path("register-webhooks/", views.ShopifyRegisterWebhooksView.as_view(), name="shopify-register-webhooks"),
     path("disconnect/", views.ShopifyDisconnectView.as_view(), name="shopify-disconnect"),
     # Data views
     path("orders/", views.ShopifyOrdersView.as_view(), name="shopify-orders"),

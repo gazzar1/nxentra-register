@@ -48,7 +48,7 @@ def test_ensure_warehouse_falls_back_and_marks_default_when_locations_api_fails(
 # =============================================================================
 
 
-def test_finalize_shopify_stores_wires_sales_routing_and_registers_webhooks(db, company, owner_membership, monkeypatch):
+def test_finalize_shopify_stores_wires_sales_routing(db, company, owner_membership):
     # Why: at OAuth callback time SHOPIFY_CLEARING doesn't yet exist, so
     # _ensure_shopify_sales_setup short-circuits and the store is left
     # without a default_customer / posting_profile. The shopify_accounting
@@ -59,6 +59,10 @@ def test_finalize_shopify_stores_wires_sales_routing_and_registers_webhooks(db, 
     #
     # Surfaced live during A1 dry-run: Aljazeera2 + Aljazeera3 both hit
     # this and required a manual shell wire-up workaround to fix.
+    #
+    # A51 (2026-05-15): webhook registration removed from this finalizer.
+    # Webhooks are now declared in shopify.app.toml and registered by
+    # Shopify on `shopify app deploy` — no per-store call needed.
     from accounting.mappings import ModuleAccountMapping
     from accounting.models import Account
     from accounts.authz import system_actor_for_company
@@ -83,8 +87,8 @@ def test_finalize_shopify_stores_wires_sales_routing_and_registers_webhooks(db, 
         account=clearing,
     )
 
-    # Create an ACTIVE store missing both customer + webhooks (state right
-    # after OAuth callback).
+    # Create an ACTIVE store without a default customer (state right after
+    # OAuth callback).
     with command_writes_allowed():
         store = ShopifyStore.objects.create(
             company=company,
@@ -93,18 +97,6 @@ def test_finalize_shopify_stores_wires_sales_routing_and_registers_webhooks(db, 
             status=ShopifyStore.Status.ACTIVE,
         )
     assert store.default_customer_id is None
-    assert store.webhooks_registered is False
-
-    # Mock the Shopify webhook-registration HTTP call so the test doesn't
-    # try to talk to a real store. 201 = newly created.
-    class _FakeResponse:
-        status_code = 201
-        text = ""
-
-    def _post(*_a, **_kw):
-        return _FakeResponse()
-
-    monkeypatch.setattr("shopify_connector.commands.requests.post", _post)
 
     actor = system_actor_for_company(company)
     _finalize_shopify_stores(actor, company)
@@ -112,7 +104,6 @@ def test_finalize_shopify_stores_wires_sales_routing_and_registers_webhooks(db, 
     store.refresh_from_db()
     assert store.default_customer_id is not None
     assert store.default_posting_profile_id is not None
-    assert store.webhooks_registered is True
 
 
 def test_auto_created_item_from_shopify_line_gets_all_four_gl_accounts(db, company, monkeypatch):
@@ -465,54 +456,7 @@ def test_a9_auto_create_falls_back_to_variant_id_when_sku_empty(db, company, mon
     assert Item.objects.filter(company=company, code__startswith="SHOP-").count() == 2
 
 
-def test_finalize_shopify_stores_swallows_webhook_failures(db, company, owner_membership, monkeypatch):
-    # Onboarding must not fail wholesale when Shopify's webhook API has a
-    # bad day — we want the merchant's books to be set up regardless.
-    # The helper should log a warning and continue.
-    from accounting.mappings import ModuleAccountMapping
-    from accounting.models import Account
-    from accounts.authz import system_actor_for_company
-    from accounts.commands import _finalize_shopify_stores
-    from projections.write_barrier import command_writes_allowed, projection_writes_allowed
-    from shopify_connector.models import ShopifyStore
-
-    with projection_writes_allowed():
-        clearing = Account.objects.projection().create(
-            company=company,
-            code="11500",
-            name="Shopify Clearing",
-            account_type=Account.AccountType.ASSET,
-            status=Account.Status.ACTIVE,
-        )
-    ModuleAccountMapping.objects.create(
-        company=company,
-        module="shopify_connector",
-        role="SHOPIFY_CLEARING",
-        account=clearing,
-    )
-
-    with command_writes_allowed():
-        store = ShopifyStore.objects.create(
-            company=company,
-            shop_domain="finalize-fail.myshopify.com",
-            access_token="test-token",
-            status=ShopifyStore.Status.ACTIVE,
-        )
-
-    def _raise(*_a, **_kw):
-        import requests
-
-        raise requests.RequestException("simulated webhook API outage")
-
-    monkeypatch.setattr("shopify_connector.commands.requests.post", _raise)
-
-    actor = system_actor_for_company(company)
-
-    # Should not raise — failures are logged as warnings.
-    _finalize_shopify_stores(actor, company)
-
-    store.refresh_from_db()
-    # Sales routing should still have been wired up (it's a separate call).
-    assert store.default_customer_id is not None
-    # Webhooks couldn't register, so flag stays False.
-    assert store.webhooks_registered is False
+# A51 (2026-05-15): removed test_finalize_shopify_stores_swallows_webhook_failures.
+# Webhook registration no longer happens in _finalize_shopify_stores — webhooks
+# are subscribed declaratively in shopify.app.toml. There is no programmatic
+# webhook call to simulate failing.

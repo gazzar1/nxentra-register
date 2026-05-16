@@ -6412,15 +6412,9 @@ class MonthEndCloseView(APIView):
             stores = list(ShopifyStore.objects.filter(company=company, status=ShopifyStore.Status.ACTIVE))
             if not stores:
                 return self._result("shopify_store", "Shopify Connection", "FAIL", "No active Shopify store connected.")
-            issues = [f"{s.shop_domain}: webhooks not registered" for s in stores if not s.webhooks_registered]
-            if issues:
-                return self._result(
-                    "shopify_store",
-                    "Shopify Connection",
-                    "WARN",
-                    f"Store connected but: {'; '.join(issues)}",
-                    {"stores": len(stores)},
-                )
+            # A51 (2026-05-15): webhooks_registered field removed — webhooks
+            # are now declared in shopify.app.toml and registered by Shopify
+            # automatically on `shopify app deploy`.
             return self._result(
                 "shopify_store",
                 "Shopify Connection",

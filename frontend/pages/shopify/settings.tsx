@@ -7,11 +7,9 @@ import Link from "next/link";
 import {
   ShoppingCart,
   CheckCircle2,
-  XCircle,
   AlertCircle,
   Loader2,
   Unplug,
-  Webhook,
   Save,
   Settings,
   RefreshCw,
@@ -50,7 +48,6 @@ export default function ShopifySettingsPage() {
   const [loading, setLoading] = useState(true);
   const [shopDomain, setShopDomain] = useState("");
   const [connecting, setConnecting] = useState(false);
-  const [registeringWebhooks, setRegisteringWebhooks] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
   const [syncingPayouts, setSyncingPayouts] = useState(false);
   const [syncingProducts, setSyncingProducts] = useState(false);
@@ -247,26 +244,6 @@ export default function ShopifySettingsPage() {
     }
   };
 
-  const handleRegisterWebhooks = async () => {
-    setRegisteringWebhooks(true);
-    try {
-      const { data } = await shopifyService.registerWebhooks();
-      if (data.errors && data.errors.length > 0) {
-        toast({
-          title: `Registered ${data.registered.length} webhooks with ${data.errors.length} errors`,
-          variant: "destructive",
-        });
-      } else {
-        toast({ title: "Webhooks registered successfully!" });
-      }
-      fetchStore();
-    } catch {
-      toast({ title: "Failed to register webhooks.", variant: "destructive" });
-    } finally {
-      setRegisteringWebhooks(false);
-    }
-  };
-
   const handleDisconnect = async () => {
     if (!confirm("Are you sure you want to disconnect your Shopify store?")) return;
     setDisconnecting(true);
@@ -426,22 +403,6 @@ export default function ShopifySettingsPage() {
                     </p>
                   </div>
                   <div>
-                    <p className="text-sm text-muted-foreground">Webhooks</p>
-                    <p className="font-medium flex items-center gap-1.5">
-                      {store.webhooks_registered ? (
-                        <>
-                          <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
-                          Registered
-                        </>
-                      ) : (
-                        <>
-                          <XCircle className="h-3.5 w-3.5 text-yellow-500" />
-                          Not registered
-                        </>
-                      )}
-                    </p>
-                  </div>
-                  <div>
                     <p className="text-sm text-muted-foreground">Last Sync</p>
                     <p className="font-medium">
                       {store.last_sync_at
@@ -459,16 +420,6 @@ export default function ShopifySettingsPage() {
                 <CardTitle>Actions</CardTitle>
               </CardHeader>
               <CardContent className="flex flex-wrap gap-3">
-                {!store.webhooks_registered && (
-                  <Button onClick={handleRegisterWebhooks} disabled={registeringWebhooks}>
-                    {registeringWebhooks ? (
-                      <Loader2 className="me-2 h-4 w-4 animate-spin" />
-                    ) : (
-                      <Webhook className="me-2 h-4 w-4" />
-                    )}
-                    Register Webhooks
-                  </Button>
-                )}
                 <Button onClick={handleSyncProducts} disabled={syncingProducts}>
                   {syncingProducts ? (
                     <Loader2 className="me-2 h-4 w-4 animate-spin" />
