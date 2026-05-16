@@ -29,16 +29,17 @@ shop_deletion_url         = "https://app.nxentra.com/api/shopify/webhooks/"
 # `write_webhooks` scope we don't grant. Declarative subscriptions are
 # registered by Shopify on `shopify app deploy` — no scope needed, no
 # per-store registration call. Router in views.py branches on X-Shopify-Topic.
+#
+# Subscription set deliberately narrow (2026-05-17): topics that carry
+# customer PII (orders/*, refunds/create, fulfillments/create) need Level 1
+# Protected Customer Data approval before they can be declared — see A53.
+# Disputes topics (disputes/create, disputes/update) need the
+# `read_shopify_payments_disputes` scope we haven't requested — see A54.
+# Periodic `sync_shopify_all` Celery task (every 4h) covers the order/refund/
+# fulfillment gap until A53/A54 land.
 [[webhooks.subscriptions]]
 uri = "https://app.nxentra.com/api/shopify/webhooks/"
 topics = [
-  "orders/create",
-  "orders/paid",
-  "orders/cancelled",
-  "refunds/create",
-  "fulfillments/create",
-  "disputes/create",
-  "disputes/update",
   "products/create",
   "products/update",
   "app/uninstalled",
