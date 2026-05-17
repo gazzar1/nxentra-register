@@ -18,7 +18,7 @@ import { useAccounts } from "@/queries/useAccounts";
 import type { Vendor, VendorCreatePayload, VendorUpdatePayload } from "@/types/account";
 
 const vendorSchema = z.object({
-  code: z.string().min(1, "Vendor code is required").max(50),
+  code: z.string().min(1, "Vendor code is required").max(20, "Vendor code must be 20 characters or less"),
   name: z.string().min(1, "Vendor name is required").max(255),
   name_ar: z.string().max(255).optional(),
   email: z.string().email().optional().or(z.literal("")),

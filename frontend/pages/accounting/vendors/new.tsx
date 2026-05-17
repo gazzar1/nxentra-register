@@ -25,9 +25,20 @@ export default function NewVendorPage() {
       });
       router.push("/accounting/vendors");
     } catch (error: any) {
+      const body = error?.response?.data;
+      let description = "Failed to create vendor.";
+      if (body?.detail) {
+        description = body.detail;
+      } else if (body && typeof body === "object") {
+        const parts = Object.entries(body).map(([field, msgs]) => {
+          const text = Array.isArray(msgs) ? msgs.join("; ") : String(msgs);
+          return `${field}: ${text}`;
+        });
+        if (parts.length) description = parts.join(" | ");
+      }
       toast({
         title: "Error",
-        description: error?.response?.data?.detail || "Failed to create vendor.",
+        description,
         variant: "destructive",
       });
     }

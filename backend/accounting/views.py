@@ -11,6 +11,8 @@ to ensure events are emitted. Views should never directly call .save() on models
 
 import logging
 
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import IntegrityError
 from django.db.models import Exists, OuterRef, Q
 from django.shortcuts import get_object_or_404
 from rest_framework import status
@@ -77,6 +79,27 @@ from .serializers import (
     VendorSerializer,
     VendorUpdateSerializer,
 )
+
+
+def _format_validation_error(exc: DjangoValidationError) -> str:
+    """Flatten a Django ValidationError into a human-readable string for API responses."""
+    if hasattr(exc, "message_dict"):
+        parts = [f"{field}: {'; '.join(msgs)}" for field, msgs in exc.message_dict.items()]
+        return " | ".join(parts)
+    if hasattr(exc, "messages"):
+        return "; ".join(exc.messages)
+    return str(exc)
+
+
+def _format_integrity_error(exc: IntegrityError, entity: str) -> str:
+    """Translate common Postgres/SQLite integrity errors into actionable messages."""
+    msg = str(exc).lower()
+    if "uniq_" in msg or "unique constraint" in msg or "unique" in msg:
+        return f"A {entity} with this code already exists."
+    if "foreign key" in msg or "violates foreign key constraint" in msg:
+        return f"Referenced record not found for {entity}."
+    return f"Database constraint failed creating {entity}: {exc}"
+
 
 # =============================================================================
 # Account Views
@@ -1157,19 +1180,24 @@ class CustomerListCreateView(APIView):
         # For now, create directly (will add command layer later)
         from projections.write_barrier import projection_writes_allowed
 
-        with projection_writes_allowed():
-            data = input_serializer.validated_data
-            default_ar_account = None
-            if data.get("default_ar_account_id"):
-                default_ar_account = get_object_or_404(
-                    Account, company=actor.company, pk=data.pop("default_ar_account_id")
+        try:
+            with projection_writes_allowed():
+                data = input_serializer.validated_data
+                default_ar_account = None
+                if data.get("default_ar_account_id"):
+                    default_ar_account = get_object_or_404(
+                        Account, company=actor.company, pk=data.pop("default_ar_account_id")
+                    )
+                customer = Customer(
+                    company=actor.company,
+                    default_ar_account=default_ar_account,
+                    **data,
                 )
-            customer = Customer(
-                company=actor.company,
-                default_ar_account=default_ar_account,
-                **data,
-            )
-            customer.save(_projection_write=True)
+                customer.save(_projection_write=True)
+        except DjangoValidationError as exc:
+            return Response({"detail": _format_validation_error(exc)}, status=400)
+        except IntegrityError as exc:
+            return Response({"detail": _format_integrity_error(exc, "customer")}, status=400)
 
         output_serializer = CustomerSerializer(customer)
         return Response(output_serializer.data, status=status.HTTP_201_CREATED)
@@ -1293,19 +1321,24 @@ class VendorListCreateView(APIView):
 
         from projections.write_barrier import projection_writes_allowed
 
-        with projection_writes_allowed():
-            data = input_serializer.validated_data
-            default_ap_account = None
-            if data.get("default_ap_account_id"):
-                default_ap_account = get_object_or_404(
-                    Account, company=actor.company, pk=data.pop("default_ap_account_id")
+        try:
+            with projection_writes_allowed():
+                data = input_serializer.validated_data
+                default_ap_account = None
+                if data.get("default_ap_account_id"):
+                    default_ap_account = get_object_or_404(
+                        Account, company=actor.company, pk=data.pop("default_ap_account_id")
+                    )
+                vendor = Vendor(
+                    company=actor.company,
+                    default_ap_account=default_ap_account,
+                    **data,
                 )
-            vendor = Vendor(
-                company=actor.company,
-                default_ap_account=default_ap_account,
-                **data,
-            )
-            vendor.save(_projection_write=True)
+                vendor.save(_projection_write=True)
+        except DjangoValidationError as exc:
+            return Response({"detail": _format_validation_error(exc)}, status=400)
+        except IntegrityError as exc:
+            return Response({"detail": _format_integrity_error(exc, "vendor")}, status=400)
 
         output_serializer = VendorSerializer(vendor)
         return Response(output_serializer.data, status=status.HTTP_201_CREATED)
