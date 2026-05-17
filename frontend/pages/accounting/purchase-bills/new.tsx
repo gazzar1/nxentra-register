@@ -24,7 +24,11 @@ import {
 } from "@/components/ui/select";
 import { useVendors } from "@/queries/useAccounts";
 import { useItems, useTaxCodes, usePostingProfiles } from "@/queries/useSales";
-import { useCreatePurchaseBill } from "@/queries/usePurchases";
+import {
+  useCreatePurchaseBill,
+  usePaginatedPurchaseOrders,
+  useCreateBillFromPO,
+} from "@/queries/usePurchases";
 import { useAccounts } from "@/queries/useAccounts";
 import { useToast } from "@/components/ui/toaster";
 import { useCompanySettings } from "@/queries/useCompanySettings";
@@ -192,9 +196,10 @@ export default function NewPurchaseBillPage() {
     const item = items?.find((i) => i.id.toString() === itemId);
     if (item) {
       setValue(`lines.${index}.description`, item.name);
-      setValue(`lines.${index}.unit_price`, item.default_unit_price);
-      if (item.purchase_account) {
-        setValue(`lines.${index}.account_id`, item.purchase_account.toString());
+      setValue(`lines.${index}.unit_price`, item.default_cost || item.default_unit_price);
+      const defaultDebit = item.purchase_account ?? item.inventory_account;
+      if (defaultDebit) {
+        setValue(`lines.${index}.account_id`, defaultDebit.toString());
       }
       if (item.default_tax_code) {
         // Only use tax code if it's INPUT direction
@@ -203,6 +208,38 @@ export default function NewPurchaseBillPage() {
           setValue(`lines.${index}.tax_code_id`, item.default_tax_code.toString());
         }
       }
+    }
+  };
+
+  // Fetch billable POs for the selected vendor so we can offer "Start from PO".
+  // Backend list endpoint accepts vendor_id + status filters. We pull a small
+  // page; if a vendor has dozens of open POs, the merchant can use the PO page
+  // directly to drive the bill creation.
+  const vendorIdNum = selectedVendorId ? parseInt(selectedVendorId) : undefined;
+  const { data: vendorPOsPage } = usePaginatedPurchaseOrders(
+    vendorIdNum ? { vendor_id: vendorIdNum, page_size: 25 } : undefined,
+  );
+  const billablePOs = (vendorPOsPage?.results || []).filter((po) =>
+    ["APPROVED", "PARTIALLY_RECEIVED", "FULLY_RECEIVED"].includes(po.status),
+  );
+  const createBillFromPO = useCreateBillFromPO();
+
+  const handleStartFromPO = async (poId: number) => {
+    try {
+      const result = await createBillFromPO.mutateAsync({ id: poId });
+      toast({
+        title: "Bill drafted from PO",
+        description: "Lines were copied from the purchase order. Review and post.",
+      });
+      const newBillId = (result as any)?.data?.id;
+      if (newBillId) router.push(`/accounting/purchase-bills/${newBillId}`);
+      else router.push("/accounting/purchase-bills");
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error?.response?.data?.detail || "Failed to create bill from PO.",
+        variant: "destructive",
+      });
     }
   };
 
@@ -264,6 +301,59 @@ export default function NewPurchaseBillPage() {
             </div>
           }
         />
+
+        {/* Start-from-PO banner (only shown when a vendor is selected and has
+            billable POs). Click on a PO line creates the draft bill on the
+            server with line items copied from the PO, then redirects. */}
+        {selectedVendorId && billablePOs.length > 0 && (
+          <Card className="border-primary/40">
+            <CardContent className="py-4">
+              <div className="flex items-start gap-3">
+                <div className="flex-1">
+                  <p className="text-sm font-medium">
+                    {billablePOs.length} purchase order{billablePOs.length > 1 ? "s" : ""} ready to bill for this vendor
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Start from a PO to skip manual entry — line items are copied over and you can edit before posting.
+                  </p>
+                  <div className="mt-3 space-y-1">
+                    {billablePOs.slice(0, 5).map((po) => (
+                      <div key={po.id} className="flex items-center gap-3 text-sm">
+                        <Link
+                          href={`/accounting/purchase-orders/${po.id}`}
+                          className="font-mono text-primary hover:underline w-28"
+                        >
+                          {po.order_number}
+                        </Link>
+                        <span className="text-muted-foreground text-xs">{po.status}</span>
+                        <span className="font-mono text-sm flex-1 text-end pe-3">
+                          {po.currency} {parseFloat(po.total_amount).toLocaleString(undefined, {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })}
+                        </span>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={createBillFromPO.isPending}
+                          onClick={() => handleStartFromPO(po.id)}
+                        >
+                          Start from this PO
+                        </Button>
+                      </div>
+                    ))}
+                    {billablePOs.length > 5 && (
+                      <p className="text-xs text-muted-foreground pt-1">
+                        +{billablePOs.length - 5} more — see all on the Purchase Orders page.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Header Info */}
         <Card>
@@ -430,9 +520,9 @@ export default function NewPurchaseBillPage() {
               <table className="w-full">
                 <thead>
                   <tr className="border-b text-sm text-muted-foreground">
-                    <th className="text-start py-2 px-2 w-[140px]">Item</th>
+                    <th className="text-start py-2 px-2 w-[180px]">Item</th>
                     <th className="text-start py-2 px-2">Description</th>
-                    <th className="text-start py-2 px-2 w-[100px]">Account</th>
+                    <th className="text-start py-2 px-2 w-[220px]">Account</th>
                     <th className="text-end py-2 px-2 w-[80px]">Qty</th>
                     <th className="text-end py-2 px-2 w-[100px]">Unit Price</th>
                     <th className="text-end py-2 px-2 w-[80px]">Discount</th>
@@ -464,7 +554,7 @@ export default function NewPurchaseBillPage() {
                                 <SelectContent>
                                   {items?.map((item) => (
                                     <SelectItem key={item.id} value={item.id.toString()}>
-                                      {item.code}
+                                      {item.code} - {item.name}
                                     </SelectItem>
                                   ))}
                                 </SelectContent>
@@ -492,7 +582,7 @@ export default function NewPurchaseBillPage() {
                                 <SelectContent>
                                   {expenseAccounts?.map((acc) => (
                                     <SelectItem key={acc.id} value={acc.id.toString()}>
-                                      {acc.code}
+                                      {acc.code} - {acc.name}
                                     </SelectItem>
                                   ))}
                                 </SelectContent>
