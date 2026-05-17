@@ -106,7 +106,8 @@ export default function NewPurchaseOrderPage() {
     if (item) {
       setValue(`lines.${index}.description`, item.name);
       setValue(`lines.${index}.unit_price`, item.default_cost || item.default_unit_price);
-      if (item.purchase_account) setValue(`lines.${index}.account_id`, item.purchase_account.toString());
+      const defaultDebit = item.purchase_account ?? item.inventory_account;
+      if (defaultDebit) setValue(`lines.${index}.account_id`, defaultDebit.toString());
       if (item.default_tax_code) {
         const tc = taxCodes?.find((t) => t.id === item.default_tax_code);
         if (tc) setValue(`lines.${index}.tax_code_id`, item.default_tax_code.toString());
@@ -207,9 +208,9 @@ export default function NewPurchaseOrderPage() {
               <table className="w-full">
                 <thead>
                   <tr className="border-b text-sm text-muted-foreground">
-                    <th className="text-start py-2 px-2 w-[140px]">Item</th>
+                    <th className="text-start py-2 px-2 w-[180px]">Item</th>
                     <th className="text-start py-2 px-2">Description</th>
-                    <th className="text-start py-2 px-2 w-[100px]">Account</th>
+                    <th className="text-start py-2 px-2 w-[220px]">Account</th>
                     <th className="text-end py-2 px-2 w-[80px]">Qty</th>
                     <th className="text-end py-2 px-2 w-[100px]">Unit Price</th>
                     <th className="text-end py-2 px-2 w-[80px]">Discount</th>
@@ -227,7 +228,7 @@ export default function NewPurchaseOrderPage() {
                           <Controller name={`lines.${index}.item_id`} control={control} render={({ field: f }) => (
                             <Select onValueChange={(val) => { f.onChange(val); handleItemChange(index, val); }} value={f.value}>
                               <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Select" /></SelectTrigger>
-                              <SelectContent>{items?.map((item) => <SelectItem key={item.id} value={item.id.toString()}>{item.code}</SelectItem>)}</SelectContent>
+                              <SelectContent>{items?.map((item) => <SelectItem key={item.id} value={item.id.toString()}>{item.code} - {item.name}</SelectItem>)}</SelectContent>
                             </Select>
                           )} />
                         </td>
@@ -236,7 +237,7 @@ export default function NewPurchaseOrderPage() {
                           <Controller name={`lines.${index}.account_id`} control={control} rules={{ required: true }} render={({ field: f }) => (
                             <Select onValueChange={f.onChange} value={f.value}>
                               <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Account" /></SelectTrigger>
-                              <SelectContent>{expenseAccounts?.map((acc) => <SelectItem key={acc.id} value={acc.id.toString()}>{acc.code}</SelectItem>)}</SelectContent>
+                              <SelectContent>{expenseAccounts?.map((acc) => <SelectItem key={acc.id} value={acc.id.toString()}>{acc.code} - {acc.name}</SelectItem>)}</SelectContent>
                             </Select>
                           )} />
                         </td>
