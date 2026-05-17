@@ -412,15 +412,22 @@ def post_purchase_bill(actor: ActorContext, bill_id: int) -> CommandResult:
             # Calculate unit cost for stock receipt
             unit_cost = line_cost / bill_line.quantity if bill_line.quantity else Decimal("0")
 
-            inventory_lines.append(
-                {
-                    "item": bill_line.item,
-                    "warehouse": None,  # Will use default warehouse
-                    "qty": bill_line.quantity,
-                    "unit_cost": unit_cost,
-                    "source_line_id": str(bill_line.public_id),
-                }
-            )
+            # Stock-receipt policy: skip lines that are matched against a PO line.
+            # When a bill comes from a PO, stock is received at goods-receipt time
+            # (post_goods_receipt → record_stock_receipt). Receiving again here
+            # would double-count qty on the InventoryBalance. Direct bills
+            # (po_line is None) still trigger receipt — that's the only path
+            # for ad-hoc purchases without a PO/GR.
+            if bill_line.po_line_id is None:
+                inventory_lines.append(
+                    {
+                        "item": bill_line.item,
+                        "warehouse": None,  # Will use default warehouse
+                        "qty": bill_line.quantity,
+                        "unit_cost": unit_cost,
+                        "source_line_id": str(bill_line.public_id),
+                    }
+                )
         else:
             # Non-inventory: use the line's account (expense)
             account_id = bill_line.account_id
