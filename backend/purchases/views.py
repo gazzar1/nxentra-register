@@ -111,6 +111,31 @@ class PurchaseBillDetailView(APIView):
         serializer = PurchaseBillSerializer(bill)
         return Response(serializer.data)
 
+    def delete(self, request, pk):
+        """Delete a DRAFT bill. Posted bills must be voided, not deleted —
+        deletion would orphan the JE and break the audit trail."""
+        from projections.write_barrier import command_writes_allowed
+
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        try:
+            bill = PurchaseBill.objects.get(company=actor.company, pk=pk)
+        except PurchaseBill.DoesNotExist:
+            return Response({"detail": "Bill not found."}, status=404)
+
+        if bill.status != PurchaseBill.Status.DRAFT:
+            return Response(
+                {"detail": f"Only DRAFT bills can be deleted (this bill is {bill.status}). Void posted bills instead."},
+                status=400,
+            )
+
+        with command_writes_allowed():
+            bill.delete()
+
+        return Response(status=204)
+
 
 class PurchaseBillPostView(APIView):
     """Post a purchase bill."""

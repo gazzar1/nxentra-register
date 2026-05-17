@@ -548,13 +548,23 @@ def post_purchase_bill(actor: ActorContext, bill_id: int) -> CommandResult:
             # Rollback will happen due to @transaction.atomic
             return CommandResult.fail(f"Failed to record stock receipt: {stock_result.error}")
 
-    # Update bill status
+    # Update bill status + advance qty_billed on linked PO lines so the PO
+    # correctly reports qty_unbilled = 0 once fully billed (A67). Without this,
+    # a fully-billed PO keeps surfacing in the 'Start from PO' banner and
+    # create_bill_from_po would re-issue the lines on every click.
     with command_writes_allowed():
         bill.status = PurchaseBill.Status.POSTED
         bill.posted_at = posted_at
         bill.posted_by = actor.user
         bill.posted_journal_entry = journal_entry
         bill.save()
+
+        for bill_line in bill.lines.select_related("po_line").all():
+            if bill_line.po_line_id is None:
+                continue
+            po_line = bill_line.po_line
+            po_line.qty_billed = (po_line.qty_billed or Decimal("0")) + bill_line.quantity
+            po_line.save(update_fields=["qty_billed"])
 
     # Build event line data
     event_lines = []
@@ -675,10 +685,19 @@ def void_purchase_bill(
 
     voided_at = timezone.now()
 
-    # Update bill status
+    # Update bill status + roll back qty_billed on linked PO lines so the
+    # quantities become billable again (A67 counterpart to post_purchase_bill).
     with command_writes_allowed():
         bill.status = PurchaseBill.Status.VOIDED
         bill.save()
+
+        for bill_line in bill.lines.select_related("po_line").all():
+            if bill_line.po_line_id is None:
+                continue
+            po_line = bill_line.po_line
+            new_qty = (po_line.qty_billed or Decimal("0")) - bill_line.quantity
+            po_line.qty_billed = max(new_qty, Decimal("0"))
+            po_line.save(update_fields=["qty_billed"])
 
     event = emit_event(
         actor=actor,
