@@ -219,8 +219,10 @@ export default function NewPurchaseBillPage() {
   const { data: vendorPOsPage } = usePaginatedPurchaseOrders(
     vendorIdNum ? { vendor_id: vendorIdNum, page_size: 25 } : undefined,
   );
-  const billablePOs = (vendorPOsPage?.results || []).filter((po) =>
-    ["APPROVED", "PARTIALLY_RECEIVED", "FULLY_RECEIVED"].includes(po.status),
+  const billablePOs = (vendorPOsPage?.results || []).filter(
+    (po) =>
+      ["APPROVED", "PARTIALLY_RECEIVED", "FULLY_RECEIVED"].includes(po.status) &&
+      po.has_unbilled,
   );
   const createBillFromPO = useCreateBillFromPO();
 

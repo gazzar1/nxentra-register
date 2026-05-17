@@ -270,6 +270,7 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
 class PurchaseOrderListSerializer(serializers.ModelSerializer):
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
     vendor_code = serializers.CharField(source="vendor.code", read_only=True)
+    has_unbilled = serializers.SerializerMethodField()
 
     class Meta:
         model = PurchaseOrder
@@ -285,8 +286,14 @@ class PurchaseOrderListSerializer(serializers.ModelSerializer):
             "currency",
             "total_amount",
             "status",
+            "has_unbilled",
             "created_at",
         ]
+
+    def get_has_unbilled(self, obj) -> bool:
+        """True when at least one line still has qty_unbilled > 0 — used by
+        the Vendor Bill form to decide whether to offer 'Start from this PO'."""
+        return any(line.qty_unbilled > 0 for line in obj.lines.all())
 
 
 class PurchaseOrderCreateSerializer(serializers.Serializer):

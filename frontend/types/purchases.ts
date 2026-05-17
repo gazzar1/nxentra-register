@@ -221,6 +221,7 @@ export interface PurchaseOrderListItem {
   currency: string;
   total_amount: string;
   status: PurchaseOrderStatus;
+  has_unbilled: boolean;
   created_at: string;
 }
 

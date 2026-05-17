@@ -189,7 +189,7 @@ class PurchaseOrderListCreateView(APIView):
         from .models import PurchaseOrder
         from .serializers import PurchaseOrderListSerializer
 
-        orders = PurchaseOrder.objects.filter(company=actor.company).select_related("vendor")
+        orders = PurchaseOrder.objects.filter(company=actor.company).select_related("vendor").prefetch_related("lines")
 
         if "status" in request.query_params:
             orders = orders.filter(status=request.query_params["status"])
