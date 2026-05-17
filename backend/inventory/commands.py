@@ -38,10 +38,31 @@ from events.types import (
     WarehouseCreatedData,
     WarehouseUpdatedData,
 )
-from projections.models import InventoryBalance
+from projections.models import InventoryBalance, ProjectionAppliedEvent
 from projections.write_barrier import command_writes_allowed
 
 from .models import StockLedgerEntry, StockLedgerSequenceCounter, Warehouse
+
+
+def _claim_inventory_balance_event(event) -> None:
+    """
+    Mark a freshly-emitted inventory event as already applied by the
+    `inventory_balance` projection.
+
+    Why: record_stock_receipt / record_stock_issue / adjust_inventory /
+    record_opening_balance write to InventoryBalance directly for immediate
+    read consistency. The InventoryBalanceProjection ALSO consumes these
+    events on its next process_pending pass, so without this claim it would
+    re-apply the same qty_delta and double-count the balance.
+
+    Inserting a ProjectionAppliedEvent row inside the same atomic transaction
+    makes the projection short-circuit on its get_or_create check.
+    """
+    ProjectionAppliedEvent.objects.get_or_create(
+        company=event.company,
+        projection_name="inventory_balance",
+        event=event,
+    )
 
 
 def _get_next_sequence(company) -> int:
@@ -434,6 +455,7 @@ def record_stock_receipt(
             posted_by_email=actor.user.email if actor.user else "",
         ).to_dict(),
     )
+    _claim_inventory_balance_event(event)
 
     return CommandResult.ok(data={"entries": created_entries}, event=event)
 
@@ -596,6 +618,7 @@ def record_stock_issue(
             posted_by_email=actor.user.email if actor.user else "",
         ).to_dict(),
     )
+    _claim_inventory_balance_event(event)
 
     return CommandResult.ok(
         data={
@@ -876,6 +899,7 @@ def adjust_inventory(
             adjusted_by_email=actor.user.email,
         ).to_dict(),
     )
+    _claim_inventory_balance_event(event)
 
     return CommandResult.ok(
         data={
@@ -1102,6 +1126,7 @@ def record_opening_balance(
             recorded_by_email=actor.user.email,
         ).to_dict(),
     )
+    _claim_inventory_balance_event(event)
 
     return CommandResult.ok(
         data={
