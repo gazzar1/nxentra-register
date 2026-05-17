@@ -39,7 +39,7 @@ from events.types import (
     WarehouseUpdatedData,
 )
 from projections.models import InventoryBalance, ProjectionAppliedEvent
-from projections.write_barrier import command_writes_allowed
+from projections.write_barrier import command_writes_allowed, projection_writes_allowed
 
 from .models import StockLedgerEntry, StockLedgerSequenceCounter, Warehouse
 
@@ -57,12 +57,18 @@ def _claim_inventory_balance_event(event) -> None:
 
     Inserting a ProjectionAppliedEvent row inside the same atomic transaction
     makes the projection short-circuit on its get_or_create check.
+
+    ProjectionAppliedEvent is projection-owned (write barrier rejects command
+    context), so we enter projection_writes_allowed() just for this one row —
+    semantically correct because the command is claiming the projection's
+    work to prevent a double-apply.
     """
-    ProjectionAppliedEvent.objects.get_or_create(
-        company=event.company,
-        projection_name="inventory_balance",
-        event=event,
-    )
+    with projection_writes_allowed():
+        ProjectionAppliedEvent.objects.get_or_create(
+            company=event.company,
+            projection_name="inventory_balance",
+            event=event,
+        )
 
 
 def _get_next_sequence(company) -> int:
