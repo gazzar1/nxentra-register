@@ -457,6 +457,9 @@ class SalesInvoiceDetailView(APIView):
         return Response(serializer.data)
 
     def patch(self, request, pk):
+        import logging
+        import traceback
+
         actor = resolve_actor(request)
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
@@ -464,7 +467,19 @@ class SalesInvoiceDetailView(APIView):
         serializer = SalesInvoiceUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        result = update_sales_invoice(actor, pk, **serializer.validated_data)
+        # Wrap the command call so unhandled exceptions surface to the client
+        # as a 500 with a JSON `detail` instead of Django's HTML error page —
+        # otherwise the frontend can't parse the body and the user sees a
+        # generic 'Failed to update invoice' toast (A72 diagnosed this).
+        try:
+            result = update_sales_invoice(actor, pk, **serializer.validated_data)
+        except Exception as exc:
+            logging.getLogger(__name__).exception("update_sales_invoice crashed: %s", exc)
+            return Response(
+                {"detail": f"Internal error in update_sales_invoice: {exc!s}", "traceback": traceback.format_exc()},
+                status=500,
+            )
+
         if not result.success:
             return Response({"detail": result.error}, status=400)
 
