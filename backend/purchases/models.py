@@ -384,6 +384,17 @@ class PurchaseBill(ProjectionWriteGuard):
         help_text="Total bill amount (subtotal - discount + tax)",
     )
 
+    # Payment tracking — incremented by record_vendor_payment when an allocation
+    # references this bill (matched by bill_number). Decremented if a payment
+    # is later voided. Used to drive amount_outstanding for the payment form
+    # dropdown so fully-paid bills don't surface.
+    amount_paid = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        default=Decimal("0"),
+        help_text="Cumulative amount paid against this bill via vendor payments",
+    )
+
     # Status and posting
     status = models.CharField(
         max_length=10,
@@ -458,6 +469,10 @@ class PurchaseBill(ProjectionWriteGuard):
 
     def __str__(self):
         return f"BILL-{self.bill_number}"
+
+    @property
+    def amount_outstanding(self) -> Decimal:
+        return (self.total_amount or Decimal("0")) - (self.amount_paid or Decimal("0"))
 
     def recalculate_totals(self):
         """

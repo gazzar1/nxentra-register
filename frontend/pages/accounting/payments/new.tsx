@@ -154,9 +154,16 @@ export default function NewVendorPaymentPage() {
       } else {
         setPaymentCurrency(functionalCurrency);
       }
-      // Fetch posted (open) bills for this vendor
+      // Fetch posted bills with outstanding balance for this vendor. Hides
+      // bills already fully paid (amount_outstanding <= 0) so the dropdown
+      // doesn't surface a second payment opportunity for a settled bill.
       purchaseBillsService.list({ vendor_id: parseInt(selectedVendorId), status: "POSTED" })
-        .then((res) => setVendorBills(res.data.results))
+        .then((res) => {
+          const openBills = res.data.results.filter(
+            (b) => parseFloat(b.amount_outstanding ?? b.total_amount) > 0.005,
+          );
+          setVendorBills(openBills);
+        })
         .catch(() => setVendorBills([]));
     } else {
       setVendorBills([]);
@@ -542,8 +549,12 @@ export default function NewVendorPaymentPage() {
                                       if (bill) {
                                         setValue(`allocations.${index}.bill_date`, bill.bill_date);
                                         setValue(`allocations.${index}.bill_amount`, bill.total_amount);
+                                        // Default the allocation to the outstanding amount, not the
+                                        // full bill total — partial-payment safe and avoids the
+                                        // over-allocate-by-default trap.
                                         if (!allocations[index]?.amount) {
-                                          setValue(`allocations.${index}.amount`, bill.total_amount);
+                                          const outstanding = bill.amount_outstanding ?? bill.total_amount;
+                                          setValue(`allocations.${index}.amount`, outstanding);
                                         }
                                       }
                                     }}
@@ -553,11 +564,21 @@ export default function NewVendorPaymentPage() {
                                       <SelectValue placeholder={t("accounting:selectBill", "Select bill")} />
                                     </SelectTrigger>
                                     <SelectContent>
-                                      {vendorBills.map((bill) => (
-                                        <SelectItem key={bill.id} value={bill.bill_number}>
-                                          {bill.bill_number} — {formatCurrency(bill.total_amount)} ({bill.bill_date})
-                                        </SelectItem>
-                                      ))}
+                                      {vendorBills.map((bill) => {
+                                        const outstanding = parseFloat(
+                                          bill.amount_outstanding ?? bill.total_amount,
+                                        );
+                                        const fullyAvailable = outstanding >= parseFloat(bill.total_amount) - 0.005;
+                                        return (
+                                          <SelectItem key={bill.id} value={bill.bill_number}>
+                                            {bill.bill_number} —{" "}
+                                            {fullyAvailable
+                                              ? formatCurrency(bill.total_amount)
+                                              : `${formatCurrency(String(outstanding))} of ${formatCurrency(bill.total_amount)} outstanding`}{" "}
+                                            ({bill.bill_date})
+                                          </SelectItem>
+                                        );
+                                      })}
                                     </SelectContent>
                                   </Select>
                                 )}

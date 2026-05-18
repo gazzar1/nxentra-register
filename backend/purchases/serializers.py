@@ -175,6 +175,7 @@ class PurchaseBillListSerializer(serializers.ModelSerializer):
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
     vendor_code = serializers.CharField(source="vendor.code", read_only=True)
     vendor_bill_reference = serializers.CharField(source="reference", read_only=True)
+    amount_outstanding = serializers.SerializerMethodField()
 
     class Meta:
         model = PurchaseBill
@@ -191,9 +192,16 @@ class PurchaseBillListSerializer(serializers.ModelSerializer):
             "currency",
             "exchange_rate",
             "total_amount",
+            "amount_paid",
+            "amount_outstanding",
             "status",
             "created_at",
         ]
+
+    def get_amount_outstanding(self, obj) -> str:
+        """Computed: total_amount - amount_paid. Returned as a string for
+        consistency with the other DecimalField fields on this serializer."""
+        return str(obj.amount_outstanding)
 
 
 # =============================================================================

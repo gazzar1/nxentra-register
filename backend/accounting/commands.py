@@ -3967,6 +3967,8 @@ def record_vendor_payment(
     total_allocated = Decimal("0")
 
     if allocations:
+        from purchases.models import PurchaseBill
+
         for idx, alloc in enumerate(allocations):
             bill_reference = alloc.get("bill_reference")
             alloc_amount_str = alloc.get("amount")
@@ -4000,6 +4002,26 @@ def record_vendor_payment(
                 except (ValueError, TypeError):
                     return CommandResult.fail(f"Allocation {idx + 1}: invalid bill_amount format.")
 
+            # A69: if the bill_reference resolves to a real Nxentra-tracked
+            # PurchaseBill (vendor-scoped, POSTED status), enforce that the
+            # allocation doesn't exceed the bill's outstanding amount. Soft
+            # bill_reference strings that don't match any bill are still
+            # accepted (the form supports paying down legacy AP that wasn't
+            # billed through Nxentra).
+            matched_bill = PurchaseBill.objects.filter(
+                company=actor.company,
+                vendor=vendor,
+                bill_number=bill_reference,
+                status=PurchaseBill.Status.POSTED,
+            ).first()
+            if matched_bill is not None:
+                outstanding = matched_bill.total_amount - (matched_bill.amount_paid or Decimal("0"))
+                if alloc_amount > outstanding:
+                    return CommandResult.fail(
+                        f"Allocation {idx + 1}: amount {alloc_amount} exceeds outstanding "
+                        f"{outstanding} on bill {bill_reference}."
+                    )
+
             total_allocated += alloc_amount
             validated_allocations.append(
                 {
@@ -4007,6 +4029,7 @@ def record_vendor_payment(
                     "amount": alloc_amount,
                     "bill_date": bill_date,
                     "bill_amount": bill_amount,
+                    "_matched_bill_id": matched_bill.id if matched_bill else None,
                 }
             )
 
@@ -4218,8 +4241,10 @@ def record_vendor_payment(
     # Build allocation data for event
     allocation_data = []
 
-    # Create payment allocations
+    # Create payment allocations + advance amount_paid on matched bills (A69)
     if validated_allocations:
+        from purchases.models import PurchaseBill
+
         with command_writes_allowed():
             for alloc in validated_allocations:
                 PaymentAllocation.objects.create(
@@ -4233,6 +4258,17 @@ def record_vendor_payment(
                     amount=alloc["amount"],
                     created_by=actor.user,
                 )
+
+                # Lock + update amount_paid on the matched bill so future
+                # payments see the new outstanding amount and the bill drops
+                # out of the payment-form dropdown once fully paid.
+                if alloc.get("_matched_bill_id"):
+                    bill = PurchaseBill.objects.select_for_update().get(
+                        pk=alloc["_matched_bill_id"],
+                        company=actor.company,
+                    )
+                    bill.amount_paid = (bill.amount_paid or Decimal("0")) + alloc["amount"]
+                    bill.save(update_fields=["amount_paid"])
 
                 allocation_data.append(
                     {

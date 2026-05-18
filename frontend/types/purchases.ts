@@ -97,6 +97,8 @@ export interface PurchaseBillListItem {
   currency: string;
   exchange_rate: string;
   total_amount: string;
+  amount_paid: string;
+  amount_outstanding: string;
   status: PurchaseBillStatus;
   posted_at: string | null;
   created_at: string;
