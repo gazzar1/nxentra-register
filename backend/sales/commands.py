@@ -905,6 +905,8 @@ def update_sales_invoice(
     due_date=None,
     customer_id: int = None,
     posting_profile_id: int = None,
+    currency: str = None,
+    exchange_rate=None,
     lines: list = None,
     reference: str = None,
     notes: str = None,
@@ -937,6 +939,19 @@ def update_sales_invoice(
             return CommandResult.fail(f"Invoice number '{invoice_number}' already exists.")
         changes["invoice_number"] = {"old": invoice.invoice_number, "new": invoice_number}
         invoice.invoice_number = invoice_number
+
+    # Update currency / exchange rate on draft. Line unit_prices stay in
+    # the new currency the merchant just picked — they are responsible for
+    # also re-entering line amounts if the currency truly changed. We
+    # silently no-op an empty-string currency since the frontend dropdown
+    # can submit "" when nothing is selected.
+    if currency is not None and currency != "" and currency != invoice.currency:
+        changes["currency"] = {"old": invoice.currency, "new": currency}
+        invoice.currency = currency
+
+    if exchange_rate is not None and exchange_rate != invoice.exchange_rate:
+        changes["exchange_rate"] = {"old": str(invoice.exchange_rate), "new": str(exchange_rate)}
+        invoice.exchange_rate = exchange_rate
 
     # Update dates
     if invoice_date is not None and invoice_date != invoice.invoice_date:
