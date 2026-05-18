@@ -113,7 +113,8 @@ export default function NewVendorPaymentPage() {
   // (e.g. when picking a bill from the dropdown auto-fills the pay amount).
   // Plain watch("allocations") sometimes missed those updates and left
   // 'Total Allocated' stuck at $0.00 even with non-zero lines.
-  const allocations = useWatch({ control, name: "allocations" }) ?? [];
+  const watchedAllocations = useWatch({ control, name: "allocations" });
+  const allocations = useMemo(() => watchedAllocations ?? [], [watchedAllocations]);
   const watchPaymentDate = watch("payment_date");
   const watchAccountingDate = watch("accounting_date");
 
@@ -662,7 +663,7 @@ export default function NewVendorPaymentPage() {
                       <div className="border-t pt-2 text-destructive text-xs">
                         ⚠ Allocations exceed the payment amount by{" "}
                         {formatCurrency(totalAllocated - parseFloat(paymentAmount || "0"))}.
-                        Reduce a line's Pay Amount or increase the header Amount before saving.
+                        Reduce a line&apos;s Pay Amount or increase the header Amount before saving.
                       </div>
                     ) : (
                       <div className="flex justify-between border-t pt-2">
