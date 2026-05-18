@@ -5,7 +5,7 @@ import { useTranslation } from "next-i18next";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import { ArrowLeft, Save, FileText, Plus, Trash2 } from "lucide-react";
-import { useForm, Controller, useFieldArray } from "react-hook-form";
+import { useForm, Controller, useFieldArray, useWatch } from "react-hook-form";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -108,7 +108,12 @@ export default function NewVendorPaymentPage() {
   });
 
   const paymentAmount = watch("amount");
-  const allocations = watch("allocations");
+  // useWatch subscribes to the nested array field reliably so totalAllocated
+  // recomputes when individual line amounts change via programmatic setValue
+  // (e.g. when picking a bill from the dropdown auto-fills the pay amount).
+  // Plain watch("allocations") sometimes missed those updates and left
+  // 'Total Allocated' stuck at $0.00 even with non-zero lines.
+  const allocations = useWatch({ control, name: "allocations" }) ?? [];
   const watchPaymentDate = watch("payment_date");
   const watchAccountingDate = watch("accounting_date");
 
@@ -401,6 +406,9 @@ export default function NewVendorPaymentPage() {
                 settings={companyFmt}
                 placeholder="0.00"
               />
+              <p className="text-xs text-muted-foreground">
+                Total cash leaving the bank. Each line below allocates a portion of this amount to a specific bill.
+              </p>
               {errors.amount && (
                 <p className="text-sm text-destructive">{errors.amount.message}</p>
               )}
@@ -547,14 +555,15 @@ export default function NewVendorPaymentPage() {
                                       f.onChange(val);
                                       const bill = vendorBills.find((b) => b.bill_number === val);
                                       if (bill) {
-                                        setValue(`allocations.${index}.bill_date`, bill.bill_date);
-                                        setValue(`allocations.${index}.bill_amount`, bill.total_amount);
+                                        const opts = { shouldDirty: true, shouldTouch: true };
+                                        setValue(`allocations.${index}.bill_date`, bill.bill_date, opts);
+                                        setValue(`allocations.${index}.bill_amount`, bill.total_amount, opts);
                                         // Default the allocation to the outstanding amount, not the
                                         // full bill total — partial-payment safe and avoids the
                                         // over-allocate-by-default trap.
                                         if (!allocations[index]?.amount) {
                                           const outstanding = bill.amount_outstanding ?? bill.total_amount;
-                                          setValue(`allocations.${index}.amount`, outstanding);
+                                          setValue(`allocations.${index}.amount`, outstanding, opts);
                                         }
                                       }
                                     }}
@@ -638,25 +647,33 @@ export default function NewVendorPaymentPage() {
 
                 {/* Allocation Summary */}
                 <div className="mt-4 flex justify-end">
-                  <div className="w-64 space-y-2 text-sm">
+                  <div className="w-80 space-y-2 text-sm">
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">
-                        {t("accounting:paymentAmount", "Payment Amount")}:
+                        Payment amount (header):
                       </span>
                       <span className="ltr-number">{formatCurrency(paymentAmount || "0")}</span>
                     </div>
                     <div className="flex justify-between font-medium">
-                      <span>{t("accounting:totalAllocated", "Total Allocated")}:</span>
+                      <span>Sum of allocations:</span>
                       <span className="ltr-number">{formatCurrency(totalAllocated)}</span>
                     </div>
-                    <div className="flex justify-between border-t pt-2">
-                      <span className="text-muted-foreground">
-                        {t("accounting:unallocated", "Unallocated")}:
-                      </span>
-                      <span className={cn("ltr-number", unallocatedAmount > 0 && "text-amber-600")}>
-                        {formatCurrency(unallocatedAmount)}
-                      </span>
-                    </div>
+                    {totalAllocated > parseFloat(paymentAmount || "0") + 0.005 ? (
+                      <div className="border-t pt-2 text-destructive text-xs">
+                        ⚠ Allocations exceed the payment amount by{" "}
+                        {formatCurrency(totalAllocated - parseFloat(paymentAmount || "0"))}.
+                        Reduce a line's Pay Amount or increase the header Amount before saving.
+                      </div>
+                    ) : (
+                      <div className="flex justify-between border-t pt-2">
+                        <span className="text-muted-foreground">
+                          Unallocated remainder:
+                        </span>
+                        <span className={cn("ltr-number", unallocatedAmount > 0 && "text-amber-600")}>
+                          {formatCurrency(unallocatedAmount)}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </div>
               </>
