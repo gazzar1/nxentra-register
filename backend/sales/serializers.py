@@ -36,6 +36,7 @@ class ItemSerializer(serializers.ModelSerializer):
     inventory_account_code = serializers.CharField(source="inventory_account.code", read_only=True, default=None)
     cogs_account_code = serializers.CharField(source="cogs_account.code", read_only=True, default=None)
     image_url = serializers.SerializerMethodField()
+    qty_on_hand = serializers.SerializerMethodField()
 
     class Meta:
         model = Item
@@ -65,6 +66,7 @@ class ItemSerializer(serializers.ModelSerializer):
             "uom",
             "average_cost",
             "last_cost",
+            "qty_on_hand",
             "image_url",
             "external_url",
             "is_active",
@@ -81,10 +83,27 @@ class ItemSerializer(serializers.ModelSerializer):
             "cogs_account_code",
             "average_cost",
             "last_cost",
+            "qty_on_hand",
             "image_url",
             "created_at",
             "updated_at",
         ]
+
+    def get_qty_on_hand(self, obj) -> str:
+        """Sum of on-hand quantity across all warehouses, from the
+        InventoryBalance projection. Returned as a string for consistency
+        with the other Decimal fields (average_cost, last_cost) which DRF
+        also serializes as strings."""
+        from decimal import Decimal
+
+        from django.db.models import Sum
+
+        from projections.models import InventoryBalance
+
+        total = InventoryBalance.objects.filter(item=obj, company=obj.company).aggregate(s=Sum("qty_on_hand"))[
+            "s"
+        ] or Decimal("0")
+        return str(total)
 
     def get_image_url(self, obj):
         if obj.image:

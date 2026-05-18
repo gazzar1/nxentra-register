@@ -36,6 +36,7 @@ export interface Item {
   costing_method: CostingMethod;
   average_cost: string;
   last_cost: string;
+  qty_on_hand: string;
   external_url: string;
   is_active: boolean;
   created_at: string;

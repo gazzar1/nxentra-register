@@ -630,6 +630,19 @@ export default function EditItemPage() {
                   Cost from last purchase
                 </p>
               </div>
+
+              <div className="space-y-2">
+                <Label>Quantity on Hand</Label>
+                <Input
+                  value={item?.qty_on_hand ?? "0"}
+                  readOnly
+                  disabled
+                  className="bg-muted"
+                />
+                <p className="text-sm text-muted-foreground">
+                  Total across all warehouses (from stock ledger)
+                </p>
+              </div>
             </CardContent>
           </Card>
         )}
