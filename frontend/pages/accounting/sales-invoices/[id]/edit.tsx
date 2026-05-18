@@ -242,9 +242,32 @@ export default function EditSalesInvoicePage() {
       });
       router.push(`/accounting/sales-invoices/${invoice.id}`);
     } catch (error: any) {
+      const body = error?.response?.data;
+      let description = "Failed to update invoice.";
+      if (body?.detail) {
+        description = body.detail;
+      } else if (body && typeof body === "object") {
+        // DRF field-level validation errors come back as {field: ["msg"]}
+        // without a 'detail' key. Flatten so the user sees the actual reason
+        // instead of the generic fallback.
+        const parts: string[] = [];
+        const walk = (val: unknown, prefix: string) => {
+          if (Array.isArray(val)) {
+            val.forEach((item, i) => walk(item, prefix ? `${prefix}[${i}]` : `[${i}]`));
+          } else if (val && typeof val === "object") {
+            Object.entries(val as Record<string, unknown>).forEach(([k, v]) =>
+              walk(v, prefix ? `${prefix}.${k}` : k),
+            );
+          } else if (val != null) {
+            parts.push(prefix ? `${prefix}: ${val}` : String(val));
+          }
+        };
+        walk(body, "");
+        if (parts.length) description = parts.join(" | ");
+      }
       toast({
         title: "Error",
-        description: error?.response?.data?.detail || "Failed to update invoice.",
+        description,
         variant: "destructive",
       });
     }
