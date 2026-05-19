@@ -80,6 +80,7 @@ def create_item(
     cogs_account_id: int = None,
     costing_method: str = Item.CostingMethod.WEIGHTED_AVERAGE,
     uom: str = "",
+    allow_negative_stock: bool = False,
 ) -> CommandResult:
     """Create a new item in the catalog."""
     require(actor, "sales.item.create")
@@ -152,6 +153,7 @@ def create_item(
             cogs_account=cogs_account,
             costing_method=costing_method,
             uom=uom,
+            allow_negative_stock=allow_negative_stock,
         )
 
     event = emit_event(
@@ -203,6 +205,7 @@ def update_item(actor: ActorContext, item_id: int, **updates) -> CommandResult:
         "is_active",
         "costing_method",
         "uom",
+        "allow_negative_stock",
     ]
     for field in simple_fields:
         if field in updates:
@@ -1242,8 +1245,13 @@ def post_sales_invoice(
                     f"No warehouse available for inventory item {item.code}. Create a warehouse first."
                 )
 
-            # Check stock availability (unless company allows negative inventory)
-            if not actor.company.allow_negative_inventory:
+            # Check stock availability. Bypassed when EITHER the company-wide
+            # toggle OR the per-item `allow_negative_stock` flag is on. The
+            # per-item flag is the merchant's escape hatch for drop-ship /
+            # made-to-order items while still enforcing strictness on the
+            # rest of the catalog.
+            allow_negative = actor.company.allow_negative_inventory or item.allow_negative_stock
+            if not allow_negative:
                 is_available, error = check_stock_availability(actor.company, item, warehouse, inv_line.quantity)
                 if not is_available:
                     return CommandResult.fail(error)
@@ -1258,7 +1266,8 @@ def post_sales_invoice(
                 issue_cost = balance.avg_cost
             except InventoryBalance.DoesNotExist:
                 # No inventory record - allow if negative inventory is allowed
-                if actor.company.allow_negative_inventory:
+                # at the company OR item level.
+                if actor.company.allow_negative_inventory or item.allow_negative_stock:
                     issue_cost = item.average_cost or Decimal("0")
                 else:
                     return CommandResult.fail(f"No inventory record for {item.code} in {warehouse.code}.")

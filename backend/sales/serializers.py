@@ -64,6 +64,7 @@ class ItemSerializer(serializers.ModelSerializer):
             "cogs_account_code",
             "costing_method",
             "uom",
+            "allow_negative_stock",
             "average_cost",
             "last_cost",
             "qty_on_hand",
@@ -141,6 +142,7 @@ class ItemCreateSerializer(serializers.Serializer):
         default=Item.CostingMethod.WEIGHTED_AVERAGE,
     )
     uom = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
+    allow_negative_stock = serializers.BooleanField(required=False, default=False)
 
 
 class ItemUpdateSerializer(serializers.Serializer):
@@ -162,6 +164,7 @@ class ItemUpdateSerializer(serializers.Serializer):
     cogs_account_id = serializers.IntegerField(required=False, allow_null=True)
     costing_method = serializers.ChoiceField(choices=Item.CostingMethod.choices, required=False)
     uom = serializers.CharField(max_length=20, required=False, allow_blank=True)
+    allow_negative_stock = serializers.BooleanField(required=False)
     is_active = serializers.BooleanField(required=False)
 
 

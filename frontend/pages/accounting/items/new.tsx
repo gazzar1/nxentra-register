@@ -38,6 +38,7 @@ interface ItemFormData {
   inventory_account_id: string;
   cogs_account_id: string;
   costing_method: CostingMethod;
+  allow_negative_stock: boolean;
   // External link
   external_url: string;
 }
@@ -125,6 +126,7 @@ export default function NewItemPage() {
       inventory_account_id: "",
       cogs_account_id: "",
       costing_method: "WEIGHTED_AVERAGE",
+      allow_negative_stock: false,
       external_url: "",
     },
   });
@@ -147,6 +149,7 @@ export default function NewItemPage() {
         inventory_account_id: data.inventory_account_id ? parseInt(data.inventory_account_id) : null,
         cogs_account_id: data.cogs_account_id ? parseInt(data.cogs_account_id) : null,
         costing_method: data.costing_method || undefined,
+        allow_negative_stock: !!data.allow_negative_stock,
       };
 
       const result = await createItem.mutateAsync(payload);
@@ -525,6 +528,31 @@ export default function NewItemPage() {
                     </Select>
                   )}
                 />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="allow_negative_stock">Allow Negative Stock</Label>
+                <Controller
+                  name="allow_negative_stock"
+                  control={control}
+                  render={({ field }) => (
+                    <Select
+                      onValueChange={(v) => field.onChange(v === "yes")}
+                      value={field.value ? "yes" : "no"}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="no">No (strict — block sales below stock)</SelectItem>
+                        <SelectItem value="yes">Yes (allow drop-ship / backorder)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
+                <p className="text-sm text-muted-foreground">
+                  When &quot;Yes&quot;, sales of this item can post even if stock would go negative.
+                </p>
               </div>
             </CardContent>
           </Card>

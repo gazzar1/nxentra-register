@@ -39,6 +39,7 @@ interface ItemFormData {
   cogs_account_id: string;
   costing_method: CostingMethod;
   default_cost: string;
+  allow_negative_stock: boolean;
   // External link
   external_url: string;
 }
@@ -135,6 +136,7 @@ export default function EditItemPage() {
       cogs_account_id: "",
       costing_method: "WEIGHTED_AVERAGE",
       default_cost: "0",
+      allow_negative_stock: false,
     },
   });
 
@@ -157,6 +159,7 @@ export default function EditItemPage() {
         cogs_account_id: item.cogs_account?.toString() || "",
         costing_method: item.costing_method || "WEIGHTED_AVERAGE",
         default_cost: item.default_cost?.toString() || "0",
+        allow_negative_stock: !!item.allow_negative_stock,
         external_url: item.external_url || "",
       });
       // Set existing image
@@ -181,6 +184,7 @@ export default function EditItemPage() {
         default_cost: data.default_cost || "0",
         uom: data.uom || undefined,
         costing_method: data.costing_method || undefined,
+        allow_negative_stock: !!data.allow_negative_stock,
       };
       if (data.sales_account_id) payload.sales_account_id = parseInt(data.sales_account_id);
       if (data.purchase_account_id) payload.purchase_account_id = parseInt(data.purchase_account_id);
@@ -587,6 +591,31 @@ export default function EditItemPage() {
                     </Select>
                   )}
                 />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="allow_negative_stock">Allow Negative Stock</Label>
+                <Controller
+                  name="allow_negative_stock"
+                  control={control}
+                  render={({ field }) => (
+                    <Select
+                      onValueChange={(v) => field.onChange(v === "yes")}
+                      value={field.value ? "yes" : "no"}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="no">No (strict — block sales below stock)</SelectItem>
+                        <SelectItem value="yes">Yes (allow drop-ship / backorder)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
+                <p className="text-sm text-muted-foreground">
+                  When &quot;Yes&quot;, sales of this item can post even if stock would go negative.
+                </p>
               </div>
 
               {/* Default cost - editable, used for COGS when no purchase history */}

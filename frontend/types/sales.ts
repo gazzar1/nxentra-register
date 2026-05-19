@@ -34,6 +34,7 @@ export interface Item {
   cogs_account: number | null;
   cogs_account_code?: string;
   costing_method: CostingMethod;
+  allow_negative_stock: boolean;
   average_cost: string;
   last_cost: string;
   qty_on_hand: string;
@@ -58,6 +59,7 @@ export interface ItemCreatePayload {
   inventory_account_id?: number | null;
   cogs_account_id?: number | null;
   costing_method?: CostingMethod;
+  allow_negative_stock?: boolean;
   external_url?: string;
 }
 
@@ -76,6 +78,7 @@ export interface ItemUpdatePayload {
   inventory_account_id?: number | null;
   cogs_account_id?: number | null;
   costing_method?: CostingMethod;
+  allow_negative_stock?: boolean;
   external_url?: string;
   is_active?: boolean;
 }

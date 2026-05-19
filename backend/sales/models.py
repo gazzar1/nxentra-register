@@ -183,6 +183,16 @@ class Item(ProjectionWriteGuard):
         help_text="Unit of measure (e.g., EA, KG, BOX)",
     )
 
+    # Per-item override for the company-level allow_negative_inventory toggle.
+    # When True, sales of this item can post even if qty_on_hand would go
+    # negative (e.g. drop-ship, made-to-order, planned backorders). The
+    # availability check still warns the merchant in the UI, but won't block
+    # posting. Default False keeps the strict tie-out invariant.
+    allow_negative_stock = models.BooleanField(
+        default=False,
+        help_text="Allow sales of this item even when stock would go negative",
+    )
+
     # Item photo
     image = models.ImageField(
         upload_to="items/",
