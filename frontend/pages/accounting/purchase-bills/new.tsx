@@ -69,8 +69,8 @@ export default function NewPurchaseBillPage() {
   const { data: postingProfiles } = usePostingProfiles({ profile_type: "VENDOR" });
   const { data: accounts } = useAccounts();
   // Phase 2: per-line warehouse picker for direct (non-PO) bills.
-  const { data: warehousesRes } = useWarehouses({ is_active: true });
-  const warehouses = warehousesRes?.results || [];
+  const { data: warehousesData } = useWarehouses({ is_active: true });
+  const warehouses = warehousesData ?? [];
   const defaultWarehouseId =
     warehouses.find((w: any) => w.is_default)?.id ?? warehouses[0]?.id ?? null;
   const createBill = useCreatePurchaseBill();

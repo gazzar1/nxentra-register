@@ -75,8 +75,8 @@ export default function NewSalesInvoicePage() {
   const createInvoice = useCreateSalesInvoice();
   // Phase 2: per-line warehouse picker + availability hint. Active warehouses
   // populate the dropdown; default warehouse pre-selected on new lines.
-  const { data: warehousesRes } = useWarehouses({ is_active: true });
-  const warehouses = warehousesRes?.results || [];
+  const { data: warehousesData } = useWarehouses({ is_active: true });
+  const warehouses = warehousesData ?? [];
   const defaultWarehouseId =
     warehouses.find((w: any) => w.is_default)?.id ?? warehouses[0]?.id ?? null;
 

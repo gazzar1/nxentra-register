@@ -43,8 +43,8 @@ export default function NewInventoryTransferPage() {
   const { toast } = useToast();
   const { company } = useAuth();
   const { data: items } = useItems();
-  const { data: warehousesRes } = useWarehouses({ is_active: true });
-  const warehouses = warehousesRes?.results || [];
+  const { data: warehousesData } = useWarehouses({ is_active: true });
+  const warehouses = warehousesData ?? [];
   const createTransfer = useCreateInventoryTransfer();
 
   const {

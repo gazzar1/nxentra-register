@@ -66,8 +66,8 @@ export default function EditSalesInvoicePage() {
   const { data: postingProfiles } = usePostingProfiles({ profile_type: "CUSTOMER" });
   const { data: accounts } = useAccounts();
   // Phase 2: line-level warehouse picker + availability hint
-  const { data: warehousesRes } = useWarehouses({ is_active: true });
-  const warehouses = warehousesRes?.results || [];
+  const { data: warehousesData } = useWarehouses({ is_active: true });
+  const warehouses = warehousesData ?? [];
   const defaultWarehouseId =
     warehouses.find((w: any) => w.is_default)?.id ?? warehouses[0]?.id ?? null;
   const updateInvoice = useUpdateSalesInvoice();
