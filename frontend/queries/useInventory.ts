@@ -163,22 +163,6 @@ export function useStockLedger(filters?: StockLedgerFilters) {
   });
 }
 
-// ==================== Stock Availability ====================
-
-export function useStockAvailability(
-  itemId: number,
-  params?: { warehouse_id?: number; qty?: number }
-) {
-  return useQuery({
-    queryKey: inventoryKeys.availability(itemId, params),
-    queryFn: async () => {
-      const { data } = await inventoryService.availability.check(itemId, params);
-      return data;
-    },
-    enabled: !!itemId,
-  });
-}
-
 // ==================== Adjustments ====================
 
 export function useCreateAdjustment() {

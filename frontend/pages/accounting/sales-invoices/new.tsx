@@ -25,7 +25,7 @@ import {
 import { useCustomers } from "@/queries/useAccounts";
 import { useItems, useTaxCodes, usePostingProfiles, useCreateSalesInvoice } from "@/queries/useSales";
 import { useAccounts } from "@/queries/useAccounts";
-import { useWarehouses, useStockAvailability } from "@/queries/useInventory";
+import { useWarehouses } from "@/queries/useInventory";
 import { useCompanySettings } from "@/queries/useCompanySettings";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/components/ui/toaster";
