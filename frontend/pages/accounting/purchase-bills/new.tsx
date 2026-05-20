@@ -30,6 +30,7 @@ import {
   useCreateBillFromPO,
 } from "@/queries/usePurchases";
 import { useAccounts } from "@/queries/useAccounts";
+import { useWarehouses } from "@/queries/useInventory";
 import { useToast } from "@/components/ui/toaster";
 import { useCompanySettings } from "@/queries/useCompanySettings";
 import { useAuth } from "@/contexts/AuthContext";
@@ -39,6 +40,7 @@ import { cn } from "@/lib/cn";
 
 interface BillLineFormData {
   item_id: string;
+  warehouse_id: string;
   description: string;
   quantity: string;
   unit_price: string;
@@ -66,6 +68,11 @@ export default function NewPurchaseBillPage() {
   const { data: taxCodes } = useTaxCodes({ direction: "INPUT" });
   const { data: postingProfiles } = usePostingProfiles({ profile_type: "VENDOR" });
   const { data: accounts } = useAccounts();
+  // Phase 2: per-line warehouse picker for direct (non-PO) bills.
+  const { data: warehousesRes } = useWarehouses({ is_active: true });
+  const warehouses = warehousesRes?.results || [];
+  const defaultWarehouseId =
+    warehouses.find((w: any) => w.is_default)?.id ?? warehouses[0]?.id ?? null;
   const createBill = useCreatePurchaseBill();
   const { data: companySettings } = useCompanySettings();
   const { company } = useAuth();
@@ -102,6 +109,7 @@ export default function NewPurchaseBillPage() {
       lines: [
         {
           item_id: "",
+          warehouse_id: "",
           description: "",
           quantity: "1",
           unit_price: "0",
@@ -258,6 +266,7 @@ export default function NewPurchaseBillPage() {
         notes: data.notes,
         lines: data.lines.map((line) => ({
           item_id: line.item_id ? parseInt(line.item_id) : null,
+          warehouse_id: line.warehouse_id ? parseInt(line.warehouse_id) : null,
           description: line.description,
           quantity: line.quantity,
           unit_price: line.unit_price,
@@ -503,6 +512,7 @@ export default function NewPurchaseBillPage() {
               size="sm"
               onClick={() =>
                 append({
+                  warehouse_id: defaultWarehouseId ? String(defaultWarehouseId) : "",
                   item_id: "",
                   description: "",
                   quantity: "1",
@@ -523,6 +533,7 @@ export default function NewPurchaseBillPage() {
                 <thead>
                   <tr className="border-b text-sm text-muted-foreground">
                     <th className="text-start py-2 px-2 w-[180px]">Item</th>
+                    <th className="text-start py-2 px-2 w-[140px]">Warehouse</th>
                     <th className="text-start py-2 px-2">Description</th>
                     <th className="text-start py-2 px-2 w-[220px]">Account</th>
                     <th className="text-end py-2 px-2 w-[80px]">Qty</th>
@@ -547,6 +558,9 @@ export default function NewPurchaseBillPage() {
                                 onValueChange={(val) => {
                                   f.onChange(val);
                                   handleItemChange(index, val);
+                                  if (!watchLines[index]?.warehouse_id && defaultWarehouseId) {
+                                    setValue(`lines.${index}.warehouse_id`, String(defaultWarehouseId));
+                                  }
                                 }}
                                 value={f.value}
                               >
@@ -557,6 +571,26 @@ export default function NewPurchaseBillPage() {
                                   {items?.map((item) => (
                                     <SelectItem key={item.id} value={item.id.toString()}>
                                       {item.code} - {item.name}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            )}
+                          />
+                        </td>
+                        <td className="py-2 px-2">
+                          <Controller
+                            name={`lines.${index}.warehouse_id`}
+                            control={control}
+                            render={({ field: f }) => (
+                              <Select onValueChange={f.onChange} value={f.value}>
+                                <SelectTrigger className="h-8 text-xs">
+                                  <SelectValue placeholder="Warehouse" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {warehouses.map((w: any) => (
+                                    <SelectItem key={w.id} value={w.id.toString()}>
+                                      {w.code} - {w.name}
                                     </SelectItem>
                                   ))}
                                 </SelectContent>

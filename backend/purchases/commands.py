@@ -165,6 +165,17 @@ def create_purchase_bill(
                 return CommandResult.fail(f"Line {idx}: Item not found.")
             item = items[item_id]
 
+        # Phase 2: per-line warehouse override (for direct/non-PO bills).
+        warehouse = None
+        warehouse_id = line.get("warehouse_id")
+        if warehouse_id:
+            from inventory.models import Warehouse
+
+            try:
+                warehouse = Warehouse.objects.get(company=actor.company, pk=warehouse_id)
+            except Warehouse.DoesNotExist:
+                return CommandResult.fail(f"Line {idx}: Warehouse not found.")
+
         # Validate quantity and unit price
         quantity = Decimal(str(line.get("quantity", "1")))
         unit_price = Decimal(str(line.get("unit_price", "0")))
@@ -185,6 +196,7 @@ def create_purchase_bill(
                 "line_number": idx,
                 "account": account,
                 "item": item,
+                "warehouse": warehouse,
                 "description": line.get("description", ""),
                 "description_ar": line.get("description_ar", ""),
                 "quantity": quantity,
@@ -244,6 +256,7 @@ def create_purchase_bill(
                 company=actor.company,
                 line_number=line_data["line_number"],
                 item=line_data.get("item"),
+                warehouse=line_data.get("warehouse"),
                 description=line_data["description"],
                 description_ar=line_data.get("description_ar", ""),
                 quantity=line_data["quantity"],
@@ -422,7 +435,9 @@ def post_purchase_bill(actor: ActorContext, bill_id: int) -> CommandResult:
                 inventory_lines.append(
                     {
                         "item": bill_line.item,
-                        "warehouse": None,  # Will use default warehouse
+                        # Phase 2: honor line-level warehouse; record_stock_receipt
+                        # falls back to company default when None.
+                        "warehouse": bill_line.warehouse,
                         "qty": bill_line.quantity,
                         "unit_cost": unit_cost,
                         "source_line_id": str(bill_line.public_id),
@@ -1051,6 +1066,18 @@ def create_goods_receipt(
                     f"Line {i}: qty_received ({qty}) exceeds outstanding ({po_line.qty_outstanding})."
                 )
 
+            # Phase 2: per-line warehouse override on the GR line. Defaults
+            # to GR header warehouse when None.
+            line_warehouse = None
+            line_warehouse_id = line_data.get("warehouse_id")
+            if line_warehouse_id:
+                from inventory.models import Warehouse
+
+                try:
+                    line_warehouse = Warehouse.objects.get(company=actor.company, pk=line_warehouse_id)
+                except Warehouse.DoesNotExist:
+                    return CommandResult.fail(f"Line {i}: Warehouse not found.")
+
             GoodsReceiptLine(
                 receipt=receipt,
                 company=actor.company,
@@ -1058,6 +1085,7 @@ def create_goods_receipt(
                 po_line=po_line,
                 item=po_line.item,
                 description=po_line.description,
+                warehouse=line_warehouse,
                 qty_received=qty,
                 unit_cost=po_line.unit_price,
             ).save()
@@ -1126,12 +1154,13 @@ def post_goods_receipt(actor: ActorContext, receipt_id: int) -> CommandResult:
             po_line.qty_received += gr_line.qty_received
             po_line.save(update_fields=["qty_received"])
 
-            # Collect inventory items for stock receipt
+            # Collect inventory items for stock receipt. Phase 2: line-level
+            # warehouse override; fall back to the GR header warehouse.
             if gr_line.item and gr_line.item.is_inventory_item:
                 inventory_lines.append(
                     {
                         "item": gr_line.item,
-                        "warehouse": receipt.warehouse,
+                        "warehouse": gr_line.warehouse or receipt.warehouse,
                         "qty": gr_line.qty_received,
                         "unit_cost": gr_line.unit_cost,
                         "source_line_id": str(gr_line.public_id),

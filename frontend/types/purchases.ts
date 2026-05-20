@@ -41,6 +41,7 @@ export interface PurchaseBillLine {
 
 export interface PurchaseBillLineInput {
   item_id?: number | null;
+  warehouse_id?: number | null;
   description: string;
   quantity: string;
   unit_price: string;

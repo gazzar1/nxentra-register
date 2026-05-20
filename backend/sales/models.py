@@ -721,6 +721,19 @@ class SalesInvoiceLine(ProjectionWriteGuard):
         help_text="Optional item reference (auto-fills defaults)",
     )
 
+    # Per-line warehouse override (Phase 2). When null, post_sales_invoice
+    # falls back to the company's is_default=True warehouse. Allows mixed-
+    # warehouse invoices (e.g. one line ships from Main, another from
+    # SHOPIFY) without splitting into multiple invoices.
+    warehouse = models.ForeignKey(
+        "inventory.Warehouse",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="+",
+        help_text="Warehouse this line ships from (defaults to company default)",
+    )
+
     description = models.CharField(max_length=500)
     description_ar = models.CharField(max_length=500, blank=True, default="")
 

@@ -25,15 +25,18 @@ import {
 import { useCustomers } from "@/queries/useAccounts";
 import { useItems, useTaxCodes, usePostingProfiles, useCreateSalesInvoice } from "@/queries/useSales";
 import { useAccounts } from "@/queries/useAccounts";
+import { useWarehouses, useStockAvailability } from "@/queries/useInventory";
 import { useCompanySettings } from "@/queries/useCompanySettings";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/components/ui/toaster";
 import type { SalesInvoiceCreatePayload, SalesInvoiceLineInput } from "@/types/sales";
 import { exchangeRatesService } from "@/services/exchange-rates.service";
+import { LineAvailabilityHint } from "@/components/inventory/LineAvailabilityHint";
 import { cn } from "@/lib/cn";
 
 interface InvoiceLineFormData {
   item_id: string;
+  warehouse_id: string;
   description: string;
   quantity: string;
   unit_price: string;
@@ -70,6 +73,12 @@ export default function NewSalesInvoicePage() {
     decimal_places: company.decimal_places,
   } : undefined;
   const createInvoice = useCreateSalesInvoice();
+  // Phase 2: per-line warehouse picker + availability hint. Active warehouses
+  // populate the dropdown; default warehouse pre-selected on new lines.
+  const { data: warehousesRes } = useWarehouses({ is_active: true });
+  const warehouses = warehousesRes?.results || [];
+  const defaultWarehouseId =
+    warehouses.find((w: any) => w.is_default)?.id ?? warehouses[0]?.id ?? null;
 
   const revenueAccounts = accounts?.filter(
     (a) => a.account_type === "REVENUE" && a.is_postable && !a.is_header
@@ -94,6 +103,7 @@ export default function NewSalesInvoicePage() {
       lines: [
         {
           item_id: "",
+          warehouse_id: "",
           description: "",
           quantity: "1",
           unit_price: "0",
@@ -227,6 +237,7 @@ export default function NewSalesInvoicePage() {
         notes: data.notes,
         lines: data.lines.map((line) => ({
           item_id: line.item_id ? parseInt(line.item_id) : null,
+          warehouse_id: line.warehouse_id ? parseInt(line.warehouse_id) : null,
           description: line.description,
           quantity: line.quantity,
           unit_price: line.unit_price,
@@ -422,6 +433,7 @@ export default function NewSalesInvoicePage() {
               size="sm"
               onClick={() =>
                 append({
+                  warehouse_id: defaultWarehouseId ? String(defaultWarehouseId) : "",
                   item_id: "",
                   description: "",
                   quantity: "1",
@@ -441,10 +453,11 @@ export default function NewSalesInvoicePage() {
               <table className="w-full">
                 <thead>
                   <tr className="border-b text-sm text-muted-foreground">
-                    <th className="text-start py-2 px-2 w-[140px]">Item</th>
+                    <th className="text-start py-2 px-2 w-[180px]">Item</th>
+                    <th className="text-start py-2 px-2 w-[140px]">Warehouse</th>
                     <th className="text-start py-2 px-2">Description</th>
-                    <th className="text-start py-2 px-2 w-[100px]">Account</th>
-                    <th className="text-end py-2 px-2 w-[80px]">Qty</th>
+                    <th className="text-start py-2 px-2 w-[180px]">Account</th>
+                    <th className="text-end py-2 px-2 w-[100px]">Qty</th>
                     <th className="text-end py-2 px-2 w-[100px]">Unit Price</th>
                     <th className="text-end py-2 px-2 w-[80px]">Discount</th>
                     <th className="text-start py-2 px-2 w-[100px]">Tax</th>
@@ -466,6 +479,12 @@ export default function NewSalesInvoicePage() {
                                 onValueChange={(val) => {
                                   f.onChange(val);
                                   handleItemChange(index, val);
+                                  // Auto-pick the company default warehouse on
+                                  // first item selection if user hasn't picked
+                                  // one yet — saves a click in the common case.
+                                  if (!watchLines[index]?.warehouse_id && defaultWarehouseId) {
+                                    setValue(`lines.${index}.warehouse_id`, String(defaultWarehouseId));
+                                  }
                                 }}
                                 value={f.value}
                               >
@@ -475,7 +494,27 @@ export default function NewSalesInvoicePage() {
                                 <SelectContent>
                                   {items?.map((item) => (
                                     <SelectItem key={item.id} value={item.id.toString()}>
-                                      {item.code}
+                                      {item.code} - {item.name}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            )}
+                          />
+                        </td>
+                        <td className="py-2 px-2">
+                          <Controller
+                            name={`lines.${index}.warehouse_id`}
+                            control={control}
+                            render={({ field: f }) => (
+                              <Select onValueChange={f.onChange} value={f.value}>
+                                <SelectTrigger className="h-8 text-xs">
+                                  <SelectValue placeholder="Warehouse" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {warehouses.map((w: any) => (
+                                    <SelectItem key={w.id} value={w.id.toString()}>
+                                      {w.code} - {w.name}
                                     </SelectItem>
                                   ))}
                                 </SelectContent>
@@ -503,7 +542,7 @@ export default function NewSalesInvoicePage() {
                                 <SelectContent>
                                   {revenueAccounts?.map((acc) => (
                                     <SelectItem key={acc.id} value={acc.id.toString()}>
-                                      {acc.code}
+                                      {acc.code} - {acc.name}
                                     </SelectItem>
                                   ))}
                                 </SelectContent>
@@ -518,6 +557,13 @@ export default function NewSalesInvoicePage() {
                             step="0.0001"
                             min="0"
                             className="h-8 text-xs text-end"
+                          />
+                          <LineAvailabilityHint
+                            itemId={watchLines[index]?.item_id ? parseInt(watchLines[index].item_id) : null}
+                            warehouseId={
+                              watchLines[index]?.warehouse_id ? parseInt(watchLines[index].warehouse_id) : null
+                            }
+                            qty={parseFloat(watchLines[index]?.quantity || "0") || 0}
                           />
                         </td>
                         <td className="py-2 px-2">

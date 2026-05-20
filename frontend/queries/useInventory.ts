@@ -50,6 +50,29 @@ export function useWarehouses(filters?: { code?: string; name?: string; is_activ
   });
 }
 
+/**
+ * Fetch stock availability for an item at a specific warehouse. Powers the
+ * "Available: N" hint + inline warning on sales-invoice lines (Phase 2).
+ * Skipped when itemId or warehouseId is missing.
+ */
+export function useStockAvailability(
+  itemId: number | null | undefined,
+  warehouseId: number | null | undefined,
+  qty?: number,
+) {
+  return useQuery({
+    queryKey: inventoryKeys.availability(itemId ?? 0, { warehouseId, qty }),
+    queryFn: async () => {
+      const { data } = await inventoryService.availability.check(itemId as number, {
+        warehouse_id: warehouseId ?? undefined,
+        qty: qty ?? 0,
+      });
+      return data;
+    },
+    enabled: !!itemId && !!warehouseId,
+  });
+}
+
 export function useWarehouse(id: number) {
   return useQuery({
     queryKey: inventoryKeys.warehouseDetail(id),

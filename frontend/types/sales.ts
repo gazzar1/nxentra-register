@@ -201,6 +201,7 @@ export interface SalesInvoiceLine {
 
 export interface SalesInvoiceLineInput {
   item_id?: number | null;
+  warehouse_id?: number | null;
   description: string;
   quantity: string;
   unit_price: string;

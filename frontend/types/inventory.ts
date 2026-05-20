@@ -88,9 +88,12 @@ export interface StockAvailability {
   item_code: string;
   warehouse_public_id: string;
   warehouse_code: string;
+  warehouse_name?: string;
   qty_on_hand: string;
   qty_requested: string;
   is_available: boolean;
+  allow_negative_stock?: boolean;
+  company_allow_negative_inventory?: boolean;
   error: string | null;
 }
 

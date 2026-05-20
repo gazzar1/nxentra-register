@@ -29,6 +29,8 @@ class PurchaseBillLineSerializer(serializers.ModelSerializer):
     item_code = serializers.CharField(source="item.code", read_only=True, default=None)
     account_code = serializers.CharField(source="account.code", read_only=True)
     tax_code_code = serializers.CharField(source="tax_code.code", read_only=True, default=None)
+    warehouse_code = serializers.CharField(source="warehouse.code", read_only=True, default=None)
+    warehouse_name = serializers.CharField(source="warehouse.name", read_only=True, default=None)
 
     class Meta:
         model = PurchaseBillLine
@@ -38,6 +40,9 @@ class PurchaseBillLineSerializer(serializers.ModelSerializer):
             "line_number",
             "item",
             "item_code",
+            "warehouse",
+            "warehouse_code",
+            "warehouse_name",
             "description",
             "description_ar",
             "quantity",
@@ -146,6 +151,7 @@ class PurchaseBillLineInputSerializer(serializers.Serializer):
     discount_amount = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, default=Decimal("0"))
     tax_code_id = serializers.IntegerField(required=False, allow_null=True)
     item_id = serializers.IntegerField(required=False, allow_null=True)
+    warehouse_id = serializers.IntegerField(required=False, allow_null=True)
     dimension_value_ids = serializers.ListField(child=serializers.IntegerField(), required=False, default=list)
 
 
@@ -324,6 +330,8 @@ class PurchaseOrderCreateSerializer(serializers.Serializer):
 
 class GoodsReceiptLineSerializer(serializers.ModelSerializer):
     po_line_number = serializers.IntegerField(source="po_line.line_number", read_only=True)
+    warehouse_code = serializers.CharField(source="warehouse.code", read_only=True, default=None)
+    warehouse_name = serializers.CharField(source="warehouse.name", read_only=True, default=None)
 
     class Meta:
         model = GoodsReceiptLine
@@ -334,6 +342,9 @@ class GoodsReceiptLineSerializer(serializers.ModelSerializer):
             "po_line",
             "po_line_number",
             "item",
+            "warehouse",
+            "warehouse_code",
+            "warehouse_name",
             "description",
             "qty_received",
             "unit_cost",

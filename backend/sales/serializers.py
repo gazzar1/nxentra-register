@@ -306,6 +306,8 @@ class SalesInvoiceLineSerializer(serializers.ModelSerializer):
     item_code = serializers.CharField(source="item.code", read_only=True, default=None)
     account_code = serializers.CharField(source="account.code", read_only=True)
     tax_code_code = serializers.CharField(source="tax_code.code", read_only=True, default=None)
+    warehouse_code = serializers.CharField(source="warehouse.code", read_only=True, default=None)
+    warehouse_name = serializers.CharField(source="warehouse.name", read_only=True, default=None)
 
     class Meta:
         model = SalesInvoiceLine
@@ -315,6 +317,9 @@ class SalesInvoiceLineSerializer(serializers.ModelSerializer):
             "line_number",
             "item",
             "item_code",
+            "warehouse",
+            "warehouse_code",
+            "warehouse_name",
             "description",
             "description_ar",
             "quantity",
@@ -336,6 +341,8 @@ class SalesInvoiceLineSerializer(serializers.ModelSerializer):
             "item_code",
             "account_code",
             "tax_code_code",
+            "warehouse_code",
+            "warehouse_name",
             "gross_amount",
             "net_amount",
             "tax_amount",
@@ -424,6 +431,7 @@ class SalesInvoiceLineInputSerializer(serializers.Serializer):
     discount_amount = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, default=Decimal("0"))
     tax_code_id = serializers.IntegerField(required=False, allow_null=True)
     item_id = serializers.IntegerField(required=False, allow_null=True)
+    warehouse_id = serializers.IntegerField(required=False, allow_null=True)
     dimension_value_ids = serializers.ListField(child=serializers.IntegerField(), required=False, default=list)
 
 

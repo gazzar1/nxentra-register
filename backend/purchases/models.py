@@ -259,6 +259,18 @@ class GoodsReceiptLine(ProjectionWriteGuard):
     item = models.ForeignKey(Item, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
     description = models.CharField(max_length=500)
 
+    # Per-line warehouse override (Phase 2). Null falls back to the GR
+    # header warehouse — preserves existing single-warehouse-per-receipt
+    # behavior unless the user explicitly splits lines across warehouses.
+    warehouse = models.ForeignKey(
+        "inventory.Warehouse",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="+",
+        help_text="Receive this line into this warehouse (defaults to GR header warehouse)",
+    )
+
     qty_received = models.DecimalField(max_digits=18, decimal_places=4)
     unit_cost = models.DecimalField(max_digits=18, decimal_places=2, help_text="Copied from PO line unit_price")
 
@@ -739,6 +751,19 @@ class PurchaseBillLine(ProjectionWriteGuard):
         blank=True,
         related_name="+",
         help_text="Optional item reference (auto-fills defaults)",
+    )
+
+    # Per-line warehouse override (Phase 2). For direct (non-PO) bills only:
+    # post_purchase_bill records stock to this warehouse when the line isn't
+    # linked to a po_line (A65 — PO-linked lines never re-receive at bill
+    # post). Null falls back to company default.
+    warehouse = models.ForeignKey(
+        "inventory.Warehouse",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="+",
+        help_text="Warehouse for stock receipt (direct bills only; defaults to company default)",
     )
 
     description = models.CharField(max_length=500)

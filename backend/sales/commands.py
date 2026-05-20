@@ -746,6 +746,18 @@ def create_sales_invoice(
                 return CommandResult.fail(f"Line {idx}: Item not found.")
             item = items[item_id]
 
+        # Phase 2: per-line warehouse override. Null = use company default
+        # at post time. Validated against the actor's company.
+        warehouse = None
+        warehouse_id = line.get("warehouse_id")
+        if warehouse_id:
+            from inventory.models import Warehouse
+
+            try:
+                warehouse = Warehouse.objects.get(company=actor.company, pk=warehouse_id)
+            except Warehouse.DoesNotExist:
+                return CommandResult.fail(f"Line {idx}: Warehouse not found.")
+
         # Validate quantity and unit price
         quantity = Decimal(str(line.get("quantity", "1")))
         unit_price = Decimal(str(line.get("unit_price", "0")))
@@ -766,6 +778,7 @@ def create_sales_invoice(
                 "line_number": idx,
                 "account": account,
                 "item": item,
+                "warehouse": warehouse,
                 "description": line.get("description", ""),
                 "description_ar": line.get("description_ar", ""),
                 "quantity": quantity,
@@ -828,6 +841,7 @@ def create_sales_invoice(
                 company=actor.company,
                 line_number=line_data["line_number"],
                 item=line_data.get("item"),
+                warehouse=line_data.get("warehouse"),
                 description=line_data["description"],
                 description_ar=line_data.get("description_ar", ""),
                 quantity=line_data["quantity"],
@@ -1042,6 +1056,17 @@ def update_sales_invoice(
                     return CommandResult.fail(f"Line {idx}: Item not found.")
                 item = items[item_id]
 
+            # Phase 2: per-line warehouse override.
+            warehouse = None
+            warehouse_id = line.get("warehouse_id")
+            if warehouse_id:
+                from inventory.models import Warehouse
+
+                try:
+                    warehouse = Warehouse.objects.get(company=actor.company, pk=warehouse_id)
+                except Warehouse.DoesNotExist:
+                    return CommandResult.fail(f"Line {idx}: Warehouse not found.")
+
             # Validate quantity and unit price
             quantity = Decimal(str(line.get("quantity", "1")))
             unit_price = Decimal(str(line.get("unit_price", "0")))
@@ -1062,6 +1087,7 @@ def update_sales_invoice(
                     "line_number": idx,
                     "account": account,
                     "item": item,
+                    "warehouse": warehouse,
                     "description": line.get("description", ""),
                     "description_ar": line.get("description_ar", ""),
                     "quantity": quantity,
@@ -1084,6 +1110,7 @@ def update_sales_invoice(
                     company=actor.company,
                     line_number=line_data["line_number"],
                     item=line_data.get("item"),
+                    warehouse=line_data.get("warehouse"),
                     description=line_data["description"],
                     description_ar=line_data.get("description_ar", ""),
                     quantity=line_data["quantity"],
@@ -1238,7 +1265,8 @@ def post_sales_invoice(
     for inv_line in invoice.lines.all():
         if not skip_cogs and inv_line.item and inv_line.item.is_inventory_item:
             item = inv_line.item
-            warehouse = default_warehouse  # TODO: Support line-level warehouse selection
+            # Phase 2: prefer line-level warehouse; fall back to company default
+            warehouse = inv_line.warehouse or default_warehouse
 
             if not warehouse:
                 return CommandResult.fail(

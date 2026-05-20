@@ -457,9 +457,14 @@ class StockAvailabilityViewSet(viewsets.ViewSet):
                 "item_code": item.code,
                 "warehouse_public_id": str(warehouse.public_id),
                 "warehouse_code": warehouse.code,
+                "warehouse_name": warehouse.name,
                 "qty_on_hand": str(qty_on_hand),
                 "qty_requested": str(qty_requested),
                 "is_available": is_available,
+                # Phase 2: surface the per-item flag so the frontend can decide
+                # whether to show a warning vs allow the input without complaint.
+                "allow_negative_stock": item.allow_negative_stock,
+                "company_allow_negative_inventory": company.allow_negative_inventory,
                 "error": error if not is_available else None,
             }
         )
