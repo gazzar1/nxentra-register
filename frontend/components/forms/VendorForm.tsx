@@ -15,6 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useAccounts } from "@/queries/useAccounts";
+import { usePostingProfiles } from "@/queries/useSales";
 import type { Vendor, VendorCreatePayload, VendorUpdatePayload } from "@/types/account";
 
 const vendorSchema = z.object({
@@ -26,6 +27,7 @@ const vendorSchema = z.object({
   address: z.string().max(500).optional(),
   address_ar: z.string().max(500).optional(),
   default_ap_account_id: z.number().nullable().optional(),
+  default_posting_profile_id: z.number().nullable().optional(),
   payment_terms_days: z.number().min(0).max(365).optional(),
   currency: z.string().length(3).optional(),
   tax_id: z.string().max(50).optional(),
@@ -57,6 +59,7 @@ export function VendorForm({
 }: VendorFormProps) {
   const { t } = useTranslation(["common", "accounting"]);
   const { data: accounts } = useAccounts();
+  const { data: postingProfiles } = usePostingProfiles({ profile_type: "VENDOR", usage: "MANUAL" });
   const formRef = useRef<HTMLFormElement>(null);
 
   // Filter to only show AP control accounts
@@ -75,6 +78,7 @@ export function VendorForm({
       address: initialData?.address || "",
       address_ar: initialData?.address_ar || "",
       default_ap_account_id: initialData?.default_ap_account || null,
+      default_posting_profile_id: initialData?.default_posting_profile || null,
       payment_terms_days: initialData?.payment_terms_days || 30,
       currency: initialData?.currency || "USD",
       tax_id: initialData?.tax_id || "",
@@ -98,6 +102,7 @@ export function VendorForm({
       address: data.address || undefined,
       address_ar: data.address_ar || undefined,
       default_ap_account_id: data.default_ap_account_id || undefined,
+      default_posting_profile_id: data.default_posting_profile_id || undefined,
       payment_terms_days: data.payment_terms_days,
       currency: data.currency || undefined,
       tax_id: data.tax_id || undefined,
@@ -187,7 +192,33 @@ export function VendorForm({
           <Input id="phone" {...form.register("phone")} placeholder="+1 234 567 8900" />
         </div>
 
-        {/* Default AP Account */}
+        {/* Default Posting Profile (A79) */}
+        <div className="space-y-2">
+          <Label htmlFor="default_posting_profile_id">Default Posting Profile</Label>
+          <Select
+            value={form.watch("default_posting_profile_id")?.toString() || "__none__"}
+            onValueChange={(value) =>
+              form.setValue("default_posting_profile_id", value === "__none__" ? null : parseInt(value))
+            }
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Select posting profile" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__none__">None (use company default)</SelectItem>
+              {postingProfiles?.map((profile) => (
+                <SelectItem key={profile.id} value={profile.id.toString()}>
+                  <span className="font-mono ltr-code">{profile.code}</span> - {profile.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            Auto-fills the posting profile when this vendor is picked on a new bill
+          </p>
+        </div>
+
+        {/* Default AP Account (legacy — phase 2 will deprecate) */}
         <div className="space-y-2">
           <Label htmlFor="default_ap_account_id">Default AP Account</Label>
           <Select

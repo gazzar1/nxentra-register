@@ -858,6 +858,12 @@ class CustomerSerializer(serializers.ModelSerializer):
 
     default_ar_account_code = serializers.CharField(source="default_ar_account.code", read_only=True, default=None)
     default_ar_account_name = serializers.CharField(source="default_ar_account.name", read_only=True, default=None)
+    default_posting_profile_code = serializers.CharField(
+        source="default_posting_profile.code", read_only=True, default=None
+    )
+    default_posting_profile_name = serializers.CharField(
+        source="default_posting_profile.name", read_only=True, default=None
+    )
 
     class Meta:
         model = Customer
@@ -871,6 +877,9 @@ class CustomerSerializer(serializers.ModelSerializer):
             "default_ar_account",
             "default_ar_account_code",
             "default_ar_account_name",
+            "default_posting_profile",
+            "default_posting_profile_code",
+            "default_posting_profile_name",
             "email",
             "phone",
             "address",
@@ -893,6 +902,8 @@ class CustomerSerializer(serializers.ModelSerializer):
             "is_active",
             "default_ar_account_code",
             "default_ar_account_name",
+            "default_posting_profile_code",
+            "default_posting_profile_name",
             "created_at",
             "updated_at",
         ]
@@ -908,6 +919,11 @@ class CustomerCreateSerializer(serializers.Serializer):
         required=False,
         allow_null=True,
         help_text="Default AR control account ID",
+    )
+    default_posting_profile_id = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        help_text="Default posting profile ID (CUSTOMER + MANUAL)",
     )
     email = serializers.EmailField(required=False, allow_blank=True, default="")
     phone = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
@@ -928,6 +944,7 @@ class CustomerUpdateSerializer(serializers.Serializer):
     name_ar = serializers.CharField(max_length=255, required=False, allow_blank=True)
     code = serializers.CharField(max_length=20, required=False)
     default_ar_account_id = serializers.IntegerField(required=False, allow_null=True)
+    default_posting_profile_id = serializers.IntegerField(required=False, allow_null=True)
     email = serializers.EmailField(required=False, allow_blank=True)
     phone = serializers.CharField(max_length=50, required=False, allow_blank=True)
     address = serializers.CharField(required=False, allow_blank=True)
@@ -955,6 +972,12 @@ class VendorSerializer(serializers.ModelSerializer):
 
     default_ap_account_code = serializers.CharField(source="default_ap_account.code", read_only=True, default=None)
     default_ap_account_name = serializers.CharField(source="default_ap_account.name", read_only=True, default=None)
+    default_posting_profile_code = serializers.CharField(
+        source="default_posting_profile.code", read_only=True, default=None
+    )
+    default_posting_profile_name = serializers.CharField(
+        source="default_posting_profile.name", read_only=True, default=None
+    )
 
     class Meta:
         model = Vendor
@@ -968,6 +991,9 @@ class VendorSerializer(serializers.ModelSerializer):
             "default_ap_account",
             "default_ap_account_code",
             "default_ap_account_name",
+            "default_posting_profile",
+            "default_posting_profile_code",
+            "default_posting_profile_name",
             "email",
             "phone",
             "address",
@@ -993,6 +1019,8 @@ class VendorSerializer(serializers.ModelSerializer):
             "is_active",
             "default_ap_account_code",
             "default_ap_account_name",
+            "default_posting_profile_code",
+            "default_posting_profile_name",
             "created_at",
             "updated_at",
         ]
@@ -1008,6 +1036,11 @@ class VendorCreateSerializer(serializers.Serializer):
         required=False,
         allow_null=True,
         help_text="Default AP control account ID",
+    )
+    default_posting_profile_id = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        help_text="Default posting profile ID (VENDOR + MANUAL)",
     )
     email = serializers.EmailField(required=False, allow_blank=True, default="")
     phone = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
@@ -1031,6 +1064,7 @@ class VendorUpdateSerializer(serializers.Serializer):
     name_ar = serializers.CharField(max_length=255, required=False, allow_blank=True)
     code = serializers.CharField(max_length=20, required=False)
     default_ap_account_id = serializers.IntegerField(required=False, allow_null=True)
+    default_posting_profile_id = serializers.IntegerField(required=False, allow_null=True)
     email = serializers.EmailField(required=False, allow_blank=True)
     phone = serializers.CharField(max_length=50, required=False, allow_blank=True)
     address = serializers.CharField(required=False, allow_blank=True)

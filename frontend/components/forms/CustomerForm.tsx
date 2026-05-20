@@ -15,6 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useAccounts } from "@/queries/useAccounts";
+import { usePostingProfiles } from "@/queries/useSales";
 import type { Customer, CustomerCreatePayload, CustomerUpdatePayload } from "@/types/account";
 
 const customerSchema = z.object({
@@ -26,6 +27,7 @@ const customerSchema = z.object({
   address: z.string().max(500).optional(),
   address_ar: z.string().max(500).optional(),
   default_ar_account_id: z.number().nullable().optional(),
+  default_posting_profile_id: z.number().nullable().optional(),
   credit_limit: z.string().optional(),
   payment_terms_days: z.number().min(0).max(365).optional(),
   currency: z.string().length(3).optional(),
@@ -54,6 +56,7 @@ export function CustomerForm({
 }: CustomerFormProps) {
   const { t } = useTranslation(["common", "accounting"]);
   const { data: accounts } = useAccounts();
+  const { data: postingProfiles } = usePostingProfiles({ profile_type: "CUSTOMER", usage: "MANUAL" });
   const formRef = useRef<HTMLFormElement>(null);
 
   // Filter to only show AR control accounts
@@ -72,6 +75,7 @@ export function CustomerForm({
       address: initialData?.address || "",
       address_ar: initialData?.address_ar || "",
       default_ar_account_id: initialData?.default_ar_account || null,
+      default_posting_profile_id: initialData?.default_posting_profile || null,
       credit_limit: initialData?.credit_limit || "",
       payment_terms_days: initialData?.payment_terms_days || 30,
       currency: initialData?.currency || "USD",
@@ -92,6 +96,7 @@ export function CustomerForm({
       address: data.address || undefined,
       address_ar: data.address_ar || undefined,
       default_ar_account_id: data.default_ar_account_id || undefined,
+      default_posting_profile_id: data.default_posting_profile_id || undefined,
       credit_limit: data.credit_limit || undefined,
       payment_terms_days: data.payment_terms_days,
       currency: data.currency || undefined,
@@ -178,7 +183,33 @@ export function CustomerForm({
           <Input id="phone" {...form.register("phone")} placeholder="+1 234 567 8900" />
         </div>
 
-        {/* Default AR Account */}
+        {/* Default Posting Profile (A79) — primary routing primitive */}
+        <div className="space-y-2">
+          <Label htmlFor="default_posting_profile_id">Default Posting Profile</Label>
+          <Select
+            value={form.watch("default_posting_profile_id")?.toString() || "__none__"}
+            onValueChange={(value) =>
+              form.setValue("default_posting_profile_id", value === "__none__" ? null : parseInt(value))
+            }
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Select posting profile" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__none__">None (use company default)</SelectItem>
+              {postingProfiles?.map((profile) => (
+                <SelectItem key={profile.id} value={profile.id.toString()}>
+                  <span className="font-mono ltr-code">{profile.code}</span> - {profile.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            Auto-fills the posting profile when this customer is picked on a new invoice
+          </p>
+        </div>
+
+        {/* Default AR Account (legacy — phase 2 will deprecate) */}
         <div className="space-y-2">
           <Label htmlFor="default_ar_account_id">Default AR Account</Label>
           <Select

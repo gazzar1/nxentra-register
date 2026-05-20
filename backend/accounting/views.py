@@ -1188,9 +1188,19 @@ class CustomerListCreateView(APIView):
                     default_ar_account = get_object_or_404(
                         Account, company=actor.company, pk=data.pop("default_ar_account_id")
                     )
+                default_posting_profile = None
+                if data.get("default_posting_profile_id"):
+                    from sales.models import PostingProfile
+
+                    default_posting_profile = get_object_or_404(
+                        PostingProfile,
+                        company=actor.company,
+                        pk=data.pop("default_posting_profile_id"),
+                    )
                 customer = Customer(
                     company=actor.company,
                     default_ar_account=default_ar_account,
+                    default_posting_profile=default_posting_profile,
                     **data,
                 )
                 customer.save(_projection_write=True)
@@ -1242,6 +1252,17 @@ class CustomerDetailView(APIView):
                     customer.default_ar_account = get_object_or_404(Account, company=actor.company, pk=ar_id)
                 else:
                     customer.default_ar_account = None
+
+            if "default_posting_profile_id" in data:
+                profile_id = data.pop("default_posting_profile_id")
+                if profile_id:
+                    from sales.models import PostingProfile
+
+                    customer.default_posting_profile = get_object_or_404(
+                        PostingProfile, company=actor.company, pk=profile_id
+                    )
+                else:
+                    customer.default_posting_profile = None
 
             for key, value in data.items():
                 setattr(customer, key, value)
@@ -1329,9 +1350,19 @@ class VendorListCreateView(APIView):
                     default_ap_account = get_object_or_404(
                         Account, company=actor.company, pk=data.pop("default_ap_account_id")
                     )
+                default_posting_profile = None
+                if data.get("default_posting_profile_id"):
+                    from sales.models import PostingProfile
+
+                    default_posting_profile = get_object_or_404(
+                        PostingProfile,
+                        company=actor.company,
+                        pk=data.pop("default_posting_profile_id"),
+                    )
                 vendor = Vendor(
                     company=actor.company,
                     default_ap_account=default_ap_account,
+                    default_posting_profile=default_posting_profile,
                     **data,
                 )
                 vendor.save(_projection_write=True)
@@ -1383,6 +1414,17 @@ class VendorDetailView(APIView):
                     vendor.default_ap_account = get_object_or_404(Account, company=actor.company, pk=ap_id)
                 else:
                     vendor.default_ap_account = None
+
+            if "default_posting_profile_id" in data:
+                profile_id = data.pop("default_posting_profile_id")
+                if profile_id:
+                    from sales.models import PostingProfile
+
+                    vendor.default_posting_profile = get_object_or_404(
+                        PostingProfile, company=actor.company, pk=profile_id
+                    )
+                else:
+                    vendor.default_posting_profile = None
 
             for key, value in data.items():
                 setattr(vendor, key, value)

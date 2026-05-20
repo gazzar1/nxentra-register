@@ -141,7 +141,7 @@ export default function NewPurchaseBillPage() {
     }).catch(() => {});
   }, [functionalCurrency]);
 
-  // Auto-set currency from vendor
+  // Auto-set currency + posting profile from vendor (A79).
   useEffect(() => {
     if (selectedVendorId && vendors) {
       const vendor = vendors.find((v) => String(v.id) === selectedVendorId);
@@ -150,8 +150,19 @@ export default function NewPurchaseBillPage() {
       } else {
         setBillCurrency(functionalCurrency);
       }
+      if (vendor?.default_posting_profile) {
+        setValue("posting_profile_id", String(vendor.default_posting_profile));
+      }
     }
-  }, [selectedVendorId, vendors, functionalCurrency]);
+  }, [selectedVendorId, vendors, functionalCurrency, setValue]);
+
+  // A79: if the company has only one MANUAL VENDOR profile, auto-fill + hide.
+  useEffect(() => {
+    if (postingProfiles?.length === 1) {
+      setValue("posting_profile_id", postingProfiles[0].id.toString());
+    }
+  }, [postingProfiles, setValue]);
+  const singleProfileMode = postingProfiles?.length === 1;
 
   // Auto-lookup exchange rate when currency or date changes
   useEffect(() => {
@@ -437,31 +448,33 @@ export default function NewPurchaseBillPage() {
               />
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="posting_profile_id">Posting Profile *</Label>
-              <Controller
-                name="posting_profile_id"
-                control={control}
-                rules={{ required: "Posting profile is required" }}
-                render={({ field }) => (
-                  <Select onValueChange={field.onChange} value={field.value}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select profile" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {postingProfiles?.map((profile) => (
-                        <SelectItem key={profile.id} value={profile.id.toString()}>
-                          {profile.code} - {profile.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+            {!singleProfileMode && (
+              <div className="space-y-2">
+                <Label htmlFor="posting_profile_id">Posting Profile *</Label>
+                <Controller
+                  name="posting_profile_id"
+                  control={control}
+                  rules={{ required: "Posting profile is required" }}
+                  render={({ field }) => (
+                    <Select onValueChange={field.onChange} value={field.value}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select profile" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {postingProfiles?.map((profile) => (
+                          <SelectItem key={profile.id} value={profile.id.toString()}>
+                            {profile.code} - {profile.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
+                {errors.posting_profile_id && (
+                  <p className="text-sm text-destructive">{errors.posting_profile_id.message}</p>
                 )}
-              />
-              {errors.posting_profile_id && (
-                <p className="text-sm text-destructive">{errors.posting_profile_id.message}</p>
-              )}
-            </div>
+              </div>
+            )}
 
             <div className="space-y-2">
               <Label>Currency</Label>

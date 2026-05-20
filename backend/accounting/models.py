@@ -877,6 +877,24 @@ class Customer(AccountingReadModel):
         help_text="Default AR control account. Must have role=RECEIVABLE_CONTROL",
     )
 
+    # A79: default PostingProfile. When set, the invoice form auto-fills the
+    # profile on customer pick so the user stops re-picking the same dropdown.
+    # Richer than default_ar_account because the profile bundles control
+    # account + (future) payment terms / default revenue account / default
+    # tax code. default_ar_account stays for backwards compatibility and
+    # for places that read the raw account; phase 2 will deprecate it.
+    default_posting_profile = models.ForeignKey(
+        "sales.PostingProfile",
+        on_delete=models.SET_NULL,
+        related_name="default_for_customers",
+        null=True,
+        blank=True,
+        help_text=(
+            "Default posting profile auto-filled on new invoices for this "
+            "customer. Should be a CUSTOMER + MANUAL profile."
+        ),
+    )
+
     # Contact information
     email = models.EmailField(blank=True, default="")
     phone = models.CharField(max_length=50, blank=True, default="")
@@ -1056,6 +1074,20 @@ class Vendor(AccountingReadModel):
         null=True,
         blank=True,
         help_text="Default AP control account. Must have role=PAYABLE_CONTROL",
+    )
+
+    # A79: default PostingProfile (VENDOR + MANUAL). Same purpose as
+    # Customer.default_posting_profile — auto-fills the profile when the user
+    # picks this vendor on a new bill / PO.
+    default_posting_profile = models.ForeignKey(
+        "sales.PostingProfile",
+        on_delete=models.SET_NULL,
+        related_name="default_for_vendors",
+        null=True,
+        blank=True,
+        help_text=(
+            "Default posting profile auto-filled on new bills/POs for this vendor. Should be a VENDOR + MANUAL profile."
+        ),
     )
 
     # Contact information

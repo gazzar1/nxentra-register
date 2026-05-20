@@ -270,6 +270,9 @@ export interface Customer {
   default_ar_account: number | null;
   default_ar_account_code?: string;
   default_ar_account_name?: string;
+  default_posting_profile: number | null;
+  default_posting_profile_code?: string;
+  default_posting_profile_name?: string;
   email: string;
   phone: string;
   address: string;
@@ -291,6 +294,7 @@ export interface CustomerCreatePayload {
   name: string;
   name_ar?: string;
   default_ar_account_id?: number | null;
+  default_posting_profile_id?: number | null;
   email?: string;
   phone?: string;
   address?: string;
@@ -308,6 +312,7 @@ export interface CustomerUpdatePayload {
   name?: string;
   name_ar?: string;
   default_ar_account_id?: number | null;
+  default_posting_profile_id?: number | null;
   email?: string;
   phone?: string;
   address?: string;
@@ -337,6 +342,9 @@ export interface Vendor {
   default_ap_account: number | null;
   default_ap_account_code?: string;
   default_ap_account_name?: string;
+  default_posting_profile: number | null;
+  default_posting_profile_code?: string;
+  default_posting_profile_name?: string;
   email: string;
   phone: string;
   address: string;
@@ -361,6 +369,7 @@ export interface VendorCreatePayload {
   name: string;
   name_ar?: string;
   default_ap_account_id?: number | null;
+  default_posting_profile_id?: number | null;
   email?: string;
   phone?: string;
   address?: string;
@@ -381,6 +390,7 @@ export interface VendorUpdatePayload {
   name?: string;
   name_ar?: string;
   default_ap_account_id?: number | null;
+  default_posting_profile_id?: number | null;
   email?: string;
   phone?: string;
   address?: string;

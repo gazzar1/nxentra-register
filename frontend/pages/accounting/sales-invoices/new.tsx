@@ -143,15 +143,29 @@ export default function NewSalesInvoicePage() {
     });
   }, [functionalCurrency]);
 
-  // Auto-populate currency from customer when customer changes
+  // Auto-populate currency + posting profile from customer when picked.
+  // A79: posting profile inherits from Customer.default_posting_profile so the
+  // user stops re-picking the same dropdown on every invoice.
   useEffect(() => {
     if (watchCustomerId) {
       const customer = customers?.find((c) => c.id.toString() === watchCustomerId);
       if (customer?.currency) {
         setValue("currency", customer.currency);
       }
+      if (customer?.default_posting_profile) {
+        setValue("posting_profile_id", customer.default_posting_profile.toString());
+      }
     }
   }, [watchCustomerId, customers, setValue]);
+
+  // A79: if the company has only one MANUAL profile, auto-fill and hide the
+  // dropdown — the user has no choice to make.
+  useEffect(() => {
+    if (postingProfiles?.length === 1) {
+      setValue("posting_profile_id", postingProfiles[0].id.toString());
+    }
+  }, [postingProfiles, setValue]);
+  const singleProfileMode = postingProfiles?.length === 1;
 
   // Auto-lookup exchange rate when currency or date changes
   useEffect(() => {
@@ -346,31 +360,33 @@ export default function NewSalesInvoicePage() {
               )}
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="posting_profile_id">Posting Profile *</Label>
-              <Controller
-                name="posting_profile_id"
-                control={control}
-                rules={{ required: "Posting profile is required" }}
-                render={({ field }) => (
-                  <Select onValueChange={field.onChange} value={field.value}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select profile" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {postingProfiles?.map((profile) => (
-                        <SelectItem key={profile.id} value={profile.id.toString()}>
-                          {profile.code} - {profile.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+            {!singleProfileMode && (
+              <div className="space-y-2">
+                <Label htmlFor="posting_profile_id">Posting Profile *</Label>
+                <Controller
+                  name="posting_profile_id"
+                  control={control}
+                  rules={{ required: "Posting profile is required" }}
+                  render={({ field }) => (
+                    <Select onValueChange={field.onChange} value={field.value}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select profile" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {postingProfiles?.map((profile) => (
+                          <SelectItem key={profile.id} value={profile.id.toString()}>
+                            {profile.code} - {profile.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
+                {errors.posting_profile_id && (
+                  <p className="text-sm text-destructive">{errors.posting_profile_id.message}</p>
                 )}
-              />
-              {errors.posting_profile_id && (
-                <p className="text-sm text-destructive">{errors.posting_profile_id.message}</p>
-              )}
-            </div>
+              </div>
+            )}
 
             <div className="space-y-2">
               <Label htmlFor="currency">Currency</Label>
