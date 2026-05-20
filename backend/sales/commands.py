@@ -1259,6 +1259,19 @@ def post_sales_invoice(
     if not invoice.lines.exists():
         return CommandResult.fail("Invoice must have at least one line.")
 
+    # A78: refuse to post a manual invoice that's pointing at a GATEWAY
+    # profile. The control account on a gateway profile has a REQUIRED
+    # SETTLEMENT_PROVIDER dimension that only the platform path can
+    # supply; without it the JE post fails with a vague projection error.
+    # control_line_analysis_tags being non-None means a connector is
+    # driving the post and knows what it's doing (e.g. Shopify retry).
+    if control_line_analysis_tags is None and invoice.posting_profile.usage == PostingProfile.Usage.GATEWAY:
+        return CommandResult.fail(
+            f"Posting profile '{invoice.posting_profile.code}' is reserved for "
+            f"platform integrations and can't be posted manually. Edit the invoice "
+            f"and switch to a Manual posting profile, or delete this draft."
+        )
+
     # Validate all lines have OUTPUT tax codes and inventory items have required accounts
     for line in invoice.lines.all():
         if line.tax_code and line.tax_code.direction != TaxCode.TaxDirection.OUTPUT:
@@ -1855,6 +1868,15 @@ def post_credit_note(
 
     if not cn.lines.exists():
         return CommandResult.fail("Credit note must have at least one line.")
+
+    # A78: same guard as post_sales_invoice — manual posts can't satisfy
+    # the SETTLEMENT_PROVIDER dimension on gateway clearing accounts.
+    if control_line_analysis_tags is None and cn.posting_profile.usage == PostingProfile.Usage.GATEWAY:
+        return CommandResult.fail(
+            f"Posting profile '{cn.posting_profile.code}' is reserved for platform "
+            f"integrations and can't be posted manually. Refunds must be issued "
+            f"through the platform that created the original invoice."
+        )
 
     # Build journal entry lines (REVERSED from invoice posting)
     je_lines = []

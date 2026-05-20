@@ -367,6 +367,15 @@ def post_purchase_bill(actor: ActorContext, bill_id: int) -> CommandResult:
     if bill.status != PurchaseBill.Status.DRAFT:
         return CommandResult.fail("Only DRAFT bills can be posted.")
 
+    # A78: refuse to post bills routed through gateway profiles. There's no
+    # platform-purchase path yet, so any GATEWAY profile here is stale data.
+    if bill.posting_profile.usage == PostingProfile.Usage.GATEWAY:
+        return CommandResult.fail(
+            f"Posting profile '{bill.posting_profile.code}' is reserved for platform "
+            f"integrations and can't be posted manually. Edit the bill and switch "
+            f"to a Manual posting profile, or delete this draft."
+        )
+
     if not bill.lines.exists():
         return CommandResult.fail("Bill must have at least one line.")
 
@@ -1671,6 +1680,13 @@ def post_purchase_credit_note(actor: ActorContext, credit_note_id: int) -> Comma
 
     if cn.status != PurchaseCreditNote.Status.DRAFT:
         return CommandResult.fail("Only DRAFT credit notes can be posted.")
+
+    # A78: same guard as post_purchase_bill.
+    if cn.posting_profile.usage == PostingProfile.Usage.GATEWAY:
+        return CommandResult.fail(
+            f"Posting profile '{cn.posting_profile.code}' is reserved for platform "
+            f"integrations and can't be posted manually."
+        )
 
     if not cn.lines.exists():
         return CommandResult.fail("Credit note must have at least one line.")
