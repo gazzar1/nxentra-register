@@ -1311,11 +1311,13 @@ def post_inventory_transfer(actor: ActorContext, transfer_id: int) -> CommandRes
         )
         line_cost_snapshots.append((tl.id, unit_cost))
 
-    # Issue from source (no JE — pass journal_entry=None)
+    # Issue from source (no JE — pass journal_entry=None). Both legs use the
+    # transfer's public_id as source_id; the OUT/IN legs are distinguished by
+    # source_type. (source_id is a UUIDField — no room for a suffix.)
     issue_result = record_stock_issue(
         actor=actor,
         source_type=StockLedgerEntry.SourceType.TRANSFER_OUT,
-        source_id=str(transfer.public_id) + ":out",
+        source_id=str(transfer.public_id),
         lines=issue_lines,
         journal_entry=None,
     )
@@ -1326,7 +1328,7 @@ def post_inventory_transfer(actor: ActorContext, transfer_id: int) -> CommandRes
     receipt_result = record_stock_receipt(
         actor=actor,
         source_type=StockLedgerEntry.SourceType.TRANSFER_IN,
-        source_id=str(transfer.public_id) + ":in",
+        source_id=str(transfer.public_id),
         lines=receive_lines,
         journal_entry=None,
     )
@@ -1391,7 +1393,7 @@ def void_inventory_transfer(actor: ActorContext, transfer_id: int) -> CommandRes
     issue_result = record_stock_issue(
         actor=actor,
         source_type=StockLedgerEntry.SourceType.TRANSFER_OUT,
-        source_id=str(transfer.public_id) + ":void:out",
+        source_id=str(transfer.public_id),
         lines=issue_lines,
         journal_entry=None,
     )
@@ -1401,7 +1403,7 @@ def void_inventory_transfer(actor: ActorContext, transfer_id: int) -> CommandRes
     receipt_result = record_stock_receipt(
         actor=actor,
         source_type=StockLedgerEntry.SourceType.TRANSFER_IN,
-        source_id=str(transfer.public_id) + ":void:in",
+        source_id=str(transfer.public_id),
         lines=receive_lines,
         journal_entry=None,
     )
