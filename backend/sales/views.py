@@ -494,6 +494,34 @@ class SalesInvoiceDetailView(APIView):
 
         return Response(SalesInvoiceSerializer(invoice).data)
 
+    def delete(self, request, pk):
+        # A78: hard-delete a DRAFT invoice. POSTED invoices must go through
+        # void (which creates a reversing JE) — direct delete would leave
+        # accounting state inconsistent. No-op events: a draft invoice has
+        # no JE / stock movement, so dropping the rows is safe.
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        try:
+            invoice = SalesInvoice.objects.get(company=actor.company, pk=pk)
+        except SalesInvoice.DoesNotExist:
+            return Response({"detail": "Invoice not found."}, status=404)
+
+        if invoice.status != SalesInvoice.Status.DRAFT:
+            return Response(
+                {"detail": "Only DRAFT invoices can be deleted. Use Void to reverse a posted invoice."},
+                status=400,
+            )
+
+        from projections.write_barrier import command_writes_allowed
+
+        with command_writes_allowed():
+            invoice.lines.all().delete()
+            invoice.delete()
+
+        return Response(status=204)
+
 
 class SalesInvoicePostView(APIView):
     """Post a sales invoice."""

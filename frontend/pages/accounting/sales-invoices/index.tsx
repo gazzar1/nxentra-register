@@ -77,8 +77,13 @@ export default function SalesInvoicesPage() {
     try {
       await deleteInvoice.mutateAsync(deleteDialog.invoice.id);
       toast({ title: "Invoice deleted", description: `Invoice ${deleteDialog.invoice.invoice_number} has been deleted.` });
-    } catch (error) {
-      toast({ title: "Error", description: "Failed to delete invoice.", variant: "destructive" });
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description:
+          error?.response?.data?.detail || error?.response?.data?.error || "Failed to delete invoice.",
+        variant: "destructive",
+      });
     } finally {
       setDeleteDialog({ open: false, invoice: null });
     }
@@ -90,7 +95,12 @@ export default function SalesInvoicesPage() {
       await postInvoice.mutateAsync(postDialog.invoice.id);
       toast({ title: "Invoice posted", description: `Invoice ${postDialog.invoice.invoice_number} has been posted to the general ledger.` });
     } catch (error: any) {
-      toast({ title: "Error", description: error?.response?.data?.error || "Failed to post invoice.", variant: "destructive" });
+      toast({
+        title: "Error",
+        description:
+          error?.response?.data?.detail || error?.response?.data?.error || "Failed to post invoice.",
+        variant: "destructive",
+      });
     } finally {
       setPostDialog({ open: false, invoice: null });
     }
@@ -102,7 +112,12 @@ export default function SalesInvoicesPage() {
       await voidInvoice.mutateAsync({ id: voidDialog.invoice.id });
       toast({ title: "Invoice voided", description: `Invoice ${voidDialog.invoice.invoice_number} has been voided with a reversing entry.` });
     } catch (error: any) {
-      toast({ title: "Error", description: error?.response?.data?.error || "Failed to void invoice.", variant: "destructive" });
+      toast({
+        title: "Error",
+        description:
+          error?.response?.data?.detail || error?.response?.data?.error || "Failed to void invoice.",
+        variant: "destructive",
+      });
     } finally {
       setVoidDialog({ open: false, invoice: null });
     }
