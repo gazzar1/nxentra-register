@@ -7,7 +7,7 @@ from rest_framework import serializers
 
 from projections.models import InventoryBalance
 
-from .models import StockLedgerEntry, Warehouse
+from .models import InventoryTransfer, InventoryTransferLine, StockLedgerEntry, Warehouse
 
 
 class WarehouseSerializer(serializers.ModelSerializer):
@@ -189,3 +189,100 @@ class InventoryOpeningBalanceSerializer(serializers.Serializer):
         if not value:
             raise serializers.ValidationError("At least one line is required.")
         return value
+
+
+# =============================================================================
+# Inventory Transfer (Phase 3)
+# =============================================================================
+
+
+class InventoryTransferLineSerializer(serializers.ModelSerializer):
+    item_code = serializers.CharField(source="item.code", read_only=True)
+    item_name = serializers.CharField(source="item.name", read_only=True)
+
+    class Meta:
+        model = InventoryTransferLine
+        fields = [
+            "id",
+            "public_id",
+            "line_number",
+            "item",
+            "item_code",
+            "item_name",
+            "qty",
+            "unit_cost_snapshot",
+        ]
+        read_only_fields = ["id", "public_id", "item_code", "item_name", "unit_cost_snapshot"]
+
+
+class InventoryTransferSerializer(serializers.ModelSerializer):
+    lines = InventoryTransferLineSerializer(many=True, read_only=True)
+    source_warehouse_code = serializers.CharField(source="source_warehouse.code", read_only=True)
+    source_warehouse_name = serializers.CharField(source="source_warehouse.name", read_only=True)
+    destination_warehouse_code = serializers.CharField(source="destination_warehouse.code", read_only=True)
+    destination_warehouse_name = serializers.CharField(source="destination_warehouse.name", read_only=True)
+
+    class Meta:
+        model = InventoryTransfer
+        fields = [
+            "id",
+            "public_id",
+            "transfer_number",
+            "transfer_date",
+            "source_warehouse",
+            "source_warehouse_code",
+            "source_warehouse_name",
+            "destination_warehouse",
+            "destination_warehouse_code",
+            "destination_warehouse_name",
+            "status",
+            "posted_at",
+            "notes",
+            "created_at",
+            "lines",
+        ]
+
+
+class InventoryTransferListSerializer(serializers.ModelSerializer):
+    source_warehouse_code = serializers.CharField(source="source_warehouse.code", read_only=True)
+    destination_warehouse_code = serializers.CharField(source="destination_warehouse.code", read_only=True)
+    line_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = InventoryTransfer
+        fields = [
+            "id",
+            "public_id",
+            "transfer_number",
+            "transfer_date",
+            "source_warehouse",
+            "source_warehouse_code",
+            "destination_warehouse",
+            "destination_warehouse_code",
+            "status",
+            "line_count",
+            "created_at",
+        ]
+
+    def get_line_count(self, obj) -> int:
+        return obj.lines.count()
+
+
+class InventoryTransferLineInputSerializer(serializers.Serializer):
+    item_id = serializers.IntegerField()
+    qty = serializers.DecimalField(max_digits=18, decimal_places=4)
+
+
+class InventoryTransferCreateSerializer(serializers.Serializer):
+    source_warehouse_id = serializers.IntegerField()
+    destination_warehouse_id = serializers.IntegerField()
+    transfer_date = serializers.DateField(required=False)
+    notes = serializers.CharField(required=False, allow_blank=True, default="")
+    lines = InventoryTransferLineInputSerializer(many=True)
+
+    def validate(self, data):
+        if data["source_warehouse_id"] == data["destination_warehouse_id"]:
+            raise serializers.ValidationError("Source and destination must be different warehouses.")
+        if not data.get("lines"):
+            raise serializers.ValidationError("At least one line is required.")
+        return data

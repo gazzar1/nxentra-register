@@ -415,3 +415,166 @@ class StockLedgerSequenceCounter(models.Model):
 
     def __str__(self):
         return f"StockLedgerCounter({self.company_id}): {self.last_sequence}"
+
+
+# =============================================================================
+# Inventory Transfer (Phase 3)
+# =============================================================================
+
+
+class InventoryTransfer(ProjectionWriteGuard):
+    """
+    Move stock between two warehouses of the same company.
+
+    Workflow: DRAFT -> POSTED -> VOIDED
+    - DRAFT: Editable. No stock movement yet.
+    - POSTED: Stock is issued from source warehouse and received in destination
+      warehouse at the SOURCE warehouse's current avg_cost. No journal entry —
+      both sides hit the same Inventory GL account so the net is zero. The
+      stock ledger captures the two movements as the audit trail.
+    - VOIDED: A reversal stock movement is posted to undo the transfer.
+
+    Cost preservation: receive cost = source warehouse avg_cost at post time.
+    This keeps total inventory value invariant across the move.
+    """
+
+    class Status(models.TextChoices):
+        DRAFT = "DRAFT", "Draft"
+        POSTED = "POSTED", "Posted"
+        VOIDED = "VOIDED", "Voided"
+
+    allowed_write_contexts = {"command", "projection", "bootstrap", "migration"}
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="inventory_transfers",
+    )
+
+    public_id = models.UUIDField(
+        default=uuid.uuid4,
+        editable=False,
+        unique=True,
+    )
+
+    transfer_number = models.CharField(
+        max_length=50,
+        help_text="Auto-generated as TRF-XXXXXX",
+    )
+
+    transfer_date = models.DateField()
+
+    source_warehouse = models.ForeignKey(
+        Warehouse,
+        on_delete=models.PROTECT,
+        related_name="transfers_out",
+    )
+
+    destination_warehouse = models.ForeignKey(
+        Warehouse,
+        on_delete=models.PROTECT,
+        related_name="transfers_in",
+    )
+
+    status = models.CharField(
+        max_length=10,
+        choices=Status.choices,
+        default=Status.DRAFT,
+    )
+
+    posted_at = models.DateTimeField(null=True, blank=True)
+    posted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+
+    notes = models.TextField(blank=True, default="")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-transfer_date", "-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "transfer_number"],
+                name="uniq_transfer_number_per_company",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["company", "status"]),
+            models.Index(fields=["company", "transfer_date"]),
+        ]
+
+    def __str__(self):
+        return self.transfer_number
+
+
+class InventoryTransferLine(ProjectionWriteGuard):
+    """Single item being moved as part of an InventoryTransfer."""
+
+    allowed_write_contexts = {"command", "projection", "bootstrap", "migration"}
+
+    transfer = models.ForeignKey(
+        InventoryTransfer,
+        on_delete=models.CASCADE,
+        related_name="lines",
+    )
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="+",
+    )
+
+    public_id = models.UUIDField(
+        default=uuid.uuid4,
+        editable=False,
+        unique=True,
+    )
+
+    line_number = models.PositiveIntegerField()
+
+    item = models.ForeignKey(
+        "sales.Item",
+        on_delete=models.PROTECT,
+        related_name="+",
+    )
+
+    qty = models.DecimalField(
+        max_digits=18,
+        decimal_places=4,
+        help_text="Quantity to transfer from source to destination",
+    )
+
+    # Snapshot of the source warehouse's avg_cost at post time. Captured here
+    # so void can reverse using the exact same cost and audit shows what was
+    # moved at what valuation.
+    unit_cost_snapshot = models.DecimalField(
+        max_digits=18,
+        decimal_places=6,
+        default=Decimal("0"),
+        help_text="Source avg_cost at posting time (filled by post_inventory_transfer)",
+    )
+
+    class Meta:
+        ordering = ["line_number"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["transfer", "line_number"],
+                name="uniq_transfer_line_number",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.transfer.transfer_number}:{self.line_number}"

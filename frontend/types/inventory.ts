@@ -176,3 +176,72 @@ export interface StockLedgerFilters {
   posted_after?: string;
   posted_before?: string;
 }
+
+// =============================================================================
+// Inventory Transfer (Phase 3)
+// =============================================================================
+
+export type InventoryTransferStatus = "DRAFT" | "POSTED" | "VOIDED";
+
+export interface InventoryTransferLine {
+  id: number;
+  public_id: string;
+  line_number: number;
+  item: number;
+  item_code: string;
+  item_name: string;
+  qty: string;
+  unit_cost_snapshot: string;
+}
+
+export interface InventoryTransfer {
+  id: number;
+  public_id: string;
+  transfer_number: string;
+  transfer_date: string;
+  source_warehouse: number;
+  source_warehouse_code: string;
+  source_warehouse_name: string;
+  destination_warehouse: number;
+  destination_warehouse_code: string;
+  destination_warehouse_name: string;
+  status: InventoryTransferStatus;
+  posted_at: string | null;
+  notes: string;
+  created_at: string;
+  lines: InventoryTransferLine[];
+}
+
+export interface InventoryTransferListItem {
+  id: number;
+  public_id: string;
+  transfer_number: string;
+  transfer_date: string;
+  source_warehouse: number;
+  source_warehouse_code: string;
+  destination_warehouse: number;
+  destination_warehouse_code: string;
+  status: InventoryTransferStatus;
+  line_count: number;
+  created_at: string;
+}
+
+export interface InventoryTransferCreatePayload {
+  source_warehouse_id: number;
+  destination_warehouse_id: number;
+  transfer_date?: string;
+  notes?: string;
+  lines: { item_id: number; qty: string }[];
+}
+
+export const TRANSFER_STATUS_COLORS: Record<InventoryTransferStatus, string> = {
+  DRAFT: "bg-yellow-100 text-yellow-800",
+  POSTED: "bg-green-100 text-green-800",
+  VOIDED: "bg-red-100 text-red-800",
+};
+
+export const TRANSFER_STATUS_LABELS: Record<InventoryTransferStatus, string> = {
+  DRAFT: "Draft",
+  POSTED: "Posted",
+  VOIDED: "Voided",
+};

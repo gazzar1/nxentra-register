@@ -10,6 +10,7 @@ from .views import (
     InventoryAdjustmentViewSet,
     InventoryBalanceViewSet,
     InventoryOpeningBalanceViewSet,
+    InventoryTransferViewSet,
     StockAvailabilityViewSet,
     StockLedgerViewSet,
     WarehouseViewSet,
@@ -22,6 +23,7 @@ router.register(r"ledger", StockLedgerViewSet, basename="stock-ledger")
 router.register(r"adjustments", InventoryAdjustmentViewSet, basename="inventory-adjustment")
 router.register(r"opening-balance", InventoryOpeningBalanceViewSet, basename="inventory-opening")
 router.register(r"availability", StockAvailabilityViewSet, basename="stock-availability")
+router.register(r"transfers", InventoryTransferViewSet, basename="inventory-transfer")
 
 urlpatterns = [
     path("", include(router.urls)),

@@ -30,6 +30,7 @@ class InventoryConfig(AppConfig):
             order=40,
             module_key="inventory",
             nav_items=[
+                {"label": "Transfers", "href": "/inventory/transfers", "icon": "ArrowLeftRight"},
                 {"label": "Stock Adjustments", "href": "/inventory/adjustments/new", "icon": "Scale"},
             ],
         )

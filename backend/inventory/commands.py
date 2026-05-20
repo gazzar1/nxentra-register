@@ -1142,3 +1142,274 @@ def record_opening_balance(
         },
         event=event,
     )
+
+
+# =============================================================================
+# Inventory Transfer (Phase 3)
+# =============================================================================
+
+
+@transaction.atomic
+def create_inventory_transfer(
+    actor: ActorContext,
+    source_warehouse_id: int,
+    destination_warehouse_id: int,
+    lines: list,
+    transfer_date=None,
+    notes: str = "",
+) -> CommandResult:
+    """Create a DRAFT inventory transfer between two warehouses of the same company."""
+    from datetime import date as date_cls
+
+    from accounting.commands import _next_company_sequence
+
+    from .models import InventoryTransfer, InventoryTransferLine
+
+    require(actor, "inventory.stock.receive")
+    require(actor, "inventory.stock.issue")
+
+    if source_warehouse_id == destination_warehouse_id:
+        return CommandResult.fail("Source and destination must be different warehouses.")
+
+    try:
+        source = Warehouse.objects.get(company=actor.company, pk=source_warehouse_id)
+    except Warehouse.DoesNotExist:
+        return CommandResult.fail("Source warehouse not found.")
+
+    try:
+        destination = Warehouse.objects.get(company=actor.company, pk=destination_warehouse_id)
+    except Warehouse.DoesNotExist:
+        return CommandResult.fail("Destination warehouse not found.")
+
+    if not lines:
+        return CommandResult.fail("At least one line is required.")
+
+    from sales.models import Item
+
+    item_ids = [line.get("item_id") for line in lines]
+    items = {i.id: i for i in Item.objects.filter(company=actor.company, id__in=item_ids)}
+
+    validated_lines = []
+    for idx, line in enumerate(lines, start=1):
+        item_id = line.get("item_id")
+        if not item_id or item_id not in items:
+            return CommandResult.fail(f"Line {idx}: Item not found.")
+        item = items[item_id]
+        if not item.is_inventory_item:
+            return CommandResult.fail(f"Line {idx}: Item '{item.code}' is not an inventory item.")
+
+        qty = Decimal(str(line.get("qty", "0")))
+        if qty <= 0:
+            return CommandResult.fail(f"Line {idx}: qty must be > 0.")
+
+        validated_lines.append({"item": item, "qty": qty})
+
+    t_date = transfer_date or date_cls.today()
+    if isinstance(t_date, str):
+        t_date = date_cls.fromisoformat(t_date)
+
+    seq = _next_company_sequence(actor.company, "inventory_transfer")
+    transfer_number = f"TRF-{seq:06d}"
+
+    with command_writes_allowed():
+        transfer = InventoryTransfer.objects.create(
+            company=actor.company,
+            transfer_number=transfer_number,
+            transfer_date=t_date,
+            source_warehouse=source,
+            destination_warehouse=destination,
+            status=InventoryTransfer.Status.DRAFT,
+            notes=notes,
+            created_by=actor.user,
+        )
+        for i, line in enumerate(validated_lines, start=1):
+            InventoryTransferLine.objects.create(
+                transfer=transfer,
+                company=actor.company,
+                line_number=i,
+                item=line["item"],
+                qty=line["qty"],
+            )
+
+    return CommandResult.ok(data={"transfer": transfer})
+
+
+@transaction.atomic
+def post_inventory_transfer(actor: ActorContext, transfer_id: int) -> CommandResult:
+    """
+    Post an inventory transfer:
+    - Issues stock from source warehouse at source.avg_cost
+    - Receives stock into destination warehouse at the same unit_cost
+    - Captures the cost snapshot on each line for audit / void reversal
+
+    No journal entry: both sides debit/credit the same Inventory GL account
+    (item.inventory_account), so the net is zero. The stock ledger entries
+    are the audit trail.
+    """
+    from .models import InventoryTransfer, InventoryTransferLine
+
+    require(actor, "inventory.stock.receive")
+    require(actor, "inventory.stock.issue")
+
+    try:
+        transfer = InventoryTransfer.objects.select_for_update().get(company=actor.company, pk=transfer_id)
+    except InventoryTransfer.DoesNotExist:
+        return CommandResult.fail("Transfer not found.")
+
+    if transfer.status != "DRAFT":
+        return CommandResult.fail(f"Only DRAFT transfers can be posted (this is {transfer.status}).")
+
+    if not transfer.lines.exists():
+        return CommandResult.fail("Transfer must have at least one line.")
+
+    source = transfer.source_warehouse
+    destination = transfer.destination_warehouse
+
+    # Build issue + receive line dicts. Lock source InventoryBalance rows so
+    # concurrent transfers can't oversell. Source avg_cost at post-time is
+    # the unit_cost for both legs — preserves total inventory value.
+    issue_lines = []
+    receive_lines = []
+    line_cost_snapshots = []  # (line_id, unit_cost) to write back
+
+    for tl in transfer.lines.select_related("item"):
+        try:
+            balance = InventoryBalance.objects.select_for_update().get(
+                company=actor.company, item=tl.item, warehouse=source
+            )
+        except InventoryBalance.DoesNotExist:
+            # No record at source — only OK if item or company allows negative.
+            if not (tl.item.allow_negative_stock or actor.company.allow_negative_inventory):
+                return CommandResult.fail(f"Line {tl.line_number}: no inventory for {tl.item.code} at {source.code}.")
+            unit_cost = tl.item.average_cost or Decimal("0")
+        else:
+            if balance.qty_on_hand < tl.qty and not (
+                tl.item.allow_negative_stock or actor.company.allow_negative_inventory
+            ):
+                return CommandResult.fail(
+                    f"Line {tl.line_number}: only {balance.qty_on_hand} available at {source.code} "
+                    f"for {tl.item.code} (requested {tl.qty})."
+                )
+            unit_cost = balance.avg_cost or tl.item.average_cost or Decimal("0")
+
+        issue_lines.append(
+            {
+                "item": tl.item,
+                "warehouse": source,
+                "qty": tl.qty,
+                "source_line_id": str(tl.public_id),
+            }
+        )
+        receive_lines.append(
+            {
+                "item": tl.item,
+                "warehouse": destination,
+                "qty": tl.qty,
+                "unit_cost": unit_cost,
+                "source_line_id": str(tl.public_id),
+            }
+        )
+        line_cost_snapshots.append((tl.id, unit_cost))
+
+    # Issue from source (no JE — pass journal_entry=None)
+    issue_result = record_stock_issue(
+        actor=actor,
+        source_type=StockLedgerEntry.SourceType.TRANSFER_OUT,
+        source_id=str(transfer.public_id) + ":out",
+        lines=issue_lines,
+        journal_entry=None,
+    )
+    if not issue_result.success:
+        return CommandResult.fail(f"Failed to issue from {source.code}: {issue_result.error}")
+
+    # Receive at destination
+    receipt_result = record_stock_receipt(
+        actor=actor,
+        source_type=StockLedgerEntry.SourceType.TRANSFER_IN,
+        source_id=str(transfer.public_id) + ":in",
+        lines=receive_lines,
+        journal_entry=None,
+    )
+    if not receipt_result.success:
+        return CommandResult.fail(f"Failed to receive at {destination.code}: {receipt_result.error}")
+
+    # Persist post + snapshots
+    with command_writes_allowed():
+        for line_id, unit_cost in line_cost_snapshots:
+            InventoryTransferLine.objects.filter(pk=line_id).update(unit_cost_snapshot=unit_cost)
+
+        transfer.status = "POSTED"
+        transfer.posted_at = timezone.now()
+        transfer.posted_by = actor.user
+        transfer.save(update_fields=["status", "posted_at", "posted_by"])
+
+    return CommandResult.ok(data={"transfer": transfer})
+
+
+@transaction.atomic
+def void_inventory_transfer(actor: ActorContext, transfer_id: int) -> CommandResult:
+    """Reverse a posted transfer: receive back at source, issue out of destination."""
+    from .models import InventoryTransfer
+
+    require(actor, "inventory.stock.receive")
+    require(actor, "inventory.stock.issue")
+
+    try:
+        transfer = InventoryTransfer.objects.select_for_update().get(company=actor.company, pk=transfer_id)
+    except InventoryTransfer.DoesNotExist:
+        return CommandResult.fail("Transfer not found.")
+
+    if transfer.status != "POSTED":
+        return CommandResult.fail(f"Only POSTED transfers can be voided (this is {transfer.status}).")
+
+    source = transfer.source_warehouse
+    destination = transfer.destination_warehouse
+
+    # Reverse: issue from destination, receive at source — at the snapshot cost
+    issue_lines = []
+    receive_lines = []
+    for tl in transfer.lines.select_related("item"):
+        unit_cost = tl.unit_cost_snapshot or Decimal("0")
+        issue_lines.append(
+            {
+                "item": tl.item,
+                "warehouse": destination,
+                "qty": tl.qty,
+                "source_line_id": str(tl.public_id),
+            }
+        )
+        receive_lines.append(
+            {
+                "item": tl.item,
+                "warehouse": source,
+                "qty": tl.qty,
+                "unit_cost": unit_cost,
+                "source_line_id": str(tl.public_id),
+            }
+        )
+
+    issue_result = record_stock_issue(
+        actor=actor,
+        source_type=StockLedgerEntry.SourceType.TRANSFER_OUT,
+        source_id=str(transfer.public_id) + ":void:out",
+        lines=issue_lines,
+        journal_entry=None,
+    )
+    if not issue_result.success:
+        return CommandResult.fail(f"Failed to reverse-issue from {destination.code}: {issue_result.error}")
+
+    receipt_result = record_stock_receipt(
+        actor=actor,
+        source_type=StockLedgerEntry.SourceType.TRANSFER_IN,
+        source_id=str(transfer.public_id) + ":void:in",
+        lines=receive_lines,
+        journal_entry=None,
+    )
+    if not receipt_result.success:
+        return CommandResult.fail(f"Failed to reverse-receive at {source.code}: {receipt_result.error}")
+
+    with command_writes_allowed():
+        transfer.status = "VOIDED"
+        transfer.save(update_fields=["status"])
+
+    return CommandResult.ok(data={"transfer": transfer})

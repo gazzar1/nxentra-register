@@ -1,7 +1,7 @@
 // queries/useInventory.ts
 // React Query hooks for inventory module
 
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { inventoryService } from "@/services/inventory.service";
 import {
   WarehouseCreatePayload,
@@ -10,6 +10,7 @@ import {
   StockLedgerFilters,
   InventoryAdjustmentPayload,
   OpeningBalancePayload,
+  InventoryTransferCreatePayload,
 } from "@/types/inventory";
 
 // Query key factories
@@ -36,6 +37,12 @@ export const inventoryKeys = {
   // Availability
   availability: (itemId: number, params?: Record<string, unknown>) =>
     [...inventoryKeys.all, "availability", itemId, params] as const,
+
+  // Transfers
+  transfers: () => [...inventoryKeys.all, "transfers"] as const,
+  transfersList: (filters?: Record<string, unknown>) =>
+    [...inventoryKeys.transfers(), "list", filters] as const,
+  transferDetail: (id: number) => [...inventoryKeys.transfers(), "detail", id] as const,
 };
 
 // ==================== Warehouses ====================
@@ -196,6 +203,72 @@ export function useCreateOpeningBalance() {
     mutationFn: (payload: OpeningBalancePayload) =>
       inventoryService.openingBalance.create(payload),
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: inventoryKeys.balances() });
+      queryClient.invalidateQueries({ queryKey: inventoryKeys.ledger() });
+    },
+  });
+}
+
+// ==================== Inventory Transfers (Phase 3) ====================
+
+export function useInventoryTransfers(filters?: {
+  status?: string;
+  page?: number;
+  page_size?: number;
+  ordering?: string;
+}) {
+  return useQuery({
+    queryKey: inventoryKeys.transfersList(filters),
+    queryFn: async () => {
+      const { data } = await inventoryService.transfers.list(filters);
+      return data;
+    },
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function useInventoryTransfer(id: number) {
+  return useQuery({
+    queryKey: inventoryKeys.transferDetail(id),
+    queryFn: async () => {
+      const { data } = await inventoryService.transfers.get(id);
+      return data;
+    },
+    enabled: !!id,
+  });
+}
+
+export function useCreateInventoryTransfer() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: InventoryTransferCreatePayload) =>
+      inventoryService.transfers.create(payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: inventoryKeys.transfers() });
+    },
+  });
+}
+
+export function usePostInventoryTransfer() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => inventoryService.transfers.post(id),
+    onSuccess: (_, id) => {
+      queryClient.invalidateQueries({ queryKey: inventoryKeys.transfers() });
+      queryClient.invalidateQueries({ queryKey: inventoryKeys.transferDetail(id) });
+      queryClient.invalidateQueries({ queryKey: inventoryKeys.balances() });
+      queryClient.invalidateQueries({ queryKey: inventoryKeys.ledger() });
+    },
+  });
+}
+
+export function useVoidInventoryTransfer() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => inventoryService.transfers.void(id),
+    onSuccess: (_, id) => {
+      queryClient.invalidateQueries({ queryKey: inventoryKeys.transfers() });
+      queryClient.invalidateQueries({ queryKey: inventoryKeys.transferDetail(id) });
       queryClient.invalidateQueries({ queryKey: inventoryKeys.balances() });
       queryClient.invalidateQueries({ queryKey: inventoryKeys.ledger() });
     },

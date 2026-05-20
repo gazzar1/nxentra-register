@@ -16,7 +16,18 @@ import {
   OpeningBalancePayload,
   OpeningBalanceResult,
   InventorySummary,
+  InventoryTransfer,
+  InventoryTransferListItem,
+  InventoryTransferCreatePayload,
 } from "@/types/inventory";
+
+type PaginatedResponse<T> = {
+  results: T[];
+  count: number;
+  next: string | null;
+  previous: string | null;
+  total_pages?: number;
+};
 
 export const inventoryService = {
   // Warehouses
@@ -74,5 +85,23 @@ export const inventoryService = {
   openingBalance: {
     create: (data: OpeningBalancePayload) =>
       apiClient.post<OpeningBalanceResult>("/inventory/opening-balance/", data),
+  },
+
+  // Inventory Transfers (Phase 3)
+  transfers: {
+    list: (params?: { status?: string; page?: number; page_size?: number; ordering?: string }) =>
+      apiClient.get<PaginatedResponse<InventoryTransferListItem>>("/inventory/transfers/", { params }),
+
+    get: (id: number) =>
+      apiClient.get<InventoryTransfer>(`/inventory/transfers/${id}/`),
+
+    create: (data: InventoryTransferCreatePayload) =>
+      apiClient.post<InventoryTransfer>("/inventory/transfers/", data),
+
+    post: (id: number) =>
+      apiClient.post<InventoryTransfer>(`/inventory/transfers/${id}/post/`),
+
+    void: (id: number) =>
+      apiClient.post<InventoryTransfer>(`/inventory/transfers/${id}/void/`),
   },
 };

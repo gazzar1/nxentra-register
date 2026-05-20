@@ -18,15 +18,21 @@ from sales.models import Item
 from .commands import (
     adjust_inventory,
     check_stock_availability,
+    create_inventory_transfer,
     create_warehouse,
+    post_inventory_transfer,
     record_opening_balance,
     update_warehouse,
+    void_inventory_transfer,
 )
-from .models import StockLedgerEntry, Warehouse
+from .models import InventoryTransfer, StockLedgerEntry, Warehouse
 from .serializers import (
     InventoryAdjustmentSerializer,
     InventoryBalanceSerializer,
     InventoryOpeningBalanceSerializer,
+    InventoryTransferCreateSerializer,
+    InventoryTransferListSerializer,
+    InventoryTransferSerializer,
     StockLedgerEntrySerializer,
     WarehouseCreateSerializer,
     WarehouseSerializer,
@@ -468,3 +474,107 @@ class StockAvailabilityViewSet(viewsets.ViewSet):
                 "error": error if not is_available else None,
             }
         )
+
+
+# =============================================================================
+# Inventory Transfer (Phase 3)
+# =============================================================================
+
+
+class InventoryTransferViewSet(viewsets.ViewSet):
+    """
+    GET    /api/inventory/transfers/        — list
+    POST   /api/inventory/transfers/        — create draft
+    GET    /api/inventory/transfers/{pk}/   — detail
+    POST   /api/inventory/transfers/{pk}/post/  — issue source + receive dest
+    POST   /api/inventory/transfers/{pk}/void/  — reverse
+    """
+
+    module_key = "inventory"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
+
+    def list(self, request):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        qs = InventoryTransfer.objects.filter(company=actor.company).select_related(
+            "source_warehouse", "destination_warehouse"
+        )
+
+        status_filter = request.query_params.get("status")
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+
+        from nxentra_backend.pagination import paginate_queryset
+
+        return paginate_queryset(
+            request,
+            qs,
+            InventoryTransferListSerializer,
+            default_ordering="-transfer_date",
+            allowed_sort_fields=["transfer_number", "transfer_date", "status"],
+        )
+
+    def create(self, request):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        serializer = InventoryTransferCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        result = create_inventory_transfer(
+            actor,
+            source_warehouse_id=data["source_warehouse_id"],
+            destination_warehouse_id=data["destination_warehouse_id"],
+            lines=[{"item_id": l["item_id"], "qty": str(l["qty"])} for l in data["lines"]],
+            transfer_date=data.get("transfer_date"),
+            notes=data.get("notes", ""),
+        )
+        if not result.success:
+            return Response({"detail": result.error}, status=400)
+
+        return Response(
+            InventoryTransferSerializer(result.data["transfer"]).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    def retrieve(self, request, pk=None):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        try:
+            transfer = (
+                InventoryTransfer.objects.select_related("source_warehouse", "destination_warehouse")
+                .prefetch_related("lines__item")
+                .get(company=actor.company, pk=pk)
+            )
+        except InventoryTransfer.DoesNotExist:
+            return Response({"detail": "Transfer not found."}, status=404)
+
+        return Response(InventoryTransferSerializer(transfer).data)
+
+    @action(detail=True, methods=["post"])
+    def post(self, request, pk=None):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        result = post_inventory_transfer(actor, int(pk))
+        if not result.success:
+            return Response({"detail": result.error}, status=400)
+        return Response(InventoryTransferSerializer(result.data["transfer"]).data)
+
+    @action(detail=True, methods=["post"])
+    def void(self, request, pk=None):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        result = void_inventory_transfer(actor, int(pk))
+        if not result.success:
+            return Response({"detail": result.error}, status=400)
+        return Response(InventoryTransferSerializer(result.data["transfer"]).data)
