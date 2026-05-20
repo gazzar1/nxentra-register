@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { PageHeader, EmptyState, LoadingSpinner } from "@/components/common";
 import { usePostingProfiles, useDeletePostingProfile } from "@/queries/useSales";
 import { useToast } from "@/components/ui/toaster";
-import type { PostingProfile, PostingProfileType } from "@/types/sales";
+import type { PostingProfile, PostingProfileType, PostingProfileUsage } from "@/types/sales";
 import { cn } from "@/lib/cn";
 import {
   AlertDialog,
@@ -34,6 +34,16 @@ const PROFILE_TYPE_LABELS: Record<PostingProfileType, string> = {
 const PROFILE_TYPE_COLORS: Record<PostingProfileType, string> = {
   CUSTOMER: "bg-green-100 text-green-800",
   VENDOR: "bg-blue-100 text-blue-800",
+};
+
+const USAGE_LABELS: Record<PostingProfileUsage, string> = {
+  MANUAL: "Manual entry",
+  GATEWAY: "Gateway",
+};
+
+const USAGE_COLORS: Record<PostingProfileUsage, string> = {
+  MANUAL: "bg-slate-100 text-slate-700",
+  GATEWAY: "bg-purple-100 text-purple-800",
 };
 
 export default function PostingProfilesPage() {
@@ -160,9 +170,19 @@ export default function PostingProfilesPage() {
                         </p>
                       )}
                     </div>
-                    <div className="col-span-2">
-                      <Badge className={cn("text-xs", PROFILE_TYPE_COLORS[profile.profile_type])}>
+                    <div className="col-span-2 flex flex-col gap-1">
+                      <Badge className={cn("text-xs w-fit", PROFILE_TYPE_COLORS[profile.profile_type])}>
                         {PROFILE_TYPE_LABELS[profile.profile_type]}
+                      </Badge>
+                      <Badge
+                        className={cn("text-xs w-fit", USAGE_COLORS[profile.usage])}
+                        title={
+                          profile.usage === "GATEWAY"
+                            ? "Owned by a platform integration. Hidden from manual invoice/bill dropdowns."
+                            : "Available in invoice/bill dropdowns for manual entry."
+                        }
+                      >
+                        {USAGE_LABELS[profile.usage]}
                       </Badge>
                     </div>
                     <div className="col-span-3 text-sm">

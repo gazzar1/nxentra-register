@@ -1283,6 +1283,7 @@ class PostingProfileCreatedData(BaseEventData):
     is_default: bool = False
     name_ar: str = ""
     description: str = ""
+    usage: str = "MANUAL"
 
 
 @dataclass

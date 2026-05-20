@@ -254,6 +254,7 @@ class PostingProfileSerializer(serializers.ModelSerializer):
             "name_ar",
             "description",
             "profile_type",
+            "usage",
             "control_account",
             "control_account_code",
             "is_default",
@@ -278,6 +279,11 @@ class PostingProfileCreateSerializer(serializers.Serializer):
     name_ar = serializers.CharField(max_length=100, required=False, allow_blank=True, default="")
     description = serializers.CharField(required=False, allow_blank=True, default="")
     profile_type = serializers.ChoiceField(choices=PostingProfile.ProfileType.choices)
+    usage = serializers.ChoiceField(
+        choices=PostingProfile.Usage.choices,
+        required=False,
+        default=PostingProfile.Usage.MANUAL,
+    )
     control_account_id = serializers.IntegerField()
     is_default = serializers.BooleanField(required=False, default=False)
 
@@ -290,6 +296,7 @@ class PostingProfileUpdateSerializer(serializers.Serializer):
     name_ar = serializers.CharField(max_length=100, required=False, allow_blank=True)
     description = serializers.CharField(required=False, allow_blank=True)
     profile_type = serializers.ChoiceField(choices=PostingProfile.ProfileType.choices, required=False)
+    usage = serializers.ChoiceField(choices=PostingProfile.Usage.choices, required=False)
     control_account_id = serializers.IntegerField(required=False)
     is_default = serializers.BooleanField(required=False)
     is_active = serializers.BooleanField(required=False)

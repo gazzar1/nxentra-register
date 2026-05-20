@@ -130,6 +130,7 @@ export interface TaxCodeUpdatePayload {
 // =============================================================================
 
 export type PostingProfileType = 'CUSTOMER' | 'VENDOR';
+export type PostingProfileUsage = 'MANUAL' | 'GATEWAY';
 
 export interface PostingProfile {
   id: number;
@@ -139,6 +140,7 @@ export interface PostingProfile {
   name: string;
   name_ar: string;
   profile_type: PostingProfileType;
+  usage: PostingProfileUsage;
   control_account: number;
   control_account_code?: string;
   control_account_name?: string;
@@ -153,6 +155,7 @@ export interface PostingProfileCreatePayload {
   name: string;
   name_ar?: string;
   profile_type: PostingProfileType;
+  usage?: PostingProfileUsage;
   control_account_id: number;
   is_default?: boolean;
 }
@@ -162,6 +165,7 @@ export interface PostingProfileUpdatePayload {
   name?: string;
   name_ar?: string;
   profile_type?: PostingProfileType;
+  usage?: PostingProfileUsage;
   control_account_id?: number;
   is_default?: boolean;
   is_active?: boolean;

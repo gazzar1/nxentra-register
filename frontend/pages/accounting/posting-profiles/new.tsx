@@ -22,13 +22,18 @@ import {
 import { useAccounts } from "@/queries/useAccounts";
 import { useCreatePostingProfile } from "@/queries/useSales";
 import { useToast } from "@/components/ui/toaster";
-import type { PostingProfileCreatePayload, PostingProfileType } from "@/types/sales";
+import type {
+  PostingProfileCreatePayload,
+  PostingProfileType,
+  PostingProfileUsage,
+} from "@/types/sales";
 
 interface PostingProfileFormData {
   code: string;
   name: string;
   name_ar: string;
   profile_type: PostingProfileType;
+  usage: PostingProfileUsage;
   control_account_id: string;
   is_default: boolean;
 }
@@ -36,6 +41,19 @@ interface PostingProfileFormData {
 const PROFILE_TYPES: { value: PostingProfileType; label: string }[] = [
   { value: "CUSTOMER", label: "Customer (AR)" },
   { value: "VENDOR", label: "Vendor (AP)" },
+];
+
+const USAGE_OPTIONS: { value: PostingProfileUsage; label: string; help: string }[] = [
+  {
+    value: "MANUAL",
+    label: "Manual entry",
+    help: "Appears in invoice/bill dropdowns for human entry. Pick this for normal AR/AP profiles.",
+  },
+  {
+    value: "GATEWAY",
+    label: "Gateway / platform",
+    help: "Reserved for platform integrations (Shopify, Stripe). Hidden from manual dropdowns. Only choose this if a connector requires it.",
+  },
 ];
 
 export default function NewPostingProfilePage() {
@@ -62,12 +80,14 @@ export default function NewPostingProfilePage() {
       name: "",
       name_ar: "",
       profile_type: "CUSTOMER",
+      usage: "MANUAL",
       control_account_id: "",
       is_default: false,
     },
   });
 
   const profileType = watch("profile_type");
+  const usage = watch("usage");
 
   // Filter accounts based on profile type
   const filteredAccounts = controlAccounts?.filter((acc) => {
@@ -85,6 +105,7 @@ export default function NewPostingProfilePage() {
         name: data.name,
         name_ar: data.name_ar || undefined,
         profile_type: data.profile_type,
+        usage: data.usage,
         control_account_id: parseInt(data.control_account_id),
         is_default: data.is_default,
       };
@@ -163,6 +184,31 @@ export default function NewPostingProfilePage() {
                   </Select>
                 )}
               />
+            </div>
+
+            <div className="space-y-2 md:col-span-2">
+              <Label htmlFor="usage">Usage *</Label>
+              <Controller
+                name="usage"
+                control={control}
+                render={({ field }) => (
+                  <Select onValueChange={field.onChange} value={field.value}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select usage" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {USAGE_OPTIONS.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+              <p className="text-xs text-muted-foreground">
+                {USAGE_OPTIONS.find((o) => o.value === usage)?.help}
+              </p>
             </div>
 
             <div className="space-y-2">

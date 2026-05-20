@@ -485,6 +485,7 @@ def create_posting_profile(
     name_ar: str = "",
     description: str = "",
     is_default: bool = False,
+    usage: str = PostingProfile.Usage.MANUAL,
 ) -> CommandResult:
     """Create a new posting profile."""
     require(actor, "sales.postingprofile.create")
@@ -496,6 +497,10 @@ def create_posting_profile(
     # Validate profile type
     if profile_type not in PostingProfile.ProfileType.values:
         return CommandResult.fail(f"Invalid profile type. Must be one of: {PostingProfile.ProfileType.values}")
+
+    # Validate usage
+    if usage not in PostingProfile.Usage.values:
+        return CommandResult.fail(f"Invalid usage. Must be one of: {PostingProfile.Usage.values}")
 
     # Validate control account
     try:
@@ -528,6 +533,7 @@ def create_posting_profile(
             name_ar=name_ar,
             description=description,
             profile_type=profile_type,
+            usage=usage,
             control_account=control_account,
             is_default=is_default,
         )
@@ -546,6 +552,7 @@ def create_posting_profile(
             name_ar=profile.name_ar,
             description=profile.description,
             profile_type=profile.profile_type,
+            usage=profile.usage,
             control_account_public_id=str(control_account.public_id),
             control_account_code=control_account.code,
             is_default=profile.is_default,
@@ -567,6 +574,7 @@ def update_posting_profile(
     control_account_id: int = None,
     is_default: bool = None,
     is_active: bool = None,
+    usage: str = None,
 ) -> CommandResult:
     """Update an existing posting profile."""
     require(actor, "sales.postingprofile.update")
@@ -584,6 +592,10 @@ def update_posting_profile(
     # Validate profile type if changed
     if profile_type is not None and profile_type not in PostingProfile.ProfileType.values:
         return CommandResult.fail(f"Invalid profile type. Must be one of: {PostingProfile.ProfileType.values}")
+
+    # Validate usage if changed
+    if usage is not None and usage not in PostingProfile.Usage.values:
+        return CommandResult.fail(f"Invalid usage. Must be one of: {PostingProfile.Usage.values}")
 
     # Validate control account if changed
     control_account = profile.control_account
@@ -621,6 +633,8 @@ def update_posting_profile(
             profile.is_default = is_default
         if is_active is not None:
             profile.is_active = is_active
+        if usage is not None:
+            profile.usage = usage
         profile.save()
 
     return CommandResult.ok(data={"posting_profile": profile})
@@ -701,6 +715,17 @@ def create_sales_invoice(
 
     if posting_profile.profile_type != PostingProfile.ProfileType.CUSTOMER:
         return CommandResult.fail("Posting profile must be CUSTOMER type for sales invoices.")
+
+    # A78: GATEWAY profiles are owned by platform connectors (Shopify etc.)
+    # and route to settlement-clearing accounts with REQUIRED dimension
+    # rules. Manual invoices can't satisfy those rules — block here with a
+    # clearer error than the eventual JE post failure.
+    if posting_profile.usage == PostingProfile.Usage.GATEWAY:
+        return CommandResult.fail(
+            f"Posting profile '{posting_profile.code}' is reserved for platform "
+            f"integrations and can't be used for manual invoices. Pick a Manual-entry "
+            f"profile instead."
+        )
 
     # Validate lines
     if not lines:
@@ -999,6 +1024,12 @@ def update_sales_invoice(
             return CommandResult.fail("Posting profile not found.")
         if posting_profile.profile_type != PostingProfile.ProfileType.CUSTOMER:
             return CommandResult.fail("Posting profile must be CUSTOMER type for sales invoices.")
+        # A78: block GATEWAY profiles on manual edit (same as create).
+        if posting_profile.usage == PostingProfile.Usage.GATEWAY:
+            return CommandResult.fail(
+                f"Posting profile '{posting_profile.code}' is reserved for platform "
+                f"integrations and can't be used for manual invoices."
+            )
         changes["posting_profile_id"] = {"old": invoice.posting_profile_id, "new": posting_profile_id}
         invoice.posting_profile = posting_profile
 
@@ -1663,6 +1694,18 @@ def create_credit_note(
 
     if invoice.status != SalesInvoice.Status.POSTED:
         return CommandResult.fail("Credit notes can only be created against POSTED invoices.")
+
+    # A78: manual credit notes inherit the invoice's posting profile. If the
+    # invoice was posted under a GATEWAY profile (Shopify-imported), the
+    # CN's JE would hit a clearing account that requires a SETTLEMENT_PROVIDER
+    # tag — which only the platform refund path knows how to supply.
+    # auto_created=True is the Shopify refund path (handles tags itself).
+    if not auto_created and invoice.posting_profile.usage == PostingProfile.Usage.GATEWAY:
+        return CommandResult.fail(
+            f"This invoice was created by a platform integration "
+            f"(profile '{invoice.posting_profile.code}'). Refunds must be issued "
+            f"through that platform — manual credit notes aren't allowed here."
+        )
 
     if not lines:
         return CommandResult.fail("Credit note must have at least one line.")

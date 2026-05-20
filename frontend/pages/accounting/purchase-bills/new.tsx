@@ -66,7 +66,7 @@ export default function NewPurchaseBillPage() {
   const { data: vendors } = useVendors();
   const { data: items } = useItems();
   const { data: taxCodes } = useTaxCodes({ direction: "INPUT" });
-  const { data: postingProfiles } = usePostingProfiles({ profile_type: "VENDOR" });
+  const { data: postingProfiles } = usePostingProfiles({ profile_type: "VENDOR", usage: "MANUAL" });
   const { data: accounts } = useAccounts();
   // Phase 2: per-line warehouse picker for direct (non-PO) bills.
   const { data: warehousesData } = useWarehouses({ is_active: true });

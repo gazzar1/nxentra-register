@@ -63,7 +63,7 @@ export default function NewSalesInvoicePage() {
   const { data: customers } = useCustomers();
   const { data: items } = useItems();
   const { data: taxCodes } = useTaxCodes({ direction: "OUTPUT" });
-  const { data: postingProfiles } = usePostingProfiles({ profile_type: "CUSTOMER" });
+  const { data: postingProfiles } = usePostingProfiles({ profile_type: "CUSTOMER", usage: "MANUAL" });
   const { data: accounts } = useAccounts();
   const { data: companySettings } = useCompanySettings();
   const { company } = useAuth();

@@ -374,6 +374,17 @@ class PostingProfile(ProjectionWriteGuard):
         CUSTOMER = "CUSTOMER", "Customer (AR)"
         VENDOR = "VENDOR", "Vendor (AP)"
 
+    class Usage(models.TextChoices):
+        # Picked from the dropdown when a user creates an invoice / bill /
+        # credit note by hand. The control_account is a plain AR/AP account
+        # with no dimension-required rules.
+        MANUAL = "MANUAL", "Manual entry"
+        # Owned by a platform connector (Shopify, Stripe, etc.) and points at
+        # a settlement-clearing account that requires a SETTLEMENT_PROVIDER
+        # dimension tag. Hidden from manual-entry dropdowns; rejected if a
+        # user tries to create a manual document with one. See A78.
+        GATEWAY = "GATEWAY", "Platform / gateway"
+
     allowed_write_contexts = {"command", "projection", "bootstrap", "migration"}
 
     company = models.ForeignKey(
@@ -402,6 +413,17 @@ class PostingProfile(ProjectionWriteGuard):
         max_length=10,
         choices=ProfileType.choices,
         help_text="CUSTOMER for AR, VENDOR for AP",
+    )
+
+    usage = models.CharField(
+        max_length=10,
+        choices=Usage.choices,
+        default=Usage.MANUAL,
+        help_text=(
+            "MANUAL: shown in invoice/bill dropdowns for human entry. "
+            "GATEWAY: owned by a connector (e.g. Shopify), hidden from manual "
+            "dropdowns and rejected if used to create a manual document."
+        ),
     )
 
     control_account = models.ForeignKey(

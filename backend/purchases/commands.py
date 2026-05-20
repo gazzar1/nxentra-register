@@ -121,6 +121,15 @@ def create_purchase_bill(
     if posting_profile.profile_type != PostingProfile.ProfileType.VENDOR:
         return CommandResult.fail("Posting profile must be VENDOR type for purchase bills.")
 
+    # A78: block GATEWAY profiles on manual bills — same reasoning as
+    # create_sales_invoice (clearing accounts with REQUIRED dimension rules).
+    if posting_profile.usage == PostingProfile.Usage.GATEWAY:
+        return CommandResult.fail(
+            f"Posting profile '{posting_profile.code}' is reserved for platform "
+            f"integrations and can't be used for manual bills. Pick a Manual-entry "
+            f"profile instead."
+        )
+
     # Validate lines
     if not lines:
         return CommandResult.fail("Bill must have at least one line.")
@@ -768,6 +777,13 @@ def create_purchase_order(
         profile = PostingProfile.objects.get(company=actor.company, pk=posting_profile_id)
     except PostingProfile.DoesNotExist:
         return CommandResult.fail("Posting profile not found.")
+
+    # A78: block GATEWAY profiles on manual POs (same as bills/invoices).
+    if profile.usage == PostingProfile.Usage.GATEWAY:
+        return CommandResult.fail(
+            f"Posting profile '{profile.code}' is reserved for platform "
+            f"integrations and can't be used for manual purchase orders."
+        )
 
     if not lines:
         return CommandResult.fail("Purchase order must have at least one line.")
@@ -1443,6 +1459,16 @@ def create_purchase_credit_note(
 
     if bill.status != PurchaseBill.Status.POSTED:
         return CommandResult.fail("Credit notes can only be created against POSTED bills.")
+
+    # A78: block manual CNs against GATEWAY-profile bills (same reasoning
+    # as sales credit notes — clearing accounts need a tag this path can't
+    # supply).
+    if bill.posting_profile.usage == PostingProfile.Usage.GATEWAY:
+        return CommandResult.fail(
+            f"This bill was created by a platform integration "
+            f"(profile '{bill.posting_profile.code}'). Manual credit notes "
+            f"aren't allowed against platform-managed bills."
+        )
 
     if not lines:
         return CommandResult.fail("Credit note must have at least one line.")

@@ -1832,14 +1832,17 @@ def _ensure_shopify_sales_setup(store):
             },
         )
 
-        # 3. Create or get PostingProfile (using Clearing as control account)
-        profile, _ = PostingProfile.objects.get_or_create(
+        # 3. Create or get PostingProfile (using Clearing as control account).
+        # A78: usage=GATEWAY so it's hidden from manual-entry dropdowns and
+        # the command-layer guard rejects accidental manual use.
+        profile, profile_created = PostingProfile.objects.get_or_create(
             company=company,
             code=f"SHOPIFY-{store_label.upper()[:10]}",
             defaults={
                 "name": f"Shopify: {store_label}",
                 "name_ar": f"شوبيفاي: {store_label}",
                 "profile_type": PostingProfile.ProfileType.CUSTOMER,
+                "usage": PostingProfile.Usage.GATEWAY,
                 "control_account": clearing_account,
                 "is_active": True,
                 "description": (
@@ -1848,6 +1851,10 @@ def _ensure_shopify_sales_setup(store):
                 ),
             },
         )
+        if not profile_created and profile.usage != PostingProfile.Usage.GATEWAY:
+            # Pre-A78 row from before usage existed; promote it.
+            profile.usage = PostingProfile.Usage.GATEWAY
+            profile.save(update_fields=["usage", "updated_at"])
 
         # 4. Link to store
         store.default_customer = customer
@@ -1956,13 +1963,15 @@ def _bootstrap_shopify_settlement_providers(company, clearing_account, fallback_
             profile_code = _provider_profile_code(normalized)
 
             # 2. PostingProfile per provider (anchored on clearing initially).
-            provider_profile, _ = PostingProfile.objects.get_or_create(
+            # A78: usage=GATEWAY — hidden from manual dropdowns.
+            provider_profile, provider_created = PostingProfile.objects.get_or_create(
                 company=company,
                 code=profile_code,
                 defaults={
                     "name": f"Shopify Provider: {display_name}",
                     "name_ar": f"بوابة شوبيفاي: {display_name}",
                     "profile_type": PostingProfile.ProfileType.CUSTOMER,
+                    "usage": PostingProfile.Usage.GATEWAY,
                     "control_account": clearing_account,
                     "is_active": True,
                     "description": (
@@ -1973,6 +1982,9 @@ def _bootstrap_shopify_settlement_providers(company, clearing_account, fallback_
                     ),
                 },
             )
+            if not provider_created and provider_profile.usage != PostingProfile.Usage.GATEWAY:
+                provider_profile.usage = PostingProfile.Usage.GATEWAY
+                provider_profile.save(update_fields=["usage", "updated_at"])
 
             # 3. AnalysisDimensionValue for the reconciliation tag.
             dimension_value = ensure_settlement_provider_dimension_value(

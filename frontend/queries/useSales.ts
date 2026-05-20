@@ -182,7 +182,11 @@ export function useDeleteTaxCode() {
 // Posting Profile Queries
 // =============================================================================
 
-export function usePostingProfiles(filters?: { profile_type?: string; is_active?: boolean }) {
+export function usePostingProfiles(filters?: {
+  profile_type?: string;
+  is_active?: boolean;
+  usage?: "MANUAL" | "GATEWAY";
+}) {
   return useQuery({
     queryKey: postingProfileKeys.list(filters || {}),
     queryFn: async () => {

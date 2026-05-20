@@ -322,6 +322,8 @@ class PostingProfileListCreateView(APIView):
             profiles = profiles.filter(is_active=is_active)
         if "profile_type" in request.query_params:
             profiles = profiles.filter(profile_type=request.query_params["profile_type"])
+        if "usage" in request.query_params:
+            profiles = profiles.filter(usage=request.query_params["usage"])
 
         serializer = PostingProfileSerializer(profiles, many=True)
         return Response(serializer.data)

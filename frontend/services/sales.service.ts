@@ -66,7 +66,7 @@ export const taxCodesService = {
 // =============================================================================
 
 export const postingProfilesService = {
-  list: (params?: { profile_type?: string; is_active?: boolean }) =>
+  list: (params?: { profile_type?: string; is_active?: boolean; usage?: "MANUAL" | "GATEWAY" }) =>
     apiClient.get<PostingProfile[]>('/sales/posting-profiles/', { params }),
 
   get: (id: number) =>

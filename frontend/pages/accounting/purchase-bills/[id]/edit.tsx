@@ -62,7 +62,7 @@ export default function EditPurchaseBillPage() {
   const { data: vendors } = useVendors();
   const { data: items } = useItems();
   const { data: taxCodes } = useTaxCodes({ direction: "INPUT" });
-  const { data: postingProfiles } = usePostingProfiles({ profile_type: "VENDOR" });
+  const { data: postingProfiles } = usePostingProfiles({ profile_type: "VENDOR", usage: "MANUAL" });
   const { data: accounts } = useAccounts();
   const updateBill = useUpdatePurchaseBill();
   const { data: companySettings } = useCompanySettings();
