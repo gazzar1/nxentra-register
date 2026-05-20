@@ -202,9 +202,9 @@ export default function CustomerDetailPage() {
             <CardContent className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <p className="text-sm text-muted-foreground">Default AR Account</p>
+                  <p className="text-sm text-muted-foreground">Default Posting Profile</p>
                   <p className="font-mono ltr-code">
-                    {customer.default_ar_account_code || "Company default"}
+                    {customer.default_posting_profile_code || "Company default"}
                   </p>
                 </div>
                 <div>

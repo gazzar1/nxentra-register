@@ -131,10 +131,10 @@ export default function VendorsPage() {
       ),
     },
     {
-      key: "default_ap_account_code",
-      label: "AP Account",
-      render: (v) => v.default_ap_account_code
-        ? <span className="font-mono ltr-code text-muted-foreground text-sm">{v.default_ap_account_code}</span>
+      key: "default_posting_profile_code",
+      label: "Posting Profile",
+      render: (v) => v.default_posting_profile_code
+        ? <span className="font-mono ltr-code text-muted-foreground text-sm">{v.default_posting_profile_code}</span>
         : <span className="text-muted-foreground">—</span>,
     },
     {

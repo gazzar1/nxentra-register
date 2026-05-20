@@ -131,10 +131,10 @@ export default function CustomersPage() {
       ),
     },
     {
-      key: "default_ar_account_code",
-      label: "AR Account",
-      render: (c) => c.default_ar_account_code
-        ? <span className="font-mono ltr-code text-muted-foreground text-sm">{c.default_ar_account_code}</span>
+      key: "default_posting_profile_code",
+      label: "Posting Profile",
+      render: (c) => c.default_posting_profile_code
+        ? <span className="font-mono ltr-code text-muted-foreground text-sm">{c.default_posting_profile_code}</span>
         : <span className="text-muted-foreground">—</span>,
     },
     {

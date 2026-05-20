@@ -14,7 +14,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useAccounts } from "@/queries/useAccounts";
 import { usePostingProfiles } from "@/queries/useSales";
 import type { Vendor, VendorCreatePayload, VendorUpdatePayload } from "@/types/account";
 
@@ -26,7 +25,6 @@ const vendorSchema = z.object({
   phone: z.string().max(50).optional(),
   address: z.string().max(500).optional(),
   address_ar: z.string().max(500).optional(),
-  default_ap_account_id: z.number().nullable().optional(),
   default_posting_profile_id: z.number().nullable().optional(),
   payment_terms_days: z.number().min(0).max(365).optional(),
   currency: z.string().length(3).optional(),
@@ -58,14 +56,8 @@ export function VendorForm({
   isEdit = false,
 }: VendorFormProps) {
   const { t } = useTranslation(["common", "accounting"]);
-  const { data: accounts } = useAccounts();
   const { data: postingProfiles } = usePostingProfiles({ profile_type: "VENDOR", usage: "MANUAL" });
   const formRef = useRef<HTMLFormElement>(null);
-
-  // Filter to only show AP control accounts
-  const apAccounts = accounts?.filter(
-    (a) => a.is_postable && (a.role === "PAYABLE_CONTROL" || a.account_type === "PAYABLE")
-  ) || [];
 
   const form = useForm<VendorFormData>({
     resolver: zodResolver(vendorSchema),
@@ -77,7 +69,6 @@ export function VendorForm({
       phone: initialData?.phone || "",
       address: initialData?.address || "",
       address_ar: initialData?.address_ar || "",
-      default_ap_account_id: initialData?.default_ap_account || null,
       default_posting_profile_id: initialData?.default_posting_profile || null,
       payment_terms_days: initialData?.payment_terms_days || 30,
       currency: initialData?.currency || "USD",
@@ -101,7 +92,6 @@ export function VendorForm({
       phone: data.phone || undefined,
       address: data.address || undefined,
       address_ar: data.address_ar || undefined,
-      default_ap_account_id: data.default_ap_account_id || undefined,
       default_posting_profile_id: data.default_posting_profile_id || undefined,
       payment_terms_days: data.payment_terms_days,
       currency: data.currency || undefined,
@@ -192,7 +182,9 @@ export function VendorForm({
           <Input id="phone" {...form.register("phone")} placeholder="+1 234 567 8900" />
         </div>
 
-        {/* Default Posting Profile (A79) */}
+        {/* Default Posting Profile (A79) — primary routing primitive.
+            The legacy `default_ap_account` field is no longer shown; the
+            profile's control account is the authoritative AP account. */}
         <div className="space-y-2">
           <Label htmlFor="default_posting_profile_id">Default Posting Profile</Label>
           <Select
@@ -214,33 +206,7 @@ export function VendorForm({
             </SelectContent>
           </Select>
           <p className="text-xs text-muted-foreground">
-            Auto-fills the posting profile when this vendor is picked on a new bill
-          </p>
-        </div>
-
-        {/* Default AP Account (legacy — phase 2 will deprecate) */}
-        <div className="space-y-2">
-          <Label htmlFor="default_ap_account_id">Default AP Account</Label>
-          <Select
-            value={form.watch("default_ap_account_id")?.toString() || "__none__"}
-            onValueChange={(value) =>
-              form.setValue("default_ap_account_id", value === "__none__" ? null : parseInt(value))
-            }
-          >
-            <SelectTrigger>
-              <SelectValue placeholder="Select AP account" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="__none__">None (use company default)</SelectItem>
-              {apAccounts.map((account) => (
-                <SelectItem key={account.id} value={account.id.toString()}>
-                  <span className="font-mono ltr-code">{account.code}</span> - {account.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <p className="text-xs text-muted-foreground">
-            The default payables account for this vendor
+            Auto-fills the posting profile (AP account, future tax/terms defaults) when this vendor is picked on a new bill.
           </p>
         </div>
 
