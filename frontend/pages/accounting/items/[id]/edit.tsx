@@ -4,7 +4,7 @@ import { useTranslation } from "next-i18next";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Save, Upload, X, ImageIcon, Trash2 } from "lucide-react";
+import { ArrowLeft, Save, Upload, X, ImageIcon, Trash2, ChevronLeft, ChevronRight } from "lucide-react";
 import { useForm, Controller } from "react-hook-form";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
@@ -20,7 +20,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useAccounts } from "@/queries/useAccounts";
-import { useItem, useUpdateItem, useTaxCodes } from "@/queries/useSales";
+import { useItem, useItems, useUpdateItem, useTaxCodes } from "@/queries/useSales";
 import { useToast } from "@/components/ui/toaster";
 import type { ItemType, CostingMethod } from "@/types/sales";
 
@@ -64,7 +64,19 @@ export default function EditItemPage() {
   const { data: item, isLoading } = useItem(parseInt(id as string));
   const { data: accounts } = useAccounts();
   const { data: taxCodes } = useTaxCodes();
+  const { data: allItems } = useItems();
   const updateItem = useUpdateItem();
+
+  // Prev/Next navigation across the full items list (ordered by code, same
+  // as the list endpoint). Cached by React Query — if the user came from
+  // /accounting/items, no extra request. The hook is on by default; if it
+  // hasn't loaded yet, buttons render disabled.
+  const currentIndex = allItems?.findIndex((i) => i.id === parseInt(id as string)) ?? -1;
+  const prevItem = currentIndex > 0 ? allItems?.[currentIndex - 1] : undefined;
+  const nextItem =
+    currentIndex >= 0 && allItems && currentIndex < allItems.length - 1
+      ? allItems[currentIndex + 1]
+      : undefined;
 
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
@@ -255,7 +267,35 @@ export default function EditItemPage() {
           title="Edit Item"
           subtitle={`Editing ${item.name}`}
           actions={
-            <div className="flex gap-2">
+            <div className="flex items-center gap-2">
+              {/* Prev/Next nav across the item catalog */}
+              <div className="flex items-center gap-1 me-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  disabled={!prevItem}
+                  title={prevItem ? `Previous: ${prevItem.code}` : "No previous item"}
+                  onClick={() => prevItem && router.push(`/accounting/items/${prevItem.id}/edit`)}
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </Button>
+                {allItems && currentIndex >= 0 && (
+                  <span className="text-xs text-muted-foreground tabular-nums px-1 min-w-[3.5rem] text-center">
+                    {currentIndex + 1} of {allItems.length}
+                  </span>
+                )}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  disabled={!nextItem}
+                  title={nextItem ? `Next: ${nextItem.code}` : "No next item"}
+                  onClick={() => nextItem && router.push(`/accounting/items/${nextItem.id}/edit`)}
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
               <Link href="/accounting/items">
                 <Button type="button" variant="outline">
                   <ArrowLeft className="h-4 w-4 me-2" />
