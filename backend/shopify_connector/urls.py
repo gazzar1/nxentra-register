@@ -7,7 +7,12 @@ urlpatterns = [
     # OAuth flow
     path("install/", views.ShopifyInstallView.as_view(), name="shopify-install"),
     path("callback/", views.ShopifyCallbackView.as_view(), name="shopify-callback"),
-    # Webhook receiver (no auth — Shopify sends directly)
+    # Webhook receiver (no auth — Shopify sends directly).
+    # Both with and without trailing slash: Shopify's Partners Dashboard strips
+    # the trailing slash off declarative subscription URIs during registration,
+    # so deliveries hit /webhooks (no slash) and Django's APPEND_SLASH would
+    # 301-redirect — Shopify rejects POST redirects as "Invalid webhook URL".
+    path("webhooks", views.ShopifyWebhookView.as_view()),
     path("webhooks/", views.ShopifyWebhookView.as_view(), name="shopify-webhooks"),
     # Store management
     path("store/", views.ShopifyStoreView.as_view(), name="shopify-store"),
