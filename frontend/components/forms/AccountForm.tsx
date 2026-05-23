@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -39,6 +39,10 @@ interface AccountFormProps {
   isSubmitting?: boolean;
   onCancel?: () => void;
   extraContent?: React.ReactNode;
+  isEdit?: boolean;
+  // Bubbles formState.isDirty up so the parent edit page can drive
+  // useUnsavedChangesGuard and surface a 'No changes to save' tooltip.
+  onDirtyChange?: (isDirty: boolean) => void;
 }
 
 // Base account types (5-type system)
@@ -122,6 +126,8 @@ export function AccountForm({
   isSubmitting,
   onCancel,
   extraContent,
+  isEdit = false,
+  onDirtyChange,
 }: AccountFormProps) {
   const { t } = useTranslation(["common", "accounting"]);
   const { data: accounts } = useAccounts();
@@ -181,6 +187,11 @@ export function AccountForm({
 
   // Filter accounts that can be parents (headers only)
   const parentAccounts = accounts?.filter((a) => a.is_header) || [];
+
+  const isDirty = form.formState.isDirty;
+  useEffect(() => {
+    onDirtyChange?.(isDirty);
+  }, [isDirty, onDirtyChange]);
 
   useFormKeyboardShortcuts({
     formRef,
@@ -387,7 +398,11 @@ export function AccountForm({
 
       {/* Actions */}
       <div className="flex gap-4">
-        <Button type="submit" disabled={isSubmitting}>
+        <Button
+          type="submit"
+          disabled={isSubmitting || (isEdit && !isDirty)}
+          title={isEdit && !isDirty ? "No changes to save" : undefined}
+        >
           {isSubmitting ? t("actions.loading") : t("actions.save")}
         </Button>
         {onCancel && (

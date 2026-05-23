@@ -16,9 +16,11 @@ import {
 } from "@/components/ui/select";
 import { PageHeader, LoadingSpinner } from "@/components/common";
 import { AccountForm } from "@/components/forms/AccountForm";
-import { useAccount, useUpdateAccount, useDeleteAccount, useDimensions } from "@/queries/useAccounts";
+import { RecordNavigator } from "@/components/forms/RecordNavigator";
+import { useAccount, useAccounts, useUpdateAccount, useDeleteAccount, useDimensions } from "@/queries/useAccounts";
 import { accountsService } from "@/services/accounts.service";
 import { useToast } from "@/components/ui/toaster";
+import { useUnsavedChangesGuard } from "@/lib/useUnsavedChangesGuard";
 import { getErrorMessage } from "@/lib/api-client";
 import type { AccountCreatePayload, AccountAnalysisDefault } from "@/types/account";
 import { Badge } from "@/components/ui/badge";
@@ -31,10 +33,14 @@ export default function EditAccountPage() {
   const accountCode = typeof code === "string" ? code : "";
 
   const { data: account, isLoading } = useAccount(accountCode);
+  const { data: allAccounts } = useAccounts();
   const { data: dimensions } = useDimensions();
   const { toast } = useToast();
   const updateAccount = useUpdateAccount();
   const deleteAccount = useDeleteAccount();
+
+  const [isDirty, setIsDirty] = useState(false);
+  useUnsavedChangesGuard(isDirty);
 
   // Analysis dimensions state
   const [accountDefaults, setAccountDefaults] = useState<AccountAnalysisDefault[]>([]);
@@ -184,6 +190,14 @@ export default function EditAccountPage() {
           subtitle={`${account.code} - ${account.name}`}
           actions={
             <div className="flex items-center gap-3">
+              <RecordNavigator
+                records={allAccounts}
+                currentKey={accountCode}
+                getKey={(a) => a.code}
+                getLabel={(a) => `${a.code} - ${a.name}`}
+                basePath="/accounting/chart-of-accounts"
+                hrefBuilder={(k) => `/accounting/chart-of-accounts/${k}`}
+              />
               {account.has_transactions && (
                 <Badge variant="secondary" className="gap-1">
                   <BookOpen className="h-3 w-3" />
@@ -213,6 +227,8 @@ export default function EditAccountPage() {
               onSubmit={handleSubmit}
               isSubmitting={updateAccount.isPending}
               onCancel={() => router.back()}
+              isEdit
+              onDirtyChange={setIsDirty}
               extraContent={
                 dimensions && dimensions.length > 0 ? (
                   <div className="border-t pt-6 mt-6 space-y-4">
