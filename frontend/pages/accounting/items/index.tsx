@@ -135,8 +135,9 @@ export default function ItemsPage() {
                   <div className="col-span-2">Code</div>
                   <div className="col-span-3">Name</div>
                   <div className="col-span-1">Type</div>
-                  <div className="col-span-2">Sales Account</div>
-                  <div className="col-span-2">Unit Price</div>
+                  <div className="col-span-1">Sales A/C</div>
+                  <div className="col-span-2 text-end">Unit Price</div>
+                  <div className="col-span-1 text-end">Qty</div>
                   <div className="col-span-1">Status</div>
                   <div className="col-span-1"></div>
                 </div>
@@ -168,7 +169,7 @@ export default function ItemsPage() {
                         {ITEM_TYPE_LABELS[item.item_type]}
                       </Badge>
                     </div>
-                    <div className="col-span-2 text-sm">
+                    <div className="col-span-1 text-sm">
                       {item.sales_account_code ? (
                         <span className="font-mono ltr-code text-muted-foreground">
                           {item.sales_account_code}
@@ -177,11 +178,20 @@ export default function ItemsPage() {
                         <span className="text-muted-foreground">—</span>
                       )}
                     </div>
-                    <div className="col-span-2 text-sm font-mono ltr-number">
+                    <div className="col-span-2 text-sm font-mono ltr-number text-end">
                       {parseFloat(item.default_unit_price).toLocaleString(undefined, {
                         minimumFractionDigits: 2,
                         maximumFractionDigits: 2,
                       })}
+                    </div>
+                    <div className="col-span-1 text-sm font-mono ltr-number text-end">
+                      {item.item_type === "INVENTORY" ? (
+                        parseFloat(item.qty_on_hand || "0").toLocaleString(undefined, {
+                          maximumFractionDigits: 4,
+                        })
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
                     </div>
                     <div className="col-span-1">
                       {item.is_active ? (

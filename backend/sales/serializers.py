@@ -94,8 +94,17 @@ class ItemSerializer(serializers.ModelSerializer):
         """Sum of on-hand quantity across all warehouses, from the
         InventoryBalance projection. Returned as a string for consistency
         with the other Decimal fields (average_cost, last_cost) which DRF
-        also serializes as strings."""
+        also serializes as strings.
+
+        Uses the `_total_qty` annotation when the queryset was annotated
+        (list endpoint, avoids N+1). Falls back to a per-call aggregate
+        for detail views where annotating is overkill.
+        """
         from decimal import Decimal
+
+        annotated = getattr(obj, "_total_qty", None)
+        if annotated is not None:
+            return str(annotated)
 
         from django.db.models import Sum
 

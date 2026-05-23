@@ -53,11 +53,28 @@ class ItemListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        from decimal import Decimal
+
+        from django.db.models import DecimalField, Sum
+        from django.db.models.functions import Coalesce
+
         actor = resolve_actor(request)
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
 
-        items = Item.objects.filter(company=actor.company).order_by("code")
+        # Annotate total qty across warehouses so the serializer's
+        # get_qty_on_hand doesn't fire N+1 SubQs on the list endpoint.
+        items = (
+            Item.objects.filter(company=actor.company)
+            .annotate(
+                _total_qty=Coalesce(
+                    Sum("inventory_balances__qty_on_hand"),
+                    Decimal("0"),
+                    output_field=DecimalField(max_digits=18, decimal_places=4),
+                )
+            )
+            .order_by("code")
+        )
 
         # Optional filters
         if "is_active" in request.query_params:
