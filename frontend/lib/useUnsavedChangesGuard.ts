@@ -37,7 +37,12 @@ export function useUnsavedChangesGuard(isDirty: boolean, message: string = DEFAU
     const handleRouteChangeStart = () => {
       if (!window.confirm(message)) {
         router.events.emit("routeChangeError");
-        // eslint-disable-next-line @typescript-eslint/no-throw-literal
+        // Next.js's documented cancellation pattern is to throw inside the
+        // handler. Throwing a string (rather than an Error) is the form
+        // Next.js's router recognizes and silently swallows; throwing an
+        // Error subclass would print a stack trace to the console on every
+        // aborted navigation.
+        // eslint-disable-next-line no-throw-literal
         throw ABORT_SENTINEL;
       }
     };
