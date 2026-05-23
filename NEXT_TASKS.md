@@ -571,6 +571,64 @@ A79 introduced `default_posting_profile` on Customer/Vendor as the authoritative
 
 **Why this hasn't been done already:** standard one-release graceful deprecation. The data was preserved during A79 backfill (used to resolve initial `default_posting_profile` matches), so removing the columns now is a pure schema cleanup with no behavior change. Hold for one round of in-the-wild use to catch any silent reader; ship when no one's poking at it.
 
+### A81. E-invoicing compliance — Egypt ETA (Phase 1) + Saudi ZATCA (Phase 2 deferred) — **~4-6w focused** (compliance + wedge, surfaced 2026-05-23 evaluation)
+
+**Both the legal-must and the strongest MENA wedge against QuickBooks/Xero.** The 2026-05-23 evaluation flagged this as the single biggest omission from EVALUATION_STATUS.md — neither doc mentioned it, despite Egypt ETA being mandatory for B2B merchants over the revenue threshold and Saudi ZATCA Phase 1 already live nationwide. Global incumbents do not handle either; they leave merchants to bolt-on a third-party invoicing portal. Nxentra can ship native compliance and price $30–$50 above the freemium tier on that basis alone.
+
+#### Egypt ETA (Egyptian Tax Authority) — Phase 1 (do first, blocking Aljazeera7 paid invite if she's over the threshold)
+
+**Regulatory context (verify current state with ETA before coding — rules have shifted twice since 2023):**
+- Mandatory for B2B (issuer-to-VAT-registered-buyer) invoices for most sectors. Threshold + scope changes annually.
+- Real-time clearance model: invoice is SUBMITTED to ETA, gets a UUID + signed return, then issued to the buyer. Unsigned invoices are not legally valid.
+- XML payload (ETA-specific schema, NOT UBL 2.1 — they diverged), digitally signed with an HSM-backed certificate or USB token.
+- ETA portal: `https://api.invoicing.eta.gov.eg` (production) / preprod sandbox available.
+
+**Implementation scope:**
+1. **`einvoicing/` Django app** — own its own models (`EInvoiceSubmission`, `EInvoiceSignature`, `EInvoiceStatus`), commands (`submit_einvoice`, `cancel_einvoice`, `query_einvoice_status`), projections. Keep separate from `sales/` so connector swap is clean.
+2. **XML builder** — map `SalesInvoice` + `SalesInvoiceLine` + `Customer.tax_id` to ETA schema. Tax breakdown per line. Handle EGP→declared-currency conversion.
+3. **Digital signature** — ETA accepts: (a) HSM-issued cert via Egypt Trust, (b) USB token (offline signing → manual workflow). For SaaS, HSM is the only sane path. Cost: ~$200/year per cert + HSM service (Egypt Trust or similar). Sign server-side via PKCS#11.
+4. **ETA API client** — OAuth client_credentials, submit endpoint, query endpoint, cancel endpoint. Idempotency-aware: ETA assigns a UUID; store it and avoid re-submission on retry.
+5. **Async submission** — Celery task. Status: `DRAFT → QUEUED → SUBMITTED → ACCEPTED | REJECTED`. Surface status on the invoice detail page. Block invoice posting if `EInvoice.required` is True for the company and submission has not succeeded.
+6. **Settings UI** — Company → Settings → E-invoicing tab. Configure: ETA submitter ID, branch ID, activity code, cert path/HSM endpoint, mandatory vs optional flag, sandbox vs prod toggle.
+7. **Customer master changes** — Customer.tax_id and Customer.activity_code become required for B2B if e-invoicing is enabled (validation surfaces on the customer form, not at submission time).
+
+**Effort:** ~3-4 weeks focused. Signing + cert procurement is the long pole — start cert acquisition in parallel.
+
+#### Saudi ZATCA (Zakat, Tax and Customs Authority) — Phase 2 (defer until first KSA merchant signs)
+
+**Regulatory context:**
+- Phase 1 (e-invoice generation): mandatory since 2021-12-04 — issuer produces a signed XML + QR code + structured invoice.
+- Phase 2 (integration with ZATCA FATOORA portal): rolled out in waves by revenue band. ~most merchants over SAR 3M revenue are in-scope today.
+- UBL 2.1 (PINT-Saudi profile) — different from Egypt ETA's schema. Don't share builders.
+- QR code on every printed invoice (B2C as well). Required since Phase 1.
+
+**Implementation scope:**
+1. Reuse the `einvoicing/` app structure. Add ZATCA-specific submodule with its own schema mapper.
+2. UBL 2.1 PINT-Saudi XML builder.
+3. ZATCA Cryptographic Stamp Identifier (CSID) — different signing model than ETA. Onboarding API to obtain CSID; renew every 12 months.
+4. QR code generation (TLV-encoded, base64, embedded in PDF).
+5. Submit-or-clearance model depending on merchant's Phase 2 wave.
+6. Settings UI extension — Country selector on the e-invoicing tab routes to ETA vs ZATCA pipeline.
+
+**Effort:** ~2-3 weeks focused once ETA Phase 1 ships and the shared infrastructure exists.
+
+#### Why this is the right wedge (not just compliance)
+
+- **Compliance gate.** Egyptian B2B merchants over the revenue threshold legally cannot operate without e-invoicing. Today they bolt on Mtebes / OrcaCenter / similar at ~$30-80/month per company. If Nxentra ships native, that's an immediate $30/month price-add justification.
+- **Lockup.** Once a merchant's e-invoicing UUIDs are stored in Nxentra, switching to QuickBooks/Xero means re-onboarding to a third-party invoicing portal too. The switching cost roughly doubles.
+- **Unblocks KSA expansion.** Saudi ZATCA support is the gate for selling into Riyadh/Jeddah merchants — ~3-4x larger TAM than Egypt alone.
+- **Global incumbents do not ship this.** QuickBooks MENA, Xero, FreshBooks — none have native ETA/ZATCA. They redirect to local partners. This is the most defensible moat Nxentra can build that doesn't require capital or headcount.
+
+#### Sequencing recommendation
+
+Do not start ETA Phase 1 in the next 30 days. The current commercial path is App Store listing + first 10 paying Shopify merchants → if any of those merchants are Egyptian B2B over the threshold, ETA Phase 1 becomes a 30-day hard requirement. Right now, every Shopify merchant Nxentra acquires is B2C (DTC e-commerce), and B2C e-invoicing is not yet mandatory in Egypt — buyer doesn't have a VAT ID to send to.
+
+**Trigger to start ETA Phase 1:** any of (a) first paying B2B Egyptian merchant signs, (b) Aljazeera7 confirms she sells B2B, (c) Egypt ETA scope expands to B2C (watch for late-2026 announcements).
+
+**Trigger to start ZATCA Phase 2:** first Saudi merchant inquiry.
+
+**Procurement to start NOW even before code:** ETA submitter registration + cert acquisition (Egypt Trust, ~$200/year, 1-2 week lead time). This is a long-pole item that should not block implementation when the trigger fires.
+
 ---
 
 **Merchant-readiness exit criteria** (revised 2026-05-17 after A50/A51/A52 ship + A53/A54/A55 surface):
