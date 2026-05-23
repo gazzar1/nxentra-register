@@ -126,13 +126,35 @@ export default function EditItemPage() {
     (a) => a.account_type === "EXPENSE" && a.is_postable && !a.is_header
   );
 
+  // Keyboard shortcuts: ←/→ to navigate prev/next. Gated on the focused
+  // element NOT being editable so the arrows still move the cursor in
+  // text fields and select dropdowns.
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      const target = e.target as HTMLElement | null;
+      if (target?.matches("input, textarea, select, [contenteditable=true], [role='combobox'], [role='listbox'], [role='option']")) {
+        return;
+      }
+      if (e.key === "ArrowLeft" && prevItem) {
+        e.preventDefault();
+        router.push(`/accounting/items/${prevItem.id}/edit`);
+      } else if (e.key === "ArrowRight" && nextItem) {
+        e.preventDefault();
+        router.push(`/accounting/items/${nextItem.id}/edit`);
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [prevItem, nextItem, router]);
+
   const {
     register,
     control,
     handleSubmit,
     reset,
     watch,
-    formState: { errors, isSubmitting },
+    formState: { errors, isSubmitting, isDirty },
   } = useForm<ItemFormData>({
     defaultValues: {
       code: "",
@@ -275,7 +297,7 @@ export default function EditItemPage() {
                   variant="outline"
                   size="icon"
                   disabled={!prevItem}
-                  title={prevItem ? `Previous: ${prevItem.code}` : "No previous item"}
+                  title={prevItem ? `Previous: ${prevItem.code}  (←)` : "No previous item"}
                   onClick={() => prevItem && router.push(`/accounting/items/${prevItem.id}/edit`)}
                 >
                   <ChevronLeft className="h-4 w-4" />
@@ -290,7 +312,7 @@ export default function EditItemPage() {
                   variant="outline"
                   size="icon"
                   disabled={!nextItem}
-                  title={nextItem ? `Next: ${nextItem.code}` : "No next item"}
+                  title={nextItem ? `Next: ${nextItem.code}  (→)` : "No next item"}
                   onClick={() => nextItem && router.push(`/accounting/items/${nextItem.id}/edit`)}
                 >
                   <ChevronRight className="h-4 w-4" />
@@ -302,7 +324,11 @@ export default function EditItemPage() {
                   Cancel
                 </Button>
               </Link>
-              <Button type="submit" disabled={isSubmitting}>
+              <Button
+                type="submit"
+                disabled={isSubmitting || !isDirty}
+                title={!isDirty ? "No changes to save" : undefined}
+              >
                 <Save className="h-4 w-4 me-2" />
                 {isSubmitting ? "Saving..." : "Save Changes"}
               </Button>
