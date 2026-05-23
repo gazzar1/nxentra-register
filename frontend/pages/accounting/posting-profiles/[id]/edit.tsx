@@ -21,8 +21,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useAccounts } from "@/queries/useAccounts";
-import { usePostingProfile, useUpdatePostingProfile } from "@/queries/useSales";
+import { usePostingProfile, useUpdatePostingProfile, usePostingProfiles } from "@/queries/useSales";
 import { useToast } from "@/components/ui/toaster";
+import { RecordNavigator } from "@/components/forms/RecordNavigator";
+import { useUnsavedChangesGuard } from "@/lib/useUnsavedChangesGuard";
 import type { PostingProfileType, PostingProfileUsage } from "@/types/sales";
 
 interface PostingProfileFormData {
@@ -59,6 +61,7 @@ export default function EditPostingProfilePage() {
   const { id } = router.query;
   const { toast } = useToast();
   const { data: profile, isLoading } = usePostingProfile(parseInt(id as string));
+  const { data: allProfiles } = usePostingProfiles();
   const { data: accounts } = useAccounts();
   const updateProfile = useUpdatePostingProfile();
 
@@ -73,7 +76,7 @@ export default function EditPostingProfilePage() {
     handleSubmit,
     watch,
     reset,
-    formState: { errors, isSubmitting },
+    formState: { errors, isSubmitting, isDirty },
   } = useForm<PostingProfileFormData>({
     defaultValues: {
       code: "",
@@ -88,6 +91,8 @@ export default function EditPostingProfilePage() {
 
   const profileType = watch("profile_type");
   const usage = watch("usage");
+
+  useUnsavedChangesGuard(isDirty);
 
   // Filter accounts based on profile type
   const filteredAccounts = controlAccounts?.filter((acc) => {
@@ -171,14 +176,25 @@ export default function EditPostingProfilePage() {
           title="Edit Posting Profile"
           subtitle={`Editing ${profile.name}`}
           actions={
-            <div className="flex gap-2">
+            <div className="flex items-center gap-2">
+              <RecordNavigator
+                records={allProfiles}
+                currentKey={parseInt(id as string)}
+                getKey={(p) => p.id}
+                getLabel={(p) => `${p.code} - ${p.name}`}
+                basePath="/accounting/posting-profiles"
+              />
               <Link href="/accounting/posting-profiles">
                 <Button type="button" variant="outline">
                   <ArrowLeft className="h-4 w-4 me-2" />
                   Cancel
                 </Button>
               </Link>
-              <Button type="submit" disabled={isSubmitting}>
+              <Button
+                type="submit"
+                disabled={isSubmitting || !isDirty}
+                title={!isDirty ? "No changes to save" : undefined}
+              >
                 <Save className="h-4 w-4 me-2" />
                 {isSubmitting ? "Saving..." : "Save Changes"}
               </Button>

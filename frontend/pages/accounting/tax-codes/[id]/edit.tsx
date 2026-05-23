@@ -20,8 +20,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useAccounts } from "@/queries/useAccounts";
-import { useTaxCode, useUpdateTaxCode } from "@/queries/useSales";
+import { useTaxCode, useUpdateTaxCode, useTaxCodes } from "@/queries/useSales";
 import { useToast } from "@/components/ui/toaster";
+import { RecordNavigator } from "@/components/forms/RecordNavigator";
+import { useUnsavedChangesGuard } from "@/lib/useUnsavedChangesGuard";
 import type { TaxCodeUpdatePayload, TaxDirection } from "@/types/sales";
 
 interface TaxCodeFormData {
@@ -46,6 +48,7 @@ export default function EditTaxCodePage() {
   const { toast } = useToast();
   const { data: accounts } = useAccounts();
   const { data: taxCode, isLoading: isLoadingTaxCode } = useTaxCode(taxCodeId);
+  const { data: allTaxCodes } = useTaxCodes();
   const updateTaxCode = useUpdateTaxCode();
 
   // Tax accounts are typically liability accounts (VAT Payable, Input VAT)
@@ -58,7 +61,7 @@ export default function EditTaxCodePage() {
     control,
     handleSubmit,
     reset,
-    formState: { errors, isSubmitting },
+    formState: { errors, isSubmitting, isDirty },
   } = useForm<TaxCodeFormData>({
     defaultValues: {
       code: "",
@@ -69,6 +72,8 @@ export default function EditTaxCodePage() {
       tax_account_id: "",
     },
   });
+
+  useUnsavedChangesGuard(isDirty);
 
   // Populate form when tax code data loads
   useEffect(() => {
@@ -143,14 +148,25 @@ export default function EditTaxCodePage() {
           title="Edit Tax Code"
           subtitle={`Editing ${taxCode.code} - ${taxCode.name}`}
           actions={
-            <div className="flex gap-2">
+            <div className="flex items-center gap-2">
+              <RecordNavigator
+                records={allTaxCodes}
+                currentKey={taxCodeId}
+                getKey={(tc) => tc.id}
+                getLabel={(tc) => `${tc.code} - ${tc.name}`}
+                basePath="/accounting/tax-codes"
+              />
               <Link href="/accounting/tax-codes">
                 <Button type="button" variant="outline">
                   <ArrowLeft className="h-4 w-4 me-2" />
                   Cancel
                 </Button>
               </Link>
-              <Button type="submit" disabled={isSubmitting}>
+              <Button
+                type="submit"
+                disabled={isSubmitting || !isDirty}
+                title={!isDirty ? "No changes to save" : undefined}
+              >
                 <Save className="h-4 w-4 me-2" />
                 {isSubmitting ? "Saving..." : "Save Changes"}
               </Button>

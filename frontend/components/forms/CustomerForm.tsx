@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -43,6 +43,9 @@ interface CustomerFormProps {
   isSubmitting?: boolean;
   onCancel?: () => void;
   isEdit?: boolean;
+  // A79-followup: lets the parent page see dirty state to drive the
+  // unsaved-changes guard + 'No changes to save' tooltip.
+  onDirtyChange?: (isDirty: boolean) => void;
 }
 
 export function CustomerForm({
@@ -51,6 +54,7 @@ export function CustomerForm({
   isSubmitting,
   onCancel,
   isEdit = false,
+  onDirtyChange,
 }: CustomerFormProps) {
   const { t } = useTranslation(["common", "accounting"]);
   const { data: postingProfiles } = usePostingProfiles({ profile_type: "CUSTOMER", usage: "MANUAL" });
@@ -96,6 +100,13 @@ export function CustomerForm({
       ...(isEdit && data.status ? { status: data.status } : {}),
     });
   };
+
+  // Bubble dirty state up so the parent page can drive
+  // useUnsavedChangesGuard + show 'Save unavailable' affordances.
+  const isDirty = form.formState.isDirty;
+  useEffect(() => {
+    onDirtyChange?.(isDirty);
+  }, [isDirty, onDirtyChange]);
 
   useFormKeyboardShortcuts({
     formRef,
@@ -301,7 +312,11 @@ export function CustomerForm({
 
       {/* Actions */}
       <div className="flex gap-4">
-        <Button type="submit" disabled={isSubmitting}>
+        <Button
+          type="submit"
+          disabled={isSubmitting || (isEdit && !form.formState.isDirty)}
+          title={isEdit && !form.formState.isDirty ? "No changes to save" : undefined}
+        >
           {isSubmitting ? t("actions.loading") : t("actions.save")}
         </Button>
         {onCancel && (

@@ -2,12 +2,15 @@ import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import { useRouter } from "next/router";
+import { useState } from "react";
 import { AppLayout } from "@/components/layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader, LoadingSpinner } from "@/components/common";
 import { VendorForm } from "@/components/forms/VendorForm";
-import { useVendor, useUpdateVendor } from "@/queries/useAccounts";
+import { RecordNavigator } from "@/components/forms/RecordNavigator";
+import { useVendor, useUpdateVendor, useVendors } from "@/queries/useAccounts";
 import { useToast } from "@/components/ui/toaster";
+import { useUnsavedChangesGuard } from "@/lib/useUnsavedChangesGuard";
 import type { VendorUpdatePayload } from "@/types/account";
 
 export default function EditVendorPage() {
@@ -16,7 +19,10 @@ export default function EditVendorPage() {
   const { toast } = useToast();
   const code = router.query.code as string;
   const { data: vendor, isLoading } = useVendor(code);
+  const { data: allVendors } = useVendors();
   const updateVendor = useUpdateVendor();
+  const [isDirty, setIsDirty] = useState(false);
+  useUnsavedChangesGuard(isDirty);
 
   const handleSubmit = async (data: Record<string, unknown>) => {
     try {
@@ -60,6 +66,15 @@ export default function EditVendorPage() {
         <PageHeader
           title={`Edit ${vendor.name}`}
           subtitle={`Update vendor information for ${vendor.code}`}
+          actions={
+            <RecordNavigator
+              records={allVendors}
+              currentKey={code}
+              getKey={(v) => v.code}
+              getLabel={(v) => `${v.code} - ${v.name}`}
+              basePath="/accounting/vendors"
+            />
+          }
         />
 
         <Card>
@@ -73,6 +88,7 @@ export default function EditVendorPage() {
               isSubmitting={updateVendor.isPending}
               onCancel={() => router.push(`/accounting/vendors/${code}`)}
               isEdit
+              onDirtyChange={setIsDirty}
             />
           </CardContent>
         </Card>

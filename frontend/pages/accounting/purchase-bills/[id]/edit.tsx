@@ -24,12 +24,14 @@ import {
 } from "@/components/ui/select";
 import { useVendors } from "@/queries/useAccounts";
 import { useItems, useTaxCodes, usePostingProfiles } from "@/queries/useSales";
-import { usePurchaseBill, useUpdatePurchaseBill } from "@/queries/usePurchases";
+import { usePurchaseBill, useUpdatePurchaseBill, usePurchaseBills } from "@/queries/usePurchases";
 import { useAccounts } from "@/queries/useAccounts";
 import { useToast } from "@/components/ui/toaster";
 import { useCompanySettings } from "@/queries/useCompanySettings";
 import { useAuth } from "@/contexts/AuthContext";
 import { exchangeRatesService } from "@/services/exchange-rates.service";
+import { RecordNavigator } from "@/components/forms/RecordNavigator";
+import { useUnsavedChangesGuard } from "@/lib/useUnsavedChangesGuard";
 import type { PurchaseBillUpdatePayload } from "@/types/purchases";
 
 interface BillLineFormData {
@@ -59,6 +61,7 @@ export default function EditPurchaseBillPage() {
   const { id } = router.query;
   const { toast } = useToast();
   const { data: bill, isLoading } = usePurchaseBill(parseInt(id as string));
+  const { data: allBills } = usePurchaseBills();
   const { data: vendors } = useVendors();
   const { data: items } = useItems();
   const { data: taxCodes } = useTaxCodes({ direction: "INPUT" });
@@ -89,7 +92,7 @@ export default function EditPurchaseBillPage() {
     watch,
     setValue,
     reset,
-    formState: { errors, isSubmitting },
+    formState: { errors, isSubmitting, isDirty },
   } = useForm<BillFormData>({
     defaultValues: {
       bill_number: "",
@@ -102,6 +105,8 @@ export default function EditPurchaseBillPage() {
       lines: [],
     },
   });
+
+  useUnsavedChangesGuard(isDirty);
 
   const { fields, append, remove } = useFieldArray({
     control,
@@ -299,14 +304,25 @@ export default function EditPurchaseBillPage() {
           title="Edit Purchase Bill"
           subtitle={`Editing ${bill.bill_number}`}
           actions={
-            <div className="flex gap-2">
+            <div className="flex items-center gap-2">
+              <RecordNavigator
+                records={allBills}
+                currentKey={parseInt(id as string)}
+                getKey={(b) => b.id}
+                getLabel={(b) => `${b.bill_number} - ${b.vendor_name ?? ""}`.trim()}
+                basePath="/accounting/purchase-bills"
+              />
               <Link href={`/accounting/purchase-bills/${bill.id}`}>
                 <Button type="button" variant="outline">
                   <ArrowLeft className="h-4 w-4 me-2" />
                   Cancel
                 </Button>
               </Link>
-              <Button type="submit" disabled={isSubmitting}>
+              <Button
+                type="submit"
+                disabled={isSubmitting || !isDirty}
+                title={!isDirty ? "No changes to save" : undefined}
+              >
                 <Save className="h-4 w-4 me-2" />
                 {isSubmitting ? "Saving..." : "Save Changes"}
               </Button>

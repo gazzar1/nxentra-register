@@ -23,7 +23,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useCustomers } from "@/queries/useAccounts";
-import { useItems, useTaxCodes, usePostingProfiles, useSalesInvoice, useUpdateSalesInvoice } from "@/queries/useSales";
+import { useItems, useTaxCodes, usePostingProfiles, useSalesInvoice, useUpdateSalesInvoice, useSalesInvoices } from "@/queries/useSales";
 import { useAccounts } from "@/queries/useAccounts";
 import { useWarehouses } from "@/queries/useInventory";
 import { LineAvailabilityHint } from "@/components/inventory/LineAvailabilityHint";
@@ -31,6 +31,8 @@ import { useToast } from "@/components/ui/toaster";
 import { useCompanySettings } from "@/queries/useCompanySettings";
 import { useAuth } from "@/contexts/AuthContext";
 import { exchangeRatesService } from "@/services/exchange-rates.service";
+import { RecordNavigator } from "@/components/forms/RecordNavigator";
+import { useUnsavedChangesGuard } from "@/lib/useUnsavedChangesGuard";
 import type { SalesInvoiceUpdatePayload } from "@/types/sales";
 
 interface InvoiceLineFormData {
@@ -60,6 +62,7 @@ export default function EditSalesInvoicePage() {
   const { id } = router.query;
   const { toast } = useToast();
   const { data: invoice, isLoading } = useSalesInvoice(parseInt(id as string));
+  const { data: allInvoices } = useSalesInvoices();
   const { data: customers } = useCustomers();
   const { data: items } = useItems();
   const { data: taxCodes } = useTaxCodes({ direction: "OUTPUT" });
@@ -94,7 +97,7 @@ export default function EditSalesInvoicePage() {
     watch,
     setValue,
     reset,
-    formState: { errors, isSubmitting },
+    formState: { errors, isSubmitting, isDirty },
   } = useForm<InvoiceFormData>({
     defaultValues: {
       invoice_number: "",
@@ -106,6 +109,8 @@ export default function EditSalesInvoicePage() {
       lines: [],
     },
   });
+
+  useUnsavedChangesGuard(isDirty);
 
   const { fields, append, remove } = useFieldArray({
     control,
@@ -324,14 +329,25 @@ export default function EditSalesInvoicePage() {
           title="Edit Sales Invoice"
           subtitle={`Editing ${invoice.invoice_number}`}
           actions={
-            <div className="flex gap-2">
+            <div className="flex items-center gap-2">
+              <RecordNavigator
+                records={allInvoices}
+                currentKey={parseInt(id as string)}
+                getKey={(inv) => inv.id}
+                getLabel={(inv) => `${inv.invoice_number} - ${inv.customer_name ?? ""}`.trim()}
+                basePath="/accounting/sales-invoices"
+              />
               <Link href={`/accounting/sales-invoices/${invoice.id}`}>
                 <Button type="button" variant="outline">
                   <ArrowLeft className="h-4 w-4 me-2" />
                   Cancel
                 </Button>
               </Link>
-              <Button type="submit" disabled={isSubmitting}>
+              <Button
+                type="submit"
+                disabled={isSubmitting || !isDirty}
+                title={!isDirty ? "No changes to save" : undefined}
+              >
                 <Save className="h-4 w-4 me-2" />
                 {isSubmitting ? "Saving..." : "Save Changes"}
               </Button>

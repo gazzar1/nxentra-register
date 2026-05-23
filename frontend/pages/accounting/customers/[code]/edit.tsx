@@ -2,12 +2,15 @@ import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import { useRouter } from "next/router";
+import { useState } from "react";
 import { AppLayout } from "@/components/layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader, LoadingSpinner } from "@/components/common";
 import { CustomerForm } from "@/components/forms/CustomerForm";
-import { useCustomer, useUpdateCustomer } from "@/queries/useAccounts";
+import { RecordNavigator } from "@/components/forms/RecordNavigator";
+import { useCustomer, useUpdateCustomer, useCustomers } from "@/queries/useAccounts";
 import { useToast } from "@/components/ui/toaster";
+import { useUnsavedChangesGuard } from "@/lib/useUnsavedChangesGuard";
 import type { CustomerUpdatePayload } from "@/types/account";
 
 export default function EditCustomerPage() {
@@ -16,7 +19,10 @@ export default function EditCustomerPage() {
   const { toast } = useToast();
   const code = router.query.code as string;
   const { data: customer, isLoading } = useCustomer(code);
+  const { data: allCustomers } = useCustomers();
   const updateCustomer = useUpdateCustomer();
+  const [isDirty, setIsDirty] = useState(false);
+  useUnsavedChangesGuard(isDirty);
 
   const handleSubmit = async (data: Record<string, unknown>) => {
     try {
@@ -60,6 +66,15 @@ export default function EditCustomerPage() {
         <PageHeader
           title={`Edit ${customer.name}`}
           subtitle={`Update customer information for ${customer.code}`}
+          actions={
+            <RecordNavigator
+              records={allCustomers}
+              currentKey={code}
+              getKey={(c) => c.code}
+              getLabel={(c) => `${c.code} - ${c.name}`}
+              basePath="/accounting/customers"
+            />
+          }
         />
 
         <Card>
@@ -73,6 +88,7 @@ export default function EditCustomerPage() {
               isSubmitting={updateCustomer.isPending}
               onCancel={() => router.push(`/accounting/customers/${code}`)}
               isEdit
+              onDirtyChange={setIsDirty}
             />
           </CardContent>
         </Card>

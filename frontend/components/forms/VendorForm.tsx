@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -46,6 +46,7 @@ interface VendorFormProps {
   isSubmitting?: boolean;
   onCancel?: () => void;
   isEdit?: boolean;
+  onDirtyChange?: (isDirty: boolean) => void;
 }
 
 export function VendorForm({
@@ -54,6 +55,7 @@ export function VendorForm({
   isSubmitting,
   onCancel,
   isEdit = false,
+  onDirtyChange,
 }: VendorFormProps) {
   const { t } = useTranslation(["common", "accounting"]);
   const { data: postingProfiles } = usePostingProfiles({ profile_type: "VENDOR", usage: "MANUAL" });
@@ -105,6 +107,11 @@ export function VendorForm({
       ...(isEdit && data.status ? { status: data.status } : {}),
     });
   };
+
+  const isDirty = form.formState.isDirty;
+  useEffect(() => {
+    onDirtyChange?.(isDirty);
+  }, [isDirty, onDirtyChange]);
 
   useFormKeyboardShortcuts({
     formRef,
@@ -323,7 +330,11 @@ export function VendorForm({
 
       {/* Actions */}
       <div className="flex gap-4">
-        <Button type="submit" disabled={isSubmitting}>
+        <Button
+          type="submit"
+          disabled={isSubmitting || (isEdit && !isDirty)}
+          title={isEdit && !isDirty ? "No changes to save" : undefined}
+        >
           {isSubmitting ? t("actions.loading") : t("actions.save")}
         </Button>
         {onCancel && (
