@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import Link from "next/link";
@@ -27,6 +27,14 @@ import {
   type SettlementImportResponse,
   type SettlementProviderCode,
 } from "@/services/settlement-imports.service";
+// A85 chunk 5 (2026-05-26): pre-flight preview modal.
+import { JEPreviewModal } from "@/components/finance/JEPreviewModal";
+import {
+  settlementImportService,
+  type OpenFiscalPeriod,
+  type SettlementImportPreview,
+} from "@/services/settlement-import.service";
+import { useAuth } from "@/contexts/AuthContext";
 
 interface UploaderState {
   file: File | null;
@@ -53,10 +61,36 @@ function formatMoney(s: string): string {
 
 export default function SettlementImportPage() {
   const { toast } = useToast();
+  const { hasPermission } = useAuth();
 
   const [paymob, setPaymob] = useState<UploaderState>(INITIAL_STATE);
   const [bosta, setBosta] = useState<UploaderState>(INITIAL_STATE);
 
+  // A85 chunk 5: pre-flight modal state.
+  const [previewModalOpen, setPreviewModalOpen] = useState(false);
+  const [preview, setPreview] = useState<SettlementImportPreview | null>(null);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [pendingProvider, setPendingProvider] = useState<SettlementProviderCode | null>(null);
+  const [posting, setPosting] = useState(false);
+  const [openPeriods, setOpenPeriods] = useState<OpenFiscalPeriod[]>([]);
+
+  // Load OPEN fiscal periods once for the override picker dropdown.
+  useEffect(() => {
+    settlementImportService
+      .listOpenPeriods()
+      .then(setOpenPeriods)
+      .catch(() => setOpenPeriods([]));
+  }, []);
+
+  const userPermissions = (() => {
+    const s = new Set<string>();
+    if (hasPermission("accounting.je.override_period")) {
+      s.add("accounting.je.override_period");
+    }
+    return s;
+  })();
+
+  // Step 1: operator clicks Import → fetch preview (no commit yet).
   const handleUpload = async (
     provider: SettlementProviderCode,
     state: UploaderState,
@@ -65,25 +99,72 @@ export default function SettlementImportPage() {
     if (!state.file) return;
     setState({ ...state, uploading: true, error: null, result: null });
     try {
-      const { data } = await settlementImportsService.importCsv(state.file, provider);
-      setState({
-        file: state.file,
+      const previewData = await settlementImportService.preview(state.file, provider);
+      setState({ ...state, uploading: false, error: null, result: null });
+      setPreview(previewData);
+      setPendingFile(state.file);
+      setPendingProvider(provider);
+      setPreviewModalOpen(true);
+    } catch (err: any) {
+      const message = err?.response?.data?.detail || err?.message || "Preview failed.";
+      setState({ ...state, uploading: false, error: message, result: null });
+      toast({
+        title: `${provider} preview failed.`,
+        description: message,
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Step 2: operator clicks Post All in modal → commit (with optional override).
+  const handleConfirmCommit = async (
+    override?: { period: number; fiscalYear: number; reason: string }
+  ) => {
+    if (!pendingFile || !pendingProvider) return;
+    setPosting(true);
+    try {
+      const result = await settlementImportService.commit({
+        file: pendingFile,
+        provider: pendingProvider,
+        periodOverride: override?.period,
+        fiscalYearOverride: override?.fiscalYear,
+        overrideReason: override?.reason,
+      });
+
+      // Show the result in the per-provider uploader card.
+      const setter = pendingProvider === "paymob" ? setPaymob : setBosta;
+      setter({
+        file: pendingFile,
         uploading: false,
-        result: data,
+        result: result as unknown as SettlementImportResponse,
         error: null,
       });
-      const newBatches = data.batches.filter((b) => !b.deduplicated).length;
-      const dupBatches = data.batches.length - newBatches;
+
+      const newBatches = result.batches.filter((b) => !b.deduplicated).length;
+      const dupBatches = result.batches.length - newBatches;
       toast({
         title:
           newBatches > 0
-            ? `Imported ${newBatches} batch(es) from ${provider}.`
+            ? `Imported ${newBatches} batch(es) from ${pendingProvider}${
+                override ? " (period overridden)" : ""
+              }.`
             : `No new batches — all ${dupBatches} were already imported.`,
       });
+
+      setPreviewModalOpen(false);
+      setPreview(null);
+      setPendingFile(null);
+      setPendingProvider(null);
     } catch (err: any) {
-      const message = err?.response?.data?.detail || err?.message || "Import failed.";
-      setState({ ...state, uploading: false, error: message, result: null });
-      toast({ title: `${provider} import failed.`, description: message, variant: "destructive" });
+      const message =
+        err?.response?.data?.detail || err?.message || "Commit failed.";
+      toast({
+        title: `${pendingProvider} commit failed.`,
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setPosting(false);
     }
   };
 
@@ -151,6 +232,24 @@ DR Sales Returns          uncollected (Bosta failed deliveries only)
             onUpload={() => handleUpload("bosta", bosta, setBosta)}
           />
         </div>
+
+        {/* A85 chunk 5: pre-flight preview modal. */}
+        <JEPreviewModal
+          open={previewModalOpen}
+          onOpenChange={(open) => {
+            setPreviewModalOpen(open);
+            if (!open) {
+              setPreview(null);
+              setPendingFile(null);
+              setPendingProvider(null);
+            }
+          }}
+          preview={preview}
+          userPermissions={userPermissions}
+          openPeriods={openPeriods}
+          onConfirm={handleConfirmCommit}
+          isPosting={posting}
+        />
       </div>
     </AppLayout>
   );
