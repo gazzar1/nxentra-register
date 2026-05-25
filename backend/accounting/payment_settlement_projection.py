@@ -342,6 +342,15 @@ class PaymentSettlementProjection(BaseProjection):
         currency = data.get("currency") or company.default_currency or "USD"
         entry_date = data.get("payout_date") or data.get("transaction_date")
 
+        # A85 chunk 3b (2026-05-26): honor optional period override carried
+        # in the event payload. When `period_override` is non-zero, the
+        # JE posts to that (period, fiscal_year) instead of auto-resolving
+        # from entry_date. The matching PeriodOverrideAudit row was already
+        # written at import time by import_settlement_csv(); replay reads
+        # the override from the immutable event payload and produces the
+        # same JE.
+        period_override = int(data.get("period_override") or 0) or None
+
         with transaction.atomic():
             create_result = create_journal_entry(
                 actor=actor,
@@ -350,6 +359,7 @@ class PaymentSettlementProjection(BaseProjection):
                 lines=je_lines,
                 kind=JournalEntry.Kind.NORMAL,
                 currency=currency,
+                period=period_override,
             )
             if not create_result.success:
                 logger.error(

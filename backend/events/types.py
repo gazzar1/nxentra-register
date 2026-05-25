@@ -2494,6 +2494,15 @@ class PaymentSettlementReceivedData(FinancialEventData):
     line_items: list = field(default_factory=list)
     provider_breakdown: list = field(default_factory=list)
     source_filename: str = ""
+    # A85 chunk 3b (2026-05-26): optional operator-driven period override.
+    # When non-zero, the PaymentSettlementProjection MUST post the JE to
+    # this (period, fiscal_year) instead of auto-resolving from payout_date.
+    # An accompanying PeriodOverrideAudit row is written at import time
+    # (not by the projection) — the event payload just carries the override
+    # forward so projection replay produces the same JE.
+    # Defaults of 0 mean "no override; use auto-resolution from date".
+    period_override: int = 0
+    fiscal_year_override: int = 0
 
 
 # =============================================================================

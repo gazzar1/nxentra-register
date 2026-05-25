@@ -87,6 +87,22 @@ class SettlementCSVImportView(APIView):
                 status=http_status.HTTP_400_BAD_REQUEST,
             )
 
+        # A85 chunk 3b (2026-05-26): optional period override.
+        # Frontend passes period_override + fiscal_year_override + reason
+        # when the operator chose to post to a different period than the
+        # payout_date-derived default. We pass them through unconditionally;
+        # the import command validates the permission, reason length, and
+        # target-period state, raising SettlementImportError on rejection.
+        try:
+            period_override = int(request.data.get("period_override") or 0)
+            fiscal_year_override = int(request.data.get("fiscal_year_override") or 0)
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "period_override and fiscal_year_override must be integers."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        override_reason = (request.data.get("override_reason") or "").strip()[:2000]
+
         try:
             emitted = import_settlement_csv(
                 company=actor.company,
@@ -95,6 +111,10 @@ class SettlementCSVImportView(APIView):
                 source_filename=getattr(upload, "name", "upload.csv"),
                 payment_method=payment_method or "",
                 external_system="shopify",
+                period_override=period_override,
+                fiscal_year_override=fiscal_year_override,
+                override_reason=override_reason,
+                override_user=request.user if period_override else None,
             )
         except SettlementImportError as exc:
             return Response(

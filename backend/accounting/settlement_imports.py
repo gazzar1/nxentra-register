@@ -649,6 +649,9 @@ def preview_settlement_import(
     }
 
 
+_MIN_OVERRIDE_REASON_CHARS = 10
+
+
 def import_settlement_csv(
     company: Company,
     provider_normalized_code: str,
@@ -656,6 +659,20 @@ def import_settlement_csv(
     source_filename: str = "",
     payment_method: str = "",
     external_system: str = "shopify",
+    # A85 chunk 3b (2026-05-26): optional operator-driven period override.
+    # When period_override > 0:
+    #   - override_user must have 'accounting.je.override_period' permission
+    #   - override_reason must be >= 10 chars (regulatory traceability)
+    #   - target (override_period, override_fiscal_year) must exist + be OPEN
+    #   - one PeriodOverrideAudit row is written per emitted batch BEFORE
+    #     events are emitted, so the audit trail survives even if event
+    #     emission fails partway
+    #   - the period override is carried in each event's payload so projection
+    #     replay produces the same JE
+    period_override: int = 0,
+    fiscal_year_override: int = 0,
+    override_reason: str = "",
+    override_user=None,
 ) -> list[dict]:
     """Parse + emit `PAYMENT_SETTLEMENT_RECEIVED` events for one CSV.
 
@@ -676,6 +693,55 @@ def import_settlement_csv(
 
     if not batches:
         return []
+
+    # A85 chunk 3b: validate override params before emitting anything.
+    # If validation fails, raise SettlementImportError (caller surfaces to user).
+    override_active = bool(period_override and fiscal_year_override)
+    if override_active:
+        if not override_user:
+            raise SettlementImportError("Period override requested but no user supplied for audit trail.")
+        # Permission check — caller (the view) typically already does this,
+        # but enforce defensively at the command layer too.
+        from accounts.models import CompanyMembership
+
+        membership = (
+            CompanyMembership.objects.filter(user=override_user, company=company, is_active=True)
+            .prefetch_related("permissions")
+            .first()
+        )
+        if not membership:
+            raise SettlementImportError(
+                f"User {override_user.email or override_user.id} has no active "
+                f"membership in this company; cannot override the posting period."
+            )
+        user_perms = set(membership.permissions.values_list("code", flat=True))
+        if "accounting.je.override_period" not in user_perms:
+            raise SettlementImportError(
+                f"User {override_user.email or override_user.id} lacks the "
+                "accounting.je.override_period permission required to override "
+                "the date-derived posting period."
+            )
+        if len(override_reason.strip()) < _MIN_OVERRIDE_REASON_CHARS:
+            raise SettlementImportError(
+                f"Period override reason must be at least {_MIN_OVERRIDE_REASON_CHARS} characters."
+            )
+        # Verify the target period exists + is OPEN.
+        from projections.models import FiscalPeriod
+
+        target_fp = FiscalPeriod.objects.filter(
+            company=company,
+            fiscal_year=fiscal_year_override,
+            period=period_override,
+        ).first()
+        if not target_fp:
+            raise SettlementImportError(
+                f"Target override period {period_override}/{fiscal_year_override} is not configured for this company."
+            )
+        if target_fp.status != FiscalPeriod.Status.OPEN:
+            raise SettlementImportError(
+                f"Target override period {period_override}/{fiscal_year_override} "
+                f"is {target_fp.status}; can only override to an OPEN period."
+            )
 
     # A26: validate referenced order_ids against ShopifyOrder per company.
     # Settlement rows that reference orders we never saw still post a JE
@@ -729,6 +795,35 @@ def import_settlement_csv(
         )
 
         currency = company.default_currency or "USD"
+
+        # A85 chunk 3b: if override is active, write an audit row for this
+        # batch BEFORE emitting the event. If event emission fails partway,
+        # we still have the intent on record.
+        if override_active and not already_existed:
+            from datetime import datetime as _dt
+
+            from accounting.models import PeriodOverrideAudit
+
+            payout_date_obj = batch["payout_date"]
+            if isinstance(payout_date_obj, str):
+                try:
+                    payout_date_obj = _dt.fromisoformat(payout_date_obj).date()
+                except (ValueError, TypeError):
+                    payout_date_obj = None
+            if payout_date_obj is not None:
+                PeriodOverrideAudit.objects.create(
+                    company=company,
+                    user=override_user,
+                    source=PeriodOverrideAudit.Source.SETTLEMENT_IMPORT,
+                    source_document_ref=f"{code}:{batch['payout_batch_id']}",
+                    original_date=payout_date_obj,
+                    original_period=payout_date_obj.month,
+                    original_fiscal_year=payout_date_obj.year,
+                    override_period=period_override,
+                    override_fiscal_year=fiscal_year_override,
+                    reason=override_reason.strip(),
+                )
+
         event_data = PaymentSettlementReceivedData(
             amount=batch["gross_amount"],
             currency=currency,
@@ -746,6 +841,10 @@ def import_settlement_csv(
             line_items=batch["line_items"],
             provider_breakdown=batch.get("provider_breakdown") or [],
             source_filename=source_filename,
+            # A85 chunk 3b: thread the override into the event payload so
+            # the projection honors it AND replay produces the same JE.
+            period_override=period_override if override_active else 0,
+            fiscal_year_override=fiscal_year_override if override_active else 0,
         )
         event = emit_event_no_actor(
             company=company,
