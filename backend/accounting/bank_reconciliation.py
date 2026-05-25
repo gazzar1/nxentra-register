@@ -1404,6 +1404,166 @@ def _clear_match_state(
     _ = statement_date
 
 
+def preview_unmatch_line(
+    actor: ActorContext,
+    bank_line_id: int,
+) -> CommandResult:
+    """A85 chunk 2b (2026-05-26): dry-run for unmatch_line.
+
+    Operator clicks "Unmatch" on a bank line; this preview shows what
+    JEs (if any) would be reversed BEFORE the action commits. Mirrors
+    the side-effect logic of `_reverse_match_side_effects()` without
+    actually reversing anything.
+
+    Three scenarios:
+    - Match is a simple flag-flip (e.g., manual match against an
+      existing JE line) → unmatch only flips flags, no JE reversal.
+    - Match was made by settlement prepass → unmatch reverses the
+      clearance JE (DR Bank / CR Expected Bank Deposit) AND resurrects
+      the original settlement's EBD residual line.
+    - Match had a difference adjustment (A16 extra fee, bank charge,
+      etc.) → unmatch reverses both the adjustment AND the clearance.
+
+    Returns CommandResult.ok with:
+        bank_line_id, bank_line_description, bank_line_amount, match_status
+        reversal_plan: [
+            { entry_id, entry_number, source_module, date, period, kind,
+              memo, total_debit, total_credit, would_reverse: true,
+              warning: <if reversal would fail, e.g., closed period> },
+            ...
+        ]
+        flag_flips: [
+            { object_type, object_id, field, old, new },
+            ...
+        ]
+        warnings: [...]
+        dry_run_safe: bool (false if any reversal would hit a closed period)
+
+    See:
+    - unmatch_line() — the corresponding execute path
+    - _reverse_match_side_effects() — the side-effect logic this mirrors
+    """
+    require(actor, "accounting.reconciliation")
+
+    try:
+        bank_line = BankStatementLine.objects.select_related(
+            "matched_journal_line__entry",
+            "difference_adjustment_entry",
+            "statement",
+        ).get(
+            id=bank_line_id,
+            company=actor.company,
+        )
+    except BankStatementLine.DoesNotExist:
+        return CommandResult.fail("Bank statement line not found.")
+
+    if bank_line.match_status == BankStatementLine.MatchStatus.UNMATCHED:
+        return CommandResult.fail("Line is not matched; nothing to unmatch.")
+
+    from accounting.policies import can_post_to_period
+
+    reversal_plan: list[dict] = []
+    warnings: list[str] = []
+
+    journal_line = bank_line.matched_journal_line
+    adjustment_entry = bank_line.difference_adjustment_entry
+
+    # Identify the clearance JE (if any) — mirrors logic at line 1340 above.
+    clearance_je = None
+    if journal_line and journal_line.entry.source_module == "payment_settlement_clearance":
+        clearance_je = journal_line.entry
+
+    def _je_plan_row(entry, why: str) -> dict:
+        # Period validation — reversing would post a new JE dated today
+        # (or, more accurately, the original entry's date for traceability).
+        # If the reversal target period is closed, surface the blocker.
+        target_date = entry.date
+        target_period = entry.period
+        allowed, reason = can_post_to_period(actor, target_date, period=target_period)
+        if not allowed:
+            warnings.append(
+                f"Reversing JE {entry.entry_number or entry.id} ({why}) "
+                f"would target period {target_period}/{target_date.year if target_date else '?'} "
+                f"which is currently rejected: {reason}"
+            )
+        return {
+            "entry_id": entry.id,
+            "entry_number": entry.entry_number or "",
+            "source_module": entry.source_module or "",
+            "source_document": entry.source_document or "",
+            "date": target_date.isoformat() if target_date else None,
+            "period": target_period,
+            "fiscal_year": target_date.year if target_date else None,
+            "kind": entry.kind,
+            "memo": entry.memo[:200] if entry.memo else "",
+            "total_debit": str(entry.total_debit) if entry.total_debit is not None else "0",
+            "total_credit": str(entry.total_credit) if entry.total_credit is not None else "0",
+            "would_reverse": allowed,
+            "reason_for_reversal": why,
+            "blocker": None if allowed else reason,
+        }
+
+    # A19 mirror: reverse adjustment FIRST (so EBD is back to its
+    # post-clearance state before the clearance itself is reversed).
+    if adjustment_entry and adjustment_entry.status == JournalEntry.Status.POSTED:
+        reversal_plan.append(
+            _je_plan_row(
+                adjustment_entry,
+                why="A16 difference adjustment posted on this match",
+            )
+        )
+
+    if clearance_je and clearance_je.status == JournalEntry.Status.POSTED:
+        reversal_plan.append(
+            _je_plan_row(
+                clearance_je,
+                why="Settlement-prepass clearance JE created on this match",
+            )
+        )
+
+    # Flag flips that always happen on unmatch, regardless of JE reversal.
+    flag_flips: list[dict] = [
+        {
+            "object_type": "BankStatementLine",
+            "object_id": bank_line.id,
+            "field": "match_status",
+            "old": bank_line.match_status,
+            "new": BankStatementLine.MatchStatus.UNMATCHED,
+        },
+    ]
+    if journal_line:
+        flag_flips.append(
+            {
+                "object_type": "JournalLine",
+                "object_id": journal_line.id,
+                "field": "reconciled",
+                "old": True,
+                "new": False,
+            }
+        )
+
+    # Helpful operator note if there's nothing to reverse.
+    if not reversal_plan:
+        warnings.append(
+            "No JEs to reverse — this unmatch is a flag-flip only "
+            "(the matched JE was pre-existing, not synthesized by the match)."
+        )
+
+    return CommandResult.ok(
+        data={
+            "bank_line_id": bank_line.id,
+            "bank_line_description": bank_line.description,
+            "bank_line_amount": str(bank_line.amount),
+            "bank_line_date": bank_line.line_date.isoformat() if bank_line.line_date else None,
+            "match_status": bank_line.match_status,
+            "reversal_plan": reversal_plan,
+            "flag_flips": flag_flips,
+            "warnings": warnings,
+            "dry_run_safe": all(row["would_reverse"] for row in reversal_plan),
+        }
+    )
+
+
 @transaction.atomic
 def unmatch_line(
     actor: ActorContext,

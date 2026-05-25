@@ -474,6 +474,49 @@ class BankUnmatchView(APIView):
         return Response({"status": "unmatched"})
 
 
+class BankUnmatchPreviewView(APIView):
+    """A85 chunk 2b (2026-05-26): dry-run preview for unmatch_line.
+
+    POST /api/accounting/bank-statements/unmatch/preview/
+        Body: {"bank_line_id": 123}
+
+    Returns what JEs (if any) would be reversed if the operator confirms
+    the unmatch. The frontend modal renders the reversal plan + warnings,
+    and shows the [Cancel] / [Confirm unmatch] choice.
+
+    No state is changed by this endpoint.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        actor = resolve_actor(request)
+
+        bank_line_id = request.data.get("bank_line_id")
+        if not bank_line_id:
+            return Response(
+                {"error": "bank_line_id is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            bank_line_id_int = int(bank_line_id)
+        except (TypeError, ValueError):
+            return Response(
+                {"error": "bank_line_id must be an integer"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        result = recon.preview_unmatch_line(actor, bank_line_id_int)
+        if not result.success:
+            return Response(
+                {"error": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(result.data)
+
+
 class BankExcludeLineView(APIView):
     """
     POST /api/accounting/bank-statements/exclude/

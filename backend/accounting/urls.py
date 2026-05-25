@@ -30,6 +30,7 @@ from .bank_views import (
     BankStatementDetailView,
     BankStatementImportPreviewView,
     BankStatementListCreateView,
+    BankUnmatchPreviewView,
     BankUnmatchView,
     BankUnreconciledLinesView,
     CommerceReconciliationView,
@@ -298,6 +299,13 @@ urlpatterns = [
         "bank-statements/unmatch/",
         BankUnmatchView.as_view(),
         name="bank-statement-unmatch",
+    ),
+    # A85 chunk 2b: dry-run preview of what JEs (if any) would be
+    # reversed if the operator confirms the unmatch.
+    path(
+        "bank-statements/unmatch/preview/",
+        BankUnmatchPreviewView.as_view(),
+        name="bank-statement-unmatch-preview",
     ),
     path(
         "bank-statements/exclude/",
