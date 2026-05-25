@@ -35,6 +35,7 @@ from .bank_views import (
     BankUnreconciledLinesView,
     CommerceReconciliationView,
 )
+from .period_override_audit_views import PeriodOverrideAuditListView
 from .reconciliation_views import (
     ReconciliationDrilldownView,
     ReconciliationOrdersView,
@@ -402,5 +403,11 @@ urlpatterns = [
         "settlements/import/",
         SettlementCSVImportView.as_view(),
         name="settlement-csv-import",
+    ),
+    # A85 chunk 3: Period-override audit log (read-only).
+    path(
+        "period-overrides/",
+        PeriodOverrideAuditListView.as_view(),
+        name="period-override-audit-list",
     ),
 ]

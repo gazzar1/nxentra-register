@@ -2941,6 +2941,131 @@ class BankReconciliation(models.Model):
         return f"Recon {self.account.code} {self.reconciliation_date} ({self.status})"
 
 
+# =============================================================================
+# A85 chunk 3 (2026-05-26): Period-override audit log
+# =============================================================================
+
+
+class PeriodOverrideAudit(models.Model):
+    """Append-only audit log of fiscal-period overrides.
+
+    When an operator overrides the date-derived fiscal period during a
+    settlement import / bank import / manual JE / reconciliation match,
+    one row lands here capturing who, when, what, original→override
+    period, and the required reason. Surface: /audit/period-overrides
+    report.
+
+    See:
+    - accounts/permission_defaults.py — 'accounting.je.override_period'
+    - accounting/settlement_imports.py (A85 chunk 3b wires this in)
+    - docs/finance_event_first_policy.md §6 (period enforcement) + §8
+      (audit + visibility on powerful operator actions)
+    """
+
+    class Source(models.TextChoices):
+        SETTLEMENT_IMPORT = "SETTLEMENT_IMPORT", "Settlement CSV import"
+        BANK_IMPORT = "BANK_IMPORT", "Bank statement CSV import"
+        MANUAL_JE = "MANUAL_JE", "Manual journal entry"
+        RECON_MATCH = "RECON_MATCH", "Reconciliation match/unmatch"
+        OTHER = "OTHER", "Other"
+
+    company = models.ForeignKey(
+        "accounts.Company",
+        on_delete=models.CASCADE,
+        related_name="period_override_audits",
+    )
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    user_email_snapshot = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Snapshotted at write time so the trail survives user deletion.",
+    )
+    user_name_snapshot = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+    )
+
+    source = models.CharField(
+        max_length=30,
+        choices=Source.choices,
+        default=Source.OTHER,
+        db_index=True,
+    )
+    source_document_ref = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text=(
+            "Free-text identifier of the override target — e.g. "
+            "'PAYMOB-BATCH-X' for a settlement import, 'JE-000042' for a "
+            "manual JE."
+        ),
+    )
+    journal_entry = models.ForeignKey(
+        "accounting.JournalEntry",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="period_override_audits",
+    )
+
+    original_date = models.DateField(
+        help_text="The date that drove the would-be auto-resolved period.",
+    )
+    original_period = models.PositiveSmallIntegerField(
+        help_text="The period the date naturally resolves to (1-13).",
+    )
+    original_fiscal_year = models.PositiveIntegerField()
+    override_period = models.PositiveSmallIntegerField(
+        help_text="The period the operator chose (1-13).",
+    )
+    override_fiscal_year = models.PositiveIntegerField()
+
+    reason = models.TextField(
+        help_text="Required at the API layer. Min 10 chars enforced upstream.",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        verbose_name = "Period override audit"
+        verbose_name_plural = "Period override audits"
+        indexes = [
+            models.Index(
+                fields=["company", "-created_at"],
+                name="idx_poa_company_created",
+            ),
+            models.Index(
+                fields=["company", "source", "-created_at"],
+                name="idx_poa_company_source",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"Period override {self.original_period}→{self.override_period} "
+            f"({self.source_document_ref or self.source}) by "
+            f"{self.user_email_snapshot or self.user_id}"
+        )
+
+    def save(self, *args, **kwargs):
+        # Snapshot the user's email/name at write time so the audit row
+        # survives user deletion intact.
+        if self.user_id and not self.user_email_snapshot:
+            self.user_email_snapshot = (getattr(self.user, "email", "") or "")[:255]
+            self.user_name_snapshot = (getattr(self.user, "name", "") or "")[:255]
+        super().save(*args, **kwargs)
+
+
 # Import ModuleAccountMapping so Django discovers it for migrations.
 from accounting.mappings import ModuleAccountMapping  # noqa: F401
 

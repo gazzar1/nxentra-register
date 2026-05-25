@@ -29,6 +29,10 @@ ROLE_DEFAULTS = {
         "periods.close",
         "periods.reopen",
         "periods.configure",
+        # A85 chunk 3: power-user override of date-derived posting period.
+        # Audit-logged via PeriodOverrideAudit. Default-granted to OWNER +
+        # ADMIN only; USER role does NOT get this by default.
+        "accounting.je.override_period",
         # Reports
         "reports.view",
         "reports.export",
@@ -65,6 +69,8 @@ ROLE_DEFAULTS = {
         "inventory.adjustment.create",
         "inventory.opening_balance.create",
         "periods.view",
+        # A85 chunk 3: ADMIN also gets period-override capability.
+        "accounting.je.override_period",
         "reports.view",
         "reports.export",
         # Voice (admin can grant/revoke access and manage quotas)
