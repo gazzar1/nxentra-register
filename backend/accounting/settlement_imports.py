@@ -400,6 +400,255 @@ def parse_bosta_csv(file_content: bytes | str) -> list[dict]:
 # =============================================================================
 
 
+def preview_settlement_import(
+    company: Company,
+    provider_normalized_code: str,
+    file_content: bytes | str,
+    source_filename: str = "",
+    external_system: str = "shopify",
+) -> dict:
+    """A85 (2026-05-25): dry-run for settlement CSV import.
+
+    Parses the CSV exactly like import_settlement_csv() would, but does NOT
+    emit events or post JEs. Returns a preview structure the frontend uses
+    to render an "About to create N journal entries in period M" modal
+    before the operator confirms.
+
+    What the preview includes per batch:
+    - batch_id, payout_date, totals
+    - resolved fiscal period (number, year, name, status OPEN/CLOSED)
+    - dedup signal (true if same idempotency_key already emitted)
+    - orphan order ids (A26 — orders referenced but not in ShopifyOrder)
+    - warnings: closed period, orphan orders, already-imported batches
+
+    Aggregate summary:
+    - total_journal_entries (one JE per non-deduped batch)
+    - periods_affected (grouped by period, with counts and statuses)
+    - blockers (rejection reasons that would cause the post to fail)
+    - dry_run_safe (bool — true if the import would post cleanly)
+
+    See:
+    - docs/finance_event_first_policy.md §8 (loud failures, not silent)
+    - import_settlement_csv() — the corresponding execute path
+    """
+    code = provider_normalized_code.strip().lower()
+    if code == "paymob":
+        batches = parse_paymob_csv(file_content)
+    elif code == "bosta":
+        batches = parse_bosta_csv(file_content)
+    else:
+        raise SettlementImportError(
+            f"No CSV parser registered for provider {provider_normalized_code!r}. Supported: paymob, bosta."
+        )
+
+    if not batches:
+        return {
+            "provider": code,
+            "filename": source_filename,
+            "batches": [],
+            "summary": {
+                "total_batches": 0,
+                "total_journal_entries_to_create": 0,
+                "periods_affected": [],
+                "blockers": ["CSV contains no batches to import."],
+                "dry_run_safe": False,
+                "total_gross": "0.00",
+                "total_fees": "0.00",
+                "total_net": "0.00",
+            },
+        }
+
+    # A26 mirror: orphan-order detection for the same flow as import_settlement_csv.
+    known_order_ids: set[str] = set()
+    if external_system == "shopify":
+        try:
+            from shopify_connector.models import ShopifyOrder
+
+            referenced_ids = {
+                str(li.get("order_id")).strip()
+                for batch in batches
+                for li in batch.get("line_items") or []
+                if li.get("order_id")
+            }
+            if referenced_ids:
+                known_order_ids = {
+                    str(oid)
+                    for oid in ShopifyOrder.objects.filter(
+                        company=company,
+                        shopify_order_id__in=[oid for oid in referenced_ids if oid.isdigit()],
+                    ).values_list("shopify_order_id", flat=True)
+                }
+        except ImportError:
+            known_order_ids = set()
+
+    from datetime import date as date_type
+    from datetime import datetime
+
+    from events.models import BusinessEvent
+    from projections.models import FiscalPeriod
+
+    def _resolve_period(payout_date_str: str) -> dict:
+        """Resolve a FiscalPeriod for the given payout date. Returns a dict
+        with the period number, year, status, and any operator-visible
+        warning."""
+        try:
+            payout_date = (
+                payout_date_str
+                if isinstance(payout_date_str, date_type)
+                else datetime.fromisoformat(str(payout_date_str)).date()
+            )
+        except (ValueError, TypeError):
+            return {
+                "resolved": False,
+                "fiscal_year": None,
+                "period": None,
+                "period_name": None,
+                "status": None,
+                "warning": f"Unparseable payout_date {payout_date_str!r}; cannot resolve fiscal period.",
+            }
+
+        fp = (
+            FiscalPeriod.objects.filter(
+                company=company,
+                start_date__lte=payout_date,
+                end_date__gte=payout_date,
+                period_type=FiscalPeriod.PeriodType.NORMAL,
+            )
+            .order_by("fiscal_year", "period")
+            .first()
+        )
+        if not fp:
+            return {
+                "resolved": False,
+                "fiscal_year": payout_date.year,
+                "period": payout_date.month,
+                "period_name": payout_date.strftime("%B %Y"),
+                "status": None,
+                "warning": (
+                    f"No FiscalPeriod configured covering {payout_date.isoformat()}. "
+                    f"Configure fiscal periods in Setup before importing."
+                ),
+            }
+        return {
+            "resolved": True,
+            "fiscal_year": fp.fiscal_year,
+            "period": fp.period,
+            "period_name": fp.start_date.strftime("%B %Y"),
+            "status": fp.status,
+            "warning": (f"Fiscal period {fp.period}/{fp.fiscal_year} is CLOSED. Import would fail at JE post time.")
+            if fp.status != FiscalPeriod.Status.OPEN
+            else None,
+        }
+
+    batch_previews: list[dict] = []
+    periods_seen: dict[tuple[int, int], dict] = {}
+    blockers: list[str] = []
+    total_gross = Decimal("0")
+    total_fees = Decimal("0")
+    total_net = Decimal("0")
+    je_count = 0
+
+    for batch in batches:
+        batch_id = batch["payout_batch_id"]
+        idempotency_key = f"payment.settlement.received:{code}:{batch_id}"
+        already_emitted = BusinessEvent.objects.filter(
+            company=company,
+            idempotency_key=idempotency_key,
+        ).exists()
+
+        period_info = _resolve_period(batch["payout_date"])
+
+        unknown_order_ids = sorted(
+            {
+                str(li["order_id"]).strip()
+                for li in batch.get("line_items") or []
+                if li.get("order_id") and str(li["order_id"]).strip() not in known_order_ids
+            }
+        )
+
+        # Warnings for this batch
+        batch_warnings: list[str] = []
+        if already_emitted:
+            batch_warnings.append(f"Batch {batch_id} already imported previously; will be deduplicated.")
+        if period_info.get("warning"):
+            batch_warnings.append(period_info["warning"])
+        if unknown_order_ids:
+            batch_warnings.append(
+                f"References {len(unknown_order_ids)} order ID(s) not found in Shopify orders: "
+                f"{', '.join(unknown_order_ids[:5])}" + ("..." if len(unknown_order_ids) > 5 else "")
+            )
+
+        will_create_je = not already_emitted
+        if will_create_je:
+            je_count += 1
+            total_gross += Decimal(str(batch["gross_amount"]))
+            total_fees += Decimal(str(batch["fees"]))
+            total_net += Decimal(str(batch["net_amount"]))
+
+            # Track periods affected (only for batches that would actually post)
+            if period_info["resolved"]:
+                key = (period_info["fiscal_year"], period_info["period"])
+                if key not in periods_seen:
+                    periods_seen[key] = {
+                        "fiscal_year": period_info["fiscal_year"],
+                        "period": period_info["period"],
+                        "period_name": period_info["period_name"],
+                        "status": period_info["status"],
+                        "journal_entries": 0,
+                    }
+                periods_seen[key]["journal_entries"] += 1
+
+                # Aggregate blocker for closed period
+                if period_info["status"] != FiscalPeriod.Status.OPEN:
+                    blocker = (
+                        f"Period {period_info['period']}/{period_info['fiscal_year']} "
+                        f"({period_info['period_name']}) is CLOSED."
+                    )
+                    if blocker not in blockers:
+                        blockers.append(blocker)
+            else:
+                # Couldn't resolve a period at all → hard blocker
+                blocker = period_info["warning"] or f"Could not resolve period for batch {batch_id}."
+                if blocker not in blockers:
+                    blockers.append(blocker)
+
+        batch_previews.append(
+            {
+                "batch_id": batch_id,
+                "payout_date": batch["payout_date"],
+                "gross": batch["gross_amount"],
+                "fees": batch["fees"],
+                "net": batch["net_amount"],
+                "uncollected": batch["uncollected_amount"],
+                "line_count": len(batch.get("line_items") or []),
+                "resolved_period": period_info,
+                "already_imported": already_emitted,
+                "will_create_journal_entry": will_create_je,
+                "unknown_order_ids": unknown_order_ids,
+                "warnings": batch_warnings,
+            }
+        )
+
+    return {
+        "provider": code,
+        "filename": source_filename,
+        "batches": batch_previews,
+        "summary": {
+            "total_batches": len(batch_previews),
+            "total_journal_entries_to_create": je_count,
+            "periods_affected": sorted(
+                periods_seen.values(),
+                key=lambda r: (r["fiscal_year"], r["period"]),
+            ),
+            "blockers": blockers,
+            "dry_run_safe": len(blockers) == 0 and je_count > 0,
+            "total_gross": str(total_gross.quantize(_MONEY)),
+            "total_fees": str(total_fees.quantize(_MONEY)),
+            "total_net": str(total_net.quantize(_MONEY)),
+        },
+    }
+
+
 def import_settlement_csv(
     company: Company,
     provider_normalized_code: str,

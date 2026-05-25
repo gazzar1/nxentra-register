@@ -38,7 +38,7 @@ from .reconciliation_views import (
     ReconciliationOrdersView,
     ReconciliationSummaryView,
 )
-from .settlement_import_views import SettlementCSVImportView
+from .settlement_import_views import SettlementCSVImportView, SettlementCSVPreviewView
 from .settlement_provider_views import (
     SettlementProviderDetailView,
     SettlementProviderListView,
@@ -375,8 +375,13 @@ urlpatterns = [
         name="reconciliation-orders",
     ),
     # ==========================================================================
-    # Settlement CSV Import (A14)
+    # Settlement CSV Import (A14) + dry-run preview (A85)
     # ==========================================================================
+    path(
+        "settlements/import/preview/",
+        SettlementCSVPreviewView.as_view(),
+        name="settlement-csv-import-preview",
+    ),
     path(
         "settlements/import/",
         SettlementCSVImportView.as_view(),

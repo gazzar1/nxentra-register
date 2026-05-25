@@ -28,6 +28,7 @@ from projections.tasks import process_company_projections
 from .settlement_imports import (
     SettlementImportError,
     import_settlement_csv,
+    preview_settlement_import,
 )
 
 logger = logging.getLogger(__name__)
@@ -129,3 +130,82 @@ class SettlementCSVImportView(APIView):
             },
             status=http_status.HTTP_200_OK,
         )
+
+
+class SettlementCSVPreviewView(APIView):
+    """A85 (2026-05-25): dry-run preview for settlement CSV imports.
+
+    POST /api/accounting/settlements/import/preview/ (multipart/form-data)
+        file:     CSV upload (same format as the real import endpoint)
+        provider: 'paymob' | 'bosta'
+
+    Parses the CSV without emitting any events. Returns a preview struct
+    the frontend uses to render an "About to create N journal entries in
+    period M" modal — operator can cancel or, if all periods are open,
+    confirm to POST against the real /import/ endpoint.
+
+    Per docs/finance_event_first_policy.md §8: the operator sees the cause-
+    and-effect before it happens. No silent surprises.
+    """
+
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser]
+
+    def post(self, request):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response(
+                {"detail": "No active company."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        upload = request.FILES.get("file")
+        if not upload:
+            return Response(
+                {"detail": "Multipart field 'file' is required."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        provider = (request.data.get("provider") or "").strip().lower()
+        if provider not in _SUPPORTED_PROVIDERS:
+            return Response(
+                {"detail": f"provider must be one of {_SUPPORTED_PROVIDERS}."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Same 10 MB ceiling as the real import endpoint.
+        if upload.size > 10 * 1024 * 1024:
+            return Response(
+                {"detail": "CSV file too large (10 MB max)."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            content = upload.read()
+        except OSError as exc:
+            return Response(
+                {"detail": f"Failed to read upload: {exc}"},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            preview = preview_settlement_import(
+                company=actor.company,
+                provider_normalized_code=provider,
+                file_content=content,
+                source_filename=getattr(upload, "name", "upload.csv"),
+                external_system="shopify",
+            )
+        except SettlementImportError as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.exception("Settlement CSV preview failed")
+            return Response(
+                {"detail": f"Unexpected error: {exc}"},
+                status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(preview, status=http_status.HTTP_200_OK)
