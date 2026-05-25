@@ -28,6 +28,7 @@ from .bank_views import (
     BankStatementCSVHeadersView,
     BankStatementCSVImportView,
     BankStatementDetailView,
+    BankStatementImportPreviewView,
     BankStatementListCreateView,
     BankUnmatchView,
     BankUnreconciledLinesView,
@@ -280,6 +281,13 @@ urlpatterns = [
         "bank-statements/parse-csv/",
         BankStatementCSVImportView.as_view(),
         name="bank-statement-parse-csv",
+    ),
+    # A85 chunk 2: dry-run preview before committing the bank statement.
+    # Takes (account_id, lines) from parse-csv and returns dedup analysis.
+    path(
+        "bank-statements/import-preview/",
+        BankStatementImportPreviewView.as_view(),
+        name="bank-statement-import-preview",
     ),
     path(
         "bank-statements/match/",

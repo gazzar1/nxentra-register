@@ -47,6 +47,148 @@ AUTO_MATCH_THRESHOLD = Decimal("80")
 # =============================================================================
 
 
+def preview_bank_statement_import(
+    actor: ActorContext,
+    account_id: int,
+    lines_data: list,
+) -> CommandResult:
+    """A85 chunk 2 (2026-05-25): dry-run for bank statement import.
+
+    Parses the same per-line input that `import_bank_statement` would
+    consume, but does NOT create BankStatement or BankStatementLine rows.
+    Returns a preview the operator-facing modal renders.
+
+    Unlike the settlement-import preview, this one has NO period/JE
+    concern — `import_bank_statement` only creates raw line records; the
+    JEs that drain Expected Bank Deposit etc. are created later, during
+    match/unmatch (see auto_match_statement + _settlement_prepass_match).
+    The corresponding match-preview is A85 chunk 2b (separate work).
+
+    What this preview shows:
+    - Total line count parsed from the input
+    - How many lines would actually be imported (new dedup_hash)
+    - How many lines would be skipped as duplicates (hash already present
+      for this account, or duplicate within the same upload)
+    - The date range covered
+    - Per-line dedup status for the first N rows (frontend renders a
+      preview table)
+
+    See:
+    - import_bank_statement() — the corresponding execute path
+    - docs/finance_event_first_policy.md §8 — operator sees cause-and-effect
+    """
+    require(actor, "accounting.reconciliation")
+
+    try:
+        account = Account.objects.get(
+            id=account_id,
+            company=actor.company,
+        )
+    except Account.DoesNotExist:
+        return CommandResult.fail("Account not found.")
+
+    if not lines_data:
+        return CommandResult.fail("No transaction lines provided.")
+
+    # Load every dedup_hash already imported for (company, account) so we
+    # can flag which incoming lines would dedup against existing data.
+    existing_hashes: set[str] = set(
+        BankStatementLine.objects.filter(
+            company=actor.company,
+            statement__account=account,
+        )
+        .exclude(dedup_hash="")
+        .values_list("dedup_hash", flat=True)
+    )
+
+    parsed_lines: list[dict] = []
+    seen_in_batch: set[str] = set()
+    would_import = 0
+    would_dedup_existing = 0
+    would_dedup_in_batch = 0
+    invalid_rows = 0
+    min_date = None
+    max_date = None
+    total_inflow = Decimal("0")
+    total_outflow = Decimal("0")
+
+    for ld in lines_data:
+        try:
+            amount = Decimal(str(ld["amount"]))
+        except (KeyError, InvalidOperation, TypeError):
+            invalid_rows += 1
+            continue
+
+        line_date_value = ld.get("line_date")
+        description = ld.get("description", "")
+        reference_str = ld.get("reference", "")
+        dedup_hash = _compute_line_dedup_hash(
+            line_date=line_date_value,
+            amount=amount,
+            reference=reference_str,
+            description=description,
+        )
+
+        if dedup_hash in existing_hashes:
+            status_label = "duplicate_existing"
+            would_dedup_existing += 1
+        elif dedup_hash in seen_in_batch:
+            status_label = "duplicate_in_batch"
+            would_dedup_in_batch += 1
+        else:
+            status_label = "would_import"
+            seen_in_batch.add(dedup_hash)
+            would_import += 1
+            if amount >= 0:
+                total_inflow += amount
+            else:
+                total_outflow += -amount
+
+            # Track date range only for lines that would actually import
+            if hasattr(line_date_value, "isoformat"):
+                if min_date is None or line_date_value < min_date:
+                    min_date = line_date_value
+                if max_date is None or line_date_value > max_date:
+                    max_date = line_date_value
+
+        parsed_lines.append(
+            {
+                "line_date": (
+                    line_date_value.isoformat() if hasattr(line_date_value, "isoformat") else str(line_date_value or "")
+                ),
+                "description": description,
+                "reference": reference_str,
+                "amount": str(amount),
+                "dedup_status": status_label,
+            }
+        )
+
+    return CommandResult.ok(
+        data={
+            "account_id": account.id,
+            "account_code": account.code,
+            "account_name": account.name,
+            "summary": {
+                "total_rows": len(lines_data),
+                "invalid_rows": invalid_rows,
+                "would_import": would_import,
+                "would_dedup_existing": would_dedup_existing,
+                "would_dedup_in_batch": would_dedup_in_batch,
+                "min_date": min_date.isoformat() if min_date else None,
+                "max_date": max_date.isoformat() if max_date else None,
+                "total_inflow": str(total_inflow.quantize(Decimal("0.01"))),
+                "total_outflow": str(total_outflow.quantize(Decimal("0.01"))),
+                "net": str((total_inflow - total_outflow).quantize(Decimal("0.01"))),
+                "dry_run_safe": would_import > 0,
+            },
+            # Per-line preview for the modal's expandable detail. Bounded
+            # to 500 entries so very large CSVs don't blow up the payload.
+            "lines": parsed_lines[:500],
+            "lines_truncated_to": 500 if len(parsed_lines) > 500 else None,
+        }
+    )
+
+
 @transaction.atomic
 def import_bank_statement(
     actor: ActorContext,

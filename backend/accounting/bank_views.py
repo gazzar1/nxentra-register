@@ -217,6 +217,93 @@ class BankStatementCSVImportView(APIView):
         )
 
 
+class BankStatementImportPreviewView(APIView):
+    """A85 chunk 2 (2026-05-26): dry-run preview for bank statement import.
+
+    POST /api/accounting/bank-statements/import-preview/
+        body: {
+            "account_id": int,
+            "lines": [{"line_date": "YYYY-MM-DD", "description": str,
+                       "reference": str, "amount": str}, ...]
+        }
+
+    Computes which lines would be imported vs deduped (against existing
+    bank lines for the same account, AND within the same upload). Does
+    NOT create BankStatement / BankStatementLine rows.
+
+    Use after the existing /parse-csv/ endpoint returns the parsed lines:
+    operator confirms the dedup analysis here, then commits via the
+    BankStatementListCreateView POST endpoint.
+
+    Note: this preview surfaces line-level info only. Bank statement
+    import doesn't create JournalEntries itself — JEs come later from
+    match/unmatch operations (A85 chunk 2b: separate match preview).
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        actor = resolve_actor(request)
+
+        try:
+            account_id = int(request.data.get("account_id") or 0)
+        except (TypeError, ValueError):
+            return Response(
+                {"error": "account_id is required and must be an integer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not account_id:
+            return Response(
+                {"error": "account_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        lines_data = request.data.get("lines") or []
+        if not isinstance(lines_data, list):
+            return Response(
+                {"error": "lines must be a list."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Parse line_date strings to date objects (mirrors what
+        # BankStatementListCreateView does on the commit path).
+        parsed_lines = []
+        for ld in lines_data:
+            if not isinstance(ld, dict):
+                continue
+            line_date_value = ld.get("line_date")
+            if isinstance(line_date_value, str):
+                try:
+                    line_date_value = datetime.strptime(line_date_value, "%Y-%m-%d").date()
+                except ValueError:
+                    # Pass through; preview's _compute_line_dedup_hash will
+                    # stringify it and the operator sees the resulting
+                    # dedup status (likely no match → would_import).
+                    pass
+            parsed_lines.append(
+                {
+                    "line_date": line_date_value,
+                    "description": ld.get("description", ""),
+                    "reference": ld.get("reference", ""),
+                    "amount": ld.get("amount", "0"),
+                }
+            )
+
+        result = recon.preview_bank_statement_import(
+            actor=actor,
+            account_id=account_id,
+            lines_data=parsed_lines,
+        )
+
+        if not result.success:
+            return Response(
+                {"error": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(result.data)
+
+
 # =============================================================================
 # Statement Detail & Lines
 # =============================================================================
