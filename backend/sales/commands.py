@@ -720,7 +720,10 @@ def create_sales_invoice(
     # and route to settlement-clearing accounts with REQUIRED dimension
     # rules. Manual invoices can't satisfy those rules — block here with a
     # clearer error than the eventual JE post failure.
-    if posting_profile.usage == PostingProfile.Usage.GATEWAY:
+    # auto_created=True is the platform integration path (Shopify projection
+    # via create_and_post_invoice_for_platform); it supplies the required
+    # dimension tags itself, so the guard is only for manual callers.
+    if not auto_created and posting_profile.usage == PostingProfile.Usage.GATEWAY:
         return CommandResult.fail(
             f"Posting profile '{posting_profile.code}' is reserved for platform "
             f"integrations and can't be used for manual invoices. Pick a Manual-entry "
