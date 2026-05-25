@@ -265,13 +265,91 @@ class BaseProjection(ABC):
             return processed
 
     def on_error(self, event: BusinessEvent, error: Exception) -> None:
-        """
-        Called when an error occurs during event processing.
+        """A80 (2026-05-25): write an operator-visible failure log entry.
 
-        Override this to implement custom error handling
-        (e.g., dead letter queue, alerting).
+        Replaces the previous `pass` no-op. Whenever a handler raises (instead
+        of silently `return`ing — see docs/finance_event_first_policy.md §8),
+        the framework records what failed where, so the merchant or operator
+        can see it in /finance/exceptions instead of having to grep Django
+        logs.
+
+        Dedup contract: (company, projection_name, event) is unique. Repeated
+        failures of the same event before resolution bump occurrence_count
+        instead of duplicating rows.
+
+        Subclasses MAY override to add custom handling (alerts, dead-letter
+        queue, etc.), but MUST call super().on_error(event, error) to preserve
+        operator visibility — silent overrides would re-introduce the A80
+        anti-pattern.
         """
-        pass
+        from django.db import transaction
+        from django.db.models import F
+        from django.utils import timezone
+
+        from projections.exceptions import (
+            ProjectionCommandFailedError,
+            ProjectionInvalidDataError,
+            ProjectionStateError,
+        )
+        from projections.models import ProjectionFailureLog
+        from projections.write_barrier import projection_writes_allowed
+
+        # Categorize the error so the operator UI can group / filter sensibly.
+        if isinstance(error, ProjectionStateError):
+            category = ProjectionFailureLog.Category.MISSING_CONFIG
+            fix_hint = getattr(error, "fix_hint", "") or ""
+        elif isinstance(error, ProjectionInvalidDataError):
+            category = ProjectionFailureLog.Category.INVALID_DATA
+            fix_hint = ""
+        elif isinstance(error, ProjectionCommandFailedError):
+            category = ProjectionFailureLog.Category.DOWNSTREAM_FAILED
+            fix_hint = ""
+        else:
+            category = ProjectionFailureLog.Category.UNEXPECTED
+            fix_hint = ""
+
+        # A80: use a separate atomic block so writing the failure log is not
+        # rolled back when the outer per-event transaction rolls back (the
+        # handler raised, so the outer block is already poisoned).
+        try:
+            with transaction.atomic(), projection_writes_allowed():
+                obj, created = ProjectionFailureLog.objects.get_or_create(
+                    company=event.company,
+                    projection_name=self.name,
+                    event=event,
+                    defaults={
+                        "event_type": event.event_type,
+                        "category": category,
+                        "message": str(error)[:5000],
+                        "fix_hint": fix_hint,
+                    },
+                )
+                if not created:
+                    # Same event failed again before being resolved — bump the
+                    # counter, refresh the message (it may have changed since
+                    # the prior occurrence), and clear `resolved` in the rare
+                    # case the operator marked it resolved prematurely.
+                    ProjectionFailureLog.objects.filter(pk=obj.pk).update(
+                        occurrence_count=F("occurrence_count") + 1,
+                        message=str(error)[:5000],
+                        category=category,
+                        fix_hint=fix_hint,
+                        last_seen_at=timezone.now(),
+                        resolved=False,
+                        resolved_at=None,
+                        resolved_by=None,
+                    )
+        except Exception as logging_error:
+            # Never let on_error itself crash the projection loop. Worst case
+            # we lose visibility on this one failure but the framework keeps
+            # processing other events.
+            logger.error(
+                "Failed to write ProjectionFailureLog for %s/%s on event %s: %s",
+                self.name,
+                event.event_type,
+                event.id,
+                logging_error,
+            )
 
     def get_bookmark(self, company: Company) -> EventBookmark | None:
         """Get the bookmark for this projection and company."""

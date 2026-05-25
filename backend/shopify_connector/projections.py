@@ -353,12 +353,20 @@ class ShopifyAccountingHandler(BaseProjection):
 
         mapping = ModuleAccountMapping.get_mapping(company, MODULE_NAME)
         if not mapping:
-            logger.warning(
-                "No ModuleAccountMapping for shopify_connector module, company %s — skipping %s",
-                company,
-                event.event_type,
+            # A80: raise instead of silent return so the failure surfaces in
+            # ProjectionFailureLog → /finance/exceptions. The event remains
+            # unprocessed (transaction rolls back); once the operator wires
+            # the mapping, the next process_pending pass self-heals.
+            from projections.exceptions import ProjectionStateError
+
+            raise ProjectionStateError(
+                f"No ModuleAccountMapping for shopify_connector module on company {company.name}",
+                fix_hint=(
+                    "Complete the Shopify onboarding wizard, or run "
+                    "`python manage.py setup_shopify_module_routing` to "
+                    "wire up the chart-of-accounts mapping."
+                ),
             )
-            return
 
         # Resolve dimension context for tagging JE lines
         dimension_context = self._resolve_dimensions(company, data)
@@ -655,12 +663,17 @@ class ShopifyAccountingHandler(BaseProjection):
 
         revenue_account = mapping.get(ROLE_SALES_REVENUE)
         if not revenue_account:
-            logger.warning(
-                "Shopify SALES_REVENUE mapping missing for company %s — skipping order %s",
-                event.company,
-                data.get("order_number"),
+            # A80: raise instead of silent return.
+            from projections.exceptions import ProjectionStateError
+
+            raise ProjectionStateError(
+                f"SALES_REVENUE not configured in shopify_connector mapping for "
+                f"company {event.company.name} (order {data.get('order_number')})",
+                fix_hint=(
+                    "Setup → Account Mapping → Shopify Connector → add SALES_REVENUE "
+                    "role pointing at the company's main Sales Revenue account."
+                ),
             )
-            return
 
         shipping_account = mapping.get(ROLE_SHIPPING_REVENUE) or revenue_account
         tax_account = mapping.get(ROLE_SALES_TAX_PAYABLE)
@@ -689,12 +702,21 @@ class ShopifyAccountingHandler(BaseProjection):
         )
 
         if not store or not store.default_customer_id or not store.default_posting_profile_id:
-            logger.warning(
-                "Shopify store missing Customer/PostingProfile for company %s — "
-                "run _ensure_shopify_sales_setup() or reconnect the store",
-                event.company,
+            # A80: raise. This is the exact failure mode the comment in
+            # accounts/commands.py:3485 was warning about — at OAuth callback
+            # time SHOPIFY_CLEARING didn't yet exist so the store was left
+            # without a default_customer / posting_profile. Used to silently
+            # no-op; now it surfaces in /finance/exceptions.
+            from projections.exceptions import ProjectionStateError
+
+            raise ProjectionStateError(
+                f"Shopify store missing Customer/PostingProfile for company "
+                f"{event.company.name} (order {data.get('order_number')})",
+                fix_hint=(
+                    "Run `python manage.py setup_shopify_module_routing --company-slug=<slug>` "
+                    "or reconnect the store via Settings → Integrations → Shopify."
+                ),
             )
-            return
 
         # Resolve or create OUTPUT TaxCode for this tax rate
         tax_code = None
@@ -752,8 +774,16 @@ class ShopifyAccountingHandler(BaseProjection):
             )
 
         if not invoice_lines:
-            logger.warning("No invoice lines for Shopify order %s — skipping", order_name)
-            return
+            # A80: raise INVALID_DATA. Order has neither revenue nor shipping
+            # amount — would create an empty invoice that disappears from the
+            # merchant's books without explanation. Surface for operator review.
+            from projections.exceptions import ProjectionInvalidDataError
+
+            raise ProjectionInvalidDataError(
+                f"Shopify order {order_name} has no postable lines "
+                f"(subtotal={subtotal}, total_tax={total_tax}, total_shipping={total_shipping}, "
+                f"total_price={total_price}). Cannot create an invoice."
+            )
 
         # Resolve which SettlementProvider routes this order's clearing line.
         # The JE Debit AR Control is read from posting_profile.control_account
@@ -785,12 +815,20 @@ class ShopifyAccountingHandler(BaseProjection):
         )
 
         if not result.success:
-            logger.error(
-                "Failed to create SalesInvoice for Shopify order %s: %s",
-                order_name,
-                result.error,
+            # A80: raise DOWNSTREAM_FAILED. The 2026-05-25 incident that
+            # exposed this entire pattern: A78's missing `not auto_created`
+            # bypass caused create_and_post_invoice_for_platform to refuse
+            # GATEWAY profiles. Pre-A80 the projection logged ERROR then
+            # `return`d, marking the event consumed with no invoice created.
+            # Post-A80 the framework writes ProjectionFailureLog so the
+            # merchant sees the failure in /finance/exceptions instead.
+            from projections.exceptions import ProjectionCommandFailedError
+
+            raise ProjectionCommandFailedError(
+                f"create_and_post_invoice_for_platform failed for Shopify order {order_name}: {result.error}",
+                command_name="create_and_post_invoice_for_platform",
+                original_error=result.error,
             )
-            return
 
         invoice = result.data.get("invoice")
         journal_entry = result.data.get("journal_entry")

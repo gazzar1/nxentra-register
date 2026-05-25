@@ -1152,3 +1152,151 @@ class ProjectionStatus(models.Model):
         self.error_message = error_message
         self.error_count += 1
         self.save()
+
+
+# =============================================================================
+# A80 (2026-05-25): Operator-visible projection failures
+# =============================================================================
+#
+# When a projection handler raises ProjectionStateError, ProjectionCommandFailedError,
+# or any unhandled exception, BaseProjection.on_error writes an entry here so
+# operators can see WHY their projection isn't producing records. Surface in
+# /finance/exceptions.
+#
+# Note: this is a derivative read model of projection OUTCOMES. The BusinessEvent
+# log remains the source of truth for projection STATE. This table is mutable
+# only for the resolved_* fields (operator workflow); the failure entry itself
+# is immutable history once written.
+#
+# See:
+# - docs/finance_event_first_policy.md §8 — Failure modes: loud, not silent
+# - projections/exceptions.py — ProjectionStateError, ProjectionCommandFailedError
+# - projections/base.py BaseProjection.on_error — writes here
+
+
+class ProjectionFailureLog(models.Model):
+    """Operator-visible record of a projection handler failing on an event.
+
+    Created/updated automatically by BaseProjection.on_error whenever a handler
+    raises. Deduped on (company, projection_name, event) — repeated failures
+    of the same event bump occurrence_count instead of creating new rows.
+
+    Once an operator fixes the underlying problem (missing mapping, broken
+    downstream command, etc.) and the next process_pending pass successfully
+    processes the event, the framework auto-marks this entry resolved.
+
+    This table is NOT a ProjectionOwnedModel because:
+    1. Operators write to it from views (mark resolved manually)
+    2. The framework writes to it from on_error (projection context)
+    Both write paths are legitimate; the strict ProjectionOwnedModel guard
+    would block path 1.
+    """
+
+    class Category(models.TextChoices):
+        # Missing or mis-configured state in the company (mapping, account,
+        # store config). FIXABLE by operator — once they complete the wizard
+        # or backfill, the projection self-heals on the next pass.
+        MISSING_CONFIG = "MISSING_CONFIG", "Missing configuration"
+        # Event payload is structurally wrong (e.g., zero amount, missing
+        # required field). NOT auto-fixable; operator may need to manually
+        # mark resolved after deciding to ignore or to edit the source.
+        INVALID_DATA = "INVALID_DATA", "Invalid event data"
+        # Downstream command (sales.create_invoice, etc.) returned
+        # success=False. Reason captured in `message`. Auto-fixable after
+        # code change + redeploy.
+        DOWNSTREAM_FAILED = "DOWNSTREAM_FAILED", "Downstream command failed"
+        # Unhandled exception. Indicates a bug — should be rare. Operator
+        # should file a ticket; developer fix required.
+        UNEXPECTED = "UNEXPECTED", "Unexpected error"
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="projection_failures",
+    )
+    projection_name = models.CharField(max_length=100)
+    event = models.ForeignKey(
+        BusinessEvent,
+        on_delete=models.CASCADE,
+        related_name="projection_failures",
+    )
+    event_type = models.CharField(
+        max_length=100,
+        help_text="Denormalized from event for fast filtering",
+    )
+
+    category = models.CharField(
+        max_length=30,
+        choices=Category.choices,
+        default=Category.UNEXPECTED,
+    )
+    message = models.TextField(
+        help_text="Exception message captured at handler raise time",
+    )
+    fix_hint = models.TextField(
+        blank=True,
+        default="",
+        help_text="Optional operator-facing hint from ProjectionStateError.fix_hint",
+    )
+
+    occurrence_count = models.PositiveIntegerField(
+        default=1,
+        help_text="Incremented when the same event fails again before resolution",
+    )
+    first_seen_at = models.DateTimeField(auto_now_add=True)
+    last_seen_at = models.DateTimeField(auto_now=True)
+
+    resolved = models.BooleanField(default=False, db_index=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    resolved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    resolution_note = models.TextField(
+        blank=True,
+        default="",
+        help_text="Operator note when manually marking resolved",
+    )
+
+    class Meta:
+        verbose_name = "Projection failure"
+        verbose_name_plural = "Projection failures"
+        constraints = [
+            # One log row per (company, projection, event) — repeated
+            # failures bump occurrence_count instead of duplicating.
+            models.UniqueConstraint(
+                fields=("company", "projection_name", "event"),
+                name="uniq_projection_failure_per_event",
+            ),
+        ]
+        indexes = [
+            # Hot path for /finance/exceptions: list unresolved failures
+            # for the company, newest first.
+            models.Index(
+                fields=["company", "resolved", "-last_seen_at"],
+                name="idx_pfl_company_unresolved",
+            ),
+            # Aggregate counts per projection (for projection_health
+            # display: "shopify_accounting: 3 unresolved failures").
+            models.Index(
+                fields=["company", "projection_name", "resolved"],
+                name="idx_pfl_company_proj_resolved",
+            ),
+        ]
+
+    def __str__(self):
+        return f"[{self.category}] {self.projection_name} on event {self.event_id}: {self.message[:60]}"
+
+    def mark_resolved(self, user=None, note: str = ""):
+        """Operator action: mark this failure as resolved."""
+        from django.utils import timezone
+
+        self.resolved = True
+        self.resolved_at = timezone.now()
+        self.resolved_by = user
+        if note:
+            self.resolution_note = note
+        self.save(update_fields=["resolved", "resolved_at", "resolved_by", "resolution_note"])
