@@ -1265,8 +1265,6 @@ class JournalEntry(AccountingReadModel):
     date = models.DateField()
 
     period = models.PositiveSmallIntegerField(
-        null=True,
-        blank=True,
         help_text="Fiscal period (1-12 or custom)",
     )
 

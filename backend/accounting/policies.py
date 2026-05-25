@@ -625,9 +625,23 @@ def can_post_to_period(actor, target_date, period=None, fiscal_year=None) -> tup
         target_date: Entry date
         period: Optional explicit period number (e.g., 13 for adjustment)
         fiscal_year: Optional explicit fiscal year (required when period=13)
+
+    A84 (2026-05-25): pre-A84 this function had two silent `return (True, "")`
+    early-returns when inputs were insufficient (no date AND no period; or
+    period set but not 13 with no date and no fiscal_year). That meant a JE
+    with NULL date and NULL period could post without any period validation
+    — a defense-in-depth gap for the Financial Truth Engine claim. Per
+    docs/finance_event_first_policy.md §8, validators must NEVER silently
+    pass on insufficient input. Both paths now refuse the operation.
     """
     if not target_date and period is None:
-        return True, ""
+        return (
+            False,
+            "Cannot validate post-eligibility: journal entry has no date "
+            "and no explicit period. (A84: previously this case silently "
+            "allowed posting; now refused per finance_event_first_policy "
+            "§8 'loud failures, not silent'.)",
+        )
 
     from datetime import date as date_type
     from datetime import datetime
@@ -676,7 +690,15 @@ def can_post_to_period(actor, target_date, period=None, fiscal_year=None) -> tup
             period_qs = period_qs.filter(period=period)
         fiscal_period = period_qs.first()
     else:
-        return True, ""
+        # A84: pre-fix this returned (True, "") silently when period was set
+        # but neither target_date nor (period==13 + fiscal_year) gave us
+        # enough info to identify a FiscalPeriod row. Refuse loudly instead.
+        return (
+            False,
+            "Cannot validate post-eligibility: period number provided "
+            "without a date or explicit fiscal_year — can't identify which "
+            "fiscal year's period to check.",
+        )
 
     if not fiscal_period:
         return False, "No fiscal period defined for this date."

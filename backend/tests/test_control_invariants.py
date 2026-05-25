@@ -168,6 +168,47 @@ class TestClosedPeriodBlocksPosting:
         assert not allowed, "Closed fiscal year should reject posting"
         assert "closed" in reason.lower()
 
+    # =========================================================================
+    # A84 (2026-05-25): Loud rejection on insufficient input
+    # =========================================================================
+    #
+    # Pre-A84, can_post_to_period had two silent `return (True, "")` early-
+    # returns when inputs were insufficient (no date AND no period; period
+    # set but not 13 with no date and no fiscal_year). That meant a JE with
+    # NULL date and NULL period could post without any period validation —
+    # a defense-in-depth gap. Per finance_event_first_policy.md §8,
+    # validators must NEVER silently pass on insufficient input.
+
+    def test_a84_no_date_and_no_period_rejects_posting(self, company, user, owner_membership):
+        """A84: if a caller invokes can_post_to_period with neither a date
+        nor a period, the validator MUST refuse. Pre-A84 this silently
+        returned (True, '')."""
+        actor = _make_actor(company, user, owner_membership)
+
+        allowed, reason = can_post_to_period(actor, target_date=None, period=None)
+        assert not allowed, (
+            "can_post_to_period must refuse when both date and period are None. Pre-A84 this silently allowed posting."
+        )
+        assert "no date" in reason.lower() or "no period" in reason.lower(), (
+            f"Rejection reason should mention missing date/period; got: {reason}"
+        )
+
+    def test_a84_period_without_date_or_fiscal_year_rejects_posting(self, company, user, owner_membership):
+        """A84: if a caller provides a period number but no date and no
+        fiscal_year, the validator can't identify which fiscal year's
+        period to check, so MUST refuse. Pre-A84 this silently returned
+        (True, '')."""
+        actor = _make_actor(company, user, owner_membership)
+
+        allowed, reason = can_post_to_period(actor, target_date=None, period=5, fiscal_year=None)
+        assert not allowed, (
+            "can_post_to_period must refuse when given a non-13 period but no "
+            "date or fiscal_year. Pre-A84 this silently allowed posting."
+        )
+        assert "date" in reason.lower() or "fiscal_year" in reason.lower(), (
+            f"Rejection reason should mention missing date/fiscal_year; got: {reason}"
+        )
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # INVARIANT 2: Projections in closed period are frozen
