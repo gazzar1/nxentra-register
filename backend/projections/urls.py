@@ -33,6 +33,12 @@ Admin Projection Management (staff/superuser only):
 
 from django.urls import path
 
+from .failure_log_views import (
+    ProjectionFailureDetailView,
+    ProjectionFailureListView,
+    ProjectionFailureResolveView,
+    ProjectionFailureSummaryView,
+)
 from .views import (
     AccountBalanceDetailView,
     AccountBalanceListView,
@@ -349,5 +355,26 @@ urlpatterns = [
         "admin/projections/<str:name>/process/",
         AdminProjectionProcessView.as_view(),
         name="admin-projection-process",
+    ),
+    # A80: Projection failure log (/finance/exceptions backing API)
+    path(
+        "projection-failures/",
+        ProjectionFailureListView.as_view(),
+        name="projection-failure-list",
+    ),
+    path(
+        "projection-failures/summary/",
+        ProjectionFailureSummaryView.as_view(),
+        name="projection-failure-summary",
+    ),
+    path(
+        "projection-failures/<int:pk>/",
+        ProjectionFailureDetailView.as_view(),
+        name="projection-failure-detail",
+    ),
+    path(
+        "projection-failures/<int:pk>/resolve/",
+        ProjectionFailureResolveView.as_view(),
+        name="projection-failure-resolve",
     ),
 ]
