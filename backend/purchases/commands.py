@@ -121,8 +121,13 @@ def create_purchase_bill(
     if posting_profile.profile_type != PostingProfile.ProfileType.VENDOR:
         return CommandResult.fail("Posting profile must be VENDOR type for purchase bills.")
 
-    # A78: block GATEWAY profiles on manual bills — same reasoning as
+    # A78 / A79: block GATEWAY profiles on manual bills — same reasoning as
     # create_sales_invoice (clearing accounts with REQUIRED dimension rules).
+    # When a platform-purchase connector is added (e.g. supplier-side Shopify,
+    # Stripe inbound, etc.), this function MUST gain an `auto_created` param
+    # and this guard MUST gate on `not auto_created and ...` per
+    # docs/finance_event_first_policy.md §6.2 — mirror the sales pattern at
+    # sales/commands.py:726 and :1031.
     if posting_profile.usage == PostingProfile.Usage.GATEWAY:
         return CommandResult.fail(
             f"Posting profile '{posting_profile.code}' is reserved for platform "
@@ -367,8 +372,11 @@ def post_purchase_bill(actor: ActorContext, bill_id: int) -> CommandResult:
     if bill.status != PurchaseBill.Status.DRAFT:
         return CommandResult.fail("Only DRAFT bills can be posted.")
 
-    # A78: refuse to post bills routed through gateway profiles. There's no
-    # platform-purchase path yet, so any GATEWAY profile here is stale data.
+    # A78 / A79: refuse to post bills routed through gateway profiles. There's
+    # no platform-purchase path yet, so any GATEWAY profile here is stale data.
+    # When a platform-purchase connector is added, this function MUST gain an
+    # `auto_created` param and gate on `not auto_created and ...` per
+    # docs/finance_event_first_policy.md §6.2.
     if bill.posting_profile.usage == PostingProfile.Usage.GATEWAY:
         return CommandResult.fail(
             f"Posting profile '{bill.posting_profile.code}' is reserved for platform "
@@ -787,7 +795,9 @@ def create_purchase_order(
     except PostingProfile.DoesNotExist:
         return CommandResult.fail("Posting profile not found.")
 
-    # A78: block GATEWAY profiles on manual POs (same as bills/invoices).
+    # A78 / A79: block GATEWAY profiles on manual POs (same as bills/invoices).
+    # When a platform-PO connector is added, gate this on `not auto_created`
+    # per docs/finance_event_first_policy.md §6.2.
     if profile.usage == PostingProfile.Usage.GATEWAY:
         return CommandResult.fail(
             f"Posting profile '{profile.code}' is reserved for platform "
@@ -1469,9 +1479,11 @@ def create_purchase_credit_note(
     if bill.status != PurchaseBill.Status.POSTED:
         return CommandResult.fail("Credit notes can only be created against POSTED bills.")
 
-    # A78: block manual CNs against GATEWAY-profile bills (same reasoning
-    # as sales credit notes — clearing accounts need a tag this path can't
-    # supply).
+    # A78 / A79: block manual CNs against GATEWAY-profile bills (same reasoning
+    # as sales credit notes at sales/commands.py:1719 — clearing accounts need a
+    # tag this path can't supply). When a platform-purchase refund connector is
+    # added, gate this on `not auto_created` per
+    # docs/finance_event_first_policy.md §6.2.
     if bill.posting_profile.usage == PostingProfile.Usage.GATEWAY:
         return CommandResult.fail(
             f"This bill was created by a platform integration "
@@ -1681,7 +1693,9 @@ def post_purchase_credit_note(actor: ActorContext, credit_note_id: int) -> Comma
     if cn.status != PurchaseCreditNote.Status.DRAFT:
         return CommandResult.fail("Only DRAFT credit notes can be posted.")
 
-    # A78: same guard as post_purchase_bill.
+    # A78 / A79: same guard as post_purchase_bill. When a platform CN connector
+    # is added, gate on `not auto_created` per
+    # docs/finance_event_first_policy.md §6.2.
     if cn.posting_profile.usage == PostingProfile.Usage.GATEWAY:
         return CommandResult.fail(
             f"Posting profile '{cn.posting_profile.code}' is reserved for platform "

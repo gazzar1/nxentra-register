@@ -955,6 +955,7 @@ def update_sales_invoice(
     lines: list = None,
     reference: str = None,
     notes: str = None,
+    auto_created: bool = False,
 ) -> CommandResult:
     """
     Update a draft sales invoice.
@@ -1027,8 +1028,10 @@ def update_sales_invoice(
             return CommandResult.fail("Posting profile not found.")
         if posting_profile.profile_type != PostingProfile.ProfileType.CUSTOMER:
             return CommandResult.fail("Posting profile must be CUSTOMER type for sales invoices.")
-        # A78: block GATEWAY profiles on manual edit (same as create).
-        if posting_profile.usage == PostingProfile.Usage.GATEWAY:
+        # A78 / A79: block GATEWAY profiles on manual edit (mirrors create at
+        # line 726). Platform integration path (auto_created=True) bypasses
+        # because it supplies the required dimension tags itself.
+        if not auto_created and posting_profile.usage == PostingProfile.Usage.GATEWAY:
             return CommandResult.fail(
                 f"Posting profile '{posting_profile.code}' is reserved for platform "
                 f"integrations and can't be used for manual invoices."
