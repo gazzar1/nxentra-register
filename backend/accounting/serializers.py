@@ -429,6 +429,17 @@ class JournalEntryAutoSaveSerializer(serializers.ModelSerializer):
     """
 
     lines = JournalLineInputSerializer(many=True, required=False)
+    # A85 chunk 3c (2026-05-26): operator-provided reason when the
+    # explicit `period` doesn't match the date-derived period. Required
+    # when the resulting period differs from auto-resolution, enforced
+    # in the view (not the serializer) so we can compare to the actual
+    # date-derived value.
+    override_reason = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=2000,
+        write_only=True,
+    )
 
     class Meta:
         model = JournalEntry
@@ -445,6 +456,7 @@ class JournalEntryAutoSaveSerializer(serializers.ModelSerializer):
             "posted_at",
             "posted_by",
             "lines",
+            "override_reason",
         ]
         read_only_fields = ["id", "company", "posted_at", "posted_by", "status"]
 

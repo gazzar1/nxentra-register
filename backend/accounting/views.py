@@ -312,6 +312,7 @@ class JournalEntryListCreateView(APIView):
         # Extract data for command
         data = input_serializer.validated_data
         lines = data.pop("lines", [])
+        override_reason = (data.pop("override_reason", "") or "").strip()
 
         # Convert lines to command format (already has account_id)
         command_lines = []
@@ -335,6 +336,59 @@ class JournalEntryListCreateView(APIView):
                 }
             )
 
+        # A85 chunk 3c (2026-05-26): detect period override on manual JE.
+        # If the user-supplied period differs from what the date would
+        # auto-resolve to, treat it as an override:
+        #   - require accounting.je.override_period permission
+        #   - require override_reason of >=10 chars
+        #   - write a PeriodOverrideAudit row after JE creation succeeds
+        # If the user-supplied period matches the date-derived period,
+        # no override has occurred — the explicit value is just a
+        # restatement; allow without audit.
+        entry_date = data.get("date")
+        requested_period = data.get("period")
+        is_override = False
+        date_derived_period = None
+        if entry_date is not None and requested_period is not None:
+            from datetime import datetime as _dt
+
+            from projections.models import FiscalPeriod
+
+            parsed_date = entry_date
+            if isinstance(parsed_date, str):
+                try:
+                    parsed_date = _dt.fromisoformat(parsed_date).date()
+                except (TypeError, ValueError):
+                    parsed_date = None
+            if parsed_date is not None:
+                date_fp = FiscalPeriod.objects.filter(
+                    company=actor.company,
+                    start_date__lte=parsed_date,
+                    end_date__gte=parsed_date,
+                    period_type=FiscalPeriod.PeriodType.NORMAL,
+                ).first()
+                date_derived_period = date_fp.period if date_fp else parsed_date.month
+                if int(requested_period) != int(date_derived_period):
+                    is_override = True
+
+        if is_override:
+            if not actor.has("accounting.je.override_period"):
+                return Response(
+                    {
+                        "detail": (
+                            "You lack the accounting.je.override_period "
+                            "permission required to post to a period "
+                            "different from the date-derived default."
+                        )
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            if len(override_reason) < 10:
+                return Response(
+                    {"detail": ("Period override requires a reason of at least 10 characters.")},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
         # Execute command (this emits the event)
         result = create_journal_entry(
             actor,
@@ -344,7 +398,7 @@ class JournalEntryListCreateView(APIView):
             currency=data.get("currency"),
             exchange_rate=data.get("exchange_rate"),
             lines=command_lines,
-            period=data.get("period"),
+            period=requested_period,
         )
 
         if not result.success:
@@ -352,6 +406,43 @@ class JournalEntryListCreateView(APIView):
                 {"detail": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        # A85 chunk 3c: write the audit row AFTER JE creation succeeds.
+        # If audit-row creation fails for any reason, log and continue —
+        # we don't roll back the JE since the override has already taken
+        # effect at the event/projection level.
+        if is_override:
+            try:
+                from datetime import datetime as _dt
+
+                from accounting.models import PeriodOverrideAudit
+
+                audit_date = entry_date
+                if isinstance(audit_date, str):
+                    try:
+                        audit_date = _dt.fromisoformat(audit_date).date()
+                    except (TypeError, ValueError):
+                        audit_date = None
+                if audit_date is not None:
+                    PeriodOverrideAudit.objects.create(
+                        company=actor.company,
+                        user=request.user,
+                        source=PeriodOverrideAudit.Source.MANUAL_JE,
+                        source_document_ref=result.data.entry_number or f"JE-{result.data.id}",
+                        journal_entry=result.data,
+                        original_date=audit_date,
+                        original_period=int(date_derived_period or audit_date.month),
+                        original_fiscal_year=audit_date.year,
+                        override_period=int(requested_period),
+                        override_fiscal_year=audit_date.year,
+                        reason=override_reason,
+                    )
+            except Exception:
+                logger.exception(
+                    "Failed to write PeriodOverrideAudit for JE %s — override "
+                    "WAS applied at the event level; audit row is missing.",
+                    result.data.id,
+                )
 
         # Return created entry
         output_serializer = JournalEntrySerializer(result.data)
