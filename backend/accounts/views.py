@@ -101,6 +101,35 @@ def clear_auth_cookies(response):
 
 
 # =============================================================================
+# Pending-Login Token (browser company-selection step)
+# =============================================================================
+#
+# When a user logs in without a company_id and has multiple memberships, the
+# backend returns a short-lived signed token that the browser holds while the
+# user picks a company. The browser never stores the user's password — it
+# exchanges this token + company_id for JWTs in the second call.
+
+PENDING_LOGIN_TOKEN_SALT = "nxentra.pending-login.v1"
+PENDING_LOGIN_TOKEN_MAX_AGE = 300  # 5 minutes
+
+
+def mint_pending_login_token(user_id: int, valid_company_ids: list[int]) -> str:
+    from django.core import signing
+
+    return signing.dumps(
+        {"user_id": int(user_id), "valid_company_ids": [int(c) for c in valid_company_ids]},
+        salt=PENDING_LOGIN_TOKEN_SALT,
+    )
+
+
+def verify_pending_login_token(token: str) -> dict:
+    """Returns the verified payload or raises signing.BadSignature / SignatureExpired."""
+    from django.core import signing
+
+    return signing.loads(token, salt=PENDING_LOGIN_TOKEN_SALT, max_age=PENDING_LOGIN_TOKEN_MAX_AGE)
+
+
+# =============================================================================
 # Authentication Views
 # =============================================================================
 
@@ -232,18 +261,25 @@ class LoginView(TokenObtainPairView):
 
     STRICT TOKEN POLICY - Tokens ONLY issued with explicit company_id:
     - Login WITHOUT company_id → ALWAYS returns "choose_company" with companies list
-    - Login WITH company_id → validates membership, issues tokens with that company_id
+      and a short-lived `pending_login_token` for the browser company-selection step.
+    - Login WITH company_id → validates membership, issues tokens with that company_id.
+      Authentication is either `email + password` (API clients) OR
+      `pending_login_token` (browser company-selection second step).
     - No implicit token issuance, no "remembering" previous active company
 
-    Required for tokens:
-    - company_id: Must be provided to receive tokens (validates membership)
+    Required for tokens (one of):
+    - email + password + company_id (full credentials)
+    - pending_login_token + company_id (browser select-company flow; token holds user_id
+      and valid_company_ids, signed with SECRET_KEY, 5-minute TTL)
 
     Blocks login if:
     - User email is not verified -> returns "email_not_verified" error
     - User is not approved (Beta Gate) -> returns "pending_approval" error
     - User has no company memberships -> returns "no_company_access" error
-    - company_id not provided -> returns "choose_company" with companies list (no tokens)
+    - company_id not provided -> returns "choose_company" with companies list +
+      pending_login_token (no JWT yet)
     - company_id invalid -> returns "invalid_company" error
+    - pending_login_token invalid/expired -> returns "invalid_pending_token" error
 
     PRE-AUTH QUERIES (SYSTEM MODELS ONLY):
     This endpoint queries User, CompanyMembership, Company before auth succeeds.
@@ -264,6 +300,12 @@ class LoginView(TokenObtainPairView):
                 {"detail": "Too many login attempts. Please try again later."},
                 status=status.HTTP_429_TOO_MANY_REQUESTS,
             )
+
+        # Browser select-company flow: exchange a signed pending_login_token + company_id
+        # for JWTs without re-sending the password.
+        pending_token = request.data.get("pending_login_token")
+        if pending_token:
+            return self._post_with_pending_token(request, pending_token)
 
         email = request.data.get("email", "").lower().strip()
         requested_company_id = request.data.get("company_id")  # REQUIRED for token issuance
@@ -333,12 +375,17 @@ class LoginView(TokenObtainPairView):
                     }
                     for m in memberships
                 ]
+                pending_token = mint_pending_login_token(
+                    user_id=user.id,
+                    valid_company_ids=list(valid_company_ids),
+                )
                 return Response(
                     {
                         "detail": "choose_company",
                         "message": "Please select a company to continue.",
                         "email": email,
                         "companies": companies,
+                        "pending_login_token": pending_token,
                     },
                     status=status.HTTP_200_OK,  # 200 because credentials are valid
                 )
@@ -412,6 +459,114 @@ class LoginView(TokenObtainPairView):
                 response.data.get("refresh"),
             )
 
+        return response
+
+    def _post_with_pending_token(self, request, pending_token: str) -> Response:
+        """
+        Exchange a signed pending_login_token + company_id for JWTs.
+
+        Used by the browser select-company flow so the frontend never has to
+        store the user's password between login and company selection.
+        """
+        from django.core import signing
+
+        try:
+            payload = verify_pending_login_token(pending_token)
+        except signing.SignatureExpired:
+            return Response(
+                {"detail": "invalid_pending_token", "message": "Login session expired. Please sign in again."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+        except signing.BadSignature:
+            return Response(
+                {"detail": "invalid_pending_token", "message": "Invalid login session. Please sign in again."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        requested_company_id = request.data.get("company_id")
+        if requested_company_id is None:
+            return Response(
+                {"detail": "company_id_required", "message": "company_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            requested_company_id = int(requested_company_id)
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "invalid_company", "message": "Invalid company_id."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        token_user_id = int(payload.get("user_id", 0))
+        token_valid_company_ids = {int(c) for c in payload.get("valid_company_ids", [])}
+
+        if requested_company_id not in token_valid_company_ids:
+            return Response(
+                {"detail": "invalid_company", "message": "You don't have access to this company."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            user = User.objects.get(id=token_user_id)
+        except User.DoesNotExist:
+            return Response(
+                {"detail": "invalid_pending_token", "message": "Invalid login session. Please sign in again."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        # Re-verify the membership is still active (tenants/users can be revoked
+        # in the 5-minute window between the two calls).
+        if not CompanyMembership.objects.filter(user=user, company_id=requested_company_id, is_active=True).exists():
+            return Response(
+                {"detail": "invalid_company", "message": "You don't have access to this company."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Set as active company so token claims line up with the standard flow.
+        if user.active_company_id != requested_company_id:
+            user.active_company_id = requested_company_id
+            user.save(update_fields=["active_company"])
+
+        from accounts.serializers import mint_token_pair
+
+        tokens = mint_token_pair(user, company_id=requested_company_id)
+
+        # Update last_login and emit USER_LOGGED_IN — same side-effects as the password path.
+        try:
+            from django.utils import timezone
+
+            user.last_login = timezone.now()
+            user.save(update_fields=["last_login"])
+
+            try:
+                active_company = Company.objects.get(id=requested_company_id)
+            except Company.DoesNotExist:
+                active_company = None
+
+            if active_company:
+                from events.emitter import emit_event_no_actor
+                from events.types import EventTypes, UserLoggedInData
+
+                emit_event_no_actor(
+                    company=active_company,
+                    user=user,
+                    event_type=EventTypes.USER_LOGGED_IN,
+                    aggregate_type="User",
+                    aggregate_id=str(user.public_id),
+                    idempotency_key=f"user.logged_in:{user.public_id}:{int(timezone.now().timestamp() * 1000)}",
+                    data=UserLoggedInData(
+                        user_public_id=str(user.public_id),
+                        email=user.email,
+                        ip_address=request.META.get("REMOTE_ADDR", ""),
+                        user_agent=request.META.get("HTTP_USER_AGENT", "")[:200],
+                    ).to_dict(),
+                )
+        except Exception:
+            # last_login + event emission are non-blocking — auth still succeeds.
+            pass
+
+        response = Response(tokens, status=status.HTTP_200_OK)
+        set_auth_cookies(response, tokens["access"], tokens["refresh"])
         return response
 
 

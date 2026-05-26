@@ -10,6 +10,7 @@ interface LoginResponse {
   access?: string;
   refresh?: string;
   detail?: string;
+  pending_login_token?: string;
   companies?: Array<{
     id: number;
     public_id: string;
@@ -56,13 +57,17 @@ export default function LoginPage() {
       setIsSubmitting(true);
       const response = await login(email, password) as LoginResponse;
 
-      // Handle "choose_company" response - user has multiple companies, no active set
-      // Backend returns 200 with companies list but NO tokens
-      if (response.detail === "choose_company" && response.companies) {
-        // Store companies in sessionStorage for the select-company page
+      // Handle "choose_company" response - user has multiple companies, no active set.
+      // Backend returns 200 with a short-lived signed pending_login_token; the browser
+      // exchanges that token + company_id for JWTs on /select-company. Password is
+      // never stored client-side (A87).
+      if (
+        response.detail === "choose_company" &&
+        response.companies &&
+        response.pending_login_token
+      ) {
         sessionStorage.setItem("pendingCompanies", JSON.stringify(response.companies));
-        sessionStorage.setItem("pendingEmail", email);
-        sessionStorage.setItem("pendingPassword", password);
+        sessionStorage.setItem("pendingLoginToken", response.pending_login_token);
         router.push("/select-company?from=login");
         return;
       }

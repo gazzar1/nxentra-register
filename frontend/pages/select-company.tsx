@@ -96,11 +96,11 @@ export default function SelectCompanyPage() {
       setError(null);
 
       if (isFromLogin) {
-        // Re-login with selected company_id
-        const email = sessionStorage.getItem("pendingEmail");
-        const password = sessionStorage.getItem("pendingPassword");
+        // Exchange the pending_login_token for JWTs. The password was never
+        // stored client-side (A87).
+        const pendingToken = sessionStorage.getItem("pendingLoginToken");
 
-        if (!email || !password) {
+        if (!pendingToken) {
           setError("Session expired. Please login again.");
           router.push("/login");
           return;
@@ -108,11 +108,13 @@ export default function SelectCompanyPage() {
 
         const response = await apiClient.post(
           "/auth/login/",
-          { email, password, company_id: companyId }
+          { pending_login_token: pendingToken, company_id: companyId }
         );
 
-        // Clear pending credentials
+        // Clear pending state (drop legacy keys defensively in case anything else
+        // still writes them).
         sessionStorage.removeItem("pendingCompanies");
+        sessionStorage.removeItem("pendingLoginToken");
         sessionStorage.removeItem("pendingEmail");
         sessionStorage.removeItem("pendingPassword");
 
@@ -135,8 +137,9 @@ export default function SelectCompanyPage() {
   };
 
   const handleLogout = () => {
-    // Clear any pending credentials
+    // Clear any pending state (drop legacy email/password keys too — A87).
     sessionStorage.removeItem("pendingCompanies");
+    sessionStorage.removeItem("pendingLoginToken");
     sessionStorage.removeItem("pendingEmail");
     sessionStorage.removeItem("pendingPassword");
     removeTokens();

@@ -15,6 +15,14 @@ Because of that, "quick fixes" can create silent data corruption, projection dri
 
 This protocol exists to prevent that.
 
+## 0. The Moat
+
+> **Make the truth engine impossible to corrupt through normal product usage. That is the moat.**
+
+Not AI. Not MCP. Not the number of connectors. Not "event-sourced" as a slogan. The moat is that every financial consequence has a traceable command, event, projection, audit trail, reversal path, and test — and that no normal product action, no UI button, no operator workflow, no AI suggestion, can write canonical state outside that path.
+
+Every rule below exists to defend this single property. When a rule and convenience conflict, the moat wins.
+
 ## 1. Non-Negotiable Invariants
 
 These rules are mandatory.

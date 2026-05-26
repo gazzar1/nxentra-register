@@ -95,8 +95,10 @@ describe('LoginPage', () => {
   });
 
   it('redirects to company selection when choose_company response', async () => {
+    sessionStorage.clear();
     mockLogin.mockResolvedValue({
       detail: 'choose_company',
+      pending_login_token: 'signed.token.value',
       companies: [{ id: 1, name: 'Acme', role: 'OWNER' }],
     });
     render(<LoginPage />);
@@ -108,6 +110,61 @@ describe('LoginPage', () => {
     await waitFor(() => {
       expect(mockPush).toHaveBeenCalledWith('/select-company?from=login');
     });
+    // Token + companies are stored; password and email are NOT.
+    expect(sessionStorage.getItem('pendingLoginToken')).toBe('signed.token.value');
+    expect(sessionStorage.getItem('pendingCompanies')).toBe(
+      JSON.stringify([{ id: 1, name: 'Acme', role: 'OWNER' }])
+    );
+  });
+
+  // A87 regression: the browser must NEVER store the user's password or email
+  // in sessionStorage during the company-selection step. The backend gives us a
+  // short-lived signed token instead.
+  it('does not store password or email in sessionStorage on choose_company (A87)', async () => {
+    sessionStorage.clear();
+    mockLogin.mockResolvedValue({
+      detail: 'choose_company',
+      pending_login_token: 'signed.token.value',
+      companies: [{ id: 1, name: 'Acme', role: 'OWNER' }],
+    });
+    render(<LoginPage />);
+
+    fireEvent.change(screen.getByTestId('email'), { target: { value: 'user@test.com' } });
+    fireEvent.change(screen.getByTestId('password'), { target: { value: 'supersecret' } });
+    fireEvent.click(screen.getByRole('button', { name: /login/i }));
+
+    await waitFor(() => {
+      expect(mockPush).toHaveBeenCalledWith('/select-company?from=login');
+    });
+
+    expect(sessionStorage.getItem('pendingPassword')).toBeNull();
+    expect(sessionStorage.getItem('pendingEmail')).toBeNull();
+    // And as a paranoia check: no sessionStorage key may contain the password text.
+    for (let i = 0; i < sessionStorage.length; i++) {
+      const key = sessionStorage.key(i)!;
+      const value = sessionStorage.getItem(key) ?? '';
+      expect(value).not.toContain('supersecret');
+    }
+  });
+
+  it('stays on login (does not redirect) if choose_company response is missing the token', async () => {
+    sessionStorage.clear();
+    mockLogin.mockResolvedValue({
+      detail: 'choose_company',
+      // pending_login_token deliberately missing
+      companies: [{ id: 1, name: 'Acme', role: 'OWNER' }],
+    });
+    render(<LoginPage />);
+
+    fireEvent.change(screen.getByTestId('email'), { target: { value: 'user@test.com' } });
+    fireEvent.change(screen.getByTestId('password'), { target: { value: 'pass' } });
+    fireEvent.click(screen.getByRole('button', { name: /login/i }));
+
+    // Wait a tick for the async submit to settle.
+    await waitFor(() => expect(mockLogin).toHaveBeenCalled());
+
+    expect(mockPush).not.toHaveBeenCalledWith('/select-company?from=login');
+    expect(sessionStorage.getItem('pendingLoginToken')).toBeNull();
   });
 
   it('redirects to verify-email when email not verified', async () => {

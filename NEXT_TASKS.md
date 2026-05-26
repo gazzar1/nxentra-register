@@ -629,6 +629,78 @@ Do not start ETA Phase 1 in the next 30 days. The current commercial path is App
 
 **Procurement to start NOW even before code:** ETA submitter registration + cert acquisition (Egypt Trust, ~$200/year, 1-2 week lead time). This is a long-pole item that should not block implementation when the trigger fires.
 
+### A82. Invoice list sort tie-breaker is inconsistent within the same posting date — **~15min** (sales UI polish, surfaced 2026-05-24 during App Store demo data creation)
+
+`/accounting/sales-invoices` sorts by `Date DESC` correctly, but the secondary sort within the same date is inconsistent. Reproduced 2026-05-24 on Shopify_R company with 5 demo invoices:
+- 23/05/2026 entries: `INV-000007` shown above `INV-000006` (descending ✓)
+- 22/05/2026 entries: `INV-000004` shown above `INV-000005` (ascending ✗)
+
+Most likely cause: ordering ties broken by `posted_at` rather than `id` or `invoice_number`. INV-000005 was saved as DRAFT first and posted later than INV-000004, which inverts the visual order from what a user expects (highest invoice number on top within a date). **Fix:** secondary `ORDER BY id DESC` or `invoice_number DESC` in the list query so tie-break is monotonic with what the user sees. Single line in the queryset. Cosmetic — not data-correctness — but jarring once you notice. **Not submission-blocking.**
+
+### A83. Auto-created Shopify customer binds AR-DEFAULT instead of SHOPIFY-DEFAULT posting profile — **~30min** (Shopify connector + posting-profile binding, surfaced 2026-05-24)
+
+When Shopify OAuth completes and Nxentra creates the "Shopify: <shop-domain>" customer record automatically, its `default_posting_profile` is set to `AR-DEFAULT` instead of the channel-specific `SHOPIFY-DEFAULT` profile that A79b/A79c was supposed to enforce. Reproduced 2026-05-24 after reinstalling Nxentra Sync on `nxentra-reviewer-store`: the auto-created `SHOPIFY-NXENTRA-RE` customer shows `AR-DEFAULT` in `/accounting/customers`. This works (invoices still post correctly), but it skips the per-channel routing logic A79 was designed to enable.
+
+Likely root cause: in `complete_oauth` (or wherever the per-store customer record is created), the call uses the company's default AR posting profile lookup rather than `PostingProfile.objects.get_or_create(usage=GATEWAY, code="SHOPIFY-DEFAULT")`. **Fix:** ensure the SHOPIFY-DEFAULT GATEWAY profile is created if missing (commit `91bb57d` was supposed to ensure this — verify it covers the OAuth-create path, not just the seed path) and bind it on customer create. Test: reinstall on a fresh dev store, confirm the auto-created customer shows `SHOPIFY-DEFAULT` not `AR-DEFAULT`. **Not submission-blocking** but degrades A79's per-channel routing value proposition for first-merchant onboarding.
+
+### A84. Customer Receipts form UX — "Bank Account" label is misleading + AR Control should default — **~1-2h** (sales UI polish + form ergonomics, surfaced 2026-05-24)
+
+The `/accounting/receipts/new` form has two ergonomic problems that surfaced when manually processing payments against Shopify-clearing invoices:
+
+1. **"Bank Account" label is wrong for clearing destinations.** The field accepts any cash-type or clearing account (e.g., `11500 Shopify Clearing`), which is correct for Shopify-gateway payments where money lands in clearing first and only later moves to the actual bank. But the label "Bank Account" makes operators hesitate or pick the wrong account. **Fix:** rename to "Deposit Account" or "Cash Destination" — covers both real bank accounts and intermediate clearing accounts.
+
+2. **AR Control Account requires manual pick when it's deterministic.** Once an invoice is selected in the Invoice Allocation table, the AR account is known (it's the account the invoice's JE actually credited — typically `12000 Accounts Receivable`, or the channel-specific AR account if the customer has a posting profile binding). Forcing the operator to re-pick it is friction and an opportunity for error. **Fix:** auto-fill from the first allocated invoice's `accounts_receivable_account_id`; show as read-only when invoices are selected, fall back to editable when receipt has no invoice allocation (advance receipt).
+
+Both surfaced during 2026-05-24 demo-data prep on Shopify_R when manually processing 3 receipts to populate the reconciliation control center. **Not submission-blocking** — operator can fill it correctly — but every merchant will hit this on day 1. Pull forward in the post-listing UX polish wave alongside A82.
+
+### A87. Bank statement import — date format must inherit from company locale, not be re-auto-detected per upload — **~30min-1h** (bank reconciliation import flow, surfaced 2026-05-24)
+
+The Import Bank Statement flow (`/accounting/bank-reconciliation/import`) auto-detects date format on each CSV upload. Reproduced 2026-05-24 on Shopify_R: uploaded `bank_statement_demo.csv` with `YYYY-MM-DD` (ISO) format → silently failed with "Parsed 0 lines — Check the column mapping — the date column may not match the date format." Regenerated as `MM/DD/YYYY` → same error. Only worked after manually opening the "Map columns" UI and explicitly selecting the date format.
+
+This is bad for two reasons:
+1. **Silent fail before user sees the column mapper.** The toast says "may not match the date format" but the importer never opened the mapper to let the user fix it — they had to click "Map columns" themselves to even discover the option. Operators will assume the file is broken.
+2. **Auto-detection ignores the locale we already know.** Every Nxentra company picks a locale / date format preference during registration (DD/MM/YYYY for Egypt, MM/DD/YYYY for US, ISO for technical defaults). The importer should default to *that* on every CSV upload from this company, not run auto-detection from scratch every time.
+
+**Fix:**
+1. Pull `company.locale.date_format` (or whatever the registration setting maps to) and use it as the **default** date format in the column mapper.
+2. On parse failure due to date format, **automatically open the column mapper modal** rather than just showing a toast. Pre-fill with the company's locale; let the user override.
+3. Persist the per-bank-account mapping (already mentioned in the help text "Mappings are remembered per bank account") — once set, future uploads to the same bank account skip the mapping prompt entirely.
+4. Wider fix: every CSV import flow in the app (settlement import, item import, customer import) should follow this same locale-defaulted, fail-loud-not-silent pattern. File a parent ticket if other importers exhibit the same issue.
+
+**Not submission-blocking** (operator can manually map columns once and proceed), but every merchant will hit this on day 1 of bank rec and the "did the file work?" anxiety is a trust-damaging first impression. Pull forward post-listing alongside A82/A84/A86 in the UX polish wave.
+
+### A86. Settlement importer falls back to generic expense account for gateway/courier fees instead of per-provider mapping — **~30min** (settlement importer + account mappings UI, surfaced 2026-05-24)
+
+When the Paymob (and presumably Bosta) settlement CSV importer posts the per-batch JE, the fees line is routed to the first generic expense account found in the company's chart of accounts. Reproduced 2026-05-24 on Shopify_R: the `PAYMOB-BATCH-DEMO-001` settlement posted `$160.85` of Paymob gateway fees to `53000 Office & General 1` instead of a dedicated "Payment Processing Fees" or "Gateway Fees" account.
+
+This is **mathematically correct** (debit balances the credit) but **mis-categorized for P&L purposes**: a merchant looking at "Office & General" expenses on their income statement sees Paymob fees blended with rent, utilities, and stationery. Their actual payment processing cost is hidden from operational reporting and competitive analysis. The expense category is a meaningful business KPI (gross margin should net it out separately) and getting it wrong costs the merchant trust in the system on day 1 of first settlement import.
+
+**Fix:**
+1. **Account Mappings UI extension** (`/settings/integrations/shopify` already has the mappings card) — add a "Gateway Fees Account" field per provider (Paymob, Bosta, Stripe, etc.); default to creating a "53400 Payment Processing Fees" account during onboarding if no equivalent exists.
+2. **Settlement importer reads this mapping** when posting the fee line, instead of falling back to a generic expense lookup.
+3. **Fail-loud fallback** — if no mapping exists, surface a banner / form-modal during import rather than silently routing to a wrong account. (Today's silent fallback is the worst-of-both-worlds: user thinks it worked, ledger is wrong.)
+
+**Not data-incorrect, not submission-blocking** — fees ARE booked, they're just in the wrong category. Pull forward in the first wave of post-listing UX polish alongside A82/A84 since every merchant will hit it on day 1 of their first settlement.
+
+### A92. Plaintext password in sessionStorage during company-selection — **DONE 2026-05-26** (security, surfaced by 2026-05-26 architectural review)
+Shipped pending-login-token flow. Previously `login.tsx` wrote `pendingPassword` + `pendingEmail` to `sessionStorage` so `select-company.tsx` could re-POST the credentials with the chosen `company_id`. Any XSS or browser extension could lift the password.
+
+Replaced with a short-lived signed token: the backend mints a `pending_login_token` (5-minute TTL, `django.core.signing.dumps` salted with `nxentra.pending-login.v1`, payload = `{user_id, valid_company_ids}`) and returns it alongside the `choose_company` response. The browser stores only that token. The second `/auth/login/` call exchanges `{pending_login_token, company_id}` for JWTs without re-sending the password. Membership is re-checked at exchange time so a revocation between step 1 and 2 still blocks the login.
+
+`email + password + company_id` continues to work for API clients and the existing e2e test — only the browser sessionStorage round-trip was the bug.
+
+11 backend regression tests in `accounts/tests/test_pending_login_token.py` (token mint + shape, exchange happy path, expired token, tampered token, wrong company, revoked membership, missing user, missing company_id, wrong salt, max_age sanity). 3 new frontend regression tests in `tests/login-page.test.tsx` including a paranoid `for (key of sessionStorage) expect(value).not.toContain(password)` to pin the rule. 12/12 frontend + 11/11 backend green.
+
+### A85. New company has no opening equity scaffolding — cash position goes negative on first non-payment activity — **~1h** (onboarding wizard, surfaced 2026-05-24)
+
+A freshly-onboarded company has no opening JE establishing initial capital. The first activity that debits cash (e.g., posting any expense, paying any bill) immediately drives `11000 Cash and Bank` negative, and the dashboard shows a negative Cash Position card. Reproduced 2026-05-24 on Shopify_R after posting 5 sales invoices + reviewer-store install — Cash Position showed `USD -10,500.00` before we manually added a $50K Owner's Capital JE.
+
+This is misleading: it tells the merchant their balance sheet is broken when in fact the engine is correct (no opening capital was recorded). Two fixes, either acceptable:
+1. **Onboarding wizard prompts for opening equity** during company setup ("How much capital did you start this company with?" → posts the JE on completion).
+2. **Dashboard distinguishes "no opening balance recorded yet"** from "actually overdrawn" — softer messaging or a setup prompt when cash is negative and no equity entries exist.
+
+Option 1 is more forgiving for first-merchant onboarding. Per April 22 session log, the `seed_shopify_demo` flow already adds a $50K Owner's Capital entry — extend the same pattern to live company setup. **Not submission-blocking** (we manually added it for the reviewer-store demo today) but the first paying merchant will hit it on day 1 if their seed flow doesn't run.
+
 ---
 
 **Merchant-readiness exit criteria** (revised 2026-05-17 after A50/A51/A52 ship + A53/A54/A55 surface):
