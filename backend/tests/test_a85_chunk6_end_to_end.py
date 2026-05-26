@@ -318,7 +318,7 @@ def test_auto_match_audit_row_only_written_after_clearance_je_posts(
     # failure such as a missing mapping). The override is active, so
     # without the chunk 6 hardening an orphan audit row would land.
     with patch(
-        "accounting.bank_reconciliation._create_settlement_clearance_je",
+        "reconciliation.commands._create_settlement_clearance_je",
         return_value=None,
     ):
         result = auto_match_statement(
