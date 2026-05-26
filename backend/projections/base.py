@@ -12,6 +12,7 @@ Projections:
 
 import logging
 from abc import ABC, abstractmethod
+from typing import cast
 
 from django.db import transaction
 from django.utils import timezone
@@ -375,10 +376,16 @@ class BaseProjection(ABC):
                 event_type__in=self.consumes,
             ).count()
 
-        return bookmark.get_unprocessed_events(
-            event_types=self.consumes,
-            limit=10000,
-        ).count()
+        # Cast: get_unprocessed_events returns an untyped QuerySet (events/models.py
+        # has no return annotation to avoid a TYPE_CHECKING cycle), so .count()
+        # types as Any without help.
+        return cast(
+            int,
+            bookmark.get_unprocessed_events(
+                event_types=self.consumes,
+                limit=10000,
+            ).count(),
+        )
 
 
 class ProjectionRegistry:
@@ -394,7 +401,10 @@ class ProjectionRegistry:
             projection.process_pending(company)
     """
 
-    _instance = None
+    _instance: "ProjectionRegistry | None" = None
+    # Declared at class level so mypy knows the attribute exists; populated in
+    # __new__ to keep the singleton's dict identity stable across imports.
+    _projections: dict[str, "BaseProjection"]
 
     def __new__(cls):
         if cls._instance is None:

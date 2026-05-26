@@ -14,7 +14,7 @@ IMPORTANT: Import this module and call apply_derived_fields() before
 saving any Account instance (in projections or migrations).
 """
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from .models import Account
@@ -199,7 +199,10 @@ def validate_type_role_combination(account_type: str, role: str) -> tuple[bool, 
     # Import here to avoid circular imports
     from .models import Account
 
-    valid_roles = Account.VALID_ROLES_BY_TYPE.get(account_type, set())
+    # cast: the dict keys are TextChoices members (str subclasses at runtime),
+    # but mypy types them as the enum class, not str. The lookup is correct
+    # at runtime via __hash__.
+    valid_roles = cast(dict, Account.VALID_ROLES_BY_TYPE).get(account_type, set())
 
     # Check if role is valid for this type
     if role not in {r.value for r in valid_roles}:
@@ -221,5 +224,6 @@ def get_default_role_for_type(account_type: str) -> str:
     # Import here to avoid circular imports
     from .models import Account
 
-    default_role = Account.DEFAULT_ROLE_BY_TYPE.get(account_type)
+    # cast: see is_valid_role_for_type above — dict key type vs str.
+    default_role = cast(dict, Account.DEFAULT_ROLE_BY_TYPE).get(account_type)
     return default_role.value if default_role else ""

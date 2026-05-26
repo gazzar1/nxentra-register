@@ -15,6 +15,7 @@ BusinessEvent supports three payload storage strategies:
 """
 
 import uuid
+from typing import cast
 
 from django.conf import settings
 from django.db import IntegrityError, models, transaction
@@ -425,10 +426,10 @@ class BusinessEvent(models.Model):
             lines = data.get('lines', [])
         """
         if self.payload_storage == "inline":
-            return self.data
+            return cast(dict, self.data)
 
         elif self.payload_storage == "external":
-            if not self.payload_ref_id:
+            if not self.payload_ref_id or self.payload_ref is None:
                 raise IntegrityError(f"Event {self.id} has external storage but no payload_ref")
 
             payload = self.payload_ref.payload
@@ -444,13 +445,13 @@ class BusinessEvent(models.Model):
                         f"expected {self.payload_hash[:16]}..., got {computed_hash[:16]}..."
                     )
 
-            return payload
+            return cast(dict, payload)
 
         elif self.payload_storage == "chunked":
             return self._assemble_chunks()
 
         # Fallback for unknown strategy (shouldn't happen)
-        return self.data
+        return cast(dict, self.data)
 
     def _assemble_chunks(self) -> dict:
         """
@@ -594,7 +595,7 @@ class EventBookmark(models.Model):
         self.last_error = error_message[:1000]
         self.save(update_fields=["error_count", "last_error", "updated_at"])
 
-    def get_unprocessed_events(self, event_types: list = None, limit: int = 100):
+    def get_unprocessed_events(self, event_types: list | None = None, limit: int = 100):
         """
         Company-wide stream ordering.
 

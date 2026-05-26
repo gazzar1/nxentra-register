@@ -298,7 +298,7 @@ class BaseEventData:
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON storage."""
-        result = {}
+        result: dict[str, Any] = {}
         for key, value in asdict(self).items():
             if isinstance(value, Decimal):
                 result[key] = str(value)

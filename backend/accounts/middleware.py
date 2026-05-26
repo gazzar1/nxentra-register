@@ -105,7 +105,7 @@ class TenantRlsMiddleware:
 
         self.jwt_auth = CookieJWTAuthentication()
         # Cache for TenantDirectory lookups (cleared per-process)
-        self._tenant_cache = {}
+        self._tenant_cache: dict[int, dict] = {}
 
     def __call__(self, request):
         # =====================================================================
@@ -242,7 +242,7 @@ class TenantRlsMiddleware:
         """Check if method+path is allowed without company_id in token."""
         return any(method == m and path.startswith(p) for m, p in self.NO_TENANT_ALLOWLIST)
 
-    def invalidate_tenant_cache(self, company_id: int = None):
+    def invalidate_tenant_cache(self, company_id: int | None = None):
         """
         Invalidate tenant cache.
 

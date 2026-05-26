@@ -682,6 +682,25 @@ This is **mathematically correct** (debit balances the credit) but **mis-categor
 
 **Not data-incorrect, not submission-blocking** — fees ARE booked, they're just in the wrong category. Pull forward in the first wave of post-listing UX polish alongside A82/A84 since every merchant will hit it on day 1 of their first settlement.
 
+### A97. Mypy blocking on canonical spine — **DONE 2026-05-26** (governance, surfaced by 2026-05-26 architectural review)
+Codex flagged that mypy was `continue-on-error: true` for finance-critical modules — type-checking was advisory only. There is no CI to host that flag (no `.github/workflows/`), so the practical "blocking" enforcement attaches to the existing pre-push pre-commit hook chain.
+
+`backend/pyproject.toml` already declared strict per-module overrides (`check_untyped_defs = true`, `warn_return_any = true`) on the canonical spine. The work was to (a) clean up the spine files so they pass strictly, (b) wire a pre-push hook that enforces it.
+
+Cleaned up 22 errors across 6 spine files:
+- `events/types.py` — `to_dict` result dict needed `dict[str, Any]` annotation (2 errors)
+- `events/models.py` — `cast(dict, ...)` for JSONField return paths + guard against `payload_ref is None` + Optional default on `event_types` (5 errors)
+- `projections/base.py` — declared `_projections` at class level on `ProjectionRegistry` singleton + `cast(int, ...)` on QuerySet.count return (9 errors)
+- `accounts/middleware.py` — annotated `_tenant_cache` and made `company_id` properly Optional (2 errors)
+- `accounting/models.py` — moved `# type: ignore[misc]` from the unused override slot onto the actual `super()._clone()` call where django-stubs lacks the method + `# type: ignore[import-untyped]` for the `requests` import (2 errors)
+- `accounting/behaviors.py` — `cast(dict, ...)` for `Account.VALID_ROLES_BY_TYPE.get(str_key)` where TextChoices keys vs str arg confused overload resolution (2 errors)
+
+Result: 17 spine files pass mypy strict cleanly. New pre-push hook `mypy-spine` in `.pre-commit-config.yaml` runs `scripts/check-types.py` (cross-platform Python wrapper; `.sh` + `.ps1` shells delegate to it). `--follow-imports=silent` so transitively-imported files get type-inferred without their existing errors blocking the gate.
+
+**Deferred as A98**: `backend/accounting/commands.py` (150 errors) and `backend/sales/commands.py` (85 errors). These are the noisiest spine files — both `commands.py` files that need a focused cleanup pass before they can join the gate. Splitting them out kept A97's scope honest while still locking down 17 critical files.
+
+33/33 regression tests green across A86.6 + A87 + write_barrier + A90 after the source fixes. Hook verified: `mypy strict on canonical spine......Passed`.
+
 ### A95. Write barrier: threading.local → contextvars.ContextVar — **DONE 2026-05-26** (architecture, surfaced by 2026-05-26 architectural review)
 Codex flagged `backend/projections/write_barrier.py:8` for using `threading.local()` to back the write-context stack. The doc surface says async-safe; the primitive was not. For plain sync Django the two are equivalent — but every future async surface (Channels consumer, async management command, AI/agent worker) would silently lose context across `await` boundaries, causing finance writes inside async tasks to either be spuriously blocked or sneak through one barrier and trip another mid-transaction.
 

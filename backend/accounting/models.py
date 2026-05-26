@@ -54,7 +54,9 @@ class ProjectionWriteQuerySet(models.QuerySet):
         super().__init__(*args, **kwargs)
         self._projection_write = _projection_write
 
-    def _clone(self):  # type: ignore[override]
+    # _clone is a private Django Manager method not present in django-stubs;
+    # the chained QuerySet API depends on it propagating _projection_write.
+    def _clone(self):
         c = super()._clone()  # type: ignore[misc]
         c._projection_write = self._projection_write
         return c
@@ -2557,7 +2559,7 @@ class ExchangeRate(models.Model):
         Saves the rate with source='ECB (auto)' so users can review/override.
         Returns the rate Decimal or None if fetch fails.
         """
-        import requests
+        import requests  # type: ignore[import-untyped]
 
         try:
             # Frankfurter API: free, based on ECB reference rates

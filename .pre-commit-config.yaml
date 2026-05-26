@@ -21,3 +21,19 @@ repos:
         language: system
         pass_filenames: false
         stages: [pre-push]
+
+  # A97: mypy gate on the canonical spine. Strict typing is already configured
+  # per-module in backend/pyproject.toml (check_untyped_defs + warn_return_any);
+  # this hook makes it BLOCKING on push. The script changes to backend/ first
+  # so django_stubs can import nxentra_backend.settings. --follow-imports=silent
+  # so transitively-imported files get type-checked for inference but their
+  # existing errors (sales/commands.py + accounting/commands.py ≈235 errors,
+  # tracked as A98) don't block the gate.
+  - repo: local
+    hooks:
+      - id: mypy-spine
+        name: mypy strict on canonical spine
+        entry: python scripts/check-types.py
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
