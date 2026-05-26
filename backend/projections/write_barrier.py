@@ -1,23 +1,49 @@
 # projections/write_barrier.py
+#
+# The write-barrier guards finance read-models against direct mutation outside
+# the command/projection/bootstrap/migration paths. The "current context" is a
+# scoped piece of state — push on enter, pop on exit — that ProjectionWriteManager
+# inspects to decide whether a `.save()` is permitted.
+#
+# A95 (2026-05-26): swapped the backing store from threading.local to
+# contextvars.ContextVar. The semantics are identical for plain sync Django
+# (each thread still sees its own stack), but ContextVar additionally:
+#
+#   - Survives `asyncio.create_task` — a task started inside
+#     `command_writes_allowed()` sees the parent's context. A
+#     threading-local-based barrier would silently lose that context on
+#     the first `await`, making finance writes in async views/workers
+#     either spuriously blocked or — worse — sneak through one barrier
+#     and trip another mid-transaction.
+#   - Properly isolates a task's context changes from the parent
+#     (Python copies the Context on task creation; mutations in the
+#     task don't leak back).
+#   - Is the recommended primitive for async-aware request-scoped state
+#     since Python 3.7 (Django Channels, FastAPI, anyio all rely on it).
+#
+# No A86+ commands run under asyncio today, so the practical impact is zero —
+# but every line in this file is something a future agent worker, Channels
+# consumer, or async management command will lean on. Getting the primitive
+# right BEFORE that work lands costs one focused commit; retrofitting it
+# after means rewriting every test that asserts barrier behavior.
 
-import threading
+import contextvars
 from contextlib import contextmanager
 
 from django.conf import settings
 
-_state = threading.local()
-
-
-def _context_stack() -> list[str]:
-    stack = getattr(_state, "write_context_stack", None)
-    if stack is None:
-        stack = []
-        _state.write_context_stack = stack
-    return stack
+# The stack is stored as an immutable tuple. Mutating a shared list would
+# mutate it for every parent frame too — and across asyncio tasks, since
+# ContextVar wraps the *value*, not a fresh copy. Tuples force the
+# "rebind on every push" discipline that keeps the stack scoped correctly.
+_write_context_stack: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
+    "nxentra.projections.write_context_stack",
+    default=(),
+)
 
 
 def current_write_context() -> str | None:
-    stack = _context_stack()
+    stack = _write_context_stack.get()
     return stack[-1] if stack else None
 
 
@@ -32,12 +58,12 @@ def write_context_allowed(allowed_contexts: set[str]) -> bool:
 
 @contextmanager
 def _push_write_context(name: str):
-    stack = _context_stack()
-    stack.append(name)
+    current = _write_context_stack.get()
+    token = _write_context_stack.set(current + (name,))
     try:
         yield
     finally:
-        stack.pop()
+        _write_context_stack.reset(token)
 
 
 @contextmanager

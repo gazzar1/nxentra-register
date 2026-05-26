@@ -682,6 +682,23 @@ This is **mathematically correct** (debit balances the credit) but **mis-categor
 
 **Not data-incorrect, not submission-blocking** — fees ARE booked, they're just in the wrong category. Pull forward in the first wave of post-listing UX polish alongside A82/A84 since every merchant will hit it on day 1 of their first settlement.
 
+### A95. Write barrier: threading.local → contextvars.ContextVar — **DONE 2026-05-26** (architecture, surfaced by 2026-05-26 architectural review)
+Codex flagged `backend/projections/write_barrier.py:8` for using `threading.local()` to back the write-context stack. The doc surface says async-safe; the primitive was not. For plain sync Django the two are equivalent — but every future async surface (Channels consumer, async management command, AI/agent worker) would silently lose context across `await` boundaries, causing finance writes inside async tasks to either be spuriously blocked or sneak through one barrier and trip another mid-transaction.
+
+Swapped to `contextvars.ContextVar[tuple[str, ...]]` with an empty-tuple default. The public API is identical (`current_write_context`, `write_context_allowed`, and the six `*_writes_allowed()` context managers), so all 50+ call sites are untouched. Stack is stored as an immutable tuple — mutating a shared list would leak across asyncio task boundaries because ContextVar wraps the value, not a fresh copy.
+
+New regression suite at `tests/test_a90_write_barrier_contextvars.py` (12 tests):
+- sync stack discipline (push/pop, nesting, exception cleanup, LIFO)
+- `write_context_allowed` membership semantics
+- `admin_emergency` setting gate
+- thread isolation (two threads see separate stacks — floor we had under `threading.local`)
+- **`asyncio.create_task` inherits the parent's stack** — the contract the swap was for
+- **task mutations don't leak back to the parent** — isolation contract
+- **concurrent tasks under the same parent context keep independent sub-stacks**
+- ContextVar default is the empty tuple (pinned, because flipping it to `None` would TypeError on subscript)
+
+Regression sweep: 55/55 green across A86.3–A86.7a + bank_connector + A87 + the new + the original `test_write_barrier.py`. Existing callers see no behavior change today; the architecture is now ready for an async finance surface without rewriting the barrier.
+
 ### A94. bank_connector reconciled-flag audit — **DONE 2026-05-26** (correctness, surfaced by 2026-05-26 architectural review)
 Codex flagged `bank_connector/matching.py:288` as a residual direct mutation of `journal_line.reconciled` under `projection_writes_allowed()` context. **The finding is stale** — A86.7b (commit `5d73387`) already removed the direct flip; `_reconcile_payout_je` now emits a `ReconciliationMatchConfirmed` event with `confirmation_kind="platform_payout_reconcile"` and runs the projection synchronously, with the projection as the sole writer of `JournalLine.reconciled`.
 
