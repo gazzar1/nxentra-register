@@ -13,6 +13,7 @@ import csv
 import hashlib
 import io
 import logging
+import uuid as _uuid
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
@@ -21,6 +22,8 @@ from django.db.models import Sum
 from django.utils import timezone
 
 from accounts.authz import ActorContext, require
+from events.emitter import emit_event_no_actor
+from events.types import EventTypes
 from projections.write_barrier import command_writes_allowed
 
 from .commands import CommandResult
@@ -46,6 +49,62 @@ AUTO_MATCH_THRESHOLD = Decimal("80")
 # a period override. Mirrors the constant in settlement_imports.py. Kept here
 # so the bank-rec module is self-contained; chunk 6 may DRY these up.
 _MIN_OVERRIDE_REASON_CHARS = 10
+
+
+def _emit_match_confirmed(
+    *,
+    company,
+    bank_line: BankStatementLine,
+    journal_line: JournalLine,
+    match_kind: str,
+    confidence,
+    difference_amount=Decimal("0"),
+    statement_date=None,
+):
+    """A86.4 (2026-05-26): emit a ReconciliationMatchConfirmed event for
+    a rule-confirmed (auto) bank-line ↔ journal-line match.
+
+    Called from `_settlement_prepass_match`, `_platform_prepass_match`,
+    and the generic GL match loop in `auto_match_statement` AFTER the
+    direct-mutation legacy path has applied the match. Runs alongside
+    the legacy path (shadow mode); the A86.3 ReconciliationProjection
+    consumes these events and writes the event_* fields on the bank
+    line — those event_* fields are the convergence target for A86.7
+    cutover.
+
+    The idempotency key uses a fresh UUID4 so each emission is unique.
+    For command-emitted events the dedup-on-replay scenario doesn't
+    apply (commands aren't fired by external systems); the UUID4
+    accepts that trade-off so unmatch-then-rematch produces a NEW
+    Confirmed event rather than getting deduped into nothing.
+    See ReconciliationMatchConfirmedData docstring + A86 plan.
+
+    Per finance_event_first_policy.md §2: every emission carries an
+    idempotency_key (uniqueness-enforced by BusinessEvent.idempotency_key
+    UNIQUE INDEX), an aggregate_type, and an aggregate_id.
+    """
+    from reconciliation.event_types import ReconciliationMatchConfirmedData
+
+    diff = Decimal(str(difference_amount or 0))
+    payload = ReconciliationMatchConfirmedData(
+        bank_line_public_id=str(bank_line.public_id),
+        journal_line_public_id=str(journal_line.public_id),
+        match_kind=match_kind,
+        confidence=str(confidence),
+        confirmation_kind="auto",
+        confirmed_at=timezone.now().isoformat(),
+        difference_amount=str(diff),
+        difference_reason="UNRESOLVED",
+        statement_date=statement_date.isoformat() if statement_date else "",
+    )
+    return emit_event_no_actor(
+        company=company,
+        event_type=EventTypes.RECONCILIATION_MATCH_CONFIRMED,
+        aggregate_type="ReconciliationMatch",
+        aggregate_id=f"{bank_line.public_id}:{journal_line.public_id}",
+        idempotency_key=f"reconciliation.match_confirmed:{_uuid.uuid4()}",
+        data=payload,
+    )
 
 
 def _validate_period_override(
@@ -887,6 +946,21 @@ def auto_match_statement(
                     reconciled_date=statement.statement_date,
                 )
 
+                # A86.4: emit ReconciliationMatchConfirmed for the shadow
+                # projection. Generic GL match is the fallback path after
+                # platform-prepass and settlement-prepass exhaust their
+                # candidates — match_kind="generic_gl" disambiguates the
+                # source in the event audit trail.
+                _emit_match_confirmed(
+                    company=actor.company,
+                    bank_line=bank_line,
+                    journal_line=best_match,
+                    match_kind="generic_gl",
+                    confidence=best_confidence,
+                    difference_amount=Decimal("0"),
+                    statement_date=statement.statement_date,
+                )
+
                 # Remove from candidates to prevent double-matching
                 candidates.remove(best_match)
                 matched_count += 1
@@ -1014,6 +1088,17 @@ def _platform_prepass_match(
             JournalLine.objects.filter(pk=payout_je_line.pk).update(
                 reconciled=True,
                 reconciled_date=statement.statement_date,
+            )
+
+            # A86.4: emit ReconciliationMatchConfirmed for shadow projection.
+            _emit_match_confirmed(
+                company=company,
+                bank_line=bank_line,
+                journal_line=payout_je_line,
+                match_kind="platform_payout",
+                confidence=CONFIDENCE_EXACT,
+                difference_amount=Decimal("0"),
+                statement_date=statement.statement_date,
             )
 
             # Remove payout from candidates to prevent double-matching
@@ -1325,6 +1410,21 @@ def _settlement_prepass_match(
                     reconciled=True,
                     reconciled_date=statement.statement_date,
                 )
+
+        # A86.4 (2026-05-26): emit ReconciliationMatchConfirmed alongside
+        # the direct mutation above. The ReconciliationProjection (A86.3)
+        # consumes this and writes the event_* shadow fields on the bank
+        # line — convergence with the direct mutation is the gate for the
+        # A86.7 cutover.
+        _emit_match_confirmed(
+            company=company,
+            bank_line=bank_line,
+            journal_line=clearance_je_line,
+            match_kind="settlement_clearance",
+            confidence=confidence,
+            difference_amount=difference,
+            statement_date=statement.statement_date,
+        )
 
         matched += 1
 
