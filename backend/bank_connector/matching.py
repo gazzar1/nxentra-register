@@ -209,6 +209,67 @@ def _is_payout_already_matched(company, payout):
     ).exists()
 
 
+def _emit_platform_payout_reconcile_event(
+    *,
+    company,
+    cash_line,
+    bank_tx,
+    platform: str,
+    payout_obj,
+):
+    """A86.6 (2026-05-26): emit ReconciliationMatchConfirmed for a
+    bank-feed-driven platform-payout reconciliation.
+
+    Distinct from accounting/bank_reconciliation.py's emission paths
+    (A86.4 + A86.5): there's no BankStatementLine here — the bank side
+    is a BankTransaction row from the bank_connector bank-feed. The
+    journal_line IS the canonical reference; bank_line_public_id is
+    left empty and the projection routes the event to a no-shadow-write
+    handler (see ReconciliationProjection._handle_match_confirmed).
+
+    Why bank_line_public_id is empty:
+    BankTransaction.public_id could be used as a polymorphic stand-in,
+    but the projection currently writes shadow fields on
+    BankStatementLine, not BankTransaction. Leaving the field empty
+    + tagging with confirmation_kind='platform_payout_reconcile'
+    cleanly discriminates the two surfaces at the projection layer.
+    A future A87 chunk may unify the bank-line abstraction if a real
+    use case demands it.
+
+    Per finance_event_first_policy.md §2: emission carries the standard
+    idempotency_key + aggregate_type + aggregate_id. The legacy direct
+    flip in _reconcile_payout_je remains until A86.7 cutover; this is
+    pure additive shadow.
+    """
+    import uuid as _uuid
+
+    from django.utils import timezone
+
+    from events.emitter import emit_event_no_actor
+    from events.types import EventTypes
+    from reconciliation.event_types import ReconciliationMatchConfirmedData
+
+    payload = ReconciliationMatchConfirmedData(
+        bank_line_public_id="",  # No BankStatementLine; see docstring.
+        journal_line_public_id=str(cash_line.public_id),
+        match_kind="platform_payout",
+        confidence="100",
+        confirmation_kind="platform_payout_reconcile",
+        confirmed_at=timezone.now().isoformat(),
+        difference_amount="0",
+        difference_reason="UNRESOLVED",
+        statement_date=bank_tx.transaction_date.isoformat() if bank_tx.transaction_date else "",
+    )
+    return emit_event_no_actor(
+        company=company,
+        event_type=EventTypes.RECONCILIATION_MATCH_CONFIRMED,
+        aggregate_type="ReconciliationMatch",
+        aggregate_id=f"bank_tx:{bank_tx.id}:{platform}:{payout_obj.pk}",
+        idempotency_key=f"reconciliation.match_confirmed:{_uuid.uuid4()}",
+        data=payload,
+    )
+
+
 # =============================================================================
 # Journal Entry Reconciliation
 # =============================================================================
@@ -296,6 +357,25 @@ def _reconcile_payout_je(company, platform, payout_obj, bank_tx):
             cash_line.line_no,
             cash_line.reconciled,
             cash_line.reconciled_date,
+        )
+
+        # A86.6 (2026-05-26): emit ReconciliationMatchConfirmed for the
+        # shadow projection. confirmation_kind="platform_payout_reconcile"
+        # is the bank-feed reconciliation path — distinct from
+        # auto_match_statement (which operates on BankStatementLine) and
+        # manual_match (operator-picked BSL ↔ JL pairing). Here a
+        # BankTransaction (bank-feed) is matched to a platform-payout JE;
+        # the JL.reconciled flip above is the canonical state change. The
+        # event records the action so the audit trail in BusinessEvent
+        # is complete across every reconciliation surface — closing the
+        # last of the three projection_writes_allowed() bypasses Codex
+        # flagged in the 2026-05-26 protocol audit.
+        _emit_platform_payout_reconcile_event(
+            company=company,
+            cash_line=cash_line,
+            bank_tx=bank_tx,
+            platform=platform,
+            payout_obj=payout_obj,
         )
 
         logger.info(

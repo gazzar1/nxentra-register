@@ -148,6 +148,23 @@ class ReconciliationProjection(BaseProjection):
         journal_line_public_id = data.get("journal_line_public_id") or ""
         confirmation_kind = data.get("confirmation_kind") or ""
 
+        # A86.6 (2026-05-26): platform_payout_reconcile is a separate
+        # surface (bank_connector's BankTransaction ↔ payout JE) that
+        # doesn't involve a BankStatementLine. The shadow fields on
+        # BankStatementLine therefore have nothing to write here; the
+        # event is recorded for audit (BusinessEvent + ProjectionAppliedEvent)
+        # but the projection takes no other action. The legacy direct
+        # JL.reconciled flip in bank_connector/matching.py:_reconcile_payout_je
+        # still owns the canonical state change until A86.7 cutover.
+        if confirmation_kind == "platform_payout_reconcile":
+            logger.info(
+                "Reconciliation: platform_payout_reconcile event consumed (no shadow write) — "
+                "journal_line=%s event_id=%s",
+                journal_line_public_id,
+                event.id,
+            )
+            return
+
         if not bank_line_public_id:
             raise ProjectionInvalidDataError("ReconciliationMatchConfirmed event missing bank_line_public_id")
         if not journal_line_public_id:
