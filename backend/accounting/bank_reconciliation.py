@@ -51,6 +51,82 @@ AUTO_MATCH_THRESHOLD = Decimal("80")
 _MIN_OVERRIDE_REASON_CHARS = 10
 
 
+def _infer_match_kind_for_unmatch(
+    bank_line: BankStatementLine,
+    previous_jl: JournalLine | None,
+) -> str:
+    """A86.5 (2026-05-26): infer the match_kind to attach to a
+    ReconciliationMatchUnmatched event by looking at the JE the bank
+    line was paired with.
+
+    The legacy direct-mutation match path didn't record which strategy
+    (settlement-prepass / platform-payout / manual / generic GL) made
+    the match. We infer at unmatch time from the JE's source_module +
+    memo so the audit trail in the Unmatched event matches what would
+    have been on the Confirmed event (had A86.4 been live when this
+    match was originally made).
+    """
+    if not previous_jl:
+        return "unknown"
+    if bank_line.match_status == BankStatementLine.MatchStatus.MANUAL_MATCHED:
+        return "manual_pick"
+    entry = previous_jl.entry
+    if entry.source_module == "payment_settlement_clearance":
+        return "settlement_clearance"
+    memo = entry.memo or ""
+    if memo.startswith("Shopify payout:") or memo.startswith("Negative payout:"):
+        return "platform_payout"
+    return "generic_gl"
+
+
+def _emit_match_unmatched(
+    *,
+    company,
+    bank_line: BankStatementLine,
+    previously_matched_journal_line: JournalLine | None,
+    match_kind: str,
+    final_status: str,
+    reversed_clearance_je_public_ids: list,
+    unmatch_reason: str = "",
+):
+    """A86.5 (2026-05-26): emit a ReconciliationMatchUnmatched event for
+    a manually-initiated unmatch or exclude. The shadow projection
+    consumes this and clears the event_* fields on the bank line (or
+    sets event_match_status to EXCLUDED when final_status='EXCLUDED').
+
+    reversed_clearance_je_public_ids carries the audit trail of which
+    JEs the side-effect reversal touched — important for A19 settlement
+    unmatch which reverses the clearance JE (and any A16 difference
+    adjustment) along with the read-model state change.
+
+    unmatch_reason is currently a placeholder for the legacy API path;
+    when A86.x adds an explicit reason-capturing command surface, the
+    placeholder gets replaced with the operator-supplied note.
+    """
+    from reconciliation.event_types import ReconciliationMatchUnmatchedData
+
+    payload = ReconciliationMatchUnmatchedData(
+        bank_line_public_id=str(bank_line.public_id),
+        previously_matched_journal_line_public_id=(
+            str(previously_matched_journal_line.public_id) if previously_matched_journal_line else ""
+        ),
+        match_kind=match_kind,
+        unmatched_at=timezone.now().isoformat(),
+        unmatch_reason=unmatch_reason or "Unmatched via legacy API (no reason captured)",
+        final_status=final_status,
+        reversed_clearance_je_public_ids=list(reversed_clearance_je_public_ids or []),
+    )
+    aggregate_id_suffix = str(previously_matched_journal_line.public_id) if previously_matched_journal_line else "none"
+    return emit_event_no_actor(
+        company=company,
+        event_type=EventTypes.RECONCILIATION_MATCH_UNMATCHED,
+        aggregate_type="ReconciliationMatch",
+        aggregate_id=f"{bank_line.public_id}:{aggregate_id_suffix}",
+        idempotency_key=f"reconciliation.match_unmatched:{_uuid.uuid4()}",
+        data=payload,
+    )
+
+
 def _emit_match_confirmed(
     *,
     company,
@@ -60,24 +136,30 @@ def _emit_match_confirmed(
     confidence,
     difference_amount=Decimal("0"),
     statement_date=None,
+    confirmation_kind: str = "auto",
 ):
     """A86.4 (2026-05-26): emit a ReconciliationMatchConfirmed event for
-    a rule-confirmed (auto) bank-line ↔ journal-line match.
+    a bank-line ↔ journal-line match.
 
-    Called from `_settlement_prepass_match`, `_platform_prepass_match`,
-    and the generic GL match loop in `auto_match_statement` AFTER the
-    direct-mutation legacy path has applied the match. Runs alongside
-    the legacy path (shadow mode); the A86.3 ReconciliationProjection
-    consumes these events and writes the event_* fields on the bank
-    line — those event_* fields are the convergence target for A86.7
-    cutover.
+    confirmation_kind discriminates the source:
+    - "auto"                       — heuristic in auto_match_statement
+                                     (settlement-prepass, platform-prepass,
+                                     generic GL match)  [A86.4]
+    - "manual"                     — operator-initiated manual_match  [A86.5]
+    - "rule"                       — future policy/agent rule
+    - "platform_payout_reconcile"  — bank_connector matching.py  [A86.6]
+
+    Called AFTER the direct-mutation legacy path has applied the match
+    so a failed legacy write doesn't leave an orphan event. Runs
+    alongside the legacy path (shadow mode); the A86.3
+    ReconciliationProjection consumes these events and writes the
+    event_* fields — convergence target for A86.7 cutover.
 
     The idempotency key uses a fresh UUID4 so each emission is unique.
     For command-emitted events the dedup-on-replay scenario doesn't
     apply (commands aren't fired by external systems); the UUID4
     accepts that trade-off so unmatch-then-rematch produces a NEW
     Confirmed event rather than getting deduped into nothing.
-    See ReconciliationMatchConfirmedData docstring + A86 plan.
 
     Per finance_event_first_policy.md §2: every emission carries an
     idempotency_key (uniqueness-enforced by BusinessEvent.idempotency_key
@@ -91,7 +173,7 @@ def _emit_match_confirmed(
         journal_line_public_id=str(journal_line.public_id),
         match_kind=match_kind,
         confidence=str(confidence),
-        confirmation_kind="auto",
+        confirmation_kind=confirmation_kind,
         confirmed_at=timezone.now().isoformat(),
         difference_amount=str(diff),
         difference_reason="UNRESOLVED",
@@ -1867,6 +1949,20 @@ def manual_match(
             reconciled_date=bank_line.statement.statement_date,
         )
 
+    # A86.5 (2026-05-26): emit ReconciliationMatchConfirmed for the
+    # shadow projection. confirmation_kind="manual" because the operator
+    # explicitly picked this pairing (vs auto_match_statement's "auto").
+    _emit_match_confirmed(
+        company=actor.company,
+        bank_line=bank_line,
+        journal_line=journal_line,
+        match_kind="manual_pick",
+        confidence=CONFIDENCE_EXACT,
+        difference_amount=Decimal("0"),
+        statement_date=bank_line.statement.statement_date,
+        confirmation_kind="manual",
+    )
+
     return CommandResult.ok(
         data={
             "bank_line": bank_line,
@@ -1878,7 +1974,7 @@ def manual_match(
 def _reverse_match_side_effects(
     actor: ActorContext,
     bank_line: BankStatementLine,
-) -> tuple[bool, str | None, JournalLine | None]:
+) -> tuple[bool, str | None, JournalLine | None, list]:
     """A19: reverse any JEs that were synthesized by the bank-rec
     match step (clearance JE + A16 difference adjustment), so unmatch
     or exclude doesn't leave orphan accounting on the bank account.
@@ -1887,9 +1983,15 @@ def _reverse_match_side_effects(
     via manual_match) are left untouched — those have independent
     meaning and only the reconciled flag should flip.
 
-    Returns (success, error_or_None, settlement_ebd_line_or_None).
+    Returns:
+        (success, error_or_None, settlement_ebd_line_or_None,
+         reversed_clearance_je_public_ids).
+
     The EBD line is returned so the caller can flip its reconciled
-    flag back inside command_writes_allowed.
+    flag back inside command_writes_allowed. The list of reversed JE
+    public_ids (added in A86.5) feeds the ReconciliationMatchUnmatched
+    event's audit trail — empty list when the unmatch was flag-flip
+    only.
     """
     from accounting.commands import reverse_journal_entry
     from accounting.mappings import ModuleAccountMapping
@@ -1911,19 +2013,23 @@ def _reverse_match_side_effects(
             if ebd_account:
                 settlement_ebd_line = settlement_je.lines.filter(account=ebd_account).first()
 
+    reversed_je_public_ids: list = []
+
     # Reverse the A16 difference adjustment first so EBD is back to its
     # post-clearance state before we reverse the clearance itself.
     if adjustment_entry and adjustment_entry.status == JournalEntry.Status.POSTED:
         rev = reverse_journal_entry(actor, adjustment_entry.id)
         if not rev.success:
-            return False, f"Could not reverse difference adjustment: {rev.error}", None
+            return False, f"Could not reverse difference adjustment: {rev.error}", None, []
+        reversed_je_public_ids.append(str(adjustment_entry.public_id))
 
     if clearance_je and clearance_je.status == JournalEntry.Status.POSTED:
         rev = reverse_journal_entry(actor, clearance_je.id)
         if not rev.success:
-            return False, f"Could not reverse clearance entry: {rev.error}", None
+            return False, f"Could not reverse clearance entry: {rev.error}", None, []
+        reversed_je_public_ids.append(str(clearance_je.public_id))
 
-    return True, None, settlement_ebd_line
+    return True, None, settlement_ebd_line, reversed_je_public_ids
 
 
 def _clear_match_state(
@@ -2137,6 +2243,10 @@ def unmatch_line(
     posted an A16 difference adjustment, both must be reversed so the
     bank account doesn't carry an orphan DR after unmatch. The original
     settlement JE's EBD residual is restored too.
+
+    A86.5 (2026-05-26): also emits ReconciliationMatchUnmatched with
+    the reversed clearance JE list — shadow projection clears the
+    event_* fields on the bank line.
     """
     require(actor, "accounting.reconciliation")
 
@@ -2151,7 +2261,12 @@ def unmatch_line(
     if bank_line.match_status == BankStatementLine.MatchStatus.UNMATCHED:
         return CommandResult.fail("Line is not matched.")
 
-    ok, err, settlement_ebd_line = _reverse_match_side_effects(actor, bank_line)
+    # A86.5: capture before _clear_match_state nulls the FK + infer
+    # match_kind from the pairing for the Unmatched event payload.
+    previously_matched_jl = bank_line.matched_journal_line
+    inferred_match_kind = _infer_match_kind_for_unmatch(bank_line, previously_matched_jl)
+
+    ok, err, settlement_ebd_line, reversed_je_public_ids = _reverse_match_side_effects(actor, bank_line)
     if not ok:
         return CommandResult.fail(err)
 
@@ -2159,6 +2274,15 @@ def unmatch_line(
         bank_line,
         settlement_ebd_line,
         final_status=BankStatementLine.MatchStatus.UNMATCHED,
+    )
+
+    _emit_match_unmatched(
+        company=actor.company,
+        bank_line=bank_line,
+        previously_matched_journal_line=previously_matched_jl,
+        match_kind=inferred_match_kind,
+        final_status=BankStatementLine.MatchStatus.UNMATCHED,
+        reversed_clearance_je_public_ids=reversed_je_public_ids,
     )
 
     return CommandResult.ok()
@@ -2174,6 +2298,12 @@ def exclude_line(
     A19: same reversal semantics as unmatch_line — any clearance or
     adjustment JE synthesized by the prior match must be reversed
     before the line is marked EXCLUDED.
+
+    A86.5 (2026-05-26): also emits ReconciliationMatchUnmatched with
+    final_status="EXCLUDED" — shadow projection sets event_match_status
+    to EXCLUDED. (When called on a never-matched line, the unmatched
+    event still emits with previously_matched_journal_line_public_id
+    empty so the audit trail records the EXCLUDED transition.)
     """
     require(actor, "accounting.reconciliation")
 
@@ -2185,7 +2315,10 @@ def exclude_line(
     except BankStatementLine.DoesNotExist:
         return CommandResult.fail("Bank statement line not found.")
 
-    ok, err, settlement_ebd_line = _reverse_match_side_effects(actor, bank_line)
+    previously_matched_jl = bank_line.matched_journal_line
+    inferred_match_kind = _infer_match_kind_for_unmatch(bank_line, previously_matched_jl)
+
+    ok, err, settlement_ebd_line, reversed_je_public_ids = _reverse_match_side_effects(actor, bank_line)
     if not ok:
         return CommandResult.fail(err)
 
@@ -2193,6 +2326,15 @@ def exclude_line(
         bank_line,
         settlement_ebd_line,
         final_status=BankStatementLine.MatchStatus.EXCLUDED,
+    )
+
+    _emit_match_unmatched(
+        company=actor.company,
+        bank_line=bank_line,
+        previously_matched_journal_line=previously_matched_jl,
+        match_kind=inferred_match_kind,
+        final_status=BankStatementLine.MatchStatus.EXCLUDED,
+        reversed_clearance_je_public_ids=reversed_je_public_ids,
     )
 
     return CommandResult.ok()
