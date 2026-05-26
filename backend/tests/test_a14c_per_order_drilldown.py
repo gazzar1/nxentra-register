@@ -210,8 +210,9 @@ ORD-1,1000.00,30.00,970.00,PMB-A36,2026-04-25
 def test_orders_endpoint_returns_banked_status_after_bank_match(
     shopify_setup, company, owner_membership, user, authenticated_client
 ):
-    from accounting.bank_reconciliation import auto_match_statement, import_bank_statement
+    from accounting.bank_reconciliation import import_bank_statement
     from accounts.authz import ActorContext
+    from reconciliation.commands import auto_match_statement
 
     paymob = SettlementProvider.objects.get(company=company, normalized_code="paymob")
     _create_shopify_invoice(company, "ORD-1", Decimal("1000.00"))

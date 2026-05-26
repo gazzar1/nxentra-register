@@ -30,10 +30,6 @@ from decimal import Decimal
 
 import pytest
 
-from accounting.bank_reconciliation import (
-    auto_match_statement,
-    preview_auto_match,
-)
 from accounting.models import (
     Account,
     BankStatementLine,
@@ -45,6 +41,7 @@ from accounts.authz import ActorContext
 from accounts.models import CompanyMembershipPermission, NxPermission
 from projections.models import FiscalPeriod
 from projections.write_barrier import command_writes_allowed, projection_writes_allowed
+from reconciliation.commands import auto_match_statement, preview_auto_match
 
 # =============================================================================
 # Fixtures

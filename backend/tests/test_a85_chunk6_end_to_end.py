@@ -26,11 +26,7 @@ from unittest.mock import patch
 import pytest
 from rest_framework.test import APIRequestFactory, force_authenticate
 
-from accounting.bank_reconciliation import (
-    auto_match_statement,
-    import_bank_statement,
-    preview_auto_match,
-)
+from accounting.bank_reconciliation import import_bank_statement
 from accounting.models import (
     Account,
     JournalEntry,
@@ -44,6 +40,7 @@ from accounts.authz import ActorContext
 from accounts.models import CompanyMembershipPermission, NxPermission
 from projections.models import FiscalPeriod
 from projections.write_barrier import command_writes_allowed, projection_writes_allowed
+from reconciliation.commands import auto_match_statement, preview_auto_match
 
 PAYMOB_CSV = b"""order_id,gross,fee,net,payout_batch_id,payout_date
 ORD-1,1000.00,30.00,970.00,A85-6-E2E,2026-04-25

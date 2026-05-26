@@ -39,13 +39,7 @@ from decimal import Decimal
 
 import pytest
 
-from accounting.bank_reconciliation import (
-    auto_match_statement,
-    exclude_line,
-    import_bank_statement,
-    manual_match,
-    unmatch_line,
-)
+from accounting.bank_reconciliation import import_bank_statement
 from accounting.models import (
     Account,
     BankStatementLine,
@@ -57,6 +51,12 @@ from accounts.authz import ActorContext
 from events.models import BusinessEvent
 from events.types import EventTypes
 from projections.write_barrier import projection_writes_allowed
+from reconciliation.commands import (
+    auto_match_statement,
+    exclude_line,
+    manual_match,
+    unmatch_line,
+)
 
 # =============================================================================
 # Fixtures

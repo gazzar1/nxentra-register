@@ -75,6 +75,24 @@ User Action (browser)
 | **Events** | `inventory.stock_received`, `inventory.stock_issued`, `inventory.adjusted` |
 | **Flow** | Stock movement → emits inventory event → updates `InventoryBalance` (qty, avg_cost, value) |
 
+### Reconciliation (`backend/reconciliation/`)
+
+Bounded context for bank reconciliation. A86 (2026-05-26) split the
+read+write surface out of `accounting/bank_reconciliation.py`:
+
+| Layer | Key Components |
+|---|---|
+| **Views** | `accounting/bank_views.py` delegates to `reconciliation.commands` (operator actions) and `accounting.bank_reconciliation` (statement import + completion + queries) |
+| **Commands** | `auto_match_statement`, `manual_match`, `unmatch_line`, `exclude_line`, `resolve_difference`, `preview_auto_match`, `preview_unmatch_line` — all in `reconciliation/commands.py` |
+| **Matching** | `_plan_settlement_prepass_matches` (pure planner), `_compute_match_confidence`, `_difference_tolerance`, confidence constants — all in `reconciliation/matching.py` |
+| **Events** | `reconciliation.match_proposed`, `.match_confirmed`, `.match_rejected`, `.match_unmatched`, `.exception_raised`, `.exception_resolved` (`reconciliation/event_types.py`) |
+| **Projection** | `ReconciliationProjection` is the **canonical writer** of `BankStatementLine.match_status` / `matched_journal_line` / `match_confidence` and flips `JournalLine.reconciled` for `confirmation_kind="platform_payout_reconcile"` events |
+| **Invariants** | `tests/test_a86_7a_cutover.py::test_replay_convergence_full_lifecycle` (event log is sufficient source of truth), `test_cross_tenant_isolation_company_events_dont_project_into_other_company` |
+
+Statement-import + CSV parsing + completion + queries stay in
+`accounting/bank_reconciliation.py` (raw line ingestion has no
+reconciliation surface and lives with the rest of accounting).
+
 ### Accounts (`backend/accounts/`)
 
 | Layer | Key Components |
@@ -187,6 +205,15 @@ backend/
 │   ├── commands.py      ← stock receipt/issue, warehouse commands
 │   ├── models.py        ← Warehouse, StockLedgerEntry
 │   └── views.py
+├── reconciliation/        ← A86 bounded context (2026-05-26)
+│   ├── commands.py      ← auto_match_statement, manual_match,
+│   │                       unmatch_line, exclude_line, resolve_difference
+│   ├── matching.py      ← pure planners + confidence helpers
+│   ├── projections.py   ← ReconciliationProjection (canonical writer)
+│   ├── event_types.py   ← ReconciliationMatch{Proposed,Confirmed,
+│   │                       Rejected,Unmatched}, Exception{Raised,Resolved}
+│   └── views.py         ← (scaffolded; bank-rec ops still routed via
+│                            accounting/bank_views.py for now)
 ├── events/
 │   ├── emitter.py       ← emit_event() with LEPH, validation, idempotency
 │   ├── models.py        ← BusinessEvent, EventBookmark, EventPayloadExternal

@@ -27,13 +27,14 @@ from decimal import Decimal
 
 import pytest
 
-from accounting.bank_reconciliation import auto_match_statement, import_bank_statement
+from accounting.bank_reconciliation import import_bank_statement
 from accounting.models import Account, BankStatementLine, JournalEntry
 from accounting.settlement_imports import import_settlement_csv
 from accounts.authz import ActorContext
 from events.models import BusinessEvent
 from events.types import EventTypes
 from projections.write_barrier import projection_writes_allowed
+from reconciliation.commands import auto_match_statement
 
 # =============================================================================
 # Fixtures (mirror test_a14b for compatibility with the settlement-prepass

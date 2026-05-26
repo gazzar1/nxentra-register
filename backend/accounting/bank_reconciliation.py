@@ -2,36 +2,34 @@
 """
 Bank statement import + completion + queries.
 
-A86.8 (2026-05-26): the reconciliation command surface — auto_match_statement,
-manual_match, unmatch_line, exclude_line, resolve_difference, and the
-matching planners — moved to the `reconciliation/` Django app. Their
-former names are re-exported below for backward compatibility with
-existing tests and view imports.
-
-What remains in this module:
-- Bank statement import (`import_bank_statement`, `preview_bank_statement_import`)
+This module owns the parts of bank reconciliation that aren't
+reconciliation *commands*:
+- Bank statement import (`import_bank_statement`,
+  `preview_bank_statement_import`)
 - CSV parsing helpers (`parse_csv_headers`, `parse_csv_statement`)
 - Dedup hash (`_compute_line_dedup_hash`)
-- Reconciliation completion (`complete_reconciliation`, `compute_reconciliation_summary`)
-- Lookup helpers used by the operator UI (`get_unreconciled_journal_lines`,
-  `get_match_candidates_for_bank_line`)
+- Reconciliation completion (`complete_reconciliation`,
+  `compute_reconciliation_summary`)
+- Lookup helpers used by the operator UI
+  (`get_unreconciled_journal_lines`, `get_match_candidates_for_bank_line`)
 
-What moved to `reconciliation/commands.py`:
-- auto_match_statement, manual_match, unmatch_line, exclude_line,
-  resolve_difference, preview_auto_match, preview_unmatch_line, and
-  their helpers (_emit_match_confirmed, _emit_match_unmatched,
-  _validate_period_override, _reverse_match_side_effects,
-  _clear_match_state, _infer_match_kind_for_unmatch,
-  _run_reconciliation_projection_sync, _create_settlement_clearance_je,
-  _platform_prepass_match, _settlement_prepass_match).
+The reconciliation command surface lives in the `reconciliation/`
+Django app:
+- `reconciliation.commands` — `auto_match_statement`, `manual_match`,
+  `unmatch_line`, `exclude_line`, `resolve_difference`,
+  `preview_auto_match`, `preview_unmatch_line`, plus the private
+  helpers they need (event emitters, period-override validation,
+  side-effect reversal, the projection sync trigger, the settlement
+  clearance JE creator, and the platform/settlement prepass execute
+  paths).
+- `reconciliation.matching` — the pure planner
+  (`_plan_settlement_prepass_matches`), the confidence scorer
+  (`_compute_match_confidence`), `_difference_tolerance`, and the
+  confidence threshold constants.
 
-What moved to `reconciliation/matching.py`:
-- _plan_settlement_prepass_matches, _compute_match_confidence,
-  _difference_tolerance, confidence-threshold constants.
-
-The shim imports below let existing callers continue to write
-`from accounting.bank_reconciliation import auto_match_statement, ...`.
-A86.9 will remove the shims and convert callers to the new locations.
+A86.8 moved the code; A86.9 dropped the backward-compat shim
+re-exports that used to live here and migrated every caller to import
+from the canonical locations.
 """
 
 import csv
@@ -47,39 +45,6 @@ from django.utils import timezone
 
 from accounts.authz import ActorContext, require
 from projections.write_barrier import command_writes_allowed
-
-# A86.8 shim re-exports — keep existing test/view imports working.
-# Remove in A86.9 after callers are migrated to the new locations.
-from reconciliation.commands import (  # noqa: F401  (re-exported for backward compat)
-    _DIFFERENCE_REASON_ROLE,
-    _MIN_OVERRIDE_REASON_CHARS,
-    _clear_match_state,
-    _create_settlement_clearance_je,
-    _emit_match_confirmed,
-    _emit_match_unmatched,
-    _infer_match_kind_for_unmatch,
-    _platform_prepass_match,
-    _reverse_match_side_effects,
-    _run_reconciliation_projection_sync,
-    _settlement_prepass_match,
-    _validate_period_override,
-    auto_match_statement,
-    exclude_line,
-    manual_match,
-    preview_auto_match,
-    preview_unmatch_line,
-    resolve_difference,
-    unmatch_line,
-)
-from reconciliation.matching import (  # noqa: F401  (re-exported for backward compat)
-    AUTO_MATCH_THRESHOLD,
-    CONFIDENCE_AMOUNT_DATE,
-    CONFIDENCE_AMOUNT_ONLY,
-    CONFIDENCE_EXACT,
-    _compute_match_confidence,
-    _difference_tolerance,
-    _plan_settlement_prepass_matches,
-)
 
 from .commands import CommandResult
 from .models import (

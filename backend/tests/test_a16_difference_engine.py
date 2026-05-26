@@ -19,11 +19,6 @@ from decimal import Decimal
 
 import pytest
 
-from accounting.bank_reconciliation import (
-    _difference_tolerance,
-    auto_match_statement,
-    resolve_difference,
-)
 from accounting.models import (
     Account,
     BankStatementLine,
@@ -33,6 +28,8 @@ from accounting.reconciliation_views import _build_narrative, _needs_review_queu
 from accounting.settlement_imports import import_settlement_csv
 from accounts.authz import ActorContext
 from projections.write_barrier import projection_writes_allowed
+from reconciliation.commands import auto_match_statement, resolve_difference
+from reconciliation.matching import _difference_tolerance
 
 # =============================================================================
 # Fixtures

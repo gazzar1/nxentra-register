@@ -178,7 +178,7 @@ ORD-3,1000.00,30.00,970.00,PMB-A25-2,2026-04-25
 def test_candidates_excludes_reconciled_ebd_lines(shopify_setup, company, actor, merchant_bank):
     """Already-reconciled EBD lines (post-auto-match) must not appear
     in the picker — paired with A19, this prevents orphan suggestions."""
-    from accounting.bank_reconciliation import auto_match_statement
+    from reconciliation.commands import auto_match_statement
 
     _import_paymob_and_post(company)
     bank_line = _make_bank_line(
@@ -213,7 +213,7 @@ def test_candidates_excludes_reversed_clearance_je_lines(shopify_setup, company,
     """Clearance JEs reversed by A19 unmatch (status=REVERSED) must
     not appear in the picker. Otherwise the merchant sees stale
     suggestions for accounting that no longer exists."""
-    from accounting.bank_reconciliation import auto_match_statement, unmatch_line
+    from reconciliation.commands import auto_match_statement, unmatch_line
 
     _import_paymob_and_post(company)
     bank_line = _make_bank_line(

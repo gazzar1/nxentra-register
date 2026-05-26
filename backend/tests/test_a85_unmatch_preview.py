@@ -24,7 +24,6 @@ from decimal import Decimal
 
 import pytest
 
-from accounting.bank_reconciliation import preview_unmatch_line
 from accounting.models import (
     Account,
     BankStatement,
@@ -33,6 +32,7 @@ from accounting.models import (
 )
 from accounts.authz import ActorContext
 from projections.write_barrier import command_writes_allowed, projection_writes_allowed
+from reconciliation.commands import preview_unmatch_line
 
 
 def _make_actor(company, user, membership):

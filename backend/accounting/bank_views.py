@@ -14,7 +14,14 @@ from rest_framework.views import APIView
 
 from accounts.authz import require, resolve_actor
 
-from . import bank_reconciliation as recon
+# A86.9 (2026-05-26): reconciliation command surface lives in
+# `reconciliation/` after A86.8; views delegate directly to the
+# canonical location. Statement import + CSV parsing + completion +
+# summary + lookup helpers remain in `accounting/bank_reconciliation.py`
+# (aliased above as `bank_import`).
+from reconciliation import commands as recon
+
+from . import bank_reconciliation as bank_import
 from .models import (
     Account,
     BankStatement,
@@ -101,7 +108,7 @@ class BankStatementListCreateView(APIView):
                 except ValueError:
                     ld["line_date"] = statement_date
 
-        result = recon.import_bank_statement(
+        result = bank_import.import_bank_statement(
             actor=actor,
             account_id=account_id,
             statement_date=statement_date,
@@ -165,7 +172,7 @@ class BankStatementCSVHeadersView(APIView):
         except UnicodeDecodeError:
             csv_content = csv_file.read().decode("latin-1")
 
-        result = recon.parse_csv_headers(csv_content)
+        result = bank_import.parse_csv_headers(csv_content)
         return Response(result)
 
 
@@ -207,7 +214,7 @@ class BankStatementCSVImportView(APIView):
             "date_format": request.data.get("date_format", "%Y-%m-%d"),
         }
 
-        lines = recon.parse_csv_statement(csv_content, **column_map)
+        lines = bank_import.parse_csv_statement(csv_content, **column_map)
 
         return Response(
             {
@@ -289,7 +296,7 @@ class BankStatementImportPreviewView(APIView):
                 }
             )
 
-        result = recon.preview_bank_statement_import(
+        result = bank_import.preview_bank_statement_import(
             actor=actor,
             account_id=account_id,
             lines_data=parsed_lines,
@@ -369,7 +376,7 @@ class BankStatementDetailView(APIView):
             lines_data.append(entry)
 
         # Compute summary
-        summary = recon.compute_reconciliation_summary(actor.company, statement)
+        summary = bank_import.compute_reconciliation_summary(actor.company, statement)
 
         return Response(
             {
@@ -677,7 +684,7 @@ class BankReconcileView(APIView):
     def post(self, request, pk):
         actor = resolve_actor(request)
 
-        result = recon.complete_reconciliation(
+        result = bank_import.complete_reconciliation(
             actor,
             pk,
             notes=request.data.get("notes", ""),
@@ -738,7 +745,7 @@ class BankUnreconciledLinesView(APIView):
             except ValueError:
                 pass
 
-        lines = recon.get_unreconciled_journal_lines(
+        lines = bank_import.get_unreconciled_journal_lines(
             actor.company,
             account,
             as_of_date,
@@ -793,7 +800,7 @@ class BankLineMatchCandidatesView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        candidates = recon.get_match_candidates_for_bank_line(bank_line)
+        candidates = bank_import.get_match_candidates_for_bank_line(bank_line)
         data = []
         for jl in candidates:
             data.append(

@@ -20,7 +20,6 @@ from decimal import Decimal
 
 import pytest
 
-from accounting.bank_reconciliation import auto_match_statement
 from accounting.models import (
     Account,
     BankStatementLine,
@@ -29,6 +28,7 @@ from accounting.models import (
 from accounting.settlement_imports import import_settlement_csv
 from accounts.authz import ActorContext
 from projections.write_barrier import projection_writes_allowed
+from reconciliation.commands import auto_match_statement
 
 # =============================================================================
 # Fixtures
