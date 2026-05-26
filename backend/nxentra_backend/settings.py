@@ -63,6 +63,20 @@ RLS_BYPASS = os.getenv("RLS_BYPASS", "False") == "True" or TESTING
 PROJECTIONS_SYNC = os.getenv("PROJECTIONS_SYNC", "") == "True" or DEBUG or TESTING
 ALLOW_ADMIN_EMERGENCY_WRITES = os.getenv("ALLOW_ADMIN_EMERGENCY_WRITES", "False") == "True"
 
+# A86.7a (2026-05-26): feature-flag-gated cutover for reconciliation
+# read-model writes. When False (default), the legacy direct-mutation
+# paths in accounting/bank_reconciliation.py + bank_connector/matching.py
+# own the canonical bank-line match state. When True, the
+# ReconciliationProjection becomes the canonical writer — driven entirely
+# by the ReconciliationMatch* event stream emitted in A86.4-A86.6.
+#
+# 7b will remove the legacy direct-mutation code paths and drop the
+# shadow fields after a soak window proves convergence.
+#
+# Stays False in production until A86.7b ships. Tests flip it via
+# django.test.override_settings to exercise both code paths.
+RECONCILIATION_EVENT_DRIVEN_STATE = os.getenv("RECONCILIATION_EVENT_DRIVEN_STATE", "False") == "True"
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",

@@ -346,30 +346,38 @@ def _reconcile_payout_je(company, platform, payout_obj, bank_tx):
             cash_line.account.code,
             bank_tx.id,
         )
-        with projection_writes_allowed():
-            cash_line.reconciled = True
-            cash_line.reconciled_date = bank_tx.transaction_date
-            cash_line.save(update_fields=["reconciled", "reconciled_date"])
-        # Verify the save persisted
-        cash_line.refresh_from_db()
-        logger.info(
-            "After save: line %d reconciled=%s reconciled_date=%s",
-            cash_line.line_no,
-            cash_line.reconciled,
-            cash_line.reconciled_date,
-        )
+        # A86.7a (2026-05-26): when the cutover flag is on, the JL.reconciled
+        # flip is owned by the ReconciliationProjection (driven by the
+        # ReconciliationMatchConfirmed event emitted below). Skipping the
+        # direct flip here removes the protocol violation Codex flagged —
+        # this function no longer writes a read model directly. The legacy
+        # path (flag off) keeps the direct flip until A86.7b decommissions it.
+        from django.conf import settings as _settings
+
+        cutover = bool(getattr(_settings, "RECONCILIATION_EVENT_DRIVEN_STATE", False))
+        if not cutover:
+            with projection_writes_allowed():
+                cash_line.reconciled = True
+                cash_line.reconciled_date = bank_tx.transaction_date
+                cash_line.save(update_fields=["reconciled", "reconciled_date"])
+            # Verify the save persisted
+            cash_line.refresh_from_db()
+            logger.info(
+                "After save: line %d reconciled=%s reconciled_date=%s",
+                cash_line.line_no,
+                cash_line.reconciled,
+                cash_line.reconciled_date,
+            )
 
         # A86.6 (2026-05-26): emit ReconciliationMatchConfirmed for the
         # shadow projection. confirmation_kind="platform_payout_reconcile"
         # is the bank-feed reconciliation path — distinct from
         # auto_match_statement (which operates on BankStatementLine) and
         # manual_match (operator-picked BSL ↔ JL pairing). Here a
-        # BankTransaction (bank-feed) is matched to a platform-payout JE;
-        # the JL.reconciled flip above is the canonical state change. The
-        # event records the action so the audit trail in BusinessEvent
-        # is complete across every reconciliation surface — closing the
-        # last of the three projection_writes_allowed() bypasses Codex
-        # flagged in the 2026-05-26 protocol audit.
+        # BankTransaction (bank-feed) is matched to a platform-payout JE.
+        # A86.7a: with the cutover flag on, the projection picks up this
+        # event and flips JL.reconciled itself; with flag off, the legacy
+        # path above already did the flip and the event is pure audit trail.
         _emit_platform_payout_reconcile_event(
             company=company,
             cash_line=cash_line,

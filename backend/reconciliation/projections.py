@@ -45,6 +45,8 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 
+from django.conf import settings
+
 from accounting.models import BankStatementLine, JournalLine
 from events.models import BusinessEvent
 from events.types import EventTypes
@@ -55,6 +57,15 @@ logger = logging.getLogger(__name__)
 
 
 PROJECTION_NAME = "reconciliation"
+
+
+def _event_driven_state_enabled() -> bool:
+    """A86.7a (2026-05-26): runtime check of the
+    RECONCILIATION_EVENT_DRIVEN_STATE feature flag. Read every call so
+    `django.test.override_settings` (used heavily in the cutover tests)
+    can flip behavior per-test without import-time caching.
+    """
+    return bool(getattr(settings, "RECONCILIATION_EVENT_DRIVEN_STATE", False))
 
 
 # Event types this projection consumes — declared up front so subclasses /
@@ -150,19 +161,47 @@ class ReconciliationProjection(BaseProjection):
 
         # A86.6 (2026-05-26): platform_payout_reconcile is a separate
         # surface (bank_connector's BankTransaction ↔ payout JE) that
-        # doesn't involve a BankStatementLine. The shadow fields on
-        # BankStatementLine therefore have nothing to write here; the
-        # event is recorded for audit (BusinessEvent + ProjectionAppliedEvent)
-        # but the projection takes no other action. The legacy direct
-        # JL.reconciled flip in bank_connector/matching.py:_reconcile_payout_je
-        # still owns the canonical state change until A86.7 cutover.
+        # doesn't involve a BankStatementLine. No BSL shadow write
+        # happens here.
+        #
+        # A86.7a (2026-05-26): when the cutover flag is on, this branch
+        # also owns the JL.reconciled flip — moving the protocol violation
+        # in bank_connector/matching.py:288 (direct projection_writes_allowed
+        # write from a non-projection module) into the canonical
+        # event-projection layer. Flag off: the legacy path in
+        # _reconcile_payout_je already did the flip; this branch is pure
+        # audit-trail recording.
         if confirmation_kind == "platform_payout_reconcile":
-            logger.info(
-                "Reconciliation: platform_payout_reconcile event consumed (no shadow write) — "
-                "journal_line=%s event_id=%s",
-                journal_line_public_id,
-                event.id,
-            )
+            if _event_driven_state_enabled() and journal_line_public_id:
+                # Look up + flip the JL. Idempotent (True→True is a no-op).
+                # confirmed_at on the event payload is the bank tx date.
+                confirmed_at_raw = data.get("confirmed_at") or ""
+                statement_date_raw = data.get("statement_date") or ""
+                # Prefer statement_date (the bank-tx transaction_date stamped
+                # into the event payload by _emit_platform_payout_reconcile_event)
+                # for reconciled_date; fall back to confirmed_at.
+                reconciled_date_value = statement_date_raw or confirmed_at_raw[:10]
+                JournalLine.objects.filter(
+                    company=event.company,
+                    public_id=journal_line_public_id,
+                ).update(
+                    reconciled=True,
+                    reconciled_date=reconciled_date_value if reconciled_date_value else None,
+                )
+                logger.info(
+                    "Reconciliation: platform_payout_reconcile canonical flip — "
+                    "journal_line=%s reconciled_date=%s event_id=%s",
+                    journal_line_public_id,
+                    reconciled_date_value,
+                    event.id,
+                )
+            else:
+                logger.info(
+                    "Reconciliation: platform_payout_reconcile event consumed "
+                    "(legacy direct flip owns canonical) — journal_line=%s event_id=%s",
+                    journal_line_public_id,
+                    event.id,
+                )
             return
 
         if not bank_line_public_id:
@@ -225,19 +264,33 @@ class ReconciliationProjection(BaseProjection):
 
         confirmed_at = data.get("confirmed_at") or None
 
-        # Write the shadow fields. The legacy match_status /
-        # matched_journal_line / match_confidence fields are NOT touched
-        # here — that's the direct-mutation path's job until A86.7.
-        BankStatementLine.objects.filter(pk=bank_line.pk).update(
-            event_match_status=status,
-            event_matched_journal_line=journal_line,
-            event_match_confidence=confidence,
-            event_last_match_event_id=event.id,
-            event_confirmed_at=confirmed_at if confirmed_at else None,
-        )
+        # A86.7a (2026-05-26): write the shadow fields ALWAYS. When the
+        # cutover flag is on, also write the canonical fields — the
+        # projection becomes the sole writer to match_status /
+        # matched_journal_line / match_confidence, and the legacy
+        # direct-mutation paths skip the same fields. Keeping shadow
+        # writes in cutover mode preserves observability + provides a
+        # rollback safety net until A86.7b drops the shadow fields.
+        update_kwargs = {
+            "event_match_status": status,
+            "event_matched_journal_line": journal_line,
+            "event_match_confidence": confidence,
+            "event_last_match_event_id": event.id,
+            "event_confirmed_at": confirmed_at if confirmed_at else None,
+        }
+        if _event_driven_state_enabled():
+            update_kwargs.update(
+                {
+                    "match_status": status,
+                    "matched_journal_line": journal_line,
+                    "match_confidence": confidence,
+                }
+            )
+        BankStatementLine.objects.filter(pk=bank_line.pk).update(**update_kwargs)
 
         logger.info(
-            "Reconciliation shadow write: bank_line=%s status=%s confidence=%s via confirmation_kind=%s event_id=%s",
+            "Reconciliation %s write: bank_line=%s status=%s confidence=%s via confirmation_kind=%s event_id=%s",
+            "canonical+shadow" if _event_driven_state_enabled() else "shadow",
             bank_line_public_id,
             status,
             confidence,
@@ -279,16 +332,27 @@ class ReconciliationProjection(BaseProjection):
         else:
             target_status = BankStatementLine.MatchStatus.UNMATCHED
 
-        BankStatementLine.objects.filter(pk=bank_line.pk).update(
-            event_match_status=target_status,
-            event_matched_journal_line=None,
-            event_match_confidence=None,
-            event_last_match_event_id=event.id,
-            event_confirmed_at=None,
-        )
+        # A86.7a: shadow always cleared; canonical also cleared when flag on.
+        update_kwargs = {
+            "event_match_status": target_status,
+            "event_matched_journal_line": None,
+            "event_match_confidence": None,
+            "event_last_match_event_id": event.id,
+            "event_confirmed_at": None,
+        }
+        if _event_driven_state_enabled():
+            update_kwargs.update(
+                {
+                    "match_status": target_status,
+                    "matched_journal_line": None,
+                    "match_confidence": None,
+                }
+            )
+        BankStatementLine.objects.filter(pk=bank_line.pk).update(**update_kwargs)
 
         logger.info(
-            "Reconciliation shadow clear: bank_line=%s final_status=%s event_id=%s",
+            "Reconciliation %s clear: bank_line=%s final_status=%s event_id=%s",
+            "canonical+shadow" if _event_driven_state_enabled() else "shadow",
             bank_line_public_id,
             target_status,
             event.id,
