@@ -399,6 +399,13 @@ class BankStatementDetailView(APIView):
 class BankAutoMatchView(APIView):
     """
     POST /api/accounting/bank-statements/<id>/auto-match/
+
+    Body (all optional — A85 chunk 2c period-override params):
+        {
+            "period_override": int,           # target period (1-13)
+            "fiscal_year_override": int,      # target fiscal year
+            "override_reason": str            # >= 10 chars
+        }
     """
 
     permission_classes = [IsAuthenticated]
@@ -406,7 +413,77 @@ class BankAutoMatchView(APIView):
     def post(self, request, pk):
         actor = resolve_actor(request)
 
-        result = recon.auto_match_statement(actor, pk)
+        # A85 chunk 2c: optional period-override parameters. When any are
+        # supplied, all three must be valid (validation happens inside the
+        # command).
+        try:
+            period_override = int(request.data.get("period_override") or 0)
+            fiscal_year_override = int(request.data.get("fiscal_year_override") or 0)
+        except (TypeError, ValueError):
+            return Response(
+                {"error": "period_override and fiscal_year_override must be integers."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        override_reason = str(request.data.get("override_reason") or "")
+
+        result = recon.auto_match_statement(
+            actor,
+            pk,
+            period_override=period_override,
+            fiscal_year_override=fiscal_year_override,
+            override_reason=override_reason,
+        )
+        if not result.success:
+            return Response(
+                {"error": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(result.data)
+
+
+class BankAutoMatchPreviewView(APIView):
+    """A85 chunk 2c (2026-05-26): dry-run preview for auto_match_statement.
+
+    POST /api/accounting/bank-statements/<id>/auto-match/preview/
+
+    Body (all optional — same override params as the execute view):
+        {
+            "period_override": int,
+            "fiscal_year_override": int,
+            "override_reason": str
+        }
+
+    Returns the planned settlement matches with per-row period info,
+    aggregate periods affected, blockers, and `dry_run_safe`. The
+    frontend modal renders this to show the operator exactly which JEs
+    will be created and in which period before they confirm.
+
+    No state is changed by this endpoint.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        actor = resolve_actor(request)
+
+        try:
+            period_override = int(request.data.get("period_override") or 0)
+            fiscal_year_override = int(request.data.get("fiscal_year_override") or 0)
+        except (TypeError, ValueError):
+            return Response(
+                {"error": "period_override and fiscal_year_override must be integers."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        override_reason = str(request.data.get("override_reason") or "")
+
+        result = recon.preview_auto_match(
+            actor,
+            pk,
+            period_override=period_override,
+            fiscal_year_override=fiscal_year_override,
+            override_reason=override_reason,
+        )
         if not result.success:
             return Response(
                 {"error": result.error},

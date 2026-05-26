@@ -772,6 +772,8 @@ def import_settlement_csv(
         except ImportError:
             known_order_ids = set()
 
+    from django.db import transaction
+
     from events.models import BusinessEvent
 
     emitted: list[dict] = []
@@ -796,34 +798,6 @@ def import_settlement_csv(
 
         currency = company.default_currency or "USD"
 
-        # A85 chunk 3b: if override is active, write an audit row for this
-        # batch BEFORE emitting the event. If event emission fails partway,
-        # we still have the intent on record.
-        if override_active and not already_existed:
-            from datetime import datetime as _dt
-
-            from accounting.models import PeriodOverrideAudit
-
-            payout_date_obj = batch["payout_date"]
-            if isinstance(payout_date_obj, str):
-                try:
-                    payout_date_obj = _dt.fromisoformat(payout_date_obj).date()
-                except (ValueError, TypeError):
-                    payout_date_obj = None
-            if payout_date_obj is not None:
-                PeriodOverrideAudit.objects.create(
-                    company=company,
-                    user=override_user,
-                    source=PeriodOverrideAudit.Source.SETTLEMENT_IMPORT,
-                    source_document_ref=f"{code}:{batch['payout_batch_id']}",
-                    original_date=payout_date_obj,
-                    original_period=payout_date_obj.month,
-                    original_fiscal_year=payout_date_obj.year,
-                    override_period=period_override,
-                    override_fiscal_year=fiscal_year_override,
-                    reason=override_reason.strip(),
-                )
-
         event_data = PaymentSettlementReceivedData(
             amount=batch["gross_amount"],
             currency=currency,
@@ -846,15 +820,55 @@ def import_settlement_csv(
             period_override=period_override if override_active else 0,
             fiscal_year_override=fiscal_year_override if override_active else 0,
         )
-        event = emit_event_no_actor(
-            company=company,
-            event_type=EventTypes.PAYMENT_SETTLEMENT_RECEIVED,
-            aggregate_type="PaymentSettlement",
-            aggregate_id=f"{code}:{batch['payout_batch_id']}",
-            idempotency_key=idempotency_key,
-            metadata={"source": "csv_import", "filename": source_filename},
-            data=event_data,
-        )
+
+        # A85 chunk 6 (2026-05-26): audit row + event emission for this
+        # batch commit atomically. If `emit_event_no_actor` raises, the
+        # audit row rolls back too — the audit log only contains entries
+        # for overrides whose events actually landed.
+        #
+        # Earlier batches' (audit, event) pairs that already committed in
+        # their own savepoint are not rolled back, so partial imports
+        # remain partial — which matches the surrounding flow: each
+        # batch is its own idempotent unit.
+        with transaction.atomic():
+            if override_active and not already_existed:
+                from datetime import datetime as _dt
+
+                from accounting.models import PeriodOverrideAudit
+
+                payout_date_obj = batch["payout_date"]
+                if isinstance(payout_date_obj, str):
+                    try:
+                        payout_date_obj = _dt.fromisoformat(payout_date_obj).date()
+                    except (ValueError, TypeError):
+                        payout_date_obj = None
+                if payout_date_obj is not None:
+                    PeriodOverrideAudit.objects.create(
+                        company=company,
+                        user=override_user,
+                        user_email_snapshot=(getattr(override_user, "email", "") or "") if override_user else "",
+                        user_name_snapshot=(getattr(override_user, "get_full_name", lambda: "")() or "")
+                        if override_user
+                        else "",
+                        source=PeriodOverrideAudit.Source.SETTLEMENT_IMPORT,
+                        source_document_ref=f"{code}:{batch['payout_batch_id']}",
+                        original_date=payout_date_obj,
+                        original_period=payout_date_obj.month,
+                        original_fiscal_year=payout_date_obj.year,
+                        override_period=period_override,
+                        override_fiscal_year=fiscal_year_override,
+                        reason=override_reason.strip(),
+                    )
+
+            event = emit_event_no_actor(
+                company=company,
+                event_type=EventTypes.PAYMENT_SETTLEMENT_RECEIVED,
+                aggregate_type="PaymentSettlement",
+                aggregate_id=f"{code}:{batch['payout_batch_id']}",
+                idempotency_key=idempotency_key,
+                metadata={"source": "csv_import", "filename": source_filename},
+                data=event_data,
+            )
         emitted.append(
             {
                 "event_id": event.id if event else None,

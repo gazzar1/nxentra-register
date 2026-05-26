@@ -147,7 +147,7 @@ def test_override_writes_audit_row_and_threads_through_event(
     # Events carry the override in the payload
     events = BusinessEvent.objects.filter(
         company=company,
-        event_type="payment.settlement.received",
+        event_type="payment.settlement_received",
     ).order_by("company_sequence")
     assert events.count() == 2
     for event in events:
@@ -243,14 +243,17 @@ def test_override_rejected_when_target_period_missing(
     """Can't override to a period that doesn't exist."""
     _grant_override_permission(user, company, owner_membership)
 
+    # Conftest's auto_fiscal_periods autouse creates all 12 periods of the
+    # current year. We target FY 2099 / period 4 to land in a year that
+    # the autouse never creates — that period truly doesn't exist.
     with pytest.raises(SettlementImportError, match="is not configured"):
         import_settlement_csv(
             company=company,
             provider_normalized_code="paymob",
             file_content=PAYMOB_CSV,
-            period_override=11,  # November 2026 — never created
-            fiscal_year_override=2026,
-            override_reason="Trying to post to November which doesn't exist.",
+            period_override=4,
+            fiscal_year_override=2099,
+            override_reason="Trying to post to a year that doesn't exist.",
             override_user=user,
         )
 
@@ -285,7 +288,7 @@ def test_no_override_means_no_audit_rows_and_no_payload_override(
     # Event payload has defaults (0)
     events = BusinessEvent.objects.filter(
         company=company,
-        event_type="payment.settlement.received",
+        event_type="payment.settlement_received",
     )
     for event in events:
         data = event.get_data()

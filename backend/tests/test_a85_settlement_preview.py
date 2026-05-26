@@ -142,12 +142,20 @@ def test_preview_resolves_period_from_payout_date(company, april_2026_period):
 @pytest.mark.django_db
 def test_preview_flags_missing_period_as_blocker(company):
     """If no FiscalPeriod covers the payout date, the preview returns a
-    blocker (cannot determine which period to post to)."""
-    # Deliberately NOT creating april_2026_period
+    blocker (cannot determine which period to post to).
+
+    The conftest's `auto_fiscal_periods` autouse fixture creates periods
+    for the current calendar year; we use a CSV whose payout_date lands
+    in year 2099 (never auto-created) so the test's "no period covers
+    this date" premise is honored.
+    """
+    csv_no_periods = (
+        b"order_id,gross,fee,net,payout_batch_id,payout_date\nORD-1,1000.00,30.00,970.00,BATCH-2099,2099-04-25\n"
+    )
     preview = preview_settlement_import(
         company=company,
         provider_normalized_code="paymob",
-        file_content=PAYMOB_CSV,
+        file_content=csv_no_periods,
     )
 
     assert preview["summary"]["dry_run_safe"] is False

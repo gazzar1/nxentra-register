@@ -42,6 +42,74 @@ CONFIDENCE_AMOUNT_ONLY = Decimal("60")
 AUTO_MATCH_THRESHOLD = Decimal("80")
 
 
+# A85 chunk 2c (2026-05-26): minimum chars an operator must type to justify
+# a period override. Mirrors the constant in settlement_imports.py. Kept here
+# so the bank-rec module is self-contained; chunk 6 may DRY these up.
+_MIN_OVERRIDE_REASON_CHARS = 10
+
+
+def _validate_period_override(
+    *,
+    company,
+    user,
+    period_override: int,
+    fiscal_year_override: int,
+    override_reason: str,
+) -> tuple[bool, str | None]:
+    """A85 chunk 2c (2026-05-26): validate operator's period-override request.
+
+    Same gate as A85 chunk 3b for settlement imports:
+    - user must have 'accounting.je.override_period' permission
+    - reason must be >= 10 chars
+    - target (period, fiscal_year) must exist + be OPEN
+
+    Returns (True, None) on success, (False, error_msg) on failure. Caller
+    surfaces the error to the operator.
+    """
+    if not user:
+        return False, "Period override requested but no user supplied for audit trail."
+
+    from accounts.models import CompanyMembership
+
+    membership = (
+        CompanyMembership.objects.filter(user=user, company=company, is_active=True)
+        .prefetch_related("permissions")
+        .first()
+    )
+    if not membership:
+        return False, (
+            f"User {user.email or user.id} has no active membership in this company; "
+            "cannot override the posting period."
+        )
+    user_perms = set(membership.permissions.values_list("code", flat=True))
+    if "accounting.je.override_period" not in user_perms:
+        return False, (
+            f"User {user.email or user.id} lacks the accounting.je.override_period "
+            "permission required to override the date-derived posting period."
+        )
+    if len(override_reason.strip()) < _MIN_OVERRIDE_REASON_CHARS:
+        return False, (f"Period override reason must be at least {_MIN_OVERRIDE_REASON_CHARS} characters.")
+
+    from projections.models import FiscalPeriod
+
+    target_fp = FiscalPeriod.objects.filter(
+        company=company,
+        fiscal_year=fiscal_year_override,
+        period=period_override,
+    ).first()
+    if not target_fp:
+        return False, (
+            f"Target override period {period_override}/{fiscal_year_override} is not configured for this company."
+        )
+    if target_fp.status != FiscalPeriod.Status.OPEN:
+        return False, (
+            f"Target override period {period_override}/{fiscal_year_override} "
+            f"is {target_fp.status}; can only override to an OPEN period."
+        )
+
+    return True, None
+
+
 # =============================================================================
 # Statement Import
 # =============================================================================
@@ -434,10 +502,244 @@ def parse_csv_statement(
 # =============================================================================
 
 
+def preview_auto_match(
+    actor: ActorContext,
+    statement_id: int,
+    *,
+    period_override: int = 0,
+    fiscal_year_override: int = 0,
+    override_reason: str = "",
+) -> CommandResult:
+    """A85 chunk 2c (2026-05-26): dry-run preview for auto_match_statement.
+
+    Returns the planned settlement matches with per-row period info,
+    aggregate periods affected, blockers, and `dry_run_safe`. Does NOT
+    create JEs or mutate any read-model state.
+
+    Scope: covers the settlement pre-pass (the only step that synthesizes
+    new JEs). The platform pre-pass and generic GL match only flip
+    `reconciled` flags on pre-existing JEs, so they have no period
+    concern and aren't included in the plan.
+
+    Optional override params: when supplied, validates them and reports
+    whether the override would resolve the blockers (vs. surfacing as
+    a fresh blocker if validation fails).
+
+    See:
+    - auto_match_statement() — the corresponding execute path
+    - _plan_settlement_prepass_matches() — shared planning logic
+    - docs/finance_event_first_policy.md §8 — operator sees cause-and-effect
+    """
+    require(actor, "accounting.reconciliation")
+
+    try:
+        statement = BankStatement.objects.select_related("account").get(
+            id=statement_id,
+            company=actor.company,
+        )
+    except BankStatement.DoesNotExist:
+        return CommandResult.fail("Statement not found.")
+
+    unmatched_bank_lines = list(
+        BankStatementLine.objects.filter(
+            statement=statement,
+            match_status=BankStatementLine.MatchStatus.UNMATCHED,
+        )
+    )
+
+    override_active = bool(period_override and fiscal_year_override)
+    override_warning: str | None = None
+    if override_active:
+        ok, err = _validate_period_override(
+            company=actor.company,
+            user=actor.user,
+            period_override=period_override,
+            fiscal_year_override=fiscal_year_override,
+            override_reason=override_reason,
+        )
+        if not ok:
+            override_warning = err
+
+    plans = _plan_settlement_prepass_matches(actor.company, statement, unmatched_bank_lines)
+
+    from projections.models import FiscalPeriod
+
+    def _resolve_period_for_date(d):
+        if d is None:
+            return {
+                "resolved": False,
+                "fiscal_year": None,
+                "period": None,
+                "period_name": None,
+                "status": None,
+                "warning": "No bank-line value date.",
+            }
+        fp = (
+            FiscalPeriod.objects.filter(
+                company=actor.company,
+                start_date__lte=d,
+                end_date__gte=d,
+                period_type=FiscalPeriod.PeriodType.NORMAL,
+            )
+            .order_by("fiscal_year", "period")
+            .first()
+        )
+        if not fp:
+            return {
+                "resolved": False,
+                "fiscal_year": d.year,
+                "period": d.month,
+                "period_name": d.strftime("%B %Y"),
+                "status": None,
+                "warning": (
+                    f"No FiscalPeriod covers {d.isoformat()}; clearance JE post may fail "
+                    "until fiscal periods are configured."
+                ),
+            }
+        warning = None
+        if fp.status != FiscalPeriod.Status.OPEN:
+            warning = (
+                f"Period {fp.period}/{fp.fiscal_year} ({fp.start_date.strftime('%B %Y')}) "
+                f"is {fp.status}; clearance JE would be rejected unless period is overridden."
+            )
+        return {
+            "resolved": True,
+            "fiscal_year": fp.fiscal_year,
+            "period": fp.period,
+            "period_name": fp.start_date.strftime("%B %Y"),
+            "status": fp.status,
+            "warning": warning,
+        }
+
+    # Resolve override target's display name (period_name) once, for
+    # rendering in the modal — not load-bearing.
+    override_period_name: str | None = None
+    if override_active and not override_warning:
+        fp = FiscalPeriod.objects.filter(
+            company=actor.company,
+            fiscal_year=fiscal_year_override,
+            period=period_override,
+        ).first()
+        if fp:
+            override_period_name = fp.start_date.strftime("%B %Y")
+
+    plan_rows: list[dict] = []
+    periods_seen: dict[tuple[int, int], dict] = {}
+    blockers: list[str] = []
+    total_actual = Decimal("0")
+    exact_matches = 0
+    near_matches = 0
+
+    for plan in plans:
+        natural_period = _resolve_period_for_date(plan["value_date"])
+        effective_period: dict
+        if override_active and not override_warning:
+            effective_period = {
+                "resolved": True,
+                "fiscal_year": fiscal_year_override,
+                "period": period_override,
+                "period_name": override_period_name,
+                "status": FiscalPeriod.Status.OPEN,
+                "warning": None,
+            }
+        else:
+            effective_period = natural_period
+
+        plan_rows.append(
+            {
+                "bank_line_id": plan["bank_line_id"],
+                "bank_line_date": plan["bank_line_date"].isoformat() if plan["bank_line_date"] else None,
+                "bank_line_description": (plan["bank_line_description"] or "")[:200],
+                "bank_line_amount": str(plan["bank_line_amount"]),
+                "settlement_entry_id": plan["settlement_entry_id"],
+                "settlement_entry_number": plan["settlement_entry_number"],
+                "settlement_source_document": plan["settlement_source_document"],
+                "batch_id": plan["batch_id"],
+                "expected_amount": str(plan["expected_amount"]),
+                "actual_amount": str(plan["actual_amount"]),
+                "difference": str(plan["difference"]),
+                "is_near_match": plan["is_near"],
+                "confidence": str(plan["confidence"]),
+                "natural_period": natural_period,
+                "effective_period": effective_period,
+                "value_date": plan["value_date"].isoformat() if plan["value_date"] else None,
+                "will_create_clearance_je": True,
+            }
+        )
+
+        target = effective_period
+        if target["resolved"]:
+            key = (target["fiscal_year"], target["period"])
+            if key not in periods_seen:
+                periods_seen[key] = {
+                    "fiscal_year": target["fiscal_year"],
+                    "period": target["period"],
+                    "period_name": target["period_name"],
+                    "status": target["status"],
+                    "journal_entries": 0,
+                }
+            periods_seen[key]["journal_entries"] += 1
+
+            if target["status"] != FiscalPeriod.Status.OPEN:
+                blocker = (
+                    f"Period {target['period']}/{target['fiscal_year']} "
+                    f"({target['period_name']}) is {target['status']}; "
+                    "cannot post clearance JE."
+                )
+                if blocker not in blockers:
+                    blockers.append(blocker)
+        else:
+            blocker = target["warning"] or f"Could not resolve period for bank line {plan['bank_line_id']}."
+            if blocker not in blockers:
+                blockers.append(blocker)
+
+        total_actual += plan["actual_amount"]
+        if plan["is_near"]:
+            near_matches += 1
+        else:
+            exact_matches += 1
+
+    if override_active and override_warning:
+        blockers.append(f"Period override rejected: {override_warning}")
+
+    return CommandResult.ok(
+        data={
+            "statement_id": statement.id,
+            "statement_public_id": str(statement.public_id),
+            "account_id": statement.account_id,
+            "account_code": statement.account.code,
+            "account_name": statement.account.name,
+            "currency": statement.currency,
+            "statement_date": statement.statement_date.isoformat(),
+            "unmatched_bank_lines": len(unmatched_bank_lines),
+            "match_plan": plan_rows,
+            "summary": {
+                "total_settlement_matches": len(plans),
+                "total_journal_entries_to_create": len(plans),
+                "total_clearance_amount": str(total_actual.quantize(Decimal("0.01"))),
+                "exact_matches": exact_matches,
+                "near_matches": near_matches,
+                "periods_affected": sorted(
+                    periods_seen.values(),
+                    key=lambda r: (r["fiscal_year"], r["period"]),
+                ),
+                "blockers": blockers,
+                "dry_run_safe": len(blockers) == 0 and len(plans) > 0,
+                "override_requested": override_active,
+                "override_warning": override_warning,
+            },
+        }
+    )
+
+
 @transaction.atomic
 def auto_match_statement(
     actor: ActorContext,
     statement_id: int,
+    *,
+    period_override: int = 0,
+    fiscal_year_override: int = 0,
+    override_reason: str = "",
 ) -> CommandResult:
     """
     Auto-match unmatched bank statement lines to journal lines.
@@ -448,6 +750,19 @@ def auto_match_statement(
     3. Amount-only match (unique) → 60% confidence
 
     Only matches above AUTO_MATCH_THRESHOLD are applied.
+
+    A85 chunk 2c (2026-05-26): optional operator-driven period override
+    for the clearance JEs created during the settlement pre-pass. Same
+    gate as A85 chunk 3b for settlement imports:
+      - actor.user must hold 'accounting.je.override_period'
+      - override_reason must be >= 10 chars (regulatory traceability)
+      - target (override_period, override_fiscal_year) must exist + be OPEN
+      - one PeriodOverrideAudit row is written per planned match BEFORE
+        the clearance JE is created, so the audit trail survives even if
+        post fails partway
+
+    The platform pre-pass and generic GL match are unaffected by the
+    override — they only flip `reconciled` flags on pre-existing JEs.
     """
     require(actor, "accounting.reconciliation")
 
@@ -458,6 +773,19 @@ def auto_match_statement(
         )
     except BankStatement.DoesNotExist:
         return CommandResult.fail("Statement not found.")
+
+    # A85 chunk 2c: validate the override BEFORE any state changes.
+    override_active = bool(period_override and fiscal_year_override)
+    if override_active:
+        ok, err = _validate_period_override(
+            company=actor.company,
+            user=actor.user,
+            period_override=period_override,
+            fiscal_year_override=fiscal_year_override,
+            override_reason=override_reason,
+        )
+        if not ok:
+            return CommandResult.fail(err)
 
     # Get unmatched bank lines
     unmatched_bank_lines = list(
@@ -493,6 +821,10 @@ def auto_match_statement(
         actor.company,
         statement,
         unmatched_bank_lines,
+        period_override=period_override,
+        fiscal_year_override=fiscal_year_override,
+        override_reason=override_reason,
+        override_user=actor.user if override_active else None,
     )
     if settlement_matched > 0:
         unmatched_bank_lines = [
@@ -697,10 +1029,163 @@ def _platform_prepass_match(
     return matched
 
 
+def _plan_settlement_prepass_matches(
+    company,
+    statement: BankStatement,
+    unmatched_bank_lines: list,
+) -> list[dict]:
+    """A85 chunk 2c (2026-05-26): pure-read planner for the settlement
+    pre-pass. Decides which bank lines would match which settlement JEs
+    and what clearance JEs would need to be created. Does NOT create
+    JEs or mutate read-model state.
+
+    The execute path (_settlement_prepass_match) calls this and then
+    creates the clearance JE + applies the read-model state per plan row.
+    The preview path (preview_auto_match) calls this and returns the plan
+    as-is for the operator to confirm.
+
+    Plan ordering mirrors the original loop: bank lines processed in the
+    order they were passed; candidates removed as they're picked so the
+    next bank line can't double-match.
+
+    Returns a list of plan dicts:
+        {
+            "bank_line_id": int,
+            "bank_line_amount": Decimal,
+            "bank_line_date": date,
+            "bank_line_description": str,
+            "settlement_entry_id": int,
+            "settlement_entry_number": str,
+            "settlement_entry_date": date,
+            "settlement_entry_period": int | None,
+            "settlement_source_document": str,
+            "ebd_line_id": int,
+            "batch_id": str,
+            "expected_amount": Decimal,
+            "actual_amount": Decimal,
+            "difference": Decimal,
+            "is_near": bool,
+            "confidence": Decimal,
+            "value_date": date,
+        }
+    """
+    from accounting.mappings import ModuleAccountMapping
+
+    if not unmatched_bank_lines:
+        return []
+
+    date_buffer = timedelta(days=7)
+    settlement_entries = list(
+        JournalEntry.objects.filter(
+            company=company,
+            source_module="payment_settlement",
+            status=JournalEntry.Status.POSTED,
+            date__gte=statement.period_start - date_buffer,
+            date__lte=statement.period_end + date_buffer,
+        ).order_by("date")
+    )
+    if not settlement_entries:
+        return []
+
+    ebd_account = ModuleAccountMapping.get_account(company, "shopify_connector", "EXPECTED_BANK_DEPOSIT")
+    if not ebd_account:
+        return []
+
+    # Pre-collect candidates: (entry, ebd_line, net, batch_id)
+    candidates: list[tuple] = []
+    for entry in settlement_entries:
+        ebd_line = entry.lines.filter(account=ebd_account, reconciled=False).first()
+        if not ebd_line:
+            continue
+        source_doc = entry.source_document or ""
+        batch_id = source_doc.split(":", 1)[1] if ":" in source_doc else source_doc
+        candidates.append((entry, ebd_line, ebd_line.debit, batch_id))
+
+    if not candidates:
+        return []
+
+    plans: list[dict] = []
+
+    for bank_line in unmatched_bank_lines:
+        if bank_line.match_status != BankStatementLine.MatchStatus.UNMATCHED:
+            continue
+
+        # A16 near-match logic: exact first, then within-tolerance.
+        exact_matches = [c for c in candidates if c[2] == bank_line.amount]
+        near_matches = []
+        if not exact_matches:
+            for c in candidates:
+                tolerance = _difference_tolerance(c[2])
+                gap = abs(c[2] - bank_line.amount)
+                if gap > 0 and gap <= tolerance:
+                    near_matches.append(c)
+
+        amount_matches = exact_matches or near_matches
+        if not amount_matches:
+            continue
+        is_near = not exact_matches
+
+        descr = (bank_line.description or "").lower()
+        batch_match = next(
+            (c for c in amount_matches if c[3] and c[3].lower() in descr),
+            None,
+        )
+        if batch_match:
+            entry, ebd_line, expected_amount, batch_id = batch_match
+            confidence = CONFIDENCE_EXACT
+        else:
+            best, best_days = None, 999
+            for c in amount_matches:
+                days = abs((bank_line.line_date - c[0].date).days)
+                if days < best_days:
+                    best_days = days
+                    best = c
+            if not best or best_days > 7:
+                continue
+            entry, ebd_line, expected_amount, batch_id = best
+            confidence = CONFIDENCE_AMOUNT_DATE if best_days <= 2 else CONFIDENCE_AMOUNT_ONLY
+
+        if confidence < AUTO_MATCH_THRESHOLD:
+            continue
+
+        difference = (expected_amount - bank_line.amount) if is_near else Decimal("0")
+        plans.append(
+            {
+                "bank_line_id": bank_line.id,
+                "bank_line_amount": bank_line.amount,
+                "bank_line_date": bank_line.line_date,
+                "bank_line_description": bank_line.description or "",
+                "settlement_entry_id": entry.id,
+                "settlement_entry_number": entry.entry_number or "",
+                "settlement_entry_date": entry.date,
+                "settlement_entry_period": entry.period,
+                "settlement_source_document": entry.source_document or "",
+                "ebd_line_id": ebd_line.id,
+                "batch_id": batch_id,
+                "expected_amount": expected_amount,
+                "actual_amount": bank_line.amount,
+                "difference": difference,
+                "is_near": is_near,
+                "confidence": confidence,
+                "value_date": bank_line.line_date,
+            }
+        )
+
+        # Remove this candidate so the next bank line can't double-match.
+        candidates = [c for c in candidates if c[0].id != entry.id]
+
+    return plans
+
+
 def _settlement_prepass_match(
     company,
     statement: BankStatement,
     unmatched_bank_lines: list,
+    *,
+    period_override: int = 0,
+    fiscal_year_override: int = 0,
+    override_reason: str = "",
+    override_user=None,
 ) -> int:
     """A14b: match bank lines against PaymentSettlement JEs (Paymob /
     Bosta / PayPal CSV imports).
@@ -720,130 +1205,99 @@ def _settlement_prepass_match(
        original settlement JE's EBD line as reconciled (it's no longer
        "expected").
 
+    A85 chunk 2c (2026-05-26): plan/apply split. The matching decisions
+    are delegated to `_plan_settlement_prepass_matches`; this function
+    only applies the plan — creates clearance JEs (honoring an optional
+    period override) and updates read-model state.
+
+    Override semantics:
+    - When period_override > 0 and fiscal_year_override > 0, the caller
+      MUST have already passed `_validate_period_override`. The clearance
+      JE is created with `period=period_override`, leaving `date=value_date`
+      (the actual bank deposit date — preserves audit truth).
+    - Chunk 6 (2026-05-26): the PeriodOverrideAudit row is written AFTER
+      the clearance JE successfully posts. Both run inside the outer
+      `auto_match_statement` `@transaction.atomic`, so they commit together
+      — and a failed JE leaves NO orphan audit row claiming an override
+      happened.
+
     Returns the number of bank lines matched (and clearance JEs created).
     """
+    plans = _plan_settlement_prepass_matches(company, statement, unmatched_bank_lines)
+    if not plans:
+        return 0
+
+    override_active = bool(period_override and fiscal_year_override)
+
+    # Map bank_line_id back to the in-memory instance the caller passed
+    # us, so per-match state mutation can run against the same object the
+    # outer function holds.
+    bl_by_id = {bl.id: bl for bl in unmatched_bank_lines}
+
     from accounting.mappings import ModuleAccountMapping
 
-    if not unmatched_bank_lines:
-        return 0
-
-    # Find POSTED PaymentSettlement JEs in the period whose EBD DR line
-    # has not yet been reconciled. Each JE has source_module="payment_settlement"
-    # and source_document="{provider}:{batch_id}".
-    date_buffer = timedelta(days=7)
-    settlement_entries = list(
-        JournalEntry.objects.filter(
-            company=company,
-            source_module="payment_settlement",
-            status=JournalEntry.Status.POSTED,
-            date__gte=statement.period_start - date_buffer,
-            date__lte=statement.period_end + date_buffer,
-        ).order_by("date")
-    )
-    if not settlement_entries:
-        return 0
-
-    # Build (entry, ebd_line, net_amount, batch_id) tuples for unmatched
-    # entries. EBD is the only DR-debit asset line whose account has the
-    # EXPECTED_BANK_DEPOSIT role on the company's mapping.
     ebd_account = ModuleAccountMapping.get_account(company, "shopify_connector", "EXPECTED_BANK_DEPOSIT")
     if not ebd_account:
         return 0
 
-    # Pre-collect candidates: (entry, ebd_line, net, batch_id)
-    candidates: list[tuple] = []
-    for entry in settlement_entries:
-        ebd_line = entry.lines.filter(account=ebd_account, reconciled=False).first()
-        if not ebd_line:
-            continue
-        # Source document = "{provider}:{batch_id}"
-        source_doc = entry.source_document or ""
-        batch_id = source_doc.split(":", 1)[1] if ":" in source_doc else source_doc
-        candidates.append((entry, ebd_line, ebd_line.debit, batch_id))
-
-    if not candidates:
-        return 0
-
     matched = 0
 
-    for bank_line in unmatched_bank_lines:
-        if bank_line.match_status != BankStatementLine.MatchStatus.UNMATCHED:
+    for plan in plans:
+        bank_line = bl_by_id.get(plan["bank_line_id"])
+        if bank_line is None:
             continue
+        settlement_entry = JournalEntry.objects.get(id=plan["settlement_entry_id"])
+        ebd_line = JournalLine.objects.get(id=plan["ebd_line_id"])
 
-        # A16: near-match. Try exact-amount first; if none, look for a
-        # candidate within tolerance (max 2% of expected, capped at 500
-        # of the company's currency unit). Bank deposits don't always
-        # equal the expected EBD because of extra gateway fees, bank
-        # wire fees, chargebacks, etc. We still match within tolerance
-        # and record the difference for the merchant to categorize.
-        exact_matches = [c for c in candidates if c[2] == bank_line.amount]
-        near_matches = []
-        if not exact_matches:
-            for c in candidates:
-                tolerance = _difference_tolerance(c[2])
-                gap = abs(c[2] - bank_line.amount)
-                if gap > 0 and gap <= tolerance:
-                    near_matches.append(c)
-
-        amount_matches = exact_matches or near_matches
-        if not amount_matches:
-            continue
-        is_near = not exact_matches
-
-        # Prefer batch-id-in-description match if available (highest
-        # confidence: even if multiple deposits have the same amount on
-        # close dates, the batch ID disambiguates).
-        descr = (bank_line.description or "").lower()
-        batch_match = next(
-            (c for c in amount_matches if c[3] and c[3].lower() in descr),
-            None,
-        )
-        if batch_match:
-            entry, ebd_line, expected_amount, batch_id = batch_match
-            confidence = CONFIDENCE_EXACT
-        else:
-            # Fall back to amount + date proximity (single best within 7 days).
-            best, best_days = None, 999
-            for c in amount_matches:
-                days = abs((bank_line.line_date - c[0].date).days)
-                if days < best_days:
-                    best_days = days
-                    best = c
-            if not best or best_days > 7:
-                continue
-            entry, ebd_line, expected_amount, batch_id = best
-            confidence = CONFIDENCE_AMOUNT_DATE if best_days <= 2 else CONFIDENCE_AMOUNT_ONLY
-
-        # A16: near-matches always require operator review even when the
-        # amount/date confidence is high. Knock confidence below
-        # AUTO_MATCH_THRESHOLD if it'd otherwise pass — but DON'T skip
-        # the match, just flag the row.
-        if confidence < AUTO_MATCH_THRESHOLD:
-            continue
-
-        # Create the clearance JE for the ACTUAL bank amount (what really
-        # arrived). For near-matches the EBD residual stays open until
-        # the merchant categorizes the difference and the adjustment JE
-        # is posted. For exact matches, EBD drains in one shot.
         clearance_je_line = _create_settlement_clearance_je(
             company=company,
-            settlement_entry=entry,
+            settlement_entry=settlement_entry,
             bank_account=statement.account,
             ebd_account=ebd_account,
             net_amount=bank_line.amount,
-            batch_id=batch_id,
+            batch_id=plan["batch_id"],
             statement_date=statement.statement_date,
             value_date=bank_line.line_date,
+            period=period_override if override_active else None,
         )
         if not clearance_je_line:
             logger.warning(
                 "Settlement match: failed to create clearance JE for batch %s — skipping bank line %s",
-                batch_id,
+                plan["batch_id"],
                 bank_line.id,
             )
             continue
 
-        difference = (expected_amount - bank_line.amount) if is_near else Decimal("0")
+        # A85 chunk 6: audit row writes ONLY when the clearance JE
+        # successfully posts. Both this and the JE live in the outer
+        # auto_match_statement @transaction.atomic, so the audit log
+        # never contains a row whose JE failed to land.
+        if override_active:
+            from accounting.models import PeriodOverrideAudit
+
+            value_date = plan["value_date"]
+            PeriodOverrideAudit.objects.create(
+                company=company,
+                user=override_user,
+                user_email_snapshot=(getattr(override_user, "email", "") or "") if override_user else "",
+                user_name_snapshot=(getattr(override_user, "get_full_name", lambda: "")() or "")
+                if override_user
+                else "",
+                source=PeriodOverrideAudit.Source.RECON_MATCH,
+                source_document_ref=f"auto-match:settlement:{plan['batch_id']}",
+                journal_entry=clearance_je_line.entry,
+                original_date=value_date,
+                original_period=value_date.month,
+                original_fiscal_year=value_date.year,
+                override_period=period_override,
+                override_fiscal_year=fiscal_year_override,
+                reason=override_reason.strip(),
+            )
+
+        difference = plan["difference"]
+        is_near = plan["is_near"]
+        confidence = plan["confidence"]
+
         new_status = (
             BankStatementLine.MatchStatus.MATCHED_WITH_DIFFERENCE
             if is_near
@@ -863,8 +1317,8 @@ def _settlement_prepass_match(
                 reconciled_date=statement.statement_date,
             )
 
-            # For exact match: EBD line is fully drained, mark reconciled.
-            # For near match: EBD line still has a residual — leave
+            # Exact match: EBD line is fully drained, mark reconciled.
+            # Near match: EBD line still has a residual — leave
             # reconciled=False until the merchant categorizes the diff.
             if not is_near:
                 JournalLine.objects.filter(pk=ebd_line.pk).update(
@@ -872,17 +1326,17 @@ def _settlement_prepass_match(
                     reconciled_date=statement.statement_date,
                 )
 
-        # Remove this candidate from future loop iterations.
-        candidates = [c for c in candidates if c[0].id != entry.id]
         matched += 1
 
         logger.info(
-            "Settlement match: bank line %s -> clearance JE for batch %s (confidence=%s, near=%s, diff=%s)",
+            "Settlement match: bank line %s -> clearance JE for batch %s "
+            "(confidence=%s, near=%s, diff=%s, override=%s)",
             bank_line.id,
-            batch_id,
+            plan["batch_id"],
             confidence,
             is_near,
             difference,
+            f"{period_override}/{fiscal_year_override}" if override_active else "no",
         )
 
     return matched
@@ -1145,6 +1599,7 @@ def _create_settlement_clearance_je(
     batch_id: str,
     statement_date: date,
     value_date: date,
+    period: int | None = None,
 ) -> JournalLine | None:
     """A14b: create the second-stage clearance JE that drains Expected
     Bank Deposit into the merchant's actual bank.
@@ -1156,6 +1611,12 @@ def _create_settlement_clearance_je(
 
     Stamps source_module='payment_settlement_clearance' and
     source_document=settlement_entry.source_document for traceability.
+
+    A85 chunk 2c (2026-05-26): when `period` is provided, the JE's
+    fiscal period is forced to that value (regardless of value_date).
+    The date stays as `value_date` — the actual bank deposit date — so
+    the audit story is "JE dated X was forcibly posted to period Y
+    because <reason>" (captured in PeriodOverrideAudit by the caller).
     """
     from accounting.commands import (
         create_journal_entry,
@@ -1186,6 +1647,7 @@ def _create_settlement_clearance_je(
             },
         ],
         kind=JournalEntry.Kind.NORMAL,
+        period=period,
     )
     if not create_result.success:
         logger.error("Settlement clearance create failed: %s", create_result.error)

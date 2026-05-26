@@ -21,6 +21,26 @@ from rest_framework.exceptions import NotAuthenticated
 
 from accounts.models import Company, CompanyMembership
 
+# A85 chunk 6 (2026-05-26): permissions that even the OWNER role must hold
+# EXPLICITLY — superuser bypass still wins (system-level access), but a
+# normal OWNER does not auto-acquire these via role. These are powerful
+# actions that need a paper trail per docs/finance_event_first_policy.md
+# §8 and ENGINEERING_PROTOCOL.md §1.5 ("auditability beats convenience").
+#
+# Adding a code here is a security-impacting change: any view that already
+# checks `actor.has(<code>)` will now reject OWNERs who don't have the
+# explicit grant. Be deliberate.
+SENSITIVE_PERMISSIONS: frozenset[str] = frozenset(
+    {
+        # A85 chunk 3c: explicit grant required to override the date-derived
+        # fiscal period on JE creation / settlement import / auto-match.
+        # Tested at: tests/test_a85_manual_je_override.py,
+        # tests/test_a85_settlement_period_override.py,
+        # tests/test_a85_auto_match_preview.py.
+        "accounting.je.override_period",
+    }
+)
+
 
 @dataclass(frozen=True)
 class ActorContext:
@@ -48,8 +68,10 @@ class ActorContext:
 
         Order of checks:
         1. Superuser: implicit allow (all permissions)
-        2. OWNER: implicit allow
-        3. everyone else: only code in perms
+        2. OWNER: implicit allow — EXCEPT for SENSITIVE_PERMISSIONS, which
+           always require an explicit grant even from an OWNER (A85 chunk 6,
+           2026-05-26). See SENSITIVE_PERMISSIONS docstring.
+        3. everyone else: only codes in perms or in the DB.
         """
         if not self.membership.is_active:
             return False
@@ -58,7 +80,7 @@ class ActorContext:
         if getattr(self.user, "is_superuser", False):
             return True
 
-        if self.membership.role == CompanyMembership.Role.OWNER:
+        if self.membership.role == CompanyMembership.Role.OWNER and code not in SENSITIVE_PERMISSIONS:
             return True
         if code in self.perms:
             return True

@@ -19,6 +19,7 @@ Admin Endpoints (super-admin only):
 from django.urls import path
 
 from .bank_views import (
+    BankAutoMatchPreviewView,
     BankAutoMatchView,
     BankExcludeLineView,
     BankLineMatchCandidatesView,
@@ -323,6 +324,15 @@ urlpatterns = [
         "bank-statements/<int:pk>/",
         BankStatementDetailView.as_view(),
         name="bank-statement-detail",
+    ),
+    # A85 chunk 2c: dry-run preview must precede the execute route so
+    # `<id>/auto-match/preview/` doesn't get swallowed by a regex match
+    # against the execute path. Django's path() actually disambiguates
+    # these cleanly, but we keep the order conventional for readability.
+    path(
+        "bank-statements/<int:pk>/auto-match/preview/",
+        BankAutoMatchPreviewView.as_view(),
+        name="bank-statement-auto-match-preview",
     ),
     path(
         "bank-statements/<int:pk>/auto-match/",

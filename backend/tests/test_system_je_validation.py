@@ -530,15 +530,34 @@ class TestShopifyReplayIdempotency:
         ).count()
         assert invoice_count == 2, f"Expected 2 invoices with JEs for 2 different orders, got {invoice_count}"
 
-    def test_closed_period_creates_incomplete_not_posted(self, shopify_company):
-        """Late Shopify webhook into closed period → INCOMPLETE, no JOURNAL_ENTRY_POSTED event."""
+    def test_closed_period_keeps_invoice_and_incomplete_je_then_raises(self, shopify_company):
+        """A85 chunk 6 (2026-05-26): closed-period Shopify webhook leaves
+        the SalesInvoice + an INCOMPLETE JE persisted, then the projection
+        raises ProjectionCommandFailedError so A80 writes a
+        ProjectionFailureLog row.
+
+        The two commits-then-fail pattern: ``create_sales_invoice`` and
+        ``create_journal_entry`` are each ``@transaction.atomic`` so each
+        commits independently. The ``save_journal_entry_complete`` step
+        is where ``can_post_to_period`` rejects (closed) — returning
+        ``CommandResult.fail`` without raising, so the outer atomic of
+        ``create_and_post_invoice_for_platform`` does NOT roll back the
+        earlier commits. The projection then sees not-success and raises
+        per A80's loud-failure pattern.
+
+        Net effect for the merchant: invoice + draft INCOMPLETE JE
+        survive (the data isn't lost), the failure is loudly surfaced
+        via /finance/exceptions, and no JOURNAL_ENTRY_POSTED event was
+        emitted (so no balances were affected).
+        """
         from accounting.models import JournalEntry
         from events.models import BusinessEvent
+        from projections.exceptions import ProjectionCommandFailedError
         from projections.models import FiscalPeriod
         from projections.write_barrier import projection_writes_allowed
+        from sales.models import SalesInvoice
         from shopify_connector.projections import ShopifyAccountingHandler
 
-        # Create a closed period for January 2025
         with projection_writes_allowed():
             FiscalPeriod.objects.get_or_create(
                 company=shopify_company,
@@ -553,8 +572,6 @@ class TestShopifyReplayIdempotency:
             )
 
         handler = ShopifyAccountingHandler()
-
-        # Create event with a date in the closed period
         event = _make_shopify_order_event(
             shopify_company,
             shopify_order_id=99005,
@@ -567,32 +584,30 @@ class TestShopifyReplayIdempotency:
             event_type="journal_entry.posted",
         ).count()
 
-        handler.handle(event)
+        with pytest.raises(ProjectionCommandFailedError, match="closed"):
+            handler.handle(event)
 
-        # Locate the JE via its parent SalesInvoice rather than memo/source_module
-        # (post_sales_invoice tags JE memo as "Sales Invoice {invoice_number}",
-        #  not the order_id, and leaves source_module unset).
-        from sales.models import SalesInvoice
-
+        # Invoice survives (created in its own atomic before post failed).
         invoice = SalesInvoice.objects.filter(
             company=shopify_company,
             source="shopify",
             source_document_id="99005",
         ).first()
-        assert invoice is not None, "SalesInvoice should be created even for closed period"
+        assert invoice is not None, "SalesInvoice should be persisted before the post fails"
+
+        # JE was created in INCOMPLETE before save_complete tried (and failed)
+        # to transition it to DRAFT for posting. No JE got posted.
         je = JournalEntry.objects.filter(
             company=shopify_company,
             memo=f"Sales Invoice {invoice.invoice_number}",
         ).first()
-        assert je is not None, "JE should be created even for closed period"
-        assert je.status == JournalEntry.Status.INCOMPLETE, f"Expected INCOMPLETE for closed period, got {je.status}"
-        assert je.posted_at is None, "posted_at should be None for INCOMPLETE entry"
+        assert je is not None, "JE should be created (in INCOMPLETE state) before save_complete fails"
+        assert je.status == JournalEntry.Status.INCOMPLETE
+        assert je.posted_at is None
 
-        # No new JOURNAL_ENTRY_POSTED event should have been emitted
+        # No JOURNAL_ENTRY_POSTED event was emitted — balances untouched.
         posted_after = BusinessEvent.objects.filter(
             company=shopify_company,
             event_type="journal_entry.posted",
         ).count()
-        assert posted_after == posted_before, (
-            f"INCOMPLETE entry must NOT emit JOURNAL_ENTRY_POSTED: {posted_before} → {posted_after}"
-        )
+        assert posted_after == posted_before

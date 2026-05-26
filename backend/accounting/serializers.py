@@ -440,6 +440,13 @@ class JournalEntryAutoSaveSerializer(serializers.ModelSerializer):
         max_length=2000,
         write_only=True,
     )
+    # A85 chunk 6 (2026-05-26): `period` is optional on the wire. When
+    # omitted, the command layer auto-resolves it from the date (the
+    # standard non-override path). When supplied AND it differs from the
+    # date-derived period, the view runs the override gate. The model's
+    # NOT NULL constraint on `period` is satisfied by `create_journal_entry`
+    # which always writes a concrete value into the event payload.
+    period = serializers.IntegerField(required=False, allow_null=True)
 
     class Meta:
         model = JournalEntry

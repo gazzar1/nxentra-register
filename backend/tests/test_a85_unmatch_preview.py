@@ -164,6 +164,9 @@ def test_preview_reports_clearance_je_reversal(company, user, owner_membership, 
     from accounting.models import JournalLine
 
     with projection_writes_allowed():
+        # total_debit / total_credit are read-only properties on
+        # JournalEntry (sum of lines); construct without them. line_no is
+        # the field name on JournalLine (not line_number).
         clearance_je = JournalEntry.objects.create(
             company=company,
             date=date(2026, 4, 25),
@@ -173,14 +176,12 @@ def test_preview_reports_clearance_je_reversal(company, user, owner_membership, 
             status=JournalEntry.Status.POSTED,
             source_module="payment_settlement_clearance",
             source_document="paymob:BATCH-X",
-            total_debit=Decimal("100"),
-            total_credit=Decimal("100"),
             entry_number="JE-CLEAR-1",
         )
         clearance_line = JournalLine.objects.create(
             company=company,
             entry=clearance_je,
-            line_number=1,
+            line_no=1,
             account=bank_account,
             debit=Decimal("100"),
             credit=Decimal("0"),
@@ -233,14 +234,12 @@ def test_preview_flags_closed_period_as_blocker(company, user, owner_membership,
             status=JournalEntry.Status.POSTED,
             source_module="payment_settlement_clearance",
             source_document="paymob:BATCH-Y",
-            total_debit=Decimal("100"),
-            total_credit=Decimal("100"),
             entry_number="JE-CLEAR-2",
         )
         clearance_line = JournalLine.objects.create(
             company=company,
             entry=clearance_je,
-            line_number=1,
+            line_no=1,
             account=bank_account,
             debit=Decimal("100"),
             credit=Decimal("0"),

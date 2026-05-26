@@ -274,7 +274,14 @@ def can_edit_entry(actor, entry) -> tuple[bool, str]:
     if entry.status not in [JournalEntry.Status.INCOMPLETE, JournalEntry.Status.DRAFT]:
         return False, f"Cannot edit entry in {entry.status} status."
 
-    allowed, reason = can_post_to_period(actor, getattr(entry, "date", None))
+    # A85 chunk 6 (2026-05-26): pass the entry's explicit `period` to the
+    # validator so override-period entries can edit through to save_complete.
+    # Without this, an INCOMPLETE JE with date=Apr/period=May (override)
+    # would fail can_edit_entry because the date alone resolves to a
+    # closed April. can_post_to_period's chunk-2c fallback handles the
+    # date+period mismatch by looking up period+inferred fiscal_year.
+    entry_period = getattr(entry, "period", None)
+    allowed, reason = can_post_to_period(actor, getattr(entry, "date", None), period=entry_period)
     if not allowed:
         return False, reason
 
@@ -689,6 +696,24 @@ def can_post_to_period(actor, target_date, period=None, fiscal_year=None) -> tup
         if period is not None:
             period_qs = period_qs.filter(period=period)
         fiscal_period = period_qs.first()
+
+        # A85 chunk 2c (2026-05-26): when an explicit `period` was supplied
+        # AND the (date, period) AND-filter yielded nothing, the operator
+        # is using the period-override pathway (date and explicit period
+        # disagree by design). Fall back to a period-only lookup with
+        # `fiscal_year` either explicit or inferred from the date's year.
+        # The permission gate + reason + target-OPEN check was already
+        # enforced upstream by `_validate_period_override`; this fallback
+        # only widens the lookup, not the OPEN/closed validation that
+        # still runs below.
+        if fiscal_period is None and period is not None:
+            inferred_fy = fiscal_year if fiscal_year is not None else target_date.year
+            fiscal_period = FiscalPeriod.objects.filter(
+                company=actor.company,
+                period=period,
+                fiscal_year=inferred_fy,
+                period_type=FiscalPeriod.PeriodType.NORMAL,
+            ).first()
     else:
         # A84: pre-fix this returned (True, "") silently when period was set
         # but neither target_date nor (period==13 + fiscal_year) gave us

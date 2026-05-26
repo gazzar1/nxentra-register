@@ -43,6 +43,14 @@ class JournalEntryAggregate:
     currency: str | None = None
     exchange_rate: str | None = None
     status: str = "INCOMPLETE"
+    # A85 chunk 6 (2026-05-26): persist the entry's fiscal period in the
+    # aggregate so policies that operate on the aggregate
+    # (can_edit_entry, can_post_entry) can see an explicit period override.
+    # Pre-chunk-6 the aggregate had no period field, so policies fell back
+    # to date-based resolution — defeating override semantics during
+    # save_complete on a date that lives in a closed period but whose
+    # override period is open.
+    period: int | None = None
     lines: list[dict] = field(default_factory=list)
     deleted: bool = False
     reversed: bool = False
@@ -58,6 +66,8 @@ class JournalEntryAggregate:
             self.currency = data.get("currency", self.currency)
             self.exchange_rate = data.get("exchange_rate", self.exchange_rate)
             self.status = data.get("status", self.status)
+            if data.get("period") is not None:
+                self.period = data.get("period")
             self.lines = data.get("lines", [])
             return
 
@@ -66,7 +76,7 @@ class JournalEntryAggregate:
             for field, change in changes.items():
                 if field in ["date", "memo", "memo_ar", "kind", "status"]:
                     setattr(self, field, change.get("new"))
-                if field in ["currency", "exchange_rate"]:
+                if field in ["currency", "exchange_rate", "period"]:
                     setattr(self, field, change.get("new"))
             if data.get("lines") is not None:
                 self.lines = data.get("lines", [])
@@ -79,6 +89,8 @@ class JournalEntryAggregate:
             self.memo_ar = data.get("memo_ar", self.memo_ar)
             self.currency = data.get("currency", self.currency)
             self.exchange_rate = data.get("exchange_rate", self.exchange_rate)
+            if data.get("period") is not None:
+                self.period = data.get("period")
             if data.get("lines") is not None:
                 self.lines = data.get("lines", [])
             self.status = "DRAFT"
@@ -91,6 +103,8 @@ class JournalEntryAggregate:
             self.kind = data.get("kind", self.kind)
             self.currency = data.get("currency", self.currency)
             self.exchange_rate = data.get("exchange_rate", self.exchange_rate)
+            if data.get("period") is not None:
+                self.period = data.get("period")
             self.status = "POSTED"
             if data.get("lines") is not None:
                 self.lines = data.get("lines", [])
