@@ -23,6 +23,22 @@ Consequences:
 - If you need a new aggregate (e.g., "open AR by salesperson"), **add a projection** — never query across commands
 - If a read model disagrees with the event log, **the read model is wrong** — replay it, don't patch it
 
+### 1.1 Replay convergence — a load-bearing property
+
+The above only holds if dropping every read-model row and re-running every projection from the event log reproduces the exact same state. This is **replay convergence**, and it is the property that distinguishes "we happen to write events" from "the event log is canonical."
+
+Verticals are responsible for proving this with at least one test that:
+1. Runs a representative lifecycle through commands.
+2. Captures final read-model state.
+3. Wipes the read-model rows + `ProjectionAppliedEvent` + `EventBookmark` for the projection.
+4. Re-runs `process_pending()`.
+5. Asserts the rebuilt state is identical.
+
+Examples in tree:
+- `tests/test_a86_7a_cutover.py::test_replay_convergence_full_lifecycle` — A86.7b makes BankStatementLine match state (`match_status`, `matched_journal_line`, `match_confidence`) canonically derived from the `ReconciliationMatch*` event stream; replay is therefore a guaranteed property of bank reconciliation.
+
+If a new field on a read model cannot be reconstructed from events, it isn't a read model — it's hidden canonical state and is a P0 violation of this policy.
+
 ---
 
 ## 2. Event emission rules

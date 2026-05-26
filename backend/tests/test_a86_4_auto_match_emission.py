@@ -1,27 +1,23 @@
 # tests/test_a86_4_auto_match_emission.py
-"""A86.4 (2026-05-26): auto_match_statement emits ReconciliationMatchConfirmed.
+"""A86.4 + A86.7b: auto_match_statement emits ReconciliationMatchConfirmed.
 
-The auto-match command continues to apply matches via direct mutation
-(legacy path, the source of truth until A86.7 cutover). A86.4 adds a
-SHADOW emission: each confirmed match now also emits a
-ReconciliationMatchConfirmed event, which A86.3's ReconciliationProjection
-consumes to populate the event_* shadow fields.
+A86.4 made auto_match_statement emit a ReconciliationMatchConfirmed event
+for every confirmed match. A86.7b made ReconciliationProjection the
+sole writer of bank-line match state, driven by those events.
 
-The convergence test is the load-bearing gate for A86: after auto-match
-runs AND the projection processes the emitted events, the legacy
-match_status / matched_journal_line / match_confidence fields must equal
-the shadow event_match_status / event_matched_journal_line /
-event_match_confidence fields. If they diverge, the cutover (A86.7)
-cannot ship.
+These tests now assert on the canonical fields the projection writes
+(match_status / matched_journal_line / match_confidence) rather than
+the dropped event_* shadow fields, and rely on auto_match_statement's
+internal sync-projection trigger (no separate process_pending call
+needed in production paths).
 
 Scenarios covered:
 
 - Settlement prepass: emits MatchConfirmed (match_kind="settlement_clearance")
 - Platform-payout prepass: emits MatchConfirmed (match_kind="platform_payout")
 - Generic GL match: emits MatchConfirmed (match_kind="generic_gl")
-- Convergence: legacy fields == shadow fields after projection runs
 - Difference > 0: emission carries the difference; projection sets
-  shadow status to MATCHED_WITH_DIFFERENCE
+  status to MATCHED_WITH_DIFFERENCE
 - Auto-match with period override (A85 chunk 2c): emission still works,
   audit row + match event coexist correctly
 """
@@ -38,7 +34,6 @@ from accounts.authz import ActorContext
 from events.models import BusinessEvent
 from events.types import EventTypes
 from projections.write_barrier import projection_writes_allowed
-from reconciliation.projections import ReconciliationProjection
 
 # =============================================================================
 # Fixtures (mirror test_a14b for compatibility with the settlement-prepass
@@ -184,11 +179,10 @@ def test_settlement_prepass_emits_match_confirmed_event(shopify_setup, company, 
 
 
 @pytest.mark.django_db
-def test_settlement_prepass_legacy_and_shadow_converge(shopify_setup, company, actor, merchant_bank):
-    """LOAD-BEARING: after auto-match + projection, legacy match fields
-    and event_* shadow fields agree. This is the convergence proof —
-    A86.7 cutover requires this to be the case for the whole settlement
-    surface."""
+def test_settlement_prepass_writes_canonical_match_state(shopify_setup, company, actor, merchant_bank):
+    """A86.7b: after auto-match, the projection (run synchronously inside
+    auto_match_statement) has written the canonical match_status /
+    matched_journal_line / match_confidence fields."""
     _import_paymob_and_post(company)
     statement = _make_statement(
         company,
@@ -200,25 +194,17 @@ def test_settlement_prepass_legacy_and_shadow_converge(shopify_setup, company, a
     )
 
     auto_match_statement(actor, statement.id)
-    ReconciliationProjection().process_pending(company)
 
     bank_line = BankStatementLine.objects.get(statement=statement)
-    # Legacy direct-mutation path
     assert bank_line.match_status == BankStatementLine.MatchStatus.AUTO_MATCHED
     assert bank_line.matched_journal_line is not None
     assert bank_line.match_confidence == Decimal("100")
-    # Shadow path
-    assert bank_line.event_match_status == BankStatementLine.MatchStatus.AUTO_MATCHED
-    assert bank_line.event_matched_journal_line_id == bank_line.matched_journal_line_id
-    assert bank_line.event_match_confidence == Decimal("100")
-    assert bank_line.event_last_match_event_id is not None
-    assert bank_line.event_confirmed_at is not None
 
 
 @pytest.mark.django_db
-def test_settlement_prepass_near_match_converges_with_difference(shopify_setup, company, actor, merchant_bank):
+def test_settlement_prepass_near_match_writes_with_difference(shopify_setup, company, actor, merchant_bank):
     """A16 near-match: bank deposit short by less than tolerance → match
-    confirmed with difference_amount > 0; legacy + shadow agree on
+    confirmed with difference_amount > 0; projection writes
     MATCHED_WITH_DIFFERENCE status."""
     _import_paymob_and_post(company)
     # Bank amount 1400 vs expected 1455 → 55 short, ~3.8% — within 15% tolerance.
@@ -232,11 +218,9 @@ def test_settlement_prepass_near_match_converges_with_difference(shopify_setup, 
     )
 
     auto_match_statement(actor, statement.id)
-    ReconciliationProjection().process_pending(company)
 
     bank_line = BankStatementLine.objects.get(statement=statement)
     assert bank_line.match_status == BankStatementLine.MatchStatus.MATCHED_WITH_DIFFERENCE
-    assert bank_line.event_match_status == BankStatementLine.MatchStatus.MATCHED_WITH_DIFFERENCE
     assert bank_line.difference_amount == Decimal("55.00")
 
     # The emitted event carries the difference for downstream consumers.
@@ -330,12 +314,11 @@ def test_platform_prepass_emits_match_confirmed_event(shopify_setup, company, ac
     assert data["match_kind"] == "platform_payout"
     assert data["confirmation_kind"] == "auto"
 
-    # Convergence: legacy + shadow agree
-    ReconciliationProjection().process_pending(company)
+    # Canonical write applied via the projection (run synchronously by
+    # auto_match_statement).
     bank_line = BankStatementLine.objects.get(statement=statement)
     assert bank_line.match_status == BankStatementLine.MatchStatus.AUTO_MATCHED
-    assert bank_line.event_match_status == BankStatementLine.MatchStatus.AUTO_MATCHED
-    assert bank_line.event_matched_journal_line_id == bank_line.matched_journal_line_id
+    assert bank_line.matched_journal_line is not None
 
 
 # =============================================================================
@@ -405,11 +388,10 @@ def test_generic_gl_match_emits_match_confirmed_event(company, actor, merchant_b
     assert data["match_kind"] == "generic_gl"
     assert data["journal_line_public_id"] == str(bank_jl.public_id)
 
-    # Convergence after projection
-    ReconciliationProjection().process_pending(company)
+    # Canonical write applied via the sync projection trigger
     bank_line = BankStatementLine.objects.get(statement=statement)
-    assert bank_line.event_match_status == BankStatementLine.MatchStatus.AUTO_MATCHED
-    assert bank_line.event_matched_journal_line_id == bank_jl.id
+    assert bank_line.match_status == BankStatementLine.MatchStatus.AUTO_MATCHED
+    assert bank_line.matched_journal_line_id == bank_jl.id
 
 
 # =============================================================================
@@ -484,10 +466,9 @@ def test_auto_match_with_period_override_emits_event_and_writes_audit_row(
         == 1
     )
 
-    # Convergence
-    ReconciliationProjection().process_pending(company)
+    # Canonical match state applied via the sync projection trigger
     bank_line = BankStatementLine.objects.get(statement=statement)
-    assert bank_line.event_match_status == bank_line.match_status
+    assert bank_line.match_status == BankStatementLine.MatchStatus.AUTO_MATCHED
 
 
 # =============================================================================

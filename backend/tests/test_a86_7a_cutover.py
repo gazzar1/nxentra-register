@@ -1,33 +1,34 @@
 # tests/test_a86_7a_cutover.py
-"""A86.7a (2026-05-26): feature-flag-gated cutover + replay convergence.
+"""A86.7a + A86.7b: projection-as-canonical-writer + replay convergence.
 
-When `RECONCILIATION_EVENT_DRIVEN_STATE = True`:
-- ReconciliationProjection writes BOTH shadow fields and canonical
-  fields (match_status / matched_journal_line / match_confidence)
-- Legacy direct-mutation paths SKIP the canonical writes
-  (so there's no double-writer)
-- Net result: BankStatementLine match state is canonically derived
-  from the event stream
+A86.7a introduced the cutover under a feature flag
+(RECONCILIATION_EVENT_DRIVEN_STATE), defended by a replay-convergence
+test. A86.7b removed the legacy direct-mutation paths and made the
+projection the sole writer; the flag is now True by default. The
+load-bearing replay-convergence test stays as a defense-in-depth
+invariant — the system's promise that BankStatementLine match state
+is a deterministic fold over the event log.
 
-When flag is False (default), behavior is unchanged from A86.4-A86.6:
-direct mutation writes canonical, projection writes shadow only.
+These tests no longer use @override_settings(RECONCILIATION_EVENT_DRIVEN_STATE=...)
+because the legacy code paths no longer exist. They now exercise the
+single (projection-driven) write path.
 
-Load-bearing test: replay convergence. With the flag on, take a
-bank line through a sequence of reconciliation events, clear the
-read-model state + bookmark, then re-run the projection from scratch.
-The final state must match what the original flow produced. This is
-the gate for A86.7b — without it, the cutover would commit an
-event-sourced system that can't be replayed.
-
-Plus: cross-tenant isolation test (company A's events don't project
-into company B's bank lines).
+Scenarios:
+- Each command path (auto-match, manual-match, unmatch, exclude)
+  produces canonical state via the projection that runs sync inside
+  the command.
+- platform_payout_reconcile (bank_connector) flips JL.reconciled via
+  the projection.
+- LOAD-BEARING: full lifecycle (auto-match → unmatch → manual-match)
+  followed by a fresh-DB rebuild reproduces the same final state.
+- Cross-tenant isolation: company A's events don't touch company B's
+  bank lines.
 """
 
 from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
-from django.test import override_settings
 
 from accounting.bank_reconciliation import (
     auto_match_statement,
@@ -156,15 +157,15 @@ def _make_statement(
 
 
 # =============================================================================
-# Cutover happy paths (flag ON)
+# Single-path canonical writes
 # =============================================================================
 
 
 @pytest.mark.django_db
-@override_settings(RECONCILIATION_EVENT_DRIVEN_STATE=True)
-def test_cutover_settlement_match_projection_writes_canonical_fields(shopify_setup, company, actor, merchant_bank):
-    """Flag ON: legacy direct mutation skips; projection writes the
-    canonical match_status / matched_journal_line / match_confidence."""
+def test_settlement_match_writes_canonical_via_projection(shopify_setup, company, actor, merchant_bank):
+    """Settlement-prepass match: auto_match_statement's sync-projection
+    trigger writes the canonical match fields by the time the command
+    returns."""
     _import_paymob_and_post(company)
     statement = _make_statement(
         company,
@@ -177,25 +178,16 @@ def test_cutover_settlement_match_projection_writes_canonical_fields(shopify_set
         line_date=date(2026, 4, 26),
     )
 
-    # A86.7a (after sync-trigger): auto_match_statement now runs the
-    # projection synchronously inside the command when flag is on, so
-    # canonical fields are populated by the time the command returns.
-    # Sanity-check the projection processed the event.
     auto_match_statement(actor, statement.id)
     bank_line = BankStatementLine.objects.get(statement=statement)
     assert bank_line.match_status == BankStatementLine.MatchStatus.AUTO_MATCHED
     assert bank_line.matched_journal_line is not None
     assert bank_line.match_confidence == Decimal("100")
-    # Shadow fields also populated (projection always writes shadow).
-    assert bank_line.event_match_status == BankStatementLine.MatchStatus.AUTO_MATCHED
-    assert bank_line.event_matched_journal_line_id == bank_line.matched_journal_line_id
 
 
 @pytest.mark.django_db
-@override_settings(RECONCILIATION_EVENT_DRIVEN_STATE=True)
-def test_cutover_manual_match_projection_writes_canonical(company, actor, merchant_bank, revenue_account):
-    """Flag ON: manual_match's direct mutation skips; projection writes
-    canonical fields with status=MANUAL_MATCHED."""
+def test_manual_match_writes_canonical_via_projection(company, actor, merchant_bank, revenue_account):
+    """manual_match writes canonical fields with status=MANUAL_MATCHED."""
     je_date = date(2026, 4, 26)
     with projection_writes_allowed():
         je = JournalEntry.objects.create(
@@ -235,7 +227,6 @@ def test_cutover_manual_match_projection_writes_canonical(company, actor, mercha
     bank_line = BankStatementLine.objects.get(statement=statement)
 
     manual_match(actor, bank_line.id, bank_jl.id)
-    ReconciliationProjection().process_pending(company)
 
     bank_line.refresh_from_db()
     assert bank_line.match_status == BankStatementLine.MatchStatus.MANUAL_MATCHED
@@ -243,10 +234,8 @@ def test_cutover_manual_match_projection_writes_canonical(company, actor, mercha
 
 
 @pytest.mark.django_db
-@override_settings(RECONCILIATION_EVENT_DRIVEN_STATE=True)
-def test_cutover_unmatch_projection_clears_canonical(shopify_setup, company, actor, merchant_bank):
-    """Flag ON: unmatch_line's direct mutation skips; projection clears
-    canonical fields back to UNMATCHED."""
+def test_unmatch_clears_canonical_via_projection(shopify_setup, company, actor, merchant_bank):
+    """unmatch_line clears canonical fields back to UNMATCHED."""
     _import_paymob_and_post(company)
     statement = _make_statement(
         company,
@@ -257,12 +246,10 @@ def test_cutover_unmatch_projection_clears_canonical(shopify_setup, company, act
         line_date=date(2026, 4, 26),
     )
     auto_match_statement(actor, statement.id)
-    ReconciliationProjection().process_pending(company)
     bank_line = BankStatementLine.objects.get(statement=statement)
     assert bank_line.match_status == BankStatementLine.MatchStatus.AUTO_MATCHED
 
     unmatch_line(actor, bank_line.id)
-    ReconciliationProjection().process_pending(company)
 
     bank_line.refresh_from_db()
     assert bank_line.match_status == BankStatementLine.MatchStatus.UNMATCHED
@@ -271,10 +258,8 @@ def test_cutover_unmatch_projection_clears_canonical(shopify_setup, company, act
 
 
 @pytest.mark.django_db
-@override_settings(RECONCILIATION_EVENT_DRIVEN_STATE=True)
-def test_cutover_exclude_projection_writes_excluded(shopify_setup, company, actor, merchant_bank):
-    """Flag ON: exclude_line's direct mutation skips; projection sets
-    canonical match_status to EXCLUDED."""
+def test_exclude_writes_canonical_EXCLUDED_via_projection(shopify_setup, company, actor, merchant_bank):
+    """exclude_line writes canonical match_status=EXCLUDED."""
     _import_paymob_and_post(company)
     statement = _make_statement(
         company,
@@ -285,18 +270,16 @@ def test_cutover_exclude_projection_writes_excluded(shopify_setup, company, acto
         line_date=date(2026, 4, 26),
     )
     auto_match_statement(actor, statement.id)
-    ReconciliationProjection().process_pending(company)
     bank_line = BankStatementLine.objects.get(statement=statement)
 
     exclude_line(actor, bank_line.id)
-    ReconciliationProjection().process_pending(company)
 
     bank_line.refresh_from_db()
     assert bank_line.match_status == BankStatementLine.MatchStatus.EXCLUDED
 
 
 # =============================================================================
-# Cutover platform_payout_reconcile (bank_connector path)
+# platform_payout_reconcile (bank_connector path)
 # =============================================================================
 
 
@@ -316,7 +299,7 @@ def gl_bank_account(db, company):
 @pytest.fixture
 def platform_payout_setup(db, company, shopify_setup, gl_bank_account, revenue_account):
     """Pre-staged Shopify payout + JE + bank-feed BankTransaction
-    aligned for the platform_payout_reconcile cutover test."""
+    aligned for the platform_payout_reconcile path."""
     from shopify_connector.models import ShopifyPayout
 
     payout_date = date(2026, 4, 26)
@@ -399,11 +382,9 @@ def platform_payout_setup(db, company, shopify_setup, gl_bank_account, revenue_a
 
 
 @pytest.mark.django_db
-@override_settings(RECONCILIATION_EVENT_DRIVEN_STATE=True)
-def test_cutover_platform_payout_projection_flips_jl_reconciled(company, platform_payout_setup):
-    """Flag ON for bank-feed reconciliation: bank_connector skips the
-    direct cash_line.save() flip; the projection's
-    platform_payout_reconcile branch does it instead."""
+def test_platform_payout_projection_flips_jl_reconciled(company, platform_payout_setup):
+    """A86.7b: the projection (run sync inside `_reconcile_payout_je`)
+    is the sole writer of JL.reconciled for this path."""
     from bank_connector.matching import auto_match_transactions
 
     bank_jl = platform_payout_setup["bank_jl"]
@@ -416,92 +397,12 @@ def test_cutover_platform_payout_projection_flips_jl_reconciled(company, platfor
         result = auto_match_transactions(company, platform_payout_setup["bank_account"].id)
     assert result["matched"] == 1
 
-    # AFTER auto_match returns but BEFORE projection: JL.reconciled should
-    # still be False (legacy flip skipped, projection not yet processed).
-    bank_jl.refresh_from_db()
-    assert bank_jl.reconciled is False, (
-        "Cutover: legacy direct flip must skip; canonical reconciled flag is only set after projection runs."
-    )
-
-    # Projection processes the event and flips JL.reconciled.
-    ReconciliationProjection().process_pending(company)
+    # auto_match_transactions runs the projection synchronously inside
+    # `_reconcile_payout_je`, so JL.reconciled is True by the time it
+    # returns.
     bank_jl.refresh_from_db()
     assert bank_jl.reconciled is True
     assert bank_jl.reconciled_date == platform_payout_setup["bank_tx"].transaction_date
-
-
-# =============================================================================
-# Convergence: legacy mode vs cutover mode produce same final state
-# =============================================================================
-
-
-@pytest.mark.django_db
-def test_legacy_mode_state_matches_cutover_mode_state(shopify_setup, company, actor, merchant_bank):
-    """Same input → same final state across both flag values. The
-    operator can flip the flag with zero observable behavior delta
-    on bank-line match fields. This is the prerequisite for A86.7b
-    cutover-to-default in production.
-
-    Both runs use identical CSV + statement shape (batch_id in
-    description → CONFIDENCE_EXACT == 100) so the only variable is
-    the flag setting.
-    """
-    # LEGACY mode (flag default False)
-    _import_paymob_and_post(company)
-    statement = _make_statement(
-        company,
-        actor,
-        merchant_bank,
-        line_amount=Decimal("1455.00"),
-        line_description="WIRE FROM PAYMOB SETTLEMENT REF: A86-7A-BATCH",
-        line_date=date(2026, 4, 26),
-    )
-    auto_match_statement(actor, statement.id)
-    ReconciliationProjection().process_pending(company)
-    legacy_bank_line = BankStatementLine.objects.get(statement=statement)
-    legacy_state = (
-        legacy_bank_line.match_status,
-        legacy_bank_line.matched_journal_line_id is not None,
-        legacy_bank_line.match_confidence,
-    )
-
-    # CUTOVER mode (flag on) for an equivalent fresh setup — second
-    # batch with a different batch_id, same shape.
-    paymob_csv_2 = b"""order_id,gross,fee,net,payout_batch_id,payout_date
-ORD-7A-3,1000.00,30.00,970.00,A86-7A-CONV-2,2026-04-25
-ORD-7A-4,500.00,15.00,485.00,A86-7A-CONV-2,2026-04-25
-"""
-    from accounting.payment_settlement_projection import PaymentSettlementProjection
-
-    import_settlement_csv(
-        company=company,
-        provider_normalized_code="paymob",
-        file_content=paymob_csv_2,
-        source_filename="a86-7a-conv-2.csv",
-    )
-    PaymentSettlementProjection().process_pending(company)
-
-    statement2 = _make_statement(
-        company,
-        actor,
-        merchant_bank,
-        line_amount=Decimal("1455.00"),
-        line_description="WIRE FROM PAYMOB SETTLEMENT REF: A86-7A-CONV-2",
-        line_date=date(2026, 4, 27),
-    )
-    with override_settings(RECONCILIATION_EVENT_DRIVEN_STATE=True):
-        auto_match_statement(actor, statement2.id)
-        # Sync trigger inside the command already ran; no explicit
-        # process_pending needed.
-
-    cutover_bank_line = BankStatementLine.objects.get(statement=statement2)
-    cutover_state = (
-        cutover_bank_line.match_status,
-        cutover_bank_line.matched_journal_line_id is not None,
-        cutover_bank_line.match_confidence,
-    )
-
-    assert legacy_state == cutover_state, f"State diverged: legacy={legacy_state}, cutover={cutover_state}"
 
 
 # =============================================================================
@@ -510,9 +411,8 @@ ORD-7A-4,500.00,15.00,485.00,A86-7A-CONV-2,2026-04-25
 
 
 @pytest.mark.django_db
-@override_settings(RECONCILIATION_EVENT_DRIVEN_STATE=True)
 def test_replay_convergence_full_lifecycle(shopify_setup, company, actor, merchant_bank, revenue_account):
-    """LOAD-BEARING TEST. With cutover ON, run a full lifecycle:
+    """LOAD-BEARING TEST. Run a full lifecycle:
         auto-match -> unmatch -> manual-match
 
     Capture final state. Then:
@@ -523,8 +423,8 @@ def test_replay_convergence_full_lifecycle(shopify_setup, company, actor, mercha
 
     Assert: rebuilt state == original final state. This is the gate
     that proves the event log is a sufficient source of truth for
-    BankStatementLine match state — without it, A86.7b cutover-to-
-    production cannot ship.
+    BankStatementLine match state. A86.7b's removal of the legacy
+    direct-mutation paths depends on this property holding.
     """
     from projections.models import ProjectionAppliedEvent
 
@@ -571,14 +471,12 @@ def test_replay_convergence_full_lifecycle(shopify_setup, company, actor, mercha
     bank_line = BankStatementLine.objects.get(statement=statement)
     unmatch_line(actor, bank_line.id)
     manual_match(actor, bank_line.id, manual_bank_jl.id)
-    ReconciliationProjection().process_pending(company)
 
     bank_line.refresh_from_db()
     original_final_state = {
         "match_status": bank_line.match_status,
         "matched_journal_line_id": bank_line.matched_journal_line_id,
         "match_confidence": bank_line.match_confidence,
-        "event_match_status": bank_line.event_match_status,
     }
     # Sanity: final state is MANUAL_MATCHED to manual_bank_jl.
     assert original_final_state["match_status"] == BankStatementLine.MatchStatus.MANUAL_MATCHED
@@ -589,11 +487,6 @@ def test_replay_convergence_full_lifecycle(shopify_setup, company, actor, mercha
         match_status=BankStatementLine.MatchStatus.UNMATCHED,
         matched_journal_line=None,
         match_confidence=None,
-        event_match_status="",
-        event_matched_journal_line=None,
-        event_match_confidence=None,
-        event_last_match_event_id=None,
-        event_confirmed_at=None,
     )
     ProjectionAppliedEvent.objects.filter(
         company=company,
@@ -614,18 +507,16 @@ def test_replay_convergence_full_lifecycle(shopify_setup, company, actor, mercha
         "match_status": bank_line.match_status,
         "matched_journal_line_id": bank_line.matched_journal_line_id,
         "match_confidence": bank_line.match_confidence,
-        "event_match_status": bank_line.event_match_status,
     }
 
     assert replayed_state == original_final_state, (
         "REPLAY FAILED. The event log is not a sufficient source of truth — "
         f"original={original_final_state}, replayed={replayed_state}. "
-        "A86.7b cutover cannot ship until this test passes."
+        "A86.7b cutover-to-default depends on this property."
     )
 
 
 @pytest.mark.django_db
-@override_settings(RECONCILIATION_EVENT_DRIVEN_STATE=True)
 def test_replay_idempotency_second_replay_produces_same_state(shopify_setup, company, actor, merchant_bank):
     """Running the projection twice produces the same state — the
     handler is idempotent per the BaseProjection contract."""
@@ -640,7 +531,6 @@ def test_replay_idempotency_second_replay_produces_same_state(shopify_setup, com
     )
     auto_match_statement(actor, statement.id)
     proj = ReconciliationProjection()
-    proj.process_pending(company)
 
     bank_line = BankStatementLine.objects.get(statement=statement)
     state_1 = (
@@ -668,7 +558,6 @@ def test_replay_idempotency_second_replay_produces_same_state(shopify_setup, com
 
 
 @pytest.mark.django_db
-@override_settings(RECONCILIATION_EVENT_DRIVEN_STATE=True)
 def test_cross_tenant_isolation_company_events_dont_project_into_other_company(db, django_user_model):
     """Company A's ReconciliationMatch* events must NOT touch any
     BankStatementLine belonging to company B. Per finance_event_first_policy
@@ -800,4 +689,3 @@ def test_cross_tenant_isolation_company_events_dont_project_into_other_company(d
     # B's bank line is UNTOUCHED — no cross-tenant leakage.
     assert bsl_b.match_status == BankStatementLine.MatchStatus.UNMATCHED
     assert bsl_b.matched_journal_line is None
-    assert bsl_b.event_match_status == ""

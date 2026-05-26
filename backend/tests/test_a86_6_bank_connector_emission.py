@@ -1,6 +1,6 @@
 # tests/test_a86_6_bank_connector_emission.py
-"""A86.6 (2026-05-26): bank_connector platform-payout reconciliation
-emits ReconciliationMatchConfirmed events.
+"""A86.6 + A86.7b: bank_connector platform-payout reconciliation emits
+ReconciliationMatchConfirmed events; projection owns JL.reconciled.
 
 The bank_connector module's `_reconcile_payout_je` (matching.py) is
 called from BOTH paths reachable via the operator UI:
@@ -12,16 +12,15 @@ called from BOTH paths reachable via the operator UI:
 
 `_reconcile_payout_je` is the single emission site so both view paths
 emit one event per matched bank transaction. confirmation_kind=
-"platform_payout_reconcile" routes the projection to a no-shadow-write
-handler (no BankStatementLine involved on this surface — only a
-BankTransaction + JournalLine).
+"platform_payout_reconcile" routes the projection to the
+JL.reconciled-flip branch (no BankStatementLine involved on this
+surface — only a BankTransaction + JournalLine).
 
-What this closes: the last three `projection_writes_allowed()`
-shortcuts Codex flagged in the 2026-05-26 protocol audit
-(matching.py:288 + views.py:568 + views.py:611) all flow through
-`_reconcile_payout_je`, so emitting once here makes the audit trail
-complete for the bank-feed reconciliation surface. Removing the
-direct JL.reconciled flip in matching.py is the A86.7 cutover.
+A86.7b: the legacy direct `cash_line.save(update_fields=["reconciled"])`
+flip was removed from `_reconcile_payout_je`. The projection (now run
+synchronously inside `_reconcile_payout_je`) is the sole writer of
+the JL.reconciled flag for this path — closes the Codex-flagged
+protocol violation in matching.py.
 
 Scenarios:
 
@@ -32,10 +31,9 @@ Scenarios:
 - bank_line_public_id is empty (no BankStatementLine on this surface);
   journal_line_public_id is the JE's bank-side line
 - Projection consumes the event WITHOUT raising the missing-bank-line
-  ProjectionInvalidDataError (the platform_payout_reconcile branch
-  short-circuits the lookup)
-- No BSL shadow state is written (this is the bank-feed surface, not
-  the BankStatementLine surface)
+  ProjectionInvalidDataError
+- JL.reconciled flip is applied by the projection (called sync inside
+  the matching function)
 """
 
 from datetime import date
@@ -286,20 +284,20 @@ def test_projection_consumes_platform_payout_reconcile_without_raising(
     company, shopify_store, connector_bank_account, payout_with_je, matching_bank_tx
 ):
     """The reconciliation projection routes platform_payout_reconcile
-    events to a no-shadow-write handler — no missing-bank-line
-    ProjectionInvalidDataError, no BSL shadow write attempted."""
+    events to the JL.reconciled-flip branch (no BankStatementLine
+    lookup is attempted), so no ProjectionInvalidDataError is raised.
+
+    A86.7b: `_reconcile_payout_je` runs the projection synchronously,
+    so by the time auto_match_transactions returns there are 0 events
+    pending. The invariant we care about is that no failure log row
+    was written.
+    """
     from bank_connector.matching import auto_match_transactions
     from projections.models import ProjectionFailureLog
-    from reconciliation.projections import ReconciliationProjection
 
     with projection_writes_allowed():
         auto_match_transactions(company, connector_bank_account.id)
 
-    proj = ReconciliationProjection()
-    processed = proj.process_pending(company)
-
-    assert processed >= 1, f"Projection processed {processed} events; expected at least 1"
-    # No ProjectionFailureLog entries — the handler didn't raise.
     failures = ProjectionFailureLog.objects.filter(
         company=company,
         projection_name="reconciliation",
@@ -310,21 +308,21 @@ def test_projection_consumes_platform_payout_reconcile_without_raising(
 
 
 @pytest.mark.django_db
-def test_platform_payout_reconcile_does_NOT_write_shadow_fields_anywhere(
+def test_platform_payout_reconcile_does_NOT_touch_bank_statement_lines(
     company, shopify_store, connector_bank_account, payout_with_je, matching_bank_tx
 ):
-    """No BSL exists on the bank-feed surface, so no shadow fields are
-    written. This is the architectural distinction between A86.4-A86.5
-    (BankStatementLine-driven) and A86.6 (BankTransaction-driven)."""
+    """No BSL exists on the bank-feed surface, so the projection's
+    platform_payout_reconcile branch only flips JL.reconciled — never
+    creates or mutates a BankStatementLine. This is the architectural
+    distinction between A86.4-A86.5 (BankStatementLine-driven) and
+    A86.6 (BankTransaction-driven)."""
     from accounting.models import BankStatementLine
     from bank_connector.matching import auto_match_transactions
-    from reconciliation.projections import ReconciliationProjection
 
     with projection_writes_allowed():
         auto_match_transactions(company, connector_bank_account.id)
-    ReconciliationProjection().process_pending(company)
 
-    # No BSL on this surface — nothing to mutate.
+    # No BSL on this surface — nothing was created.
     assert BankStatementLine.objects.filter(company=company).count() == 0
 
 
@@ -354,14 +352,14 @@ def test_bank_transaction_canonical_state_unchanged_by_event_emission(
 
 
 @pytest.mark.django_db
-def test_journal_line_reconciled_flag_is_set_by_legacy_path(
+def test_journal_line_reconciled_flag_is_set_by_projection(
     company, shopify_store, connector_bank_account, payout_with_je, matching_bank_tx
 ):
-    """A86.6 SHADOW INVARIANT: the legacy direct flip in
-    _reconcile_payout_je (matching.py:288 inside `with
-    projection_writes_allowed()`) still owns the canonical JL.reconciled
-    state change. The event emission added in A86.6 is pure additive
-    audit trail — A86.7 cutover swaps these.
+    """A86.7b: the ReconciliationProjection (run synchronously inside
+    `_reconcile_payout_je`) is the sole writer of JL.reconciled for
+    the bank-connector path. The legacy direct
+    `cash_line.save(update_fields=["reconciled"])` was removed; this
+    test proves the projection-driven flip lands.
     """
     from bank_connector.matching import auto_match_transactions
 

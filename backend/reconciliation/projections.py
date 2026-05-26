@@ -1,21 +1,25 @@
 # reconciliation/projections.py
 """ReconciliationProjection — derives bank-line match state from events.
 
-A86.3 (2026-05-26): SHADOW mode. The projection writes new event_*
-fields on BankStatementLine alongside the existing match_status /
-matched_journal_line / match_confidence direct-mutation path. Nothing
-in production behavior changes — the operator UI continues to read
-the legacy fields. Convergence between the two paths is exercised
-by tests; the cutover (event_* becomes canonical) happens in A86.7.
+A86.7b (2026-05-26): CANONICAL writer. ReconciliationProjection now
+owns the BankStatementLine match fields (match_status,
+matched_journal_line, match_confidence) and the JournalLine.reconciled
+flip for the platform-payout-reconcile path. The legacy direct-mutation
+code in accounting/bank_reconciliation.py + bank_connector/matching.py
+has been removed; the event stream is the only path to a canonical
+write. Replay convergence is therefore a guaranteed property of the
+system (see tests/test_a86_7a_cutover.py:test_replay_convergence_full_lifecycle).
 
 What this projection handles
 ============================
 
-- ReconciliationMatchConfirmed   → write shadow fields on bank_line
-- ReconciliationMatchUnmatched   → clear shadow fields on bank_line
-- ReconciliationMatchProposed    → recorded, NO shadow state change
+- ReconciliationMatchConfirmed   → write match state on bank_line OR
+                                   flip JL.reconciled (depending on
+                                   confirmation_kind)
+- ReconciliationMatchUnmatched   → clear match state on bank_line
+- ReconciliationMatchProposed    → recorded, NO state change
                                    (advisory-vs-canonical contract)
-- ReconciliationMatchRejected    → recorded, NO shadow state change
+- ReconciliationMatchRejected    → recorded, NO state change
 - ReconciliationExceptionRaised  → A86.3 no-op (exception read model
                                    lands in a later chunk)
 - ReconciliationExceptionResolved → A86.3 no-op
@@ -29,11 +33,6 @@ itself does not need to guard against re-application; framework
 guarantees handle() is called at most once per (company, event) pair
 under normal operation.
 
-For defense-in-depth during a rebuild, event_last_match_event_id on
-BankStatementLine lets the projection assert "this event already
-applied" without consulting ProjectionAppliedEvent — useful for the
-A86.7 replay-convergence test.
-
 See:
 - docs/finance_event_first_policy.md §3 (read model + projection rules)
 - docs/projection-idempotency.md (idempotency contract)
@@ -45,8 +44,6 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 
-from django.conf import settings
-
 from accounting.models import BankStatementLine, JournalLine
 from events.models import BusinessEvent
 from events.types import EventTypes
@@ -57,15 +54,6 @@ logger = logging.getLogger(__name__)
 
 
 PROJECTION_NAME = "reconciliation"
-
-
-def _event_driven_state_enabled() -> bool:
-    """A86.7a (2026-05-26): runtime check of the
-    RECONCILIATION_EVENT_DRIVEN_STATE feature flag. Read every call so
-    `django.test.override_settings` (used heavily in the cutover tests)
-    can flip behavior per-test without import-time caching.
-    """
-    return bool(getattr(settings, "RECONCILIATION_EVENT_DRIVEN_STATE", False))
 
 
 # Event types this projection consumes — declared up front so subclasses /
@@ -81,11 +69,11 @@ _CONSUMES = [
 
 
 class ReconciliationProjection(BaseProjection):
-    """Shadow projection that derives bank-line match state from
-    ReconciliationMatch* events. A86.7 cutover swaps the operator UI's
-    canonical read onto these shadow fields; until then the legacy
-    direct-mutation path is the canonical source and these fields are
-    used only for convergence proofs."""
+    """Canonical projection that derives bank-line match state from
+    ReconciliationMatch* events. A86.7b made this the sole writer for
+    match_status / matched_journal_line / match_confidence; the operator
+    UI reads those fields and they are guaranteed to be a deterministic
+    fold over the event log (proven by test_replay_convergence_full_lifecycle)."""
 
     @property
     def name(self) -> str:
@@ -105,13 +93,13 @@ class ReconciliationProjection(BaseProjection):
         elif et == EventTypes.RECONCILIATION_MATCH_PROPOSED:
             # ADVISORY: a suggestion is not a state change. The projection
             # records it (future chunks may build a suggestion-queue read
-            # model) but does NOT touch the bank_line's shadow match
+            # model) but does NOT touch the bank_line's canonical match
             # fields. This is the load-bearing line between "AI/heuristic
             # proposes" and "operator/rule confirms" — see
             # docs/finance_event_first_policy.md §1 + ENGINEERING_PROTOCOL.md §1.5.
             data = event.get_data()
             logger.info(
-                "Reconciliation: proposal recorded (no shadow write) — "
+                "Reconciliation: proposal recorded (no state write) — "
                 "bank_line=%s journal_line=%s proposer=%s confidence=%s",
                 data.get("bank_line_public_id"),
                 data.get("journal_line_public_id"),
@@ -123,7 +111,7 @@ class ReconciliationProjection(BaseProjection):
             # line was never Confirmed, so there's nothing to clear).
             data = event.get_data()
             logger.info(
-                "Reconciliation: rejection recorded (no shadow write) — bank_line=%s journal_line=%s",
+                "Reconciliation: rejection recorded (no state write) — bank_line=%s journal_line=%s",
                 data.get("bank_line_public_id"),
                 data.get("journal_line_public_id"),
             )
@@ -149,7 +137,8 @@ class ReconciliationProjection(BaseProjection):
             raise ProjectionInvalidDataError(f"ReconciliationProjection received unexpected event_type {et!r}")
 
     # -------------------------------------------------------------------------
-    # MatchConfirmed: write shadow fields on the bank line
+    # MatchConfirmed: write match state on the bank line (or flip JL for
+    # the platform_payout_reconcile branch).
     # -------------------------------------------------------------------------
 
     def _handle_match_confirmed(self, event: BusinessEvent) -> None:
@@ -159,22 +148,16 @@ class ReconciliationProjection(BaseProjection):
         journal_line_public_id = data.get("journal_line_public_id") or ""
         confirmation_kind = data.get("confirmation_kind") or ""
 
-        # A86.6 (2026-05-26): platform_payout_reconcile is a separate
-        # surface (bank_connector's BankTransaction ↔ payout JE) that
-        # doesn't involve a BankStatementLine. No BSL shadow write
-        # happens here.
-        #
-        # A86.7a (2026-05-26): when the cutover flag is on, this branch
-        # also owns the JL.reconciled flip — moving the protocol violation
-        # in bank_connector/matching.py:288 (direct projection_writes_allowed
-        # write from a non-projection module) into the canonical
-        # event-projection layer. Flag off: the legacy path in
-        # _reconcile_payout_je already did the flip; this branch is pure
-        # audit-trail recording.
+        # A86.6 / A86.7b (2026-05-26): platform_payout_reconcile is the
+        # bank_connector surface (BankTransaction ↔ payout JE). It does
+        # NOT involve a BankStatementLine — the projection's job here
+        # is to flip JL.reconciled. This branch is the canonical owner
+        # of that flip: bank_connector/matching.py no longer mutates
+        # JL.reconciled directly (closes the Codex-flagged protocol
+        # violation).
         if confirmation_kind == "platform_payout_reconcile":
-            if _event_driven_state_enabled() and journal_line_public_id:
+            if journal_line_public_id:
                 # Look up + flip the JL. Idempotent (True→True is a no-op).
-                # confirmed_at on the event payload is the bank tx date.
                 confirmed_at_raw = data.get("confirmed_at") or ""
                 statement_date_raw = data.get("statement_date") or ""
                 # Prefer statement_date (the bank-tx transaction_date stamped
@@ -189,17 +172,9 @@ class ReconciliationProjection(BaseProjection):
                     reconciled_date=reconciled_date_value if reconciled_date_value else None,
                 )
                 logger.info(
-                    "Reconciliation: platform_payout_reconcile canonical flip — "
-                    "journal_line=%s reconciled_date=%s event_id=%s",
+                    "Reconciliation: platform_payout_reconcile flip — journal_line=%s reconciled_date=%s event_id=%s",
                     journal_line_public_id,
                     reconciled_date_value,
-                    event.id,
-                )
-            else:
-                logger.info(
-                    "Reconciliation: platform_payout_reconcile event consumed "
-                    "(legacy direct flip owns canonical) — journal_line=%s event_id=%s",
-                    journal_line_public_id,
                     event.id,
                 )
             return
@@ -262,35 +237,18 @@ class ReconciliationProjection(BaseProjection):
         except (ValueError, ArithmeticError):
             confidence = Decimal("0")
 
-        confirmed_at = data.get("confirmed_at") or None
-
-        # A86.7a (2026-05-26): write the shadow fields ALWAYS. When the
-        # cutover flag is on, also write the canonical fields — the
-        # projection becomes the sole writer to match_status /
-        # matched_journal_line / match_confidence, and the legacy
-        # direct-mutation paths skip the same fields. Keeping shadow
-        # writes in cutover mode preserves observability + provides a
-        # rollback safety net until A86.7b drops the shadow fields.
-        update_kwargs = {
-            "event_match_status": status,
-            "event_matched_journal_line": journal_line,
-            "event_match_confidence": confidence,
-            "event_last_match_event_id": event.id,
-            "event_confirmed_at": confirmed_at if confirmed_at else None,
-        }
-        if _event_driven_state_enabled():
-            update_kwargs.update(
-                {
-                    "match_status": status,
-                    "matched_journal_line": journal_line,
-                    "match_confidence": confidence,
-                }
-            )
-        BankStatementLine.objects.filter(pk=bank_line.pk).update(**update_kwargs)
+        # A86.7b (2026-05-26): canonical write. The shadow fields
+        # (event_match_status, event_matched_journal_line, etc.) were
+        # dropped in migration 0038; the projection is now the sole
+        # writer of match_status / matched_journal_line / match_confidence.
+        BankStatementLine.objects.filter(pk=bank_line.pk).update(
+            match_status=status,
+            matched_journal_line=journal_line,
+            match_confidence=confidence,
+        )
 
         logger.info(
-            "Reconciliation %s write: bank_line=%s status=%s confidence=%s via confirmation_kind=%s event_id=%s",
-            "canonical+shadow" if _event_driven_state_enabled() else "shadow",
+            "Reconciliation write: bank_line=%s status=%s confidence=%s via confirmation_kind=%s event_id=%s",
             bank_line_public_id,
             status,
             confidence,
@@ -299,7 +257,7 @@ class ReconciliationProjection(BaseProjection):
         )
 
     # -------------------------------------------------------------------------
-    # MatchUnmatched: clear shadow fields on the bank line
+    # MatchUnmatched: clear match state on the bank line.
     # -------------------------------------------------------------------------
 
     def _handle_match_unmatched(self, event: BusinessEvent) -> None:
@@ -322,9 +280,9 @@ class ReconciliationProjection(BaseProjection):
             ) from exc
 
         # Two paths through Unmatched:
-        # - "UNMATCHED" — return to needs-review queue (shadow cleared back
-        #   to UNMATCHED, FK cleared, confidence cleared)
-        # - "EXCLUDED" — operator marks the line as out-of-scope (shadow
+        # - "UNMATCHED" — return to needs-review queue (FK + confidence
+        #   cleared; status set back to UNMATCHED)
+        # - "EXCLUDED" — operator marks the line as out-of-scope (status
         #   set to EXCLUDED; FK + confidence still cleared since the
         #   match itself is being reversed)
         if final_status == BankStatementLine.MatchStatus.EXCLUDED:
@@ -332,27 +290,14 @@ class ReconciliationProjection(BaseProjection):
         else:
             target_status = BankStatementLine.MatchStatus.UNMATCHED
 
-        # A86.7a: shadow always cleared; canonical also cleared when flag on.
-        update_kwargs = {
-            "event_match_status": target_status,
-            "event_matched_journal_line": None,
-            "event_match_confidence": None,
-            "event_last_match_event_id": event.id,
-            "event_confirmed_at": None,
-        }
-        if _event_driven_state_enabled():
-            update_kwargs.update(
-                {
-                    "match_status": target_status,
-                    "matched_journal_line": None,
-                    "match_confidence": None,
-                }
-            )
-        BankStatementLine.objects.filter(pk=bank_line.pk).update(**update_kwargs)
+        BankStatementLine.objects.filter(pk=bank_line.pk).update(
+            match_status=target_status,
+            matched_journal_line=None,
+            match_confidence=None,
+        )
 
         logger.info(
-            "Reconciliation %s clear: bank_line=%s final_status=%s event_id=%s",
-            "canonical+shadow" if _event_driven_state_enabled() else "shadow",
+            "Reconciliation clear: bank_line=%s final_status=%s event_id=%s",
             bank_line_public_id,
             target_status,
             event.id,

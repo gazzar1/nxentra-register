@@ -1,30 +1,28 @@
 # tests/test_a86_3_shadow_projection.py
-"""A86.3 (2026-05-26): ReconciliationProjection shadow-mode tests.
+"""A86.3 + A86.7b: ReconciliationProjection canonical-writer tests.
 
 Lives in backend/tests/ (rather than reconciliation/tests/) because
 it needs the central `company` / DB fixtures from backend/tests/conftest.py.
 The framework-scaffolding tests that don't touch the DB stay under
 reconciliation/tests/ (test_a86_1_scaffold.py, test_a86_2_event_payloads.py).
 
-The projection consumes ReconciliationMatch*/Exception* events and
-writes shadow fields (event_match_status, event_matched_journal_line,
-event_match_confidence, event_last_match_event_id, event_confirmed_at)
-on BankStatementLine. The existing match_status / matched_journal_line
-/ match_confidence fields (the direct-mutation legacy path) MUST NOT
-be touched here — A86.7 cutover swaps the operator UI read off the
-legacy fields onto the shadow fields; until then they're independent.
+A86.3 originally exercised the projection in SHADOW mode (writing
+event_* fields alongside the legacy direct-mutation path). A86.7b
+flipped the projection to canonical writer + dropped the shadow
+fields (migration 0038); these tests now assert on the canonical
+match_status / matched_journal_line / match_confidence fields.
 
 Test scenarios:
 
 - MatchConfirmed (auto / manual / rule / platform_payout_reconcile) →
-  shadow fields populated; legacy fields untouched
+  canonical fields populated
 - MatchConfirmed with difference_amount > 0 →
   status = MATCHED_WITH_DIFFERENCE (per A16)
-- MatchUnmatched (final_status="UNMATCHED") → shadow fields cleared
-- MatchUnmatched (final_status="EXCLUDED") → shadow status = EXCLUDED
-- MatchProposed → projection records BUT NO shadow state change
+- MatchUnmatched (final_status="UNMATCHED") → canonical fields cleared
+- MatchUnmatched (final_status="EXCLUDED") → canonical status = EXCLUDED
+- MatchProposed → projection records BUT NO canonical state change
   (the load-bearing advisory-vs-canonical contract)
-- MatchRejected → projection records BUT NO shadow state change
+- MatchRejected → projection records BUT NO canonical state change
 - ExceptionRaised/Resolved → events consumed cleanly (no-op for A86.3)
 - Re-processing same event is idempotent (framework guard)
 - Missing bank_line raises ProjectionInvalidDataError (loud failure
@@ -289,24 +287,22 @@ def _emit_exception_resolved(company, *, exception_id="exc-x1", suffix=""):
 
 
 # =============================================================================
-# MatchConfirmed: shadow writes happy path
+# MatchConfirmed: canonical writes happy path
 # =============================================================================
 
 
 @pytest.mark.django_db
-def test_match_confirmed_writes_shadow_fields(company, bank_line, cash_line):
-    """Happy path: a Confirmed event populates the shadow fields with
+def test_match_confirmed_writes_canonical_fields(company, bank_line, cash_line):
+    """Happy path: a Confirmed event populates the canonical fields with
     the values from the event payload."""
     _emit_match_confirmed(company, bank_line, cash_line)
 
     ReconciliationProjection().process_pending(company)
 
     bank_line.refresh_from_db()
-    assert bank_line.event_match_status == BankStatementLine.MatchStatus.AUTO_MATCHED
-    assert bank_line.event_matched_journal_line_id == cash_line.id
-    assert bank_line.event_match_confidence == Decimal("92.50")
-    assert bank_line.event_last_match_event_id is not None
-    assert bank_line.event_confirmed_at is not None
+    assert bank_line.match_status == BankStatementLine.MatchStatus.AUTO_MATCHED
+    assert bank_line.matched_journal_line_id == cash_line.id
+    assert bank_line.match_confidence == Decimal("92.50")
 
 
 @pytest.mark.django_db
@@ -317,7 +313,7 @@ def test_match_confirmed_with_manual_kind_maps_to_MANUAL_MATCHED(company, bank_l
     ReconciliationProjection().process_pending(company)
 
     bank_line.refresh_from_db()
-    assert bank_line.event_match_status == BankStatementLine.MatchStatus.MANUAL_MATCHED
+    assert bank_line.match_status == BankStatementLine.MatchStatus.MANUAL_MATCHED
 
 
 @pytest.mark.django_db
@@ -329,61 +325,35 @@ def test_match_confirmed_with_difference_maps_to_MATCHED_WITH_DIFFERENCE(company
     ReconciliationProjection().process_pending(company)
 
     bank_line.refresh_from_db()
-    assert bank_line.event_match_status == BankStatementLine.MatchStatus.MATCHED_WITH_DIFFERENCE
-
-
-@pytest.mark.django_db
-def test_match_confirmed_DOES_NOT_touch_legacy_match_status(company, bank_line, cash_line):
-    """SHADOW MODE INVARIANT: the projection writes only event_* fields.
-    The legacy match_status / matched_journal_line / match_confidence
-    fields are owned by the direct-mutation path until A86.7 cutover."""
-    # Verify baseline: legacy fields untouched at fixture-creation time.
-    assert bank_line.match_status == BankStatementLine.MatchStatus.UNMATCHED
-    assert bank_line.matched_journal_line is None
-    assert bank_line.match_confidence is None
-
-    _emit_match_confirmed(company, bank_line, cash_line)
-    ReconciliationProjection().process_pending(company)
-
-    bank_line.refresh_from_db()
-    # Legacy fields STILL untouched — only shadow fields moved.
-    assert bank_line.match_status == BankStatementLine.MatchStatus.UNMATCHED, (
-        "A86.3 shadow projection must NOT write the legacy match_status field. "
-        "That's the direct-mutation path's job until A86.7 cutover."
-    )
-    assert bank_line.matched_journal_line is None
-    assert bank_line.match_confidence is None
-    # And shadow fields ARE populated.
-    assert bank_line.event_match_status == BankStatementLine.MatchStatus.AUTO_MATCHED
+    assert bank_line.match_status == BankStatementLine.MatchStatus.MATCHED_WITH_DIFFERENCE
 
 
 # =============================================================================
-# MatchUnmatched: shadow clears
+# MatchUnmatched: canonical clears
 # =============================================================================
 
 
 @pytest.mark.django_db
-def test_match_unmatched_clears_shadow_fields(company, bank_line, cash_line):
-    """Unmatched after a Confirmed: shadow status → UNMATCHED, FK + confidence cleared."""
+def test_match_unmatched_clears_canonical_fields(company, bank_line, cash_line):
+    """Unmatched after a Confirmed: status → UNMATCHED, FK + confidence cleared."""
     _emit_match_confirmed(company, bank_line, cash_line)
     ReconciliationProjection().process_pending(company)
     bank_line.refresh_from_db()
-    assert bank_line.event_match_status == BankStatementLine.MatchStatus.AUTO_MATCHED
+    assert bank_line.match_status == BankStatementLine.MatchStatus.AUTO_MATCHED
 
     _emit_match_unmatched(company, bank_line, cash_line)
     ReconciliationProjection().process_pending(company)
 
     bank_line.refresh_from_db()
-    assert bank_line.event_match_status == BankStatementLine.MatchStatus.UNMATCHED
-    assert bank_line.event_matched_journal_line_id is None
-    assert bank_line.event_match_confidence is None
-    assert bank_line.event_confirmed_at is None
+    assert bank_line.match_status == BankStatementLine.MatchStatus.UNMATCHED
+    assert bank_line.matched_journal_line_id is None
+    assert bank_line.match_confidence is None
 
 
 @pytest.mark.django_db
 def test_match_unmatched_with_excluded_sets_EXCLUDED_status(company, bank_line, cash_line):
     """exclude_line path: final_status='EXCLUDED' marks the bank line
-    as out-of-scope (shadow → EXCLUDED, FK still cleared)."""
+    as out-of-scope (status → EXCLUDED, FK still cleared)."""
     _emit_match_confirmed(company, bank_line, cash_line)
     ReconciliationProjection().process_pending(company)
 
@@ -391,37 +361,35 @@ def test_match_unmatched_with_excluded_sets_EXCLUDED_status(company, bank_line, 
     ReconciliationProjection().process_pending(company)
 
     bank_line.refresh_from_db()
-    assert bank_line.event_match_status == BankStatementLine.MatchStatus.EXCLUDED
-    assert bank_line.event_matched_journal_line_id is None
+    assert bank_line.match_status == BankStatementLine.MatchStatus.EXCLUDED
+    assert bank_line.matched_journal_line_id is None
 
 
 # =============================================================================
-# Advisory contract: Proposed / Rejected don't mutate shadow state
+# Advisory contract: Proposed / Rejected don't mutate canonical state
 # =============================================================================
 
 
 @pytest.mark.django_db
-def test_match_proposed_does_NOT_mutate_shadow_state(company, bank_line, cash_line):
+def test_match_proposed_does_NOT_mutate_canonical_state(company, bank_line, cash_line):
     """LOAD-BEARING: a Proposed event is advisory. The projection
     records it (logs, future suggestion queue) but the bank_line's
-    shadow match state is unchanged. This is the line between AI
+    canonical match state is unchanged. This is the line between AI
     suggestion and operator/rule decision."""
     _emit_match_proposed(company, bank_line, cash_line)
 
     ReconciliationProjection().process_pending(company)
 
     bank_line.refresh_from_db()
-    # Shadow status NEVER moves on Proposed.
-    assert bank_line.event_match_status == ""
-    assert bank_line.event_matched_journal_line_id is None
-    assert bank_line.event_match_confidence is None
-    assert bank_line.event_last_match_event_id is None
-    assert bank_line.event_confirmed_at is None
+    # Canonical status NEVER moves on Proposed — bank line stays UNMATCHED.
+    assert bank_line.match_status == BankStatementLine.MatchStatus.UNMATCHED
+    assert bank_line.matched_journal_line_id is None
+    assert bank_line.match_confidence is None
 
 
 @pytest.mark.django_db
-def test_match_rejected_does_NOT_mutate_shadow_state(company, bank_line, cash_line):
-    """Rejection of a Proposed match doesn't touch shadow state either —
+def test_match_rejected_does_NOT_mutate_canonical_state(company, bank_line, cash_line):
+    """Rejection of a Proposed match doesn't touch canonical state either —
     the line was never Confirmed, so there's nothing to clear."""
     _emit_match_proposed(company, bank_line, cash_line)
     _emit_match_rejected(company, bank_line, cash_line)
@@ -429,24 +397,24 @@ def test_match_rejected_does_NOT_mutate_shadow_state(company, bank_line, cash_li
     ReconciliationProjection().process_pending(company)
 
     bank_line.refresh_from_db()
-    assert bank_line.event_match_status == ""
-    assert bank_line.event_matched_journal_line_id is None
+    assert bank_line.match_status == BankStatementLine.MatchStatus.UNMATCHED
+    assert bank_line.matched_journal_line_id is None
 
 
 @pytest.mark.django_db
-def test_proposed_then_confirmed_only_confirms_writes_shadow(company, bank_line, cash_line):
+def test_proposed_then_confirmed_only_confirms_writes_canonical(company, bank_line, cash_line):
     """Common flow: agent/heuristic Proposes → operator Confirms. Only
-    the Confirmed event causes a shadow write."""
+    the Confirmed event causes a canonical write."""
     _emit_match_proposed(company, bank_line, cash_line)
     ReconciliationProjection().process_pending(company)
     bank_line.refresh_from_db()
-    assert bank_line.event_match_status == ""
+    assert bank_line.match_status == BankStatementLine.MatchStatus.UNMATCHED
 
     _emit_match_confirmed(company, bank_line, cash_line, confirmation_kind="manual")
     ReconciliationProjection().process_pending(company)
 
     bank_line.refresh_from_db()
-    assert bank_line.event_match_status == BankStatementLine.MatchStatus.MANUAL_MATCHED
+    assert bank_line.match_status == BankStatementLine.MatchStatus.MANUAL_MATCHED
 
 
 # =============================================================================
@@ -480,20 +448,22 @@ def test_exception_raised_and_resolved_consume_without_crash(company, bank_line)
 def test_reprocessing_same_event_is_idempotent(company, bank_line, cash_line):
     """Framework's ProjectionAppliedEvent guard — re-running
     process_pending after the same events does nothing (no extra
-    writes, no double-application of the shadow state)."""
+    writes, no double-application of the canonical state)."""
     _emit_match_confirmed(company, bank_line, cash_line)
     proj = ReconciliationProjection()
 
     first = proj.process_pending(company)
     assert first == 1
     bank_line.refresh_from_db()
-    initial_event_id = bank_line.event_last_match_event_id
+    initial_status = bank_line.match_status
+    initial_confidence = bank_line.match_confidence
 
     second = proj.process_pending(company)
     assert second == 0, "Re-running should mark 0 new events processed"
 
     bank_line.refresh_from_db()
-    assert bank_line.event_last_match_event_id == initial_event_id
+    assert bank_line.match_status == initial_status
+    assert bank_line.match_confidence == initial_confidence
 
 
 # =============================================================================

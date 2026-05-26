@@ -17,7 +17,6 @@ import uuid as _uuid
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
-from django.conf import settings
 from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
@@ -30,22 +29,14 @@ from projections.write_barrier import command_writes_allowed
 from .commands import CommandResult
 
 
-def _event_driven_state_enabled() -> bool:
-    """A86.7a (2026-05-26): runtime check of the cutover feature flag.
-    When True, the legacy direct-mutation paths skip the canonical
-    field writes — the ReconciliationProjection owns them. Local copy
-    of the helper in reconciliation/projections.py to avoid an import
-    cycle between accounting and reconciliation modules.
-    """
-    return bool(getattr(settings, "RECONCILIATION_EVENT_DRIVEN_STATE", False))
-
-
-def _run_reconciliation_projection_if_cutover(company) -> None:
-    """A86.7a (2026-05-26): when the cutover flag is on, the legacy
-    direct-mutation paths skip canonical writes. Subsequent reads of
-    bank_line.match_status (operator UI response, follow-up command
-    `if not matched: return fail`, etc.) need the canonical fields
-    populated by the time the command returns.
+def _run_reconciliation_projection_sync(company) -> None:
+    """A86.7b (2026-05-26): bank_line.match_status / matched_journal_line
+    / match_confidence are now exclusively owned by ReconciliationProjection
+    — driven by the ReconciliationMatch* event stream emitted by the
+    reconciliation commands. Subsequent reads inside the same
+    @transaction.atomic (operator UI response payload, follow-up
+    `if not matched: return fail` checks, etc.) need the canonical
+    fields populated by the time the command returns.
 
     This helper runs ReconciliationProjection.process_pending
     synchronously inside the command's @transaction.atomic so the
@@ -53,12 +44,7 @@ def _run_reconciliation_projection_if_cutover(company) -> None:
     projection's own per-event savepoints nest cleanly inside the
     outer atomic; when the outer atomic commits, the events + the
     projected state commit together.
-
-    When flag is off: no-op (legacy direct mutation already populated
-    canonical state synchronously).
     """
-    if not _event_driven_state_enabled():
-        return
     # Import here to avoid a hard import-cycle when reconciliation/
     # eventually imports back into accounting.bank_reconciliation.
     from reconciliation.projections import ReconciliationProjection
@@ -1053,16 +1039,11 @@ def auto_match_statement(
                     best_match = jl
 
             if best_match and best_confidence >= AUTO_MATCH_THRESHOLD:
-                # A86.7a: when cutover flag is on, the ReconciliationProjection
-                # owns these three fields. The bank_line.save() below still
-                # fires to commit any other modified fields, and the JL
-                # reconciled flip continues here until a future chunk moves
-                # it into the projection as well.
-                if not _event_driven_state_enabled():
-                    bank_line.matched_journal_line = best_match
-                    bank_line.match_status = BankStatementLine.MatchStatus.AUTO_MATCHED
-                    bank_line.match_confidence = best_confidence
-                    bank_line.save()
+                # A86.7b: bank_line match_status / matched_journal_line /
+                # match_confidence are now exclusively owned by the
+                # ReconciliationProjection. _emit_match_confirmed below
+                # produces the event; _run_reconciliation_projection_sync
+                # at the end of this function applies it.
 
                 # Mark journal line as reconciled. JournalLine is a read
                 # model — direct .save() is rejected outside projections,
@@ -1108,11 +1089,7 @@ def auto_match_statement(
         settlement_matched,
     )
 
-    # A86.7a: in cutover mode, run the projection synchronously so the
-    # canonical match_status / matched_journal_line / match_confidence
-    # fields are populated by the time this function returns. No-op when
-    # flag is off (legacy direct mutation already did the writes).
-    _run_reconciliation_projection_if_cutover(actor.company)
+    _run_reconciliation_projection_sync(actor.company)
 
     return CommandResult.ok(
         data={
@@ -1213,13 +1190,13 @@ def _platform_prepass_match(
                 continue
 
             # Match!
-            # A86.7a: skip the three projection-owned fields when cutover flag on.
-            if not _event_driven_state_enabled():
-                bank_line.matched_journal_line = payout_je_line
-                bank_line.match_status = BankStatementLine.MatchStatus.AUTO_MATCHED
-                bank_line.match_confidence = CONFIDENCE_EXACT  # High confidence — platform match
-                bank_line.save()
-
+            # A86.7b: projection owns the bank_line match fields; the
+            # platform_payout event emitted below drives the write.
+            # Tag the in-memory bank_line so the next stage's filter
+            # (which still uses match_status as a "has this line been
+            # matched yet?" hint) sees the line as taken. The DB write
+            # happens later when the projection runs at end-of-command.
+            bank_line.match_status = BankStatementLine.MatchStatus.AUTO_MATCHED
             JournalLine.objects.filter(pk=payout_je_line.pk).update(
                 reconciled=True,
                 reconciled_date=statement.statement_date,
@@ -1518,23 +1495,31 @@ def _settlement_prepass_match(
         is_near = plan["is_near"]
         confidence = plan["confidence"]
 
-        new_status = (
-            BankStatementLine.MatchStatus.MATCHED_WITH_DIFFERENCE
-            if is_near
-            else BankStatementLine.MatchStatus.AUTO_MATCHED
-        )
+        # A86.7b: status (AUTO_MATCHED vs MATCHED_WITH_DIFFERENCE) is now
+        # derived by the projection from the event's difference_amount,
+        # so we no longer compute new_status here.
 
         with command_writes_allowed():
-            # A86.7a: skip the three projection-owned fields when flag on.
-            # difference_amount + difference_reason are not (yet) projected;
-            # they stay as direct mutation. Future chunk may move them too.
-            if not _event_driven_state_enabled():
-                bank_line.matched_journal_line = clearance_je_line
-                bank_line.match_status = new_status
-                bank_line.match_confidence = confidence
+            # A86.7b: matched_journal_line / match_status / match_confidence
+            # are owned by the ReconciliationProjection. difference_amount +
+            # difference_reason are NOT yet projected — they remain a direct
+            # mutation on the bank line. See A86 followup re extending the
+            # Confirmed event schema or adding new event types for the
+            # difference flow.
+            #
+            # Tag the in-memory bank_line so the next stage's filter sees
+            # this line as taken. We deliberately do NOT include
+            # match_status in update_fields — the DB write of that field
+            # is the projection's job. The in-memory attribute is purely
+            # a hint for the auto_match_statement filter loop.
+            bank_line.match_status = (
+                BankStatementLine.MatchStatus.MATCHED_WITH_DIFFERENCE
+                if is_near
+                else BankStatementLine.MatchStatus.AUTO_MATCHED
+            )
             bank_line.difference_amount = difference
             bank_line.difference_reason = BankStatementLine.DifferenceReason.UNRESOLVED
-            bank_line.save()
+            bank_line.save(update_fields=["difference_amount", "difference_reason"])
 
             JournalLine.objects.filter(pk=clearance_je_line.pk).update(
                 reconciled=True,
@@ -1996,21 +1981,17 @@ def manual_match(
         return CommandResult.fail("Journal line is already reconciled.")
 
     with command_writes_allowed():
-        # A86.7a: skip the three projection-owned fields when flag on.
-        if not _event_driven_state_enabled():
-            bank_line.matched_journal_line = journal_line
-            bank_line.match_status = BankStatementLine.MatchStatus.MANUAL_MATCHED
-            bank_line.match_confidence = CONFIDENCE_EXACT
-            bank_line.save()
-
+        # A86.7b: bank_line match fields are owned by the
+        # ReconciliationProjection; the JournalLine.reconciled flip
+        # remains here because it's not (yet) projection-driven.
         JournalLine.objects.filter(pk=journal_line.pk).update(
             reconciled=True,
             reconciled_date=bank_line.statement.statement_date,
         )
 
-    # A86.5 (2026-05-26): emit ReconciliationMatchConfirmed for the
-    # shadow projection. confirmation_kind="manual" because the operator
-    # explicitly picked this pairing (vs auto_match_statement's "auto").
+    # A86.5 (2026-05-26): emit ReconciliationMatchConfirmed.
+    # confirmation_kind="manual" because the operator explicitly picked
+    # this pairing (vs auto_match_statement's "auto").
     _emit_match_confirmed(
         company=actor.company,
         bank_line=bank_line,
@@ -2022,8 +2003,7 @@ def manual_match(
         confirmation_kind="manual",
     )
 
-    # A86.7a: sync projection in cutover mode.
-    _run_reconciliation_projection_if_cutover(actor.company)
+    _run_reconciliation_projection_sync(actor.company)
 
     return CommandResult.ok(
         data={
@@ -2097,31 +2077,40 @@ def _reverse_match_side_effects(
 def _clear_match_state(
     bank_line: BankStatementLine,
     settlement_ebd_line: JournalLine | None,
-    *,
-    final_status: str,
 ) -> None:
-    """Apply the read-model side of unmatch/exclude under
-    command_writes_allowed: detach the bank line, drop A16 difference
-    state, and resurrect the EBD residual if a clearance JE was
-    reversed."""
+    """Apply the non-projected side of unmatch/exclude under
+    command_writes_allowed: drop A16 difference state on the bank line
+    and resurrect the EBD residual if a clearance JE was reversed.
+
+    A86.7b: matched_journal_line / match_status / match_confidence are
+    no longer written here — the ReconciliationMatchUnmatched event
+    emitted by the caller drives those via ReconciliationProjection.
+    """
     journal_line_id = bank_line.matched_journal_line_id
     statement_date = bank_line.statement.statement_date  # captured before refresh
 
     with command_writes_allowed():
-        # A86.7a: skip the three projection-owned fields when flag on —
-        # the ReconciliationMatchUnmatched event drives them via the
-        # projection. The A16 difference fields + adjustment FK aren't
-        # (yet) projected; they stay as direct mutation.
-        if not _event_driven_state_enabled():
-            bank_line.matched_journal_line = None
-            bank_line.match_status = final_status
-            bank_line.match_confidence = None
+        # A86.7b: matched_journal_line / match_status / match_confidence
+        # are projection-owned (the ReconciliationMatchUnmatched event
+        # drives them). The A16 difference fields + adjustment FK aren't
+        # (yet) projected — they remain a direct mutation here.
+        # update_fields scopes the save to the difference fields so the
+        # bank_line.save() doesn't overwrite the projection's pending
+        # match-state write.
         bank_line.difference_amount = Decimal("0")
         bank_line.difference_reason = BankStatementLine.DifferenceReason.UNRESOLVED
         bank_line.difference_notes = ""
         bank_line.difference_resolved_at = None
         bank_line.difference_adjustment_entry = None
-        bank_line.save()
+        bank_line.save(
+            update_fields=[
+                "difference_amount",
+                "difference_reason",
+                "difference_notes",
+                "difference_resolved_at",
+                "difference_adjustment_entry",
+            ]
+        )
 
         if journal_line_id:
             JournalLine.objects.filter(pk=journal_line_id).update(
@@ -2337,11 +2326,7 @@ def unmatch_line(
     if not ok:
         return CommandResult.fail(err)
 
-    _clear_match_state(
-        bank_line,
-        settlement_ebd_line,
-        final_status=BankStatementLine.MatchStatus.UNMATCHED,
-    )
+    _clear_match_state(bank_line, settlement_ebd_line)
 
     _emit_match_unmatched(
         company=actor.company,
@@ -2352,8 +2337,7 @@ def unmatch_line(
         reversed_clearance_je_public_ids=reversed_je_public_ids,
     )
 
-    # A86.7a: sync projection in cutover mode.
-    _run_reconciliation_projection_if_cutover(actor.company)
+    _run_reconciliation_projection_sync(actor.company)
 
     return CommandResult.ok()
 
@@ -2392,11 +2376,7 @@ def exclude_line(
     if not ok:
         return CommandResult.fail(err)
 
-    _clear_match_state(
-        bank_line,
-        settlement_ebd_line,
-        final_status=BankStatementLine.MatchStatus.EXCLUDED,
-    )
+    _clear_match_state(bank_line, settlement_ebd_line)
 
     _emit_match_unmatched(
         company=actor.company,
@@ -2407,8 +2387,7 @@ def exclude_line(
         reversed_clearance_je_public_ids=reversed_je_public_ids,
     )
 
-    # A86.7a: sync projection in cutover mode.
-    _run_reconciliation_projection_if_cutover(actor.company)
+    _run_reconciliation_projection_sync(actor.company)
 
     return CommandResult.ok()
 

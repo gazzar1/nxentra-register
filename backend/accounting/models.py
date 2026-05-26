@@ -2838,54 +2838,12 @@ class BankStatementLine(models.Model):
         help_text="SHA-256 hex digest of (line_date|amount|reference|description). Empty for legacy rows from before A17.",
     )
 
-    # A86.3 (2026-05-26): SHADOW fields written by ReconciliationProjection
-    # from ReconciliationMatch* events. They live alongside match_status /
-    # matched_journal_line / match_confidence (the direct-mutation legacy
-    # path) so we can prove event-derived state converges with the legacy
-    # writes BEFORE flipping the canonical read off the legacy fields
-    # (A86.7 cutover). Nothing reads these in A86.3 except convergence
-    # tests; the operator UI continues to read match_status.
-    event_match_status = models.CharField(
-        max_length=24,
-        choices=MatchStatus.choices,
-        blank=True,
-        default="",
-        help_text=(
-            "A86 shadow: derived from ReconciliationMatch* events. "
-            "Empty (not UNMATCHED) when no Confirmed/Unmatched event has "
-            "been applied yet — distinguishes 'never matched' from "
-            "'matched then unmatched'."
-        ),
-    )
-    event_matched_journal_line = models.ForeignKey(
-        JournalLine,
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        related_name="event_bank_matches",
-        help_text="A86 shadow: from ReconciliationMatchConfirmed events.",
-    )
-    event_match_confidence = models.DecimalField(
-        max_digits=5,
-        decimal_places=2,
-        null=True,
-        blank=True,
-        help_text="A86 shadow: confidence from the latest MatchConfirmed event.",
-    )
-    event_last_match_event_id = models.UUIDField(
-        null=True,
-        blank=True,
-        help_text=(
-            "A86 shadow: BusinessEvent.id of the latest Match{Confirmed,Unmatched} "
-            "event applied. Lets the projection skip already-applied events "
-            "during rebuild (defense beyond ProjectionAppliedEvent)."
-        ),
-    )
-    event_confirmed_at = models.DateTimeField(
-        null=True,
-        blank=True,
-        help_text="A86 shadow: confirmed_at from the latest MatchConfirmed event.",
-    )
+    # A86.7b (2026-05-26): the event_* shadow fields added by A86.3 were
+    # dropped here. match_status / matched_journal_line / match_confidence
+    # are now exclusively projection-written from the ReconciliationMatch*
+    # event stream — convergence with the legacy direct-mutation path was
+    # proven during the A86.7a soak, and the legacy paths were removed
+    # together with this field set in migration 0038.
 
     created_at = models.DateTimeField(auto_now_add=True)
 

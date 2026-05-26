@@ -1,9 +1,8 @@
 # tests/test_a86_5_manual_match_unmatch_emission.py
-"""A86.5 (2026-05-26): manual_match / unmatch_line / exclude_line emit
-ReconciliationMatch* events.
+"""A86.5 + A86.7b: manual_match / unmatch_line / exclude_line emit
+ReconciliationMatch* events; canonical match state is projection-derived.
 
-Three operator-initiated paths gain shadow emissions alongside the
-existing direct-mutation legacy writes:
+Three operator-initiated paths emit events:
 
   manual_match  -> ReconciliationMatchConfirmed(confirmation_kind="manual",
                                                  match_kind="manual_pick")
@@ -13,24 +12,26 @@ existing direct-mutation legacy writes:
                                                  reversed_clearance_je_public_ids=[...])
 
 The match_kind on Unmatched events is inferred from the JE source_module
-+ memo (because the legacy direct-mutation match path didn't record
-which strategy matched it) so the audit trail in the Unmatched event
-matches what would have been on the Confirmed event.
++ memo so the audit trail in the Unmatched event matches what would have
+been on the Confirmed event.
 
-Convergence proof: after each command runs and the ReconciliationProjection
-processes the emitted events, the legacy match_status equals the
-event_match_status shadow field.
+A86.7b: each command runs the ReconciliationProjection synchronously
+inside its @transaction.atomic, so the canonical match state on the
+bank line is up to date by the time the command returns. Tests
+read the canonical match_status / matched_journal_line /
+match_confidence fields directly (the event_* shadow fields were
+dropped in migration 0038).
 
 Scenarios:
 
-- manual_match: emit + converge
-- unmatch_line on a settlement-prepass match: emit + converge +
+- manual_match: emit + canonical write
+- unmatch_line on a settlement-prepass match: emit + canonical clear +
   reversed_clearance_je_public_ids contains the reversed JE
-- unmatch_line on a manual match: emit + converge + reversed list empty
-  (flag-flip only)
-- exclude_line on a manual match: emit + converge to EXCLUDED status
+- unmatch_line on a manual match: emit + canonical clear + reversed
+  list empty (flag-flip only)
+- exclude_line on a manual match: emit + canonical EXCLUDED
 - Full lifecycle: auto-match -> unmatch -> manual-match
-  (3 events emitted; shadow converges at each step)
+  (3 events emitted; canonical state correct at each step)
 """
 
 from datetime import date, timedelta
@@ -56,7 +57,6 @@ from accounts.authz import ActorContext
 from events.models import BusinessEvent
 from events.types import EventTypes
 from projections.write_barrier import projection_writes_allowed
-from reconciliation.projections import ReconciliationProjection
 
 # =============================================================================
 # Fixtures
@@ -245,20 +245,18 @@ def test_manual_match_emits_match_confirmed_event(company, actor, manual_match_t
 
 
 @pytest.mark.django_db
-def test_manual_match_legacy_and_shadow_converge(company, actor, manual_match_targets):
-    """After manual_match + projection runs, legacy match fields and
-    event_* shadow fields agree on MANUAL_MATCHED."""
+def test_manual_match_writes_canonical_state(company, actor, manual_match_targets):
+    """A86.7b: after manual_match returns, the projection (run sync inside
+    the command) has applied the canonical match state on the bank line."""
     bank_line = manual_match_targets["bank_line"]
     journal_line = manual_match_targets["journal_line"]
 
     manual_match(actor, bank_line.id, journal_line.id)
-    ReconciliationProjection().process_pending(company)
 
     bank_line.refresh_from_db()
     assert bank_line.match_status == BankStatementLine.MatchStatus.MANUAL_MATCHED
-    assert bank_line.event_match_status == BankStatementLine.MatchStatus.MANUAL_MATCHED
-    assert bank_line.event_matched_journal_line_id == journal_line.id
-    assert bank_line.event_match_confidence == Decimal("100")
+    assert bank_line.matched_journal_line_id == journal_line.id
+    assert bank_line.match_confidence == Decimal("100")
 
 
 # =============================================================================
@@ -307,11 +305,10 @@ def test_unmatch_settlement_match_emits_match_unmatched_with_reversed_jes(shopif
 
 
 @pytest.mark.django_db
-def test_unmatch_settlement_match_legacy_and_shadow_converge_back_to_UNMATCHED(
-    shopify_setup, company, actor, merchant_bank
-):
-    """End-to-end: auto-match -> unmatch_line -> projection. Both legacy
-    and shadow status come back to UNMATCHED with FK cleared."""
+def test_unmatch_settlement_match_writes_canonical_back_to_UNMATCHED(shopify_setup, company, actor, merchant_bank):
+    """End-to-end: auto-match -> unmatch_line. The projection (run sync
+    inside each command) leaves the bank line in canonical UNMATCHED
+    with FK cleared."""
     _import_paymob_and_post(company)
     statement = _make_statement_with_line(
         company,
@@ -322,22 +319,16 @@ def test_unmatch_settlement_match_legacy_and_shadow_converge_back_to_UNMATCHED(
         line_date=date(2026, 4, 26),
     )
     auto_match_statement(actor, statement.id)
-    ReconciliationProjection().process_pending(company)
 
     bank_line = BankStatementLine.objects.get(statement=statement)
-    assert bank_line.event_match_status == BankStatementLine.MatchStatus.AUTO_MATCHED
+    assert bank_line.match_status == BankStatementLine.MatchStatus.AUTO_MATCHED
 
     unmatch_line(actor, bank_line.id)
-    ReconciliationProjection().process_pending(company)
 
     bank_line.refresh_from_db()
-    # Legacy
     assert bank_line.match_status == BankStatementLine.MatchStatus.UNMATCHED
     assert bank_line.matched_journal_line is None
-    # Shadow
-    assert bank_line.event_match_status == BankStatementLine.MatchStatus.UNMATCHED
-    assert bank_line.event_matched_journal_line_id is None
-    assert bank_line.event_match_confidence is None
+    assert bank_line.match_confidence is None
 
 
 @pytest.mark.django_db
@@ -397,20 +388,18 @@ def test_exclude_line_emits_match_unmatched_with_excluded_status(company, actor,
 
 
 @pytest.mark.django_db
-def test_exclude_line_legacy_and_shadow_converge_to_EXCLUDED(company, actor, manual_match_targets):
-    """After exclude_line + projection, both legacy and shadow status
-    are EXCLUDED."""
+def test_exclude_line_writes_canonical_EXCLUDED(company, actor, manual_match_targets):
+    """After exclude_line, the projection has written canonical status =
+    EXCLUDED on the bank line."""
     bank_line = manual_match_targets["bank_line"]
     journal_line = manual_match_targets["journal_line"]
 
     manual_match(actor, bank_line.id, journal_line.id)
     exclude_line(actor, bank_line.id)
-    ReconciliationProjection().process_pending(company)
 
     bank_line.refresh_from_db()
     assert bank_line.match_status == BankStatementLine.MatchStatus.EXCLUDED
-    assert bank_line.event_match_status == BankStatementLine.MatchStatus.EXCLUDED
-    assert bank_line.event_matched_journal_line_id is None
+    assert bank_line.matched_journal_line_id is None
 
 
 # =============================================================================
@@ -419,7 +408,7 @@ def test_exclude_line_legacy_and_shadow_converge_to_EXCLUDED(company, actor, man
 
 
 @pytest.mark.django_db
-def test_full_lifecycle_emits_three_events_and_converges_at_each_step(
+def test_full_lifecycle_emits_three_events_and_writes_canonical_at_each_step(
     shopify_setup, company, actor, merchant_bank, revenue_account
 ):
     """3-step operator journey through one bank line:
@@ -427,7 +416,8 @@ def test_full_lifecycle_emits_three_events_and_converges_at_each_step(
     2. Unmatch       -> MatchUnmatched(UNMATCHED, settlement_clearance,
                                        reverses clearance JE)
     3. Manual-match  -> MatchConfirmed(manual, manual_pick)
-    Shadow converges with legacy at each step.
+    A86.7b: each command's sync projection trigger writes canonical
+    match state at each step.
     """
     _import_paymob_and_post(company)
     statement = _make_statement_with_line(
@@ -472,10 +462,8 @@ def test_full_lifecycle_emits_three_events_and_converges_at_each_step(
 
     # ----- Step 1: auto-match (settlement-prepass against the Paymob batch) -----
     auto_match_statement(actor, statement.id)
-    ReconciliationProjection().process_pending(company)
     bank_line = BankStatementLine.objects.get(statement=statement)
     assert bank_line.match_status == BankStatementLine.MatchStatus.AUTO_MATCHED
-    assert bank_line.event_match_status == BankStatementLine.MatchStatus.AUTO_MATCHED
 
     assert (
         BusinessEvent.objects.filter(
@@ -487,10 +475,8 @@ def test_full_lifecycle_emits_three_events_and_converges_at_each_step(
 
     # ----- Step 2: unmatch (reverses the settlement clearance JE) -----
     unmatch_line(actor, bank_line.id)
-    ReconciliationProjection().process_pending(company)
     bank_line.refresh_from_db()
     assert bank_line.match_status == BankStatementLine.MatchStatus.UNMATCHED
-    assert bank_line.event_match_status == BankStatementLine.MatchStatus.UNMATCHED
 
     assert (
         BusinessEvent.objects.filter(
@@ -503,11 +489,9 @@ def test_full_lifecycle_emits_three_events_and_converges_at_each_step(
     # ----- Step 3: manual-match against the pre-staged JE -----
     result = manual_match(actor, bank_line.id, manual_bank_jl.id)
     assert result.success, f"manual_match failed: {result.error}"
-    ReconciliationProjection().process_pending(company)
     bank_line.refresh_from_db()
     assert bank_line.match_status == BankStatementLine.MatchStatus.MANUAL_MATCHED
-    assert bank_line.event_match_status == BankStatementLine.MatchStatus.MANUAL_MATCHED
-    assert bank_line.event_matched_journal_line_id == manual_bank_jl.id
+    assert bank_line.matched_journal_line_id == manual_bank_jl.id
 
     # Final event counts: 2 confirmed (auto settlement + manual), 1 unmatched.
     assert (

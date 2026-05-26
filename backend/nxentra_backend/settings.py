@@ -63,19 +63,17 @@ RLS_BYPASS = os.getenv("RLS_BYPASS", "False") == "True" or TESTING
 PROJECTIONS_SYNC = os.getenv("PROJECTIONS_SYNC", "") == "True" or DEBUG or TESTING
 ALLOW_ADMIN_EMERGENCY_WRITES = os.getenv("ALLOW_ADMIN_EMERGENCY_WRITES", "False") == "True"
 
-# A86.7a (2026-05-26): feature-flag-gated cutover for reconciliation
-# read-model writes. When False (default), the legacy direct-mutation
-# paths in accounting/bank_reconciliation.py + bank_connector/matching.py
-# own the canonical bank-line match state. When True, the
-# ReconciliationProjection becomes the canonical writer — driven entirely
-# by the ReconciliationMatch* event stream emitted in A86.4-A86.6.
+# A86.7b (2026-05-26): event-driven reconciliation state is now the
+# default. The ReconciliationProjection is the canonical writer for
+# BankStatementLine match state — driven by the ReconciliationMatch*
+# event stream. Replay convergence is a guaranteed property (proven by
+# test_replay_convergence_full_lifecycle).
 #
-# 7b will remove the legacy direct-mutation code paths and drop the
-# shadow fields after a soak window proves convergence.
-#
-# Stays False in production until A86.7b ships. Tests flip it via
-# django.test.override_settings to exercise both code paths.
-RECONCILIATION_EVENT_DRIVEN_STATE = os.getenv("RECONCILIATION_EVENT_DRIVEN_STATE", "False") == "True"
+# The env var override is retained so an operator can flip back to
+# False as an emergency rollback while legacy direct-mutation code is
+# still on disk (it isn't — A86.7b deleted it). Effectively a no-op
+# read kept to avoid a config-shape break; remove in A86.9.
+RECONCILIATION_EVENT_DRIVEN_STATE = os.getenv("RECONCILIATION_EVENT_DRIVEN_STATE", "True") == "True"
 
 INSTALLED_APPS = [
     "django.contrib.admin",
