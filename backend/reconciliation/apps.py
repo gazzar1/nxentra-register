@@ -26,3 +26,8 @@ class ReconciliationConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "reconciliation"
     verbose_name = "Reconciliation (bounded context)"
+    # A86.2 (2026-05-26): point ProjectionsConfig.ready() at our event
+    # payload registry. REGISTERED_EVENTS in this module is auto-merged
+    # into events.types.EVENT_DATA_CLASSES so emit_event() validation
+    # works without an explicit import from caller code.
+    event_types_module = "reconciliation.event_types"

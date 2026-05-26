@@ -2352,6 +2352,20 @@ class EventTypes:
     # debits Expected Bank Deposit + Fees.
     PAYMENT_SETTLEMENT_RECEIVED = "payment.settlement_received"
 
+    # =========================================================================
+    # Reconciliation domain events (A86 — bounded context)
+    # =========================================================================
+    # Match lifecycle: Proposed is advisory (suggestion only, projection does
+    # NOT change canonical match state). Confirmed/Rejected/Unmatched are
+    # canonical operator/rule decisions. See reconciliation/event_types.py.
+    RECONCILIATION_MATCH_PROPOSED = "reconciliation.match_proposed"
+    RECONCILIATION_MATCH_CONFIRMED = "reconciliation.match_confirmed"
+    RECONCILIATION_MATCH_REJECTED = "reconciliation.match_rejected"
+    RECONCILIATION_MATCH_UNMATCHED = "reconciliation.match_unmatched"
+    # Exception lifecycle (surfaces in /finance/exceptions).
+    RECONCILIATION_EXCEPTION_RAISED = "reconciliation.exception_raised"
+    RECONCILIATION_EXCEPTION_RESOLVED = "reconciliation.exception_resolved"
+
 
 # =============================================================================
 # Platform-agnostic Event Data Classes

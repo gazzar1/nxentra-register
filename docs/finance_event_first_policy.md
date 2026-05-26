@@ -35,7 +35,7 @@ Every event must:
 
 2. **Carry a `company_sequence`** — gap-free, monotonically increasing per company. Assigned by `emit_event()`. Never set manually.
 
-3. **Pass payload-schema validation** — every event type has a Pydantic schema in `events/types.py`. Validation is mandatory at emission time. Schema drift is the most common cause of silent projection failures.
+3. **Pass payload-schema validation** — every event type has a `@dataclass` payload class extending `BaseEventData` in `events/types.py` (or in a vertical's `event_types.py` auto-discovered via `AppConfig.event_types_module`). Validation is mandatory at emission time via `validate_event_payload()`. Schema drift is the most common cause of silent projection failures. (Doc note: pre-A86.2 this section read "Pydantic schema" — the implementation has always used dataclasses; corrected 2026-05-26.)
 
 4. **Use `system_actor_for_company()` for connector-driven emissions** — never reuse a user session for connector / scheduled / projection work. `ActorContext` is set explicitly at emission time so audit trails are correct.
 

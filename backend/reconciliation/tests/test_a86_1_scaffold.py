@@ -37,7 +37,7 @@ def test_all_scaffolded_modules_import_cleanly():
     from reconciliation import (  # noqa: F401
         apps,
         commands,
-        events,
+        event_types,
         exceptions,
         matching,
         policies,
