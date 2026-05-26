@@ -337,9 +337,11 @@ function ProviderUploader({
 }
 
 function BatchResult({ batch }: { batch: SettlementImportBatch }) {
+  const orphans = batch.unknown_order_ids ?? [];
+  const hasOrphans = orphans.length > 0;
   return (
     <div className="rounded-md border p-3 text-xs">
-      <div className="mb-2 flex items-center gap-2">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
         <FileText className="h-3.5 w-3.5 text-muted-foreground" />
         <span className="font-mono font-medium">{batch.batch_id}</span>
         {batch.deduplicated ? (
@@ -348,6 +350,15 @@ function BatchResult({ batch }: { batch: SettlementImportBatch }) {
           <Badge variant="success">
             <CheckCircle2 className="me-1 h-3 w-3" />
             Imported
+          </Badge>
+        )}
+        {hasOrphans && (
+          // A26: this batch referenced orders the system has never seen.
+          // JE still posted, but provider clearing may go negative on the
+          // orphaned portion — the merchant should investigate.
+          <Badge variant="destructive" title="Some referenced orders were not found in Shopify history.">
+            <AlertCircle className="me-1 h-3 w-3" />
+            Needs review
           </Badge>
         )}
       </div>
@@ -370,6 +381,20 @@ function BatchResult({ batch }: { batch: SettlementImportBatch }) {
         </div>
       </div>
       <div className="mt-2 text-[11px] text-muted-foreground">{batch.line_count} line item(s)</div>
+      {hasOrphans && (
+        <div className="mt-2 rounded border border-destructive/30 bg-destructive/5 p-2 text-[11px]">
+          <p className="mb-1 font-medium text-destructive">
+            {orphans.length} order ID{orphans.length === 1 ? "" : "s"} not found in Shopify history:
+          </p>
+          <p className="font-mono text-muted-foreground break-all">
+            {orphans.slice(0, 10).join(", ")}
+            {orphans.length > 10 && <span> … (+{orphans.length - 10} more)</span>}
+          </p>
+          <p className="mt-1 text-muted-foreground">
+            The JE still posted, but the orphaned portion will short-pay provider clearing until you import the missing orders.
+          </p>
+        </div>
+      )}
     </div>
   );
 }

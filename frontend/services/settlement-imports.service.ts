@@ -14,6 +14,13 @@ export interface SettlementImportBatch {
   uncollected: string;
   line_count: number;
   deduplicated: boolean;
+  /**
+   * A26: order IDs referenced by the CSV that the system has never seen on
+   * a ShopifyOrder. Non-empty → the merchant should investigate before
+   * trusting the resulting clearing-balance posture. JE still posts so
+   * incomplete Shopify history doesn't block import.
+   */
+  unknown_order_ids: string[];
 }
 
 export interface SettlementImportResponse {

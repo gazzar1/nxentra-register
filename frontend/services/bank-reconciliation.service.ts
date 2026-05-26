@@ -88,6 +88,21 @@ export interface UnreconciledJournalLine {
   net_amount: string;
 }
 
+/**
+ * A25: candidate JournalLines a merchant can manually match to a bank
+ * statement line. Superset of UnreconciledJournalLine — adds account_*
+ * fields so the picker can label EBD-from-settlement candidates
+ * distinctly from same-account candidates, and source_module so the UI
+ * can show provenance (shopify_accounting, payment_settlement, etc).
+ */
+export interface MatchCandidate extends UnreconciledJournalLine {
+  source_module: string;
+  source_document: string;
+  account_id: number;
+  account_code: string;
+  account_name: string;
+}
+
 // =============================================================================
 // Commerce Reconciliation (Three-Column View) Types
 // =============================================================================
@@ -239,11 +254,25 @@ export const bankReconciliationService = {
       notes,
     }),
 
-  // Unreconciled lines for manual matching
+  // Unreconciled lines for manual matching (legacy: same-account only).
   getUnreconciledLines: (accountId: number, asOf?: string) =>
     apiClient.get<UnreconciledJournalLine[]>(
       "/accounting/bank-reconciliation/unreconciled/",
       { params: { account_id: accountId, as_of: asOf } },
+    ),
+
+  /**
+   * A25 manual-match candidates for a specific bank statement line. Returns
+   * the union of same-account unreconciled JLs AND un-reconciled EBD lines
+   * from settlement JEs, sorted by amount-proximity. This is what the
+   * picker on /accounting/bank-reconciliation/[id] should call so the
+   * BNK→EBD path is reachable from the UI (the older /unreconciled/
+   * endpoint can't surface EBD candidates because they sit on a different
+   * account from the bank line).
+   */
+  getMatchCandidates: (bankLineId: number) =>
+    apiClient.get<MatchCandidate[]>(
+      `/accounting/bank-statements/lines/${bankLineId}/candidates/`,
     ),
 
   // Commerce reconciliation (three-column view)

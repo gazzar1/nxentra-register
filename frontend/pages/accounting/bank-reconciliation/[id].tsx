@@ -23,7 +23,7 @@ import {
   bankReconciliationService,
   BankStatementDetail,
   BankStatementLineData,
-  UnreconciledJournalLine,
+  MatchCandidate,
 } from "@/services/bank-reconciliation.service";
 
 function formatMoney(value: string | number, currency = "USD") {
@@ -48,9 +48,11 @@ export default function BankStatementDetailPage() {
   const [autoMatching, setAutoMatching] = useState(false);
   const [reconciling, setReconciling] = useState(false);
 
-  // Manual match state
+  // Manual match state (A25: candidates includes EBD lines from settlement JEs,
+  // not just same-account unreconciled lines, so the BNK→A16-Resolve flow is
+  // reachable from the picker).
   const [selectedBankLine, setSelectedBankLine] = useState<number | null>(null);
-  const [unreconciledLines, setUnreconciledLines] = useState<UnreconciledJournalLine[]>([]);
+  const [candidates, setCandidates] = useState<MatchCandidate[]>([]);
   const [loadingJL, setLoadingJL] = useState(false);
 
   const fetchStatement = useCallback(async () => {
@@ -105,16 +107,12 @@ export default function BankStatementDetailPage() {
 
   const handleSelectForMatch = async (bankLineId: number) => {
     setSelectedBankLine(bankLineId);
-    if (!statement) return;
     setLoadingJL(true);
     try {
-      const { data } = await bankReconciliationService.getUnreconciledLines(
-        statement.account_id,
-        statement.period_end,
-      );
-      setUnreconciledLines(data);
+      const { data } = await bankReconciliationService.getMatchCandidates(bankLineId);
+      setCandidates(data);
     } catch {
-      toast({ title: "Failed to load journal lines.", variant: "destructive" });
+      toast({ title: "Failed to load candidates.", variant: "destructive" });
     } finally {
       setLoadingJL(false);
     }
@@ -126,7 +124,7 @@ export default function BankStatementDetailPage() {
       await bankReconciliationService.manualMatch(selectedBankLine, journalLineId);
       toast({ title: "Lines matched." });
       setSelectedBankLine(null);
-      setUnreconciledLines([]);
+      setCandidates([]);
       fetchStatement();
     } catch {
       toast({ title: "Failed to match.", variant: "destructive" });
@@ -390,7 +388,7 @@ export default function BankStatementDetailPage() {
                 size="sm"
                 onClick={() => {
                   setSelectedBankLine(null);
-                  setUnreconciledLines([]);
+                  setCandidates([]);
                 }}
               >
                 Cancel
@@ -401,57 +399,75 @@ export default function BankStatementDetailPage() {
                 <div className="flex justify-center py-8">
                   <Loader2 className="h-5 w-5 animate-spin" />
                 </div>
-              ) : unreconciledLines.length === 0 ? (
+              ) : candidates.length === 0 ? (
                 <p className="text-sm text-muted-foreground py-4">
-                  No unreconciled journal lines found for this account.
+                  No candidates found for this bank line.
                 </p>
               ) : (
-                <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
-                  <table className="w-full text-sm">
-                    <thead className="sticky top-0 bg-background">
-                      <tr className="border-b text-left text-muted-foreground">
-                        <th className="pb-2 font-medium">Date</th>
-                        <th className="pb-2 font-medium">Entry #</th>
-                        <th className="pb-2 font-medium">Memo</th>
-                        <th className="pb-2 font-medium">Description</th>
-                        <th className="pb-2 font-medium text-right">Net Amount</th>
-                        <th className="pb-2 font-medium"></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {unreconciledLines.map((jl) => (
-                        <tr
-                          key={jl.id}
-                          className="border-b last:border-0 hover:bg-muted/50"
-                        >
-                          <td className="py-2">{jl.entry_date}</td>
-                          <td className="py-2 font-mono text-xs">
-                            {jl.entry_number}
-                          </td>
-                          <td className="py-2 max-w-[150px] truncate">
-                            {jl.entry_memo}
-                          </td>
-                          <td className="py-2 max-w-[150px] truncate text-muted-foreground">
-                            {jl.description}
-                          </td>
-                          <td className="py-2 text-right font-mono">
-                            {Number(jl.net_amount).toFixed(2)}
-                          </td>
-                          <td className="py-2 text-right">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => handleManualMatch(jl.id)}
-                            >
-                              <Link2 className="me-1 h-3.5 w-3.5" />
-                              Match
-                            </Button>
-                          </td>
+                <>
+                  <p className="mb-2 text-xs text-muted-foreground">
+                    Candidates include same-account unreconciled lines and
+                    Expected Bank Deposit lines from settlement imports,
+                    sorted by amount-proximity.
+                  </p>
+                  <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
+                    <table className="w-full text-sm">
+                      <thead className="sticky top-0 bg-background">
+                        <tr className="border-b text-left text-muted-foreground">
+                          <th className="pb-2 font-medium">Date</th>
+                          <th className="pb-2 font-medium">Entry #</th>
+                          <th className="pb-2 font-medium">Account</th>
+                          <th className="pb-2 font-medium">Memo</th>
+                          <th className="pb-2 font-medium text-right">Net Amount</th>
+                          <th className="pb-2 font-medium"></th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                      </thead>
+                      <tbody>
+                        {candidates.map((jl) => {
+                          const isEbd = jl.source_module === "payment_settlement";
+                          return (
+                            <tr
+                              key={jl.id}
+                              className="border-b last:border-0 hover:bg-muted/50"
+                            >
+                              <td className="py-2">{jl.entry_date}</td>
+                              <td className="py-2 font-mono text-xs">
+                                {jl.entry_number}
+                              </td>
+                              <td className="py-2 text-xs">
+                                <span className="font-mono">{jl.account_code}</span>{" "}
+                                <span className="text-muted-foreground">
+                                  {jl.account_name}
+                                </span>
+                                {isEbd && (
+                                  <span className="ms-1 inline-flex rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
+                                    EBD
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-2 max-w-[150px] truncate text-muted-foreground">
+                                {jl.entry_memo}
+                              </td>
+                              <td className="py-2 text-right font-mono">
+                                {Number(jl.net_amount).toFixed(2)}
+                              </td>
+                              <td className="py-2 text-right">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => handleManualMatch(jl.id)}
+                                >
+                                  <Link2 className="me-1 h-3.5 w-3.5" />
+                                  Match
+                                </Button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
               )}
             </CardContent>
           </Card>
