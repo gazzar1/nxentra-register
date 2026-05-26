@@ -682,6 +682,19 @@ This is **mathematically correct** (debit balances the credit) but **mis-categor
 
 **Not data-incorrect, not submission-blocking** — fees ARE booked, they're just in the wrong category. Pull forward in the first wave of post-listing UX polish alongside A82/A84 since every merchant will hit it on day 1 of their first settlement.
 
+### A94. bank_connector reconciled-flag audit — **DONE 2026-05-26** (correctness, surfaced by 2026-05-26 architectural review)
+Codex flagged `bank_connector/matching.py:288` as a residual direct mutation of `journal_line.reconciled` under `projection_writes_allowed()` context. **The finding is stale** — A86.7b (commit `5d73387`) already removed the direct flip; `_reconcile_payout_je` now emits a `ReconciliationMatchConfirmed` event with `confirmation_kind="platform_payout_reconcile"` and runs the projection synchronously, with the projection as the sole writer of `JournalLine.reconciled`.
+
+Audit findings:
+- **Zero** direct `.reconciled = True/False` writes anywhere in `backend/bank_connector/` (grep-verified).
+- A86.6 has 6 tests pinning the emission + projection-write contract — all green.
+- `BankTransaction.status` mutations remain direct, by design: `BankTransaction` is a connector-owned canonical model (no `ProjectionWriteManager`, no write-barrier check). Not a protocol violation.
+- `payout_obj.journal_entry_id` mutation in `_create_payout_je` is also connector-owned canonical state. Not a violation.
+
+Capstone test added (`test_a89_no_direct_journal_line_reconciled_write_in_matching_path`): stubs the projection to a no-op, runs `auto_match_transactions`, asserts (a) the canonical event WAS emitted, (b) `JournalLine.reconciled` stayed `False`. If anyone ever reintroduces a "just in case" direct flip, this test fails.
+
+7/7 green at `tests/test_a86_6_bank_connector_emission.py`.
+
 ### A93. Migration health gate + RLS_BYPASS engine guard — **DONE 2026-05-26** (correctness/dev-loop, surfaced by 2026-05-26 architectural review)
 Codex flagged a reported `duplicate column name: warehouse_id` SQLite migration failure. The original symptom did not reproduce, but reproducing the gate surfaced a different latent bug: `settings.py` unconditionally added a Postgres-only `OPTIONS["options"] = "-c app.rls_bypass=on"` to `DATABASES["default"]` whenever `RLS_BYPASS=True`. Any Django command run against a SQLite `DATABASE_URL` with that flag set crashed with `TypeError: 'options' is an invalid keyword argument for Connection()`. `pytest` only worked because `test_settings.py` overwrote `DATABASES` *after* the buggy mutation. Gated the block on `"postgresql" in ENGINE` so SQLite stays usable.
 

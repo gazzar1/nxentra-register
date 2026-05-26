@@ -370,3 +370,69 @@ def test_journal_line_reconciled_flag_is_set_by_projection(
     cash_line.refresh_from_db()
     assert cash_line.reconciled is True
     assert cash_line.reconciled_date == matching_bank_tx.transaction_date
+
+
+# =============================================================================
+# A89 audit capstone: prove there is NO hidden direct-write fallback
+# =============================================================================
+
+
+@pytest.mark.django_db
+def test_a89_no_direct_journal_line_reconciled_write_in_matching_path(
+    company, shopify_store, connector_bank_account, payout_with_je, matching_bank_tx
+):
+    """A89 audit capstone — the matching path's *only* mechanism for
+    setting JournalLine.reconciled is the ReconciliationProjection
+    consuming a ReconciliationMatchConfirmed event. There is no hidden
+    direct ``cash_line.reconciled = True`` or
+    ``.save(update_fields=["reconciled"])`` fallback.
+
+    Test mechanism: stub the projection to a no-op while running the
+    auto-match path. If a direct write still existed, the JL.reconciled
+    flag would flip anyway. Because the event-first contract holds,
+    the flag stays False — but the canonical event is still emitted
+    (so a future replay against a healthy projection would converge).
+
+    If anyone ever reintroduces a direct flip ("just in case the
+    projection is slow"), this test fails.
+    """
+    from unittest import mock
+
+    from bank_connector.matching import auto_match_transactions
+
+    events_before = BusinessEvent.objects.filter(
+        company=company,
+        event_type=EventTypes.RECONCILIATION_MATCH_CONFIRMED,
+    ).count()
+
+    cash_line = payout_with_je["bank_line"]
+    assert cash_line.reconciled is False, "Precondition: JL starts unreconciled."
+
+    with (
+        mock.patch(
+            "reconciliation.projections.ReconciliationProjection.process_pending",
+            return_value=None,
+        ),
+        projection_writes_allowed(),
+    ):
+        result = auto_match_transactions(company, connector_bank_account.id)
+
+    assert result["matched"] == 1, f"Match should still happen; got: {result}"
+
+    # The canonical event WAS emitted — event-first contract held.
+    events_after = BusinessEvent.objects.filter(
+        company=company,
+        event_type=EventTypes.RECONCILIATION_MATCH_CONFIRMED,
+    ).count()
+    assert events_after == events_before + 1, (
+        "ReconciliationMatchConfirmed must be emitted regardless of projection state."
+    )
+
+    # The JL.reconciled flag did NOT flip — proves no direct-write fallback.
+    cash_line.refresh_from_db()
+    assert cash_line.reconciled is False, (
+        "JL.reconciled flipped without the projection running — this means "
+        "_reconcile_payout_je (or something it calls) wrote to the read model "
+        "directly, bypassing the event-first contract. Find and remove the "
+        "direct mutation."
+    )
