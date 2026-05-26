@@ -24,6 +24,7 @@ urlpatterns = [
     path("api/shopify/", include("shopify_connector.urls")),
     path("api/stripe/", include("stripe_connector.urls")),
     path("api/bank/", include("bank_connector.urls")),
+    path("api/reconciliation/", include("reconciliation.urls")),  # A86.1
     path("api/platforms/", include("platform_connectors.urls")),
     path("api/events/", include("events.urls")),
     path("api/backups/", include("backups.urls")),
