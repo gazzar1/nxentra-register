@@ -168,12 +168,20 @@ for key, value in os.environ.items():
 # Database Router for tenant isolation
 DATABASE_ROUTERS = ["tenant.router.TenantDatabaseRouter"]
 
-# RLS bypass for testing/development
+# RLS bypass for testing/development.
+# The `-c app.rls_bypass=on` flag is a Postgres connection option (psycopg2's
+# `options` kwarg). On SQLite — which the local pytest config uses, and any
+# dev who points DATABASE_URL at sqlite — Django passes OPTIONS straight to
+# sqlite3.connect(), which rejects `options` with a TypeError that breaks
+# every Django command (migrate, makemigrations, shell, runserver). Gate the
+# block on Postgres so a non-Postgres default DB stays usable. (A93)
 if RLS_BYPASS:
-    db_options = DATABASES["default"].setdefault("OPTIONS", {})
-    existing = db_options.get("options", "")
-    if "app.rls_bypass=on" not in existing:
-        db_options["options"] = (existing + " " if existing else "") + "-c app.rls_bypass=on"
+    default_db = DATABASES["default"]
+    if "postgresql" in default_db.get("ENGINE", ""):
+        db_options = default_db.setdefault("OPTIONS", {})
+        existing = db_options.get("options", "")
+        if "app.rls_bypass=on" not in existing:
+            db_options["options"] = (existing + " " if existing else "") + "-c app.rls_bypass=on"
 
 AUTH_PASSWORD_VALIDATORS = [
     {

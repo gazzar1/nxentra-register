@@ -682,6 +682,16 @@ This is **mathematically correct** (debit balances the credit) but **mis-categor
 
 **Not data-incorrect, not submission-blocking** — fees ARE booked, they're just in the wrong category. Pull forward in the first wave of post-listing UX polish alongside A82/A84 since every merchant will hit it on day 1 of their first settlement.
 
+### A93. Migration health gate + RLS_BYPASS engine guard — **DONE 2026-05-26** (correctness/dev-loop, surfaced by 2026-05-26 architectural review)
+Codex flagged a reported `duplicate column name: warehouse_id` SQLite migration failure. The original symptom did not reproduce, but reproducing the gate surfaced a different latent bug: `settings.py` unconditionally added a Postgres-only `OPTIONS["options"] = "-c app.rls_bypass=on"` to `DATABASES["default"]` whenever `RLS_BYPASS=True`. Any Django command run against a SQLite `DATABASE_URL` with that flag set crashed with `TypeError: 'options' is an invalid keyword argument for Connection()`. `pytest` only worked because `test_settings.py` overwrote `DATABASES` *after* the buggy mutation. Gated the block on `"postgresql" in ENGINE` so SQLite stays usable.
+
+Gate now exists in two halves:
+
+- **Fast (pre-push):** `.pre-commit-config.yaml` runs `python backend/manage.py makemigrations --check --dry-run` on every `git push`. Enable on a fresh clone with `pre-commit install --hook-type pre-push`.
+- **Full (manual before schema work):** `scripts/check-migrations.sh` + `scripts/check-migrations.ps1` add a migrate-from-zero against a throw-away SQLite DB (~40s). Catches duplicate-column, missing-dependency, and bad-RunPython class bugs that `--check` does not.
+
+Verified end-to-end: A87 backend test suite still 11/11 green after the settings fix. `check-migrations.ps1` reports `Migration health: GREEN.`
+
 ### A92. Plaintext password in sessionStorage during company-selection — **DONE 2026-05-26** (security, surfaced by 2026-05-26 architectural review)
 Shipped pending-login-token flow. Previously `login.tsx` wrote `pendingPassword` + `pendingEmail` to `sessionStorage` so `select-company.tsx` could re-POST the credentials with the chosen `company_id`. Any XSS or browser extension could lift the password.
 

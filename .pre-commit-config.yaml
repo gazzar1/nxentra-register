@@ -7,3 +7,17 @@ repos:
         types_or: [python, pyi]
       - id: ruff-format
         types_or: [python, pyi]
+
+  # A93: migration health gate — block pushes that diverge models from migrations.
+  # Runs on `git push`, not every commit, so it doesn't slow the inner-loop.
+  # The full "migrate from zero" check is in scripts/migrations-fresh-migrate.ps1
+  # (and .sh) — devs are expected to run that one manually before non-trivial
+  # schema work lands.
+  - repo: local
+    hooks:
+      - id: django-makemigrations-check
+        name: django makemigrations --check (no missing migrations)
+        entry: python backend/manage.py makemigrations --check --dry-run
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
