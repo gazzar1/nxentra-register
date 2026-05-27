@@ -201,7 +201,27 @@ jobs:
       - name: Ruff format check
         run: ruff format --check --diff
 
-      - name: mypy type check
+      # A102 (2026-05-26): blocking mypy on the canonical spine.
+      # The 17 spine files (events emission, projection infra, tenant
+      # routing, accounts auth, accounting truth layer) MUST pass strict
+      # typing. Codex review #3 flagged that pre-A102 the only mypy step
+      # was continue-on-error: true — advisory only, exactly the gate
+      # the Finance Event-First Policy is supposed to harden. The
+      # whole-codebase mypy below stays advisory (gradual adoption), but
+      # the spine is now enforced.
+      - name: mypy strict on canonical spine (blocking)
+        run: python ../scripts/check-types.py
+
+      # A101 (2026-05-26): the 4 AST-based architecture-rule tests.
+      # Views must not enter projection_writes_allowed(); projections
+      # must not emit events; direct writes to JournalLine.reconciled
+      # and BankStatementLine.difference_amount outside the projection
+      # are forbidden. Adding a new violation requires explicit allowlist
+      # update in tests/test_architecture_rules.py.
+      - name: architecture rule tests (blocking)
+        run: python -m pytest tests/test_architecture_rules.py -v --tb=short
+
+      - name: mypy full (advisory — gradual adoption on non-spine files)
         run: mypy --config-file pyproject.toml .
         continue-on-error: true
 

@@ -123,6 +123,14 @@ class ReconciliationMatchConfirmedData(BaseEventData):
     difference_reason: str = "UNRESOLVED"
     # statement_date captured for the read-model's reconciled_date column.
     statement_date: str = ""
+    # A99 (2026-05-26): additional JournalLines that this match also
+    # reconciles, beyond the primary `journal_line_public_id`. Used by the
+    # settlement-prepass path in auto_match_statement, which creates a
+    # clearance JE AND drains an EBD line in the same logical match — the
+    # projection needs to flip JL.reconciled=True on both. Empty list for
+    # the common bank-line ↔ single-JL case (manual_match, generic-GL
+    # match, platform_payout_reconcile).
+    additional_journal_lines_to_reconcile: list = field(default_factory=list)
 
 
 @dataclass
@@ -175,6 +183,11 @@ class ReconciliationMatchUnmatchedData(BaseEventData):
     reversed_clearance_je_public_ids: list = field(default_factory=list)
     # Link back to the MatchConfirmed event being reversed.
     confirmed_by_event_id: Optional[str] = None
+    # A99 (2026-05-26): additional JournalLines to flip reconciled=False
+    # beyond previously_matched_journal_line. Settlement-prepass path
+    # carries the EBD line here so its reconciled flag is reset when the
+    # original match is reversed. Empty list for the common case.
+    additional_journal_lines_to_unreconcile: list = field(default_factory=list)
 
 
 # =============================================================================

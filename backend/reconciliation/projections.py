@@ -237,21 +237,57 @@ class ReconciliationProjection(BaseProjection):
         except (ValueError, ArithmeticError):
             confidence = Decimal("0")
 
-        # A86.7b (2026-05-26): canonical write. The shadow fields
-        # (event_match_status, event_matched_journal_line, etc.) were
-        # dropped in migration 0038; the projection is now the sole
-        # writer of match_status / matched_journal_line / match_confidence.
+        # A86.7b: canonical match-state write. A99 (2026-05-26): now also
+        # writes A16 difference fields and flips JL.reconciled — both used
+        # to be direct mutations in reconciliation/commands.py. The shadow
+        # fields (event_match_status, event_matched_journal_line, etc.) were
+        # dropped in migration 0038; this projection is the sole writer.
+        difference_reason_raw = data.get("difference_reason") or BankStatementLine.DifferenceReason.UNRESOLVED
         BankStatementLine.objects.filter(pk=bank_line.pk).update(
             match_status=status,
             matched_journal_line=journal_line,
             match_confidence=confidence,
+            difference_amount=difference_amount,
+            difference_reason=difference_reason_raw,
         )
 
+        # A99: flip JL.reconciled=True for the primary matched line. The
+        # date is the bank-line's statement date when available (preferred
+        # so reversal/replay can locate the original reconciliation period)
+        # or the confirmed_at date as a fallback.
+        confirmed_at_raw = data.get("confirmed_at") or ""
+        statement_date_raw = data.get("statement_date") or ""
+        reconciled_date_value = statement_date_raw or confirmed_at_raw[:10]
+        JournalLine.objects.filter(
+            company=event.company,
+            public_id=journal_line.public_id,
+        ).update(
+            reconciled=True,
+            reconciled_date=reconciled_date_value if reconciled_date_value else None,
+        )
+
+        # A99: settlement-prepass path also drains a separate EBD line in
+        # the same logical match — flip those too. Empty list for the common
+        # one-JL match shape.
+        additional_jl_public_ids = data.get("additional_journal_lines_to_reconcile") or []
+        if additional_jl_public_ids:
+            JournalLine.objects.filter(
+                company=event.company,
+                public_id__in=[str(p) for p in additional_jl_public_ids],
+            ).update(
+                reconciled=True,
+                reconciled_date=reconciled_date_value if reconciled_date_value else None,
+            )
+
         logger.info(
-            "Reconciliation write: bank_line=%s status=%s confidence=%s via confirmation_kind=%s event_id=%s",
+            "Reconciliation write: bank_line=%s status=%s confidence=%s difference=%s "
+            "primary_jl=%s additional_jls=%d via confirmation_kind=%s event_id=%s",
             bank_line_public_id,
             status,
             confidence,
+            difference_amount,
+            journal_line_public_id,
+            len(additional_jl_public_ids),
             confirmation_kind,
             event.id,
         )
@@ -290,15 +326,49 @@ class ReconciliationProjection(BaseProjection):
         else:
             target_status = BankStatementLine.MatchStatus.UNMATCHED
 
+        # A99 (2026-05-26): also clear A16 difference fields. Used to be
+        # a direct mutation in reconciliation/commands.py unmatch_line.
+        # difference_notes / resolved_at / adjustment_entry are written
+        # by the A16 resolve_difference flow; clearing them here keeps the
+        # bank line consistent with "no match → no resolved difference".
         BankStatementLine.objects.filter(pk=bank_line.pk).update(
             match_status=target_status,
             matched_journal_line=None,
             match_confidence=None,
+            difference_amount=Decimal("0"),
+            difference_reason=BankStatementLine.DifferenceReason.UNRESOLVED,
+            difference_notes="",
+            difference_resolved_at=None,
+            difference_adjustment_entry=None,
         )
 
+        # A99: also un-reconcile the JL that was matched. Used to be a
+        # latent bug — confirming flipped JL.reconciled=True directly, but
+        # unmatch never flipped it back, so a JL could carry a stale
+        # reconciled=True flag with no bank line pointing at it. Now both
+        # transitions flow through the projection so the invariant holds.
+        jl_public_ids_to_unreconcile: list[str] = []
+        previously_matched_jl_public_id = data.get("previously_matched_journal_line_public_id") or ""
+        if previously_matched_jl_public_id:
+            jl_public_ids_to_unreconcile.append(str(previously_matched_jl_public_id))
+        # Settlement-prepass path: the EBD line that was reconciled by the
+        # original match needs to be un-reconciled when the match reverses.
+        for jl_public_id in data.get("additional_journal_lines_to_unreconcile") or []:
+            jl_public_ids_to_unreconcile.append(str(jl_public_id))
+
+        if jl_public_ids_to_unreconcile:
+            JournalLine.objects.filter(
+                company=event.company,
+                public_id__in=jl_public_ids_to_unreconcile,
+            ).update(
+                reconciled=False,
+                reconciled_date=None,
+            )
+
         logger.info(
-            "Reconciliation clear: bank_line=%s final_status=%s event_id=%s",
+            "Reconciliation clear: bank_line=%s final_status=%s unreconciled_jls=%d event_id=%s",
             bank_line_public_id,
             target_status,
+            len(jl_public_ids_to_unreconcile),
             event.id,
         )

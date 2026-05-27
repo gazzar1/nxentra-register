@@ -303,8 +303,18 @@ def _reconcile_payout_je(company, platform, payout_obj, bank_tx):
             )
 
     if not je:
-        # Create a JE for this payout
-        je = _create_payout_je(company, platform, payout_obj)
+        # A100 (2026-05-26): _create_payout_je calls platform_connectors.je_builder
+        # which uses JournalEntry.objects.projection().create() — that path
+        # requires projection_writes_allowed(). Scope the context narrowly
+        # here (where the projection-chain write actually happens) instead of
+        # at the view layer, so views don't grant projection-write privileges
+        # to the entire request. The eventual reactor extraction (A3) replaces
+        # this in-line projection-chain write with a proper event-driven post,
+        # at which point this context manager goes away.
+        from projections.write_barrier import projection_writes_allowed
+
+        with projection_writes_allowed():
+            je = _create_payout_je(company, platform, payout_obj)
         if not je:
             logger.warning(
                 "Could not create JE for %s payout %s — account mapping may be missing",

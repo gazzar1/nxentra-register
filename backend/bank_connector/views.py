@@ -556,16 +556,18 @@ class AutoMatchView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        from projections.write_barrier import projection_writes_allowed
-
         actor = resolve_actor(request)
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
 
         from django.db import transaction
 
+        # A100 (2026-05-26): projection_writes_allowed() was previously entered
+        # here; the protocol forbids views from granting projection-write
+        # privileges. Moved into bank_connector/matching.py around the actual
+        # _create_payout_je call, where the projection-chain write happens.
         bank_account_id = request.data.get("bank_account_id")
-        with transaction.atomic(), projection_writes_allowed():
+        with transaction.atomic():
             result = auto_match_transactions(actor.company, bank_account_id)
         return Response(result)
 
@@ -590,8 +592,6 @@ class ManualMatchView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        from projections.write_barrier import projection_writes_allowed
-
         actor = resolve_actor(request)
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
@@ -608,7 +608,9 @@ class ManualMatchView(APIView):
 
         from django.db import transaction
 
-        with transaction.atomic(), projection_writes_allowed():
+        # A100 (2026-05-26): see AutoMatchView. The projection-context entry
+        # moved into bank_connector/matching.py where the actual write happens.
+        with transaction.atomic():
             result = manual_match(actor.company, int(bank_transaction_id), platform, int(payout_id))
         if "error" in result:
             return Response({"detail": result["error"]}, status=400)

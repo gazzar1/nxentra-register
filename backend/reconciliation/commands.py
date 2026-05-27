@@ -152,6 +152,7 @@ def _emit_match_unmatched(
     final_status: str,
     reversed_clearance_je_public_ids: list,
     unmatch_reason: str = "",
+    additional_journal_lines_to_unreconcile: list | None = None,
 ):
     """A86.5 (2026-05-26): emit a ReconciliationMatchUnmatched event for
     a manually-initiated unmatch or exclude. The projection consumes
@@ -179,6 +180,9 @@ def _emit_match_unmatched(
         unmatch_reason=unmatch_reason or "Unmatched via legacy API (no reason captured)",
         final_status=final_status,
         reversed_clearance_je_public_ids=list(reversed_clearance_je_public_ids or []),
+        additional_journal_lines_to_unreconcile=[
+            str(jl_public_id) for jl_public_id in (additional_journal_lines_to_unreconcile or [])
+        ],
     )
     aggregate_id_suffix = str(previously_matched_journal_line.public_id) if previously_matched_journal_line else "none"
     return emit_event_no_actor(
@@ -201,6 +205,7 @@ def _emit_match_confirmed(
     difference_amount=Decimal("0"),
     statement_date=None,
     confirmation_kind: str = "auto",
+    additional_journal_lines_to_reconcile: list | None = None,
 ):
     """A86.4 (2026-05-26): emit a ReconciliationMatchConfirmed event for
     a bank-line ↔ journal-line match.
@@ -240,6 +245,9 @@ def _emit_match_confirmed(
         difference_amount=str(diff),
         difference_reason="UNRESOLVED",
         statement_date=statement_date.isoformat() if statement_date else "",
+        additional_journal_lines_to_reconcile=[
+            str(jl_public_id) for jl_public_id in (additional_journal_lines_to_reconcile or [])
+        ],
     )
     return emit_event_no_actor(
         company=company,
@@ -657,37 +665,25 @@ def _settlement_prepass_match(
         is_near = plan["is_near"]
         confidence = plan["confidence"]
 
-        with command_writes_allowed():
-            # A86.7b: matched_journal_line / match_status / match_confidence
-            # are owned by the ReconciliationProjection. difference_amount +
-            # difference_reason are NOT yet projected — they remain a direct
-            # mutation here. Tag the in-memory bank_line so the generic-gl
-            # filter loop in auto_match_statement sees the line as taken;
-            # update_fields scopes the actual save to the difference fields
-            # so we don't overwrite the projection's pending write.
-            bank_line.match_status = (
-                BankStatementLine.MatchStatus.MATCHED_WITH_DIFFERENCE
-                if is_near
-                else BankStatementLine.MatchStatus.AUTO_MATCHED
-            )
-            bank_line.difference_amount = difference
-            bank_line.difference_reason = BankStatementLine.DifferenceReason.UNRESOLVED
-            bank_line.save(update_fields=["difference_amount", "difference_reason"])
+        # A99 (2026-05-26): tag the in-memory bank_line so the generic-gl
+        # filter loop in auto_match_statement sees the line as taken
+        # within this same pass. This is NOT a DB write — the projection
+        # (run synchronously below via _run_reconciliation_projection_sync)
+        # is the sole writer of match_status / difference_amount /
+        # difference_reason. Previously the difference fields were
+        # save()'d here directly; now they ride on the event.
+        bank_line.match_status = (
+            BankStatementLine.MatchStatus.MATCHED_WITH_DIFFERENCE
+            if is_near
+            else BankStatementLine.MatchStatus.AUTO_MATCHED
+        )
 
-            JournalLine.objects.filter(pk=clearance_je_line.pk).update(
-                reconciled=True,
-                reconciled_date=statement.statement_date,
-            )
-
-            # Exact match: EBD line is fully drained, mark reconciled.
-            # Near match: EBD line still has a residual — leave
-            # reconciled=False until the merchant categorizes the diff.
-            if not is_near:
-                JournalLine.objects.filter(pk=ebd_line.pk).update(
-                    reconciled=True,
-                    reconciled_date=statement.statement_date,
-                )
-
+        # A99: emit the canonical event carrying the difference fields +
+        # the EBD line as an additional JL to reconcile on exact match.
+        # The projection flips JL.reconciled on (clearance_je_line, ebd_line)
+        # and writes BSL.difference_* — closing the protocol violation
+        # the Codex review flagged at reconciliation/commands.py:660.
+        additional_jls = [ebd_line.public_id] if not is_near else []
         _emit_match_confirmed(
             company=company,
             bank_line=bank_line,
@@ -696,6 +692,7 @@ def _settlement_prepass_match(
             confidence=confidence,
             difference_amount=difference,
             statement_date=statement.statement_date,
+            additional_journal_lines_to_reconcile=additional_jls,
         )
 
         matched += 1
@@ -1190,18 +1187,14 @@ def manual_match(
     if journal_line.reconciled:
         return CommandResult.fail("Journal line is already reconciled.")
 
-    with command_writes_allowed():
-        # A86.7b: bank_line match fields are owned by the
-        # ReconciliationProjection; the JournalLine.reconciled flip
-        # remains here because it's not (yet) projection-driven.
-        JournalLine.objects.filter(pk=journal_line.pk).update(
-            reconciled=True,
-            reconciled_date=bank_line.statement.statement_date,
-        )
+    # A99 (2026-05-26): the JL.reconciled flip used to be a direct mutation
+    # here. Now the ReconciliationProjection owns it, driven by the
+    # MatchConfirmed event below. _run_reconciliation_projection_sync runs
+    # inside this command's @transaction.atomic so the flag is set by the
+    # time we return.
 
-    # A86.5 (2026-05-26): emit ReconciliationMatchConfirmed.
-    # confirmation_kind="manual" because the operator explicitly picked
-    # this pairing (vs auto_match_statement's "auto").
+    # A86.5: emit ReconciliationMatchConfirmed. confirmation_kind="manual"
+    # because the operator explicitly picked this pairing.
     _emit_match_confirmed(
         company=actor.company,
         bank_line=bank_line,
@@ -1295,47 +1288,19 @@ def _clear_match_state(
     A86.7b: matched_journal_line / match_status / match_confidence are
     no longer written here — the ReconciliationMatchUnmatched event
     emitted by the caller drives those via ReconciliationProjection.
+
+    A99 (2026-05-26): difference_* fields, primary JL.reconciled flip-back,
+    and settlement EBD JL.reconciled flip-back ALSO no longer written here.
+    The caller passes the EBD line through _emit_match_unmatched's
+    additional_journal_lines_to_unreconcile, and the projection handles
+    everything. This function is now a NO-OP and exists only as a
+    placeholder for the legacy call sites that haven't been removed yet
+    (kept so the unmatch_line/exclude_line call shape doesn't change in
+    the same diff that moves the writes).
     """
-    journal_line_id = bank_line.matched_journal_line_id
-    statement_date = bank_line.statement.statement_date  # captured before refresh
-
-    with command_writes_allowed():
-        # A86.7b: matched_journal_line / match_status / match_confidence
-        # are projection-owned (the ReconciliationMatchUnmatched event
-        # drives them). The A16 difference fields + adjustment FK aren't
-        # (yet) projected — they remain a direct mutation here.
-        # update_fields scopes the save to the difference fields so the
-        # bank_line.save() doesn't overwrite the projection's pending
-        # match-state write.
-        bank_line.difference_amount = Decimal("0")
-        bank_line.difference_reason = BankStatementLine.DifferenceReason.UNRESOLVED
-        bank_line.difference_notes = ""
-        bank_line.difference_resolved_at = None
-        bank_line.difference_adjustment_entry = None
-        bank_line.save(
-            update_fields=[
-                "difference_amount",
-                "difference_reason",
-                "difference_notes",
-                "difference_resolved_at",
-                "difference_adjustment_entry",
-            ]
-        )
-
-        if journal_line_id:
-            JournalLine.objects.filter(pk=journal_line_id).update(
-                reconciled=False,
-                reconciled_date=None,
-            )
-
-        if settlement_ebd_line is not None:
-            JournalLine.objects.filter(pk=settlement_ebd_line.pk).update(
-                reconciled=False,
-                reconciled_date=None,
-            )
-
-    # Quiet the lint warning — captured intentionally for future use.
-    _ = statement_date
+    # All side effects now flow through the event → projection path.
+    _ = (bank_line, settlement_ebd_line)
+    return
 
 
 def preview_unmatch_line(
@@ -1536,7 +1501,7 @@ def unmatch_line(
     if not ok:
         return CommandResult.fail(err)
 
-    _clear_match_state(bank_line, settlement_ebd_line)
+    _clear_match_state(bank_line, settlement_ebd_line)  # A99: now a no-op.
 
     _emit_match_unmatched(
         company=actor.company,
@@ -1545,6 +1510,9 @@ def unmatch_line(
         match_kind=inferred_match_kind,
         final_status=BankStatementLine.MatchStatus.UNMATCHED,
         reversed_clearance_je_public_ids=reversed_je_public_ids,
+        additional_journal_lines_to_unreconcile=(
+            [settlement_ebd_line.public_id] if settlement_ebd_line is not None else []
+        ),
     )
 
     _run_reconciliation_projection_sync(actor.company)
@@ -1586,7 +1554,7 @@ def exclude_line(
     if not ok:
         return CommandResult.fail(err)
 
-    _clear_match_state(bank_line, settlement_ebd_line)
+    _clear_match_state(bank_line, settlement_ebd_line)  # A99: now a no-op.
 
     _emit_match_unmatched(
         company=actor.company,
@@ -1595,6 +1563,9 @@ def exclude_line(
         match_kind=inferred_match_kind,
         final_status=BankStatementLine.MatchStatus.EXCLUDED,
         reversed_clearance_je_public_ids=reversed_je_public_ids,
+        additional_journal_lines_to_unreconcile=(
+            [settlement_ebd_line.public_id] if settlement_ebd_line is not None else []
+        ),
     )
 
     _run_reconciliation_projection_sync(actor.company)

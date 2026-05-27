@@ -686,6 +686,81 @@ This is **mathematically correct** (debit balances the credit) but **mis-categor
 
 **Not data-incorrect, not submission-blocking** — fees ARE booked, they're just in the wrong category. Pull forward in the first wave of post-listing UX polish alongside A82/A84 since every merchant will hit it on day 1 of their first settlement.
 
+### A102. GitHub Actions: make mypy spine + architecture tests blocking — **DONE 2026-05-26** (governance, surfaced by 2026-05-26 review #3)
+Codex review #3 said *"CI still allows mypy to fail"* — turned out to be exactly right. `.github/workflows/ci.yml` already existed (Glob filters dotfiles by default, hid it from earlier audits during Track 2; I'd been operating under the wrong assumption that there was no CI at all). The full-codebase mypy step in `backend-lint` carried `continue-on-error: true` (line 206), making type-checking advisory.
+
+A102 fixes that surgically:
+- New step `mypy strict on canonical spine (blocking)` runs `python ../scripts/check-types.py` (the same script as the pre-push hook). 17 spine files MUST pass strict typing.
+- New step `architecture rule tests (blocking)` runs the 5 AST-based tests from A101.
+- The existing whole-codebase `mypy --config-file pyproject.toml .` step stays advisory under `continue-on-error: true` — gradual adoption on non-spine files is still the right posture, but the spine is now enforced.
+
+Path note: the spine-mypy step uses `python ../scripts/check-types.py` because the `backend-lint` job's working-directory is `backend/`, and the wrapper script chdirs to backend/ internally before running mypy, so it works regardless of invocation cwd.
+
+Other findings during A102:
+- `security-check` job (line 248-251 of the workflow) was already running `manage.py makemigrations --check --dry-run` — so A88's pre-push migration check is duplicated by CI, not the sole gate. Belt-and-suspenders is the right answer here.
+- The full E2E + invariants + Postgres test jobs already exist (`backend-invariants`, `backend-e2e`). The protocol-spine gates A102 adds are additive.
+
+When this lands on main, the next push will exercise the new blocking steps in CI.
+
+### A101. Executable architecture tests — **DONE 2026-05-26** (governance, surfaced by 2026-05-26 review #3)
+Codex review #3 recommended making the architecture rules executable so a regression breaks the build. Shipped `backend/tests/test_architecture_rules.py` with 5 tests (4 rules + 1 meta):
+
+1. **Rule 1** — `*/views.py` files must not call `projection_writes_allowed()`. Allowlist: `projections/views.py` (legitimate operator-triggered rebuild endpoint) + `accounting/views.py` (6 known sites tracked for A3 reactor cleanup). bank_connector cleaned via A100; this rule holds the line.
+2. **Rule 2** — `*/projections.py` files must not call `emit_event*`. Allowlist: `shopify_connector/projections.py` + `clinic/projections.py` (the existing "projection vs reactor" blurs, pending A3 reactor extraction).
+3. **Rule 3** — non-allowlisted files must not perform direct `JournalLine.reconciled = …` writes. Allowlist: `reconciliation/projections.py` (canonical writer), `accounting/models.py` (field def), `backfill_entry_numbers.py` (ops), `reconciliation/commands.py` (3 remaining sites at lines 518/1107/1771 deferred as A99b).
+4. **Rule 4** — non-allowlisted files must not perform direct `BankStatementLine.difference_amount = …` writes. Allowlist: projection, model def, `reconciliation/commands.py` (A99b resolve_difference path).
+5. **Meta** — each allowlist capped at 5 entries so the lists can't grow silently; new additions need a written justification.
+
+Surfaced **three more direct `JL.reconciled` writes** in `reconciliation/commands.py` (lines 518, 1107, 1771) that A99 didn't catch — platform-payout prepass, generic-GL match, A16 resolve_difference. Logged as A99b on the post-listing punch list.
+
+Verified: 5/5 architecture tests green. AST-based scans so renames are a one-line update.
+
+### A100. Remove projection_writes_allowed() from bank_connector views — **DONE 2026-05-26** (governance, surfaced by 2026-05-26 review #3)
+Codex review #3: `backend/bank_connector/views.py:568` (and `:611` in `ManualMatchView`) entered `projection_writes_allowed()` directly from a view. The engineering protocol forbids views from granting projection-write privileges — that should sit narrowly around the actual write inside a command/projection.
+
+Root cause: `_create_payout_je` calls `platform_connectors.je_builder.build_journal_entry`, which uses `JournalEntry.objects.projection().create()` — a projection-chain write that requires `projection_writes_allowed()`. The view was the only path that had it open.
+
+Fix: pushed the context entry from the two views into `bank_connector/matching.py:_reconcile_payout_je`, scoped to just the `_create_payout_je(...)` call. The views now only wrap with `transaction.atomic()`; they no longer grant projection-write privileges to anything they don't own. Documented in code that the eventual A3 reactor extraction replaces the in-line projection-chain write with a proper event-driven post, at which point the context manager goes away entirely.
+
+Verified: 11/11 green across `tests/test_a86_6_bank_connector_emission.py` (7 incl. A89 capstone) + `tests/test_a99_reconciliation_event_first.py` (4).
+
+### A99. Finish projection ownership of JournalLine.reconciled + A16 difference fields — **DONE 2026-05-26** (event-first hardening, surfaced by 2026-05-26 review #3)
+Codex review #3 flagged `reconciliation/commands.py:660 + :1193 + :1302` as residual direct writes to `JournalLine.reconciled` and `BankStatementLine.difference_*` fields. The code self-admitted the gap in comments. A99 closes it.
+
+Changes:
+- **Event payload extended.** `ReconciliationMatchConfirmedData` gains `additional_journal_lines_to_reconcile: list` (for the settlement-prepass EBD line). `ReconciliationMatchUnmatchedData` gains `additional_journal_lines_to_unreconcile: list` (for the EBD line on reverse).
+- **Projection extended.** `ReconciliationProjection._handle_match_confirmed` now also writes `bank_line.difference_amount`, `bank_line.difference_reason`, and flips `JournalLine.reconciled=True` for `matched_journal_line` + every `additional_journal_lines_to_reconcile`. `_handle_match_unmatched` clears `bank_line.difference_amount / difference_reason / difference_notes / difference_resolved_at / difference_adjustment_entry` and flips `JournalLine.reconciled=False` for `previously_matched_journal_line` + every `additional_journal_lines_to_unreconcile`.
+- **Commands cleaned.** `auto_match_statement` no longer writes BSL.difference_* or JL.reconciled directly — passes `additional_journal_lines_to_reconcile=[ebd_line.public_id]` on exact match. `manual_match` no longer writes JL.reconciled directly. `_clear_match_state` is now a no-op (kept as a placeholder so the unmatch_line/exclude_line call shape is unchanged in this diff); both unmatch callers pass `additional_journal_lines_to_unreconcile=[settlement_ebd_line.public_id]` when present.
+- **Latent bug fixed.** Pre-A99, `unmatch_line` cleared the BSL match fields but never reset `JournalLine.reconciled` on the previously-matched line — the JL carried a stale reconciled=True with no bank line pointing at it. Now both transitions flow through the projection so the invariant holds.
+
+Tests:
+- 4/4 A99 capstone tests in `tests/test_a99_reconciliation_event_first.py` — stub the projection, prove `manual_match` and `unmatch_line` produce no direct writes (matches the A89 pattern).
+- 74/74 reconciliation regression sweep across `test_a86_3..._a86_7a`, `test_a19_bank_rec_unmatch_reversal`, `test_a16_difference_engine`, `test_a25_match_candidates` still green.
+- mypy spine still clean.
+
+**Deferred as A99b:** A16's `resolve_difference` command path still writes `difference_notes`, `difference_resolved_at`, `difference_adjustment_entry` directly. That path emits a `ReconciliationExceptionResolved` event whose projection handler is still a no-op (per the existing A86.3 comment). When the exception read model lands, fold those writes in.
+
+### A98. shopify_accounting projection diagnostic — **DONE 2026-05-26** (operability, blocker for screencast)
+Per `project_app_store_submission_paused.md`, on 2026-05-25 the screencast was blocked because `seed_test_csv_pack` created `ShopifyOrder` rows but the `shopify_accounting` projection produced no `SalesInvoice`/`JournalEntry` for them, and the cause was unclear.
+
+Code-level reproduction: **the bug no longer exists in code.** All four E2E tests in `tests/test_shopify_pipeline_e2e.py` pass — including the exact `SHOPIFY_ORDER_PAID → SalesInvoice + posted JournalEntry` happy path that A78 originally broke. A80's loud-failure framework writes a `ProjectionFailureLog` row whenever a handler raises, which means the production failure on Shopify_R was either (a) an environmental gap (missing `ModuleAccountMapping` role, missing `store.default_customer`/`default_posting_profile`, order date in a CLOSED fiscal period) or (b) a `ProjectionFailureLog` row that nobody checked on `/finance/exceptions`.
+
+Built `shopify_connector/management/commands/shopify_health_check.py` to surface every required piece of setup in one place:
+- ACTIVE `ShopifyStore` + `default_customer` + `default_posting_profile`
+- Required `ModuleAccountMapping` roles (`SALES_REVENUE`, `SHOPIFY_CLEARING`) + optional (`SHIPPING_REVENUE`, `SALES_TAX_PAYABLE`)
+- Event queue counts (total / applied by `shopify_accounting` / pending) per shopify event type
+- `ShopifyOrder` rows by status (RECEIVED vs PROCESSED)
+- Fiscal-period coverage warnings for any RECEIVED orders outside an OPEN period
+- Recent `ProjectionFailureLog` entries for `shopify_accounting`, last N days
+
+Outputs human-readable text by default; `--json` for piping into monitoring.
+
+Operator workflow on the droplet:
+```
+python manage.py shopify_health_check --company-slug shopify-r
+```
+prints a checklist with `[OK]` / `[FAIL]` / `[WARN]` markers and a "Found N blocker(s)" summary. Run it on Shopify_R, fix what it flags (likely missing posting profile or role mapping per the 2026-05-25 memory), re-run `seed_test_csv_pack --flush`, then record the screencast.
+
 ### A97. Mypy blocking on canonical spine — **DONE 2026-05-26** (governance, surfaced by 2026-05-26 architectural review)
 Codex flagged that mypy was `continue-on-error: true` for finance-critical modules — type-checking was advisory only. There is no CI to host that flag (no `.github/workflows/`), so the practical "blocking" enforcement attaches to the existing pre-push pre-commit hook chain.
 
