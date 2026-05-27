@@ -686,6 +686,37 @@ This is **mathematically correct** (debit balances the credit) but **mis-categor
 
 **Not data-incorrect, not submission-blocking** — fees ARE booked, they're just in the wrong category. Pull forward in the first wave of post-listing UX polish alongside A82/A84 since every merchant will hit it on day 1 of their first settlement.
 
+### A100b. Migrate accounting/views.py off projection_writes_allowed() — **PENDING** (~1.5h, post-listing punch list)
+Six sites in `backend/accounting/views.py` enter `projection_writes_allowed()` directly from a view, the same protocol violation A100 cleaned in `bank_connector/views.py`. Currently allowlisted in `tests/test_architecture_rules.py::VIEW_PROJECTION_CONTEXT_ALLOWLIST` so the arch test passes; that allowlist entry is what this ticket removes.
+
+Suggested approach:
+1. **Audit (~30 min):** list each of the 6 sites (lines 1275, 1338, 1381, 1437, 1500, 1543), identify the downstream command/operation, classify each as:
+   - (a) command-needs-projection-write pattern → push context into the command
+   - (b) workaround for missing `command_writes_allowed` chain → fix at the manager layer
+   - (c) genuinely projection-rebuild work (analogous to `projections/views.py`) → keep but separately allowlisted with justification
+2. **Move (~1h):** straightforward refactor per A100's pattern for type (a); small fix at the manager layer for type (b).
+3. **Remove `accounting/views.py` from `VIEW_PROJECTION_CONTEXT_ALLOWLIST`.** The arch test now holds the whole `*/views.py` surface against the rule.
+
+**When:** after the App Store listing submits and Aljazeera7 is onboarded. Not blocking any user. The arch test pins the surface so nothing gets worse in the meantime.
+
+### A99b. Close the remaining 3 direct JournalLine.reconciled writes in reconciliation/commands.py — **PENDING** (A99b-fast ~1h + A99b-deep deferred)
+A101's source scan surfaced three sites A99 didn't catch. Currently allowlisted in `RECONCILED_WRITE_ALLOWLIST` in the arch test.
+
+**A99b-fast (~1h) — sites 518 and 1107:**
+- `reconciliation/commands.py:518` — `auto_match_statement` platform-payout prepass. Flips a payout JE's bank line to reconciled.
+- `reconciliation/commands.py:1107` — `auto_match_statement` generic-GL match. Flips a matched JL in the generic same-account fallback.
+
+Both can ride on the existing `ReconciliationMatchConfirmedData.additional_journal_lines_to_reconcile` field that A99 added. No new event shape needed. Update the `_emit_match_confirmed(...)` callers to pass the relevant JL public_id, then delete the direct `JournalLine.objects.filter(pk=…).update(reconciled=True, …)` block. Same shape as the A99 refactor itself.
+
+**A99b-deep (deferred) — site 1771:**
+- `reconciliation/commands.py:1771` — `resolve_difference` flips the EBD line when the difference adjustment fully drains it. This is part of the A16 exception flow; the right home for the write is `ReconciliationExceptionResolved`'s projection handler, which is currently a no-op pending the exception read model (per the A86.3 comment in `reconciliation/projections.py`).
+
+A99b-deep folds into the eventual exception-queue work alongside the A86.3 read-model build — bigger piece, not a standalone item.
+
+**Exit:** when A99b-fast lands, drop `reconciliation/commands.py` from `RECONCILED_WRITE_ALLOWLIST`. When A99b-deep lands, drop it from `DIFFERENCE_WRITE_ALLOWLIST` too.
+
+**When:** post-listing punch list, after Aljazeera7 onboards. Same justification as A100b.
+
 ### A102. GitHub Actions: make mypy spine + architecture tests blocking — **DONE 2026-05-26** (governance, surfaced by 2026-05-26 review #3)
 Codex review #3 said *"CI still allows mypy to fail"* — turned out to be exactly right. `.github/workflows/ci.yml` already existed (Glob filters dotfiles by default, hid it from earlier audits during Track 2; I'd been operating under the wrong assumption that there was no CI at all). The full-codebase mypy step in `backend-lint` carried `continue-on-error: true` (line 206), making type-checking advisory.
 
