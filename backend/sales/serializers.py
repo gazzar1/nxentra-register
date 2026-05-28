@@ -613,6 +613,10 @@ class CreditNoteListSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     customer_code = serializers.CharField(source="customer.code", read_only=True)
     invoice_number = serializers.CharField(source="invoice.invoice_number", read_only=True)
+    journal_entry_pk = serializers.IntegerField(source="posted_journal_entry_id", read_only=True)
+    journal_entry_number = serializers.CharField(
+        source="posted_journal_entry.entry_number", read_only=True, default=None
+    )
 
     class Meta:
         from .models import SalesCreditNote
@@ -632,6 +636,8 @@ class CreditNoteListSerializer(serializers.ModelSerializer):
             "currency",
             "total_amount",
             "status",
+            "journal_entry_pk",
+            "journal_entry_number",
             "created_at",
         ]
 

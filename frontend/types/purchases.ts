@@ -101,6 +101,8 @@ export interface PurchaseBillListItem {
   amount_paid: string;
   amount_outstanding: string;
   status: PurchaseBillStatus;
+  journal_entry_pk: number | null;
+  journal_entry_number: string | null;
   posted_at: string | null;
   created_at: string;
 }

@@ -69,7 +69,7 @@ class PurchaseBillListCreateView(APIView):
             request,
             bills,
             PurchaseBillListSerializer,
-            default_ordering="-bill_date",
+            default_ordering=("-bill_date", "-bill_number"),
             allowed_sort_fields=["bill_number", "bill_date", "due_date", "total_amount", "status"],
         )
 

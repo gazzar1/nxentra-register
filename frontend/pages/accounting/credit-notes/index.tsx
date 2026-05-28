@@ -3,7 +3,7 @@ import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import { Plus, Search, Receipt, Eye, Send, XCircle, MoreHorizontal } from "lucide-react";
+import { Plus, Search, Receipt, Eye, Send, XCircle, MoreHorizontal, ExternalLink } from "lucide-react";
 import { useState } from "react";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
@@ -160,6 +160,24 @@ export default function CreditNotesPage() {
         <Badge className={clsx("text-xs", CREDIT_NOTE_STATUS_COLORS[cn.status])}>
           {CREDIT_NOTE_STATUS_LABELS[cn.status]}
         </Badge>
+      ),
+    },
+    {
+      key: "journal_entry",
+      label: "Journal Entry",
+      render: (cn) => (
+        cn.journal_entry_pk && cn.journal_entry_number ? (
+          <Link
+            href={`/accounting/journal-entries/${cn.journal_entry_pk}`}
+            onClick={(e) => e.stopPropagation()}
+            className="inline-flex items-center gap-1 text-sm font-mono text-primary hover:underline"
+          >
+            {cn.journal_entry_number}
+            <ExternalLink className="h-3 w-3" />
+          </Link>
+        ) : (
+          <span className="text-xs text-muted-foreground">—</span>
+        )
       ),
     },
     {

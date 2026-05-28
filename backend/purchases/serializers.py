@@ -182,6 +182,10 @@ class PurchaseBillListSerializer(serializers.ModelSerializer):
     vendor_code = serializers.CharField(source="vendor.code", read_only=True)
     vendor_bill_reference = serializers.CharField(source="reference", read_only=True)
     amount_outstanding = serializers.SerializerMethodField()
+    journal_entry_pk = serializers.IntegerField(source="posted_journal_entry_id", read_only=True)
+    journal_entry_number = serializers.CharField(
+        source="posted_journal_entry.entry_number", read_only=True, default=None
+    )
 
     class Meta:
         model = PurchaseBill
@@ -201,6 +205,8 @@ class PurchaseBillListSerializer(serializers.ModelSerializer):
             "amount_paid",
             "amount_outstanding",
             "status",
+            "journal_entry_pk",
+            "journal_entry_number",
             "created_at",
         ]
 

@@ -825,20 +825,13 @@ The 2026-05-27 incident (JEs wiped via Django shell DELETE) and my own follow-up
 
 **Lesson logged.** When advising on cleanup, default to "preserve all events; rebuild read models" rather than "delete events to clean orphans." The 2026-05-27 advice to delete `cash.customer_receipt_recorded` events was wrong in retrospect — those events would have repopulated the Customer Receipts list after the JE rebuild. Event deletion violates the source-of-truth invariant even when the intent is cleanup.
 
-### A109. `PurchaseBill` has no FK to its journal entry — operator cannot drill from bill to its accounting impact — **PENDING ~1-2h** (post-listing punch list, surfaced 2026-05-27 during Shopify_R deep-data investigation)
+### A109. `PurchaseBill` has no FK to its journal entry — ✅ **RESOLVED-NOT-A-BUG 2026-05-28** (originally surfaced 2026-05-27 during Shopify_R deep-data investigation)
 
-`backend/purchases/commands.py:post_bill` creates and posts a `JournalEntry` (line 553-569) for every bill, but `PurchaseBill` model carries no FK back to that JE. Verified by shell: `hasattr(PurchaseBill_instance, 'journal_entry_id')` → False.
+**Original ticket was a false alarm.** Re-checking on 2026-05-28: `PurchaseBill` (and `PurchaseCreditNote`) DO carry `posted_journal_entry = ForeignKey(JournalEntry, ...)` at `backend/purchases/models.py:427` and `:583`. The previous shell verification used `hasattr(bill, 'journal_entry_id')` which returned False because the FK is named `posted_journal_entry` (auto-creating `posted_journal_entry_id`, not `journal_entry_id`). My field-name assumption was wrong.
 
-Symptoms:
-- Operator viewing a Posted bill cannot click through to its JE — no "View JE" affordance possible without the FK
-- Audit trail from bill → ledger is broken for the operator UI
-- Programmatic queries to find a bill's JE require scanning `JournalEntry.memo` for "Purchase Bill {bill_number}" or joining via `source_module='purchase_bill'` if that exists
+Closure: same 2026-05-28 commit that adds the JE-link column on Vendor Bills surfaces this FK on the serializer (`journal_entry_pk` + `journal_entry_number` via `source="posted_journal_entry_id"` / `source="posted_journal_entry.entry_number"`). The UI now shows clickable `BILL-* → JE-*` links. Same treatment applied to Credit Notes, Sales Invoices, and Vendor Payments.
 
-Compare: `SalesInvoice` and `Shopify*` entities all carry direct FKs to their JE, and the UI shows "View JE" links on those rows.
-
-**Smallest fix:** add `journal_entry = ForeignKey(JournalEntry, on_delete=SET_NULL, null=True, related_name='+')` to `PurchaseBill`, populate inside `post_bill` after `je_result.success` check, expose in the bill detail API + UI.
-
-**Why now matters:** if/when A85's JE-preview-modal pattern extends to purchases, this FK is the load-bearing piece. Also surfaces in screencast risk — a Posted bill with no clickable JE makes the audit trail look incomplete.
+Lesson logged: when checking FK existence, `hasattr` is brittle — names like `journal_entry_id` vs `posted_journal_entry_id` matter. Better verification: read the model class definition directly, or grep for `ForeignKey.*JournalEntry`.
 
 ### A108. Dashboard "Total Revenue" doesn't reconcile with Shopify Connector dashboard or Reconciliation page — **PENDING ~1h, investigate-only** (post-listing punch list, surfaced 2026-05-27; only act if screencast playback exposes it)
 Observed on Shopify_R during 2026-05-27 verification:

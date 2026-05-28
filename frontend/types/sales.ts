@@ -361,6 +361,8 @@ export interface CreditNoteListItem {
   currency: string;
   total_amount: string;
   status: CreditNoteStatus;
+  journal_entry_pk: number | null;
+  journal_entry_number: string | null;
   created_at: string;
 }
 

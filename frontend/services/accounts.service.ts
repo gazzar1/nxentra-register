@@ -308,6 +308,9 @@ export interface VendorPaymentListItem {
   currency: string;
   exchange_rate: string;
   journal_entry_public_id: string;
+  journal_entry_id: number | null;
+  journal_entry_number: string | null;
+  journal_entry_status: string | null;
   bank_account_code: string;
   recorded_at: string;
   recorded_by_email: string;
