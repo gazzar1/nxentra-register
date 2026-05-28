@@ -3,7 +3,7 @@ import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import { Plus, Search, Receipt, Pencil, Trash2, Send, XCircle, Eye, MoreHorizontal } from "lucide-react";
+import { Plus, Search, Receipt, Pencil, Trash2, Send, XCircle, Eye, MoreHorizontal, ExternalLink } from "lucide-react";
 import { useState } from "react";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
@@ -54,7 +54,7 @@ export default function SalesInvoicesPage() {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
-  const [ordering, setOrdering] = useState("-invoice_date");
+  const [ordering, setOrdering] = useState("");
   const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; invoice: SalesInvoiceListItem | null }>({ open: false, invoice: null });
   const [postDialog, setPostDialog] = useState<{ open: boolean; invoice: SalesInvoiceListItem | null }>({ open: false, invoice: null });
   const [voidDialog, setVoidDialog] = useState<{ open: boolean; invoice: SalesInvoiceListItem | null }>({ open: false, invoice: null });
@@ -170,6 +170,24 @@ export default function SalesInvoicesPage() {
         <Badge className={cn("text-xs", INVOICE_STATUS_COLORS[inv.status])}>
           {INVOICE_STATUS_LABELS[inv.status]}
         </Badge>
+      ),
+    },
+    {
+      key: "journal_entry",
+      label: "Journal Entry",
+      render: (inv) => (
+        inv.journal_entry_pk && inv.journal_entry_number ? (
+          <Link
+            href={`/accounting/journal-entries/${inv.journal_entry_pk}`}
+            onClick={(e) => e.stopPropagation()}
+            className="inline-flex items-center gap-1 text-sm font-mono text-primary hover:underline"
+          >
+            {inv.journal_entry_number}
+            <ExternalLink className="h-3 w-3" />
+          </Link>
+        ) : (
+          <span className="text-xs text-muted-foreground">—</span>
+        )
       ),
     },
     {

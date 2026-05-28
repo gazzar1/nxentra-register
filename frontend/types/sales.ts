@@ -262,6 +262,8 @@ export interface SalesInvoiceListItem {
   exchange_rate: string;
   total_amount: string;
   status: SalesInvoiceStatus;
+  journal_entry_pk: number | null;
+  journal_entry_number: string | null;
   posted_at: string | null;
   created_at: string;
 }

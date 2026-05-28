@@ -56,7 +56,7 @@ export default function CreditNotesPage() {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
-  const [ordering, setOrdering] = useState("-credit_note_date");
+  const [ordering, setOrdering] = useState("");
   const [postDialog, setPostDialog] = useState<{ open: boolean; cn: CreditNoteListItem | null }>({ open: false, cn: null });
   const [voidDialog, setVoidDialog] = useState<{ open: boolean; cn: CreditNoteListItem | null }>({ open: false, cn: null });
 
