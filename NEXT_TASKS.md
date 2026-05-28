@@ -764,6 +764,33 @@ Two paths:
 
 Option 1 matches the existing bootstrap surface (which has `paymob` but not `paymob_accept`) and is the lower-cost choice. Worth a 5-minute Paymob-docs check before deciding.
 
+### A116. `JournalEntry.source_module` / `source_document` are direct-written, not in event payload — lost on projection rebuild — **PENDING ~1h** (HIGH PRIORITY, surfaced 2026-05-28 during Shopify_R Banked-column diagnostic)
+
+**The bug.**  Settlement and bank-clearance journal entries carry two stamps used downstream to join the Stage 1 → Stage 3 chain:
+
+- `source_module = 'payment_settlement'` (settlement JEs) or `'payment_settlement_clearance'` (clearance JEs)
+- `source_document = batch_id` (links settlement to clearance via the shared Paymob/Bosta batch identifier)
+
+These stamps are applied via a **direct ORM update AFTER the projection materializes the JE** — see `backend/reconciliation/commands.py:407` for the clearance side and the settlement command for the other:
+
+```python
+with command_writes_allowed():
+    JournalEntry.objects.filter(pk=entry.pk).update(
+        source_module="payment_settlement_clearance",
+        source_document=settlement_entry.source_document or batch_id,
+    )
+```
+
+The fields are NOT part of the `JOURNAL_ENTRY_CREATED` event payload (`JournalEntryCreatedData` in `events/types.py` doesn't include them).  So when `JournalEntryProjection.handle()` re-materializes a JE from events during a rebuild, it never sees the stamps.
+
+**Symptom on Shopify_R 2026-05-28.**  After the orphan-JE purge and balance-projection rebuilds, the Banked column on the reconciliation page showed $0 for all providers.  Diagnosis: `JournalEntry.source_module = ''` and `source_document = ''` on both the settlement JE (JE-000018) and the bank clearance JE (JE-000019).  The `_banked_by_provider` helper filters by `source_module='payment_settlement'` / `'payment_settlement_clearance'` so found no rows.  Manually re-stamped via shell update from the memo's batch_id; Banked column now shows correct Paymob $5,688.03.
+
+**Smallest fix.**  Extend `JournalEntryCreatedData` (and `JournalEntryPostedData` if needed) with optional `source_module` and `source_document` fields.  Have `create_journal_entry` and `post_journal_entry` accept these as kwargs and include them in the emitted event.  Have the projection's `handle()` set them on the row when materializing.  Drop the direct-write stamp step entirely — it becomes redundant.
+
+**Why this matters.**  Settle / clearance / future audit pipelines all key off these stamps.  Today any operator who does a JE rebuild silently loses the Stage 2→3 join.  Same root cause as [[A115]] (rebuild semantics) and [[A114]] (FK stability across rebuilds) — fields outside the event payload don't survive rebuilds.
+
+**Workaround in place for Shopify_R 2026-05-28:** shell update that re-derives batch_id from the JE memo via regex `r"batch\s+([\w\-]+)"`.  Persists until the next rebuild that clears JE rows.  Not committed to source — one-off.
+
 ### A115. `JournalEntryProjection._clear_projected_data` is missing — `--rebuild` is a silent no-op on the JE read model — **PENDING ~30min** (HIGH PRIORITY, surfaced 2026-05-28 during Shopify_R orphan-event purge)
 
 **The bug.**  `BaseProjection.rebuild()` at `backend/projections/base.py:98-132` is documented as:
