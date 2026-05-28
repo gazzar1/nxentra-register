@@ -764,6 +764,24 @@ Two paths:
 
 Option 1 matches the existing bootstrap surface (which has `paymob` but not `paymob_accept`) and is the lower-cost choice. Worth a 5-minute Paymob-docs check before deciding.
 
+### A114. Source-document → JournalEntry FK target should survive JE projection rebuild — **PENDING ~2-4h** (post-listing punch list, surfaced 2026-05-28 during Shopify_R re-link recovery)
+
+**The problem.**  Source documents (`SalesInvoice`, `SalesCreditNote`, `PurchaseBill`) carry `posted_journal_entry = ForeignKey(JournalEntry, on_delete=SET_NULL)`.  The FK target is `JournalEntry.id` — the auto-increment integer primary key.  When `run_projections --rebuild journal_entry_read_model` clears and replays the JE projection, the new JE rows get NEW int primary keys.  Source documents that were linked to the OLD ids now point to nothing — their FK gets nulled by SET_NULL during the rebuild's delete pass, and nothing reconnects them after.
+
+**Symptom on Shopify_R 2026-05-28.**  After the JE rebuild, the Vendor Bills / Sales Invoices / Credit Notes pages all showed "—" in the new JE-link column because `posted_journal_entry_id IS NULL` on every row.  Worked around via a one-off `relink_orphaned_je_fks` management command (committed alongside this ticket) that memo-matches each source doc to its rebuilt JE.
+
+**Three possible fixes (in increasing architectural cleanliness):**
+
+1. **Keep the int FK + make rebuild reconnect** — `journal_entry_read_model._rebuild` would, after re-creating JEs, scan source documents whose memo matches a known pattern and re-link.  Memo-pattern matching is brittle (changes to memo format break recovery) and tightly couples the projection to source-doc semantics.
+
+2. **Switch FK target to `JournalEntry.public_id` (UUID)** — UUIDs are stable across rebuilds (they're stored on the event payload, so the projection re-creates the same UUID even with a fresh int pk).  Requires a model migration: replace `posted_journal_entry` FK with `posted_journal_entry_public_id` UUIDField + a property that resolves to the JE row.  Cleaner than option 1 but loses the ORM `.posted_journal_entry` accessor.
+
+3. **Make source documents projection-driven (A110)** — when SalesInvoice / PurchaseBill are themselves projection read models, both the row AND its FK get rebuilt from the source event's payload (which carries the JE UUID alongside the source doc's identity).  The whole class of "FK orphaned by rebuild" problems disappears for the full source-document tier.  This is the deepest fix and the right architectural endpoint.
+
+**Recommendation:** ship Option 3 (A110).  Don't ship Option 1 (brittleness compounds).  Option 2 is a viable intermediate if A110 is too big to schedule but the rebuild-orphan problem keeps biting; it's strictly less work than A110 but yields less value.
+
+**Connects to.** [[A110]] (the umbrella architectural fix), [[A111]] (deletion guard — preventing the originating event), [[A112]] (cleaning downstream events on test-pack re-seed).
+
 ### A113. GR/IR three-way matching for accrual accuracy on goods-received-pre-invoice — **DEFERRED, trigger-based** (post-listing punch list, surfaced 2026-05-28 during JE-link audit-trail work)
 
 **Current Nxentra accounting flow (two-step):**
