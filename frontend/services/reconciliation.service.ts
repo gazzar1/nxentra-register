@@ -26,6 +26,7 @@ export interface ReconciliationProviderRow {
   total_debit: string;
   total_credit: string;
   open_balance: string;
+  banked: string;
   oldest_entry_date: string | null;
   days_outstanding: number;
   aging_bucket: AgingBucket;

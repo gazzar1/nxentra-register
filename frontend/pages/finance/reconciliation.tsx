@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { GetServerSideProps } from "next";
+import Link from "next/link";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import {
   Wallet,
@@ -302,17 +303,20 @@ export default function ReconciliationPage() {
                   label="Total Expected"
                   value={formatMoney(totals.total_expected)}
                   caption="From Shopify orders, awaiting settlement"
+                  href="#stage-1"
                 />
                 <SummaryTile
                   label="Total Settled"
                   value={formatMoney(totals.total_settled)}
                   caption="Already drained from clearing"
+                  href="#stage-2"
                 />
                 <SummaryTile
                   label="Open Balance"
                   value={formatMoney(totals.open_balance)}
                   caption={`Across ${totals.providers_with_open_balance} provider(s)`}
                   emphasize
+                  href="#stage-1"
                 />
                 <SummaryTile
                   label="Aged > 30 days"
@@ -323,12 +327,13 @@ export default function ReconciliationPage() {
                       : "Nothing overdue"
                   }
                   variant={Number(totals.aged_30_plus) > 0 ? "destructive" : "default"}
+                  href="#stage-1"
                 />
               </div>
             )}
 
             {/* Stage 1 — Sales → Clearing */}
-            <Card>
+            <Card id="stage-1" className="scroll-mt-20">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Wallet className="h-5 w-5" />
@@ -350,6 +355,7 @@ export default function ReconciliationPage() {
                           <th className="py-2 pr-3">Account</th>
                           <th className="py-2 pr-3 text-right">Expected</th>
                           <th className="py-2 pr-3 text-right">Settled</th>
+                          <th className="py-2 pr-3 text-right">Banked</th>
                           <th className="py-2 pr-3 text-right">Open Balance</th>
                           <th className="py-2 pr-3">Oldest</th>
                           <th className="py-2 pr-3">Aging</th>
@@ -390,7 +396,7 @@ export default function ReconciliationPage() {
             </Card>
 
             {/* Stage 2 — Clearing → Settlement */}
-            <Card>
+            <Card id="stage-2" className="scroll-mt-20">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <RefreshCw className="h-5 w-5" />
@@ -428,7 +434,7 @@ export default function ReconciliationPage() {
             </Card>
 
             {/* Stage 3 — Bank Match */}
-            <Card>
+            <Card id="stage-3" className="scroll-mt-20">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Building2 className="h-5 w-5" />
@@ -493,21 +499,24 @@ function SummaryTile({
   caption,
   emphasize,
   variant,
+  href,
 }: {
   label: string;
   value: string;
   caption?: string;
   emphasize?: boolean;
   variant?: "default" | "destructive";
+  href?: string;
 }) {
-  return (
+  const card = (
     <Card
       className={
-        variant === "destructive"
+        (variant === "destructive"
           ? "border-destructive/40 bg-destructive/5"
           : emphasize
           ? "border-primary/40"
-          : ""
+          : "") +
+        (href ? " transition hover:border-primary/60 hover:shadow-md cursor-pointer" : "")
       }
     >
       <CardContent className="space-y-1 py-4">
@@ -517,6 +526,14 @@ function SummaryTile({
       </CardContent>
     </Card>
   );
+  if (href) {
+    return (
+      <Link href={href} className="block">
+        {card}
+      </Link>
+    );
+  }
+  return card;
 }
 
 const ORDER_STATUS_VARIANT: Record<OrderReconciliationStatus, "secondary" | "warning" | "success"> = {
@@ -569,6 +586,7 @@ function ProviderRow({
         </td>
         <td className="py-2 pr-3 text-right">{formatMoney(row.total_debit)}</td>
         <td className="py-2 pr-3 text-right">{formatMoney(row.total_credit)}</td>
+        <td className="py-2 pr-3 text-right">{formatMoney(row.banked ?? "0")}</td>
         <td className={`py-2 pr-3 text-right font-semibold ${open > 0 ? "" : "text-muted-foreground"}`}>
           {formatMoney(row.open_balance)}
         </td>
@@ -590,7 +608,7 @@ function ProviderRow({
       </tr>
       {isExpanded && (
         <tr>
-          <td colSpan={8} className="bg-muted/30 px-3 py-3">
+          <td colSpan={9} className="bg-muted/30 px-3 py-3">
             {/* Tab bar — Orders (merchant-friendly) / JE lines (auditor view) */}
             <div className="mb-3 flex items-center gap-2">
               <button

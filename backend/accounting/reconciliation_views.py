@@ -74,6 +74,66 @@ def _aging_bucket(oldest: date | None, today: date) -> str:
     return "30_plus"
 
 
+def _banked_by_provider(company, dimension) -> dict[int, Decimal]:
+    """Compute, per settlement_provider dimension_value, the cumulative
+    bank-deposited amount.
+
+    Chain: settlement JE (source_module='payment_settlement') drains the
+    provider clearing → posts a DR on Expected Bank Deposit. When the
+    bank deposit lands, A14b auto-matches and creates a clearance JE
+    (source_module='payment_settlement_clearance') with DR Bank /
+    CR EBD. Both JEs share `source_document = batch_id`, which lets us
+    join them.
+
+    Banked-per-provider math:
+      1. Map each settlement batch_id → provider dim_value (from the
+         clearing-account credit line's analysis_tags).
+      2. Map each batch_id → bank-debit amount (from clearance JE bank lines).
+      3. Sum step 2 amounts grouped by step 1's dim_value.
+    """
+    # Step 1: batch_id -> provider dim_value_id
+    settlement_jes = JournalEntry.objects.filter(
+        company=company,
+        source_module="payment_settlement",
+        status=JournalEntry.Status.POSTED,
+    ).prefetch_related("lines__analysis_tags")
+
+    batch_to_provider: dict[str, int] = {}
+    for je in settlement_jes:
+        if not je.source_document:
+            continue
+        for line in je.lines.all():
+            # Clearing-account credit is the line carrying the provider tag.
+            if line.credit and line.credit > 0:
+                for tag in line.analysis_tags.all():
+                    if tag.dimension_id == dimension.id and tag.dimension_value_id:
+                        batch_to_provider[je.source_document] = tag.dimension_value_id
+                        break
+
+    # Step 2: batch_id -> bank-debit amount (sum of debits on clearance JE)
+    clearance_jes = JournalEntry.objects.filter(
+        company=company,
+        source_module="payment_settlement_clearance",
+        status=JournalEntry.Status.POSTED,
+    ).prefetch_related("lines")
+
+    batch_to_banked: dict[str, Decimal] = {}
+    for je in clearance_jes:
+        if not je.source_document:
+            continue
+        total = sum(
+            (line.debit for line in je.lines.all() if line.debit and line.debit > 0),
+            Decimal("0"),
+        )
+        batch_to_banked[je.source_document] = batch_to_banked.get(je.source_document, Decimal("0")) + total
+
+    # Step 3: dim_value_id -> total banked
+    banked: dict[int, Decimal] = {}
+    for batch_id, dim_value_id in batch_to_provider.items():
+        banked[dim_value_id] = banked.get(dim_value_id, Decimal("0")) + batch_to_banked.get(batch_id, Decimal("0"))
+    return banked
+
+
 def _stage1_per_provider(company, today: date) -> list[dict]:
     """Per-provider sales→clearing balances pivoted on
     (clearing_account, settlement_provider_dimension_value).
@@ -89,6 +149,10 @@ def _stage1_per_provider(company, today: date) -> list[dict]:
     except AnalysisDimension.DoesNotExist:
         # Bootstrap hasn't run for this company — no Shopify connection yet.
         return []
+
+    # Pre-compute banked totals per provider (joined via batch_id across
+    # settlement JE -> clearance JE pairs).
+    banked_by_provider = _banked_by_provider(company, dimension)
 
     # All journal lines tagged with the SETTLEMENT_PROVIDER dimension,
     # restricted to posted entries (DRAFT / INCOMPLETE entries don't move
@@ -133,6 +197,7 @@ def _stage1_per_provider(company, today: date) -> list[dict]:
         credit = row["total_credit"] or Decimal("0")
         balance = debit - credit
         provider = providers_by_dim_value.get(row["analysis_tags__dimension_value_id"])
+        banked = banked_by_provider.get(row["analysis_tags__dimension_value_id"], Decimal("0"))
         results.append(
             {
                 "account_id": row["account_id"],
@@ -147,6 +212,7 @@ def _stage1_per_provider(company, today: date) -> list[dict]:
                 "total_debit": _money_str(debit),
                 "total_credit": _money_str(credit),
                 "open_balance": _money_str(balance),
+                "banked": _money_str(banked),
                 "oldest_entry_date": (row["oldest_entry_date"].isoformat() if row["oldest_entry_date"] else None),
                 "days_outstanding": ((today - row["oldest_entry_date"]).days if row["oldest_entry_date"] else 0),
                 "aging_bucket": _aging_bucket(row["oldest_entry_date"], today),
