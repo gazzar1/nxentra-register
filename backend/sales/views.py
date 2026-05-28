@@ -433,7 +433,7 @@ class SalesInvoiceListCreateView(APIView):
             request,
             invoices,
             SalesInvoiceListSerializer,
-            default_ordering="-invoice_date",
+            default_ordering=("-invoice_date", "-invoice_number"),
             allowed_sort_fields=["invoice_number", "invoice_date", "due_date", "total_amount", "status"],
         )
 
@@ -939,7 +939,7 @@ class CreditNoteListCreateView(APIView):
             request,
             credit_notes,
             CreditNoteListSerializer,
-            default_ordering="-credit_note_date",
+            default_ordering=("-credit_note_date", "-credit_note_number"),
             allowed_sort_fields=["credit_note_number", "credit_note_date", "total_amount", "status"],
         )
 

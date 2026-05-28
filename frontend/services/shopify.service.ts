@@ -36,6 +36,8 @@ export interface ShopifyOrder {
   order_date: string;
   status: "RECEIVED" | "PENDING_CAPTURE" | "PROCESSED" | "CANCELLED" | "ERROR";
   journal_entry_id: string | null;
+  journal_entry_pk: number | null;
+  journal_entry_number: string | null;
   error_message: string;
   created_at: string;
 }

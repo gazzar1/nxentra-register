@@ -140,48 +140,56 @@ export default function ShopifyDashboardPage() {
 
             {/* Stats Grid */}
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              <Card>
-                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                  <CardTitle className="text-sm font-medium">Total Orders</CardTitle>
-                  <Package className="h-4 w-4 text-muted-foreground" />
-                </CardHeader>
-                <CardContent>
-                  <div className="text-2xl font-bold">{stats.total}</div>
-                </CardContent>
-              </Card>
+              <Link href="/shopify/orders" className="block transition hover:scale-[1.02]">
+                <Card className="h-full hover:border-primary/50 hover:shadow-md transition cursor-pointer">
+                  <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                    <CardTitle className="text-sm font-medium">Total Orders</CardTitle>
+                    <Package className="h-4 w-4 text-muted-foreground" />
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-2xl font-bold">{stats.total}</div>
+                  </CardContent>
+                </Card>
+              </Link>
 
-              <Card>
-                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                  <CardTitle className="text-sm font-medium">Processed</CardTitle>
-                  <CheckCircle2 className="h-4 w-4 text-green-500" />
-                </CardHeader>
-                <CardContent>
-                  <div className="text-2xl font-bold">{stats.processed}</div>
-                </CardContent>
-              </Card>
+              <Link href="/shopify/orders" className="block transition hover:scale-[1.02]">
+                <Card className="h-full hover:border-primary/50 hover:shadow-md transition cursor-pointer">
+                  <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                    <CardTitle className="text-sm font-medium">Processed</CardTitle>
+                    <CheckCircle2 className="h-4 w-4 text-green-500" />
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-2xl font-bold">{stats.processed}</div>
+                  </CardContent>
+                </Card>
+              </Link>
 
-              <Card>
-                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                  <CardTitle className="text-sm font-medium">Errors</CardTitle>
-                  <AlertCircle className="h-4 w-4 text-destructive" />
-                </CardHeader>
-                <CardContent>
-                  <div className="text-2xl font-bold">{stats.errors}</div>
-                </CardContent>
-              </Card>
+              <Link href="/shopify/orders" className="block transition hover:scale-[1.02]">
+                <Card className="h-full hover:border-primary/50 hover:shadow-md transition cursor-pointer">
+                  <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                    <CardTitle className="text-sm font-medium">Errors</CardTitle>
+                    <AlertCircle className="h-4 w-4 text-destructive" />
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-2xl font-bold">{stats.errors}</div>
+                  </CardContent>
+                </Card>
+              </Link>
 
-              <Card>
-                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                  <CardTitle className="text-sm font-medium">Revenue (Processed)</CardTitle>
-                  <ReceiptText className="h-4 w-4 text-muted-foreground" />
-                </CardHeader>
-                <CardContent>
-                  <div className="text-2xl font-bold">
-                    {stats.currency}{" "}
-                    {stats.revenue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                  </div>
-                </CardContent>
-              </Card>
+              <Link href="/shopify/orders" className="block transition hover:scale-[1.02]">
+                <Card className="h-full hover:border-primary/50 hover:shadow-md transition cursor-pointer">
+                  <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                    <CardTitle className="text-sm font-medium">Revenue (Processed)</CardTitle>
+                    <ReceiptText className="h-4 w-4 text-muted-foreground" />
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-2xl font-bold">
+                      {stats.currency}{" "}
+                      {stats.revenue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </div>
+                  </CardContent>
+                </Card>
+              </Link>
             </div>
 
             {/* Recent Orders */}

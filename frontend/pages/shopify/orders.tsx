@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
+import Link from "next/link";
 import {
   Package,
   Search,
@@ -10,6 +11,7 @@ import {
   Clock,
   Loader2,
   RefreshCw,
+  ExternalLink,
 } from "lucide-react";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
@@ -160,6 +162,7 @@ export default function ShopifyOrdersPage() {
                       <TableHead>Payment</TableHead>
                       <TableHead>Financial Status</TableHead>
                       <TableHead>Sync Status</TableHead>
+                      <TableHead>Journal Entry</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -189,6 +192,19 @@ export default function ShopifyOrdersPage() {
                           {statusBadge(order.status)}
                           {order.status === "ERROR" && order.error_message && (
                             <p className="mt-1 text-xs text-destructive">{order.error_message}</p>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {order.journal_entry_pk && order.journal_entry_number ? (
+                            <Link
+                              href={`/accounting/journal-entries/${order.journal_entry_pk}`}
+                              className="inline-flex items-center gap-1 text-sm font-mono text-primary hover:underline"
+                            >
+                              {order.journal_entry_number}
+                              <ExternalLink className="h-3 w-3" />
+                            </Link>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
                           )}
                         </TableCell>
                       </TableRow>

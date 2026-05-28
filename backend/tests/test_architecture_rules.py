@@ -237,13 +237,23 @@ RECONCILED_WRITE_ALLOWLIST: set[str] = {
     "reconciliation/projections.py",  # canonical writer
     "accounting/models.py",  # field definition
     "accounting/management/commands/backfill_entry_numbers.py",  # ops-only
-    # A99 closed the manual_match + auto_match settlement-prepass paths.
-    # Three sites remain in this file (lines 518, 1107, 1771): the
-    # platform-payout prepass, the generic-GL match, and A16
-    # resolve_difference. Tracked as A99b — fold them into the projection
-    # as the exception read model lands. Each is gated by a code comment
-    # explaining the deferral.
-    "reconciliation/commands.py",
+}
+
+# A99b: tighter allowlist for files that have a KNOWN, BOUNDED number of
+# direct writes. The test expects exactly this many hits — any more (new
+# regression) OR any fewer (a write moved out without dropping the
+# allowlist entry) fails the build. Catches new violations AND signals
+# when A99b cleanup lands so the file can be removed entirely.
+RECONCILED_WRITE_EXPECTED_COUNTS: dict[str, int] = {
+    # Three sites tracked as A99b in NEXT_TASKS.md:
+    #   - auto_match_statement platform-payout prepass (~line 518)
+    #   - auto_match_statement generic-GL match (~line 1107)
+    #   - resolve_difference A16 EBD drain (~line 1771)
+    # When A99b-fast lands, sites 518+1107 ride the existing
+    # `additional_journal_lines_to_reconcile` field A99 added; drop count
+    # to 1. When A99b-deep lands (A86.3 exception read model), drop to 0
+    # and remove this entry entirely.
+    "reconciliation/commands.py": 3,
 }
 
 
@@ -253,6 +263,11 @@ def test_no_direct_journal_line_reconciled_writes_outside_projection():
     test holds that line: any future direct flip (`jl.reconciled = True`,
     `JournalLine.objects.filter(...).update(reconciled=True)`) outside
     the allowlist fails the build.
+
+    A99b refinement (2026-05-27): `reconciliation/commands.py` graduated
+    from file-level allowlist to expected-count allowlist. A new direct
+    write fails, AND a removal that doesn't drop the count also fails —
+    so the cleanup path is loud in both directions.
     """
     files = _python_files_under(
         BACKEND_ROOT,
@@ -260,19 +275,34 @@ def test_no_direct_journal_line_reconciled_writes_outside_projection():
     )
 
     violations: list[str] = []
+    count_mismatches: list[str] = []
     for path in files:
         rel = path.relative_to(BACKEND_ROOT).as_posix()
         if rel in RECONCILED_WRITE_ALLOWLIST:
             continue
         hits = _file_contains_attribute_assignment(path, "JournalLine", "reconciled")
-        if hits:
+        if not hits:
+            continue
+        expected = RECONCILED_WRITE_EXPECTED_COUNTS.get(rel)
+        if expected is None:
             violations.append(f"{rel}:{','.join(str(n) for n in hits)}")
+        elif len(hits) != expected:
+            count_mismatches.append(
+                f"{rel}: expected {expected} write(s), found {len(hits)} at lines {','.join(str(n) for n in hits)}"
+            )
 
     assert not violations, (
         "Direct writes to JournalLine.reconciled outside the reconciliation "
         "projection are forbidden — the event path through "
         "ReconciliationMatchConfirmed/Unmatched is the only canonical writer. "
         "Violations:\n  " + "\n  ".join(violations)
+    )
+    assert not count_mismatches, (
+        "Expected-count allowlist mismatch — a known-allowed file gained "
+        "or lost a direct .reconciled write. If a write was added, fold it "
+        "into the projection. If a write was removed (good!), drop the "
+        "expected count in RECONCILED_WRITE_EXPECTED_COUNTS or remove the "
+        "entry entirely. Mismatches:\n  " + "\n  ".join(count_mismatches)
     )
 
 
@@ -284,19 +314,22 @@ def test_no_direct_journal_line_reconciled_writes_outside_projection():
 DIFFERENCE_WRITE_ALLOWLIST: set[str] = {
     "reconciliation/projections.py",  # canonical writer
     "accounting/models.py",  # field definition
-    # A99b (deferred): A16 resolve_difference still writes these. Once the
-    # exception read model lands, fold the writes into the projection and
-    # remove this entry. Tracked in NEXT_TASKS.md.
-    "reconciliation/commands.py",
+    # A99b refinement (2026-05-27): `reconciliation/commands.py` dropped
+    # from this allowlist. Re-scan confirmed zero direct
+    # `.difference_amount = ...` assignments and zero `.update(difference_amount=...)`
+    # calls in that file — all difference_amount references are kwargs
+    # passed to `_emit_match_confirmed(...)` (which routes through the
+    # event/projection path). The architecture rule now holds the entire
+    # surface for this field; new direct writes anywhere fail the build.
 }
 
 
 def test_no_direct_bank_statement_line_difference_writes_outside_projection():
-    """A99 (2026-05-26) cleaned the difference_amount / difference_reason
-    direct writes in the confirm/unmatch paths. The A16 resolve_difference
-    path remains (A99b deferred). When that's cleaned, drop
-    reconciliation/commands.py from the allowlist and this test will hold
-    the entire surface.
+    """A99 (2026-05-26) cleaned the direct difference_amount writes in
+    the confirm/unmatch/resolve_difference paths. A99b refinement
+    (2026-05-27) confirmed `reconciliation/commands.py` has zero
+    remaining direct writes matching the AST patterns and dropped the
+    file from this allowlist. This rule now holds the entire surface.
     """
     files = _python_files_under(
         BACKEND_ROOT,

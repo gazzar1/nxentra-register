@@ -633,7 +633,14 @@ Do not start ETA Phase 1 in the next 30 days. The current commercial path is App
 
 **Procurement to start NOW even before code:** ETA submitter registration + cert acquisition (Egypt Trust, ~$200/year, 1-2 week lead time). This is a long-pole item that should not block implementation when the trigger fires.
 
-### A82. Invoice list sort tie-breaker is inconsistent within the same posting date — **~15min** (sales UI polish, surfaced 2026-05-24 during App Store demo data creation)
+### A82. Invoice list sort tie-breaker is inconsistent within the same posting date — ✅ **DONE 2026-05-28** (sales UI polish, surfaced 2026-05-24 during App Store demo data creation)
+
+Shipped during 2026-05-28 screencast pre-flight. Two-file change:
+1. `backend/nxentra_backend/pagination.py` — `paginate_queryset` now accepts a tuple/list for `default_ordering`; splats into `order_by(*ordering)` when so. Backward-compatible — string callers unchanged.
+2. `backend/sales/views.py:436` (Sales Invoices list) — `default_ordering=("-invoice_date", "-invoice_number")`. Within the same date, invoices now sort by invoice number descending.
+3. `backend/sales/views.py:942` (Credit Notes list) — same shape: `default_ordering=("-credit_note_date", "-credit_note_number")`.
+
+Original scope below:
 
 `/accounting/sales-invoices` sorts by `Date DESC` correctly, but the secondary sort within the same date is inconsistent. Reproduced 2026-05-24 on Shopify_R company with 5 demo invoices:
 - 23/05/2026 entries: `INV-000007` shown above `INV-000006` (descending ✓)
@@ -713,9 +720,137 @@ Both can ride on the existing `ReconciliationMatchConfirmedData.additional_journ
 
 A99b-deep folds into the eventual exception-queue work alongside the A86.3 read-model build — bigger piece, not a standalone item.
 
-**Exit:** when A99b-fast lands, drop `reconciliation/commands.py` from `RECONCILED_WRITE_ALLOWLIST`. When A99b-deep lands, drop it from `DIFFERENCE_WRITE_ALLOWLIST` too.
+**Exit:** when A99b-fast lands, drop the `reconciliation/commands.py` entry from `RECONCILED_WRITE_EXPECTED_COUNTS` (or lower the count from 3 → 1 if only sites 518+1107 are cleaned). When A99b-deep lands, drop the entry entirely.
+
+**A99b refinement (2026-05-27, post-Round-4-review):** `reconciliation/commands.py` graduated from file-level allowlist (`RECONCILED_WRITE_ALLOWLIST`) to expected-count allowlist (`RECONCILED_WRITE_EXPECTED_COUNTS = {"reconciliation/commands.py": 3}`). Net effect: a new direct write fails the test (catches regression), AND a removal that doesn't update the count also fails (catches partial cleanup). For `difference_amount`, re-scan confirmed zero direct writes in the file — dropped from `DIFFERENCE_WRITE_ALLOWLIST` entirely; the architecture rule now holds the whole surface for that field.
 
 **When:** post-listing punch list, after Aljazeera7 onboards. Same justification as A100b.
+
+### A103. Registration must propagate `default_currency` → `functional_currency` — ✅ **ALREADY DONE 2026-04-26** (commit `b6b52b9`, re-diagnosed during 2026-05-27 Shopify_R screencast prep)
+
+Re-diagnosed today and found to be already fixed. Commit `b6b52b9` (2026-04-26) "Fix registration: persist user-selected currency to both default and functional currency" did exactly this. The bug originally manifested in the opposite direction — Egyptian merchants picking EGP silently got USD/USD because the projection overwrote with the model default. The fix:
+- `backend/accounts/views.py:174` reads `currency` first, falls back to `default_currency` (backward-compat)
+- `register_signup` (`accounts/commands.py:187`) and `create_company` (`accounts/commands.py:488`) both persist `default_currency=X, functional_currency=X` on the Company row
+- `CompanyCreatedData` carries both currencies; projection applies them (legacy events without `functional_currency` fall back to `default_currency` for replay safety)
+- Two regression tests: `test_register_persists_currency_to_both_fields` + `test_register_view_honors_currency_request_key`
+
+**Why Shopify_R still has the mismatch:** Shopify_R was created before commit `b6b52b9` shipped, so it carries the legacy USD/EGP state. New merchants registering via the App Store listing today will NOT hit this bug — they will have `default_currency == functional_currency` correctly persisted.
+
+**Workaround applied to Shopify_R during 2026-05-27 session** (for the screencast specifically): added `ExchangeRate(USD→EGP, rate=1.0, effective_date=2026-01-01, source='Manual (demo seed workaround)')`. Marked the failure log row resolved manually after `run_projections` re-applied the pending refunds. Shopify_R remains a legacy mismatch case; no production merchant will reach this state.
+
+**Optional follow-up:** a data migration could backfill any legacy company where `default_currency != functional_currency`. Deliberately not shipped because the mismatch is sometimes intentional (multi-currency businesses report in a different functional currency than transaction default). Leave to operator/admin tooling.
+
+### A104. Reconcile FX-fallback policy between `je_builder` (warn+1.0) and `shopify_connector.projections._resolve_exchange_rate` (raise) — **PENDING ~30min** (post-listing punch list, surfaced 2026-05-27)
+Two policies for the same situation (no rate found): `backend/platform_connectors/je_builder.py:227` warns and uses 1.0 (silent data-quality risk — JE posts at wrong rate, no operator-visible signal); `backend/shopify_connector/projections.py:151` raises `MissingExchangeRate` (visible operator stop via `ProjectionFailureLog`). After A103, this matters less, but the inconsistency is latent — `order_paid` will silently book at wrong rate while `refund_created` raises.
+
+**Recommendation:** make the strict path the default everywhere; drop the je_builder fallback. The operator-visible stop is the right safety mechanism per [ENGINEERING_PROTOCOL.md](ENGINEERING_PROTOCOL.md) §2.4 ("partial postings must surface visibly").
+
+### A105. `ProjectionFailureLog` auto-resolve hook didn't fire after successful retry — **PENDING ~1h** (post-listing punch list, surfaced 2026-05-27)
+The model docstring at `backend/projections/models.py:1184-1186` claims: *"Once an operator fixes the underlying problem … and the next process_pending pass successfully processes the event, the framework auto-marks this entry resolved."* That did not happen during the 2026-05-27 session — after `run_projections` posted `CN-000001` + `CN-000002` successfully, the failure-log row stayed `resolved=False, resolved_at=NULL` and `shopify_health_check` continued to report a blocker until manually resolved via shell.
+
+Grep `mark_resolved` / `auto_resolve` in `backend/projections/base.py` to confirm whether the hook is missing entirely or just not wired into `BaseProjection.process_pending`. Either implement it, or update the docstring to match reality (and document the manual resolve path).
+
+### A106. `ProjectionFailureLog.resolved` boolean and `resolved_at` timestamp drift — **PENDING ~15min** (post-listing punch list, surfaced 2026-05-27)
+Two fields representing one state. The model has both `resolved` (BooleanField, indexed) and `resolved_at` (DateTimeField, nullable). `backend/shopify_connector/management/commands/shopify_health_check.py:357` gates OPEN/RESOLVED on `resolved_at`; a manual `.update(resolved=True)` leaves `resolved_at=NULL` and the row still looks OPEN to the operator-facing health check (verified live during 2026-05-27 session).
+
+**Smallest fix:** override `ProjectionFailureLog.save()` to auto-stamp `resolved_at = timezone.now()` when `resolved` flips True. Alternative: change `_collect_problems` (line 357) + the rendering at line 317-318 in `shopify_health_check.py` to read the `resolved` boolean. The save-override pattern is more defensive — it propagates to any future caller.
+
+### A107. `paymob_accept` lazy-creates as a distinct SettlementProvider instead of mapping to `paymob` — **PENDING ~30min** (post-listing punch list, surfaced 2026-05-27)
+On `/finance/reconciliation` Stage 1 the Shopify_R demo shows three providers: `Bosta`, `Paymob`, and `Paymob Accept` with a yellow "Review" badge. The Review badge fires from `needs_review=True` set by A2's lazy-create path. The seed CSV used the gateway code `Paymob Accept` for some orders and `Paymob` for others; A2's `normalized_code` logic didn't fold the variant.
+
+Two paths:
+1. Treat `paymob_accept` as a normalized alias of `paymob` (one clearing flow). Add to the alias map next to `accounting/settlement_provider.py`'s bootstrap rows.
+2. Treat Paymob Accept as a legitimately distinct Paymob product (merchant-of-record API vs. gateway-only API are real distinct flows). Then drop `needs_review=True` after operator confirms.
+
+Option 1 matches the existing bootstrap surface (which has `paymob` but not `paymob_accept`) and is the lower-cost choice. Worth a 5-minute Paymob-docs check before deciding.
+
+### A112. `seed_test_csv_pack --flush` leaves downstream `journal_entry.created` / `sales.invoice_created` events as orphans, creating "ghost JE" history on re-seed — **PENDING ~1h** (post-listing punch list, surfaced 2026-05-28)
+
+The `_flush` method at `backend/shopify_connector/management/commands/seed_test_csv_pack.py:361-388` only deletes events tagged with `metadata__source='test_csv_pack'` — which captures `shopify.order_paid` + `shopify.refund_created` (the events the seed itself emits) but NOT the cascading downstream events that the Shopify projection emits when it consumes those (specifically `journal_entry.created`, `journal_entry.posted`, `sales.invoice_created`, `sales.invoice_posted`).
+
+**Symptom on Shopify_R, 2026-05-28:** after multiple seed-flush-reseed cycles over the past weeks, the company's `BusinessEvent` log carries 27 `sales.invoice_created` events and 25 `sales.invoice_posted` events — when the user only ever explicitly invoked 1 active seed (10 orders). The other 15+ events are "ghosts" from prior seed runs whose ShopifyOrders + tagged events were flushed but whose downstream JE events survived. After the 2026-05-28 rebuild, JE list shows 41 entries when operator expected ~15. Confusing for the operator; harmless to financial correctness; bad for demo cleanliness.
+
+**Smallest fix:** in `_flush`, after deleting tagged `BusinessEvent`s, also delete:
+1. `journal_entry.*` events whose `data.memo` matches the Shopify invoice naming pattern `Sales Invoice INV-*` AND whose date falls within the seed CSV's date range
+2. `sales.invoice_*` events for the same invoice numbers
+3. The orphan `SalesInvoice` + `JournalEntry` rows for those invoice numbers (the rows the projection materialized)
+
+**Caveat:** this is a deliberate event deletion in a controlled scope (test-pack reseed). It's narrower than the 2026-05-27 incident (full table delete) but still violates event immutability. Worth gating behind an explicit `--purge-downstream` flag rather than making it the default of `--flush`. Document the trade-off clearly in the command help.
+
+**Connects to.** [[A110]] (proper SalesInvoice projection would let this rebuild cleanly), [[A111]] (BusinessEvent deletion guard would force the explicit flag here).
+
+### A111. Add code-level guard against `BusinessEvent` deletion — **PENDING ~2-3h** (post-listing punch list, surfaced 2026-05-28 after JE rebuild)
+
+The 2026-05-27 incident (JEs wiped via Django shell DELETE) and my own follow-up advice (delete orphan `cash.customer_receipt_recorded` events as cleanup) both violated event immutability. A110 codifies the principle in docs. A111 codifies it in code.
+
+**Smallest fix:** override `BusinessEvent.delete()` and `BusinessEvent.objects.delete()` paths to raise `EventImmutabilityViolation` unless the caller explicitly passes `confirm_immutability_violation=True`. Audit-log every deletion attempt (whether allowed or refused) to a separate `EventDeletionAttempt` model with stack trace + actor identity.
+
+**Recovery path** still available — `confirm_immutability_violation=True` is the explicit acknowledgement that the caller knows the trade-off. Used by:
+- `seed_test_csv_pack._flush` (after A112 wires the explicit `--purge-downstream` flag)
+- Any future test-fixture cleanup
+- Operator emergency recovery (with full audit trail)
+
+**Plus monitoring:** add a `monitor_event_count_drops` management command (or scheduled health check) that compares `BusinessEvent.objects.filter(company=c).count()` against a high-water-mark stored per company. Sudden drops (>5% in 24h) alert. Catches both shell-level DELETEs and accidental code paths.
+
+**Connects to.** [[A110]] (the lesson this codifies), [[A112]] (the legitimate use case that the override flag enables).
+
+### A110. Source-document read models (SalesInvoice / PurchaseBill / PurchaseOrder / GoodsReceipt / ShopifyOrder) are not projection-driven — only the ledger tier is replayable from events — **PENDING ~1-2 weeks** (post-listing punch list, ARCHITECTURAL, surfaced 2026-05-28 during Shopify_R event-replay experiment)
+
+**The finding.** Nxentra has TWO tiers of event-sourcing:
+
+| Tier | Model | Pattern | Replayable from `BusinessEvent`? |
+|---|---|---|---|
+| Ledger | `JournalEntry`, `JournalLine`, `AccountBalance`, `DimensionBalance`, `PeriodAccountBalance`, `CustomerBalance`, `VendorBalance` | Projection-driven (via `journal_entry_read_model`, `account_balance`, etc.) | ✅ Yes — proven on 2026-05-28 when 111 events replayed into 41 JEs |
+| Source documents | `SalesInvoice`, `PurchaseBill`, `PurchaseOrder`, `GoodsReceipt`, `ShopifyOrder` | Command-direct ORM `objects.create(...)` with auxiliary event emit | ❌ No — events carry the data but no projection consumes them to rebuild rows |
+| Event-view (no model) | Customer Receipts list, Vendor Payments list | Pure event-query on `BusinessEvent` | ✅ Yes if their specific events still exist |
+
+**Why it matters.** The "event log is the source of truth, everything else is a derived read model" promise is the heart of Nxentra's positioning. Today it holds for the ledger, which is the bulk of accounting truth — but breaks for source documents. A merchant whose Shopify-imported invoices or manually-created bills get deleted from the read-model table has no system-driven recovery path; the events are there but unused.
+
+**Surfaced when.** During the 2026-05-28 Shopify_R event-replay experiment, JEs rebuilt cleanly (correctly proving the architecture works at the ledger tier) but the SalesInvoice list stayed at 10 entries — the events show 27 `sales.invoice_created` + 25 `sales.invoice_posted` but only 10 SalesInvoice rows exist. Same pattern for PurchaseBill (4 created events, 3 posted events, 3 rows).
+
+**Smallest fix per model.** For each source document, add a projection in `<module>/projections.py` (or `projections/<model>.py`) that:
+1. Consumes the `<model>.created` / `<model>.updated` / `<model>.posted` / `<model>.deleted` events
+2. Materializes / mutates the row from event payload
+3. Switch the command from `Model.objects.create(...)` to `emit_event(...)` then read the projected row (the same pattern `create_journal_entry` uses at `accounting/commands.py:732-758`)
+
+**Suggested order of attack** (cheap → expensive):
+1. **SalesInvoice** — highest-value, central to the merchant-facing surface
+2. **PurchaseBill** — folds in A109 naturally (the `journal_entry_id` FK becomes a projection-write)
+3. **ShopifyOrder** — feeds the Shopify dashboard; high merchant visibility
+4. **PurchaseOrder + GoodsReceipt** — lower frequency, lower urgency
+
+**Why not now (pre-listing).** This is genuine architectural work. The migration must be careful: each rewrite is a semantics change for one of the most-touched files in its module. Pre-listing budget can't absorb this.
+
+**Connects to.** [[A99b]] (reconciliation/commands.py direct writes), [[A3]] (reactor extraction), [[A109]] (PurchaseBill→JE FK — folds in here). Also Phase B canonical platform models — when those land, this is a natural alignment point.
+
+**Lesson logged.** When advising on cleanup, default to "preserve all events; rebuild read models" rather than "delete events to clean orphans." The 2026-05-27 advice to delete `cash.customer_receipt_recorded` events was wrong in retrospect — those events would have repopulated the Customer Receipts list after the JE rebuild. Event deletion violates the source-of-truth invariant even when the intent is cleanup.
+
+### A109. `PurchaseBill` has no FK to its journal entry — operator cannot drill from bill to its accounting impact — **PENDING ~1-2h** (post-listing punch list, surfaced 2026-05-27 during Shopify_R deep-data investigation)
+
+`backend/purchases/commands.py:post_bill` creates and posts a `JournalEntry` (line 553-569) for every bill, but `PurchaseBill` model carries no FK back to that JE. Verified by shell: `hasattr(PurchaseBill_instance, 'journal_entry_id')` → False.
+
+Symptoms:
+- Operator viewing a Posted bill cannot click through to its JE — no "View JE" affordance possible without the FK
+- Audit trail from bill → ledger is broken for the operator UI
+- Programmatic queries to find a bill's JE require scanning `JournalEntry.memo` for "Purchase Bill {bill_number}" or joining via `source_module='purchase_bill'` if that exists
+
+Compare: `SalesInvoice` and `Shopify*` entities all carry direct FKs to their JE, and the UI shows "View JE" links on those rows.
+
+**Smallest fix:** add `journal_entry = ForeignKey(JournalEntry, on_delete=SET_NULL, null=True, related_name='+')` to `PurchaseBill`, populate inside `post_bill` after `je_result.success` check, expose in the bill detail API + UI.
+
+**Why now matters:** if/when A85's JE-preview-modal pattern extends to purchases, this FK is the load-bearing piece. Also surfaces in screencast risk — a Posted bill with no clickable JE makes the audit trail look incomplete.
+
+### A108. Dashboard "Total Revenue" doesn't reconcile with Shopify Connector dashboard or Reconciliation page — **PENDING ~1h, investigate-only** (post-listing punch list, surfaced 2026-05-27; only act if screencast playback exposes it)
+Observed on Shopify_R during 2026-05-27 verification:
+- `/dashboard` Total Revenue: **USD 39,448.78**
+- `/shopify` Revenue (Processed): **USD 16,800.00**
+- `/finance/reconciliation` Total Expected: **USD 16,950.00**
+
+The reconciliation arithmetic is internally consistent (16,950 sold − 1,700 settled = 15,250 open balance). The `/shopify` figure is close to expected sold (10 USD seed orders, sum ≈ 16,800-16,950 depending on tax/shipping inclusion). The `/dashboard` Total Revenue is ~2.35× larger — likely the global dashboard sums all P&L revenue-class accounts (41000 Sales + 42000 Shipping + possibly a returns-class line) and may also pick up seeded opening balances on the chart of accounts.
+
+Not wrong per se; the concern is a screencast viewer notices the gap and asks where 39k comes from. Investigate only if the playback shows the discrepancy on-camera; otherwise let it ride.
+
+**Suggested probe:** `SELECT account.code, account.name, SUM(amount) FROM journal_line WHERE company_id = 41 AND account.type IN ('REVENUE', 'INCOME') GROUP BY account.code, account.name ORDER BY SUM(amount) DESC;` to identify which account(s) push the dashboard number above the connector number.
 
 ### A102. GitHub Actions: make mypy spine + architecture tests blocking — **DONE 2026-05-26** (governance, surfaced by 2026-05-26 review #3)
 Codex review #3 said *"CI still allows mypy to fail"* — turned out to be exactly right. `.github/workflows/ci.yml` already existed (Glob filters dotfiles by default, hid it from earlier audits during Track 2; I'd been operating under the wrong assumption that there was no CI at all). The full-codebase mypy step in `backend-lint` carried `continue-on-error: true` (line 206), making type-checking advisory.

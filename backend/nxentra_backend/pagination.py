@@ -61,12 +61,15 @@ def paginate_queryset(
     """
     # ── Sorting ──────────────────────────────────────────────
     ordering = request.query_params.get("ordering", default_ordering)
-    if allowed_sort_fields and ordering:
+    if allowed_sort_fields and isinstance(ordering, str):
         # Strip leading "-" to check the base field name
         base_field = ordering.lstrip("-")
         if base_field not in allowed_sort_fields:
             ordering = default_ordering
-    queryset = queryset.order_by(ordering)
+    if isinstance(ordering, tuple | list):
+        queryset = queryset.order_by(*ordering)
+    else:
+        queryset = queryset.order_by(ordering)
 
     # ── Pagination ───────────────────────────────────────────
     total_count = queryset.count()

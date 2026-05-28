@@ -505,7 +505,7 @@ class ShopifyOrdersView(APIView):
 
         orders = ShopifyOrder.objects.filter(
             company=actor.company,
-        ).order_by("-shopify_created_at")[:100]
+        ).order_by("-shopify_created_at", "-shopify_order_id")[:100]
 
         return Response(ShopifyOrderSerializer(orders, many=True).data)
 

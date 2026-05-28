@@ -42,6 +42,9 @@ class ShopifyStoreSerializer(serializers.ModelSerializer):
 
 
 class ShopifyOrderSerializer(serializers.ModelSerializer):
+    journal_entry_pk = serializers.SerializerMethodField()
+    journal_entry_number = serializers.SerializerMethodField()
+
     class Meta:
         model = ShopifyOrder
         fields = [
@@ -60,10 +63,42 @@ class ShopifyOrderSerializer(serializers.ModelSerializer):
             "order_date",
             "status",
             "journal_entry_id",
+            "journal_entry_pk",
+            "journal_entry_number",
             "error_message",
             "created_at",
         ]
         read_only_fields = fields
+
+    def get_journal_entry_pk(self, obj):
+        if not obj.journal_entry_id:
+            return None
+        from accounting.models import JournalEntry
+
+        je = (
+            JournalEntry.objects.filter(
+                company=obj.company,
+                public_id=obj.journal_entry_id,
+            )
+            .only("id")
+            .first()
+        )
+        return je.id if je else None
+
+    def get_journal_entry_number(self, obj):
+        if not obj.journal_entry_id:
+            return None
+        from accounting.models import JournalEntry
+
+        je = (
+            JournalEntry.objects.filter(
+                company=obj.company,
+                public_id=obj.journal_entry_id,
+            )
+            .only("entry_number")
+            .first()
+        )
+        return je.entry_number if je else None
 
 
 class ShopifyRefundSerializer(serializers.ModelSerializer):
