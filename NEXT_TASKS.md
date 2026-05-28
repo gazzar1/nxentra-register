@@ -764,6 +764,40 @@ Two paths:
 
 Option 1 matches the existing bootstrap surface (which has `paymob` but not `paymob_accept`) and is the lower-cost choice. Worth a 5-minute Paymob-docs check before deciding.
 
+### A113. GR/IR three-way matching for accrual accuracy on goods-received-pre-invoice — **DEFERRED, trigger-based** (post-listing punch list, surfaced 2026-05-28 during JE-link audit-trail work)
+
+**Current Nxentra accounting flow (two-step):**
+1. PO created/approved → no JE (commitment only)
+2. Goods Receipt posted → updates `StockLedgerEntry` (physical quantity + average cost), **no JE**; per `backend/purchases/models.py:200` and `backend/purchases/commands.py:1156`: *"GRs create NO journal entries — accounting happens at bill posting."*
+3. Vendor Bill posted → full JE: `Dr Inventory + Dr Tax / Cr AP Control` (where the AP liability is born)
+4. Vendor Payment posted → `Dr AP / Cr Bank`
+
+**The accrual gap.** If goods arrive on day 1 but the vendor's invoice doesn't arrive until day 10, between day 1 and day 10 the trial balance does NOT reflect either the inventory asset or the AP liability. The stock subledger says "we have it physically" but the books say "we don't own it yet." For a Shopify merchant whose invoices typically arrive within hours/days of the goods, this is fine. For larger operations with longer receipt-to-invoice gaps, the trial balance is understated on month-end snapshots between GR and Bill.
+
+**Textbook three-way match pattern (what large ERPs do):**
+- New account role: `GR_IR_CLEARING` (Goods Received / Invoice Received clearing — a control liability account)
+- Post GR: `Dr Inventory / Cr GR/IR` — inventory hits books at receipt
+- Post Bill: `Dr GR/IR / Cr AP Control` — clears the accrual, creates the actual AP liability
+- Plus a Purchase Price Variance line if bill cost ≠ GR cost: `Dr PPV / Cr GR/IR` (or reverse)
+
+**Smallest fix when triggered:**
+1. Add `GR_IR_CLEARING` to `purchases` ModuleAccountMapping role list; bootstrap creates `21100 Goods Received / Invoice Received Clearing` (Liability, sub-control of AP).
+2. `post_goods_receipt` (`purchases/commands.py:1150`): build a JE with `Dr Inventory(item.inventory_account) / Cr GR_IR_CLEARING(module mapping)`. Tag the GR/IR line with `vendor_public_id` so the subledger can age "we received goods but haven't been billed yet" by vendor.
+3. `post_purchase_bill` (`purchases/commands.py:346`): change the inventory debit lines into `Dr GR_IR_CLEARING` (for matched amounts from linked PO lines). The non-inventory expense + tax debit lines stay as-is. Cr AP stays as-is.
+4. Add a Purchase Price Variance line when `bill.unit_cost ≠ gr.unit_cost` for the same PO line.
+5. New reconciliation surface: "GR/IR aging" — goods received but not yet billed, grouped by vendor.
+6. New invariant test: `sum(GR_IR_CLEARING balance) == sum(unmatched GR cost where bill not yet posted)`.
+
+**Trigger conditions** (don't pull forward without one of these):
+- A real Nxentra merchant reports inventory understated at month-end because invoices arrive late
+- Move into mid-market distribution/manufacturing ICP where month-end accruals are load-bearing
+- Auditor/CPA partner requests it for a specific customer
+- Or pre-emptive ahead of the Phase B canonical platform models work, when it's cheap to fold in
+
+**Why NOT now:** the current two-step model is correct for the Shopify-merchant ICP. The 2026-05-28 narration ("POs are commitments, goods receipts record physical stock, accounting happens at Bill posting, click any bill or vendor payment to see the JE") is the simpler, more digestible story for a merchant who doesn't have a CFO. Three-way matching adds a clearing account that operators have to understand. Don't build until a real customer needs it.
+
+**Connects to.** [[A110]] (source-document projection work — if SalesInvoice/PurchaseBill become projection-driven, the GR/IR transition is a natural alignment point), Phase B (canonical platform models — could fold in here).
+
 ### A112. `seed_test_csv_pack --flush` leaves downstream `journal_entry.created` / `sales.invoice_created` events as orphans, creating "ghost JE" history on re-seed — **PENDING ~1h** (post-listing punch list, surfaced 2026-05-28)
 
 The `_flush` method at `backend/shopify_connector/management/commands/seed_test_csv_pack.py:361-388` only deletes events tagged with `metadata__source='test_csv_pack'` — which captures `shopify.order_paid` + `shopify.refund_created` (the events the seed itself emits) but NOT the cascading downstream events that the Shopify projection emits when it consumes those (specifically `journal_entry.created`, `journal_entry.posted`, `sales.invoice_created`, `sales.invoice_posted`).
