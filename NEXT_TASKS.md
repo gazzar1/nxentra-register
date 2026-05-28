@@ -764,6 +764,39 @@ Two paths:
 
 Option 1 matches the existing bootstrap surface (which has `paymob` but not `paymob_accept`) and is the lower-cost choice. Worth a 5-minute Paymob-docs check before deciding.
 
+### A115. `JournalEntryProjection._clear_projected_data` is missing — `--rebuild` is a silent no-op on the JE read model — **PENDING ~30min** (HIGH PRIORITY, surfaced 2026-05-28 during Shopify_R orphan-event purge)
+
+**The bug.**  `BaseProjection.rebuild()` at `backend/projections/base.py:98-132` is documented as:
+
+> Default implementation:
+>   1. Reset bookmark to beginning
+>   2. Clear existing projected data
+>   3. Process all relevant events
+
+Step 2 calls `self._clear_projected_data(company)`.  The default implementation at base.py:134-139 is `pass` (a stub).  Subclasses are expected to override.
+
+`AccountBalanceProjection`, `PeriodAccountBalanceProjection`, `SubledgerBalanceProjection` all override correctly.  **`JournalEntryProjection` does NOT** — the rebuild call is therefore a silent no-op.  The projection's `handle()` method at `projections/accounting.py:332` uses `get_or_create(public_id=...)`, so replayed `journal_entry.created` events match the EXISTING JE row by public_id and do nothing.  Net effect: `--rebuild journal_entry_read_model` does not delete orphan JEs; it just re-confirms the existing state.
+
+**Symptom on Shopify_R 2026-05-28.**  After deleting 82 orphan `journal_entry.*` events and calling `--rebuild journal_entry_read_model`, the JE count actually went UP from 41 → 43 (because some previously incomplete JEs got picked up).  Clearing-account totals on the reconciliation page did not change.  Worked around by directly deleting orphan `JournalEntry` rows from the shell.
+
+**Smallest fix:**
+
+```python
+# projections/accounting.py — JournalEntryProjection
+def _clear_projected_data(self, company: Company) -> None:
+    from .models import JournalEntry, JournalLine
+    JournalLine.objects.filter(company=company).delete()
+    JournalEntry.objects.filter(company=company).delete()
+```
+
+Caveats:
+- JournalLine/JournalEntry are `ProjectionWriteGuard` models — the delete must happen in a `projection_writes_allowed()` context.  Check that the `rebuild` call site already grants this; if not, the `_clear_projected_data` override needs to grant it.
+- Other source documents (SalesInvoice, PurchaseBill, etc.) have `posted_journal_entry` FK with `on_delete=SET_NULL` — the JE delete will null those.  After rebuild materializes new JEs with new int pks, those FKs stay null until `relink_orphaned_je_fks` runs.  Documented in [[A114]] — A114's "Option 3" (source-doc projections) fixes this class of issue entirely.
+
+**Why this matters beyond demo data.**  Any operator who needs to recover from event corruption / partial-write scenarios is currently told `run_projections --rebuild journal_entry_read_model` is the recovery primitive.  It silently doesn't work.  Worth fixing before the first real merchant ever needs to use this path.
+
+**Connects to.** [[A110]] (source-doc projections), [[A111]] (BusinessEvent deletion guard), [[A112]] (seed flush downstream cleanup), [[A114]] (FK target stability).
+
 ### A114. Source-document → JournalEntry FK target should survive JE projection rebuild — **PENDING ~2-4h** (post-listing punch list, surfaced 2026-05-28 during Shopify_R re-link recovery)
 
 **The problem.**  Source documents (`SalesInvoice`, `SalesCreditNote`, `PurchaseBill`) carry `posted_journal_entry = ForeignKey(JournalEntry, on_delete=SET_NULL)`.  The FK target is `JournalEntry.id` — the auto-increment integer primary key.  When `run_projections --rebuild journal_entry_read_model` clears and replays the JE projection, the new JE rows get NEW int primary keys.  Source documents that were linked to the OLD ids now point to nothing — their FK gets nulled by SET_NULL during the rebuild's delete pass, and nothing reconnects them after.
