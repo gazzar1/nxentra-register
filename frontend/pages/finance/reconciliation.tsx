@@ -407,16 +407,26 @@ export default function ReconciliationPage() {
                 {summary.stage2.available ? (
                   <>
                     <div className="flex flex-wrap gap-6">
-                      <div>
+                      <Link
+                        href="/finance/settlements/import"
+                        className="rounded-md p-1 -m-1 hover:bg-muted/60 transition-colors cursor-pointer"
+                        title="Open Import Settlements"
+                      >
                         <p className="text-xs uppercase text-muted-foreground">Settlements posted</p>
-                        <p className="text-lg font-semibold">{summary.stage2.settled_count ?? 0}</p>
-                      </div>
-                      <div>
+                        <p className="text-lg font-semibold underline-offset-2 hover:underline">
+                          {summary.stage2.settled_count ?? 0}
+                        </p>
+                      </Link>
+                      <Link
+                        href="/finance/settlements/import"
+                        className="rounded-md p-1 -m-1 hover:bg-muted/60 transition-colors cursor-pointer"
+                        title="Open Import Settlements"
+                      >
                         <p className="text-xs uppercase text-muted-foreground">Settled total</p>
-                        <p className="text-lg font-semibold">
+                        <p className="text-lg font-semibold underline-offset-2 hover:underline">
                           {formatMoney(summary.stage2.settled_total ?? "0")}
                         </p>
-                      </div>
+                      </Link>
                     </div>
                     {summary.stage2.pending_csv_import_note && (
                       <div className="flex items-start gap-2 rounded-md border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs">
@@ -444,18 +454,36 @@ export default function ReconciliationPage() {
               <CardContent className="text-sm">
                 {summary.stage3.available ? (
                   <div className="flex flex-wrap gap-6">
-                    <div>
+                    <Link
+                      href="/accounting/bank-reconciliation"
+                      className="rounded-md p-1 -m-1 hover:bg-muted/60 transition-colors cursor-pointer"
+                      title="Open Bank Reconciliation"
+                    >
                       <p className="text-xs uppercase text-muted-foreground">Total bank lines</p>
-                      <p className="text-lg font-semibold">{summary.stage3.total_lines ?? 0}</p>
-                    </div>
-                    <div>
+                      <p className="text-lg font-semibold underline-offset-2 hover:underline">
+                        {summary.stage3.total_lines ?? 0}
+                      </p>
+                    </Link>
+                    <Link
+                      href="/accounting/bank-reconciliation"
+                      className="rounded-md p-1 -m-1 hover:bg-muted/60 transition-colors cursor-pointer"
+                      title="Open Bank Reconciliation"
+                    >
                       <p className="text-xs uppercase text-muted-foreground">Matched</p>
-                      <p className="text-lg font-semibold">{summary.stage3.matched_lines ?? 0}</p>
-                    </div>
-                    <div>
+                      <p className="text-lg font-semibold underline-offset-2 hover:underline">
+                        {summary.stage3.matched_lines ?? 0}
+                      </p>
+                    </Link>
+                    <Link
+                      href="/accounting/bank-reconciliation"
+                      className="rounded-md p-1 -m-1 hover:bg-muted/60 transition-colors cursor-pointer"
+                      title="Open Bank Reconciliation"
+                    >
                       <p className="text-xs uppercase text-muted-foreground">Unmatched</p>
-                      <p className="text-lg font-semibold">{summary.stage3.unmatched_lines ?? 0}</p>
-                    </div>
+                      <p className="text-lg font-semibold underline-offset-2 hover:underline">
+                        {summary.stage3.unmatched_lines ?? 0}
+                      </p>
+                    </Link>
                     {(summary.stage3.matched_with_unresolved_difference ?? 0) > 0 && (
                       <a
                         href="#needs-review-queue"
@@ -657,7 +685,7 @@ function ProviderRow({
               </div>
             ) : tab === "orders" ? (
               orders && orders.orders.length > 0 ? (
-                <OrdersTable orders={orders} />
+                <OrdersTable orders={orders} row={row} />
               ) : (
                 <p className="py-2 text-xs text-muted-foreground italic">
                   No orders for this provider.
@@ -708,13 +736,23 @@ function ProviderRow({
   );
 }
 
-function OrdersTable({ orders }: { orders: ReconciliationOrders }) {
+function OrdersTable({
+  orders,
+  row,
+}: {
+  orders: ReconciliationOrders;
+  row: ReconciliationProviderRow;
+}) {
   return (
     <>
       <div className="mb-2 grid grid-cols-3 gap-3 text-[11px]">
-        <StatusTile status="expected" totals={orders.totals} />
-        <StatusTile status="settled" totals={orders.totals} />
-        <StatusTile status="banked" totals={orders.totals} />
+        <StatusTile
+          status="expected"
+          count={orders.totals.by_status.expected}
+          amount={row.total_debit}
+        />
+        <StatusTile status="settled" amount={row.total_credit} />
+        <StatusTile status="banked" amount={row.banked ?? "0"} />
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
@@ -754,20 +792,22 @@ function OrdersTable({ orders }: { orders: ReconciliationOrders }) {
 
 function StatusTile({
   status,
-  totals,
+  count,
+  amount,
 }: {
   status: OrderReconciliationStatus;
-  totals: ReconciliationOrders["totals"];
+  count?: number;
+  amount: string;
 }) {
-  const count = totals.by_status[status];
-  const paid = totals.shopify_paid_by_status[status];
   return (
     <div className="rounded border bg-background p-2">
       <div className="flex items-center gap-1">
         <Badge variant={ORDER_STATUS_VARIANT[status]}>{ORDER_STATUS_LABEL[status]}</Badge>
-        <span className="text-muted-foreground">×{count}</span>
+        {count !== undefined && (
+          <span className="text-muted-foreground">×{count}</span>
+        )}
       </div>
-      <div className="mt-1 font-mono">{formatMoney(paid)}</div>
+      <div className="mt-1 font-mono">{formatMoney(amount)}</div>
     </div>
   );
 }
