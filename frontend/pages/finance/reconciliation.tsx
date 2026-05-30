@@ -437,10 +437,11 @@ export default function ReconciliationPage() {
                         className="rounded-md p-1 -m-1 hover:bg-muted/60 transition-colors cursor-pointer"
                         title="Open Import Settlements"
                       >
-                        <p className="text-xs uppercase text-muted-foreground">Settled total</p>
+                        <p className="text-xs uppercase text-muted-foreground">Net to bank</p>
                         <p className="text-lg font-semibold underline-offset-2 hover:underline">
                           {formatMoney(summary.stage2.settled_total ?? "0")}
                         </p>
+                        <p className="text-[10px] text-muted-foreground">After provider fees</p>
                       </Link>
                     </div>
                     {summary.stage2.pending_csv_import_note && (
