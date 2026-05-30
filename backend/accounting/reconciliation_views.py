@@ -134,6 +134,41 @@ def _banked_by_provider(company, dimension) -> dict[int, Decimal]:
     return banked
 
 
+def _refunded_by_provider(company, dimension) -> dict[int, Decimal]:
+    """Compute, per settlement_provider dimension_value, the cumulative
+    amount drained from clearing by posted credit notes (refunds).
+
+    A119: pre-A119, refund CRs on the gateway control (= clearing) account
+    were lumped into Stage 1 "Settled". They look identical to settlement
+    CRs in raw aggregation but mean something different — money the
+    provider doesn't owe anymore because the customer was refunded. We
+    split them out so "Settled" only counts genuine settlement drains.
+
+    The Shopify refund path (`create_and_post_credit_note_for_platform`)
+    tags the AR Control credit line with the provider dimension, which is
+    what makes the join work.
+    """
+    from sales.models import SalesCreditNote
+
+    posted_cn_je_ids = SalesCreditNote.objects.filter(
+        company=company,
+        status=SalesCreditNote.Status.POSTED,
+        posted_journal_entry__isnull=False,
+    ).values_list("posted_journal_entry_id", flat=True)
+
+    rows = (
+        JournalLine.objects.filter(
+            company=company,
+            entry_id__in=list(posted_cn_je_ids),
+            entry__status=JournalEntry.Status.POSTED,
+            analysis_tags__dimension=dimension,
+        )
+        .values("analysis_tags__dimension_value_id")
+        .annotate(refunded=Sum("credit"))
+    )
+    return {row["analysis_tags__dimension_value_id"]: (row["refunded"] or Decimal("0")) for row in rows}
+
+
 def _stage1_per_provider(company, today: date) -> list[dict]:
     """Per-provider sales→clearing balances pivoted on
     (clearing_account, settlement_provider_dimension_value).
@@ -153,6 +188,10 @@ def _stage1_per_provider(company, today: date) -> list[dict]:
     # Pre-compute banked totals per provider (joined via batch_id across
     # settlement JE -> clearance JE pairs).
     banked_by_provider = _banked_by_provider(company, dimension)
+
+    # A119: pre-compute refunded totals per provider so Stage 1 "Settled"
+    # excludes credit-note CRs.
+    refunded_by_provider = _refunded_by_provider(company, dimension)
 
     # All journal lines tagged with the SETTLEMENT_PROVIDER dimension,
     # restricted to posted entries (DRAFT / INCOMPLETE entries don't move
@@ -195,9 +234,15 @@ def _stage1_per_provider(company, today: date) -> list[dict]:
     for row in rows:
         debit = row["total_debit"] or Decimal("0")
         credit = row["total_credit"] or Decimal("0")
-        balance = debit - credit
+        balance = debit - credit  # net open balance — refunds reduce expected, settlements drain it
         provider = providers_by_dim_value.get(row["analysis_tags__dimension_value_id"])
         banked = banked_by_provider.get(row["analysis_tags__dimension_value_id"], Decimal("0"))
+        refunded = refunded_by_provider.get(row["analysis_tags__dimension_value_id"], Decimal("0"))
+        # A119: total_credit raw = settlements + refund CRs. Settled-only =
+        # raw credit minus refunds. Clamp at zero in case of edge ordering.
+        settled = credit - refunded
+        if settled < Decimal("0"):
+            settled = Decimal("0")
         results.append(
             {
                 "account_id": row["account_id"],
@@ -210,7 +255,8 @@ def _stage1_per_provider(company, today: date) -> list[dict]:
                 "provider_type": provider.provider_type if provider else "manual",
                 "needs_review": provider.needs_review if provider else False,
                 "total_debit": _money_str(debit),
-                "total_credit": _money_str(credit),
+                "total_credit": _money_str(settled),  # A119: settlements only, refunds excluded
+                "total_refunded": _money_str(refunded),
                 "open_balance": _money_str(balance),
                 "banked": _money_str(banked),
                 "oldest_entry_date": (row["oldest_entry_date"].isoformat() if row["oldest_entry_date"] else None),
@@ -226,7 +272,12 @@ def _stage1_totals(rows: list[dict]) -> dict:
     """Roll up Stage 1 per-provider rows into a top-line summary."""
     total_expected = sum(Decimal(r["total_debit"]) for r in rows)
     total_settled = sum(Decimal(r["total_credit"]) for r in rows)
-    open_balance = total_expected - total_settled
+    # A119: refunds drain clearing too — track separately so the top tile
+    # can show "Settled" cleanly without inflating it with refund amounts.
+    total_refunded = sum(Decimal(r.get("total_refunded", "0")) for r in rows)
+    # Sum per-row open_balance directly — each row already nets refunds
+    # against debits, so summing here is equivalent to expected - settled - refunded.
+    open_balance = sum(Decimal(r["open_balance"]) for r in rows)
     review_count = sum(1 for r in rows if r["needs_review"])
     aged_30_plus = sum(
         Decimal(r["open_balance"]) for r in rows if r["aging_bucket"] == "30_plus" and Decimal(r["open_balance"]) > 0
@@ -234,6 +285,7 @@ def _stage1_totals(rows: list[dict]) -> dict:
     return {
         "total_expected": _money_str(total_expected),
         "total_settled": _money_str(total_settled),
+        "total_refunded": _money_str(total_refunded),
         "open_balance": _money_str(open_balance),
         "providers_with_open_balance": sum(1 for r in rows if Decimal(r["open_balance"]) > 0),
         "providers_needing_review": review_count,
@@ -354,6 +406,7 @@ def _build_narrative(
         )
 
     settled = Decimal(stage1_totals.get("total_settled") or "0")
+    refunded = Decimal(stage1_totals.get("total_refunded") or "0")
     open_balance = Decimal(stage1_totals.get("open_balance") or "0")
     unresolved = needs_review.get("unresolved_difference_count", 0)
     unresolved_amount = Decimal(needs_review.get("unresolved_difference_amount") or "0")
@@ -380,9 +433,10 @@ def _build_narrative(
     parts.append(f"Shopify says {_fmt(stage1_totals.get('total_expected'))} {company_currency} sold.")
 
     if settled > 0:
-        parts.append(
-            f"{_fmt(stage1_totals.get('total_settled'))} has been drained from clearing via provider settlements"
-        )
+        clause = f"{_fmt(stage1_totals.get('total_settled'))} has been drained from clearing via provider settlements"
+        if refunded > 0:
+            clause += f" and {_fmt(stage1_totals.get('total_refunded'))} via customer refunds"
+        parts.append(clause)
         if open_balance > 0:
             # When providers have BOTH positive (still owed) and negative
             # (over-credited) balances, the net "X expected from providers"
@@ -408,6 +462,15 @@ def _build_narrative(
                 parts[-1] += f"; {_fmt(stage1_totals.get('open_balance'))} is still expected from providers."
         else:
             parts[-1] += "."
+    elif refunded > 0:
+        clause = (
+            f"{_fmt(stage1_totals.get('total_refunded'))} has been refunded to customers — no settlements imported yet"
+        )
+        if open_balance > 0:
+            clause += f"; {_fmt(stage1_totals.get('open_balance'))} is still expected from providers."
+        else:
+            clause += "."
+        parts.append(clause)
     elif open_balance > 0:
         parts.append(
             f"{_fmt(stage1_totals.get('open_balance'))} is still expected from providers — no settlements imported yet."

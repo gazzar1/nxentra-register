@@ -25,6 +25,7 @@ export interface ReconciliationProviderRow {
   needs_review: boolean;
   total_debit: string;
   total_credit: string;
+  total_refunded: string;
   open_balance: string;
   banked: string;
   oldest_entry_date: string | null;
@@ -36,6 +37,7 @@ export interface ReconciliationProviderRow {
 export interface Stage1Totals {
   total_expected: string;
   total_settled: string;
+  total_refunded: string;
   open_balance: string;
   providers_with_open_balance: number;
   providers_needing_review: number;

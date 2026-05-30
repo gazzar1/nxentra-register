@@ -298,7 +298,13 @@ export default function ReconciliationPage() {
 
             {/* Top-line totals */}
             {totals && (
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div
+                className={`grid gap-4 sm:grid-cols-2 ${
+                  Number(totals.total_refunded ?? "0") > 0
+                    ? "lg:grid-cols-5"
+                    : "lg:grid-cols-4"
+                }`}
+              >
                 <SummaryTile
                   label="Total Expected"
                   value={formatMoney(totals.total_expected)}
@@ -308,9 +314,17 @@ export default function ReconciliationPage() {
                 <SummaryTile
                   label="Total Settled"
                   value={formatMoney(totals.total_settled)}
-                  caption="Already drained from clearing"
+                  caption="Drained via provider settlements"
                   href="#stage-2"
                 />
+                {Number(totals.total_refunded ?? "0") > 0 && (
+                  <SummaryTile
+                    label="Total Refunded"
+                    value={formatMoney(totals.total_refunded)}
+                    caption="Drained via customer refunds"
+                    href="#stage-1"
+                  />
+                )}
                 <SummaryTile
                   label="Open Balance"
                   value={formatMoney(totals.open_balance)}
@@ -355,6 +369,7 @@ export default function ReconciliationPage() {
                           <th className="py-2 pr-3">Account</th>
                           <th className="py-2 pr-3 text-right">Expected</th>
                           <th className="py-2 pr-3 text-right">Settled</th>
+                          <th className="py-2 pr-3 text-right">Refunded</th>
                           <th className="py-2 pr-3 text-right">Banked</th>
                           <th className="py-2 pr-3 text-right">Open Balance</th>
                           <th className="py-2 pr-3">Oldest</th>
@@ -614,6 +629,7 @@ function ProviderRow({
         </td>
         <td className="py-2 pr-3 text-right">{formatMoney(row.total_debit)}</td>
         <td className="py-2 pr-3 text-right">{formatMoney(row.total_credit)}</td>
+        <td className="py-2 pr-3 text-right">{formatMoney(row.total_refunded ?? "0")}</td>
         <td className="py-2 pr-3 text-right">{formatMoney(row.banked ?? "0")}</td>
         <td className={`py-2 pr-3 text-right font-semibold ${open > 0 ? "" : "text-muted-foreground"}`}>
           {formatMoney(row.open_balance)}
@@ -636,7 +652,7 @@ function ProviderRow({
       </tr>
       {isExpanded && (
         <tr>
-          <td colSpan={9} className="bg-muted/30 px-3 py-3">
+          <td colSpan={10} className="bg-muted/30 px-3 py-3">
             {/* Tab bar — Orders (merchant-friendly) / JE lines (auditor view) */}
             <div className="mb-3 flex items-center gap-2">
               <button
@@ -745,14 +761,16 @@ function OrdersTable({
 }) {
   return (
     <>
-      <div className="mb-2 grid grid-cols-3 gap-3 text-[11px]">
+      <div className="mb-2 grid grid-cols-4 gap-3 text-[11px]">
         <StatusTile
-          status="expected"
+          label="Expected"
+          variant="warning"
           count={orders.totals.by_status.expected}
           amount={row.total_debit}
         />
-        <StatusTile status="settled" amount={row.total_credit} />
-        <StatusTile status="banked" amount={row.banked ?? "0"} />
+        <StatusTile label="Settled" variant="secondary" amount={row.total_credit} />
+        <StatusTile label="Refunded" variant="destructive" amount={row.total_refunded ?? "0"} />
+        <StatusTile label="Banked" variant="success" amount={row.banked ?? "0"} />
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
@@ -791,18 +809,20 @@ function OrdersTable({
 }
 
 function StatusTile({
-  status,
+  label,
+  variant,
   count,
   amount,
 }: {
-  status: OrderReconciliationStatus;
+  label: string;
+  variant: "secondary" | "warning" | "success" | "destructive";
   count?: number;
   amount: string;
 }) {
   return (
     <div className="rounded border bg-background p-2">
       <div className="flex items-center gap-1">
-        <Badge variant={ORDER_STATUS_VARIANT[status]}>{ORDER_STATUS_LABEL[status]}</Badge>
+        <Badge variant={variant}>{label}</Badge>
         {count !== undefined && (
           <span className="text-muted-foreground">×{count}</span>
         )}
