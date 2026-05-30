@@ -276,17 +276,25 @@ export default function DashboardPage() {
                 </CardHeader>
                 <CardContent>
                   <div className="text-2xl font-bold ltr-number">
-                    <span className={
-                      widgets.recon_health.match_rate >= 80
-                        ? "text-green-500"
-                        : widgets.recon_health.match_rate >= 50
-                        ? "text-yellow-500"
-                        : "text-red-500"
-                    }>
-                      {widgets.recon_health.match_rate}%
-                    </span>
+                    {widgets.recon_health.total_transactions === 0 ? (
+                      <span className="text-muted-foreground">—</span>
+                    ) : (
+                      <span className={
+                        widgets.recon_health.match_rate >= 80
+                          ? "text-green-500"
+                          : widgets.recon_health.match_rate >= 50
+                          ? "text-yellow-500"
+                          : "text-red-500"
+                      }>
+                        {widgets.recon_health.match_rate}%
+                      </span>
+                    )}
                   </div>
-                  <p className="text-xs text-muted-foreground mb-3">match rate</p>
+                  <p className="text-xs text-muted-foreground mb-3">
+                    {widgets.recon_health.total_transactions === 0
+                      ? "No bank statements imported yet"
+                      : "match rate"}
+                  </p>
                   <div className="space-y-1.5 text-sm">
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">Matched</span>
