@@ -73,23 +73,51 @@ export const shopifyService = {
   disconnect: () =>
     apiClient.post<{ status: string }>("/shopify/disconnect/"),
 
-  // Product sync
+  // Product sync.
+  // status="unavailable" + message is returned when Shopify denies access
+  // (e.g. read_products scope not granted on this install). The call still
+  // resolves successfully so the UI can show an informational toast instead
+  // of a destructive one.
   syncProducts: () =>
-    apiClient.post<{ created: number; linked: number; updated: number; skipped: number }>("/shopify/sync-products/"),
+    apiClient.post<{
+      created: number;
+      linked: number;
+      updated: number;
+      skipped: number;
+      status?: "unavailable";
+      message?: string;
+    }>("/shopify/sync-products/"),
 
   // Orders
   getOrders: () =>
     apiClient.get<ShopifyOrder[]>("/shopify/orders/"),
 
-  // Re-sync missed orders (catch-up for missed webhooks)
+  // Re-sync missed orders (catch-up for missed webhooks).
+  // status="unavailable" + message is returned when Shopify denies access
+  // (e.g. read_orders scope not granted on this install or REST API version
+  // past its support window). status="error" + error returned on real failures.
   resyncOrders: (params?: { days?: number }) =>
-    apiClient.post<{ status: string; fetched: number; created: number; skipped: number; errors: number }>(
-      "/shopify/resync-orders/", params || {}
-    ),
+    apiClient.post<{
+      status: string;
+      fetched: number;
+      created: number;
+      skipped: number;
+      errors: number;
+      message?: string;
+      error?: string;
+    }>("/shopify/resync-orders/", params || {}),
 
-  // Payouts
+  // Payouts.
+  // status="unavailable" + message is returned when the store hasn't enabled
+  // Shopify Payments (the default on fresh dev stores) or Shopify denies
+  // access for any other policy reason. The call still resolves successfully.
   syncPayouts: () =>
-    apiClient.post<{ created: number; skipped: number }>("/shopify/sync-payouts/"),
+    apiClient.post<{
+      created: number;
+      skipped: number;
+      status?: "unavailable";
+      message?: string;
+    }>("/shopify/sync-payouts/"),
 
   // Account mapping
   getAccountMapping: () =>

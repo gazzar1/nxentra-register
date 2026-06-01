@@ -54,6 +54,44 @@ SHOPIFY_SCOPES = getattr(
 )
 SHOPIFY_APP_URL = getattr(settings, "SHOPIFY_APP_URL", "")
 
+# Shopify REST Admin API version. Keep in sync with shopify.app.toml's
+# [webhooks] api_version. Bumped 2026-06-01 from 2025-01 (past its 12-month
+# support window) ahead of App Store resubmission. Override via Django
+# settings.SHOPIFY_API_VERSION when testing against a different release.
+SHOPIFY_API_VERSION = getattr(settings, "SHOPIFY_API_VERSION", "2026-04")
+
+
+def _shopify_api_root(shop_domain: str) -> str:
+    return f"https://{shop_domain}/admin/api/{SHOPIFY_API_VERSION}"
+
+
+def _shopify_access_denied(exc: "requests.RequestException") -> str | None:
+    """
+    Classify a Shopify REST error as a recoverable "access denied" condition.
+
+    Returns a human-readable reason when Shopify replied with a 401/402/403/404
+    that the merchant can self-diagnose (missing scope, Shopify Payments not
+    enabled, resource hidden behind app review). Returns None for everything
+    else (real network failure, 5xx, rate limit) — those should still bubble
+    as command failures.
+
+    This exists so the App Store reviewer's bare dev store (no Shopify Payments
+    configured, no products created) stops seeing red "Failed to sync" toasts
+    when the sync simply has nothing to do or is gated behind a permission the
+    merchant must grant.
+    """
+    resp = getattr(exc, "response", None)
+    if resp is None:
+        return None
+    code = resp.status_code
+    if code in (401, 402, 403, 404):
+        # Don't try to parse Shopify's body — versions and endpoints differ in
+        # whether they wrap the error string. The status code alone is enough
+        # to flip "Failed" → "Nothing to sync (access not granted on this
+        # store)".
+        return f"Shopify returned HTTP {code} for this resource."
+    return None
+
 
 # =============================================================================
 # OAuth Commands
@@ -765,7 +803,7 @@ def sync_payouts(store: ShopifyStore) -> CommandResult:
 
     try:
         resp = requests.get(
-            f"https://{store.shop_domain}/admin/api/2025-01/shopify_payments/payouts.json",
+            f"{_shopify_api_root(store.shop_domain)}/shopify_payments/payouts.json",
             headers=headers,
             params={"status": "paid", "limit": 50},
             timeout=15,
@@ -773,6 +811,30 @@ def sync_payouts(store: ShopifyStore) -> CommandResult:
         resp.raise_for_status()
         payouts_data = resp.json().get("payouts", [])
     except requests.RequestException as e:
+        # Shopify returns 403 on this endpoint when the store hasn't enabled
+        # Shopify Payments — the default state of every fresh dev store the
+        # App Store reviewer creates. Treat that as "nothing to sync" rather
+        # than an error so the reviewer doesn't see a red toast on first
+        # connect.
+        denial = _shopify_access_denied(e)
+        if denial:
+            logger.info(
+                "Skipping payout sync for %s: %s (likely Shopify Payments not enabled or scope not granted)",
+                store.shop_domain,
+                denial,
+            )
+            return CommandResult.ok(
+                data={
+                    "created": 0,
+                    "skipped": 0,
+                    "status": "unavailable",
+                    "message": (
+                        "Shopify Payments isn't available on this store. "
+                        "Enable Shopify Payments in the store admin to start "
+                        "syncing payouts."
+                    ),
+                }
+            )
         logger.error("Failed to fetch payouts from Shopify: %s", e)
         return CommandResult.fail(f"Shopify API error: {e}")
 
@@ -922,7 +984,7 @@ def fetch_payout_transactions(store: ShopifyStore, payout: ShopifyPayout) -> Com
 
     try:
         resp = requests.get(
-            f"https://{store.shop_domain}/admin/api/2025-01/shopify_payments/balance/transactions.json",
+            f"{_shopify_api_root(store.shop_domain)}/shopify_payments/balance/transactions.json",
             headers=headers,
             params={"payout_id": payout.shopify_payout_id, "limit": 250},
             timeout=30,
@@ -1686,7 +1748,7 @@ def _ensure_shopify_warehouse(store):
     locations = []
     try:
         resp = requests.get(
-            f"https://{store.shop_domain}/admin/api/2025-01/locations.json",
+            f"{_shopify_api_root(store.shop_domain)}/locations.json",
             headers=headers,
             timeout=15,
         )
@@ -2050,7 +2112,7 @@ def _fetch_variant_cost(store, variant_id, convert_to_currency: str = "") -> Dec
     try:
         # Get the variant to find its inventory_item_id and the store currency
         resp = requests.get(
-            f"https://{store.shop_domain}/admin/api/2025-01/variants/{variant_id}.json",
+            f"{_shopify_api_root(store.shop_domain)}/variants/{variant_id}.json",
             headers=headers,
             timeout=10,
         )
@@ -2138,7 +2200,7 @@ def _get_shopify_store_currency(store, headers=None) -> str:
         }
     try:
         resp = requests.get(
-            f"https://{store.shop_domain}/admin/api/2025-01/shop.json",
+            f"{_shopify_api_root(store.shop_domain)}/shop.json",
             headers=headers,
             timeout=10,
         )
@@ -2318,13 +2380,41 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
     skipped = 0
     errors = []
 
-    url = f"https://{store.shop_domain}/admin/api/2025-01/products.json?limit=250"
+    url = f"{_shopify_api_root(store.shop_domain)}/products.json?limit=250"
 
     while url:
         try:
             resp = requests.get(url, headers=headers, timeout=30)
             resp.raise_for_status()
         except requests.RequestException as e:
+            # 403 here means the access token wasn't granted `read_products`
+            # at install time, or the store hides the products endpoint for
+            # some other policy reason. Either way, the merchant needs to
+            # reinstall / reauthorize — not retry — so surface a friendly
+            # message instead of a red "Failed to sync" toast. App Store
+            # reviewers hit this on fresh dev stores.
+            denial = _shopify_access_denied(e)
+            if denial:
+                logger.info(
+                    "Skipping product sync for %s: %s (likely read_products scope not granted on this install)",
+                    store.shop_domain,
+                    denial,
+                )
+                return CommandResult.ok(
+                    data={
+                        "created": 0,
+                        "linked": 0,
+                        "updated": 0,
+                        "skipped": 0,
+                        "errors": [],
+                        "status": "unavailable",
+                        "message": (
+                            "Shopify didn't grant read access to products on "
+                            "this store. Disconnect and reconnect to re-grant "
+                            "the read_products scope, then try again."
+                        ),
+                    }
+                )
             logger.error("Shopify products API error: %s", e)
             return CommandResult.fail(f"Shopify API error: {e}")
 
@@ -2660,7 +2750,7 @@ def _fetch_inventory_item_costs(store, inventory_item_ids, headers):
         ids_param = ",".join(str(x) for x in batch)
         try:
             resp = requests.get(
-                f"https://{store.shop_domain}/admin/api/2025-01/inventory_items.json",
+                f"{_shopify_api_root(store.shop_domain)}/inventory_items.json",
                 headers=headers,
                 params={"ids": ids_param},
                 timeout=15,

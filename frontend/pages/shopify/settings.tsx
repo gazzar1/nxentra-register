@@ -262,9 +262,13 @@ export default function ShopifySettingsPage() {
     setSyncingProducts(true);
     try {
       const { data } = await shopifyService.syncProducts();
-      toast({
-        title: `Product sync complete: ${data.created} created, ${data.linked} linked, ${data.updated} updated`,
-      });
+      if (data.status === "unavailable") {
+        toast({ title: data.message ?? "Shopify product sync isn't available on this store." });
+      } else {
+        toast({
+          title: `Product sync complete: ${data.created} created, ${data.linked} linked, ${data.updated} updated`,
+        });
+      }
     } catch {
       toast({ title: "Failed to sync products.", variant: "destructive" });
     } finally {
@@ -276,9 +280,13 @@ export default function ShopifySettingsPage() {
     setSyncingPayouts(true);
     try {
       const { data } = await shopifyService.syncPayouts();
-      toast({
-        title: `Payout sync complete: ${data.created} new, ${data.skipped} already synced`,
-      });
+      if (data.status === "unavailable") {
+        toast({ title: data.message ?? "Shopify payout sync isn't available on this store." });
+      } else {
+        toast({
+          title: `Payout sync complete: ${data.created} new, ${data.skipped} already synced`,
+        });
+      }
       fetchStore(); // refresh last_sync_at
     } catch {
       toast({ title: "Failed to sync payouts.", variant: "destructive" });
@@ -291,9 +299,18 @@ export default function ShopifySettingsPage() {
     setResyncingOrders(true);
     try {
       const { data } = await shopifyService.resyncOrders({ days: 7 });
-      toast({
-        title: `Order re-sync complete: ${data.created} new, ${data.skipped} already synced${data.errors ? `, ${data.errors} errors` : ""}`,
-      });
+      if (data.status === "unavailable") {
+        toast({ title: data.message ?? "Shopify order re-sync isn't available on this store." });
+      } else if (data.status === "error") {
+        toast({
+          title: data.error ?? "Failed to re-sync orders.",
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: `Order re-sync complete: ${data.created} new, ${data.skipped} already synced${data.errors ? `, ${data.errors} errors` : ""}`,
+        });
+      }
       fetchStore();
     } catch {
       toast({ title: "Failed to re-sync orders.", variant: "destructive" });

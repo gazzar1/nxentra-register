@@ -49,6 +49,8 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS(f"Done. Created {total_created}, updated {total_updated} warehouses."))
 
     def _sync_store_locations(self, store):
+        from shopify_connector.commands import _shopify_api_root
+
         headers = {
             "X-Shopify-Access-Token": store.access_token,
             "Content-Type": "application/json",
@@ -56,7 +58,7 @@ class Command(BaseCommand):
 
         try:
             resp = requests.get(
-                f"https://{store.shop_domain}/admin/api/2025-01/locations.json",
+                f"{_shopify_api_root(store.shop_domain)}/locations.json",
                 headers=headers,
                 timeout=15,
             )

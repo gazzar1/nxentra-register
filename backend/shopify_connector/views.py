@@ -197,11 +197,18 @@ class ShopifyWebhookView(APIView):
                 status=ShopifyStore.Status.ACTIVE,
             )
         except ShopifyStore.DoesNotExist:
-            # For app/uninstalled, try disconnected stores too
+            # For app/uninstalled, try disconnected stores too. Multiple
+            # companies can share the same shop_domain when the store has
+            # been connected and disconnected from different test companies
+            # — the unique_active constraint only forbids more than one
+            # ACTIVE row. Use .filter().first() so we don't blow up with
+            # MultipleObjectsReturned (A120, surfaced via Sentry
+            # faa8b00779d04db2a3aed3bbbb366198 from our own diagnostic shell
+            # but the same path is reachable from a real app/uninstalled
+            # webhook).
             if topic == "app/uninstalled":
-                try:
-                    store = ShopifyStore.objects.get(shop_domain=shop_domain)
-                except ShopifyStore.DoesNotExist:
+                store = ShopifyStore.objects.filter(shop_domain=shop_domain).order_by("-created_at").first()
+                if not store:
                     logger.warning("Unknown shop domain: %s", shop_domain)
                     return HttpResponse(status=200)  # Acknowledge anyway
             else:

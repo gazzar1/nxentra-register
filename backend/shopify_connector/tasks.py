@@ -174,7 +174,9 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
     created = 0
     skipped = 0
     errors = 0
-    page_url = f"https://{store.shop_domain}/admin/api/2025-01/orders.json"
+    from .commands import _shopify_api_root
+
+    page_url = f"{_shopify_api_root(store.shop_domain)}/orders.json"
     params = {
         "status": "any",
         "created_at_min": created_at_min,
@@ -200,6 +202,33 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
             resp = requests.get(page_url, headers=headers, params=params, timeout=30)
             resp.raise_for_status()
         except requests.RequestException as e:
+            # A120 (2026-06-01): treat 401/402/403/404 as "unavailable" rather
+            # than a hard failure. Same rationale as sync_products/sync_payouts
+            # — Shopify returns 403 on read-orders for tokens missing the scope
+            # and (as of mid-2026) on REST endpoints whose API version is past
+            # its support window. We want the UI to say "Shopify denied
+            # access" instead of a generic failure toast.
+            from .commands import _shopify_access_denied
+
+            denial = _shopify_access_denied(e)
+            if denial and fetched == 0:
+                logger.info(
+                    "Skipping order re-sync for %s: %s (scope not granted or API version unsupported on this store)",
+                    store.shop_domain,
+                    denial,
+                )
+                return {
+                    "status": "unavailable",
+                    "fetched": 0,
+                    "created": 0,
+                    "skipped": 0,
+                    "errors": 0,
+                    "message": (
+                        "Shopify didn't grant read access to orders on this "
+                        "store. Disconnect and reconnect to re-grant the "
+                        "read_orders scope, then try again."
+                    ),
+                }
             logger.error("Failed to fetch orders from Shopify %s: %s", store.shop_domain, e)
             return {
                 "status": "partial" if fetched > 0 else "error",
@@ -281,7 +310,7 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
         logger.warning(
             "[A52] _sync_orders fetched zero orders shop=%s created_at_min=%s created_at_max=%s "
             "(check: access_token valid? store has orders in this date range? "
-            "API version 2025-01 still supported by shop?)",
+            "API version still supported by shop?)",
             store.shop_domain,
             created_at_min,
             created_at_max,
