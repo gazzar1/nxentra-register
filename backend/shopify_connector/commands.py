@@ -131,8 +131,12 @@ def get_install_url(company, shop_domain: str) -> dict:
 @transaction.atomic
 def complete_oauth(company, shop_domain: str, code: str, nonce: str) -> CommandResult:
     """
-    Exchange the OAuth code for a permanent access token.
-    Called from the OAuth callback endpoint.
+    Exchange the OAuth code for an expiring offline access token (A122).
+
+    Sends `expiring=1` in the request body so Shopify returns a refreshable
+    offline token (access_token valid ~1h + refresh_token valid ~90d) instead
+    of the legacy permanent non-expiring token. Permanent tokens are
+    deprecated and will be rejected entirely by 2027-01-01.
     """
     try:
         store = ShopifyStore.objects.get(company=company, shop_domain=shop_domain)
@@ -142,7 +146,7 @@ def complete_oauth(company, shop_domain: str, code: str, nonce: str) -> CommandR
     if store.oauth_nonce != nonce:
         return CommandResult.fail("OAuth state mismatch — possible CSRF attack.")
 
-    # Exchange code for access token
+    # Exchange code for expiring access token (A122).
     token_url = f"https://{shop_domain}/admin/oauth/access_token"
     try:
         resp = requests.post(
@@ -151,6 +155,7 @@ def complete_oauth(company, shop_domain: str, code: str, nonce: str) -> CommandR
                 "client_id": SHOPIFY_API_KEY,
                 "client_secret": SHOPIFY_API_SECRET,
                 "code": code,
+                "expiring": 1,
             },
             timeout=15,
         )
@@ -165,10 +170,30 @@ def complete_oauth(company, shop_domain: str, code: str, nonce: str) -> CommandR
 
     access_token = token_data.get("access_token", "")
     scopes = token_data.get("scope", "")
+    refresh_token = token_data.get("refresh_token", "")
+    expires_in = token_data.get("expires_in")
+    refresh_token_expires_in = token_data.get("refresh_token_expires_in")
+
+    # A122: compute absolute expiry timestamps from the relative seconds
+    # Shopify returns. If we didn't actually get an expiring token (e.g.,
+    # Shopify ignored `expiring=1` for some reason), token_expires_at stays
+    # NULL and the token is treated as legacy permanent.
+    from datetime import timedelta
+
+    from django.utils import timezone as tz
+
+    now = tz.now()
+    token_expires_at = now + timedelta(seconds=int(expires_in)) if expires_in else None
+    refresh_token_expires_at = (
+        now + timedelta(seconds=int(refresh_token_expires_in)) if refresh_token_expires_in else None
+    )
 
     try:
         with command_writes_allowed():
             store.access_token = access_token
+            store.refresh_token = refresh_token
+            store.token_expires_at = token_expires_at
+            store.refresh_token_expires_at = refresh_token_expires_at
             store.scopes = scopes
             store.status = ShopifyStore.Status.ACTIVE
             store.oauth_nonce = ""
@@ -208,6 +233,125 @@ def complete_oauth(company, shop_domain: str, code: str, nonce: str) -> CommandR
     )
 
     return CommandResult.ok(data={"store": store})
+
+
+# =============================================================================
+# A122: Rotating offline tokens — refresh + valid-token helpers
+# =============================================================================
+
+
+def _refresh_shopify_token(store: ShopifyStore) -> bool:
+    """
+    Refresh the store's access_token using its refresh_token.
+
+    Returns True on success. Returns False when:
+      - The store has no refresh_token (legacy permanent token from before
+        A122, or never completed OAuth)
+      - The refresh_token itself has expired (>90d since last issue), in
+        which case the merchant must re-authorize
+      - Shopify rejects the refresh request for any reason
+
+    Caller is responsible for surfacing a re-auth prompt to the merchant
+    when this returns False on an ACTIVE store.
+    """
+    if not store.refresh_token:
+        return False
+
+    from django.utils import timezone as tz
+
+    if store.refresh_token_expires_at and store.refresh_token_expires_at <= tz.now():
+        logger.warning(
+            "Shopify refresh_token expired for %s — merchant must re-OAuth",
+            store.shop_domain,
+        )
+        return False
+
+    token_url = f"https://{store.shop_domain}/admin/oauth/access_token"
+    try:
+        resp = requests.post(
+            token_url,
+            json={
+                "client_id": SHOPIFY_API_KEY,
+                "client_secret": SHOPIFY_API_SECRET,
+                "refresh_token": store.refresh_token,
+                "grant_type": "refresh_token",
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.RequestException as e:
+        logger.error(
+            "Failed to refresh Shopify token for %s: %s",
+            store.shop_domain,
+            e,
+        )
+        return False
+
+    from datetime import timedelta
+
+    now = tz.now()
+    access_token = data.get("access_token")
+    if not access_token:
+        logger.error(
+            "Shopify refresh response missing access_token for %s",
+            store.shop_domain,
+        )
+        return False
+
+    new_refresh_token = data.get("refresh_token", store.refresh_token)
+    expires_in = data.get("expires_in")
+    refresh_token_expires_in = data.get("refresh_token_expires_in")
+
+    with command_writes_allowed():
+        store.access_token = access_token
+        store.refresh_token = new_refresh_token
+        if expires_in:
+            store.token_expires_at = now + timedelta(seconds=int(expires_in))
+        if refresh_token_expires_in:
+            store.refresh_token_expires_at = now + timedelta(seconds=int(refresh_token_expires_in))
+        store.save(
+            update_fields=[
+                "access_token",
+                "refresh_token",
+                "token_expires_at",
+                "refresh_token_expires_at",
+                "updated_at",
+            ]
+        )
+
+    logger.info("Refreshed Shopify access_token for %s", store.shop_domain)
+    return True
+
+
+def _get_valid_access_token(store: ShopifyStore) -> str | None:
+    """
+    Return a valid Shopify access_token, refreshing on-the-fly if expired.
+
+    Returns None when the token can't be made valid — caller should surface a
+    "please reconnect this store" message to the merchant.
+
+    Behavior:
+      - Legacy stores (no token_expires_at): return access_token as-is. These
+        permanent tokens still work until Shopify cuts them off entirely
+        (deadline 2027-01-01).
+      - A122 stores (token_expires_at set): refresh if expired or expiring
+        within the next 60 seconds (buffer to avoid mid-call expiry).
+    """
+    if not store.access_token:
+        return None
+
+    if store.token_expires_at:
+        from datetime import timedelta
+
+        from django.utils import timezone as tz
+
+        buffer = timedelta(seconds=60)
+        if tz.now() + buffer >= store.token_expires_at:
+            if not _refresh_shopify_token(store):
+                return None
+
+    return store.access_token
 
 
 @transaction.atomic
@@ -793,11 +937,12 @@ def sync_payouts(store: ShopifyStore) -> CommandResult:
     if store.status != ShopifyStore.Status.ACTIVE:
         return CommandResult.fail("Store is not active.")
 
-    if not store.access_token:
-        return CommandResult.fail("No access token — reconnect the store.")
+    token = _get_valid_access_token(store)
+    if not token:
+        return CommandResult.fail("Token expired or revoked — please reconnect the store.")
 
     headers = {
-        "X-Shopify-Access-Token": store.access_token,
+        "X-Shopify-Access-Token": token,
         "Content-Type": "application/json",
     }
 
@@ -970,15 +1115,16 @@ def fetch_payout_transactions(store: ShopifyStore, payout: ShopifyPayout) -> Com
     Stores each transaction and attempts to match to local orders/refunds.
     Verifies that sum(transactions) matches the payout's reported amounts.
     """
-    if not store.access_token:
-        return CommandResult.fail("No access token.")
+    token = _get_valid_access_token(store)
+    if not token:
+        return CommandResult.fail("Token expired or revoked — please reconnect the store.")
 
     # Skip if transactions already fetched
     if payout.transactions.exists():
         return CommandResult.ok(data={"skipped": True, "reason": "Transactions already fetched."})
 
     headers = {
-        "X-Shopify-Access-Token": store.access_token,
+        "X-Shopify-Access-Token": token,
         "Content-Type": "application/json",
     }
 
@@ -1740,8 +1886,18 @@ def _ensure_shopify_warehouse(store):
     ).exists():
         return
 
+    token = _get_valid_access_token(store)
+    if not token:
+        # Can't reach Shopify with a valid token — fall through to the
+        # fallback-warehouse path below by raising the same exception the
+        # API call would have raised.
+        logger.warning(
+            "Skipping location sync for %s: no valid access token",
+            store.shop_domain,
+        )
+        token = ""  # let the API call fail naturally to hit the fallback branch
     headers = {
-        "X-Shopify-Access-Token": store.access_token,
+        "X-Shopify-Access-Token": token,
         "Content-Type": "application/json",
     }
 
@@ -2101,11 +2257,15 @@ def _fetch_variant_cost(store, variant_id, convert_to_currency: str = "") -> Dec
     Returns:
         Cost in target currency (or store currency if no conversion needed).
     """
-    if not variant_id or not store.access_token:
+    if not variant_id:
+        return Decimal("0")
+
+    token = _get_valid_access_token(store)
+    if not token:
         return Decimal("0")
 
     headers = {
-        "X-Shopify-Access-Token": store.access_token,
+        "X-Shopify-Access-Token": token,
         "Content-Type": "application/json",
     }
 
@@ -2194,8 +2354,11 @@ def _get_shopify_store_currency(store, headers=None) -> str:
 
     # Fall back to Shopify shop API
     if not headers:
+        token = _get_valid_access_token(store)
+        if not token:
+            return ""
         headers = {
-            "X-Shopify-Access-Token": store.access_token,
+            "X-Shopify-Access-Token": token,
             "Content-Type": "application/json",
         }
     try:
@@ -2354,8 +2517,9 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
     if store.status != ShopifyStore.Status.ACTIVE:
         return CommandResult.fail("Store is not active.")
 
-    if not store.access_token:
-        return CommandResult.fail("No access token — reconnect the store.")
+    token = _get_valid_access_token(store)
+    if not token:
+        return CommandResult.fail("Token expired or revoked — please reconnect the store.")
 
     # Ensure Shopify warehouse exists
     _ensure_shopify_warehouse(store)
@@ -2370,7 +2534,7 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
     purchase_account = default_accounts.get("purchase")
 
     headers = {
-        "X-Shopify-Access-Token": store.access_token,
+        "X-Shopify-Access-Token": token,
         "Content-Type": "application/json",
     }
 

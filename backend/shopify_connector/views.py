@@ -66,6 +66,99 @@ class ShopifyInstallView(APIView):
         return Response(result, status=status.HTTP_200_OK)
 
 
+class ShopifyLaunchView(APIView):
+    """
+    GET /api/shopify/launch/?hmac=...&host=...&shop=...&session=...&timestamp=...
+
+    A122 (2026-06-02): Handles the Shopify "Open app" handshake.
+
+    When a merchant clicks the app icon from their Shopify admin (or Shopify
+    auto-launches the app to verify it's reachable), Shopify GETs our
+    `application_url` with a signed query-string. This view:
+
+      1. Verifies the HMAC against the rest of the query-string using our
+         shared client_secret. Rejects on mismatch.
+      2. Decodes the `host` parameter (base64 of `admin.shopify.com/store/<shop>`)
+         or falls back to the `shop` parameter to identify the shop.
+      3. Looks up an ACTIVE ShopifyStore for that shop_domain. If found,
+         redirects to the in-app Shopify settings page. If not found,
+         redirects to a "install / connect this store" page that prompts the
+         merchant to sign in to (or create) their Nxentra account, after
+         which the install flow runs.
+
+    Without this endpoint, Shopify treats our `application_url` as
+    "application_cant_be_loaded_misconfigured" because the bare marketing
+    page at `/` doesn't know what to do with launch parameters.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        import base64
+        import hmac as hmac_lib
+
+        from django.conf import settings as django_settings
+
+        params = request.query_params
+        hmac_header = params.get("hmac", "")
+        host = params.get("host", "")
+        shop = params.get("shop", "")
+
+        if not hmac_header:
+            return Response(
+                {"error": "Missing hmac parameter"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Build the canonical message: every query-string param sorted by
+        # key, except hmac itself, joined as key=value&... per Shopify spec.
+        sorted_params = "&".join(f"{k}={v}" for k, v in sorted(params.items()) if k != "hmac")
+        client_secret = getattr(django_settings, "SHOPIFY_API_SECRET", "")
+        computed = hmac_lib.new(
+            client_secret.encode("utf-8"),
+            sorted_params.encode("utf-8"),
+            "sha256",
+        ).hexdigest()
+        if not hmac_lib.compare_digest(computed, hmac_header):
+            logger.warning("Shopify launch HMAC verification failed (shop=%s)", shop or host)
+            return Response(
+                {"error": "Invalid HMAC"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Resolve shop domain — prefer explicit `shop`, fall back to decoding
+        # `host` (base64-url of `admin.shopify.com/store/<shop_slug>`).
+        shop_domain = shop
+        if not shop_domain and host:
+            try:
+                # Shopify uses base64-URL without padding; pad to 4-char boundary
+                padded = host + "=" * (-len(host) % 4)
+                decoded = base64.urlsafe_b64decode(padded).decode("utf-8")
+                # decoded is e.g. "admin.shopify.com/store/whmwtc-pc"
+                if "/store/" in decoded:
+                    slug = decoded.rsplit("/store/", 1)[1]
+                    shop_domain = f"{slug}.myshopify.com"
+            except Exception:
+                logger.exception("Failed to decode Shopify host parameter: %s", host)
+
+        if not shop_domain:
+            return Response(
+                {"error": "Could not determine shop domain from launch params"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not shop_domain.endswith(".myshopify.com"):
+            shop_domain = f"{shop_domain}.myshopify.com"
+
+        # Both connected and not-yet-connected cases route to /shopify/settings,
+        # which already handles "show connected store" vs "show connect form".
+        # The shop hint lets the connect form pre-fill when no store row
+        # exists for this domain. The standard frontend auth guard prompts
+        # for login if the merchant isn't authenticated in this browser.
+        return HttpResponseRedirect(f"/shopify/settings?shop={shop_domain}&launched=true")
+
+
 class ShopifyCallbackView(APIView):
     """
     GET /api/shopify/callback/?code=...&shop=...&state=...

@@ -49,10 +49,15 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS(f"Done. Created {total_created}, updated {total_updated} warehouses."))
 
     def _sync_store_locations(self, store):
-        from shopify_connector.commands import _shopify_api_root
+        from shopify_connector.commands import _get_valid_access_token, _shopify_api_root
+
+        token = _get_valid_access_token(store)
+        if not token:
+            self.stdout.write(self.style.WARNING(f"  {store.company.slug}: token expired or revoked"))
+            return 0, 0
 
         headers = {
-            "X-Shopify-Access-Token": store.access_token,
+            "X-Shopify-Access-Token": token,
             "Content-Type": "application/json",
         }
 

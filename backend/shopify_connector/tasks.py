@@ -160,13 +160,19 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
 
     All downstream handlers are idempotent.
     """
-    from .commands import process_order_cancelled, process_order_paid, process_order_pending
+    from .commands import (
+        _get_valid_access_token,
+        process_order_cancelled,
+        process_order_paid,
+        process_order_pending,
+    )
 
-    if not store.access_token:
-        return {"status": "error", "error": "No access token"}
+    token = _get_valid_access_token(store)
+    if not token:
+        return {"status": "error", "error": "Token expired or revoked — please reconnect the store."}
 
     headers = {
-        "X-Shopify-Access-Token": store.access_token,
+        "X-Shopify-Access-Token": token,
         "Content-Type": "application/json",
     }
 

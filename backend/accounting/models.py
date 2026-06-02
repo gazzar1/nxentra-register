@@ -2559,7 +2559,7 @@ class ExchangeRate(models.Model):
         Saves the rate with source='ECB (auto)' so users can review/override.
         Returns the rate Decimal or None if fetch fails.
         """
-        import requests  # type: ignore[import-untyped]
+        import requests  # type: ignore
 
         try:
             # Frankfurter API: free, based on ECB reference rates

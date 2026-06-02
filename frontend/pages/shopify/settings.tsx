@@ -46,7 +46,12 @@ export default function ShopifySettingsPage() {
 
   const [store, setStore] = useState<ShopifyStore | null>(null);
   const [loading, setLoading] = useState(true);
-  const [shopDomain, setShopDomain] = useState("");
+  // A122: pre-fill the connect-form with `shop` query param when the merchant
+  // landed here via the Shopify launch redirect (clicked "Open app" in their
+  // admin and we couldn't find an active install for that shop).
+  const initialShopHint =
+    typeof router.query.shop === "string" ? router.query.shop : "";
+  const [shopDomain, setShopDomain] = useState(initialShopHint);
   const [connecting, setConnecting] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
   const [syncingPayouts, setSyncingPayouts] = useState(false);

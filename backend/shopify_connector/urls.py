@@ -7,6 +7,13 @@ urlpatterns = [
     # OAuth flow
     path("install/", views.ShopifyInstallView.as_view(), name="shopify-install"),
     path("callback/", views.ShopifyCallbackView.as_view(), name="shopify-callback"),
+    # A122 (2026-06-02): Shopify app launch handshake. Shopify sends merchants
+    # to https://app.nxentra.com/?hmac=...&host=...&shop=...&session=... when
+    # they click "Open app" from their Shopify admin. The frontend root page
+    # 307-redirects launch traffic here; we verify HMAC and route to either
+    # OAuth install (no store record) or the merchant's settings page
+    # (already connected).
+    path("launch/", views.ShopifyLaunchView.as_view(), name="shopify-launch"),
     # Webhook receiver (no auth — Shopify sends directly).
     # Both with and without trailing slash: Shopify's Partners Dashboard strips
     # the trailing slash off declarative subscription URIs during registration,

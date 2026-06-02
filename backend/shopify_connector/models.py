@@ -43,6 +43,37 @@ class ShopifyStore(models.Model):
         blank=True,
         help_text="Shopify Admin API access token (encrypted at rest in production).",
     )
+    # A122 (2026-06-02): Shopify deprecated non-expiring offline tokens
+    # (deadline 2027-01-01, partially enforced today). We now request expiring
+    # offline tokens via `expiring=1` on the OAuth exchange, and refresh them
+    # before each API call. Existing rows from before A122 have empty
+    # refresh_token / null token_expires_at — those tokens are non-expiring
+    # legacy ones and must be re-OAuthed before Shopify rejects them.
+    refresh_token = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text=(
+            "Shopify refresh token (shprt_*). Used to obtain a new access "
+            "token before the current one expires. Empty for legacy "
+            "non-expiring tokens issued before A122."
+        ),
+    )
+    token_expires_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "When the current access_token expires. NULL for legacy "
+            "non-expiring tokens; future timestamp for A122 rotating tokens."
+        ),
+    )
+    refresh_token_expires_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "When the refresh_token itself expires (typically 90 days from "
+            "issue). After this point, the merchant must re-authorize."
+        ),
+    )
     scopes = models.CharField(
         max_length=500,
         blank=True,
