@@ -46,16 +46,15 @@ export default function ShopifyDashboardPage() {
 
         if (storeRes.status === "fulfilled") {
           const d = storeRes.value.data as any;
-          if (!d.connected) {
-            setStore(null);
-          } else if (d.stores && d.stores.length > 0) {
-            setStore(d.stores[0] as ShopifyStore);
-          } else if (d.status) {
-            // Direct store object (legacy format)
-            setStore(d as ShopifyStore);
-          } else {
-            setStore(null);
-          }
+          // B4 (2026-06-04): contract — `stores` holds live rows, dashboard
+          // only cares about an ACTIVE one. DISCONNECTED rows live in
+          // `inactive_stores` and are deliberately not shown here (the
+          // settings page is where reconnection happens).
+          const liveStores = (d.stores ?? []) as ShopifyStore[];
+          setStore(
+            liveStores.find((s) => s.status === "ACTIVE") ??
+              (d.status ? (d as ShopifyStore) : null),
+          );
         }
 
         if (ordersRes.status === "fulfilled") {

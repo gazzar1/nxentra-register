@@ -106,14 +106,58 @@ def get_install_url(company, shop_domain: str) -> dict:
     """
     nonce = secrets.token_urlsafe(32)
 
-    # Create or update the store record
-    _store, _ = ShopifyStore.objects.update_or_create(
-        company=company,
-        shop_domain=shop_domain,
-        defaults={
-            "oauth_nonce": nonce,
-            "status": ShopifyStore.Status.PENDING,
-        },
+    # B2 (2026-06-04): sweep abandoned PENDING rows for this company before
+    # creating the new one. OAuth round-trip normally completes in seconds; a
+    # PENDING row older than an hour means the merchant bounced out of the
+    # Shopify authorize screen. Leaving these rows behind is what produced the
+    # App-Store-reviewer state on Shopify_R (multiple shop_domains tried over
+    # rejection cycles, each leaving its own PENDING). The current shop_domain
+    # is excluded so the update_or_create below cleanly refreshes the row a
+    # legitimate re-attempt expects to see.
+    from datetime import timedelta
+
+    from django.utils import timezone as tz
+
+    swept = (
+        ShopifyStore.objects.filter(
+            company=company,
+            status=ShopifyStore.Status.PENDING,
+            updated_at__lt=tz.now() - timedelta(hours=1),
+        )
+        .exclude(shop_domain=shop_domain)
+        .delete()
+    )
+    swept_count = swept[0] if isinstance(swept, tuple) else 0
+
+    # B3 (2026-06-04): never downgrade an ACTIVE store to PENDING when the
+    # merchant re-clicks Connect on the same shop_domain. A re-auth (Shopify
+    # scope-grant flow, recovery from a glitchy install) is legitimate and
+    # must rotate the nonce, but the existing access_token + ACTIVE status
+    # must keep working until the new OAuth callback succeeds. If callback
+    # never fires we still serve API requests with the old token instead of
+    # silently disconnecting the merchant for hours.
+    existing = ShopifyStore.objects.filter(company=company, shop_domain=shop_domain).first()
+    if existing and existing.status == ShopifyStore.Status.ACTIVE:
+        existing.oauth_nonce = nonce
+        existing.save(update_fields=["oauth_nonce", "updated_at"])
+        existing_status_before = "ACTIVE"
+    else:
+        existing_status_before = existing.status if existing else "NONE"
+        ShopifyStore.objects.update_or_create(
+            company=company,
+            shop_domain=shop_domain,
+            defaults={
+                "oauth_nonce": nonce,
+                "status": ShopifyStore.Status.PENDING,
+            },
+        )
+
+    logger.info(
+        "shopify.install_url_generated company=%s shop=%s prior_status=%s swept_pending=%d",
+        getattr(company, "id", None),
+        shop_domain,
+        existing_status_before,
+        swept_count,
     )
 
     redirect_uri = f"{SHOPIFY_APP_URL}/api/shopify/callback/"
@@ -138,12 +182,29 @@ def complete_oauth(company, shop_domain: str, code: str, nonce: str) -> CommandR
     of the legacy permanent non-expiring token. Permanent tokens are
     deprecated and will be rejected entirely by 2027-01-01.
     """
+    logger.info(
+        "shopify.oauth_callback_received company=%s shop=%s",
+        getattr(company, "id", None),
+        shop_domain,
+    )
+
     try:
         store = ShopifyStore.objects.get(company=company, shop_domain=shop_domain)
     except ShopifyStore.DoesNotExist:
+        logger.warning(
+            "shopify.oauth_failed reason=no_store company=%s shop=%s",
+            getattr(company, "id", None),
+            shop_domain,
+        )
         return CommandResult.fail(f"No pending store for {shop_domain}.")
 
     if store.oauth_nonce != nonce:
+        logger.warning(
+            "shopify.oauth_failed reason=nonce_mismatch company=%s shop=%s store_id=%s",
+            getattr(company, "id", None),
+            shop_domain,
+            store.id,
+        )
         return CommandResult.fail("OAuth state mismatch — possible CSRF attack.")
 
     # Exchange code for expiring access token (A122).
@@ -162,6 +223,12 @@ def complete_oauth(company, shop_domain: str, code: str, nonce: str) -> CommandR
         resp.raise_for_status()
         token_data = resp.json()
     except requests.RequestException as e:
+        logger.warning(
+            "shopify.token_exchange_failed company=%s shop=%s error=%s",
+            getattr(company, "id", None),
+            shop_domain,
+            e,
+        )
         with command_writes_allowed():
             store.status = ShopifyStore.Status.ERROR
             store.error_message = str(e)
@@ -200,10 +267,23 @@ def complete_oauth(company, shop_domain: str, code: str, nonce: str) -> CommandR
             store.error_message = ""
             store.save()
     except IntegrityError:
+        logger.warning(
+            "shopify.store_active_failed reason=domain_taken company=%s shop=%s",
+            getattr(company, "id", None),
+            shop_domain,
+        )
         return CommandResult.fail(
             "This Shopify store is already connected to another Nxentra company. "
             "Disconnect it from the other company first."
         )
+
+    logger.info(
+        "shopify.store_marked_active company=%s shop=%s store_id=%s expires_at=%s",
+        getattr(company, "id", None),
+        shop_domain,
+        store.id,
+        token_expires_at.isoformat() if token_expires_at else None,
+    )
 
     # Auto-create a Shopify warehouse for inventory tracking
     _ensure_shopify_warehouse(store)

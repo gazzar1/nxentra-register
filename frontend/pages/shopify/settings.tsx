@@ -74,24 +74,30 @@ export default function ShopifySettingsPage() {
   const [codProviderForm, setCodProviderForm] = useState<number | null>(null);
   const [savingCodProvider, setSavingCodProvider] = useState(false);
 
-  const fetchStore = async () => {
+  const fetchStore = async (): Promise<ShopifyStore | null> => {
     setLoading(true);
     try {
       const { data } = await shopifyService.getStore();
       const d = data as any;
+      // B4 (2026-06-04): contract — pick the ACTIVE row from `stores`. Fall
+      // back to the most recent `inactive_stores` row only so the
+      // "previously connected to X" hint can render. Legacy `status`-on-root
+      // path kept for older API responses during deploy.
       let resolvedStore: ShopifyStore | null = null;
-      if (!d.connected) {
-        resolvedStore = null;
-      } else if (d.stores && d.stores.length > 0) {
-        resolvedStore = d.stores[0] as ShopifyStore;
-      } else if (d.status) {
-        resolvedStore = d as ShopifyStore;
-      }
+      const liveStores = (d.stores ?? []) as ShopifyStore[];
+      const inactiveStores = (d.inactive_stores ?? []) as ShopifyStore[];
+      resolvedStore =
+        liveStores.find((s) => s.status === "ACTIVE") ??
+        liveStores[0] ??
+        inactiveStores[0] ??
+        (d.status ? (d as ShopifyStore) : null);
       setStore(resolvedStore);
       setCodProviderForm(resolvedStore?.default_cod_settlement_provider_id ?? null);
+      return resolvedStore;
     } catch {
       setStore(null);
       setCodProviderForm(null);
+      return null;
     } finally {
       setLoading(false);
     }
@@ -207,30 +213,47 @@ export default function ShopifySettingsPage() {
   };
 
   useEffect(() => {
-    fetchStore();
-    fetchMappings();
-    fetchProviders();
-    fetchPostingProfiles();
+    const init = async () => {
+      // B5 (2026-06-04): the success toast must wait for fetchStore to
+      // confirm an ACTIVE row exists. Before this fix `?connected=true` in
+      // the URL alone fired the success toast even when OAuth had quietly
+      // failed to flip the row — the App Store reviewer would have seen
+      // "Shopify store connected successfully!" alongside an empty Connect
+      // form. Confirming first makes the toast match what the user actually
+      // sees on the page.
+      const resolved = await fetchStore();
+      fetchMappings();
+      fetchProviders();
+      fetchPostingProfiles();
 
-    // Check for OAuth callback result
-    if (router.query.connected === "true") {
-      // If user came from onboarding, redirect back there
-      const returnTo = sessionStorage.getItem("shopify_return_to");
-      if (returnTo === "onboarding") {
-        sessionStorage.removeItem("shopify_return_to");
-        router.replace("/onboarding/setup?shopify_connected=true");
-        return;
+      if (router.query.connected === "true") {
+        if (resolved?.status === "ACTIVE") {
+          const returnTo = sessionStorage.getItem("shopify_return_to");
+          if (returnTo === "onboarding") {
+            sessionStorage.removeItem("shopify_return_to");
+            router.replace("/onboarding/setup?shopify_connected=true");
+            return;
+          }
+          toast({ title: "Shopify store connected successfully!" });
+        } else {
+          toast({
+            title: "Connection didn't complete",
+            description:
+              "Shopify reported success but no active store was found. Please try connecting again.",
+            variant: "destructive",
+          });
+        }
+        router.replace("/shopify/settings", undefined, { shallow: true });
+      } else if (router.query.error) {
+        toast({
+          title: "Connection failed",
+          description: String(router.query.error),
+          variant: "destructive",
+        });
+        router.replace("/shopify/settings", undefined, { shallow: true });
       }
-      toast({ title: "Shopify store connected successfully!" });
-      router.replace("/shopify/settings", undefined, { shallow: true });
-    } else if (router.query.error) {
-      toast({
-        title: "Connection failed",
-        description: String(router.query.error),
-        variant: "destructive",
-      });
-      router.replace("/shopify/settings", undefined, { shallow: true });
-    }
+    };
+    init();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleConnect = async () => {

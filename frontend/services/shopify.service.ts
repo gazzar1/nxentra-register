@@ -47,6 +47,16 @@ export interface ShopifyInstallResponse {
   nonce: string;
 }
 
+// B4 (2026-06-04): contract for GET /shopify/store/. `connected` is true iff
+// at least one ACTIVE row exists in `stores`. DISCONNECTED rows live in
+// `inactive_stores` purely so the settings page can render the "previously
+// connected to <shop>" hint. PENDING rows are never exposed.
+export interface ShopifyStoreResponse {
+  connected: boolean;
+  stores: ShopifyStore[];
+  inactive_stores: ShopifyStore[];
+}
+
 export interface ShopifyAccountMapping {
   role: string;
   account_id: number | null;
@@ -60,8 +70,7 @@ export interface ShopifyAccountMapping {
 
 export const shopifyService = {
   // Store management
-  getStore: () =>
-    apiClient.get<ShopifyStore | { connected: false }>("/shopify/store/"),
+  getStore: () => apiClient.get<ShopifyStoreResponse>("/shopify/store/"),
 
   // A12: update mutable store config (currently only the COD courier FK).
   updateStore: (data: { default_cod_settlement_provider: number | null }) =>

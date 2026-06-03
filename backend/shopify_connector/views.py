@@ -383,13 +383,56 @@ class ShopifyStoreView(APIView):
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
-        stores = ShopifyStore.objects.filter(company=actor.company)
-        if not stores.exists():
-            return Response({"connected": False, "stores": []}, status=status.HTTP_200_OK)
+        # B1+B4 (2026-06-04): contract — `connected` is true iff at least one
+        # ACTIVE row exists. `stores` holds live rows (ACTIVE/ERROR) the
+        # frontend treats as connection candidates; `inactive_stores` holds
+        # DISCONNECTED rows kept only so the settings page can render the
+        # "previously connected to <shop>" hint. PENDING rows are never
+        # exposed.
+        #
+        # The earlier shape returned `{connected: true, stores: [all-minus-
+        # PENDING ranked]}` and let the frontend re-sort. That hid a latent
+        # bug: a company with only DISCONNECTED rows reported
+        # `connected: true`, lying to any consumer that didn't itself check
+        # per-row status. That's the App Store reviewer's failure mode — the
+        # API claimed connection, the frontend (correctly) said no.
+        live_qs = (
+            ShopifyStore.objects.filter(company=actor.company)
+            .filter(status__in=[ShopifyStore.Status.ACTIVE, ShopifyStore.Status.ERROR])
+            # ACTIVE before ERROR — DESC ordering on the literal string puts
+            # 'ACTIVE' (A) before 'ERROR' (E) alphabetically reversed; explicit
+            # case keeps it intentional even if the labels ever change.
+            .order_by("-updated_at")
+        )
+        inactive_qs = ShopifyStore.objects.filter(
+            company=actor.company,
+            status=ShopifyStore.Status.DISCONNECTED,
+        ).order_by("-updated_at")
+
+        live = sorted(
+            live_qs,
+            key=lambda s: (
+                0 if s.status == ShopifyStore.Status.ACTIVE else 1,
+                -(s.updated_at.timestamp() if s.updated_at else 0),
+            ),
+        )
+        inactive = list(inactive_qs)
+        connected = any(s.status == ShopifyStore.Status.ACTIVE for s in live)
+
+        logger.info(
+            "shopify.store_api company=%s active=%d error=%d disconnected=%d connected=%s",
+            getattr(actor.company, "id", None),
+            sum(1 for s in live if s.status == ShopifyStore.Status.ACTIVE),
+            sum(1 for s in live if s.status == ShopifyStore.Status.ERROR),
+            len(inactive),
+            connected,
+        )
+
         return Response(
             {
-                "connected": True,
-                "stores": ShopifyStoreSerializer(stores, many=True).data,
+                "connected": connected,
+                "stores": ShopifyStoreSerializer(live, many=True).data,
+                "inactive_stores": ShopifyStoreSerializer(inactive, many=True).data,
             }
         )
 

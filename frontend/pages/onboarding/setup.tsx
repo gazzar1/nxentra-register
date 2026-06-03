@@ -184,15 +184,16 @@ export default function OnboardingSetupPage() {
         setLoading(false);
       });
 
-    // Check if Shopify store is already connected (e.g. returning from OAuth or page reload)
+    // Check if Shopify store is already connected (e.g. returning from OAuth or page reload).
+    // B4 contract: `connected` is true iff an ACTIVE row exists in `stores`.
     shopifyService.getStore().then(({ data }) => {
-      // API returns { connected: false } when no store, or full store object when connected
-      if (!data || ("connected" in data && !data.connected)) return;
-      if ("shop_domain" in data && "status" in data) {
-        if (data.status === "ACTIVE") {
-          setShopifyConnected(true);
-          setShopifyStoreName(String(data.shop_domain || ""));
-        }
+      const d = data as any;
+      if (!d || d.connected !== true) return;
+      const liveStores = (d.stores ?? []) as Array<{ shop_domain?: string; status?: string }>;
+      const active = liveStores.find((s) => s.status === "ACTIVE");
+      if (active) {
+        setShopifyConnected(true);
+        setShopifyStoreName(String(active.shop_domain || ""));
       }
     }).catch(() => { /* no store yet */ });
 
