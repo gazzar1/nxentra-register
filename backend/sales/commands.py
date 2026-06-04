@@ -1474,16 +1474,23 @@ def post_sales_invoice(
 
         _fix_fx_rounding_dicts(je_lines, actor.company, currency=inv_currency)
 
+    # FX (2026-06-04): always pass the invoice's currency to the JE, even
+    # for the domestic case (inv_currency == functional). The previous
+    # behavior only set currency when is_foreign was True, letting
+    # create_journal_entry fall back to a default that was wrong on
+    # companies where default_currency != functional_currency
+    # (e.g. USD-presentation / EGP-functional). The is_foreign flag still
+    # gates the line-level FX setup above; only the JE-header currency
+    # is hoisted out of the guard.
     je_kwargs = dict(
         actor=actor,
         date=invoice.invoice_date,
         memo=f"Sales Invoice {invoice.invoice_number}",
         lines=je_lines,
         kind=JournalEntry.Kind.NORMAL,
+        currency=inv_currency,
+        exchange_rate=str(inv_rate),
     )
-    if is_foreign:
-        je_kwargs["currency"] = inv_currency
-        je_kwargs["exchange_rate"] = str(inv_rate)
 
     je_result = create_journal_entry(**je_kwargs)
 
@@ -1946,16 +1953,18 @@ def post_credit_note(
 
         _fix_fx_rounding_dicts(je_lines, actor.company, currency=cn_currency)
 
+    # FX (2026-06-04): always pass cn_currency to the JE, even when it
+    # matches functional. See post_sales_invoice for the full rationale —
+    # this is the credit-note sibling of the same bug.
     je_kwargs = dict(
         actor=actor,
         date=cn.credit_note_date,
         memo=f"Credit Note {cn.credit_note_number} (ref: {cn.invoice.invoice_number})",
         lines=je_lines,
         kind=JournalEntry.Kind.NORMAL,
+        currency=cn_currency,
+        exchange_rate=str(cn_rate),
     )
-    if is_foreign:
-        je_kwargs["currency"] = cn_currency
-        je_kwargs["exchange_rate"] = str(cn_rate)
 
     je_result = create_journal_entry(**je_kwargs)
     if not je_result.success:

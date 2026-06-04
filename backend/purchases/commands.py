@@ -539,16 +539,18 @@ def post_purchase_bill(actor: ActorContext, bill_id: int) -> CommandResult:
 
         _fix_fx_rounding_dicts(je_lines, actor.company, currency=bill_currency)
 
+    # FX (2026-06-04): always pass bill currency to the JE, even for the
+    # domestic case. Sibling of the sales/commands.py bug — see comments
+    # there for the full Shopify_R reviewer reproduction.
     je_kwargs = dict(
         actor=actor,
         date=bill.bill_date,
         memo=f"Purchase Bill {bill.bill_number}",
         lines=je_lines,
         kind=JournalEntry.Kind.NORMAL,
+        currency=bill_currency,
+        exchange_rate=str(bill_rate),
     )
-    if is_foreign:
-        je_kwargs["currency"] = bill_currency
-        je_kwargs["exchange_rate"] = str(bill_rate)
 
     je_result = create_journal_entry(**je_kwargs)
 
@@ -1784,16 +1786,17 @@ def post_purchase_credit_note(actor: ActorContext, credit_note_id: int) -> Comma
 
         _fix_fx_rounding_dicts(je_lines, actor.company, currency=cn_currency)
 
+    # FX (2026-06-04): always pass cn currency to the JE — same bug as
+    # purchase-bill posting above.
     je_kwargs = dict(
         actor=actor,
         date=cn.credit_note_date,
         memo=f"Purchase Credit Note {cn.credit_note_number}",
         lines=je_lines,
         kind=JournalEntry.Kind.NORMAL,
+        currency=cn_currency,
+        exchange_rate=str(cn_rate),
     )
-    if is_foreign:
-        je_kwargs["currency"] = cn_currency
-        je_kwargs["exchange_rate"] = str(cn_rate)
 
     je_result = create_journal_entry(**je_kwargs)
     if not je_result.success:

@@ -649,7 +649,14 @@ def create_journal_entry(
         period = fp.period if fp else (parsed.month if hasattr(parsed, "month") else None)
 
     entry_public_id = uuid.uuid4()
-    entry_currency = currency or actor.company.default_currency
+    # FX (2026-06-04): JEs record accounting events, so the default currency
+    # must be the company's functional currency (the books currency), not
+    # default_currency (the presentation currency used for reports). For most
+    # companies these match, but a USD-presentation / EGP-functional setup is
+    # legitimate and previously produced USD-stamped JEs for EGP transactions
+    # — surfaced on the Shopify_R reviewer company when EGP order #1006
+    # turned into a USD JE despite the SalesInvoice being correctly EGP.
+    entry_currency = currency or getattr(actor.company, "functional_currency", "") or actor.company.default_currency
     entry_exchange_rate = exchange_rate or "1.0"
 
     line_data = []
