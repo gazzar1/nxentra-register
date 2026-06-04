@@ -2766,6 +2766,16 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
         # Pagination: follow Link header
         url = _get_next_page_url(resp)
 
+    # Sync-UX (2026-06-04): refresh last_sync_at so the settings page
+    # "Last Sync" widget tracks the actual successful pull. Without this,
+    # clicking Sync Products forever leaves "Last Sync: Never" — the
+    # exact reviewer-broken signal we surfaced post-FX-fix on Shopify_R.
+    from django.utils import timezone as tz
+
+    with command_writes_allowed():
+        store.last_sync_at = tz.now()
+        store.save(update_fields=["last_sync_at"])
+
     logger.info(
         "Product sync for %s: %d created, %d linked, %d updated, %d skipped",
         store.shop_domain,

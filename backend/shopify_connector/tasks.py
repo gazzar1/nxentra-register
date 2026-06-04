@@ -331,6 +331,20 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
             errors,
         )
 
+    # Sync-UX (2026-06-04): refresh last_sync_at on every successful pull
+    # so the settings page "Last Sync" widget actually changes when the
+    # merchant clicks Re-sync. Previously only sync_payouts did this, so
+    # the widget stuck on "Never" no matter how many times the merchant
+    # hit Re-sync Orders — the broken-looking signal the App Store
+    # reviewer would see immediately.
+    from django.utils import timezone as tz
+
+    from projections.write_barrier import command_writes_allowed
+
+    with command_writes_allowed():
+        store.last_sync_at = tz.now()
+        store.save(update_fields=["last_sync_at"])
+
     return {
         "status": "ok",
         "fetched": fetched,
