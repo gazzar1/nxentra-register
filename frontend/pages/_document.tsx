@@ -41,21 +41,28 @@ export default function Document(props: DocumentProps) {
           The reliable workaround: render an inline loader (via
           dangerouslySetInnerHTML, which React passes through verbatim)
           that creates the App Bridge <script> element via DOM API and
-          inserts it at document.head.firstChild with async=false. Since
-          the loader is itself the first script the browser parses, the
-          App Bridge script becomes position-0 in <head> before any
-          other script runs. App Bridge's runtime DOM check then sees a
-          sync first-script-in-head and initializes cleanly.
+          inserts it at document.head.firstChild with async=false.
+
+          The loader also gates on the presence of ?shop= AND ?host=
+          in the URL — App Bridge auto-initializes when it loads and
+          errors with "missing required configuration fields: shop"
+          when those URL params are missing. On the standalone /
+          marketing page and any other non-Shopify-launched route we
+          don't want App Bridge loaded at all.
         */}
         <meta name="shopify-api-key" content={shopifyApiKey} />
         <script
           dangerouslySetInnerHTML={{
             __html: `
               (function () {
-                var s = document.createElement('script');
-                s.src = 'https://cdn.shopify.com/shopifycloud/app-bridge.js';
-                s.async = false;
-                document.head.insertBefore(s, document.head.firstChild);
+                try {
+                  var p = new URLSearchParams(window.location.search);
+                  if (!p.get('shop') || !p.get('host')) return;
+                  var s = document.createElement('script');
+                  s.src = 'https://cdn.shopify.com/shopifycloud/app-bridge.js';
+                  s.async = false;
+                  document.head.insertBefore(s, document.head.firstChild);
+                } catch (e) {}
               })();
             `,
           }}
