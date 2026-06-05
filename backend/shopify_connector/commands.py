@@ -550,6 +550,247 @@ def finalize_shopify_install(company, pending_public_id: str) -> CommandResult:
 
 
 # =============================================================================
+# B8 (2026-06-05): Token Exchange — embedded-app install flow
+# =============================================================================
+#
+# Shopify's Token Exchange API replaces OAuth code-grant for apps using
+# the modern App Bridge install pattern. The merchant installs the app
+# silently (no OAuth redirect), and when they open it Shopify gives App
+# Bridge a short-lived session_token JWT signed with our client_secret.
+# We exchange that JWT here for an offline access_token + refresh_token,
+# bypassing the entire OAuth dance.
+#
+# This is the path required for Shopify's Dev Dashboard "Install app"
+# button (which bypasses OAuth — confirmed via empty nginx logs on
+# 2026-06-05) and for any future managed-install distribution.
+
+
+def verify_shopify_session_token(session_token: str) -> dict | None:
+    """
+    Verify and decode a Shopify session token JWT.
+
+    Shopify signs session tokens with our client_secret using HS256.
+    Expected claims (Shopify spec):
+        iss   issuer — the shop URL, e.g. https://x.myshopify.com/admin
+        dest  destination — the shop URL, e.g. https://x.myshopify.com
+        aud   audience — our client_id
+        exp   expiration timestamp
+        nbf   not-before timestamp
+        iat   issued-at timestamp
+        sub   subject — the Shopify user id who launched the app
+        jti   unique JWT id
+        sid   session id
+
+    Returns the decoded claims dict on success, None on any failure
+    (bad signature, expired, missing/wrong audience, missing client_id
+    in settings).
+    """
+    import jwt as pyjwt
+
+    if not SHOPIFY_API_SECRET or not SHOPIFY_API_KEY:
+        logger.warning("shopify.session_token_verify_failed reason=missing_secret_or_key")
+        return None
+
+    try:
+        claims = pyjwt.decode(
+            session_token,
+            SHOPIFY_API_SECRET,
+            algorithms=["HS256"],
+            audience=SHOPIFY_API_KEY,
+            options={"require": ["exp", "iat", "iss", "dest", "aud"]},
+        )
+    except pyjwt.ExpiredSignatureError:
+        logger.warning("shopify.session_token_verify_failed reason=expired")
+        return None
+    except pyjwt.InvalidAudienceError:
+        logger.warning("shopify.session_token_verify_failed reason=bad_audience")
+        return None
+    except pyjwt.InvalidTokenError as e:
+        logger.warning("shopify.session_token_verify_failed reason=invalid error=%s", e)
+        return None
+
+    return claims
+
+
+def _extract_shop_domain_from_claims(claims: dict) -> str | None:
+    """Pull `<shop>.myshopify.com` out of a session token's iss/dest claim."""
+    from urllib.parse import urlparse
+
+    for key in ("dest", "iss"):
+        value = claims.get(key, "")
+        if not value:
+            continue
+        parsed = urlparse(value)
+        netloc = parsed.netloc or parsed.path  # tolerant of malformed URLs
+        if netloc.endswith(".myshopify.com"):
+            return netloc
+    return None
+
+
+@transaction.atomic
+def complete_oauth_token_exchange(
+    company,
+    session_token: str,
+    expected_shop_domain: str = "",
+) -> CommandResult:
+    """
+    Phase 1 of the embedded install — exchange a session token for an
+    offline access token and persist a ShopifyStore for the merchant's
+    company.
+
+    The frontend (App Bridge) gives us the session_token. We:
+      1. Verify the JWT signature + expiry + audience.
+      2. Extract shop_domain from the JWT claims (verify against the
+         expected one if the caller supplied a hint).
+      3. POST to Shopify's /admin/oauth/access_token with
+         grant_type=urn:ietf:params:oauth:grant-type:token-exchange,
+         passing the session_token as the subject_token and asking for
+         an offline-access-token in return.
+      4. Persist the resulting tokens onto a ShopifyStore row for the
+         caller's company (reusing the row if one already exists, same
+         pattern as complete_oauth / finalize_shopify_install).
+      5. Run the standard post-install setup (warehouse + sales setup
+         + SHOPIFY_STORE_CONNECTED event).
+
+    Same idempotency story as the OAuth-code path: if the merchant
+    re-launches the app, we re-exchange and refresh tokens on the
+    same row — no duplicate stores.
+    """
+    logger.info(
+        "shopify.token_exchange_start company=%s expected_shop=%s",
+        getattr(company, "id", None),
+        expected_shop_domain or "(none)",
+    )
+
+    claims = verify_shopify_session_token(session_token)
+    if not claims:
+        return CommandResult.fail("Invalid or expired session token.")
+
+    claim_shop_domain = _extract_shop_domain_from_claims(claims)
+    if not claim_shop_domain:
+        return CommandResult.fail("Session token has no recognizable shop domain.")
+
+    if expected_shop_domain and expected_shop_domain != claim_shop_domain:
+        logger.warning(
+            "shopify.token_exchange_shop_mismatch claimed=%s expected=%s",
+            claim_shop_domain,
+            expected_shop_domain,
+        )
+        return CommandResult.fail("Session token shop_domain does not match request.")
+
+    shop_domain = claim_shop_domain
+
+    token_url = f"https://{shop_domain}/admin/oauth/access_token"
+    try:
+        resp = requests.post(
+            token_url,
+            json={
+                "client_id": SHOPIFY_API_KEY,
+                "client_secret": SHOPIFY_API_SECRET,
+                "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+                "subject_token": session_token,
+                "subject_token_type": "urn:ietf:params:oauth:token-type:id_token",
+                "requested_token_type": "urn:shopify:params:oauth:token-type:offline-access-token",
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        token_data = resp.json()
+    except requests.RequestException as e:
+        logger.warning(
+            "shopify.token_exchange_failed shop=%s error=%s",
+            shop_domain,
+            e,
+        )
+        return CommandResult.fail(f"Token exchange failed: {e}")
+
+    access_token = token_data.get("access_token", "")
+    if not access_token:
+        return CommandResult.fail("Token exchange returned no access_token.")
+
+    expires_in = token_data.get("expires_in")
+    refresh_token_expires_in = token_data.get("refresh_token_expires_in")
+    scopes = token_data.get("scope", "")
+    refresh_token = token_data.get("refresh_token", "")
+
+    from datetime import timedelta
+
+    from django.utils import timezone as tz
+
+    now = tz.now()
+    token_expires_at = now + timedelta(seconds=int(expires_in)) if expires_in else None
+    refresh_token_expires_at = (
+        now + timedelta(seconds=int(refresh_token_expires_in)) if refresh_token_expires_in else None
+    )
+
+    existing = ShopifyStore.objects.filter(company=company, shop_domain=shop_domain).first()
+
+    try:
+        with command_writes_allowed():
+            if existing:
+                existing.access_token = access_token
+                existing.refresh_token = refresh_token
+                existing.token_expires_at = token_expires_at
+                existing.refresh_token_expires_at = refresh_token_expires_at
+                existing.scopes = scopes
+                existing.status = ShopifyStore.Status.ACTIVE
+                existing.oauth_nonce = ""
+                existing.error_message = ""
+                existing.save()
+                store = existing
+            else:
+                store = ShopifyStore.objects.create(
+                    company=company,
+                    shop_domain=shop_domain,
+                    access_token=access_token,
+                    refresh_token=refresh_token,
+                    token_expires_at=token_expires_at,
+                    refresh_token_expires_at=refresh_token_expires_at,
+                    scopes=scopes,
+                    status=ShopifyStore.Status.ACTIVE,
+                )
+    except IntegrityError:
+        logger.warning(
+            "shopify.token_exchange_active_failed reason=domain_taken company=%s shop=%s",
+            getattr(company, "id", None),
+            shop_domain,
+        )
+        return CommandResult.fail(
+            "This Shopify store is already connected to another Nxentra company. "
+            "Disconnect it from the other company first."
+        )
+
+    logger.info(
+        "shopify.token_exchange_completed company=%s shop=%s store_id=%s expires_at=%s",
+        getattr(company, "id", None),
+        shop_domain,
+        store.id,
+        token_expires_at.isoformat() if token_expires_at else None,
+    )
+
+    _ensure_shopify_warehouse(store)
+    _ensure_shopify_sales_setup(store)
+
+    from events.emitter import emit_event_no_actor
+
+    emit_event_no_actor(
+        company=company,
+        event_type=EventTypes.SHOPIFY_STORE_CONNECTED,
+        aggregate_type="ShopifyStore",
+        aggregate_id=str(store.public_id),
+        idempotency_key=f"shopify.store.connected:{store.public_id}",
+        data=ShopifyStoreConnectedData(
+            store_public_id=str(store.public_id),
+            shop_domain=store.shop_domain,
+            company_public_id=str(company.public_id),
+            connected_by_email="",
+        ),
+    )
+
+    return CommandResult.ok(data={"store": store})
+
+
+# =============================================================================
 # A122: Rotating offline tokens — refresh + valid-token helpers
 # =============================================================================
 

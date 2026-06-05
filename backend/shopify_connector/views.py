@@ -239,6 +239,64 @@ class ShopifyCallbackView(APIView):
         return HttpResponseRedirect(finalize_path)
 
 
+class ShopifyTokenExchangeView(APIView):
+    """
+    POST /api/shopify/token-exchange/
+    Body: {"session_token": "<jwt>", "shop_domain": "<optional hint>"}
+
+    B8 (2026-06-05): Token Exchange — the embedded install path.
+
+    Called by the App Bridge frontend after Shopify silently installs
+    the app. The session token (JWT signed by Shopify with our
+    client_secret) is exchanged server-side for an offline access
+    token, and the resulting tokens are persisted on a ShopifyStore
+    row for the authenticated merchant's company.
+
+    Replaces the OAuth code-grant dance for installs that bypass
+    /api/shopify/callback/ (Shopify Dev Dashboard "Install app", App
+    Store managed-install flow). The Nxentra-initiated Connect form
+    still uses OAuth; this is the second path.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        actor = resolve_actor(request)
+        require(actor, "settings.edit")
+
+        session_token = request.data.get("session_token", "").strip()
+        if not session_token:
+            return Response(
+                {"error": "session_token is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Optional shop_domain hint — when provided, the command
+        # verifies it matches the JWT's claim to catch frontend bugs
+        # early. The JWT remains the source of truth either way.
+        shop_hint = request.data.get("shop_domain", "").strip()
+
+        result = commands.complete_oauth_token_exchange(
+            actor.company,
+            session_token,
+            expected_shop_domain=shop_hint,
+        )
+        if not result.success:
+            return Response(
+                {"error": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        store = result.data["store"]
+        return Response(
+            {
+                "status": "connected",
+                "shop_domain": store.shop_domain,
+                "store_public_id": str(store.public_id),
+            }
+        )
+
+
 class ShopifyFinalizeInstallView(APIView):
     """
     POST /api/shopify/finalize-install/<pending_id>/

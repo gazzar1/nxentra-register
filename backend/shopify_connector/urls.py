@@ -15,6 +15,14 @@ urlpatterns = [
         views.ShopifyFinalizeInstallView.as_view(),
         name="shopify-finalize-install",
     ),
+    # B8 (2026-06-05): Token Exchange — embedded-app install path.
+    # Called by the App Bridge frontend after silent install. Exchanges
+    # a session token JWT for an offline access token, server-side.
+    path(
+        "token-exchange/",
+        views.ShopifyTokenExchangeView.as_view(),
+        name="shopify-token-exchange",
+    ),
     # A122 (2026-06-02): Shopify app launch handshake. Shopify sends merchants
     # to https://app.nxentra.com/?hmac=...&host=...&shop=...&session=... when
     # they click "Open app" from their Shopify admin. The frontend root page
