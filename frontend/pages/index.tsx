@@ -2,17 +2,41 @@ import type { GetServerSideProps } from "next";
 import Link from "next/link";
 import { useEffect } from "react";
 
-// A122 (2026-06-02): when Shopify launches our app from a merchant's admin
-// (clicking the app icon or via App Store install), it GETs `/` with signed
-// query parameters (hmac/host/shop/session/timestamp). Without server-side
-// handling here, the bare marketing page renders, Shopify reports the app
-// as "application_cant_be_loaded_misconfigured", and merchants can't reach
-// the app from their Shopify admin. We detect those params and 307-redirect
-// to the backend launch handler which verifies HMAC and routes to either
-// OAuth install or the settings page.
+// A122 (2026-06-02) + B8 (2026-06-05): when Shopify launches our app from a
+// merchant's admin (clicking the app icon, App Store install, or embedded
+// iframe load), it GETs `/` with signed query parameters
+// (hmac/host/shop/session/timestamp). Without server-side handling here,
+// the bare marketing page renders, Shopify reports the app as
+// "application_cant_be_loaded_misconfigured", and merchants can't reach the
+// app from their Shopify admin.
+//
+// Routing rules:
+//   - `?host=` present  → embedded launch (we're inside the Shopify admin
+//     iframe). 307 to /shopify/embedded — that client page picks up the
+//     App Bridge session token and runs the Token Exchange flow.
+//   - `?hmac=` or `?shop=` without `?host=` → legacy launch handshake,
+//     route through the backend (HMAC verification → /shopify/settings).
+//
+// The `host` param is the canonical signal of an embedded launch. Shopify
+// only sends it when our app is being loaded inside the admin iframe.
 export const getServerSideProps: GetServerSideProps = async (ctx) => {
   const { hmac, host, shop } = ctx.query;
-  if (hmac || host || shop) {
+
+  if (host) {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(ctx.query)) {
+      if (typeof v === "string") params.set(k, v);
+      else if (Array.isArray(v) && v.length) params.set(k, v[0]);
+    }
+    return {
+      redirect: {
+        destination: `/shopify/embedded?${params.toString()}`,
+        permanent: false,
+      },
+    };
+  }
+
+  if (hmac || shop) {
     const params = new URLSearchParams();
     for (const [k, v] of Object.entries(ctx.query)) {
       if (typeof v === "string") params.set(k, v);
@@ -25,6 +49,7 @@ export const getServerSideProps: GetServerSideProps = async (ctx) => {
       },
     };
   }
+
   return { props: {} };
 };
 

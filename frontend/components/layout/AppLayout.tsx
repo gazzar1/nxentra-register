@@ -7,10 +7,17 @@ import { Header } from "./Header";
 import { ModuleGuard } from "./ModuleGuard";
 import { CommandPalette } from "./CommandPalette";
 import { LoadingScreen } from "@/components/common/LoadingScreen";
+import { useShopifyEmbedded } from "@/lib/shopify-embed";
 
 export function AppLayout({ children }: PropsWithChildren) {
   const { isAuthenticated, isLoading } = useAuth();
   const router = useRouter();
+  // B8 (2026-06-05): inside the Shopify admin iframe we suppress our own
+  // chrome (sidebar + header). Shopify renders its own admin chrome around
+  // the iframe; ours would look nested and would also re-trigger the
+  // sidebar inside the embedded launch flow. Detection is from `?host=`
+  // in the URL which is the canonical Shopify-embedded signal.
+  const isEmbedded = useShopifyEmbedded();
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
@@ -35,6 +42,16 @@ export function AppLayout({ children }: PropsWithChildren) {
 
   if (!isAuthenticated) {
     return null;
+  }
+
+  if (isEmbedded) {
+    // Bare content render inside the Shopify admin iframe — no sidebar,
+    // no header, no command palette. The admin chrome wraps us already.
+    return (
+      <main className="h-screen overflow-y-auto bg-background p-4 md:p-6">
+        <ModuleGuard>{children}</ModuleGuard>
+      </main>
+    );
   }
 
   return (
