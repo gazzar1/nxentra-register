@@ -1,5 +1,6 @@
 import { Html, Head, Main, NextScript } from 'next/document';
 import type { DocumentProps } from 'next/document';
+import Script from 'next/script';
 
 export default function Document(props: DocumentProps) {
   const locale = props.__NEXT_DATA__.locale || 'en';
@@ -30,11 +31,21 @@ export default function Document(props: DocumentProps) {
           rel="stylesheet"
         />
         {/*
-          App Bridge MUST come before any other <script> in <head>. The
-          meta tag goes immediately above. No async / defer / type=module.
+          B8 (2026-06-05): App Bridge requires synchronous loading as
+          the first <script> in <head>. Plain <script> tags inside
+          Next.js's <Head> get silently stripped by React 18 unless they
+          have async/defer/nomodule. next/script with
+          strategy="beforeInteractive" is the Next.js-supported way to
+          inject sync third-party scripts via _document.tsx — it
+          renders the tag without forcing async, runs before page
+          hydration, and isn't stripped.
         */}
         <meta name="shopify-api-key" content={shopifyApiKey} />
-        <script src="https://cdn.shopify.com/shopifycloud/app-bridge.js" />
+        <Script
+          id="shopify-app-bridge"
+          src="https://cdn.shopify.com/shopifycloud/app-bridge.js"
+          strategy="beforeInteractive"
+        />
         <meta name="description" content="Nxentra - Financial Truth Engine" />
         <link rel="icon" href="/favicon.ico" sizes="any" />
         <link rel="icon" type="image/png" sizes="192x192" href="/android-chrome-192x192.png" />
