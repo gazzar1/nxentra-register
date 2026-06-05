@@ -1,6 +1,5 @@
 import { Html, Head, Main, NextScript } from 'next/document';
 import type { DocumentProps } from 'next/document';
-import Script from 'next/script';
 
 export default function Document(props: DocumentProps) {
   const locale = props.__NEXT_DATA__.locale || 'en';
@@ -32,19 +31,34 @@ export default function Document(props: DocumentProps) {
         />
         {/*
           B8 (2026-06-05): App Bridge requires synchronous loading as
-          the first <script> in <head>. Plain <script> tags inside
-          Next.js's <Head> get silently stripped by React 18 unless they
-          have async/defer/nomodule. next/script with
-          strategy="beforeInteractive" is the Next.js-supported way to
-          inject sync third-party scripts via _document.tsx — it
-          renders the tag without forcing async, runs before page
-          hydration, and isn't stripped.
+          the first <script> in <head>. Two prior approaches failed:
+            - A plain <script src="..."> tag inside Next.js's <Head>
+              gets silently stripped by React 18 (no async/defer means
+              "potentially blocking", which React refuses to render).
+            - next/script with strategy="beforeInteractive" renders the
+              tag but auto-injects defer="", which Shopify's App Bridge
+              rejects with the same error as async.
+          The reliable workaround: render an inline loader (via
+          dangerouslySetInnerHTML, which React passes through verbatim)
+          that creates the App Bridge <script> element via DOM API and
+          inserts it at document.head.firstChild with async=false. Since
+          the loader is itself the first script the browser parses, the
+          App Bridge script becomes position-0 in <head> before any
+          other script runs. App Bridge's runtime DOM check then sees a
+          sync first-script-in-head and initializes cleanly.
         */}
         <meta name="shopify-api-key" content={shopifyApiKey} />
-        <Script
-          id="shopify-app-bridge"
-          src="https://cdn.shopify.com/shopifycloud/app-bridge.js"
-          strategy="beforeInteractive"
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function () {
+                var s = document.createElement('script');
+                s.src = 'https://cdn.shopify.com/shopifycloud/app-bridge.js';
+                s.async = false;
+                document.head.insertBefore(s, document.head.firstChild);
+              })();
+            `,
+          }}
         />
         <meta name="description" content="Nxentra - Financial Truth Engine" />
         <link rel="icon" href="/favicon.ico" sizes="any" />
