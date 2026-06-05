@@ -57,6 +57,15 @@ export default function LoginPage() {
       setIsSubmitting(true);
       const response = await login(email, password) as LoginResponse;
 
+      // B6 (2026-06-05): preserve ?next= through the login chain so that
+      // post-login redirects land where the user was originally headed
+      // (e.g. /shopify/finalize-install after a Shopify-initiated install).
+      // Without this, the post-OAuth merchant gets dumped on /dashboard
+      // with no install confirmation — the exact reviewer-broken state
+      // we surfaced on 2026-06-05.
+      const rawNext = typeof router.query.next === "string" ? router.query.next : "";
+      const nextParam = rawNext && rawNext.startsWith("/") ? rawNext : "";
+
       // Handle "choose_company" response - user has multiple companies, no active set.
       // Backend returns 200 with a short-lived signed pending_login_token; the browser
       // exchanges that token + company_id for JWTs on /select-company. Password is
@@ -68,14 +77,17 @@ export default function LoginPage() {
       ) {
         sessionStorage.setItem("pendingCompanies", JSON.stringify(response.companies));
         sessionStorage.setItem("pendingLoginToken", response.pending_login_token);
-        router.push("/select-company?from=login");
+        const selectUrl = nextParam
+          ? `/select-company?from=login&next=${encodeURIComponent(nextParam)}`
+          : "/select-company?from=login";
+        router.push(selectUrl);
         return;
       }
 
       // Normal login with tokens
       if (response.access && response.refresh) {
         storeTokens(response.access, response.refresh);
-        await router.push("/dashboard");
+        await router.push(nextParam || "/dashboard");
         return;
       }
 

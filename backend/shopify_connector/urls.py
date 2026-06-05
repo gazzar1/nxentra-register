@@ -7,6 +7,14 @@ urlpatterns = [
     # OAuth flow
     path("install/", views.ShopifyInstallView.as_view(), name="shopify-install"),
     path("callback/", views.ShopifyCallbackView.as_view(), name="shopify-callback"),
+    # B6 (2026-06-05): finalize a Shopify-initiated install after the
+    # merchant has logged into Nxentra and selected a company. Called by
+    # the /shopify/finalize-install Next.js page with the JWT in headers.
+    path(
+        "finalize-install/<uuid:pending_id>/",
+        views.ShopifyFinalizeInstallView.as_view(),
+        name="shopify-finalize-install",
+    ),
     # A122 (2026-06-02): Shopify app launch handshake. Shopify sends merchants
     # to https://app.nxentra.com/?hmac=...&host=...&shop=...&session=... when
     # they click "Open app" from their Shopify admin. The frontend root page

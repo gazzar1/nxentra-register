@@ -316,6 +316,240 @@ def complete_oauth(company, shop_domain: str, code: str, nonce: str) -> CommandR
 
 
 # =============================================================================
+# B6 (2026-06-05): Shopify-initiated install support
+# =============================================================================
+
+
+def verify_shopify_oauth_hmac(params) -> bool:
+    """
+    Verify the HMAC signature on a Shopify OAuth callback URL.
+
+    Shopify signs the OAuth callback's query string the same way it signs
+    the launch handshake — alphabetically sort all params except `hmac`,
+    join as `k=v&k=v...`, HMAC-SHA256 with the client_secret, compare
+    hex-encoded.
+
+    For Nxentra-initiated installs we rely on the state nonce we created
+    in get_install_url for CSRF protection. For Shopify-initiated
+    installs no state nonce exists (the install originates from Shopify
+    Partners or App Store), so HMAC verification is the only defense
+    against forged callbacks. Strict checking required.
+    """
+    import hmac as hmac_lib
+
+    hmac_param = params.get("hmac", "")
+    if not hmac_param or not SHOPIFY_API_SECRET:
+        return False
+
+    sorted_params = "&".join(f"{k}={v}" for k, v in sorted(params.items()) if k != "hmac")
+    computed = hmac_lib.new(
+        SHOPIFY_API_SECRET.encode("utf-8"),
+        sorted_params.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac_lib.compare_digest(computed, hmac_param)
+
+
+def _exchange_oauth_code(shop_domain: str, code: str) -> tuple[str | None, dict | None]:
+    """
+    POST to Shopify's token exchange endpoint and return (error, token_data).
+
+    Returns (None, token_data) on success, (error_message, None) on failure.
+    Shared between Nxentra-initiated and Shopify-initiated flows.
+    """
+    token_url = f"https://{shop_domain}/admin/oauth/access_token"
+    try:
+        resp = requests.post(
+            token_url,
+            json={
+                "client_id": SHOPIFY_API_KEY,
+                "client_secret": SHOPIFY_API_SECRET,
+                "code": code,
+                "expiring": 1,
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return None, resp.json()
+    except requests.RequestException as e:
+        return str(e), None
+
+
+def complete_oauth_shopify_initiated(shop_domain: str, code: str) -> CommandResult:
+    """
+    B6 Phase 1: handle a Shopify-initiated install callback.
+
+    The merchant clicked Install from the App Store listing or Partners
+    Dashboard test install. Shopify called our callback with `code +
+    shop`, no pre-existing PENDING ShopifyStore row (we never created
+    one via get_install_url) and possibly no Nxentra session at all.
+
+    OAuth codes are single-use and short-lived (Shopify caps them at
+    ~10 min), so we must exchange the code for tokens immediately.
+    The tokens go into a PendingShopifyInstall record; the caller then
+    redirects through login + select-company → finalize_shopify_install
+    finishes the install for the chosen company.
+    """
+    from datetime import timedelta
+
+    from django.utils import timezone as tz
+
+    from .models import PendingShopifyInstall
+
+    logger.info("shopify.oauth_callback_received_shopify_initiated shop=%s", shop_domain)
+
+    error, token_data = _exchange_oauth_code(shop_domain, code)
+    if error:
+        logger.warning(
+            "shopify.token_exchange_failed_shopify_initiated shop=%s error=%s",
+            shop_domain,
+            error,
+        )
+        return CommandResult.fail(f"Failed to exchange OAuth code: {error}")
+
+    access_token = token_data.get("access_token", "")
+    if not access_token:
+        return CommandResult.fail("Shopify returned no access_token.")
+
+    expires_in = token_data.get("expires_in")
+    refresh_token_expires_in = token_data.get("refresh_token_expires_in")
+    now = tz.now()
+    token_expires_at = now + timedelta(seconds=int(expires_in)) if expires_in else None
+    refresh_token_expires_at = (
+        now + timedelta(seconds=int(refresh_token_expires_in)) if refresh_token_expires_in else None
+    )
+
+    with command_writes_allowed():
+        # 30 minute TTL — the merchant has to log in + pick company
+        # within this window. If not, the install record expires and
+        # they'd need to redo the Shopify install (~3 clicks).
+        pending = PendingShopifyInstall.objects.create(
+            shop_domain=shop_domain,
+            access_token=access_token,
+            refresh_token=token_data.get("refresh_token", ""),
+            token_expires_at=token_expires_at,
+            refresh_token_expires_at=refresh_token_expires_at,
+            scopes=token_data.get("scope", ""),
+            expires_at=now + timedelta(minutes=30),
+        )
+
+    logger.info(
+        "shopify.pending_install_created shop=%s pending_id=%s expires_at=%s",
+        shop_domain,
+        pending.public_id,
+        pending.expires_at.isoformat(),
+    )
+
+    return CommandResult.ok(data={"pending": pending})
+
+
+@transaction.atomic
+def finalize_shopify_install(company, pending_public_id: str) -> CommandResult:
+    """
+    B6 Phase 2: associate a PendingShopifyInstall with a company.
+
+    Called after the merchant logged into Nxentra and selected their
+    active company. Moves the saved tokens onto a real ShopifyStore row
+    and runs the standard post-install setup (warehouse, customer,
+    posting profile, store-connected event).
+    """
+    from django.utils import timezone as tz
+
+    from .models import PendingShopifyInstall
+
+    try:
+        pending = PendingShopifyInstall.objects.get(
+            public_id=pending_public_id,
+            consumed_at__isnull=True,
+        )
+    except PendingShopifyInstall.DoesNotExist:
+        return CommandResult.fail("Install record not found or already consumed.")
+
+    if pending.expires_at < tz.now():
+        return CommandResult.fail("Install record expired — please reinstall the app from Shopify.")
+
+    shop_domain = pending.shop_domain
+
+    # Reuse an existing ShopifyStore row for this (company, shop_domain) if
+    # one exists (e.g. the merchant previously disconnected and is reinstalling)
+    # — same pattern as complete_oauth + the B3 no-downgrade guard.
+    existing = ShopifyStore.objects.filter(company=company, shop_domain=shop_domain).first()
+    if existing:
+        store = existing
+    else:
+        store = None
+
+    try:
+        with command_writes_allowed():
+            if store is None:
+                store = ShopifyStore.objects.create(
+                    company=company,
+                    shop_domain=shop_domain,
+                    access_token=pending.access_token,
+                    refresh_token=pending.refresh_token,
+                    token_expires_at=pending.token_expires_at,
+                    refresh_token_expires_at=pending.refresh_token_expires_at,
+                    scopes=pending.scopes,
+                    status=ShopifyStore.Status.ACTIVE,
+                )
+            else:
+                store.access_token = pending.access_token
+                store.refresh_token = pending.refresh_token
+                store.token_expires_at = pending.token_expires_at
+                store.refresh_token_expires_at = pending.refresh_token_expires_at
+                store.scopes = pending.scopes
+                store.status = ShopifyStore.Status.ACTIVE
+                store.oauth_nonce = ""
+                store.error_message = ""
+                store.save()
+    except IntegrityError:
+        logger.warning(
+            "shopify.store_active_failed_finalize reason=domain_taken company=%s shop=%s",
+            getattr(company, "id", None),
+            shop_domain,
+        )
+        return CommandResult.fail(
+            "This Shopify store is already connected to another Nxentra company. "
+            "Disconnect it from the other company first."
+        )
+
+    # Mark pending consumed so it can't be reused.
+    with command_writes_allowed():
+        pending.consumed_at = tz.now()
+        pending.consumed_by_company = company
+        pending.save(update_fields=["consumed_at", "consumed_by_company"])
+
+    logger.info(
+        "shopify.store_marked_active_finalize company=%s shop=%s store_id=%s",
+        getattr(company, "id", None),
+        shop_domain,
+        store.id,
+    )
+
+    # Same post-install setup as complete_oauth
+    _ensure_shopify_warehouse(store)
+    _ensure_shopify_sales_setup(store)
+
+    from events.emitter import emit_event_no_actor
+
+    emit_event_no_actor(
+        company=company,
+        event_type=EventTypes.SHOPIFY_STORE_CONNECTED,
+        aggregate_type="ShopifyStore",
+        aggregate_id=str(store.public_id),
+        idempotency_key=f"shopify.store.connected:{store.public_id}",
+        data=ShopifyStoreConnectedData(
+            store_public_id=str(store.public_id),
+            shop_domain=store.shop_domain,
+            company_public_id=str(company.public_id),
+            connected_by_email="",
+        ),
+    )
+
+    return CommandResult.ok(data={"store": store})
+
+
+# =============================================================================
 # A122: Rotating offline tokens — refresh + valid-token helpers
 # =============================================================================
 

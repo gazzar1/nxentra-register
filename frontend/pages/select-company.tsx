@@ -18,6 +18,13 @@ interface CompanyOption {
   role: string;
 }
 
+// B6 (2026-06-05): only honor `?next=` if it's a safe in-app path
+// (starts with "/"), to prevent open-redirect via crafted login URLs.
+function resolveNextOrDashboard(nextQuery: string | string[] | undefined): string {
+  const raw = typeof nextQuery === "string" ? nextQuery : "";
+  return raw.startsWith("/") ? raw : "/dashboard";
+}
+
 export default function SelectCompanyPage() {
   const router = useRouter();
   const [companies, setCompanies] = useState<CompanyOption[]>([]);
@@ -121,13 +128,13 @@ export default function SelectCompanyPage() {
         // Store tokens and do full page redirect (not client-side navigation)
         // This ensures AuthContext properly initializes with new tokens
         storeTokens(response.data.access, response.data.refresh);
-        window.location.href = "/dashboard";
+        window.location.href = resolveNextOrDashboard(router.query.next);
       } else {
         // Already authenticated, just switch company
         const { data } = await authService.switchCompany(companyId);
         storeTokens(data.tokens.access, data.tokens.refresh);
         // Full page reload to reinitialize auth context with new company tokens
-        window.location.href = "/dashboard";
+        window.location.href = resolveNextOrDashboard(router.query.next);
       }
     } catch (err) {
       console.error(err);

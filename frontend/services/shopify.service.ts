@@ -79,6 +79,17 @@ export const shopifyService = {
   install: (shop_domain: string) =>
     apiClient.post<ShopifyInstallResponse>("/shopify/install/", { shop_domain }),
 
+  // B6 (2026-06-05): finalize a Shopify-initiated install after the
+  // merchant has logged into Nxentra and selected a company. The
+  // `pending_id` (UUID) comes from the URL handle the backend redirect
+  // dropped us on after the OAuth callback ran.
+  finalizeInstall: (pending_id: string) =>
+    apiClient.post<{
+      status: "connected";
+      shop_domain: string;
+      store_public_id: string;
+    }>(`/shopify/finalize-install/${pending_id}/`),
+
   disconnect: () =>
     apiClient.post<{ status: string }>("/shopify/disconnect/"),
 

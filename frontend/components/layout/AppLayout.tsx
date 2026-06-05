@@ -14,7 +14,18 @@ export function AppLayout({ children }: PropsWithChildren) {
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
-      router.replace("/login");
+      // B6 (2026-06-05): preserve the originally-requested URL so post-
+      // login redirects land back here (e.g. /shopify/finalize-install
+      // after a Shopify-initiated install). Avoid passing /login or
+      // /dashboard as next.
+      const current = router.asPath;
+      const safeNext =
+        current && current.startsWith("/") && !current.startsWith("/login") && current !== "/dashboard"
+          ? current
+          : "";
+      router.replace(
+        safeNext ? `/login?next=${encodeURIComponent(safeNext)}` : "/login",
+      );
     }
   }, [isLoading, isAuthenticated, router]);
 

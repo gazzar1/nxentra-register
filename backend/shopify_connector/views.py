@@ -174,47 +174,103 @@ class ShopifyCallbackView(APIView):
         shop = request.query_params.get("shop", "")
         state = request.query_params.get("state", "")
 
-        if not code or not shop or not state:
+        if not code or not shop:
             return Response(
                 {"error": "Missing required OAuth parameters"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Find the store by shop domain and nonce
-        try:
-            store = ShopifyStore.objects.get(
-                shop_domain=shop,
-                oauth_nonce=state,
-                status=ShopifyStore.Status.PENDING,
-            )
-        except ShopifyStore.DoesNotExist:
-            return Response(
-                {"error": "Invalid OAuth state or store not found"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        # Try to match a PENDING ShopifyStore row created by the
+        # Nxentra-initiated install path (merchant pasted shop domain
+        # into /shopify/settings → Connect → get_install_url created the
+        # row + nonce). When matched, we have a company context and run
+        # the original flow.
+        store = None
+        if state:
+            try:
+                store = ShopifyStore.objects.get(
+                    shop_domain=shop,
+                    oauth_nonce=state,
+                    status=ShopifyStore.Status.PENDING,
+                )
+            except ShopifyStore.DoesNotExist:
+                pass
 
-        result = commands.complete_oauth(store.company, shop, code, state)
-
-        if not result.success:
-            # Redirect to frontend with error.
-            # A7: error path also branches on onboarding state so the
-            # merchant lands back where they started (wizard or
-            # standalone settings).
+        if store is not None:
+            result = commands.complete_oauth(store.company, shop, code, state)
+            if not result.success:
+                # A7: error path also branches on onboarding state so the
+                # merchant lands back where they started (wizard or
+                # standalone settings).
+                if not store.company.onboarding_completed:
+                    return HttpResponseRedirect(f"/onboarding/setup?shopify_error={result.error}")
+                return HttpResponseRedirect(f"/shopify/settings?error={result.error}")
+            # A7: onboarding-incomplete companies are mid-wizard at the
+            # Shopify step.
             if not store.company.onboarding_completed:
-                return HttpResponseRedirect(f"/onboarding/setup?shopify_error={result.error}")
+                return HttpResponseRedirect("/onboarding/setup?shopify_connected=true")
+            return HttpResponseRedirect("/shopify/settings?connected=true")
+
+        # B6 (2026-06-05): Shopify-initiated install fallback.
+        # Reviewer / merchant installed via App Store or Partner Dashboard
+        # — no PENDING row exists for us to bind to a company. We exchange
+        # the OAuth code immediately (it's single-use + short-lived),
+        # stash the tokens, and bounce through login + select-company so
+        # the merchant can choose where the store lands.
+        if not commands.verify_shopify_oauth_hmac(request.query_params):
+            logger.warning(
+                "shopify.oauth_callback_hmac_failed shop=%s state=%r",
+                shop,
+                state[:8] if state else "",
+            )
+            return Response({"error": "Invalid HMAC"}, status=status.HTTP_400_BAD_REQUEST)
+
+        result = commands.complete_oauth_shopify_initiated(shop, code)
+        if not result.success:
             return HttpResponseRedirect(f"/shopify/settings?error={result.error}")
 
-        # A7: route post-callback by where the merchant came from.
-        # Onboarding-incomplete companies are mid-wizard at the Shopify
-        # step — return them to the wizard with the connected signal so
-        # it advances to the next step (Import Orders) instead of
-        # dumping them on /shopify/settings (which feels like leaving
-        # the wizard mid-flow). Already-onboarded companies adding an
-        # additional store land on the standalone settings page as
-        # before.
-        if not store.company.onboarding_completed:
-            return HttpResponseRedirect("/onboarding/setup?shopify_connected=true")
-        return HttpResponseRedirect("/shopify/settings?connected=true")
+        pending = result.data["pending"]
+
+        finalize_path = f"/shopify/finalize-install?handle={pending.public_id}"
+        # /shopify/finalize-install is a Next.js page protected by the
+        # frontend auth guard; unauthenticated users get bounced through
+        # /login?next=... → /select-company → finalize-install page,
+        # which calls the backend finalize endpoint with the JWT.
+        return HttpResponseRedirect(finalize_path)
+
+
+class ShopifyFinalizeInstallView(APIView):
+    """
+    POST /api/shopify/finalize-install/<pending_id>/
+
+    B6 Phase 2: associate a PendingShopifyInstall with the
+    authenticated merchant's active company. Called by the
+    /shopify/finalize-install Next.js page after the merchant has
+    logged in and selected a company.
+
+    GET would expose the action to CSRF — keep this POST-only.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pending_id):
+        actor = resolve_actor(request)
+        require(actor, "settings.edit")
+
+        result = commands.finalize_shopify_install(actor.company, str(pending_id))
+        if not result.success:
+            return Response(
+                {"error": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        store = result.data["store"]
+        return Response(
+            {
+                "status": "connected",
+                "shop_domain": store.shop_domain,
+                "store_public_id": str(store.public_id),
+            }
+        )
 
 
 # =============================================================================

@@ -182,6 +182,57 @@ class ShopifyStore(models.Model):
         return f"{self.shop_domain} ({self.status})"
 
 
+class PendingShopifyInstall(models.Model):
+    """
+    B6 (2026-06-05): a Shopify-initiated install awaiting Nxentra-side
+    company association.
+
+    Created when our OAuth callback fires for a shop that has no
+    matching PENDING ShopifyStore row — the canonical reviewer /
+    App-Store-merchant path: they click Install from Shopify side, our
+    callback receives `code + shop` with no pre-existing PENDING row to
+    bind to a company. OAuth codes are single-use and short-lived, so we
+    exchange them immediately and stash the tokens here; the merchant
+    then logs into Nxentra (or signs up), picks a company, and the
+    finalize endpoint moves the tokens onto a real ShopifyStore row.
+
+    Until B6 shipped, the callback rejected this path with HTTP 400
+    "Invalid OAuth state or store not found" — so the reviewer's primary
+    install path never created a store. This was the core blocker for
+    App Store rejection #4 (would-have-been).
+    """
+
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    shop_domain = models.CharField(max_length=255, db_index=True)
+    access_token = models.CharField(max_length=255)
+    refresh_token = models.CharField(max_length=255, blank=True)
+    token_expires_at = models.DateTimeField(null=True, blank=True)
+    refresh_token_expires_at = models.DateTimeField(null=True, blank=True)
+    scopes = models.CharField(max_length=500, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(
+        help_text="Short TTL (~30 min) — the merchant must finish login + company select before this.",
+    )
+    consumed_at = models.DateTimeField(null=True, blank=True)
+    consumed_by_company = models.ForeignKey(
+        Company,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="consumed_shopify_installs",
+    )
+
+    class Meta:
+        db_table = "shopify_pending_install"
+        indexes = [
+            models.Index(fields=["expires_at"], name="shopify_pending_exp_idx"),
+        ]
+
+    def __str__(self):
+        return f"PendingInstall {self.shop_domain} ({self.public_id})"
+
+
 class ShopifyOrder(models.Model):
     """
     Local record of a Shopify order for reconciliation and audit.
