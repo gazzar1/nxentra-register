@@ -57,7 +57,31 @@ export default function Document(props: DocumentProps) {
               (function () {
                 try {
                   var p = new URLSearchParams(window.location.search);
-                  if (!p.get('shop') || !p.get('host')) return;
+                  var shop = p.get('shop');
+                  var host = p.get('host');
+                  // B8.5 (2026-06-06): in-iframe navigations after the
+                  // embedded landing may drop shop+host from the URL. The
+                  // landing page persists them to sessionStorage, so we
+                  // fall back to that — App Bridge still gets a working
+                  // host via the meta tag + sessionStorage round-trip.
+                  if (!shop || !host) {
+                    try {
+                      shop = shop || sessionStorage.getItem('nxentra-shopify-shop');
+                      host = host || sessionStorage.getItem('nxentra-shopify-host');
+                    } catch (e2) {}
+                  }
+                  if (!shop || !host) return;
+                  // App Bridge auto-reads host from URL. If we recovered
+                  // host from sessionStorage, write it back into the URL
+                  // (history-only, no nav) so App Bridge can initialize.
+                  if (!p.get('host')) {
+                    try {
+                      p.set('host', host);
+                      if (shop) p.set('shop', shop);
+                      var newUrl = window.location.pathname + '?' + p.toString() + window.location.hash;
+                      window.history.replaceState(null, '', newUrl);
+                    } catch (e3) {}
+                  }
                   var s = document.createElement('script');
                   s.src = 'https://cdn.shopify.com/shopifycloud/app-bridge.js';
                   s.async = false;

@@ -69,24 +69,47 @@ apiClient.interceptors.request.use(
  * B8.5: re-mint a Nxentra JWT inside the iframe by calling App Bridge for
  * a fresh session token and POSTing it to /auth/shopify-session-login/.
  * Returns the new access token, or null if any step fails.
+ *
+ * Polls for App Bridge for up to 5s. On a hard page reload inside the
+ * iframe, the api-client may attempt a request before App Bridge has
+ * finished loading from the CDN — without the poll, the first 401 retry
+ * would fall through to "unauthenticated" even though App Bridge is
+ * milliseconds away from being ready.
+ *
+ * Coalescing: if multiple requests 401 at once, they all share the same
+ * in-flight refresh promise so we only call session-login once.
  */
+let inFlightRefresh: Promise<string | null> | null = null;
+
 async function refreshEmbeddedSession(): Promise<string | null> {
-  try {
-    const sessionToken = await getShopifySessionToken();
-    if (!sessionToken) return null;
-    const { data } = await axios.post<{ access: string; refresh: string }>(
-      `${baseURL}/auth/shopify-session-login/`,
-      { session_token: sessionToken },
-      { withCredentials: true, headers: { 'Content-Type': 'application/json' } }
-    );
-    if (data?.access) {
-      setEmbeddedAccessToken(data.access);
-      return data.access;
+  if (inFlightRefresh) return inFlightRefresh;
+  inFlightRefresh = (async () => {
+    try {
+      const deadline = Date.now() + 5000;
+      let sessionToken: string | null = null;
+      while (Date.now() < deadline) {
+        sessionToken = await getShopifySessionToken();
+        if (sessionToken) break;
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      if (!sessionToken) return null;
+      const { data } = await axios.post<{ access: string; refresh: string }>(
+        `${baseURL}/auth/shopify-session-login/`,
+        { session_token: sessionToken },
+        { withCredentials: true, headers: { 'Content-Type': 'application/json' } }
+      );
+      if (data?.access) {
+        setEmbeddedAccessToken(data.access);
+        return data.access;
+      }
+      return null;
+    } catch {
+      return null;
+    } finally {
+      inFlightRefresh = null;
     }
-    return null;
-  } catch {
-    return null;
-  }
+  })();
+  return inFlightRefresh;
 }
 
 // Response interceptor - handle token refresh and tenant context errors

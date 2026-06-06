@@ -1,5 +1,5 @@
 /**
- * B8 (2026-06-05): Shopify App Bridge embedded-mode helpers.
+ * B8 / B8.5 (2026-06-06): Shopify App Bridge embedded-mode helpers.
  *
  * When Shopify embeds our app inside the admin iframe, Shopify's CDN
  * script (loaded in _document.tsx) populates `window.shopify` with:
@@ -13,7 +13,12 @@
  *
  * Embedded detection: Shopify launches us at /?host=<base64>&shop=<x>
  * inside an iframe. Presence of the `host` query param is the canonical
- * signal that we should treat this as an embedded launch.
+ * signal of an embedded launch. After the first embedded page mounts we
+ * also persist host/shop to sessionStorage so that subsequent in-iframe
+ * navigations (which may not carry the params in the URL) still report
+ * "embedded mode" correctly. sessionStorage in a Shopify-framed
+ * app.nxentra.com context is partitioned per top-level origin, so the
+ * persistence can't leak into a standalone-tab session.
  */
 
 import { useEffect, useState } from "react";
@@ -29,25 +34,74 @@ declare global {
       };
       idToken?: () => Promise<string>;
       toast?: { show: (message: string) => void };
+      redirect?: {
+        toRemote?: (options: { url: string; newContext?: boolean }) => void;
+        dispatch?: (action: unknown) => void;
+      };
     };
   }
 }
 
+const SESSION_HOST_KEY = "nxentra-shopify-host";
+const SESSION_SHOP_KEY = "nxentra-shopify-shop";
+
+function safeSessionGet(key: string): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.sessionStorage.getItem(key);
+  } catch {
+    // sessionStorage can throw in partitioned-storage edge cases.
+    return null;
+  }
+}
+
+function safeSessionSet(key: string, value: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(key, value);
+  } catch {
+    /* ignore */
+  }
+}
+
+function safeSessionRemove(key: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(key);
+  } catch {
+    /* ignore */
+  }
+}
+
 /**
- * Returns true if the current page was launched from inside Shopify
- * admin. Reads the `?host=` query param synchronously from
- * `window.location`, so this is SSR-safe (returns false during SSR
- * and on first client render before the URL is parsed).
+ * Persist the Shopify launch context (host + shop) for the duration of
+ * the iframe session. Called once from the embedded landing page so that
+ * any subsequent in-iframe navigation that drops the URL params still
+ * recognizes itself as embedded.
+ */
+export function persistShopifyContext(host: string, shop: string): void {
+  if (host) safeSessionSet(SESSION_HOST_KEY, host);
+  if (shop) safeSessionSet(SESSION_SHOP_KEY, shop);
+}
+
+export function clearShopifyContext(): void {
+  safeSessionRemove(SESSION_HOST_KEY);
+  safeSessionRemove(SESSION_SHOP_KEY);
+}
+
+/**
+ * Returns true if the current page is running inside the Shopify admin
+ * iframe. Checks the URL first (canonical signal), then sessionStorage
+ * (set by persistShopifyContext during the embedded launch landing).
  *
- * Idempotent: safe to call multiple times. Cheap (string parsing).
+ * SSR-safe: returns false during SSR and on first client render before
+ * the URL is parsed.
  */
 export function useShopifyEmbedded(): boolean {
   const [isEmbedded, setIsEmbedded] = useState(false);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const params = new URLSearchParams(window.location.search);
-    setIsEmbedded(Boolean(params.get("host")));
+    setIsEmbedded(isShopifyEmbedded());
   }, []);
 
   return isEmbedded;
@@ -60,7 +114,8 @@ export function useShopifyEmbedded(): boolean {
 export function isShopifyEmbedded(): boolean {
   if (typeof window === "undefined") return false;
   const params = new URLSearchParams(window.location.search);
-  return Boolean(params.get("host"));
+  if (params.get("host")) return true;
+  return Boolean(safeSessionGet(SESSION_HOST_KEY));
 }
 
 /**
@@ -122,13 +177,23 @@ export function useShopifySessionToken(): {
 }
 
 /**
- * Reads the `shop` query param from the current URL. Shopify always
- * sends this on launch (e.g. `shop=foo.myshopify.com`). Useful for
- * showing the merchant which store they're connecting before the
- * token exchange completes.
+ * Reads the `shop` query param from the URL, falling back to
+ * sessionStorage when the URL doesn't carry it. Returns null only when
+ * we have no record of which shop launched us.
  */
 export function getShopifyShopParam(): string | null {
   if (typeof window === "undefined") return null;
   const params = new URLSearchParams(window.location.search);
-  return params.get("shop");
+  return params.get("shop") || safeSessionGet(SESSION_SHOP_KEY);
+}
+
+/**
+ * Reads the `host` param — same fallback as getShopifyShopParam. The
+ * `host` value is what App Bridge needs to initialize and what we put
+ * back in URLs to keep downstream pages embedded-aware.
+ */
+export function getShopifyHostParam(): string | null {
+  if (typeof window === "undefined") return null;
+  const params = new URLSearchParams(window.location.search);
+  return params.get("host") || safeSessionGet(SESSION_HOST_KEY);
 }

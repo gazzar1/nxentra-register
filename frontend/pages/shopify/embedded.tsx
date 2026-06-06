@@ -7,39 +7,50 @@ import axios from "axios";
 import apiClient from "@/lib/api-client";
 import { setEmbeddedAccessToken } from "@/lib/embedded-auth";
 import { setAuthenticated } from "@/lib/auth-storage";
+import { useAuth } from "@/contexts/AuthContext";
 import {
+  getShopifyHostParam,
   getShopifySessionToken,
   getShopifyShopParam,
   isShopifyEmbedded,
+  persistShopifyContext,
 } from "@/lib/shopify-embed";
 
 const baseURL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+const NXENTRA_STANDALONE_URL = "https://app.nxentra.com";
 
 /**
- * B8.5 (2026-06-05): embedded-mode landing page.
+ * B8.5 (2026-06-06): embedded-mode landing page.
  *
  * Flow when the merchant lands here from inside the Shopify admin iframe:
- *   1. Read `?shop=` for display; confirm `?host=` (embedded signal).
+ *   1. Persist `host` and `shop` to sessionStorage so subsequent in-iframe
+ *      navigations (which may drop URL params) still report embedded.
  *   2. Wait for App Bridge to populate `window.shopify.idToken`.
  *   3. Call shopify.idToken() to get a Shopify session token JWT.
  *   4. POST to /api/auth/shopify-session-login/ — backend verifies the
  *      JWT, finds the ACTIVE ShopifyStore for the shop_domain, and mints
  *      a Nxentra JWT pair for the store's company OWNER. We stash the
- *      access token in memory so subsequent API calls authenticate via
- *      Authorization: Bearer (cookies don't ride along in the iframe).
- *   5. POST to /api/shopify/token-exchange/ — this is now authenticated
- *      by the Bearer header from step 4. Backend exchanges the session
- *      token for a fresh offline access_token for the merchant's company
- *      (idempotent: reuses the existing ShopifyStore row).
- *   6. Redirect to /shopify/settings?connected=true (inside the iframe).
+ *      access token in memory + sessionStorage so subsequent API calls
+ *      authenticate via Authorization: Bearer (cookies don't ride along
+ *      in the iframe).
+ *   5. Force AuthContext to refetch /auth/me/ via refreshProfile() so
+ *      React state (isAuthenticated, user, company) updates before the
+ *      next route gates on it.
+ *   6. POST to /api/shopify/token-exchange/ — this is now authenticated
+ *      by the Bearer header. Backend refreshes the offline access_token
+ *      for the merchant's company (idempotent: reuses the existing
+ *      ShopifyStore row).
+ *   7. Redirect to /shopify/settings?host=...&shop=...&connected=true
+ *      (params preserved so downstream still sees embedded mode).
  *
  * No-connection case: if step 4 returns 404 `no_connection`, the merchant
  * has installed the app without first connecting from standalone Nxentra.
- * We show an error state with a link to open Nxentra in a new top-level
- * tab where they can sign up + connect.
+ * We show an error state with a button that uses App Bridge's redirect
+ * API (or a popup fallback) to open Nxentra in a new top-level context.
  */
 export default function ShopifyEmbeddedPage() {
   const router = useRouter();
+  const { refreshProfile } = useAuth();
   const [status, setStatus] = useState<
     "idle" | "waiting" | "session_login" | "exchanging" | "success" | "error" | "no_connection"
   >("idle");
@@ -54,6 +65,7 @@ export default function ShopifyEmbeddedPage() {
 
     const run = async () => {
       const shop = getShopifyShopParam() || "";
+      const host = getShopifyHostParam() || "";
       setShopDomain(shop);
 
       if (!isShopifyEmbedded()) {
@@ -63,6 +75,12 @@ export default function ShopifyEmbeddedPage() {
             "Use /shopify/settings instead.",
         );
         return;
+      }
+
+      // Persist context BEFORE anything async so a reload mid-flow still
+      // sees us as embedded.
+      if (host || shop) {
+        persistShopifyContext(host, shop);
       }
 
       setStatus("waiting");
@@ -87,9 +105,8 @@ export default function ShopifyEmbeddedPage() {
         return;
       }
 
-      // Step 1: session-login. We do this with a bare axios call (no
-      // apiClient) so the cookie-refresh interceptor doesn't fire — at
-      // this point we don't have any auth yet.
+      // Step 1: session-login. Bare axios — interceptors would short-
+      // circuit on missing Bearer; we're bootstrapping auth here.
       setStatus("session_login");
       let accessToken: string | null = null;
       try {
@@ -124,8 +141,20 @@ export default function ShopifyEmbeddedPage() {
         return;
       }
 
-      // Step 2: token-exchange. apiClient will attach the Bearer header
-      // we just stashed.
+      // Step 2: force AuthContext to re-fetch /auth/me/ so state.user /
+      // state.company / state.isAuthenticated update before the next
+      // route gates on them. Without this, AppLayout sees the stale
+      // initial-mount state (isAuthenticated:false) and bounces to /login.
+      try {
+        await refreshProfile();
+      } catch {
+        // refreshProfile swallows its own errors — if it failed silently
+        // the next page will hit a 401, and the api-client interceptor
+        // will re-mint via App Bridge. Acceptable fallback.
+      }
+
+      // Step 3: token-exchange. apiClient attaches the Bearer header we
+      // just stashed.
       setStatus("exchanging");
       try {
         const { data } = await apiClient.post<{
@@ -139,7 +168,13 @@ export default function ShopifyEmbeddedPage() {
         setShopDomain(data.shop_domain);
         setStatus("success");
         setTimeout(() => {
-          router.replace("/shopify/settings?connected=true");
+          // Preserve host+shop in the redirect URL so the next page (and
+          // all client-side navigations from it) still report as embedded.
+          const next = new URLSearchParams();
+          if (host) next.set("host", host);
+          if (shop) next.set("shop", shop);
+          next.set("connected", "true");
+          router.replace(`/shopify/settings?${next.toString()}`);
         }, 800);
       } catch (e: unknown) {
         const ax = e as { response?: { status?: number; data?: { error?: string } } };
@@ -152,15 +187,35 @@ export default function ShopifyEmbeddedPage() {
     };
 
     run();
-  }, [router]);
+  }, [router, refreshProfile]);
 
+  /**
+   * Break out of the iframe to standalone Nxentra so the merchant can
+   * sign up / log in and connect their store. Strategy, in order:
+   *   1. App Bridge redirect API (Shopify-sanctioned; works inside the
+   *      iframe sandbox without `allow-top-navigation`).
+   *   2. window.open(url, "_blank") (popup; usually allowed by
+   *      `allow-popups`, which Shopify includes by default).
+   *   3. window.open(url, "_top") (final fallback; may be sandbox-blocked).
+   */
   const openNxentraTop = () => {
-    const target = `https://app.nxentra.com/register?next=/shopify/settings`;
-    // Break out of the iframe so the merchant can sign up/log in. _top
-    // requires the iframe to have allow-top-navigation in sandbox — the
-    // Shopify admin iframe does.
-    if (typeof window !== "undefined") {
+    if (typeof window === "undefined") return;
+    const target = `${NXENTRA_STANDALONE_URL}/register?next=/shopify/settings`;
+    try {
+      if (window.shopify?.redirect?.toRemote) {
+        window.shopify.redirect.toRemote({ url: target, newContext: true });
+        return;
+      }
+    } catch {
+      /* fall through */
+    }
+    const popup = window.open(target, "_blank", "noopener,noreferrer");
+    if (popup) return;
+    // popup blocked — last-ditch top-nav (often sandboxed but try)
+    try {
       window.open(target, "_top");
+    } catch {
+      /* nothing more we can do */
     }
   };
 
