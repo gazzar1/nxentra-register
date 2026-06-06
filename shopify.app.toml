@@ -3,7 +3,7 @@
 client_id = "2258d6303a3672a381fe7606c2d2917b"
 name = "Nxentra Sync"
 application_url = "https://app.nxentra.com"
-embedded = false
+embedded = true
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
