@@ -1,5 +1,11 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
 import { setAuthenticated } from './auth-storage';
+import {
+  clearEmbeddedAccessToken,
+  getEmbeddedAccessToken,
+  setEmbeddedAccessToken,
+} from './embedded-auth';
+import { getShopifySessionToken, isShopifyEmbedded } from './shopify-embed';
 
 // Extend AxiosRequestConfig to include _retry flag
 interface CustomAxiosRequestConfig extends InternalAxiosRequestConfig {
@@ -10,7 +16,11 @@ const baseURL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
 
 const apiClient = axios.create({
   baseURL,
-  withCredentials: true, // Send HttpOnly cookies automatically
+  // withCredentials still on for non-embedded flows (standard browser
+  // session). In embedded mode the cookies are sent too but the browser
+  // ignores them under SameSite=Strict/Lax — we authenticate via the
+  // Authorization header instead (set below in the request interceptor).
+  withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -25,20 +35,59 @@ function getCsrfToken(): string | null {
   return match ? match[1] : null;
 }
 
-// Request interceptor - add CSRF token for state-changing requests
+// Request interceptor — CSRF for non-GET, Bearer auth when embedded.
 apiClient.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
-    // Add CSRF token for non-GET requests (Django requires this for cookie-based auth)
     if (config.method && config.method !== 'get') {
       const csrfToken = getCsrfToken();
       if (csrfToken) {
         config.headers['X-CSRFToken'] = csrfToken;
       }
     }
+
+    // B8.5: inside the Shopify admin iframe, cookies are blocked. Attach
+    // the Nxentra JWT obtained from `/auth/shopify-session-login/` as a
+    // Bearer header. Do not attach for the session-login or token-exchange
+    // calls themselves — those bootstrap the auth state.
+    if (isShopifyEmbedded()) {
+      const tok = getEmbeddedAccessToken();
+      const url = config.url || '';
+      const isAuthBootstrap =
+        url.includes('/auth/shopify-session-login') ||
+        url.includes('/shopify/token-exchange');
+      if (tok && !isAuthBootstrap) {
+        config.headers['Authorization'] = `Bearer ${tok}`;
+      }
+    }
+
     return config;
   },
   (error) => Promise.reject(error)
 );
+
+/**
+ * B8.5: re-mint a Nxentra JWT inside the iframe by calling App Bridge for
+ * a fresh session token and POSTing it to /auth/shopify-session-login/.
+ * Returns the new access token, or null if any step fails.
+ */
+async function refreshEmbeddedSession(): Promise<string | null> {
+  try {
+    const sessionToken = await getShopifySessionToken();
+    if (!sessionToken) return null;
+    const { data } = await axios.post<{ access: string; refresh: string }>(
+      `${baseURL}/auth/shopify-session-login/`,
+      { session_token: sessionToken },
+      { withCredentials: true, headers: { 'Content-Type': 'application/json' } }
+    );
+    if (data?.access) {
+      setEmbeddedAccessToken(data.access);
+      return data.access;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 // Response interceptor - handle token refresh and tenant context errors
 apiClient.interceptors.response.use(
@@ -47,25 +96,41 @@ apiClient.interceptors.response.use(
     const originalRequest = error.config as CustomAxiosRequestConfig;
     const errorData = error.response?.data as { detail?: string } | undefined;
 
-    // Handle missing tenant context - redirect to company selection
+    // Handle missing tenant context - redirect to company selection.
+    // In embedded mode we don't have a select-company UI inside the iframe,
+    // so swallow the redirect and let the page show its own error state.
     if (error.response?.status === 403 && errorData?.detail === 'no_tenant_context') {
-      if (typeof window !== 'undefined') {
+      if (typeof window !== 'undefined' && !isShopifyEmbedded()) {
         window.location.href = '/select-company';
       }
       return Promise.reject(error);
     }
 
-    // If 401 and we haven't retried yet — attempt cookie-based refresh
     if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {
       originalRequest._retry = true;
 
+      // B8.5: in the Shopify admin iframe, cookies don't ride along, so
+      // /auth/refresh/ would always fail. Mint a fresh access token via
+      // App Bridge -> session-login instead.
+      if (isShopifyEmbedded()) {
+        const fresh = await refreshEmbeddedSession();
+        if (fresh) {
+          originalRequest.headers = originalRequest.headers || {};
+          originalRequest.headers['Authorization'] = `Bearer ${fresh}`;
+          return apiClient(originalRequest);
+        }
+        clearEmbeddedAccessToken();
+        setAuthenticated(false);
+        // Inside the iframe we can't usefully redirect to /login (it
+        // would be denied embedding). Let the page surface the error.
+        return Promise.reject(error);
+      }
+
+      // Standalone (non-embedded) flow: cookie-based refresh.
       try {
-        // Refresh endpoint reads the refresh token from HttpOnly cookie
         await axios.post(`${baseURL}/auth/refresh/`, {}, { withCredentials: true });
-        // Cookie is now refreshed — retry original request
         return apiClient(originalRequest);
       } catch (refreshError) {
-        // Refresh failed — session expired
         setAuthenticated(false);
         if (typeof window !== 'undefined') {
           window.location.href = '/login';

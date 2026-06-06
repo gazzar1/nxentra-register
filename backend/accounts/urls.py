@@ -59,6 +59,8 @@ from .views import (
     RegisterView,
     RejectUserView,
     ResendVerificationView,
+    # Shopify embedded session-login (B8.5)
+    ShopifySessionLoginView,
     # Module & Sidebar
     SidebarView,
     SwitchCompanyView,
@@ -89,6 +91,12 @@ urlpatterns = [
     path("auth/refresh/", NxentraTokenRefreshView.as_view(), name="token-refresh"),
     path("auth/me/", MeView.as_view(), name="me"),
     path("auth/switch-company/", SwitchCompanyView.as_view(), name="switch-company"),
+    # B8.5: embedded Shopify auth — session_token -> Nxentra JWT
+    path(
+        "auth/shopify-session-login/",
+        ShopifySessionLoginView.as_view(),
+        name="shopify-session-login",
+    ),
     # ==========================================================================
     # Email Verification
     # ==========================================================================

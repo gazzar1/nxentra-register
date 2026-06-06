@@ -644,6 +644,170 @@ class LogoutView(APIView):
         return response
 
 
+class ShopifySessionLoginView(APIView):
+    """
+    POST /api/auth/shopify-session-login/
+
+    B8.5 (2026-06-05): exchange a Shopify App Bridge session token for a
+    Nxentra JWT pair, bound to the company that already owns the connected
+    ShopifyStore.
+
+    Why this exists: when our app is embedded inside the Shopify admin
+    iframe, HttpOnly cookies are dropped on cross-site requests (SameSite
+    blocks the JWT cookie from being sent in the iframe context). The
+    embedded landing page therefore can't authenticate via cookies. It
+    instead grabs a session_token from App Bridge and POSTs it here; we
+    verify the token's HS256 signature against our client_secret, look up
+    the corresponding ShopifyStore by shop_domain, and mint a JWT pair for
+    that store's company OWNER. The tokens are returned in the JSON body so
+    the embedded SPA can attach them as Authorization headers (cookies are
+    set too as a no-op fallback for non-iframe re-auth).
+
+    Authorization model: trusting the session_token's signature is exactly
+    what Shopify's Token Exchange spec defines as proof-of-merchant. The
+    only person who can mint a valid signed token for shop X is somebody
+    Shopify has already authenticated as having admin access to shop X.
+    Mapping shop_domain -> ShopifyStore -> company.OWNER is therefore a
+    safe automatic login.
+
+    Failure modes:
+      - 400 missing_session_token: request body had no session_token.
+      - 401 invalid_session_token: JWT signature/expiry/audience failed.
+      - 400 bad_shop_claim: token claims have no recognizable shop domain.
+      - 404 no_connection: no ACTIVE ShopifyStore for that shop. The
+        frontend should top-window redirect to standalone Nxentra so the
+        merchant can register/login + connect manually first.
+      - 500 no_owner: store exists but has no OWNER membership (data
+        inconsistency; should never happen in practice).
+    """
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        from django.utils import timezone
+
+        from shopify_connector.commands import (
+            _extract_shop_domain_from_claims,
+            verify_shopify_session_token,
+        )
+        from shopify_connector.models import ShopifyStore
+
+        session_token = request.data.get("session_token", "").strip()
+        if not session_token:
+            return Response(
+                {"detail": "missing_session_token", "message": "session_token is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        claims = verify_shopify_session_token(session_token)
+        if not claims:
+            return Response(
+                {"detail": "invalid_session_token", "message": "Session token is invalid or expired."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        shop_domain = _extract_shop_domain_from_claims(claims)
+        if not shop_domain:
+            return Response(
+                {"detail": "bad_shop_claim", "message": "Session token has no recognizable shop domain."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Pick the most recently updated ACTIVE store. In normal use there's
+        # exactly one — a shop connected to one company. If a merchant
+        # accidentally reconnected the same shop to a second Nxentra
+        # company, we'd pick the freshest one (the most recently OAuth'd).
+        store = (
+            ShopifyStore.objects.filter(
+                shop_domain=shop_domain,
+                status=ShopifyStore.Status.ACTIVE,
+            )
+            .order_by("-updated_at")
+            .first()
+        )
+        if store is None:
+            return Response(
+                {
+                    "detail": "no_connection",
+                    "message": (
+                        "No Nxentra account is connected to this Shopify store yet. "
+                        "Sign in to Nxentra and connect the store first."
+                    ),
+                    "shop_domain": shop_domain,
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        owner_membership = (
+            CompanyMembership.objects.filter(
+                company_id=store.company_id,
+                role=CompanyMembership.Role.OWNER,
+                is_active=True,
+            )
+            .select_related("user")
+            .order_by("id")
+            .first()
+        )
+        if owner_membership is None or owner_membership.user is None:
+            return Response(
+                {"detail": "no_owner", "message": "Store has no active owner."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        user = owner_membership.user
+        company_id = store.company_id
+
+        # Align active_company so token claims line up with the standard
+        # login path's invariants.
+        if user.active_company_id != company_id:
+            user.active_company_id = company_id
+            user.save(update_fields=["active_company"])
+
+        tokens = mint_token_pair(user, company_id=company_id)
+
+        # Best-effort last_login + audit event — same side-effects as the
+        # password and pending-token login paths.
+        try:
+            user.last_login = timezone.now()
+            user.save(update_fields=["last_login"])
+
+            from events.emitter import emit_event_no_actor
+            from events.types import EventTypes, UserLoggedInData
+
+            company = Company.objects.filter(id=company_id).first()
+            if company is not None:
+                emit_event_no_actor(
+                    company=company,
+                    user=user,
+                    event_type=EventTypes.USER_LOGGED_IN,
+                    aggregate_type="User",
+                    aggregate_id=str(user.public_id),
+                    idempotency_key=(f"user.logged_in:{user.public_id}:{int(timezone.now().timestamp() * 1000)}"),
+                    data=UserLoggedInData(
+                        user_public_id=str(user.public_id),
+                        email=user.email,
+                        ip_address=request.META.get("REMOTE_ADDR", ""),
+                        user_agent=request.META.get("HTTP_USER_AGENT", "")[:200],
+                    ).to_dict(),
+                )
+        except Exception:
+            pass
+
+        response = Response(
+            {
+                "access": tokens["access"],
+                "refresh": tokens["refresh"],
+                "shop_domain": shop_domain,
+                "company_id": company_id,
+                "company_public_id": str(store.company.public_id),
+                "user_public_id": str(user.public_id),
+            },
+            status=status.HTTP_200_OK,
+        )
+        set_auth_cookies(response, tokens["access"], tokens["refresh"])
+        return response
+
+
 class MeView(APIView):
     """
     GET /api/auth/me/

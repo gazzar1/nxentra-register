@@ -3,40 +3,46 @@ import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useRouter } from "next/router";
 import { Loader2, CheckCircle2, AlertCircle } from "lucide-react";
+import axios from "axios";
 import apiClient from "@/lib/api-client";
+import { setEmbeddedAccessToken } from "@/lib/embedded-auth";
+import { setAuthenticated } from "@/lib/auth-storage";
 import {
   getShopifySessionToken,
   getShopifyShopParam,
   isShopifyEmbedded,
 } from "@/lib/shopify-embed";
-import { isAuthenticated as checkAuthFlag } from "@/lib/auth-storage";
+
+const baseURL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
 
 /**
- * B8 (2026-06-05): embedded-mode landing page.
+ * B8.5 (2026-06-05): embedded-mode landing page.
  *
- * When Shopify launches our app from the admin (inside the iframe),
- * the merchant lands here. The page:
- *   1. Reads the `shop` query param and detects embedded mode (?host=).
- *   2. Waits for App Bridge to populate `window.shopify`.
- *   3. Gets a session token via shopify.idToken().
- *   4. POSTs to /api/shopify/token-exchange/ with the token.
- *   5. Backend exchanges session_token for an offline access_token,
- *      persists/refreshes the ShopifyStore for the merchant's company.
- *   6. Redirects to /shopify/settings?connected=true.
+ * Flow when the merchant lands here from inside the Shopify admin iframe:
+ *   1. Read `?shop=` for display; confirm `?host=` (embedded signal).
+ *   2. Wait for App Bridge to populate `window.shopify.idToken`.
+ *   3. Call shopify.idToken() to get a Shopify session token JWT.
+ *   4. POST to /api/auth/shopify-session-login/ — backend verifies the
+ *      JWT, finds the ACTIVE ShopifyStore for the shop_domain, and mints
+ *      a Nxentra JWT pair for the store's company OWNER. We stash the
+ *      access token in memory so subsequent API calls authenticate via
+ *      Authorization: Bearer (cookies don't ride along in the iframe).
+ *   5. POST to /api/shopify/token-exchange/ — this is now authenticated
+ *      by the Bearer header from step 4. Backend exchanges the session
+ *      token for a fresh offline access_token for the merchant's company
+ *      (idempotent: reuses the existing ShopifyStore row).
+ *   6. Redirect to /shopify/settings?connected=true (inside the iframe).
  *
- * Auth gating: the token-exchange endpoint requires the merchant's
- * Nxentra JWT cookie. If unauthenticated, we redirect through
- * /login?next=<this URL with all params preserved> so the merchant
- * can sign in and come back.
- *
- * On error, show a fallback that lets the merchant retry or jump
- * to /shopify/settings to use the manual Connect form instead.
+ * No-connection case: if step 4 returns 404 `no_connection`, the merchant
+ * has installed the app without first connecting from standalone Nxentra.
+ * We show an error state with a link to open Nxentra in a new top-level
+ * tab where they can sign up + connect.
  */
 export default function ShopifyEmbeddedPage() {
   const router = useRouter();
-  const [status, setStatus] = useState<"idle" | "waiting" | "exchanging" | "success" | "error" | "needs_auth">(
-    "idle",
-  );
+  const [status, setStatus] = useState<
+    "idle" | "waiting" | "session_login" | "exchanging" | "success" | "error" | "no_connection"
+  >("idle");
   const [error, setError] = useState<string | null>(null);
   const [shopDomain, setShopDomain] = useState<string>("");
   const calledRef = useRef(false);
@@ -59,21 +65,11 @@ export default function ShopifyEmbeddedPage() {
         return;
       }
 
-      // Auth check: if we don't have a Nxentra session, bounce through
-      // login with `next=` set so we come back to this exact URL after
-      // login + select-company. The `host`+`shop` params are preserved
-      // by the browser since they're in the current URL.
-      if (!checkAuthFlag()) {
-        setStatus("needs_auth");
-        const current = window.location.pathname + window.location.search;
-        router.replace(`/login?next=${encodeURIComponent(current)}`);
-        return;
-      }
-
       setStatus("waiting");
 
-      // App Bridge loads async via the CDN script. Poll briefly for
-      // window.shopify.idToken to appear (typically <500ms).
+      // App Bridge loads async via the CDN script (kicked off in
+      // _document.tsx as the first <script> in <head>). Poll briefly
+      // for window.shopify.idToken to appear (typically <500ms).
       const deadline = Date.now() + 5000;
       let sessionToken: string | null = null;
       while (Date.now() < deadline) {
@@ -91,6 +87,45 @@ export default function ShopifyEmbeddedPage() {
         return;
       }
 
+      // Step 1: session-login. We do this with a bare axios call (no
+      // apiClient) so the cookie-refresh interceptor doesn't fire — at
+      // this point we don't have any auth yet.
+      setStatus("session_login");
+      let accessToken: string | null = null;
+      try {
+        const { data } = await axios.post<{
+          access: string;
+          refresh: string;
+          shop_domain: string;
+          company_id: number;
+        }>(
+          `${baseURL}/auth/shopify-session-login/`,
+          { session_token: sessionToken },
+          {
+            withCredentials: true,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+        accessToken = data.access;
+        setShopDomain(data.shop_domain);
+        setEmbeddedAccessToken(accessToken);
+        setAuthenticated(true);
+      } catch (e: unknown) {
+        const ax = e as { response?: { status?: number; data?: { detail?: string; message?: string } } };
+        if (ax.response?.status === 404 && ax.response?.data?.detail === "no_connection") {
+          setStatus("no_connection");
+          return;
+        }
+        setStatus("error");
+        setError(
+          ax.response?.data?.message ||
+            "Couldn't sign in to your Nxentra account from Shopify. Please try again.",
+        );
+        return;
+      }
+
+      // Step 2: token-exchange. apiClient will attach the Bearer header
+      // we just stashed.
       setStatus("exchanging");
       try {
         const { data } = await apiClient.post<{
@@ -108,13 +143,6 @@ export default function ShopifyEmbeddedPage() {
         }, 800);
       } catch (e: unknown) {
         const ax = e as { response?: { status?: number; data?: { error?: string } } };
-        if (ax.response?.status === 401) {
-          // JWT got invalidated between the auth check and the exchange.
-          // Bounce through login to refresh.
-          const current = window.location.pathname + window.location.search;
-          router.replace(`/login?next=${encodeURIComponent(current)}`);
-          return;
-        }
         setStatus("error");
         setError(
           ax.response?.data?.error ||
@@ -126,6 +154,16 @@ export default function ShopifyEmbeddedPage() {
     run();
   }, [router]);
 
+  const openNxentraTop = () => {
+    const target = `https://app.nxentra.com/register?next=/shopify/settings`;
+    // Break out of the iframe so the merchant can sign up/log in. _top
+    // requires the iframe to have allow-top-navigation in sandbox — the
+    // Shopify admin iframe does.
+    if (typeof window !== "undefined") {
+      window.open(target, "_top");
+    }
+  };
+
   // Bare layout — no AppLayout chrome since we're embedded inside
   // Shopify admin which provides its own.
   return (
@@ -135,7 +173,7 @@ export default function ShopifyEmbeddedPage() {
           Connecting Shopify
         </h1>
 
-        {status === "idle" || status === "waiting" ? (
+        {(status === "idle" || status === "waiting") && (
           <div className="flex items-start gap-3 text-muted-foreground">
             <Loader2 className="mt-0.5 h-5 w-5 animate-spin" />
             <div>
@@ -147,29 +185,29 @@ export default function ShopifyEmbeddedPage() {
               ) : null}
             </div>
           </div>
-        ) : null}
+        )}
 
-        {status === "exchanging" ? (
-          <div className="flex items-start gap-3 text-muted-foreground">
-            <Loader2 className="mt-0.5 h-5 w-5 animate-spin" />
-            <div>
-              <p className="font-medium text-foreground">Exchanging tokens…</p>
-              <p className="text-sm">Setting up the connection on your books.</p>
-            </div>
-          </div>
-        ) : null}
-
-        {status === "needs_auth" ? (
+        {status === "session_login" && (
           <div className="flex items-start gap-3 text-muted-foreground">
             <Loader2 className="mt-0.5 h-5 w-5 animate-spin" />
             <div>
               <p className="font-medium text-foreground">Signing you in…</p>
-              <p className="text-sm">Taking you to Nxentra to sign in, then back here.</p>
+              <p className="text-sm">Authenticating your Nxentra account via Shopify.</p>
             </div>
           </div>
-        ) : null}
+        )}
 
-        {status === "success" ? (
+        {status === "exchanging" && (
+          <div className="flex items-start gap-3 text-muted-foreground">
+            <Loader2 className="mt-0.5 h-5 w-5 animate-spin" />
+            <div>
+              <p className="font-medium text-foreground">Refreshing connection…</p>
+              <p className="text-sm">Updating your Shopify access token.</p>
+            </div>
+          </div>
+        )}
+
+        {status === "success" && (
           <div className="flex items-start gap-3 text-green-500">
             <CheckCircle2 className="mt-0.5 h-5 w-5" />
             <div>
@@ -179,9 +217,30 @@ export default function ShopifyEmbeddedPage() {
               </p>
             </div>
           </div>
-        ) : null}
+        )}
 
-        {status === "error" ? (
+        {status === "no_connection" && (
+          <>
+            <div className="mb-4 flex items-start gap-3 text-amber-500">
+              <AlertCircle className="mt-0.5 h-5 w-5" />
+              <div>
+                <p className="font-medium">No Nxentra account is connected to {shopDomain} yet.</p>
+                <p className="text-sm text-muted-foreground">
+                  Sign in or create your Nxentra account, then come back here from
+                  your Shopify admin to finish the connection.
+                </p>
+              </div>
+            </div>
+            <button
+              className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+              onClick={openNxentraTop}
+            >
+              Open Nxentra
+            </button>
+          </>
+        )}
+
+        {status === "error" && (
           <>
             <div className="mb-4 flex items-start gap-3 text-destructive">
               <AlertCircle className="mt-0.5 h-5 w-5" />
@@ -192,12 +251,12 @@ export default function ShopifyEmbeddedPage() {
             </div>
             <button
               className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
-              onClick={() => router.replace("/shopify/settings")}
+              onClick={() => router.reload()}
             >
-              Go to Shopify Settings
+              Try again
             </button>
           </>
-        ) : null}
+        )}
       </div>
     </main>
   );
