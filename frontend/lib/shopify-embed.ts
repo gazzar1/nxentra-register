@@ -197,3 +197,70 @@ export function getShopifyHostParam(): string | null {
   const params = new URLSearchParams(window.location.search);
   return params.get("host") || safeSessionGet(SESSION_HOST_KEY);
 }
+
+/**
+ * B13 (2026-06-07): top-level navigation that survives inside the
+ * Shopify admin iframe.
+ *
+ * Plain `window.location.href = url` navigates the IFRAME itself — fine
+ * for same-origin paths, but OAuth screens like
+ * `accounts.shopify.com/oauth/authorize` send `X-Frame-Options: DENY`
+ * and refuse to render inside an iframe, producing
+ * "Firefox can't open this page" / Chrome's equivalent. The merchant
+ * gets stuck.
+ *
+ * App Bridge's `shopify.redirect.toRemote({ url, newContext })` is the
+ * sanctioned escape hatch: Shopify breaks out of the iframe at the
+ * browser level without needing `allow-top-navigation` in the sandbox,
+ * and the redirect_uri returns the merchant either back to the same tab
+ * (default) or to a new tab (`newContext: true`).
+ *
+ * Outside the iframe (standalone Nxentra), this is just a normal
+ * navigation — same caller, no branching at the call site.
+ *
+ * Fallback order, defensive against missing App Bridge:
+ *   1. shopify.redirect.toRemote — sanctioned
+ *   2. window.open(_top|_blank) — needs sandbox `allow-top-navigation`
+ *      (top) or `allow-popups` (blank), both usually granted by Shopify
+ *   3. window.location.href — last resort; in iframe this will be
+ *      blocked by the destination's X-Frame-Options
+ */
+export function redirectTopLevel(
+  url: string,
+  options: { newContext?: boolean } = {},
+): void {
+  if (typeof window === "undefined") return;
+  const newContext = options.newContext ?? false;
+
+  if (!isShopifyEmbedded()) {
+    if (newContext) {
+      window.open(url, "_blank", "noopener,noreferrer");
+    } else {
+      window.location.href = url;
+    }
+    return;
+  }
+
+  try {
+    if (window.shopify?.redirect?.toRemote) {
+      window.shopify.redirect.toRemote({ url, newContext });
+      return;
+    }
+  } catch {
+    /* fall through */
+  }
+
+  const target = newContext ? "_blank" : "_top";
+  try {
+    const opened = window.open(
+      url,
+      target,
+      newContext ? "noopener,noreferrer" : undefined,
+    );
+    if (opened) return;
+  } catch {
+    /* fall through */
+  }
+
+  window.location.href = url;
+}

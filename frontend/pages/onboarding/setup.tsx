@@ -20,6 +20,7 @@ import {
   type OnboardingSetupPayload,
 } from "@/services/onboarding.service";
 import { shopifyService } from "@/services/shopify.service";
+import { redirectTopLevel } from "@/lib/shopify-embed";
 import {
   Building2,
   Calendar,
@@ -487,7 +488,10 @@ export default function OnboardingSetupPage() {
                     saveDraft();
                     // Save return point so we come back to onboarding after OAuth
                     sessionStorage.setItem("shopify_return_to", "onboarding");
-                    window.location.href = data.url;
+                    // B13: use the embedded-aware redirect so the iframe
+                    // case (rare during onboarding but possible) escapes
+                    // to top level for Shopify's OAuth page.
+                    redirectTopLevel(data.url);
                   } catch {
                     toast({ title: "Failed to connect. Check your store domain.", variant: "destructive" });
                     setShopifyConnecting(false);

@@ -37,6 +37,7 @@ import {
 import { postingProfilesService } from "@/services/sales.service";
 import type { PostingProfile } from "@/types/sales";
 import { useAccounts } from "@/queries/useAccounts";
+import { redirectTopLevel } from "@/lib/shopify-embed";
 
 export default function ShopifySettingsPage() {
   const { t } = useTranslation(["common"]);
@@ -264,8 +265,14 @@ export default function ShopifySettingsPage() {
     setConnecting(true);
     try {
       const { data } = await shopifyService.install(shopDomain.trim());
-      // Redirect to Shopify OAuth
-      window.location.href = data.url;
+      // B13 (2026-06-07): inside the Shopify admin iframe, plain
+      // window.location.href would navigate the iframe itself to
+      // accounts.shopify.com/oauth/authorize, which sends
+      // X-Frame-Options: DENY and renders as "can't open this page".
+      // redirectTopLevel uses App Bridge's redirect.toRemote inside the
+      // iframe (sanctioned top-level escape) and falls back to
+      // window.location.href when standalone — same caller, no branch.
+      redirectTopLevel(data.url);
     } catch {
       toast({ title: "Failed to start connection.", variant: "destructive" });
       setConnecting(false);

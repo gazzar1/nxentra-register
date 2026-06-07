@@ -14,6 +14,7 @@ import {
   getShopifyShopParam,
   isShopifyEmbedded,
   persistShopifyContext,
+  redirectTopLevel,
 } from "@/lib/shopify-embed";
 
 const baseURL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
@@ -191,32 +192,13 @@ export default function ShopifyEmbeddedPage() {
 
   /**
    * Break out of the iframe to standalone Nxentra so the merchant can
-   * sign up / log in and connect their store. Strategy, in order:
-   *   1. App Bridge redirect API (Shopify-sanctioned; works inside the
-   *      iframe sandbox without `allow-top-navigation`).
-   *   2. window.open(url, "_blank") (popup; usually allowed by
-   *      `allow-popups`, which Shopify includes by default).
-   *   3. window.open(url, "_top") (final fallback; may be sandbox-blocked).
+   * sign up / log in and connect their store. Delegates to the shared
+   * redirectTopLevel helper which prefers App Bridge's sanctioned
+   * top-level redirect over raw window.open.
    */
   const openNxentraTop = () => {
-    if (typeof window === "undefined") return;
     const target = `${NXENTRA_STANDALONE_URL}/register?next=/shopify/settings`;
-    try {
-      if (window.shopify?.redirect?.toRemote) {
-        window.shopify.redirect.toRemote({ url: target, newContext: true });
-        return;
-      }
-    } catch {
-      /* fall through */
-    }
-    const popup = window.open(target, "_blank", "noopener,noreferrer");
-    if (popup) return;
-    // popup blocked — last-ditch top-nav (often sandboxed but try)
-    try {
-      window.open(target, "_top");
-    } catch {
-      /* nothing more we can do */
-    }
+    redirectTopLevel(target, { newContext: true });
   };
 
   // Bare layout — no AppLayout chrome since we're embedded inside
