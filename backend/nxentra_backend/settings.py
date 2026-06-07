@@ -31,6 +31,17 @@ if not DEBUG:
     # Secure cookies
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
+    # B18.4 (2026-06-07): cookies set during an in-iframe Nxentra login
+    # (Shopify admin embedding our app) must survive cross-site iframe
+    # navigations to be readable on the post-select-company page reload.
+    # SameSite=Lax drops them when the iframe at app.nxentra.com is
+    # embedded under admin.shopify.com top-level. SameSite=None lets the
+    # cookie ride along; the Secure=True flag (already required for
+    # SameSite=None per spec) keeps it HTTPS-only. CSRF protection is
+    # unchanged — we still validate the X-CSRFToken header on writes,
+    # check Origin/Referer, and the api-client only attaches the CSRF
+    # cookie value to same-origin requests.
+    CSRF_COOKIE_SAMESITE = "None"
 
     # Prevent browsers from MIME-sniffing
     SECURE_CONTENT_TYPE_NOSNIFF = True
@@ -222,7 +233,16 @@ REST_FRAMEWORK = {
 AUTH_COOKIE_ACCESS_NAME = "nxentra_access"
 AUTH_COOKIE_REFRESH_NAME = "nxentra_refresh"
 AUTH_COOKIE_SECURE = not DEBUG  # HTTPS-only in production
-AUTH_COOKIE_SAMESITE = "Lax"
+# B18.4 (2026-06-07): SameSite=None lets the auth cookies survive
+# cross-site iframe contexts (Shopify admin embedding our app at
+# app.nxentra.com under admin.shopify.com top-level). Required for the
+# in-iframe login → select-company → /shopify/settings reload chain to
+# keep the merchant authenticated; SameSite=Lax silently drops the
+# cookies on the navigation. Per the SameSite=None spec, the cookie
+# must also be Secure — which AUTH_COOKIE_SECURE already enforces in
+# production. In dev (HTTP localhost) we fall back to Lax since
+# SameSite=None without Secure is rejected by all browsers.
+AUTH_COOKIE_SAMESITE = "None" if not DEBUG else "Lax"
 AUTH_COOKIE_HTTPONLY = True
 AUTH_COOKIE_REFRESH_PATH = "/api/auth/"  # Refresh cookie only sent to auth endpoints
 
