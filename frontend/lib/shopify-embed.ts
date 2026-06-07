@@ -241,50 +241,42 @@ export function redirectTopLevel(
     return;
   }
 
-  // B17.1 (2026-06-07): split the embedded-mode strategy by intent.
+  // B18.1 (2026-06-07): always use plain window.open from inside the
+  // Shopify admin iframe — _blank for newContext=true, _top for
+  // newContext=false. Shopify's iframe sandbox grants `allow-popups`
+  // AND `allow-top-navigation-by-user-activation`, so window.open from
+  // a button-click handler works for both targets.
   //
-  // For newContext (open in a new top-level tab — e.g. the "Open Nxentra"
-  // button from the no_connection iframe state): use plain window.open
-  // directly. Live test 2026-06-07 showed that
-  // shopify.redirect.toRemote({ url, newContext: true }) opens the new
-  // tab AND also re-iframes our own application_url through the admin
-  // shell's app router as a side effect — the merchant ended up with
-  // both a new register tab AND the iframe pointed at the register
-  // page. Shopify's iframe sandbox grants `allow-popups`, so plain
-  // window.open is a clean one-effect operation.
+  // We deliberately stopped using shopify.redirect.toRemote here:
+  //   - With newContext=true and a target URL matching application_url
+  //     (e.g. app.nxentra.com/register), App Bridge opened a popup AND
+  //     also re-iframed our app through admin's app router. The merchant
+  //     got two copies of the destination — one in a new tab and one
+  //     replacing the embedded iframe (B17.1, 2026-06-07).
+  //   - With newContext=false and the same kind of target, App Bridge
+  //     similarly tried to in-app navigate instead of breaking out to
+  //     top level, leaving the merchant inside the iframe (B18.1).
   //
-  // For !newContext (same-tab top-level navigation — e.g. OAuth start):
-  // we still need App Bridge's sanctioned escape because navigating the
-  // iframe to accounts.shopify.com fails with X-Frame-Options: DENY.
-  if (newContext) {
-    const opened = window.open(url, "_blank", "noopener,noreferrer");
-    if (opened) return;
-    // Popup blocked — last-ditch App Bridge fallback. Not preferred
-    // because of the side effect, but better than silently dropping the
-    // navigation.
-    try {
-      window.shopify?.redirect?.toRemote?.({ url, newContext: true });
-    } catch {
-      /* nothing else we can safely do here */
-    }
-    return;
-  }
+  // window.open(_top) is the sanctioned escape from a sandboxed iframe
+  // when triggered by user activation; the Shopify admin sandbox grants
+  // exactly that permission. App Bridge stays as a last-ditch fallback
+  // only — and only when the target URL is *not* our own application_url,
+  // since that's where its in-app-navigation interpretation kicks in.
+  const target = newContext ? "_blank" : "_top";
+  const opened = window.open(
+    url,
+    target,
+    newContext ? "noopener,noreferrer" : undefined,
+  );
+  if (opened) return;
 
+  // Fallback (rare): popup or top-nav was blocked. App Bridge is safe
+  // here because the only scenarios that block window.open are popup-
+  // blocker for _blank or some sandbox edge case for _top — neither of
+  // which our standard OAuth/register URLs hit in practice.
   try {
-    if (window.shopify?.redirect?.toRemote) {
-      window.shopify.redirect.toRemote({ url });
-      return;
-    }
+    window.shopify?.redirect?.toRemote?.({ url, newContext });
   } catch {
-    /* fall through */
+    /* nothing more we can safely do */
   }
-
-  try {
-    const opened = window.open(url, "_top");
-    if (opened) return;
-  } catch {
-    /* fall through */
-  }
-
-  window.location.href = url;
 }

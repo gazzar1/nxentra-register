@@ -192,13 +192,19 @@ export default function ShopifyEmbeddedPage() {
 
   /**
    * Break out of the iframe to standalone Nxentra so the merchant can
-   * sign up / log in and connect their store. Delegates to the shared
-   * redirectTopLevel helper which prefers App Bridge's sanctioned
-   * top-level redirect over raw window.open.
+   * sign up / log in and connect their store. Uses TOP-LEVEL navigation
+   * (newContext: false) so the merchant ends with ONE tab throughout the
+   * flow: their Shopify admin tab navigates out to Nxentra, the merchant
+   * signs in, OAuths their store, and the callback (B17) redirects the
+   * same tab back to Shopify admin where our app re-opens in the iframe.
+   *
+   * The previous newContext: true (popup new tab) implementation left a
+   * stale "No Nxentra account is connected" iframe in the original tab
+   * (B17.1 + B18 live test 2026-06-07).
    */
   const openNxentraTop = () => {
     const target = `${NXENTRA_STANDALONE_URL}/register?next=/shopify/settings`;
-    redirectTopLevel(target, { newContext: true });
+    redirectTopLevel(target);
   };
 
   // Bare layout — no AppLayout chrome since we're embedded inside
