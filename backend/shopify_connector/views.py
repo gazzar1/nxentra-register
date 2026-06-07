@@ -30,6 +30,35 @@ from .serializers import ShopifyOrderSerializer, ShopifyStoreSerializer
 logger = logging.getLogger(__name__)
 
 
+def _get_active_store_for_actor(actor) -> ShopifyStore | None:
+    """
+    Return the actor's company's currently-connected ShopifyStore, or None.
+
+    A company can legitimately have multiple ACTIVE stores at once (e.g. a
+    multi-region merchant with one store per region). The sync endpoints
+    used to call `.get(company=..., status=ACTIVE)` which crashed with
+    MultipleObjectsReturned in that case (B8.5 live test 2026-06-07).
+
+    For the single-store-button endpoints (Sync Products / Sync Payouts /
+    Re-sync Orders / Verify Payout) we resolve ambiguity by picking the
+    most recently updated ACTIVE store — that's the one whose token was
+    just refreshed via the embedded launch (or via the most recent OAuth
+    callback), so it's the merchant's "current" store for this session.
+
+    A future hardening should let the UI pass a `store_public_id` to
+    target a specific store, but the freshest-active heuristic is enough
+    to unblock the App Store reviewer flow today.
+    """
+    return (
+        ShopifyStore.objects.filter(
+            company=actor.company,
+            status=ShopifyStore.Status.ACTIVE,
+        )
+        .order_by("-updated_at")
+        .first()
+    )
+
+
 # =============================================================================
 # OAuth Flow
 # =============================================================================
@@ -643,12 +672,8 @@ class ShopifySyncPayoutsView(APIView):
         actor = resolve_actor(request)
         require(actor, "settings.edit")
 
-        try:
-            store = ShopifyStore.objects.get(
-                company=actor.company,
-                status=ShopifyStore.Status.ACTIVE,
-            )
-        except ShopifyStore.DoesNotExist:
+        store = _get_active_store_for_actor(actor)
+        if store is None:
             return Response(
                 {"error": "No active Shopify store"},
                 status=status.HTTP_404_NOT_FOUND,
@@ -681,12 +706,8 @@ class ShopifySyncProductsView(APIView):
         actor = resolve_actor(request)
         require(actor, "settings.edit")
 
-        try:
-            store = ShopifyStore.objects.get(
-                company=actor.company,
-                status=ShopifyStore.Status.ACTIVE,
-            )
-        except ShopifyStore.DoesNotExist:
+        store = _get_active_store_for_actor(actor)
+        if store is None:
             return Response(
                 {"error": "No active Shopify store"},
                 status=status.HTTP_404_NOT_FOUND,
@@ -722,12 +743,8 @@ class ShopifyResyncOrdersView(APIView):
         actor = resolve_actor(request)
         require(actor, "settings.edit")
 
-        try:
-            store = ShopifyStore.objects.get(
-                company=actor.company,
-                status=ShopifyStore.Status.ACTIVE,
-            )
-        except ShopifyStore.DoesNotExist:
+        store = _get_active_store_for_actor(actor)
+        if store is None:
             return Response(
                 {"error": "No active Shopify store"},
                 status=status.HTTP_404_NOT_FOUND,
@@ -860,9 +877,8 @@ class ShopifyPayoutVerifyView(APIView):
         actor = resolve_actor(request)
         require(actor, "reports.view")
 
-        try:
-            store = ShopifyStore.objects.get(company=actor.company, status="ACTIVE")
-        except ShopifyStore.DoesNotExist:
+        store = _get_active_store_for_actor(actor)
+        if store is None:
             return Response(
                 {"detail": "No active Shopify store."},
                 status=status.HTTP_404_NOT_FOUND,
