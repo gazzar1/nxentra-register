@@ -28,6 +28,16 @@ export default function LoginPage() {
   const [isDemo, setIsDemo] = useState(false);
   const demoTriggered = useRef(false);
 
+  // B18 (2026-06-07): preserve `?next=` when linking to /register so a
+  // merchant who came from the iframe's "Open Nxentra" button + clicked
+  // "Get started" doesn't lose the /shopify/settings destination.
+  const nextParam =
+    typeof router.query.next === "string" && router.query.next.startsWith("/")
+      ? router.query.next
+      : "";
+  const withNext = (path: string) =>
+    nextParam ? `${path}?next=${encodeURIComponent(nextParam)}` : path;
+
   // Auto-fill demo credentials when ?demo=true
   useEffect(() => {
     if (router.query.demo === "true" && !demoTriggered.current) {
@@ -57,14 +67,15 @@ export default function LoginPage() {
       setIsSubmitting(true);
       const response = await login(email, password) as LoginResponse;
 
-      // B6 (2026-06-05): preserve ?next= through the login chain so that
-      // post-login redirects land where the user was originally headed
-      // (e.g. /shopify/finalize-install after a Shopify-initiated install).
-      // Without this, the post-OAuth merchant gets dumped on /dashboard
-      // with no install confirmation — the exact reviewer-broken state
-      // we surfaced on 2026-06-05.
+      // B6 (2026-06-05) / B18 (2026-06-07): preserve ?next= through the
+      // login chain so post-login redirects land where the user was
+      // originally headed (e.g. /shopify/settings after the iframe's
+      // "Open Nxentra" + "Sign in" chain). Without this, the merchant
+      // gets dumped on /dashboard. nextParam is shadowed here so the
+      // top-of-component withNext() helper (used for the "Get started"
+      // cross-link) and this handler stay self-contained.
       const rawNext = typeof router.query.next === "string" ? router.query.next : "";
-      const nextParam = rawNext && rawNext.startsWith("/") ? rawNext : "";
+      const handlerNext = rawNext && rawNext.startsWith("/") ? rawNext : "";
 
       // Handle "choose_company" response - user has multiple companies, no active set.
       // Backend returns 200 with a short-lived signed pending_login_token; the browser
@@ -77,8 +88,8 @@ export default function LoginPage() {
       ) {
         sessionStorage.setItem("pendingCompanies", JSON.stringify(response.companies));
         sessionStorage.setItem("pendingLoginToken", response.pending_login_token);
-        const selectUrl = nextParam
-          ? `/select-company?from=login&next=${encodeURIComponent(nextParam)}`
+        const selectUrl = handlerNext
+          ? `/select-company?from=login&next=${encodeURIComponent(handlerNext)}`
           : "/select-company?from=login";
         router.push(selectUrl);
         return;
@@ -87,7 +98,7 @@ export default function LoginPage() {
       // Normal login with tokens
       if (response.access && response.refresh) {
         storeTokens(response.access, response.refresh);
-        await router.push(nextParam || "/dashboard");
+        await router.push(handlerNext || "/dashboard");
         return;
       }
 
@@ -143,7 +154,7 @@ export default function LoginPage() {
           {isSubmitting ? "Authenticating..." : "Login"}
         </button>
         <p className="text-sm text-muted-foreground">
-          Don&apos;t have an account? <Link href="/register">Get started</Link>
+          Don&apos;t have an account? <Link href={withNext("/register")}>Get started</Link>
         </p>
       </form>
     </AuthLayout>

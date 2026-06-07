@@ -15,6 +15,17 @@ export default function VerifyEmailPage() {
   const [resendCooldown, setResendCooldown] = useState(0);
   const [isResending, setIsResending] = useState(false);
 
+  // B18 (2026-06-07): preserve `?next=` across the verification chain so
+  // the merchant who came from the Shopify iframe -> Open Nxentra ->
+  // Register -> Verify-email flow still lands at /shopify/settings after
+  // they log in post-verification, instead of being dumped at /dashboard.
+  const nextParam =
+    typeof router.query.next === "string" && router.query.next.startsWith("/")
+      ? router.query.next
+      : "";
+  const withNext = (path: string) =>
+    nextParam ? `${path}?next=${encodeURIComponent(nextParam)}` : path;
+
   useEffect(() => {
     // If just registered, show "check your email" message
     if (sent === 'true' && email) {
@@ -121,7 +132,7 @@ export default function VerifyEmailPage() {
             )}
 
             <div className="pt-4">
-              <Link href="/login" className="text-sm text-slate-400 hover:text-slate-300">
+              <Link href={withNext("/login")} className="text-sm text-slate-400 hover:text-slate-300">
                 Back to Login
               </Link>
             </div>
@@ -138,7 +149,7 @@ export default function VerifyEmailPage() {
             <h2 className="text-2xl font-semibold text-slate-100">Email Verified!</h2>
             <p className="text-slate-400">{message}</p>
             <Link
-              href="/login"
+              href={withNext("/login")}
               className="inline-block rounded-full bg-accent px-8 py-3 font-semibold text-slate-950 shadow-lg shadow-accent/30 transition hover:bg-sky-400"
             >
               Continue to Login
@@ -159,7 +170,7 @@ export default function VerifyEmailPage() {
               Your email has been verified. An administrator will review your account shortly.
             </p>
             <Link
-              href="/login"
+              href={withNext("/login")}
               className="inline-block rounded-full bg-accent px-8 py-3 font-semibold text-slate-950 shadow-lg shadow-accent/30 transition hover:bg-sky-400"
             >
               Back to Login
@@ -185,13 +196,13 @@ export default function VerifyEmailPage() {
               The verification link may have expired or already been used.
             </p>
             <Link
-              href="/register"
+              href={withNext("/register")}
               className="inline-block rounded-full bg-accent px-8 py-3 font-semibold text-slate-950 shadow-lg shadow-accent/30 transition hover:bg-sky-400"
             >
               Register Again
             </Link>
             <div className="pt-2">
-              <Link href="/login" className="text-sm text-slate-400 hover:text-slate-300">
+              <Link href={withNext("/login")} className="text-sm text-slate-400 hover:text-slate-300">
                 Back to Login
               </Link>
             </div>

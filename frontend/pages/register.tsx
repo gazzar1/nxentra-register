@@ -28,6 +28,18 @@ export default function RegisterPage() {
   const [errors, setErrors] = useState<Errors>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // B18 (2026-06-07): preserve the `?next=` query param across auth pages
+  // so a merchant who clicks "Open Nxentra" inside the Shopify iframe and
+  // then clicks "Sign in" doesn't lose the /shopify/settings destination
+  // and end up stranded at /dashboard. Same goes for the post-registration
+  // verify-email redirect.
+  const nextParam =
+    typeof router.query.next === "string" && router.query.next.startsWith("/")
+      ? router.query.next
+      : "";
+  const withNext = (path: string) =>
+    nextParam ? `${path}?next=${encodeURIComponent(nextParam)}` : path;
+
   const handleChange = (field: keyof typeof form) => (value: string) => {
     setForm((previous) => ({ ...previous, [field]: value }));
   };
@@ -69,8 +81,15 @@ export default function RegisterPage() {
         tos_accepted: form.tos_accepted,
       });
 
-      // Redirect to verify-email page
-      router.push(`/verify-email?email=${encodeURIComponent(form.email)}&sent=true`);
+      // Redirect to verify-email page, preserving `?next=` so the merchant
+      // who arrived from the iframe ends up back at /shopify/settings after
+      // verification + login.
+      const verifyParams = new URLSearchParams({
+        email: form.email,
+        sent: "true",
+      });
+      if (nextParam) verifyParams.set("next", nextParam);
+      router.push(`/verify-email?${verifyParams.toString()}`);
     } catch (error: unknown) {
       console.error(error);
       const axiosError = error as { response?: { data?: { detail?: string; email?: string[] } } };
@@ -173,7 +192,7 @@ export default function RegisterPage() {
               {isSubmitting ? "Submitting..." : "Launch Workspace"}
             </button>
             <p className="text-sm text-muted-foreground">
-              Already have an account? <Link href="/login">Sign in</Link>
+              Already have an account? <Link href={withNext("/login")}>Sign in</Link>
             </p>
           </div>
         </form>
