@@ -192,18 +192,22 @@ export default function ShopifyEmbeddedPage() {
 
   /**
    * Break out of the iframe to standalone Nxentra so the merchant can
-   * sign up / log in and connect their store. Uses TOP-LEVEL navigation
-   * (newContext: false) so the merchant ends with ONE tab throughout the
-   * flow: their Shopify admin tab navigates out to Nxentra, the merchant
-   * signs in, OAuths their store, and the callback (B17) redirects the
-   * same tab back to Shopify admin where our app re-opens in the iframe.
+   * sign in (or register) and connect their store. Uses TOP-LEVEL
+   * navigation (newContext: false) so the merchant ends with ONE tab
+   * throughout the flow: their Shopify admin tab navigates out to
+   * Nxentra, the merchant signs in, OAuths their store, and the
+   * callback (B17) redirects the same tab back to Shopify admin where
+   * our app re-opens in the iframe.
    *
-   * The previous newContext: true (popup new tab) implementation left a
-   * stale "No Nxentra account is connected" iframe in the original tab
-   * (B17.1 + B18 live test 2026-06-07).
+   * Defaults to /login (not /register) because the no_connection branch
+   * is most commonly hit by merchants who already have a Nxentra
+   * account and just disconnected their store — sending them to a
+   * register form they don't need is friction. Brand-new users can
+   * still click "Get started" from /login to register; ?next= is
+   * preserved across the cross-link by B18.
    */
   const openNxentraTop = () => {
-    const target = `${NXENTRA_STANDALONE_URL}/register?next=/shopify/settings`;
+    const target = `${NXENTRA_STANDALONE_URL}/login?next=/shopify/settings`;
     redirectTopLevel(target);
   };
 
