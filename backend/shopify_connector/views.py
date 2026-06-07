@@ -30,6 +30,38 @@ from .serializers import ShopifyOrderSerializer, ShopifyStoreSerializer
 logger = logging.getLogger(__name__)
 
 
+def _shopify_admin_app_url(shop_domain: str) -> str:
+    """
+    B17 (2026-06-07): post-OAuth landing URL inside Shopify admin.
+
+    For an embedded app, the canonical "open the app" location is the
+    Shopify admin's apps panel for the merchant's store, not standalone
+    app.nxentra.com. Redirecting there after OAuth puts the merchant back
+    inside the iframe (or opens it for the first time), where our
+    embedded launch flow takes over: session-login mints a fresh Nxentra
+    JWT and renders /shopify/settings — no manual Nxentra login needed.
+
+    Without this redirect, the merchant who initiated OAuth from inside
+    the iframe (Disconnect → Connect) was dropped at standalone
+    app.nxentra.com/login, lost their iframe context, and had to log in
+    again and manually navigate back to Shopify admin. Discovered in the
+    B13 live test on 2026-06-07.
+
+    URL format follows Shopify's documented admin app deep link:
+        https://admin.shopify.com/store/<subdomain>/apps/<client_id>
+    """
+    from django.conf import settings as django_settings
+
+    subdomain = shop_domain.replace(".myshopify.com", "").strip()
+    api_key = getattr(django_settings, "SHOPIFY_API_KEY", "") or SHOPIFY_API_KEY_PLACEHOLDER
+    return f"https://admin.shopify.com/store/{subdomain}/apps/{api_key}"
+
+
+# B17: fallback constant only used if Django settings somehow lack
+# SHOPIFY_API_KEY (which would already break OAuth — defensive only).
+SHOPIFY_API_KEY_PLACEHOLDER = ""
+
+
 def _get_active_store_for_actor(actor) -> ShopifyStore | None:
     """
     Return the actor's company's currently-connected ShopifyStore, or None.
@@ -230,15 +262,23 @@ class ShopifyCallbackView(APIView):
             if not result.success:
                 # A7: error path also branches on onboarding state so the
                 # merchant lands back where they started (wizard or
-                # standalone settings).
+                # standalone settings). Errors stay on standalone Nxentra
+                # so the merchant can see the error message — embedded
+                # iframe would just bounce them back here on next launch
+                # without context.
                 if not store.company.onboarding_completed:
                     return HttpResponseRedirect(f"/onboarding/setup?shopify_error={result.error}")
                 return HttpResponseRedirect(f"/shopify/settings?error={result.error}")
             # A7: onboarding-incomplete companies are mid-wizard at the
-            # Shopify step.
+            # Shopify step — keep them on the wizard, not bouncing into
+            # Shopify admin.
             if not store.company.onboarding_completed:
                 return HttpResponseRedirect("/onboarding/setup?shopify_connected=true")
-            return HttpResponseRedirect("/shopify/settings?connected=true")
+            # B17 (2026-06-07): post-onboarding success lands the merchant
+            # back inside the Shopify admin embedded app, not at
+            # standalone /shopify/settings. See _shopify_admin_app_url
+            # docstring for the why.
+            return HttpResponseRedirect(_shopify_admin_app_url(shop))
 
         # B6 (2026-06-05): Shopify-initiated install fallback.
         # Reviewer / merchant installed via App Store or Partner Dashboard
