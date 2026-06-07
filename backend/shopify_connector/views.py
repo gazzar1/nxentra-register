@@ -123,7 +123,14 @@ class ShopifyInstallView(APIView):
         if not shop_domain.endswith(".myshopify.com"):
             shop_domain = f"{shop_domain}.myshopify.com"
 
-        result = commands.get_install_url(actor.company, shop_domain)
+        # B17.2 (2026-06-07): the frontend tells us whether the OAuth
+        # flow was initiated from inside the Shopify admin iframe so the
+        # callback can route the success redirect appropriately.
+        # Standalone-started flows stay on app.nxentra.com; embedded-
+        # started flows return to admin.shopify.com.
+        embedded = bool(request.data.get("embedded", False))
+
+        result = commands.get_install_url(actor.company, shop_domain, embedded=embedded)
         return Response(result, status=status.HTTP_200_OK)
 
 
@@ -233,13 +240,21 @@ class ShopifyCallbackView(APIView):
     def get(self, request):
         code = request.query_params.get("code", "")
         shop = request.query_params.get("shop", "")
-        state = request.query_params.get("state", "")
+        raw_state = request.query_params.get("state", "")
 
         if not code or not shop:
             return Response(
                 {"error": "Missing required OAuth parameters"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        # B17.2 (2026-06-07): if the install was kicked off from inside
+        # the Shopify admin iframe, get_install_url appended an
+        # ".embedded" suffix to the OAuth state. Strip it before lookup
+        # (the stored ShopifyStore.oauth_nonce only holds the bare
+        # nonce) and remember the intent for the success redirect.
+        return_to_embedded = raw_state.endswith(commands.EMBEDDED_STATE_SUFFIX)
+        state = raw_state[: -len(commands.EMBEDDED_STATE_SUFFIX)] if return_to_embedded else raw_state
 
         # Try to match a PENDING ShopifyStore row created by the
         # Nxentra-initiated install path (merchant pasted shop domain
@@ -274,11 +289,18 @@ class ShopifyCallbackView(APIView):
             # Shopify admin.
             if not store.company.onboarding_completed:
                 return HttpResponseRedirect("/onboarding/setup?shopify_connected=true")
-            # B17 (2026-06-07): post-onboarding success lands the merchant
-            # back inside the Shopify admin embedded app, not at
-            # standalone /shopify/settings. See _shopify_admin_app_url
-            # docstring for the why.
-            return HttpResponseRedirect(_shopify_admin_app_url(shop))
+            # B17.2 (2026-06-07): post-onboarding success lands the
+            # merchant back where they STARTED the OAuth flow:
+            #   - Iframe-started (embedded suffix on state) → Shopify
+            #     admin embedded app URL. The iframe re-opens our app
+            #     at the connected state with embedded.tsx running the
+            #     session-login + token-exchange handshake.
+            #   - Standalone-started (no suffix) → app.nxentra.com/
+            #     shopify/settings. The merchant stays inside Nxentra
+            #     without being teleported into Shopify admin.
+            if return_to_embedded:
+                return HttpResponseRedirect(_shopify_admin_app_url(shop))
+            return HttpResponseRedirect("/shopify/settings?connected=true")
 
         # B6 (2026-06-05): Shopify-initiated install fallback.
         # Reviewer / merchant installed via App Store or Partner Dashboard

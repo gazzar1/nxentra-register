@@ -61,11 +61,15 @@ def test_admin_app_url_handles_no_suffix():
 
 
 @pytest.mark.django_db
-def test_callback_success_redirects_to_shopify_admin_when_onboarded(api_client, company, monkeypatch):
+def test_callback_success_with_embedded_state_redirects_to_shopify_admin(api_client, company, monkeypatch):
+    """B17.2: an OAuth state ending with `.embedded` means the merchant
+    started the install from inside the Shopify admin iframe. Send them
+    back to the admin embedded app URL so the iframe re-opens at the
+    connected state."""
     company.onboarding_completed = True
     company.save(update_fields=["onboarding_completed"])
 
-    nonce = "test-nonce-b17"
+    nonce = "test-nonce-b17-embedded"
     store = ShopifyStore.objects.create(
         company=company,
         shop_domain="b17merchant.myshopify.com",
@@ -74,7 +78,6 @@ def test_callback_success_redirects_to_shopify_admin_when_onboarded(api_client, 
     )
 
     def _fake_complete_oauth(c, shop, code, state):
-        # Mark the row ACTIVE the way the real command would
         store.status = ShopifyStore.Status.ACTIVE
         store.save(update_fields=["status"])
         from shopify_connector.commands import CommandResult
@@ -88,11 +91,81 @@ def test_callback_success_redirects_to_shopify_admin_when_onboarded(api_client, 
     with override_settings(SHOPIFY_API_KEY="cid_b17"):
         response = api_client.get(
             reverse("shopify-callback"),
-            {"code": "fake_code", "shop": "b17merchant.myshopify.com", "state": nonce},
+            {
+                "code": "fake_code",
+                "shop": "b17merchant.myshopify.com",
+                "state": nonce + ".embedded",
+            },
         )
 
     assert response.status_code == 302
     assert response.url == "https://admin.shopify.com/store/b17merchant/apps/cid_b17", response.url
+
+
+@pytest.mark.django_db
+def test_callback_success_without_suffix_stays_on_standalone(api_client, company, monkeypatch):
+    """B17.2: a bare-nonce state (no `.embedded` suffix) means the
+    merchant started OAuth from standalone Nxentra. After completion
+    they stay on standalone /shopify/settings — teleporting them into
+    the Shopify admin iframe would yank them out of the context they
+    were just in."""
+    company.onboarding_completed = True
+    company.save(update_fields=["onboarding_completed"])
+
+    nonce = "test-nonce-b17-standalone"
+    store = ShopifyStore.objects.create(
+        company=company,
+        shop_domain="b17standalone.myshopify.com",
+        oauth_nonce=nonce,
+        status=ShopifyStore.Status.PENDING,
+    )
+
+    def _fake_complete_oauth(c, shop, code, state):
+        store.status = ShopifyStore.Status.ACTIVE
+        store.save(update_fields=["status"])
+        from shopify_connector.commands import CommandResult
+
+        return CommandResult.ok({"store": store})
+
+    monkeypatch.setattr("shopify_connector.commands.complete_oauth", _fake_complete_oauth)
+
+    response = api_client.get(
+        reverse("shopify-callback"),
+        {"code": "fake_code", "shop": "b17standalone.myshopify.com", "state": nonce},
+    )
+
+    assert response.status_code == 302
+    assert response.url == "/shopify/settings?connected=true", response.url
+    assert "admin.shopify.com" not in response.url
+
+
+@pytest.mark.django_db
+def test_install_url_appends_embedded_suffix_to_state(db, company):
+    """B17.2: get_install_url with embedded=True must put the
+    `.embedded` suffix on the OAuth `state` query parameter so the
+    callback can detect the iframe context. The stored
+    ShopifyStore.oauth_nonce stays bare (no DB-schema change)."""
+    from shopify_connector.commands import EMBEDDED_STATE_SUFFIX, get_install_url
+
+    result = get_install_url(company, "embedflag.myshopify.com", embedded=True)
+
+    assert f"&state={result['nonce']}{EMBEDDED_STATE_SUFFIX}" in result["url"]
+    # The stored row has the bare nonce only — suffix isn't persisted.
+    row = ShopifyStore.objects.get(company=company, shop_domain="embedflag.myshopify.com")
+    assert row.oauth_nonce == result["nonce"]
+    assert EMBEDDED_STATE_SUFFIX not in row.oauth_nonce
+
+
+@pytest.mark.django_db
+def test_install_url_without_embedded_flag_omits_suffix(db, company):
+    """B17.2: the default (embedded=False) keeps the bare nonce in the
+    state — matches all pre-B17.2 install URLs."""
+    from shopify_connector.commands import EMBEDDED_STATE_SUFFIX, get_install_url
+
+    result = get_install_url(company, "noflag.myshopify.com")
+
+    assert f"&state={result['nonce']}" in result["url"]
+    assert EMBEDDED_STATE_SUFFIX not in result["url"]
 
 
 @pytest.mark.django_db

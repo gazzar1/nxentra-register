@@ -76,8 +76,15 @@ export const shopifyService = {
   updateStore: (data: { default_cod_settlement_provider: number | null }) =>
     apiClient.patch<ShopifyStore>("/shopify/store/", data),
 
-  install: (shop_domain: string) =>
-    apiClient.post<ShopifyInstallResponse>("/shopify/install/", { shop_domain }),
+  // B17.2 (2026-06-07): pass through whether the OAuth was initiated
+  // from inside the Shopify admin iframe so the backend callback knows
+  // whether to redirect back to admin.shopify.com (iframe) or to
+  // standalone app.nxentra.com/shopify/settings (standalone).
+  install: (shop_domain: string, embedded: boolean = false) =>
+    apiClient.post<ShopifyInstallResponse>("/shopify/install/", {
+      shop_domain,
+      embedded,
+    }),
 
   // B6 (2026-06-05): finalize a Shopify-initiated install after the
   // merchant has logged into Nxentra and selected a company. The

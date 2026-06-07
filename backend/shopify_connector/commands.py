@@ -122,13 +122,28 @@ def _shopify_denial_reason(exc: "requests.RequestException") -> str | None:
 # =============================================================================
 
 
-def get_install_url(company, shop_domain: str) -> dict:
+EMBEDDED_STATE_SUFFIX = ".embedded"
+
+
+def get_install_url(company, shop_domain: str, embedded: bool = False) -> dict:
     """
     Generate the Shopify OAuth authorization URL.
 
     Returns {url, nonce} for the frontend to redirect the merchant.
+
+    B17.2 (2026-06-07): when the merchant kicked off the OAuth from
+    inside the Shopify admin iframe, append an `.embedded` suffix to
+    the OAuth `state` so the callback can route the success redirect
+    back to admin.shopify.com (B17). Standalone-started OAuth flows
+    keep the bare nonce and land at app.nxentra.com/shopify/settings —
+    the merchant stays in the context they started in.
+
+    The stored ShopifyStore.oauth_nonce only holds the random nonce
+    (suffix is consumed in the callback before lookup), so the DB
+    schema stays unchanged.
     """
     nonce = secrets.token_urlsafe(32)
+    state_in_url = nonce + (EMBEDDED_STATE_SUFFIX if embedded else "")
 
     # B2 (2026-06-04): sweep abandoned PENDING rows for this company before
     # creating the new one. OAuth round-trip normally completes in seconds; a
@@ -190,7 +205,7 @@ def get_install_url(company, shop_domain: str) -> dict:
         f"?client_id={SHOPIFY_API_KEY}"
         f"&scope={SHOPIFY_SCOPES}"
         f"&redirect_uri={redirect_uri}"
-        f"&state={nonce}"
+        f"&state={state_in_url}"
     )
 
     return {"url": url, "nonce": nonce}

@@ -20,7 +20,7 @@ import {
   type OnboardingSetupPayload,
 } from "@/services/onboarding.service";
 import { shopifyService } from "@/services/shopify.service";
-import { redirectTopLevel } from "@/lib/shopify-embed";
+import { isShopifyEmbedded, redirectTopLevel } from "@/lib/shopify-embed";
 import {
   Building2,
   Calendar,
@@ -479,7 +479,10 @@ export default function OnboardingSetupPage() {
                   }
                   setShopifyConnecting(true);
                   try {
-                    const { data } = await shopifyService.install(shopifyDomain.trim());
+                    const { data } = await shopifyService.install(
+                      shopifyDomain.trim(),
+                      isShopifyEmbedded(),
+                    );
                     // A7: persist the current step (Shopify Setup) before
                     // leaving for OAuth. Without this, the draft still has
                     // the previous step (saved by handleNext when user

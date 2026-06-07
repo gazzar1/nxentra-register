@@ -37,7 +37,7 @@ import {
 import { postingProfilesService } from "@/services/sales.service";
 import type { PostingProfile } from "@/types/sales";
 import { useAccounts } from "@/queries/useAccounts";
-import { redirectTopLevel } from "@/lib/shopify-embed";
+import { isShopifyEmbedded, redirectTopLevel } from "@/lib/shopify-embed";
 
 export default function ShopifySettingsPage() {
   const { t } = useTranslation(["common"]);
@@ -264,7 +264,13 @@ export default function ShopifySettingsPage() {
     }
     setConnecting(true);
     try {
-      const { data } = await shopifyService.install(shopDomain.trim());
+      // B17.2 (2026-06-07): tell the backend whether this OAuth is
+      // starting from inside the iframe so the callback can route the
+      // success redirect back to the right context (admin vs standalone).
+      const { data } = await shopifyService.install(
+        shopDomain.trim(),
+        isShopifyEmbedded(),
+      );
       // B13 (2026-06-07): inside the Shopify admin iframe, plain
       // window.location.href would navigate the iframe itself to
       // accounts.shopify.com/oauth/authorize, which sends
