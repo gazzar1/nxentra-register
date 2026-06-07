@@ -14,7 +14,6 @@ import {
   getShopifyShopParam,
   isShopifyEmbedded,
   persistShopifyContext,
-  redirectTopLevel,
 } from "@/lib/shopify-embed";
 
 const baseURL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
@@ -191,24 +190,35 @@ export default function ShopifyEmbeddedPage() {
   }, [router, refreshProfile]);
 
   /**
-   * Break out of the iframe to standalone Nxentra so the merchant can
-   * sign in (or register) and connect their store. Uses TOP-LEVEL
-   * navigation (newContext: false) so the merchant ends with ONE tab
-   * throughout the flow: their Shopify admin tab navigates out to
-   * Nxentra, the merchant signs in, OAuths their store, and the
-   * callback (B17) redirects the same tab back to Shopify admin where
-   * our app re-opens in the iframe.
+   * Open Nxentra's sign-in flow INSIDE the iframe (not by escaping to
+   * the top window). The merchant sees Shopify admin's chrome the
+   * entire time; only the iframe content changes from "No Nxentra
+   * account connected" to the Nxentra login form, then select-company,
+   * then /shopify/settings.
    *
-   * Defaults to /login (not /register) because the no_connection branch
-   * is most commonly hit by merchants who already have a Nxentra
-   * account and just disconnected their store — sending them to a
-   * register form they don't need is friction. Brand-new users can
-   * still click "Get started" from /login to register; ?next= is
-   * preserved across the cross-link by B18.
+   * Why same-iframe (B18.3) instead of top-level navigation (B18.1):
+   *   - Same-origin nav (our app to our login) is always allowed in
+   *     the iframe sandbox — no popup blocker or top-nav restrictions.
+   *   - The merchant never visually leaves Shopify admin. Earlier live
+   *     test 2026-06-07 showed merchants felt disoriented when the
+   *     entire browser tab dropped them at app.nxentra.com mid-flow.
+   *   - Cookies set during the in-iframe login are partitioned per
+   *     top-level origin (admin.shopify.com), so they don't leak from
+   *     or to a standalone-tab Nxentra session — which is actually a
+   *     security plus. API calls from the iframe attach those
+   *     partitioned cookies and work normally.
+   *   - The eventual OAuth click on /shopify/settings still escapes to
+   *     top via redirectTopLevel (B13), since accounts.shopify.com
+   *     can't render in an iframe. After OAuth, B17 brings the
+   *     merchant back into the embedded admin URL.
+   *
+   * Defaults to /login (not /register) since the no_connection branch
+   * is overwhelmingly hit by returning merchants — B18.2.
    */
   const openNxentraTop = () => {
+    if (typeof window === "undefined") return;
     const target = `${NXENTRA_STANDALONE_URL}/login?next=/shopify/settings`;
-    redirectTopLevel(target);
+    window.location.href = target;
   };
 
   // Bare layout — no AppLayout chrome since we're embedded inside
