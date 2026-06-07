@@ -241,22 +241,46 @@ export function redirectTopLevel(
     return;
   }
 
+  // B17.1 (2026-06-07): split the embedded-mode strategy by intent.
+  //
+  // For newContext (open in a new top-level tab — e.g. the "Open Nxentra"
+  // button from the no_connection iframe state): use plain window.open
+  // directly. Live test 2026-06-07 showed that
+  // shopify.redirect.toRemote({ url, newContext: true }) opens the new
+  // tab AND also re-iframes our own application_url through the admin
+  // shell's app router as a side effect — the merchant ended up with
+  // both a new register tab AND the iframe pointed at the register
+  // page. Shopify's iframe sandbox grants `allow-popups`, so plain
+  // window.open is a clean one-effect operation.
+  //
+  // For !newContext (same-tab top-level navigation — e.g. OAuth start):
+  // we still need App Bridge's sanctioned escape because navigating the
+  // iframe to accounts.shopify.com fails with X-Frame-Options: DENY.
+  if (newContext) {
+    const opened = window.open(url, "_blank", "noopener,noreferrer");
+    if (opened) return;
+    // Popup blocked — last-ditch App Bridge fallback. Not preferred
+    // because of the side effect, but better than silently dropping the
+    // navigation.
+    try {
+      window.shopify?.redirect?.toRemote?.({ url, newContext: true });
+    } catch {
+      /* nothing else we can safely do here */
+    }
+    return;
+  }
+
   try {
     if (window.shopify?.redirect?.toRemote) {
-      window.shopify.redirect.toRemote({ url, newContext });
+      window.shopify.redirect.toRemote({ url });
       return;
     }
   } catch {
     /* fall through */
   }
 
-  const target = newContext ? "_blank" : "_top";
   try {
-    const opened = window.open(
-      url,
-      target,
-      newContext ? "noopener,noreferrer" : undefined,
-    );
+    const opened = window.open(url, "_top");
     if (opened) return;
   } catch {
     /* fall through */
