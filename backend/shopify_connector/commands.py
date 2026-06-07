@@ -85,11 +85,35 @@ def _shopify_access_denied(exc: "requests.RequestException") -> str | None:
         return None
     code = resp.status_code
     if code in (401, 402, 403, 404):
-        # Don't try to parse Shopify's body — versions and endpoints differ in
-        # whether they wrap the error string. The status code alone is enough
-        # to flip "Failed" → "Nothing to sync (access not granted on this
-        # store)".
         return f"Shopify returned HTTP {code} for this resource."
+    return None
+
+
+# B15 (2026-06-07): caller-facing classification of denial reasons. The
+# generic _shopify_access_denied above lumps every 4xx together so callers
+# can default to a graceful "skip" path. This helper inspects the body so
+# the user-facing toast can tell *why* — token format vs scope vs payments
+# not enabled. Misdiagnosis (a "deprecated token" looking like "missing
+# scope") cost us hours of debug on 2026-06-07; never again.
+def _shopify_denial_reason(exc: "requests.RequestException") -> str | None:
+    """Returns one of: 'non_expiring_token', 'scope_missing', 'payments_disabled',
+    'not_found', or None when the body doesn't match a known reason."""
+    resp = getattr(exc, "response", None)
+    if resp is None:
+        return None
+    try:
+        body = resp.text or ""
+    except Exception:
+        body = ""
+    lower = body.lower()
+    if "non-expiring" in lower or "non expiring" in lower:
+        return "non_expiring_token"
+    if "scope" in lower:
+        return "scope_missing"
+    if "shopify payments" in lower or ("payouts" in lower and "not" in lower):
+        return "payments_disabled"
+    if resp.status_code == 404:
+        return "not_found"
     return None
 
 
@@ -680,6 +704,12 @@ def complete_oauth_token_exchange(
 
     shop_domain = claim_shop_domain
 
+    # B15 (2026-06-07): request an EXPIRING offline token, same as A122 did
+    # for the OAuth code-grant path. Without `expiring=1`, Shopify returns a
+    # legacy non-expiring `shpat_*` token that the Admin API now rejects
+    # outright ("Non-expiring access tokens are no longer accepted for the
+    # Admin API"). Diagnosed via direct API call against a fresh token-
+    # exchanged store on 2026-06-07.
     token_url = f"https://{shop_domain}/admin/oauth/access_token"
     try:
         resp = requests.post(
@@ -691,6 +721,7 @@ def complete_oauth_token_exchange(
                 "subject_token": session_token,
                 "subject_token_type": "urn:ietf:params:oauth:token-type:id_token",
                 "requested_token_type": "urn:shopify:params:oauth:token-type:offline-access-token",
+                "expiring": 1,
             },
             timeout=15,
         )
@@ -3113,11 +3144,34 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
             # message instead of a red "Failed to sync" toast. App Store
             # reviewers hit this on fresh dev stores.
             denial = _shopify_access_denied(e)
+            reason = _shopify_denial_reason(e)
             if denial:
+                if reason == "non_expiring_token":
+                    # B15: Shopify rejected our legacy non-expiring access
+                    # token. New token-exchanges (B15) return expiring
+                    # tokens, but pre-B15 connected stores still have the
+                    # old format and need a re-OAuth to upgrade.
+                    msg = (
+                        "Your Shopify connection uses a deprecated token "
+                        "format that Shopify no longer accepts. Disconnect "
+                        "and reconnect this store to upgrade to the current "
+                        "token format, then try again."
+                    )
+                    log_hint = "non-expiring token deprecated by Shopify"
+                else:
+                    # Default: scope-missing message (covers fresh App Store
+                    # installs that genuinely don't have read_products).
+                    msg = (
+                        "Shopify didn't grant read access to products on "
+                        "this store. Disconnect and reconnect to re-grant "
+                        "the read_products scope, then try again."
+                    )
+                    log_hint = "likely read_products scope not granted on this install"
                 logger.info(
-                    "Skipping product sync for %s: %s (likely read_products scope not granted on this install)",
+                    "Skipping product sync for %s: %s (%s)",
                     store.shop_domain,
                     denial,
+                    log_hint,
                 )
                 return CommandResult.ok(
                     data={
@@ -3127,11 +3181,8 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
                         "skipped": 0,
                         "errors": [],
                         "status": "unavailable",
-                        "message": (
-                            "Shopify didn't grant read access to products on "
-                            "this store. Disconnect and reconnect to re-grant "
-                            "the read_products scope, then try again."
-                        ),
+                        "reason": reason or "access_denied",
+                        "message": msg,
                     }
                 )
             logger.error("Shopify products API error: %s", e)
