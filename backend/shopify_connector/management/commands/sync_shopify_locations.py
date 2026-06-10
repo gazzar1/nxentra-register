@@ -12,7 +12,6 @@ Usage:
 
 from datetime import UTC, datetime
 
-import requests
 from django.core.management.base import BaseCommand
 
 from accounts.rls import rls_bypass
@@ -49,30 +48,18 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS(f"Done. Created {total_created}, updated {total_updated} warehouses."))
 
     def _sync_store_locations(self, store):
-        from shopify_connector.commands import _get_valid_access_token, _shopify_api_root
+        from shopify_connector.commands import _admin_client
 
-        token = _get_valid_access_token(store)
-        if not token:
+        client = _admin_client(store)
+        if not client:
             self.stdout.write(self.style.WARNING(f"  {store.company.slug}: token expired or revoked"))
             return 0, 0
 
-        headers = {
-            "X-Shopify-Access-Token": token,
-            "Content-Type": "application/json",
-        }
-
         try:
-            resp = requests.get(
-                f"{_shopify_api_root(store.shop_domain)}/locations.json",
-                headers=headers,
-                timeout=15,
-            )
-            resp.raise_for_status()
+            locations = client.list_locations()
         except Exception as exc:
             self.stdout.write(self.style.WARNING(f"  {store.company.slug}: failed to fetch locations: {exc}"))
             return 0, 0
-
-        locations = resp.json().get("locations", [])
         created = 0
         updated = 0
 

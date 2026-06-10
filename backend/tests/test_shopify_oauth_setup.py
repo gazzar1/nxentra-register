@@ -34,7 +34,7 @@ def test_ensure_warehouse_falls_back_and_marks_default_when_locations_api_fails(
     def _raise(*_a, **_kw):
         raise RuntimeError("simulated Shopify API failure")
 
-    monkeypatch.setattr("shopify_connector.commands.requests.get", _raise)
+    monkeypatch.setattr("shopify_connector.graphql_client.requests.post", _raise)
 
     _ensure_shopify_warehouse(shopify_store)
 

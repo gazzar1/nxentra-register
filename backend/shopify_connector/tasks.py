@@ -66,6 +66,37 @@ def sync_shopify_all(self, lookback_hours: int = 48) -> dict:
 
 
 @shared_task(
+    name="shopify.initial_store_sync",
+    bind=True,
+    max_retries=2,
+    default_retry_delay=60,
+)
+def initial_store_sync(self, store_id: int) -> dict:
+    """
+    First data pull right after a store connects (OAuth callback, token
+    exchange, or Shopify-initiated install finalization).
+
+    Without this, a freshly connected merchant — or the App Store reviewer —
+    sees an empty dashboard until they click the manual sync buttons or the
+    4-hour periodic catch-up fires. Pulls a 7-day order window plus products
+    and payouts; every downstream handler is idempotent, so overlapping with
+    the periodic task is harmless.
+    """
+    from .models import ShopifyStore
+
+    with rls_bypass():
+        try:
+            store = ShopifyStore.objects.select_related("company").get(id=store_id)
+        except ShopifyStore.DoesNotExist:
+            return {"status": "error", "error": "Store not found"}
+
+    if store.status != ShopifyStore.Status.ACTIVE:
+        return {"status": "skipped", "reason": "Store not active"}
+
+    return _sync_store(store, lookback_hours=24 * 7)
+
+
+@shared_task(
     name="shopify.sync_store_orders",
     bind=True,
     max_retries=2,
@@ -161,38 +192,25 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
     All downstream handlers are idempotent.
     """
     from .commands import (
-        _get_valid_access_token,
+        _admin_client,
         process_order_cancelled,
         process_order_paid,
         process_order_pending,
     )
 
-    token = _get_valid_access_token(store)
-    if not token:
+    client = _admin_client(store)
+    if not client:
         return {"status": "error", "error": "Token expired or revoked — please reconnect the store."}
-
-    headers = {
-        "X-Shopify-Access-Token": token,
-        "Content-Type": "application/json",
-    }
 
     fetched = 0
     created = 0
     skipped = 0
     errors = 0
-    from .commands import _shopify_api_root
-
-    page_url = f"{_shopify_api_root(store.shop_domain)}/orders.json"
-    params = {
-        "status": "any",
-        "created_at_min": created_at_min,
-        "created_at_max": created_at_max,
-        "limit": 250,
-    }
 
     # A52 (2026-05-15): diagnostic logging while we hunt down why re-sync(7d)
-    # returns 0 orders despite orders existing in the store. Log entry shows
-    # the exact request shape; per-page logs show what Shopify returns.
+    # returns 0 orders despite orders existing in the store. Root cause found
+    # 2026-06-10: REST orders.json silently excludes dev-store test orders.
+    # The GraphQL orders query below returns them.
     logger.info(
         "[A52] _sync_orders start shop=%s store_id=%s created_at_min=%s created_at_max=%s",
         store.shop_domain,
@@ -201,25 +219,24 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
         created_at_max,
     )
 
-    page_num = 0
-    while page_url:
-        page_num += 1
+    orders_iter = client.iter_orders(created_at_min, created_at_max)
+    while True:
         try:
-            resp = requests.get(page_url, headers=headers, params=params, timeout=30)
-            resp.raise_for_status()
+            order_payload = next(orders_iter)
+        except StopIteration:
+            break
         except requests.RequestException as e:
-            # A120 (2026-06-01): treat 401/402/403/404 as "unavailable" rather
+            # A120 (2026-06-01): treat access denials as "unavailable" rather
             # than a hard failure. Same rationale as sync_products/sync_payouts
-            # — Shopify returns 403 on read-orders for tokens missing the scope
-            # and (as of mid-2026) on REST endpoints whose API version is past
-            # its support window. We want the UI to say "Shopify denied
-            # access" instead of a generic failure toast.
+            # — Shopify denies read-orders for tokens missing the scope. We
+            # want the UI to say "Shopify denied access" instead of a generic
+            # failure toast.
             from .commands import _shopify_access_denied
 
             denial = _shopify_access_denied(e)
             if denial and fetched == 0:
                 logger.info(
-                    "Skipping order re-sync for %s: %s (scope not granted or API version unsupported on this store)",
+                    "Skipping order re-sync for %s: %s (scope not granted on this store)",
                     store.shop_domain,
                     denial,
                 )
@@ -244,71 +261,54 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
                 "error": str(e),
             }
 
-        orders_data = resp.json().get("orders", [])
-        page_count = len(orders_data)
-        fetched += page_count
+        fetched += 1
+        shopify_order_id = order_payload.get("id")
+        if not shopify_order_id:
+            continue
 
-        logger.info(
-            "[A52] _sync_orders page=%d shop=%s status=%d page_orders=%d url=%s",
-            page_num,
-            store.shop_domain,
-            resp.status_code,
-            page_count,
-            resp.url,
+        # Route to the right handler based on current order state.
+        handler = _pick_order_handler(
+            order_payload,
+            process_order_paid,
+            process_order_pending,
+            process_order_cancelled,
         )
+        if handler is None:
+            skipped += 1
+            continue
 
-        for order_payload in orders_data:
-            shopify_order_id = order_payload.get("id")
-            if not shopify_order_id:
-                continue
-
-            # Route to the right handler based on current order state.
-            handler = _pick_order_handler(
-                order_payload,
-                process_order_paid,
-                process_order_pending,
-                process_order_cancelled,
-            )
-            if handler is None:
-                skipped += 1
-                continue
-
-            # Process each order in its own savepoint so one failure
-            # doesn't break the entire batch
-            try:
-                with transaction.atomic():
-                    result = handler(store, order_payload)
-                    if result.success:
-                        if result.data and result.data.get("skipped"):
-                            skipped += 1
-                        else:
-                            created += 1
+        # Process each order in its own savepoint so one failure
+        # doesn't break the entire batch
+        try:
+            with transaction.atomic():
+                result = handler(store, order_payload)
+                if result.success:
+                    if result.data and result.data.get("skipped"):
+                        skipped += 1
                     else:
-                        errors += 1
-                        logger.warning(
-                            "Failed to process order %s from %s: %s",
-                            shopify_order_id,
-                            store.shop_domain,
-                            result.error,
-                        )
-            except Exception as e:
-                errors += 1
-                logger.error(
-                    "Error processing order %s from %s [%s]: %s",
-                    shopify_order_id,
-                    store.shop_domain,
-                    type(e).__name__,
-                    e,
-                )
-                # If the connection is in a broken state, reset it
-                from django.db import connection
+                        created += 1
+                else:
+                    errors += 1
+                    logger.warning(
+                        "Failed to process order %s from %s: %s",
+                        shopify_order_id,
+                        store.shop_domain,
+                        result.error,
+                    )
+        except Exception as e:
+            errors += 1
+            logger.error(
+                "Error processing order %s from %s [%s]: %s",
+                shopify_order_id,
+                store.shop_domain,
+                type(e).__name__,
+                e,
+            )
+            # If the connection is in a broken state, reset it
+            from django.db import connection
 
-                if connection.needs_rollback:
-                    connection.rollback()
-
-        # Pagination: follow Link header for next page
-        params = {}  # Clear params for subsequent pages (URL contains them)
-        page_url = _get_next_page_url(resp)
+            if connection.needs_rollback:
+                connection.rollback()
 
     # A52: warning when fetch returns nothing — likely indicates token/date/
     # API-version issue rather than a "genuinely zero orders" situation.
@@ -368,18 +368,4 @@ def _pick_order_handler(order_payload, paid_handler, pending_handler, cancelled_
         return paid_handler
     if financial_status == "pending":
         return pending_handler
-    return None
-
-
-def _get_next_page_url(response) -> str | None:
-    """Extract next page URL from Shopify Link header."""
-    link_header = response.headers.get("Link", "")
-    if not link_header:
-        return None
-
-    for part in link_header.split(","):
-        if 'rel="next"' in part:
-            url = part.split(";")[0].strip().strip("<>")
-            return url
-
     return None

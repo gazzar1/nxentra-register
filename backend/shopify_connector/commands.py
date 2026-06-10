@@ -54,32 +54,65 @@ SHOPIFY_SCOPES = getattr(
 )
 SHOPIFY_APP_URL = getattr(settings, "SHOPIFY_APP_URL", "")
 
-# Shopify REST Admin API version. Keep in sync with shopify.app.toml's
-# [webhooks] api_version. Bumped 2026-06-01 from 2025-01 (past its 12-month
-# support window) ahead of App Store resubmission. Override via Django
-# settings.SHOPIFY_API_VERSION when testing against a different release.
-SHOPIFY_API_VERSION = getattr(settings, "SHOPIFY_API_VERSION", "2026-04")
+# Shopify Admin API version lives in graphql_client (single Admin API entry
+# point since the GraphQL migration). Re-exported here because callers and
+# tests historically read it from commands.
+from .graphql_client import (
+    SHOPIFY_API_VERSION,
+    ShopifyAdminClient,
+    ShopifyGraphQLDenied,
+)
 
 
 def _shopify_api_root(shop_domain: str) -> str:
     return f"https://{shop_domain}/admin/api/{SHOPIFY_API_VERSION}"
 
 
+def _admin_client(store) -> "ShopifyAdminClient | None":
+    """ShopifyAdminClient for the store, or None when no valid token."""
+    token = _get_valid_access_token(store)
+    if not token:
+        return None
+    return ShopifyAdminClient(store.shop_domain, token)
+
+
+def _schedule_initial_sync(store) -> None:
+    """
+    Queue the first data pull (orders 7d + products + payouts) right after a
+    store connects. A broken Celery broker must never fail the OAuth flow —
+    the 4-hour periodic catch-up covers the gap if the enqueue is lost.
+    """
+    try:
+        from .tasks import initial_store_sync
+
+        initial_store_sync.delay(store.id)
+        logger.info("Queued initial Shopify sync for %s", store.shop_domain)
+    except Exception as exc:
+        logger.warning(
+            "Could not queue initial Shopify sync for %s: %s",
+            store.shop_domain,
+            exc,
+        )
+
+
 def _shopify_access_denied(exc: "requests.RequestException") -> str | None:
     """
-    Classify a Shopify REST error as a recoverable "access denied" condition.
+    Classify a Shopify Admin API error as a recoverable "access denied"
+    condition.
 
     Returns a human-readable reason when Shopify replied with a 401/402/403/404
-    that the merchant can self-diagnose (missing scope, Shopify Payments not
-    enabled, resource hidden behind app review). Returns None for everything
-    else (real network failure, 5xx, rate limit) — those should still bubble
-    as command failures.
+    (transport layer) or a GraphQL-level ACCESS_DENIED that the merchant can
+    self-diagnose (missing scope, Shopify Payments not enabled, resource hidden
+    behind app review). Returns None for everything else (real network failure,
+    5xx, rate limit) — those should still bubble as command failures.
 
     This exists so the App Store reviewer's bare dev store (no Shopify Payments
     configured, no products created) stops seeing red "Failed to sync" toasts
     when the sync simply has nothing to do or is gated behind a permission the
     merchant must grant.
     """
+    if isinstance(exc, ShopifyGraphQLDenied):
+        return "Shopify denied access to this resource (missing scope or approval)."
     resp = getattr(exc, "response", None)
     if resp is None:
         return None
@@ -99,20 +132,23 @@ def _shopify_denial_reason(exc: "requests.RequestException") -> str | None:
     """Returns one of: 'non_expiring_token', 'scope_missing', 'payments_disabled',
     'not_found', or None when the body doesn't match a known reason."""
     resp = getattr(exc, "response", None)
-    if resp is None:
-        return None
-    try:
-        body = resp.text or ""
-    except Exception:
-        body = ""
+    if isinstance(exc, ShopifyGraphQLDenied):
+        body = str(exc)
+    else:
+        if resp is None:
+            return None
+        try:
+            body = resp.text or ""
+        except Exception:
+            body = ""
     lower = body.lower()
     if "non-expiring" in lower or "non expiring" in lower:
         return "non_expiring_token"
-    if "scope" in lower:
+    if "scope" in lower or "access denied" in lower:
         return "scope_missing"
     if "shopify payments" in lower or ("payouts" in lower and "not" in lower):
         return "payments_disabled"
-    if resp.status_code == 404:
+    if resp is not None and resp.status_code == 404:
         return "not_found"
     return None
 
@@ -329,6 +365,9 @@ def complete_oauth(company, shop_domain: str, code: str, nonce: str) -> CommandR
 
     # Auto-create Customer + PostingProfile for Sales Invoice routing
     _ensure_shopify_sales_setup(store)
+
+    # Kick off the first data pull so the dashboard isn't empty
+    _schedule_initial_sync(store)
 
     # A51 (2026-05-15): emit SHOPIFY_STORE_CONNECTED on successful OAuth.
     # Previously this event was emitted from register_webhooks (now removed
@@ -568,6 +607,7 @@ def finalize_shopify_install(company, pending_public_id: str) -> CommandResult:
     # Same post-install setup as complete_oauth
     _ensure_shopify_warehouse(store)
     _ensure_shopify_sales_setup(store)
+    _schedule_initial_sync(store)
 
     from events.emitter import emit_event_no_actor
 
@@ -816,6 +856,7 @@ def complete_oauth_token_exchange(
 
     _ensure_shopify_warehouse(store)
     _ensure_shopify_sales_setup(store)
+    _schedule_initial_sync(store)
 
     from events.emitter import emit_event_no_actor
 
@@ -1538,30 +1579,30 @@ def sync_payouts(store: ShopifyStore) -> CommandResult:
     if store.status != ShopifyStore.Status.ACTIVE:
         return CommandResult.fail("Store is not active.")
 
-    token = _get_valid_access_token(store)
-    if not token:
+    client = _admin_client(store)
+    if not client:
         return CommandResult.fail("Token expired or revoked — please reconnect the store.")
 
-    headers = {
-        "X-Shopify-Access-Token": token,
-        "Content-Type": "application/json",
-    }
+    payouts_unavailable = CommandResult.ok(
+        data={
+            "created": 0,
+            "skipped": 0,
+            "status": "unavailable",
+            "message": (
+                "Shopify Payments isn't available on this store. "
+                "Enable Shopify Payments in the store admin to start "
+                "syncing payouts."
+            ),
+        }
+    )
 
     try:
-        resp = requests.get(
-            f"{_shopify_api_root(store.shop_domain)}/shopify_payments/payouts.json",
-            headers=headers,
-            params={"status": "paid", "limit": 50},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        payouts_data = resp.json().get("payouts", [])
+        payouts_data = client.list_payouts(status="paid", limit=50)
     except requests.RequestException as e:
-        # Shopify returns 403 on this endpoint when the store hasn't enabled
-        # Shopify Payments — the default state of every fresh dev store the
-        # App Store reviewer creates. Treat that as "nothing to sync" rather
-        # than an error so the reviewer doesn't see a red toast on first
-        # connect.
+        # Shopify denies this resource when the store hasn't enabled Shopify
+        # Payments — the default state of every fresh dev store the App Store
+        # reviewer creates. Treat that as "nothing to sync" rather than an
+        # error so the reviewer doesn't see a red toast on first connect.
         denial = _shopify_access_denied(e)
         if denial:
             logger.info(
@@ -1569,20 +1610,18 @@ def sync_payouts(store: ShopifyStore) -> CommandResult:
                 store.shop_domain,
                 denial,
             )
-            return CommandResult.ok(
-                data={
-                    "created": 0,
-                    "skipped": 0,
-                    "status": "unavailable",
-                    "message": (
-                        "Shopify Payments isn't available on this store. "
-                        "Enable Shopify Payments in the store admin to start "
-                        "syncing payouts."
-                    ),
-                }
-            )
+            return payouts_unavailable
         logger.error("Failed to fetch payouts from Shopify: %s", e)
         return CommandResult.fail(f"Shopify API error: {e}")
+
+    if payouts_data is None:
+        # GraphQL exposes "no Shopify Payments" as shopifyPaymentsAccount: null
+        # rather than an error — same outcome as the denied case above.
+        logger.info(
+            "Skipping payout sync for %s: no Shopify Payments account exposed",
+            store.shop_domain,
+        )
+        return payouts_unavailable
 
     created_count = 0
     skipped_count = 0
@@ -1716,31 +1755,22 @@ def fetch_payout_transactions(store: ShopifyStore, payout: ShopifyPayout) -> Com
     Stores each transaction and attempts to match to local orders/refunds.
     Verifies that sum(transactions) matches the payout's reported amounts.
     """
-    token = _get_valid_access_token(store)
-    if not token:
+    client = _admin_client(store)
+    if not client:
         return CommandResult.fail("Token expired or revoked — please reconnect the store.")
 
     # Skip if transactions already fetched
     if payout.transactions.exists():
         return CommandResult.ok(data={"skipped": True, "reason": "Transactions already fetched."})
 
-    headers = {
-        "X-Shopify-Access-Token": token,
-        "Content-Type": "application/json",
-    }
-
     try:
-        resp = requests.get(
-            f"{_shopify_api_root(store.shop_domain)}/shopify_payments/balance/transactions.json",
-            headers=headers,
-            params={"payout_id": payout.shopify_payout_id, "limit": 250},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        transactions = resp.json().get("transactions", [])
+        transactions = client.list_payout_transactions(payout.shopify_payout_id, limit=250)
     except requests.RequestException as e:
         logger.error("Failed to fetch payout transactions: %s", e)
         return CommandResult.fail(f"Shopify API error: {e}")
+
+    if transactions is None:
+        return CommandResult.fail("Shopify Payments isn't available on this store.")
 
     created = 0
     verified = 0
@@ -2487,30 +2517,19 @@ def _ensure_shopify_warehouse(store):
     ).exists():
         return
 
-    token = _get_valid_access_token(store)
-    if not token:
-        # Can't reach Shopify with a valid token — fall through to the
-        # fallback-warehouse path below by raising the same exception the
-        # API call would have raised.
+    client = _admin_client(store)
+    if not client:
+        # Can't reach Shopify with a valid token — an empty token still
+        # exercises the API call so we hit the fallback-warehouse branch.
         logger.warning(
             "Skipping location sync for %s: no valid access token",
             store.shop_domain,
         )
-        token = ""  # let the API call fail naturally to hit the fallback branch
-    headers = {
-        "X-Shopify-Access-Token": token,
-        "Content-Type": "application/json",
-    }
+        client = ShopifyAdminClient(store.shop_domain, "")
 
     locations = []
     try:
-        resp = requests.get(
-            f"{_shopify_api_root(store.shop_domain)}/locations.json",
-            headers=headers,
-            timeout=15,
-        )
-        resp.raise_for_status()
-        locations = resp.json().get("locations", [])
+        locations = client.list_locations()
     except Exception as exc:
         logger.warning("Failed to fetch Shopify locations for %s: %s", store.shop_domain, exc)
 
@@ -2861,37 +2880,20 @@ def _fetch_variant_cost(store, variant_id, convert_to_currency: str = "") -> Dec
     if not variant_id:
         return Decimal("0")
 
-    token = _get_valid_access_token(store)
-    if not token:
+    client = _admin_client(store)
+    if not client:
         return Decimal("0")
 
-    headers = {
-        "X-Shopify-Access-Token": token,
-        "Content-Type": "application/json",
-    }
-
     try:
-        # Get the variant to find its inventory_item_id and the store currency
-        resp = requests.get(
-            f"{_shopify_api_root(store.shop_domain)}/variants/{variant_id}.json",
-            headers=headers,
-            timeout=10,
-        )
-        resp.raise_for_status()
-        inv_item_id = resp.json().get("variant", {}).get("inventory_item_id")
-        if not inv_item_id:
-            return Decimal("0")
-
-        # Fetch cost from inventory item (returns cost in store currency)
-        cost_map = _fetch_inventory_item_costs(store, [inv_item_id], headers)
-        cost = cost_map.get(inv_item_id, Decimal("0"))
+        # unitCost carries its own currency, so a single query replaces the
+        # old variant -> inventory_item -> shop currency REST chain.
+        cost_str, cost_currency = client.get_variant_unit_cost(variant_id)
+        cost = Decimal(cost_str)
 
         if cost <= 0 or not convert_to_currency:
             return cost
 
-        # Determine the store's currency from the inventory item
-        # The cost_per_item currency comes from the shop's currency setting
-        store_currency = _get_shopify_store_currency(store, headers)
+        store_currency = cost_currency or _get_shopify_store_currency(store, client)
 
         if not store_currency or store_currency == convert_to_currency:
             return cost
@@ -2933,7 +2935,7 @@ def _fetch_variant_cost(store, variant_id, convert_to_currency: str = "") -> Dec
         return Decimal("0")
 
 
-def _get_shopify_store_currency(store, headers=None) -> str:
+def _get_shopify_store_currency(store, client=None) -> str:
     """Fetch the store's currency from Shopify's shop endpoint.
 
     Caches the result on the store instance to avoid repeated API calls.
@@ -2954,22 +2956,12 @@ def _get_shopify_store_currency(store, headers=None) -> str:
         return recent_order
 
     # Fall back to Shopify shop API
-    if not headers:
-        token = _get_valid_access_token(store)
-        if not token:
+    if client is None:
+        client = _admin_client(store)
+        if not client:
             return ""
-        headers = {
-            "X-Shopify-Access-Token": token,
-            "Content-Type": "application/json",
-        }
     try:
-        resp = requests.get(
-            f"{_shopify_api_root(store.shop_domain)}/shop.json",
-            headers=headers,
-            timeout=10,
-        )
-        resp.raise_for_status()
-        return resp.json().get("shop", {}).get("currency", "")
+        return client.get_shop_currency()
     except Exception as exc:
         logger.warning("Failed to fetch store currency for %s: %s", store.shop_domain, exc)
         return ""
@@ -3118,8 +3110,8 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
     if store.status != ShopifyStore.Status.ACTIVE:
         return CommandResult.fail("Store is not active.")
 
-    token = _get_valid_access_token(store)
-    if not token:
+    client = _admin_client(store)
+    if not client:
         return CommandResult.fail("Token expired or revoked — please reconnect the store.")
 
     # Ensure Shopify warehouse exists
@@ -3134,28 +3126,24 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
     sales_account = default_accounts.get("sales")
     purchase_account = default_accounts.get("purchase")
 
-    headers = {
-        "X-Shopify-Access-Token": token,
-        "Content-Type": "application/json",
-    }
-
     created = 0
     linked = 0
     updated = 0
     skipped = 0
     errors = []
 
-    url = f"{_shopify_api_root(store.shop_domain)}/products.json?limit=250"
+    pages = client.iter_product_pages()
 
-    while url:
+    while True:
         try:
-            resp = requests.get(url, headers=headers, timeout=30)
-            resp.raise_for_status()
+            page = next(pages)
+        except StopIteration:
+            break
         except requests.RequestException as e:
-            # 403 here means the access token wasn't granted `read_products`
-            # at install time, or the store hides the products endpoint for
-            # some other policy reason. Either way, the merchant needs to
-            # reinstall / reauthorize — not retry — so surface a friendly
+            # A denial here means the access token wasn't granted
+            # `read_products` at install time, or the store hides products
+            # for some other policy reason. Either way, the merchant needs
+            # to reinstall / reauthorize — not retry — so surface a friendly
             # message instead of a red "Failed to sync" toast. App Store
             # reviewers hit this on fresh dev stores.
             denial = _shopify_access_denied(e)
@@ -3203,18 +3191,11 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
             logger.error("Shopify products API error: %s", e)
             return CommandResult.fail(f"Shopify API error: {e}")
 
-        products = resp.json().get("products", [])
+        products, raw_cost_map = page
 
-        # Collect inventory_item_ids to batch-fetch costs
-        inventory_item_ids = []
-        for product in products:
-            for variant in product.get("variants", []):
-                iid = variant.get("inventory_item_id")
-                if iid:
-                    inventory_item_ids.append(iid)
-
-        # Batch fetch costs from Shopify Inventory Items API
-        cost_map = _fetch_inventory_item_costs(store, inventory_item_ids, headers)
+        # unitCost arrives in the same GraphQL page — no separate
+        # inventory-items call anymore.
+        cost_map = {iid: Decimal(cost) for iid, cost in raw_cost_map.items()}
 
         for product in products:
             product_id = product.get("id")
@@ -3303,9 +3284,6 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
                     auto_created=auto_created,
                     raw_data=variant,
                 )
-
-        # Pagination: follow Link header
-        url = _get_next_page_url(resp)
 
     # Sync-UX (2026-06-04): refresh last_sync_at so the settings page
     # "Last Sync" widget tracks the actual successful pull. Without this,
@@ -3533,34 +3511,6 @@ def _resolve_account(company, account_id):
     return Account.objects.filter(company=company, id=account_id).first()
 
 
-def _fetch_inventory_item_costs(store, inventory_item_ids, headers):
-    """Batch fetch cost per item from Shopify Inventory Items API."""
-    cost_map = {}
-    if not inventory_item_ids:
-        return cost_map
-
-    # Shopify allows up to 100 IDs per request
-    for i in range(0, len(inventory_item_ids), 100):
-        batch = inventory_item_ids[i : i + 100]
-        ids_param = ",".join(str(x) for x in batch)
-        try:
-            resp = requests.get(
-                f"{_shopify_api_root(store.shop_domain)}/inventory_items.json",
-                headers=headers,
-                params={"ids": ids_param},
-                timeout=15,
-            )
-            resp.raise_for_status()
-            for item in resp.json().get("inventory_items", []):
-                cost_str = item.get("cost")
-                if cost_str:
-                    cost_map[item["id"]] = Decimal(str(cost_str))
-        except Exception as exc:
-            logger.warning("Failed to fetch inventory item costs: %s", exc)
-
-    return cost_map
-
-
 def _resolve_default_item_accounts(company):
     """Resolve default GL accounts for newly auto-created Items.
 
@@ -3590,15 +3540,3 @@ def _resolve_default_item_accounts(company):
     result["purchase"] = result["inventory"]
 
     return result
-
-
-def _get_next_page_url(response):
-    """Extract next page URL from Shopify's Link header pagination."""
-    link_header = response.headers.get("Link", "")
-    if not link_header:
-        return None
-    for part in link_header.split(","):
-        if 'rel="next"' in part:
-            url = part.split(";")[0].strip().strip("<>")
-            return url
-    return None

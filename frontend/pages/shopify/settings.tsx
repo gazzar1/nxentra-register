@@ -235,7 +235,10 @@ export default function ShopifySettingsPage() {
             router.replace("/onboarding/setup?shopify_connected=true");
             return;
           }
-          toast({ title: "Shopify store connected successfully!" });
+          toast({
+            title: "Shopify store connected successfully!",
+            description: "Initial sync started — orders, products and payouts will appear shortly.",
+          });
         } else {
           toast({
             title: "Connection didn't complete",
