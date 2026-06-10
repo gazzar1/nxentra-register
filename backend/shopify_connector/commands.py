@@ -47,10 +47,13 @@ logger = logging.getLogger(__name__)
 # Shopify API configuration — set these in Django settings or env vars
 SHOPIFY_API_KEY = getattr(settings, "SHOPIFY_API_KEY", "")
 SHOPIFY_API_SECRET = getattr(settings, "SHOPIFY_API_SECRET", "")
+# Keep in sync with shopify.app.toml [access_scopes].
+# read_shopify_payments_accounts: required by the GraphQL
+# shopifyPaymentsAccount field (payout sync); REST only needed _payouts.
 SHOPIFY_SCOPES = getattr(
     settings,
     "SHOPIFY_SCOPES",
-    "read_customers,read_discounts,read_fulfillments,read_inventory,read_locations,read_orders,read_products,read_returns,read_shopify_payments_payouts",
+    "read_customers,read_discounts,read_fulfillments,read_inventory,read_locations,read_orders,read_products,read_returns,read_shopify_payments_accounts,read_shopify_payments_payouts",
 )
 SHOPIFY_APP_URL = getattr(settings, "SHOPIFY_APP_URL", "")
 

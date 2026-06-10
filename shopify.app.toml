@@ -7,7 +7,11 @@ embedded = true
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "read_customers,read_discounts,read_fulfillments,read_inventory,read_locations,read_orders,read_products,read_returns,read_shopify_payments_payouts"
+# read_shopify_payments_accounts added 2026-06-10: the GraphQL
+# shopifyPaymentsAccount field (payout + balance-transaction sync) requires
+# it — the legacy REST payouts endpoint only needed _payouts. Verified via
+# live ACCESS_DENIED from shopify_graphql_ping on 2026-04.
+scopes = "read_customers,read_discounts,read_fulfillments,read_inventory,read_locations,read_orders,read_products,read_returns,read_shopify_payments_accounts,read_shopify_payments_payouts"
 optional_scopes = [ ]
 use_legacy_install_flow = false
 
