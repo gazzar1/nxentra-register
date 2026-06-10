@@ -21,6 +21,7 @@ GraphQL-sourced data.
 
 import logging
 import time
+from datetime import UTC, datetime
 
 import requests
 from django.conf import settings
@@ -72,6 +73,23 @@ def _gid_tail(gid: str | None) -> int | None:
         return int(str(gid).rsplit("/", 1)[-1])
     except (ValueError, TypeError):
         return None
+
+
+def _iso_for_search(value: str) -> str:
+    """
+    Normalize an ISO datetime to the second-precision UTC `...T19:37:58Z`
+    form Shopify's search syntax documents. Django's isoformat() carries
+    microseconds and a +00:00 offset, which the search parser is not
+    documented to accept — a silently-ignored filter would make order
+    backfill fetch nothing (or everything).
+    """
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return value
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(UTC)
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _money(node: dict | None) -> str:
@@ -372,7 +390,9 @@ class ShopifyAdminClient:
           }}
         }}
         """
-        search = f"created_at:>='{created_at_min}' AND created_at:<='{created_at_max}'"
+        search = (
+            f"created_at:>='{_iso_for_search(created_at_min)}' AND created_at:<='{_iso_for_search(created_at_max)}'"
+        )
         cursor = None
         while True:
             # allow_partial: customer fields can be individually denied on
