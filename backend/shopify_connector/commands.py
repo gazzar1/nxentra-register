@@ -2864,6 +2864,41 @@ def _bootstrap_shopify_settlement_providers(company, clearing_account, fallback_
                 provider.save(update_fields=[*updates, "updated_at"])
 
 
+def _convert_costs_to_functional(store, client, cost_map: dict) -> dict:
+    """
+    Convert a {inventory_item_id: cost} map from the Shopify store currency
+    to the company's functional currency. Returns the map unchanged when no
+    conversion is needed or no exchange rate is configured (logged).
+    """
+    if not cost_map:
+        return cost_map
+
+    company = store.company
+    functional = getattr(company, "functional_currency", "") or company.default_currency
+    if not functional:
+        return cost_map
+
+    store_currency = _get_shopify_store_currency(store, client)
+    if not store_currency or store_currency == functional:
+        return cost_map
+
+    from datetime import date as date_type
+
+    from accounting.models import ExchangeRate
+
+    rate = ExchangeRate.get_rate(company, store_currency, functional, date_type.today())
+    if not rate or rate <= 0:
+        logger.warning(
+            "No exchange rate for %s→%s — storing Shopify costs unconverted. "
+            "Set up exchange rates to enable conversion.",
+            store_currency,
+            functional,
+        )
+        return cost_map
+
+    return {iid: (cost * rate).quantize(Decimal("0.01")) for iid, cost in cost_map.items()}
+
+
 def _fetch_variant_cost(store, variant_id, convert_to_currency: str = "") -> Decimal:
     """Fetch cost_per_item for a single variant from Shopify API.
 
@@ -3197,8 +3232,13 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
         products, raw_cost_map = page
 
         # unitCost arrives in the same GraphQL page — no separate
-        # inventory-items call anymore.
+        # inventory-items call anymore. Shopify denominates it in the STORE
+        # currency; convert to the company's functional currency like the
+        # per-variant path (_fetch_variant_cost) does, otherwise default_cost
+        # — and the COGS bookings derived from it — are misstated whenever
+        # the store currency differs from the books.
         cost_map = {iid: Decimal(cost) for iid, cost in raw_cost_map.items()}
+        cost_map = _convert_costs_to_functional(store, client, cost_map)
 
         for product in products:
             product_id = product.get("id")
