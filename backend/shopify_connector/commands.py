@@ -3244,6 +3244,15 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
                             mapping.item.default_cost = cost
                             mapping.item.save(update_fields=["default_cost"])
 
+                    # Backfill missing GL accounts / cost on the linked Item —
+                    # only fills blanks, never overwrites a merchant's edits.
+                    # Heals items created by older webhook code that didn't
+                    # set account defaults.
+                    if mapping.item:
+                        _update_item_defaults(
+                            mapping.item, cost, inv_account, cogs_account, sales_account, purchase_account
+                        )
+
                     updated += 1
                     continue
 
@@ -3375,9 +3384,17 @@ def process_product_webhook(store: ShopifyStore, payload: dict) -> CommandResult
 
             updated += 1
         elif store.product_sync_enabled:
-            # Auto-create mapping for new variants
-            inv_account = _resolve_account(company, store.default_inventory_account_id)
-            cogs_account = _resolve_account(company, store.default_cogs_account_id)
+            # Auto-create mapping for new variants. Resolve account defaults
+            # the same way sync_products does: per-store overrides first, then
+            # the company's shopify_connector module account mapping. The
+            # previous version passed 7 positional args to the 10-arg
+            # _create_item_from_variant — a guaranteed TypeError whenever a
+            # products/create webhook raced ahead of the first product sync.
+            defaults = _resolve_default_item_accounts(company)
+            inv_account = _resolve_account(company, store.default_inventory_account_id) or defaults.get("inventory")
+            cogs_account = _resolve_account(company, store.default_cogs_account_id) or defaults.get("cogs")
+            sales_account = defaults.get("sales")
+            purchase_account = defaults.get("purchase")
 
             item = Item.objects.filter(company=company, code=sku).first()
             auto_created = False
@@ -3389,8 +3406,11 @@ def process_product_webhook(store: ShopifyStore, payload: dict) -> CommandResult
                     product_title,
                     variant_title,
                     price,
+                    Decimal("0"),
                     inv_account,
                     cogs_account,
+                    sales_account,
+                    purchase_account,
                 )
                 auto_created = True
 
