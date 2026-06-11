@@ -587,6 +587,23 @@ COGS books exclusively from `fulfillments/create` webhooks (subscribed since `nx
 
 **Trigger:** before onboarding any merchant with pre-existing fulfilled order history (i.e., effectively every real merchant using historical import). Pairs with the post-launch `read_all_orders` request (full-history import beyond 60 days).
 
+### A126. Historical order import beyond 60 days — `read_all_orders` — **~1d + Shopify approval wait** (Shopify connector, surfaced 2026-06-11)
+The `read_orders` scope only exposes the last 60 days of orders; that's why the onboarding historical import caps `created_at_min` at 59 days ([accounts/commands.py](backend/accounts/commands.py) `earliest_allowed`). Merchants switching accounting systems need their full fiscal year (or more).
+
+**Scope:**
+- Request the `read_all_orders` grant in Partner Dashboard → Nxentra Sync → API access → "Read all orders scope" → Request access (justification: accounting books require complete order history; mirrors the PCD reasons). Shopify reviews this separately — expect days-to-weeks.
+- Once granted: add scope to `shopify.app.toml` + `SHOPIFY_SCOPES` (remember [settings.py](backend/nxentra_backend/settings.py) default shadows commands.py) + `shopify app deploy`; existing stores must reconnect.
+- Lift the 59-day cap in `_enqueue_historical_import`; surface a "from date / full history" choice in the onboarding wizard and a Settings-page import flow. Large imports are long-running Celery jobs — chunk by month, report progress, stay idempotent.
+- Depends on A125 (fulfillment backfill) — importing a year of orders without COGS makes the margin problem worse, not better.
+
+**Trigger:** first merchant who asks to migrate a full fiscal year (i.e., any serious accounting migration).
+
+### A127. Shopify-pulled Items: account defaults + selling price gaps (backend backfill + edit-page display bug) — **~0.5-1d** (Shopify connector + frontend, surfaced 2026-06-11 during reviewer-flow dry run)
+Three distinct symptoms observed on Shopify_R, only partly fixed by `718bf90`:
+1. **FIXED root cause** (`718bf90`): the `products/create` webhook auto-create branch passed 7 args to the 10-arg `_create_item_from_variant` (TypeError) and ignored the module account mapping — items created by that path got no accounts. Sync Products now backfills missing accounts/cost via `_update_item_defaults`.
+2. **Still open — selling price**: `_update_item_defaults` backfills cost + the four GL accounts but NOT `default_unit_price`. Items created by older broken paths show Unit Price 0.00 (e.g. `Snowboard-Complete`, `Snowboard-Liquid` on Shopify_R). Add price backfill (only when current value is 0/empty — never clobber a merchant's manual price), and audit all three creation paths (sync, webhook, order-line auto-create) set `default_unit_price` from the variant price.
+3. **Still open — frontend display bug**: [items/[id]/edit.tsx](frontend/pages/accounting/items/[id]/edit.tsx) shows Sales/Purchase/Inventory/COGS dropdowns as "None" even when the DB has them (verified 2026-06-11: item 55 `DEMO-MUG-001` has accounts 721/716/723 in DB; edit page displayed None; the Items LIST shows the correct Sales A/C). Form reads `item.sales_account?.toString()` against the serializer's int PK — likely the accounts options list loads after form init or a Select value-type mismatch (string vs number). A merchant who "fixes" the apparent None and saves could overwrite real accounts — worse than cosmetic.
+
 ### A80. A79 Phase 2 cleanup — drop `Customer.default_ar_account` + `Vendor.default_ap_account` columns — **~0.5d** (schema cleanup, surfaced 2026-05-23)
 A79 introduced `default_posting_profile` on Customer/Vendor as the authoritative routing primitive; the bare `default_ar_account` / `default_ap_account` fields were hidden from the UI in A79b (commit `19f108d`) but left on the model + serializer + PATCH endpoint for one release of graceful deprecation. Phase 2 finishes the job.
 
