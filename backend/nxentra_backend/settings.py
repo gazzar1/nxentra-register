@@ -335,9 +335,13 @@ VOICE_PARSE_MODEL = os.getenv("VOICE_PARSE_MODEL", "gpt-4o-mini")
 SHOPIFY_API_KEY = os.getenv("SHOPIFY_API_KEY", "")
 SHOPIFY_API_SECRET = os.getenv("SHOPIFY_API_SECRET", "")
 SHOPIFY_APP_URL = os.getenv("SHOPIFY_APP_URL", "")
+# Keep in sync with shopify.app.toml [access_scopes]. This default shadows
+# the one in shopify_connector.commands (getattr reads settings first).
+# read_shopify_payments_accounts: required by the GraphQL
+# shopifyPaymentsAccount field (payout sync); REST only needed _payouts.
 SHOPIFY_SCOPES = os.getenv(
     "SHOPIFY_SCOPES",
-    "read_customers,read_discounts,read_fulfillments,read_inventory,read_locations,read_orders,read_products,read_returns,read_shopify_payments_payouts",
+    "read_customers,read_discounts,read_fulfillments,read_inventory,read_locations,read_orders,read_products,read_returns,read_shopify_payments_accounts,read_shopify_payments_payouts",
 )
 
 # =============================================================================
