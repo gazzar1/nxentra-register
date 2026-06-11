@@ -41,10 +41,22 @@ shop_deletion_url         = "https://app.nxentra.com/api/shopify/webhooks/"
 # `read_shopify_payments_disputes` scope we haven't requested — see A54.
 # Periodic `sync_shopify_all` Celery task (every 4h) covers the order/refund/
 # fulfillment gap until A53/A54 land.
+# 2026-06-11: order/refund/fulfillment topics added once the PCD Level 1
+# data-use request was completed in the Partner Dashboard (these topics
+# carry customer PII and can't be declared without it). They make orders
+# appear in Nxentra instantly via webhook instead of the Re-sync button /
+# 4-hour catch-up, and fulfillments/create books COGS. Disputes topics
+# still excluded — they need the read_shopify_payments_disputes scope we
+# don't request (A54).
 [[webhooks.subscriptions]]
 uri = "https://app.nxentra.com/api/shopify/webhooks/"
 topics = [
   "products/create",
   "products/update",
   "app/uninstalled",
+  "orders/create",
+  "orders/paid",
+  "orders/cancelled",
+  "refunds/create",
+  "fulfillments/create",
 ]
