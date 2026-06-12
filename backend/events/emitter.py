@@ -120,6 +120,15 @@ def _emit_event_core(
     if not idempotency_key or not str(idempotency_key).strip():
         raise ValueError("idempotency_key is required")
 
+    # Enforce the column limits up front: SQLite (the test DB) silently
+    # accepts oversized varchars, so without this guard an overflow only
+    # surfaces as a Postgres DataError in production (e.g. the 2026-06-12
+    # auto-match 500 from a 73-char two-UUID aggregate_id).
+    if len(str(aggregate_id)) > 64:
+        raise ValueError(f"aggregate_id exceeds 64 chars ({len(str(aggregate_id))}): {str(aggregate_id)[:80]}")
+    if len(str(idempotency_key)) > 255:
+        raise ValueError(f"idempotency_key exceeds 255 chars ({len(str(idempotency_key))})")
+
     # ═══════════════════════════════════════════════════════════════════════════
     # PAYLOAD VALIDATION: Enforce canonical schema from events/types.py
     # ═══════════════════════════════════════════════════════════════════════════

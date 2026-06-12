@@ -184,12 +184,16 @@ def _emit_match_unmatched(
             str(jl_public_id) for jl_public_id in (additional_journal_lines_to_unreconcile or [])
         ],
     )
-    aggregate_id_suffix = str(previously_matched_journal_line.public_id) if previously_matched_journal_line else "none"
+    # aggregate_id is the BANK LINE public_id alone: BusinessEvent.aggregate_id
+    # is varchar(64) and two joined UUIDs (73 chars) overflow it on Postgres
+    # (SQLite tests don't enforce length — auto-match 500'd in production,
+    # 2026-06-12). The bank line is the true aggregate: one match-state
+    # stream per line. The journal-line identity lives in the payload.
     return emit_event_no_actor(
         company=company,
         event_type=EventTypes.RECONCILIATION_MATCH_UNMATCHED,
         aggregate_type="ReconciliationMatch",
-        aggregate_id=f"{bank_line.public_id}:{aggregate_id_suffix}",
+        aggregate_id=str(bank_line.public_id),
         idempotency_key=f"reconciliation.match_unmatched:{_uuid.uuid4()}",
         data=payload,
     )
@@ -249,11 +253,13 @@ def _emit_match_confirmed(
             str(jl_public_id) for jl_public_id in (additional_journal_lines_to_reconcile or [])
         ],
     )
+    # aggregate_id is the BANK LINE public_id alone — see _emit_match_unmatched
+    # for why (varchar(64) vs two joined UUIDs; Postgres-only 500).
     return emit_event_no_actor(
         company=company,
         event_type=EventTypes.RECONCILIATION_MATCH_CONFIRMED,
         aggregate_type="ReconciliationMatch",
-        aggregate_id=f"{bank_line.public_id}:{journal_line.public_id}",
+        aggregate_id=str(bank_line.public_id),
         idempotency_key=f"reconciliation.match_confirmed:{_uuid.uuid4()}",
         data=payload,
     )

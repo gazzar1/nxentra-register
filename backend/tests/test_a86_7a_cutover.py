@@ -669,7 +669,9 @@ def test_cross_tenant_isolation_company_events_dont_project_into_other_company(d
         company=company_a,
         event_type=EventTypes.RECONCILIATION_MATCH_CONFIRMED,
         aggregate_type="ReconciliationMatch",
-        aggregate_id=f"{bsl_a.public_id}:{jl_a.public_id}",
+        # Bank-line public_id alone — the old two-UUID pair format (73 chars)
+        # overflows BusinessEvent.aggregate_id varchar(64) on Postgres.
+        aggregate_id=str(bsl_a.public_id),
         idempotency_key="a86_7a_cross_tenant_test_a",
         data=payload,
     )
