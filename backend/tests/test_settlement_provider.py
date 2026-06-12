@@ -89,7 +89,7 @@ def shopify_with_clearing(db, company):
 
 
 def test_bootstrap_creates_default_providers(shopify_with_clearing, company):
-    # Seven active providers + the deprecated cash_on_delivery row (inactive,
+    # Eight active providers + the deprecated cash_on_delivery row (inactive,
     # preserved from A2 for historical compatibility). Each active row has
     # its own PostingProfile and an AnalysisDimensionValue for reconciliation.
     from accounting.models import AnalysisDimension, AnalysisDimensionValue
@@ -106,6 +106,9 @@ def test_bootstrap_creates_default_providers(shopify_with_clearing, company):
         "bank_transfer",
         "bosta",
         "unknown",
+        # Shopify's dev-store test gateway — every App Store reviewer order
+        # uses it; bootstrapped so it doesn't surface as needs_review.
+        "bogus",
     }
 
     rows = SettlementProvider.objects.filter(company=company, external_system="shopify")
@@ -139,6 +142,7 @@ def test_bootstrap_creates_default_providers(shopify_with_clearing, company):
         "bank_transfer": "bank_transfer",
         "bosta": "courier",  # A12: bosta replaces cash_on_delivery as the routable COD provider
         "unknown": "manual",
+        "bogus": "gateway",
         "cash_on_delivery": "manual",
     }
     for code, expected_type in expected_types.items():
@@ -150,7 +154,7 @@ def test_bootstrap_creates_default_providers(shopify_with_clearing, company):
     # of the SettlementProvider doesn't drop the PostingProfile — it's still
     # referenced by historical JEs).
     pg_profiles = PostingProfile.objects.filter(company=company, code__startswith="PG-")
-    assert pg_profiles.count() == 8  # 7 active + 1 cash_on_delivery (deprecated)
+    assert pg_profiles.count() == 9  # 8 active + 1 cash_on_delivery (deprecated)
     for profile in pg_profiles:
         assert profile.profile_type == PostingProfile.ProfileType.CUSTOMER
         assert profile.control_account_id == shopify_with_clearing["clearing"].id

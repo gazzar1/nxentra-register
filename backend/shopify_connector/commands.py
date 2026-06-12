@@ -2734,6 +2734,11 @@ _SHOPIFY_DEFAULT_PROVIDERS = (
     ("bank_transfer", "Bank Transfer", "bank_transfer", True),
     ("bosta", "Bosta", "courier", True),
     ("unknown", "Unknown / Default", "manual", True),
+    # Shopify's dev-store test gateway. Every App Store reviewer order (and
+    # every merchant trial on a dev store) comes through it — without a
+    # default it lazy-creates with needs_review=True and the reconciliation
+    # page shows an unexplained "Review" badge on the reviewer's screen.
+    ("bogus", "Bogus Gateway (Shopify test)", "gateway", True),
     # Transitional: A2 created cash_on_delivery as a provider; A12 routes
     # COD orders via ShopifyStore.default_cod_settlement_provider instead.
     # Kept inactive so it doesn't pollute reconciliation but historical
@@ -2860,6 +2865,13 @@ def _bootstrap_shopify_settlement_providers(company, clearing_account, fallback_
             if provider.is_active != is_active and normalized == "cash_on_delivery":
                 provider.is_active = is_active
                 updates.append("is_active")
+            # A defaults-listed code is by definition known: clear the review
+            # flag a lazy-create may have set before the code joined this
+            # list (e.g. `bogus` rows created by reviewer test orders before
+            # 2026-06-12).
+            if provider.needs_review:
+                provider.needs_review = False
+                updates.append("needs_review")
             if updates:
                 provider.save(update_fields=[*updates, "updated_at"])
 
