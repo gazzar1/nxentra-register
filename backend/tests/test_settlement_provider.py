@@ -167,6 +167,31 @@ def test_bootstrap_creates_default_providers(shopify_with_clearing, company):
     assert {v.code for v in values} == expected_value_codes
 
 
+def test_bootstrap_reruns_on_configured_store_and_heals_review_flag(shopify_with_clearing, company):
+    # Regression (2026-06-12): _ensure_shopify_sales_setup early-returns when
+    # the store already has default_customer/posting_profile — which skipped
+    # the provider bootstrap entirely, so already-connected stores never
+    # received new default providers (e.g. `bogus`) or the needs_review
+    # healing. The early-return path must still run the idempotent bootstrap.
+    from shopify_connector.commands import _ensure_shopify_sales_setup
+
+    store = shopify_with_clearing["store"]
+    _ensure_shopify_sales_setup(store)
+    store.refresh_from_db()
+    assert store.default_customer_id and store.default_posting_profile_id
+
+    # Simulate a row lazy-created with the review flag before its code
+    # joined the defaults list.
+    bogus = SettlementProvider.objects.get(company=company, external_system="shopify", normalized_code="bogus")
+    bogus.needs_review = True
+    bogus.save(update_fields=["needs_review"])
+
+    # Re-run on the now-configured store: must reach the bootstrap and heal.
+    _ensure_shopify_sales_setup(store)
+    bogus.refresh_from_db()
+    assert bogus.needs_review is False
+
+
 def test_bootstrap_is_idempotent(shopify_with_clearing, company):
     # Running setup twice must not create duplicate rows or profiles.
     from accounting.models import AnalysisDimension, AnalysisDimensionValue

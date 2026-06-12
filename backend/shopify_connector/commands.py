@@ -2631,8 +2631,21 @@ def _ensure_shopify_sales_setup(store):
 
     company = store.company
 
-    # Skip if already set up
+    # Skip customer/profile creation if already set up — but still re-run
+    # the idempotent provider bootstrap: it's the canonical "make provider
+    # state correct" function, and stores configured before a change to
+    # _SHOPIFY_DEFAULT_PROVIDERS (e.g. `bogus`, 2026-06-12) or before the
+    # needs_review healing would otherwise never receive it.
     if store.default_customer_id and store.default_posting_profile_id:
+        mapping = ModuleAccountMapping.get_mapping(company, "shopify_connector")
+        clearing_account = mapping.get("SHOPIFY_CLEARING") if mapping else None
+        if clearing_account:
+            with command_writes_allowed(), projection_writes_allowed():
+                _bootstrap_shopify_settlement_providers(
+                    company,
+                    clearing_account,
+                    store.default_posting_profile,
+                )
         return
 
     store_label = store.shop_domain.replace(".myshopify.com", "")
