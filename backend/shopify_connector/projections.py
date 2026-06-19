@@ -14,6 +14,7 @@ Account roles used by this module:
     PAYMENT_PROCESSING_FEES — Payment processing fees (Shopify Payments)
 """
 
+import hashlib
 import logging
 import time
 import uuid
@@ -46,6 +47,37 @@ ROLE_SHIPPING_REVENUE = "SHIPPING_REVENUE"
 ROLE_CASH_BANK = "CASH_BANK"
 ROLE_PROCESSING_FEES = "PAYMENT_PROCESSING_FEES"
 ROLE_CHARGEBACK_EXPENSE = "CHARGEBACK_EXPENSE"
+
+_DIMENSION_VALUE_CODE_MAX_LENGTH = 20
+_DIMENSION_VALUE_NAME_MAX_LENGTH = 100
+
+
+def _coerce_shopify_text(value):
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _dimension_value_code(value):
+    """
+    Normalize a Shopify-derived value into an uppercase dimension-value code
+    (spaces become underscores; hyphens and other punctuation are preserved)
+    that fits AnalysisDimensionValue.code (max 20). When the normalized text
+    exceeds the limit, truncate and append a short content hash so two distinct
+    long values don't collapse onto the same code (which would mis-merge their
+    analytics). Idempotent — re-applying to an already-coded value is a no-op,
+    so the call-site code stays consistent with the code that
+    _ensure_dimension_and_value re-derives and stores.
+    """
+    text = _coerce_shopify_text(value).upper().replace(" ", "_")
+    if len(text) <= _DIMENSION_VALUE_CODE_MAX_LENGTH:
+        return text
+    digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:8].upper()
+    return f"{text[: _DIMENSION_VALUE_CODE_MAX_LENGTH - 9]}-{digest}"
+
+
+def _dimension_value_name(value):
+    return _coerce_shopify_text(value)[:_DIMENSION_VALUE_NAME_MAX_LENGTH]
 
 
 def _parse_date(value):
@@ -264,6 +296,11 @@ def _ensure_dimension_and_value(company, dim_code, dim_name, dim_name_ar, val_co
     """
     from accounting.models import AnalysisDimension, AnalysisDimensionValue
 
+    val_code = _dimension_value_code(val_code)
+    val_name = _dimension_value_name(val_name) or val_code
+    if not val_code:
+        return None
+
     dim, _ = AnalysisDimension.objects.projection().get_or_create(
         company=company,
         code=dim_code,
@@ -277,7 +314,7 @@ def _ensure_dimension_and_value(company, dim_code, dim_name, dim_name_ar, val_co
         },
     )
 
-    AnalysisDimensionValue.objects.projection().get_or_create(
+    return AnalysisDimensionValue.objects.projection().get_or_create(
         dimension=dim,
         code=val_code,
         company=company,
@@ -446,27 +483,28 @@ class ShopifyAccountingHandler(BaseProjection):
         line_items = data.get("line_items", []) or raw.get("line_items", [])
         if line_items:
             first_item = line_items[0]
-            sku = first_item.get("sku", "")
-            title = first_item.get("title", "")
+            sku = _coerce_shopify_text(first_item.get("sku"))
+            title = _coerce_shopify_text(first_item.get("title"))
             if sku:
+                val_code = _dimension_value_code(sku)
                 _ensure_dimension_and_value(
-                    company, "PRODUCT", "Product", "المنتج", sku, title or sku, _REVENUE_COGS_INV
+                    company, "PRODUCT", "Product", "المنتج", val_code, title or sku, _REVENUE_COGS_INV
                 )
-                context["PRODUCT"] = sku
+                context["PRODUCT"] = val_code
 
             # 3. CATEGORY — product_type (Revenue + COGS)
-            product_type = first_item.get("product_type", "")
+            product_type = _coerce_shopify_text(first_item.get("product_type"))
             if product_type:
-                val_code = product_type.upper().replace(" ", "_")[:20]
+                val_code = _dimension_value_code(product_type)
                 _ensure_dimension_and_value(
                     company, "CATEGORY", "Product Category", "فئة المنتج", val_code, product_type, _REVENUE_COGS
                 )
                 context["CATEGORY"] = val_code
 
             # 4. VENDOR — brand/supplier (Revenue + COGS + Inventory)
-            vendor = first_item.get("vendor", "")
+            vendor = _coerce_shopify_text(first_item.get("vendor"))
             if vendor:
-                val_code = vendor.upper().replace(" ", "_")[:20]
+                val_code = _dimension_value_code(vendor)
                 _ensure_dimension_and_value(
                     company, "VENDOR", "Vendor / Brand", "المورد / العلامة", val_code, vendor, _REVENUE_COGS_INV
                 )
@@ -476,7 +514,7 @@ class ShopifyAccountingHandler(BaseProjection):
         shipping = raw.get("shipping_address") or {}
         country = shipping.get("country", "") or shipping.get("country_code", "")
         if country:
-            val_code = country.upper()[:20]
+            val_code = _dimension_value_code(country)
             country_name = shipping.get("country", country)
             _ensure_dimension_and_value(
                 company, "REGION", "Region / Country", "المنطقة / الدولة", val_code, country_name, _REVENUE_COGS
@@ -486,14 +524,14 @@ class ShopifyAccountingHandler(BaseProjection):
         # 6. CITY — shipping city (Revenue + COGS)
         city = shipping.get("city", "")
         if city:
-            val_code = city.upper().replace(" ", "_")[:20]
+            val_code = _dimension_value_code(city)
             _ensure_dimension_and_value(company, "CITY", "City", "المدينة", val_code, city, _REVENUE_COGS)
             context["CITY"] = val_code
 
         # 7. SOURCE — order source (Revenue only)
         source_name = raw.get("source_name", "")
         if source_name:
-            val_code = source_name.upper()[:20]
+            val_code = _dimension_value_code(source_name)
             _ensure_dimension_and_value(
                 company, "SOURCE", "Order Source", "مصدر الطلب", val_code, source_name, _REVENUE_ONLY
             )
@@ -502,7 +540,7 @@ class ShopifyAccountingHandler(BaseProjection):
         # 8. PAY_METHOD — payment gateway (Fees + Clearing)
         gateway = data.get("gateway", "") or raw.get("gateway", "")
         if gateway:
-            val_code = gateway.upper().replace(" ", "_")[:20]
+            val_code = _dimension_value_code(gateway)
             _ensure_dimension_and_value(
                 company, "PAY_METHOD", "Payment Method", "طريقة الدفع", val_code, gateway, _FEES_CLEARING
             )
@@ -513,7 +551,7 @@ class ShopifyAccountingHandler(BaseProjection):
         if discount_codes:
             code = discount_codes[0].get("code", "")
             if code:
-                val_code = code.upper()[:20]
+                val_code = _dimension_value_code(code)
                 _ensure_dimension_and_value(
                     company, "PROMOTION", "Promotion / Discount", "العرض / الخصم", val_code, code, _REVENUE_ONLY
                 )
@@ -524,7 +562,7 @@ class ShopifyAccountingHandler(BaseProjection):
         if tags_str:
             first_tag = tags_str.split(",")[0].strip()
             if first_tag:
-                val_code = first_tag.upper().replace(" ", "_")[:20]
+                val_code = _dimension_value_code(first_tag)
                 _ensure_dimension_and_value(
                     company, "CAMPAIGN", "Campaign / Tag", "الحملة", val_code, first_tag, _REVENUE_COGS
                 )
@@ -539,7 +577,7 @@ class ShopifyAccountingHandler(BaseProjection):
                 domain = urlparse(referring_site).netloc or referring_site
             except Exception:
                 domain = referring_site
-            val_code = domain.upper().replace(".", "_").replace("WWW_", "")[:20]
+            val_code = _dimension_value_code(domain.upper().replace(".", "_").replace("WWW_", ""))
             _ensure_dimension_and_value(company, "REFERRER", "Referrer", "المُحيل", val_code, domain, _REVENUE_ONLY)
             context["REFERRER"] = val_code
 
@@ -551,7 +589,7 @@ class ShopifyAccountingHandler(BaseProjection):
         if customer_tags:
             first_tag = customer_tags.split(",")[0].strip()
             if first_tag:
-                val_code = first_tag.upper().replace(" ", "_")[:20]
+                val_code = _dimension_value_code(first_tag)
                 _ensure_dimension_and_value(
                     company, "CUST_SEGMENT", "Customer Segment", "شريحة العملاء", val_code, first_tag, _REVENUE_COGS
                 )

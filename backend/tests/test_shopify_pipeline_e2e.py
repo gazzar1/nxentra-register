@@ -300,3 +300,58 @@ def test_same_order_event_processed_twice_produces_one_invoice(shopify_company):
         source_document_id="70004",
     ).count()
     assert invoices_after_replay == 1, "Replaying the same event must not create a duplicate invoice."
+
+
+@pytest.mark.django_db
+def test_shopify_dimensions_truncate_external_values(shopify_company):  # noqa: F811
+    from uuid import uuid4
+
+    from django.utils import timezone
+
+    from accounting.models import AnalysisDimensionValue
+    from events.models import BusinessEvent, CompanyEventCounter
+    from shopify_connector.projections import ShopifyAccountingHandler
+
+    long_title = "Premium reviewer product " * 8
+    counter, _ = CompanyEventCounter.objects.get_or_create(company=shopify_company)
+    counter.last_sequence += 1
+    counter.save()
+    event = BusinessEvent.objects.create(
+        company=shopify_company,
+        event_type="shopify.order_paid",
+        aggregate_type="ShopifyOrder",
+        aggregate_id=str(uuid4()),
+        company_sequence=counter.last_sequence,
+        idempotency_key="shopify.order.paid:70005",
+        data={
+            "amount": "125.00",
+            "currency": "USD",
+            "transaction_date": date.today().isoformat(),
+            "document_ref": "#70005",
+            "shopify_order_id": "70005",
+            "order_number": "70005",
+            "order_name": "#70005",
+            "subtotal": "125.00",
+            "total_tax": "0",
+            "total_shipping": "0",
+            "total_discounts": "0",
+            "financial_status": "paid",
+            "gateway": "shopify_payments",
+            "line_items": [
+                {
+                    "sku": "reviewer-sku-with-a-long-external-code",
+                    "title": long_title,
+                    "product_type": "Very Long Product Category From Shopify Review Store",
+                    "vendor": "Very Long Vendor Name From Shopify Review Store",
+                }
+            ],
+        },
+        occurred_at=timezone.now(),
+    )
+
+    ShopifyAccountingHandler().handle(event)
+
+    values = AnalysisDimensionValue.objects.filter(company=shopify_company)
+    assert values.filter(dimension__code="PRODUCT").exists()
+    assert not values.filter(code__regex=r"^.{21,}$").exists()
+    assert not values.filter(name__regex=r"^.{101,}$").exists()

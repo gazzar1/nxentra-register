@@ -1992,7 +1992,7 @@ def process_fulfillment(store: ShopifyStore, payload: dict) -> CommandResult:
             warehouse = Warehouse.objects.filter(company=store.company, is_active=True).first()
 
     for li in line_items:
-        sku = li.get("sku", "").strip()
+        sku = str(li.get("sku") or "").strip()
         qty = Decimal(str(li.get("quantity", 1)))
 
         if not sku:

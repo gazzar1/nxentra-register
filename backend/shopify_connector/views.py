@@ -110,7 +110,7 @@ class ShopifyInstallView(APIView):
         actor = resolve_actor(request)
         require(actor, "settings.edit")
 
-        shop_domain = request.data.get("shop_domain", "").strip()
+        shop_domain = (request.data.get("shop_domain") or "").strip()
         if not shop_domain:
             return Response(
                 {"error": "shop_domain is required"},
@@ -355,7 +355,7 @@ class ShopifyTokenExchangeView(APIView):
         actor = resolve_actor(request)
         require(actor, "settings.edit")
 
-        session_token = request.data.get("session_token", "").strip()
+        session_token = (request.data.get("session_token") or "").strip()
         if not session_token:
             return Response(
                 {"error": "session_token is required"},
@@ -365,7 +365,7 @@ class ShopifyTokenExchangeView(APIView):
         # Optional shop_domain hint — when provided, the command
         # verifies it matches the JWT's claim to catch frontend bugs
         # early. The JWT remains the source of truth either way.
-        shop_hint = request.data.get("shop_domain", "").strip()
+        shop_hint = (request.data.get("shop_domain") or "").strip()
 
         result = commands.complete_oauth_token_exchange(
             actor.company,
