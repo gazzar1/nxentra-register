@@ -327,7 +327,11 @@ class Command(BaseCommand):
         today = date.today()
         orders = []
         base_id = 5000000000
-        base_num = 1001
+        # A130: seed demo order numbers at #9001+ so they can't collide with a
+        # real store's order numbers (Shopify starts merchants at #1001). The
+        # #1003/#1004 seed-vs-live collision is what forced the cast-instructions
+        # workaround during App Store review.
+        base_num = 9001
 
         for i in range(30):
             days_ago = random.randint(7, 45)
@@ -376,7 +380,7 @@ class Command(BaseCommand):
         today = date.today()
         unsettled = []
         base_id = 5000000000 + offset
-        base_num = 1001 + offset
+        base_num = 9001 + offset  # A130: keep demo order numbers at #9001+ (non-colliding)
 
         for i in range(random.randint(3, 5)):
             days_ago = random.randint(0, 2)

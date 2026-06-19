@@ -97,8 +97,14 @@ export const shopifyService = {
       store_public_id: string;
     }>(`/shopify/finalize-install/${pending_id}/`),
 
-  disconnect: () =>
-    apiClient.post<{ status: string }>("/shopify/disconnect/"),
+  // A136: pass the merchant-selected store so a multi-store tenant disconnects
+  // the intended store. Omitted (single-store) → backend auto-selects the sole
+  // connected store; with 2+ connected and no id the backend refuses.
+  disconnect: (storePublicId?: string) =>
+    apiClient.post<{ status: string }>(
+      "/shopify/disconnect/",
+      storePublicId ? { store_public_id: storePublicId } : {},
+    ),
 
   // Product sync.
   // status="unavailable" + message is returned when Shopify denies access

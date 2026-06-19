@@ -292,7 +292,9 @@ export default function ShopifySettingsPage() {
     if (!confirm("Are you sure you want to disconnect your Shopify store?")) return;
     setDisconnecting(true);
     try {
-      await shopifyService.disconnect();
+      // A136: name the store being disconnected so multi-store tenants never
+      // disconnect an arbitrary one.
+      await shopifyService.disconnect(store?.public_id);
       toast({ title: "Shopify store disconnected." });
       setStore(null);
     } catch {
