@@ -11,7 +11,13 @@ embedded = true
 # shopifyPaymentsAccount field (payout + balance-transaction sync) requires
 # it — the legacy REST payouts endpoint only needed _payouts. Verified via
 # live ACCESS_DENIED from shopify_graphql_ping on 2026-04.
-scopes = "read_customers,read_discounts,read_fulfillments,read_inventory,read_locations,read_orders,read_products,read_returns,read_shopify_payments_accounts,read_shopify_payments_payouts"
+# read_all_orders added 2026-06-19 (A126): read_orders alone only exposes the
+# last 60 days; read_all_orders (Shopify-approved, ticket 67968450) lifts that
+# so historical imports can reach back years. Requires `shopify app deploy`
+# AND each existing store to reconnect before the grant takes effect — the
+# import code is scope-gated (ShopifyStore.scopes) so un-reconnected stores
+# keep the safe 60-day clamp and never 403.
+scopes = "read_customers,read_discounts,read_fulfillments,read_inventory,read_locations,read_orders,read_all_orders,read_products,read_returns,read_shopify_payments_accounts,read_shopify_payments_payouts"
 optional_scopes = [ ]
 use_legacy_install_flow = false
 

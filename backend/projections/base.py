@@ -157,6 +157,7 @@ class BaseProjection(ABC):
         """
         from accounts.rls import rls_bypass as _rls_bypass
         from accounts.rls import set_current_company_id
+        from projections.exceptions import ProjectionTerminalSkip
 
         # Projections are system-level operations that build read models.
         # They bypass RLS because they explicitly receive the company parameter
@@ -228,6 +229,32 @@ class BaseProjection(ABC):
                         earliest_deferred = event
                     continue
 
+                except ProjectionTerminalSkip as skip:
+                    # Terminal: retrying won't help until the operator acts
+                    # (e.g. the event's date is in a CLOSED fiscal period).
+                    # Record an operator-visible failure (A80) but ADVANCE past
+                    # the event instead of raising — a plain raise under
+                    # stop_on_error would halt the whole stream and re-attempt
+                    # this same event forever (head-of-line stall). The outer
+                    # per-event transaction already rolled back, so we mark it
+                    # applied + advance the bookmark in a fresh transaction.
+                    logger.warning(
+                        "Projection %s terminally skipped event %s: %s",
+                        self.name,
+                        event.id,
+                        skip,
+                    )
+                    self.on_error(event, skip)
+                    with transaction.atomic(), projection_writes_allowed():
+                        ProjectionAppliedEvent.objects.get_or_create(
+                            company=company,
+                            projection_name=self.name,
+                            event=event,
+                        )
+                        bookmark.mark_processed(event)
+                    processed += 1
+                    continue
+
                 except Exception as e:
                     logger.exception(f"Error processing event {event.id} in {self.name}: {e}")
                     bookmark.mark_error(str(e))
@@ -291,12 +318,16 @@ class BaseProjection(ABC):
             ProjectionCommandFailedError,
             ProjectionInvalidDataError,
             ProjectionStateError,
+            ProjectionTerminalSkip,
         )
         from projections.models import ProjectionFailureLog
         from projections.write_barrier import projection_writes_allowed
 
         # Categorize the error so the operator UI can group / filter sensibly.
-        if isinstance(error, ProjectionStateError):
+        if isinstance(error, ProjectionStateError | ProjectionTerminalSkip):
+            # Both are operator-fixable state (missing wiring; or a closed
+            # period to reopen / an order to exclude). The fix_hint carries the
+            # specific remedy.
             category = ProjectionFailureLog.Category.MISSING_CONFIG
             fix_hint = getattr(error, "fix_hint", "") or ""
         elif isinstance(error, ProjectionInvalidDataError):

@@ -3515,20 +3515,60 @@ def _finalize_shopify_stores(actor: ActorContext, company) -> None:
             )
 
 
+# A126: how far back "import all" reaches once read_all_orders is granted.
+# Bounded (vs unbounded "since store creation") so the monthly chunking can't
+# fan out into hundreds of mostly-empty tasks for a long-lived store. Bump if a
+# merchant genuinely needs deeper history.
+_HISTORICAL_IMPORT_MAX_YEARS = 5
+
+
+def _month_window_chunks(start_iso: str, end_iso: str) -> list[tuple[str, str]]:
+    """Split [start, end] (naive ISO-8601) into consecutive calendar-month
+    windows. The first window starts at ``start``; each subsequent window
+    begins on the 1st of the next month; the last ends at ``end``. Returns []
+    when start >= end. Used to chunk historical imports so a multi-year
+    backfill becomes many small, idempotent, independently-retryable tasks
+    instead of one that can time out a worker."""
+    from datetime import datetime
+
+    start = datetime.fromisoformat(start_iso)
+    end = datetime.fromisoformat(end_iso)
+    chunks: list[tuple[str, str]] = []
+    cur = start
+    while cur < end:
+        if cur.month == 12:
+            nxt = cur.replace(year=cur.year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        else:
+            nxt = cur.replace(month=cur.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        boundary = min(nxt, end)
+        chunks.append((cur.isoformat(), boundary.isoformat()))
+        cur = nxt
+    return chunks
+
+
 def _enqueue_shopify_historical_import(company, import_mode: str, import_from_date) -> None:
     """
-    Enqueue a Celery task to import historical Shopify orders.
+    Enqueue Celery task(s) to import historical Shopify orders.
 
     Revenue-recognition caveat: the underlying _sync_orders filters on
     financial_status=paid, so COD / pending orders are not imported here.
     Handling those requires separate work on revenue recognition + AR booking.
 
-    Scope caveat (A50, 2026-05-15): the `read_orders` scope only grants
-    access to orders from the last 60 days. Without `read_all_orders`
-    (which requires separate Shopify approval), an older `created_at_min`
-    returns 403. Both `all` and `from_date` modes are clamped to a 59-day
-    floor (1-day buffer against clock skew) until `read_all_orders` is
-    added to the scope set in shopify.app.toml.
+    Scope behaviour (A50 → A126, scope-gated on ShopifyStore.scopes):
+    - Without `read_all_orders`, the `read_orders` scope only sees the last 60
+      days; an older created_at_min returns 403. Both modes stay clamped to a
+      59-day floor (1-day clock-skew buffer) for such stores.
+    - With `read_all_orders` granted (A126), the clamp is LIFTED: `all` reaches
+      back `_HISTORICAL_IMPORT_MAX_YEARS` and `from_date` honours the requested
+      date. The grant only lands after `shopify app deploy` + the store
+      reconnecting, so gating on the store's actually-granted scopes means a
+      not-yet-reconnected store can never trigger the 403.
+
+    The resolved window is split into monthly chunks — one task each — so a
+    multi-year backfill is bounded and resumable (every chunk is idempotent).
+    Months that fall in a CLOSED period (or closed fiscal year) are skipped:
+    those orders can't post and already live in the closing balances. Open and
+    not-yet-configured months import normally.
     """
     from datetime import date, datetime, time, timedelta
 
@@ -3541,10 +3581,16 @@ def _enqueue_shopify_historical_import(company, import_mode: str, import_from_da
     if not store:
         return
 
-    earliest_allowed = (tz.now() - timedelta(days=59)).replace(tzinfo=None).isoformat()
+    now_naive = tz.now().replace(tzinfo=None)
+    created_at_max = now_naive.isoformat()
+    has_all_orders = "read_all_orders" in (store.scopes or "")
+    clamp_floor = (now_naive - timedelta(days=59)).isoformat()
 
     if import_mode == "all":
-        created_at_min = earliest_allowed
+        if has_all_orders:
+            created_at_min = (now_naive - timedelta(days=365 * _HISTORICAL_IMPORT_MAX_YEARS)).isoformat()
+        else:
+            created_at_min = clamp_floor
     else:  # from_date
         if not import_from_date:
             return
@@ -3554,16 +3600,38 @@ def _enqueue_shopify_historical_import(company, import_mode: str, import_from_da
             requested = datetime.combine(import_from_date, time.min).isoformat()
         else:
             requested = str(import_from_date)
-        # Both are naive ISO-8601 strings — lexical compare gives chronological order.
-        created_at_min = max(requested, earliest_allowed)
+        if has_all_orders:
+            created_at_min = requested
+        else:
+            # Naive ISO-8601 strings — lexical compare gives chronological order.
+            created_at_min = max(requested, clamp_floor)
 
-    created_at_max = tz.now().isoformat()
+    # A126 + A: one idempotent task per monthly window, but skip months that
+    # fall in a CLOSED period (or closed fiscal year). Those orders can't post
+    # — they'd quarantine via ProjectionTerminalSkip (see C) — and replaying
+    # old sales into closed books is wrong: they're already in the closing
+    # balances, and reopening would double-count. Missing/open periods import
+    # normally. Skips are logged (no silent caps).
+    from accounting.validation import _check_period
 
-    sync_shopify_store_orders.delay(
-        store_id=store.id,
-        created_at_min=created_at_min,
-        created_at_max=created_at_max,
-    )
+    skipped_months: list[str] = []
+    for chunk_min, chunk_max in _month_window_chunks(created_at_min, created_at_max):
+        if _check_period(company, datetime.fromisoformat(chunk_min).date()):
+            skipped_months.append(chunk_min[:7])  # YYYY-MM
+            continue
+        sync_shopify_store_orders.delay(
+            store_id=store.id,
+            created_at_min=chunk_min,
+            created_at_max=chunk_max,
+        )
+
+    if skipped_months:
+        logger.info(
+            "[A126] Skipped %d closed-period import month(s) for %s: %s",
+            len(skipped_months),
+            store.shop_domain,
+            ", ".join(skipped_months),
+        )
 
 
 def _setup_shopify_accounts(company):

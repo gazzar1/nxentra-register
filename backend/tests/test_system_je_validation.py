@@ -531,10 +531,12 @@ class TestShopifyReplayIdempotency:
         assert invoice_count == 2, f"Expected 2 invoices with JEs for 2 different orders, got {invoice_count}"
 
     def test_closed_period_keeps_invoice_and_incomplete_je_then_raises(self, shopify_company):
-        """A85 chunk 6 (2026-05-26): closed-period Shopify webhook leaves
+        """A85 chunk 6 + C (2026-06-19): a closed-period Shopify order leaves
         the SalesInvoice + an INCOMPLETE JE persisted, then the projection
-        raises ProjectionCommandFailedError so A80 writes a
-        ProjectionFailureLog row.
+        raises ProjectionTerminalSkip — A80 writes a ProjectionFailureLog row
+        AND (under process_pending) the stream ADVANCES past the event instead
+        of head-of-line-stalling on it. A closed period is terminal, not
+        transient: see test_closed_period_quarantine for the no-stall proof.
 
         The two commits-then-fail pattern: ``create_sales_invoice`` and
         ``create_journal_entry`` are each ``@transaction.atomic`` so each
@@ -552,7 +554,7 @@ class TestShopifyReplayIdempotency:
         """
         from accounting.models import JournalEntry
         from events.models import BusinessEvent
-        from projections.exceptions import ProjectionCommandFailedError
+        from projections.exceptions import ProjectionTerminalSkip
         from projections.models import FiscalPeriod
         from projections.write_barrier import projection_writes_allowed
         from sales.models import SalesInvoice
@@ -584,7 +586,7 @@ class TestShopifyReplayIdempotency:
             event_type="journal_entry.posted",
         ).count()
 
-        with pytest.raises(ProjectionCommandFailedError, match="closed"):
+        with pytest.raises(ProjectionTerminalSkip, match="closed"):
             handler.handle(event)
 
         # Invoice survives (created in its own atomic before post failed).

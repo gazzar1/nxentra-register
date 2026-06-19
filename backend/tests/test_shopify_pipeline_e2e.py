@@ -199,26 +199,38 @@ def test_missing_store_config_records_projection_failure(shopify_company):  # no
     missing config, it MUST raise (which creates a ProjectionFailureLog
     row) instead of silently returning.
 
-    Setup: break the store's default_customer wiring. The projection
-    should detect this in the guard at shopify_connector/projections.py
-    and raise ProjectionStateError. BaseProjection.on_error catches it
-    and writes a MISSING_CONFIG row to ProjectionFailureLog.
+    Setup: break the store's default_customer wiring AND remove the
+    SHOPIFY_CLEARING mapping so A134's in-flight self-heal cannot recreate
+    it. The projection should then detect the unrepairable state in the
+    guard at shopify_connector/projections.py and raise ProjectionStateError.
+    BaseProjection.on_error catches it and writes a MISSING_CONFIG row to
+    ProjectionFailureLog.
+
+    (With the clearing mapping intact, A134 self-heals the store and the
+    order posts — that path is covered by
+    test_a134_store_resolution.test_self_heals_store_missing_defaults.)
 
     Pre-A80: the projection logged a warning and returned. No operator-
     visible signal. Merchant sees empty pages with no explanation.
     """
+    from accounting.mappings import ModuleAccountMapping
     from projections.exceptions import ProjectionStateError
     from projections.models import ProjectionFailureLog
     from shopify_connector.models import ShopifyStore
     from shopify_connector.projections import ShopifyAccountingHandler
 
     # Sabotage the store's customer wiring (simulates the pre-A28
-    # finalize-stores bug or any other state-misconfiguration scenario).
+    # finalize-stores bug or any other state-misconfiguration scenario)...
     store = ShopifyStore.objects.filter(company=shopify_company, status=ShopifyStore.Status.ACTIVE).first()
     assert store is not None, "shopify_company fixture should have an active store"
     original_customer_id = store.default_customer_id
     store.default_customer_id = None
     store.save(update_fields=["default_customer"])
+    # ...and remove the clearing mapping so the A134 self-heal can't fix it
+    # (no clearing account → no PostingProfile to anchor → store stays bare).
+    ModuleAccountMapping.objects.filter(
+        company=shopify_company, module="shopify_connector", role="SHOPIFY_CLEARING"
+    ).delete()
 
     event = _make_shopify_order_event(
         shopify_company,

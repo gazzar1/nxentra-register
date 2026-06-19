@@ -54,6 +54,33 @@ class ProjectionInvalidDataError(Exception):
         super().__init__(message)
 
 
+class ProjectionTerminalSkip(Exception):
+    """Raised when a handler cannot apply an event AND retrying will not help
+    until a deliberate operator action changes external state — e.g. the
+    event's date falls in a CLOSED fiscal period.
+
+    This is distinct from the other failure modes on purpose:
+
+    - A plain raise (ProjectionStateError / ...CommandFailedError) under
+      ``stop_on_error=True`` HALTS the whole stream and re-attempts the same
+      event on every pass — a head-of-line stall. Correct for transient,
+      self-healing conditions (a missing mapping the operator will wire up),
+      wrong for a closed period (which blocks every later event forever).
+    - ``DeferEvent`` retries every pass but stays invisible (no failure log) —
+      wrong here because a closed-period order should be operator-visible.
+
+    On this exception the framework records an operator-visible
+    ``ProjectionFailureLog`` (A80) AND advances past the event so the rest of
+    the stream keeps flowing — a dead-letter / quarantine outcome. The event
+    is consumed; re-applying it requires a deliberate replay/rebuild after the
+    operator resolves the cause (e.g. reopens the period).
+    """
+
+    def __init__(self, message: str, *, fix_hint: str = ""):
+        super().__init__(message)
+        self.fix_hint = fix_hint
+
+
 class ProjectionCommandFailedError(Exception):
     """Raised when a downstream command call inside a projection handler
     returned ``CommandResult.fail(...)``. The handler can't proceed but

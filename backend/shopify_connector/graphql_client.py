@@ -42,6 +42,13 @@ VARIANTS_PER_PRODUCT = 60
 ORDERS_PAGE_SIZE = 10
 LINE_ITEMS_PER_ORDER = 50
 
+# Fulfillment backfill (A125): pulled per-order in a dedicated query so the
+# nested fulfillments × fulfillmentLineItems cost (≈ FULFILLMENTS_PER_ORDER ×
+# (1 + FULFILLMENT_LINE_ITEMS) ≈ 510) never compounds with the orders-page cost
+# and breaches Shopify's 1000-point single-query ceiling for large orders.
+FULFILLMENTS_PER_ORDER = 10
+FULFILLMENT_LINE_ITEMS = 50
+
 _MAX_THROTTLE_RETRIES = 5
 
 
@@ -453,6 +460,73 @@ class ShopifyAdminClient:
             ),
             "line_items": line_items,
         }
+
+    # ------------------------------------------------------------------
+    # Fulfillments  (A125 COGS backfill — REST shape: fulfillments/create)
+    # ------------------------------------------------------------------
+
+    def get_order_fulfillments(self, order_id) -> list[dict]:
+        """REST-shaped fulfillment dicts for a single order (A125 COGS backfill).
+
+        Pulled per-order (not nested in iter_orders) so the
+        fulfillments × fulfillmentLineItems cost stays well under Shopify's
+        1000-point single-query ceiling regardless of order size. Each dict
+        matches the fulfillments/create webhook payload process_fulfillment
+        consumes: {id, order_id, created_at, location_id, status, line_items}.
+        Returns [] when the order has no fulfillments.
+        """
+        gid = f"gid://shopify/Order/{order_id}"
+        query = f"""
+        query OrderFulfillments($id: ID!) {{
+          order(id: $id) {{
+            fulfillments(first: {FULFILLMENTS_PER_ORDER}) {{
+              legacyResourceId
+              createdAt
+              status
+              location {{ legacyResourceId }}
+              fulfillmentLineItems(first: {FULFILLMENT_LINE_ITEMS}) {{
+                nodes {{
+                  quantity
+                  lineItem {{ sku title }}
+                }}
+              }}
+            }}
+          }}
+        }}
+        """
+        data = self.execute(query, {"id": gid}, allow_partial=True)
+        order = data.get("order") or {}
+        raw = order.get("fulfillments") or []
+        # Tolerate either the list shape ([Fulfillment!]!) or a connection
+        # shape ({nodes: [...]}) across Admin API versions.
+        if isinstance(raw, dict):
+            raw = raw.get("nodes") or []
+
+        results = []
+        for f in raw:
+            fli_nodes = (f.get("fulfillmentLineItems") or {}).get("nodes") or []
+            line_items = []
+            for li in fli_nodes:
+                item = li.get("lineItem") or {}
+                line_items.append(
+                    {
+                        "sku": item.get("sku") or "",
+                        "title": item.get("title") or "",
+                        "quantity": li.get("quantity", 0),
+                    }
+                )
+            location = f.get("location") or {}
+            results.append(
+                {
+                    "id": int(f["legacyResourceId"]),
+                    "order_id": int(order_id),
+                    "created_at": f.get("createdAt") or "",
+                    "status": (f.get("status") or "").lower(),
+                    "location_id": location.get("legacyResourceId") or "",
+                    "line_items": line_items,
+                }
+            )
+        return results
 
     # ------------------------------------------------------------------
     # Shopify Payments  (REST shape: /shopify_payments/payouts.json and

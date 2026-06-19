@@ -681,6 +681,98 @@ class ShopifyAccountingHandler(BaseProjection):
                 return "The entry is unbalanced — this usually means a missing account mapping. Go to Settings > Shopify > Account Mapping and verify all roles are mapped."
         return "Review the entry in Journal Entries and post manually after resolving the issue."
 
+    def _resolve_store_for_event(self, event, data):
+        """Resolve the ShopifyStore a financial event belongs to.
+
+        A134: replaces the historical
+        ``ShopifyStore.filter(status=ACTIVE).first()`` pattern (same bug
+        family as A57). That bare ``.first()`` mis-attributed orders for
+        multi-store merchants and, after a connect/disconnect churn, returned
+        ``None`` and re-errored every projection beat (the b74379 reviewer
+        residual on Shopify_R).
+
+        The event's identifier is the source of truth for WHICH store the
+        order belongs to. We resolve it **regardless of store status**:
+        ``disconnect_store`` only flips status + blanks the access_token; the
+        store's ``default_customer`` / ``default_posting_profile`` are
+        preserved, so posting a still-queued order under its now-disconnected
+        store is correct (and a reconnect reuses the same row). Re-homing the
+        order to a *different* active store would mis-attribute the money —
+        the A57 bug this exists to kill.
+
+        1. ``store_public_id`` from the event payload — the exact store that
+           emitted the order (carried on every Shopify financial event; see
+           shopify_connector/event_types.py). Any status.
+        2. ``shop_domain`` from event metadata — same store, domain-keyed
+           (covers any payload predating ``store_public_id``). Any status.
+        3. The company's SOLE active store — ONLY for legacy events carrying
+           neither identifier (the single-store common case). Never guess
+           among several active stores; that ambiguity is the A57 bug.
+
+        Returns the ShopifyStore, or ``None`` only when an explicit identifier
+        matches no store row (store hard-deleted), or a legacy event arrives
+        while the active-store count is not exactly one. The caller bounds the
+        resulting defer with an age cap.
+        """
+        from shopify_connector.models import ShopifyStore
+
+        base = ShopifyStore.objects.filter(company=event.company).select_related(
+            "default_customer",
+            "default_posting_profile",
+            "default_cod_settlement_provider",
+        )
+
+        store_public_id = (data or {}).get("store_public_id")
+        shop_domain = (event.metadata or {}).get("shop_domain")
+
+        # 1 + 2: an explicit identifier is authoritative. Honor it regardless
+        # of status, and NEVER fall through to the sole-active fallback when
+        # one is present — doing so would re-home the order to a different
+        # store and mis-attribute the money (A57). A None here means the row
+        # was hard-deleted, which the caller defers/surfaces.
+        if store_public_id or shop_domain:
+            store = None
+            if store_public_id:
+                store = base.filter(public_id=store_public_id).first()
+            if store is None and shop_domain:
+                store = base.filter(shop_domain=shop_domain).order_by("-created_at").first()
+            return store
+
+        # 3: no identifier at all (legacy event). Safe only when unambiguous.
+        active = list(base.filter(status=ShopifyStore.Status.ACTIVE)[:2])
+        if len(active) == 1:
+            return active[0]
+        return None
+
+    def _ensure_store_setup(self, store):
+        """A134: idempotent self-heal of a store missing its default
+        Customer / PostingProfile (the OAuth-callback ordering gap A80
+        documented — SHOPIFY_CLEARING didn't exist yet at connect time, so
+        the store was left unconfigured).
+
+        Runs the canonical ``_ensure_shopify_sales_setup`` once and refreshes
+        the instance. The caller re-checks and raises ``ProjectionStateError``
+        if it is STILL missing (loud-not-silent per A80 — never skip a
+        financial event silently).
+
+        Note: the heal is best-effort. Its Customer/PostingProfile/store writes
+        execute inside process_pending's per-event ``transaction.atomic()``, so
+        if this handler later raises, they roll back and re-run next beat — all
+        writes are get_or_create-based, so this is idempotent, just repeated.
+        ``_ensure_shopify_sales_setup`` opens its own
+        ``command_writes_allowed() + projection_writes_allowed()``; the inner
+        ``projection_writes_allowed()`` is REQUIRED (not redundant) because
+        Customer/PostingProfile are projection-owned read models and the write
+        barrier checks only the top of the context stack.
+        """
+        if store.default_customer_id and store.default_posting_profile_id:
+            return store
+        from shopify_connector.commands import _ensure_shopify_sales_setup
+
+        _ensure_shopify_sales_setup(store)
+        store.refresh_from_db()
+        return store
+
     def _handle_order_paid(self, event, data, mapping, dimension_context=None):
         """
         Create a SalesInvoice from a paid Shopify order.
@@ -697,7 +789,7 @@ class ShopifyAccountingHandler(BaseProjection):
         """
         from sales.commands import create_and_post_invoice_for_platform
         from sales.models import TaxCode
-        from shopify_connector.models import ShopifyOrder, ShopifyStore
+        from shopify_connector.models import ShopifyOrder
 
         revenue_account = mapping.get(ROLE_SALES_REVENUE)
         if not revenue_account:
@@ -729,22 +821,64 @@ class ShopifyAccountingHandler(BaseProjection):
             logger.warning("Skipping Shopify order %s — non-positive amount %s", order_name, total_price)
             return
 
-        # Get the store's Customer and PostingProfile (created during connect)
-        store = (
-            ShopifyStore.objects.filter(
-                company=event.company,
-                status="ACTIVE",
-            )
-            .select_related("default_customer", "default_posting_profile")
-            .first()
-        )
+        # A134: resolve the exact store this order belongs to (by
+        # store_public_id / shop_domain) instead of blindly taking the
+        # company's first ACTIVE store. The bare .first() mis-attributed
+        # orders for multi-store merchants and, after a disconnect, returned
+        # None and re-errored every projection beat (the b74379 residual on
+        # Shopify_R; same bug family as A57).
+        store = self._resolve_store_for_event(event, data)
+        if store is None:
+            # The event's store can't be resolved — its identifier points at a
+            # hard-deleted store row, or a legacy (no-identifier) event arrived
+            # while the company has 0 or 2+ active stores. While the event is
+            # fresh, defer (quiet INFO retry): a store may be (re)connecting.
+            # Raising would re-hit Sentry every beat; the deferred event stays
+            # unprocessed (no data loss) and posts once a store appears.
+            #
+            # Bounded like the refund handler (A41): past 24h, stop deferring
+            # and surface loudly (A80) so a genuinely orphaned order becomes
+            # operator-visible in /finance/exceptions instead of re-scanning
+            # the company stream forever (head-of-line stall).
+            from datetime import timedelta
 
-        if not store or not store.default_customer_id or not store.default_posting_profile_id:
-            # A80: raise. This is the exact failure mode the comment in
-            # accounts/commands.py:3485 was warning about — at OAuth callback
-            # time SHOPIFY_CLEARING didn't yet exist so the store was left
-            # without a default_customer / posting_profile. Used to silently
-            # no-op; now it surfaces in /finance/exceptions.
+            from django.utils import timezone as _tz
+
+            event_age = _tz.now() - event.recorded_at
+            label = order_name or data.get("order_number")
+            if event_age < timedelta(hours=24):
+                from projections.base import DeferEvent
+
+                raise DeferEvent(
+                    f"No Shopify store resolvable yet for order {label} on "
+                    f"company {event.company.name} (store_public_id="
+                    f"{data.get('store_public_id')!r}, aged "
+                    f"{event_age.total_seconds():.0f}s) — deferring."
+                )
+
+            from projections.exceptions import ProjectionStateError
+
+            raise ProjectionStateError(
+                f"No Shopify store resolvable for order {label} on company "
+                f"{event.company.name} after {event_age}; the originating "
+                f"store (store_public_id={data.get('store_public_id')!r}) "
+                f"appears deleted or ambiguous.",
+                fix_hint=(
+                    "Reconnect the store via Settings → Integrations → Shopify. "
+                    "If the order is genuinely orphaned, resolve it from "
+                    "/finance/exceptions."
+                ),
+            )
+
+        # A134: idempotent self-heal for the OAuth-callback ordering gap
+        # (SHOPIFY_CLEARING didn't exist yet at connect time so the store was
+        # left without a default_customer / posting_profile). Run the
+        # canonical setup once; only raise if it's STILL missing afterward —
+        # the exact failure mode the comment in accounts/commands.py:3485 was
+        # warning about. Loud-not-silent per A80: surfaces in
+        # /finance/exceptions instead of a silent no-op.
+        store = self._ensure_store_setup(store)
+        if not store.default_customer_id or not store.default_posting_profile_id:
             from projections.exceptions import ProjectionStateError
 
             raise ProjectionStateError(
@@ -853,13 +987,32 @@ class ShopifyAccountingHandler(BaseProjection):
         )
 
         if not result.success:
-            # A80: raise DOWNSTREAM_FAILED. The 2026-05-25 incident that
-            # exposed this entire pattern: A78's missing `not auto_created`
-            # bypass caused create_and_post_invoice_for_platform to refuse
-            # GATEWAY profiles. Pre-A80 the projection logged ERROR then
-            # `return`d, marking the event consumed with no invoice created.
-            # Post-A80 the framework writes ProjectionFailureLog so the
-            # merchant sees the failure in /finance/exceptions instead.
+            # C (closed-period quarantine): a CLOSED fiscal period is terminal
+            # — it won't self-heal until an operator reopens it. Raising the
+            # usual ProjectionCommandFailedError under stop_on_error would
+            # head-of-line-stall the WHOLE projection (A126 made this reachable
+            # by importing historical dates; the oldest closed-period order
+            # would freeze every later order). Raise ProjectionTerminalSkip
+            # instead so the framework records the failure (A80) AND advances.
+            # (A85 chunk 6 already left the invoice + INCOMPLETE JE persisted
+            # via independent atomics — data isn't lost.)
+            from accounting.validation import _check_period
+
+            if _check_period(event.company, entry_date):
+                from projections.exceptions import ProjectionTerminalSkip
+
+                raise ProjectionTerminalSkip(
+                    f"Shopify order {order_name} dated {entry_date} cannot post: {result.error}",
+                    fix_hint=(
+                        "Reopen the fiscal period to post this order's INCOMPLETE "
+                        "journal entry, or exclude pre-close history from the import."
+                    ),
+                )
+
+            # A80: any other downstream refusal is (potentially) transient — it
+            # should surface AND retry, so keep raising ProjectionCommandFailedError.
+            # The 2026-05-25 incident (A78's missing `not auto_created` bypass)
+            # is the canonical case this guards.
             from projections.exceptions import ProjectionCommandFailedError
 
             raise ProjectionCommandFailedError(
@@ -1003,7 +1156,7 @@ class ShopifyAccountingHandler(BaseProjection):
         separately (kept as direct JE until Phase 6 moves it to StockLedger).
         """
         from sales.commands import create_and_post_credit_note_for_platform
-        from shopify_connector.models import ShopifyOrder, ShopifyRefund, ShopifyStore
+        from shopify_connector.models import ShopifyOrder, ShopifyRefund
 
         revenue_account = mapping.get(ROLE_SALES_REVENUE)
         if not revenue_account:
@@ -1061,25 +1214,25 @@ class ShopifyAccountingHandler(BaseProjection):
 
         # A12 follow-up: tag the credit-note clearing line with the same
         # settlement provider the original order posted under, so the
-        # refund drains the correct provider's clearing balance. We
-        # re-resolve via the original ShopifyOrder's gateway. For COD
+        # refund drains the correct provider's clearing balance. For COD
         # orders this resolves through ShopifyStore.default_cod_settlement_provider —
         # if the merchant changed couriers between order and refund the
         # refund tags the *current* courier (acceptable; differences
         # show up via needs_review on lazy-create).
-        original_order = ShopifyOrder.objects.filter(
-            company=event.company,
-            shopify_order_id=data.get("shopify_order_id"),
-        ).first()
-        order_gateway = original_order.gateway if original_order else ""
-        refund_store = (
-            ShopifyStore.objects.filter(
+        original_order = (
+            ShopifyOrder.objects.filter(
                 company=event.company,
-                status=ShopifyStore.Status.ACTIVE,
+                shopify_order_id=data.get("shopify_order_id"),
             )
-            .select_related("default_cod_settlement_provider")
+            .select_related("store", "store__default_posting_profile", "store__default_cod_settlement_provider")
             .first()
         )
+        order_gateway = original_order.gateway if original_order else ""
+        # A134: tag the refund via the ORIGINAL order's own store (its FK), not
+        # a re-resolve from the refund event. The order already booked under
+        # that store; re-resolving could land on a *different* active store for
+        # a multi-store merchant and mis-tag the refund's clearing line.
+        refund_store = original_order.store if original_order else None
         refund_provider = (
             self._resolve_settlement_provider(event, refund_store, order_gateway) if refund_store else None
         )

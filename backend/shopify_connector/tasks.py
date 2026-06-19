@@ -206,6 +206,7 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
     created = 0
     skipped = 0
     errors = 0
+    cogs_fulfillments = 0  # A125: COGS booked from backfilled fulfillments
 
     # A52 (2026-05-15): diagnostic logging while we hunt down why re-sync(7d)
     # returns 0 orders despite orders existing in the store. Root cause found
@@ -279,6 +280,7 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
 
         # Process each order in its own savepoint so one failure
         # doesn't break the entire batch
+        booked_paid = False
         try:
             with transaction.atomic():
                 result = handler(store, order_payload)
@@ -287,6 +289,11 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
                         skipped += 1
                     else:
                         created += 1
+                    # Only paid orders book revenue + a SalesInvoice; their
+                    # fulfillments are what carry COGS. "Skipped" here means
+                    # already-booked — those still backfill so historical
+                    # orders booked before fulfillment processing get COGS.
+                    booked_paid = handler is process_order_paid
                 else:
                     errors += 1
                     logger.warning(
@@ -309,6 +316,12 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
 
             if connection.needs_rollback:
                 connection.rollback()
+
+        # A125: book COGS for the order's fulfillments. Runs AFTER the order's
+        # transaction committed and is best-effort — a fulfillment failure must
+        # never roll back the already-booked order or break the batch.
+        if booked_paid:
+            cogs_fulfillments += _backfill_order_fulfillments(store, client, shopify_order_id)
 
     # A52: warning when fetch returns nothing — likely indicates token/date/
     # API-version issue rather than a "genuinely zero orders" situation.
@@ -351,7 +364,53 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
         "created": created,
         "skipped": skipped,
         "errors": errors,
+        "cogs_fulfillments": cogs_fulfillments,
     }
+
+
+def _backfill_order_fulfillments(store, client, shopify_order_id) -> int:
+    """A125: pull an order's fulfillments and book COGS for each via
+    process_fulfillment (idempotent — re-runs skip already-booked ones).
+
+    Best-effort by contract: the order is already committed by the time this
+    runs, so a fulfillment fetch/processing failure is logged and swallowed —
+    it must never roll back the order or abort the rest of the sync batch.
+    Returns the count of fulfillments that newly booked COGS.
+    """
+    from .commands import process_fulfillment
+
+    try:
+        fulfillments = client.get_order_fulfillments(shopify_order_id)
+    except Exception as e:
+        logger.warning(
+            "[A125] Fulfillment fetch failed for order %s on %s: %s",
+            shopify_order_id,
+            store.shop_domain,
+            e,
+        )
+        return 0
+
+    booked = 0
+    for fulfillment in fulfillments:
+        try:
+            with transaction.atomic():
+                result = process_fulfillment(store, fulfillment)
+            if result.success and not (result.data and result.data.get("skipped")):
+                booked += 1
+        except Exception as e:
+            logger.warning(
+                "[A125] COGS backfill failed for fulfillment %s on order %s (%s): %s",
+                fulfillment.get("id"),
+                shopify_order_id,
+                store.shop_domain,
+                e,
+            )
+            from django.db import connection
+
+            if connection.needs_rollback:
+                connection.rollback()
+
+    return booked
 
 
 def _pick_order_handler(order_payload, paid_handler, pending_handler, cancelled_handler):

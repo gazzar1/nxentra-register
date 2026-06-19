@@ -119,19 +119,36 @@ def get_projection_lag_metrics() -> list[dict[str, Any]]:
     """
     Get lag metrics for all projection consumers.
 
-    Returns list of consumer bookmarks with their lag (pending event count).
+    A135 (2026-06-19): lag is RELEVANCE-AWARE. A bookmark advances on
+    company_sequence and only ever sits at the last event its consumer
+    *handled*, so counting the whole company stream (events of types the
+    consumer never consumes) reported huge phantom lag — a fully-caught-up
+    projection showed "487 behind" simply because unrelated events kept being
+    emitted after its bookmark. For a registered projection we now count only
+    the event types it consumes within (bookmark, latest], matching
+    BaseProjection.get_lag so the gauge and the projection can't disagree.
+
+    Consumers with no registered projection (legacy / non-projection bookmarks)
+    fall back to the coarse whole-stream count, since their handled event types
+    are unknown.
     """
+    from projections.base import projection_registry
 
     results = []
 
     for bookmark in EventBookmark.objects.select_related("company", "last_event").all():
-        # Get total events for company
-        total_events = BusinessEvent.objects.filter(company=bookmark.company).count()
+        projection = projection_registry.get(bookmark.consumer_name)
+        consumes = projection.consumes if projection is not None else None
 
-        # Get processed events (up to bookmark)
+        # For a known projection, restrict to the types it actually consumes;
+        # otherwise count the whole stream (same coarse fallback as before).
+        relevant = BusinessEvent.objects.filter(company=bookmark.company)
+        if consumes is not None:
+            relevant = relevant.filter(event_type__in=consumes)
+
+        total_events = relevant.count()
         if bookmark.last_event:
-            processed = BusinessEvent.objects.filter(
-                company=bookmark.company,
+            processed = relevant.filter(
                 company_sequence__lte=bookmark.last_event.company_sequence,
             ).count()
         else:
@@ -147,6 +164,7 @@ def get_projection_lag_metrics() -> list[dict[str, Any]]:
                 "total_events": total_events,
                 "processed_events": processed,
                 "lag": lag,
+                "relevance_aware": consumes is not None,
                 "last_processed_at": bookmark.last_processed_at,
                 "is_paused": bookmark.is_paused,
                 "error_count": bookmark.error_count,

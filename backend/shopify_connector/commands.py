@@ -50,10 +50,13 @@ SHOPIFY_API_SECRET = getattr(settings, "SHOPIFY_API_SECRET", "")
 # Keep in sync with shopify.app.toml [access_scopes].
 # read_shopify_payments_accounts: required by the GraphQL
 # shopifyPaymentsAccount field (payout sync); REST only needed _payouts.
+# read_all_orders (A126): lifts the read_orders 60-day historical window.
+# NOTE: settings.SHOPIFY_SCOPES shadows this default (getattr reads settings
+# first), so the settings.py value is the effective one — keep both in sync.
 SHOPIFY_SCOPES = getattr(
     settings,
     "SHOPIFY_SCOPES",
-    "read_customers,read_discounts,read_fulfillments,read_inventory,read_locations,read_orders,read_products,read_returns,read_shopify_payments_accounts,read_shopify_payments_payouts",
+    "read_customers,read_discounts,read_fulfillments,read_inventory,read_locations,read_orders,read_all_orders,read_products,read_returns,read_shopify_payments_accounts,read_shopify_payments_payouts",
 )
 SHOPIFY_APP_URL = getattr(settings, "SHOPIFY_APP_URL", "")
 
@@ -1001,7 +1004,18 @@ def _get_valid_access_token(store: ShopifyStore) -> str | None:
 
 @transaction.atomic
 def disconnect_store(actor: ActorContext, store_public_id: str = None) -> CommandResult:
-    """Disconnect a Shopify store. If store_public_id not given, disconnects the first active store."""
+    """Disconnect a Shopify store.
+
+    If ``store_public_id`` is given, disconnects exactly that store. If it is
+    omitted, the command auto-selects ONLY when the company has a single
+    connected store; with two or more it refuses rather than guessing.
+
+    A136 (sibling of A134): the previous bare
+    ``.exclude(DISCONNECTED).first()`` fallback silently disconnected an
+    arbitrary store for a multi-store merchant (the B8.5 multi-region
+    incident), stranding the wrong store's order/refund/payout sync. The
+    UI should pass the public_id of the store the merchant picked.
+    """
     require(actor, "settings.edit")
 
     try:
@@ -1011,15 +1025,16 @@ def disconnect_store(actor: ActorContext, store_public_id: str = None) -> Comman
                 public_id=store_public_id,
             )
         else:
-            store = (
-                ShopifyStore.objects.filter(
-                    company=actor.company,
-                )
-                .exclude(status=ShopifyStore.Status.DISCONNECTED)
-                .first()
+            connected = list(
+                ShopifyStore.objects.filter(company=actor.company).exclude(status=ShopifyStore.Status.DISCONNECTED)[:2]
             )
-            if not store:
+            if len(connected) > 1:
+                return CommandResult.fail(
+                    "Multiple connected Shopify stores — specify which one to disconnect (store_public_id is required)."
+                )
+            if not connected:
                 raise ShopifyStore.DoesNotExist
+            store = connected[0]
     except ShopifyStore.DoesNotExist:
         return CommandResult.fail("No connected store.")
 

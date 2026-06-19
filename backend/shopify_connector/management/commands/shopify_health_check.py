@@ -81,11 +81,26 @@ class Command(BaseCommand):
         from shopify_connector.models import ShopifyOrder, ShopifyStore
 
         # Store
-        store = (
+        active_store_qs = (
             ShopifyStore.objects.filter(company=company, status="ACTIVE")
             .select_related("default_customer", "default_posting_profile")
-            .first()
+            .order_by("-created_at")
         )
+        store = active_store_qs.first()
+
+        # A134: enumerate EVERY active store, not just the first. The
+        # order_paid projection now resolves the exact store an event belongs
+        # to, so a second active store missing its sales-routing defaults is a
+        # real blocker even when the primary store is healthy.
+        active_stores = [
+            {
+                "shop_domain": s.shop_domain,
+                "public_id": str(s.public_id),
+                "has_default_customer": bool(s.default_customer_id),
+                "has_default_posting_profile": bool(s.default_posting_profile_id),
+            }
+            for s in active_store_qs
+        ]
 
         # Mappings
         mapping = ModuleAccountMapping.get_mapping(company, MODULE_KEY) if company else {}
@@ -185,6 +200,7 @@ class Command(BaseCommand):
                     "has_default_cod_settlement_provider": bool(store.default_cod_settlement_provider_id),
                 }
             ),
+            "active_stores": active_stores,
             "module_account_mapping": role_status,
             "events": event_counts,
             "orders_by_status": order_status_counts,
@@ -266,6 +282,20 @@ class Command(BaseCommand):
             if not store["has_default_customer"] or not store["has_default_posting_profile"]:
                 out(muted("    → Run: python manage.py setup_shopify_module_routing --company-slug=" + company.slug))
 
+        # A134: multi-store health. The detail block above only shows the most
+        # recent active store; flag any OTHER active store missing defaults.
+        active_stores = report["active_stores"]
+        if len(active_stores) > 1:
+            out(muted(f"  ({len(active_stores)} active stores total)"))
+            for s in active_stores:
+                healthy = s["has_default_customer"] and s["has_default_posting_profile"]
+                mark = ok if healthy else bad
+                out(mark(f"  {'[OK]' if healthy else '[FAIL]'} {s['shop_domain']}"))
+                if not healthy:
+                    out(
+                        muted("    → Run: python manage.py setup_shopify_module_routing --company-slug=" + company.slug)
+                    )
+
         # Mappings
         out("\nModule account mappings (shopify_connector):")
         for role in REQUIRED_ROLES:
@@ -341,13 +371,17 @@ class Command(BaseCommand):
 
     def _collect_problems(self, report: dict) -> list[str]:
         problems = []
-        if not report["store"]:
+        if not report["active_stores"]:
             problems.append("No ACTIVE ShopifyStore on this company.")
         else:
-            if not report["store"]["has_default_customer"]:
-                problems.append("Store.default_customer missing.")
-            if not report["store"]["has_default_posting_profile"]:
-                problems.append("Store.default_posting_profile missing.")
+            # A134: flag EVERY active store missing its sales-routing defaults,
+            # not just the first — the order_paid projection now resolves the
+            # exact store an event belongs to, so a masked second store fails.
+            for s in report["active_stores"]:
+                if not s["has_default_customer"]:
+                    problems.append(f"Store {s['shop_domain']} default_customer missing.")
+                if not s["has_default_posting_profile"]:
+                    problems.append(f"Store {s['shop_domain']} default_posting_profile missing.")
         for role in REQUIRED_ROLES:
             if not report["module_account_mapping"][role]["configured"]:
                 problems.append(f"Required role {role} not mapped in shopify_connector.")

@@ -713,7 +713,11 @@ class ShopifyDisconnectView(APIView):
 
     def post(self, request):
         actor = resolve_actor(request)
-        result = commands.disconnect_store(actor)
+        # A136: pass the merchant-selected store through so a multi-store
+        # tenant disconnects the intended store, not an arbitrary one. Absent
+        # (single-store UI) the command auto-selects the sole connected store.
+        store_public_id = request.data.get("store_public_id") or None
+        result = commands.disconnect_store(actor, store_public_id=store_public_id)
         if not result.success:
             return Response(
                 {"error": result.error},

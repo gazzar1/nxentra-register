@@ -339,9 +339,12 @@ SHOPIFY_APP_URL = os.getenv("SHOPIFY_APP_URL", "")
 # the one in shopify_connector.commands (getattr reads settings first).
 # read_shopify_payments_accounts: required by the GraphQL
 # shopifyPaymentsAccount field (payout sync); REST only needed _payouts.
+# read_all_orders (A126): lifts the read_orders 60-day window for historical
+# imports; the import path is scope-gated so stores granted only read_orders
+# stay safely clamped until they reconnect.
 SHOPIFY_SCOPES = os.getenv(
     "SHOPIFY_SCOPES",
-    "read_customers,read_discounts,read_fulfillments,read_inventory,read_locations,read_orders,read_products,read_returns,read_shopify_payments_accounts,read_shopify_payments_payouts",
+    "read_customers,read_discounts,read_fulfillments,read_inventory,read_locations,read_orders,read_all_orders,read_products,read_returns,read_shopify_payments_accounts,read_shopify_payments_payouts",
 )
 
 # =============================================================================
