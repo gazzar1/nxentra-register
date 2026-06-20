@@ -279,6 +279,94 @@ ORD-1,1000.00,30.00,970.00,PMB-555,2026-04-25
     assert body["totals"]["by_status"]["banked"] == 1
 
 
+# =============================================================================
+# U4 — Money Trace (the "proof button")
+# =============================================================================
+
+
+def test_money_trace_assembles_full_chain_for_banked_order(
+    shopify_setup, company, owner_membership, user, authenticated_client
+):
+    """U4: for a banked order the Money Trace assembles Stage 1 (sale) ->
+    Stage 2 (settlement) -> Stage 3 (bank match), with the real JE + durable
+    ReconciliationLink references behind each stage."""
+    from accounting.bank_reconciliation import import_bank_statement
+    from accounts.authz import ActorContext
+    from reconciliation.commands import auto_match_statement
+
+    paymob = SettlementProvider.objects.get(company=company, normalized_code="paymob")
+    _create_shopify_invoice(company, "ORD-T1", Decimal("1000.00"))
+
+    csv = b"""order_id,gross,fee,net,payout_batch_id,payout_date
+ORD-T1,1000.00,30.00,970.00,PMB-TRACE,2026-04-25
+"""
+    import_settlement_csv(
+        company=company, provider_normalized_code="paymob", file_content=csv, source_filename="paymob.csv"
+    )
+    PaymentSettlementProjection().process_pending(company)
+
+    with projection_writes_allowed():
+        merchant_bank = Account.objects.projection().create(
+            company=company,
+            code="10100",
+            name="Merchant Bank",
+            account_type=Account.AccountType.ASSET,
+            status=Account.Status.ACTIVE,
+        )
+    perms = frozenset(owner_membership.permissions.values_list("code", flat=True))
+    actor = ActorContext(user=user, company=company, membership=owner_membership, perms=perms)
+
+    bank_result = import_bank_statement(
+        actor=actor,
+        account_id=merchant_bank.id,
+        statement_date=date(2026, 4, 26),
+        period_start=date(2026, 4, 24),
+        period_end=date(2026, 4, 28),
+        opening_balance=Decimal("0"),
+        closing_balance=Decimal("970.00"),
+        lines_data=[
+            {
+                "line_date": "2026-04-26",
+                "amount": "970.00",
+                "description": "PAYMOB SETTLEMENT PMB-TRACE",
+                "reference": "",
+                "transaction_type": "credit",
+            }
+        ],
+        source="MANUAL",
+        currency="EGP",
+    )
+    assert bank_result.success
+    auto_match_statement(actor, bank_result.data["statement"].id)
+
+    resp = authenticated_client.get(f"/api/accounting/reconciliation/trace/?provider_id={paymob.id}&order_id=ORD-T1")
+    assert resp.status_code == 200
+    trace = resp.json()
+
+    assert trace["status"] == "banked"
+    # Stage 1 — the sale.
+    assert trace["stage1_sale"] is not None
+    assert trace["stage1_sale"]["invoice_number"]
+    assert trace["stage1_sale"]["je_entry_number"]
+    assert trace["stage1_sale"]["provider"] == paymob.display_name
+    # Stage 2 — the settlement.
+    assert trace["stage2_settlement"]["batch_id"] == "PMB-TRACE"
+    assert trace["stage2_settlement"]["je_entry_number"]
+    # Stage 3 — the bank match, proven by the durable link.
+    assert trace["stage3_bank"] is not None
+    assert trace["stage3_bank"]["clearance_je_entry_number"]
+    assert trace["stage3_bank"]["match"] is not None
+    assert trace["stage3_bank"]["match"]["status"] == "CONFIRMED"
+    assert trace["stage3_bank"]["match"]["confidence"] is not None
+
+
+def test_money_trace_404_for_unknown_order(shopify_setup, company, authenticated_client):
+    paymob = SettlementProvider.objects.get(company=company, normalized_code="paymob")
+    _create_shopify_invoice(company, "ORD-X", Decimal("100.00"))
+    resp = authenticated_client.get(f"/api/accounting/reconciliation/trace/?provider_id={paymob.id}&order_id=NOPE")
+    assert resp.status_code == 404
+
+
 def test_orders_endpoint_filters_to_provider(shopify_setup, company, owner_membership, authenticated_client):
     # Two providers; orders for one shouldn't show under the other.
     paymob = SettlementProvider.objects.get(company=company, normalized_code="paymob")

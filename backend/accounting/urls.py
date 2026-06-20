@@ -41,6 +41,7 @@ from .reconciliation_views import (
     ReconciliationDrilldownView,
     ReconciliationOrdersView,
     ReconciliationSummaryView,
+    ReconciliationTraceView,
 )
 from .settlement_import_views import SettlementCSVImportView, SettlementCSVPreviewView
 from .settlement_provider_views import (
@@ -400,6 +401,11 @@ urlpatterns = [
         "reconciliation/orders/",
         ReconciliationOrdersView.as_view(),
         name="reconciliation-orders",
+    ),
+    path(
+        "reconciliation/trace/",
+        ReconciliationTraceView.as_view(),
+        name="reconciliation-trace",
     ),
     # ==========================================================================
     # Settlement CSV Import (A14) + dry-run preview (A85)

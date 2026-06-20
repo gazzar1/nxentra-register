@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import type { GetServerSideProps } from "next";
 import Link from "next/link";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
@@ -27,6 +27,7 @@ import {
   type AgingBucket,
   type DifferenceReason,
   type MoneyFlow,
+  type MoneyTrace,
   type NeedsReviewItem,
   type OrderReconciliationStatus,
   type ProviderType,
@@ -860,6 +861,31 @@ function OrdersTable({
   orders: ReconciliationOrders;
   row: ReconciliationProviderRow;
 }) {
+  const { toast } = useToast();
+  const [openOrder, setOpenOrder] = useState<string | null>(null);
+  const [traceByOrder, setTraceByOrder] = useState<Record<string, MoneyTrace>>({});
+  const [traceLoading, setTraceLoading] = useState<string | null>(null);
+
+  const handleTrace = async (orderId: string) => {
+    if (openOrder === orderId) {
+      setOpenOrder(null);
+      return;
+    }
+    setOpenOrder(orderId);
+    if (!traceByOrder[orderId] && row.provider_id) {
+      setTraceLoading(orderId);
+      try {
+        const { data } = await reconciliationService.trace(row.provider_id, orderId);
+        setTraceByOrder((prev) => ({ ...prev, [orderId]: data }));
+      } catch {
+        toast({ title: "Failed to load the money trace.", variant: "destructive" });
+        setOpenOrder(null);
+      } finally {
+        setTraceLoading(null);
+      }
+    }
+  };
+
   return (
     <>
       <div className="mb-2 grid grid-cols-4 gap-3 text-[11px]">
@@ -883,29 +909,110 @@ function OrdersTable({
               <th className="py-1 pr-3">Settlement Batch</th>
               <th className="py-1 pr-3 text-right">Settled</th>
               <th className="py-1 pr-3">Status</th>
+              <th className="py-1"></th>
             </tr>
           </thead>
           <tbody>
-            {orders.orders.map((o) => (
-              <tr key={`${o.shopify_order_id}-${o.order_number}`} className="border-b last:border-0">
-                <td className="py-1 pr-3 font-mono">{o.order_number}</td>
-                <td className="py-1 pr-3">{o.order_date ?? "—"}</td>
-                <td className="py-1 pr-3 text-right">{formatMoney(o.shopify_paid)}</td>
-                <td className="py-1 pr-3 font-mono">{o.settled_batch_id ?? "—"}</td>
-                <td className="py-1 pr-3 text-right">
-                  {o.settled_amount ? formatMoney(o.settled_amount) : "—"}
-                </td>
-                <td className="py-1 pr-3">
-                  <Badge variant={ORDER_STATUS_VARIANT[o.status]}>
-                    {ORDER_STATUS_LABEL[o.status]}
-                  </Badge>
-                </td>
-              </tr>
-            ))}
+            {orders.orders.map((o) => {
+              const isOpen = openOrder === o.shopify_order_id;
+              return (
+                <Fragment key={`${o.shopify_order_id}-${o.order_number}`}>
+                  <tr className="border-b last:border-0">
+                    <td className="py-1 pr-3 font-mono">{o.order_number}</td>
+                    <td className="py-1 pr-3">{o.order_date ?? "—"}</td>
+                    <td className="py-1 pr-3 text-right">{formatMoney(o.shopify_paid)}</td>
+                    <td className="py-1 pr-3 font-mono">{o.settled_batch_id ?? "—"}</td>
+                    <td className="py-1 pr-3 text-right">
+                      {o.settled_amount ? formatMoney(o.settled_amount) : "—"}
+                    </td>
+                    <td className="py-1 pr-3">
+                      <Badge variant={ORDER_STATUS_VARIANT[o.status]}>
+                        {ORDER_STATUS_LABEL[o.status]}
+                      </Badge>
+                    </td>
+                    <td className="py-1 text-right">
+                      <button
+                        type="button"
+                        onClick={() => handleTrace(o.shopify_order_id)}
+                        className="text-primary underline-offset-2 hover:underline"
+                      >
+                        {isOpen ? "Hide" : "Trace"}
+                      </button>
+                    </td>
+                  </tr>
+                  {isOpen && (
+                    <tr>
+                      <td colSpan={7} className="bg-background px-3 py-2">
+                        {traceLoading === o.shopify_order_id ? (
+                          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                        ) : (
+                          <MoneyTraceView trace={traceByOrder[o.shopify_order_id] ?? null} />
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>
     </>
+  );
+}
+
+function MoneyTraceView({ trace }: { trace: MoneyTrace | null }) {
+  if (!trace) {
+    return <span className="text-xs italic text-muted-foreground">No trace available.</span>;
+  }
+  const s1 = trace.stage1_sale;
+  const s2 = trace.stage2_settlement;
+  const s3 = trace.stage3_bank;
+  return (
+    <div className="space-y-1.5 text-xs">
+      <div className="flex items-center gap-2">
+        <span className="font-medium">Money trace · order {trace.order_number}</span>
+        <Badge variant={ORDER_STATUS_VARIANT[trace.status]}>{ORDER_STATUS_LABEL[trace.status]}</Badge>
+      </div>
+      <ol className="space-y-1">
+        <li>
+          <span className="text-muted-foreground">1 · Sale —</span>{" "}
+          {s1 ? (
+            <span>
+              {s1.invoice_number} ({formatMoney(s1.amount)}) via {s1.provider}
+              {s1.je_entry_number ? ` · ${s1.je_entry_number}` : ""}
+            </span>
+          ) : (
+            <span className="text-muted-foreground">—</span>
+          )}
+        </li>
+        <li>
+          <span className="text-muted-foreground">2 · Settlement —</span>{" "}
+          {s2 ? (
+            <span>
+              batch {s2.batch_id}
+              {s2.settled_amount ? ` (${formatMoney(s2.settled_amount)})` : ""}
+              {s2.je_entry_number ? ` · ${s2.je_entry_number}` : ""}
+            </span>
+          ) : (
+            <span className="text-muted-foreground">not settled yet</span>
+          )}
+        </li>
+        <li>
+          <span className="text-muted-foreground">3 · Bank —</span>{" "}
+          {s3 ? (
+            <span>
+              {s3.clearance_je_entry_number ?? "—"}
+              {s3.match
+                ? ` · ${s3.match.status}${s3.match.confidence ? ` (${s3.match.confidence}% confidence)` : ""}`
+                : ""}
+            </span>
+          ) : (
+            <span className="text-muted-foreground">not banked yet</span>
+          )}
+        </li>
+      </ol>
+    </div>
   );
 }
 
