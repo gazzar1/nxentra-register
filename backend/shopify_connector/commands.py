@@ -3330,7 +3330,14 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
                     # set account defaults.
                     if mapping.item:
                         _update_item_defaults(
-                            mapping.item, cost, inv_account, cogs_account, sales_account, purchase_account
+                            mapping.item,
+                            cost,
+                            inv_account,
+                            cogs_account,
+                            sales_account,
+                            purchase_account,
+                            price,
+                            image_url,
                         )
 
                     updated += 1
@@ -3357,8 +3364,10 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
                     auto_created = True
                     created += 1
                 else:
-                    # Update existing item with cost + accounts if missing
-                    _update_item_defaults(item, cost, inv_account, cogs_account, sales_account, purchase_account)
+                    # Update existing item with cost + accounts + price + image if missing
+                    _update_item_defaults(
+                        item, cost, inv_account, cogs_account, sales_account, purchase_account, price, image_url
+                    )
                     linked += 1
 
                 # Create mapping
@@ -3445,6 +3454,11 @@ def process_product_webhook(store: ShopifyStore, payload: dict) -> CommandResult
         ).first()
 
         if mapping:
+            # Snapshot the price we last synced from Shopify BEFORE overwriting
+            # it, so we can tell whether the merchant has since taken ownership
+            # of the Item's price (A127 principle: never clobber a manual price).
+            previous_shopify_price = mapping.shopify_price
+
             # Update snapshot
             mapping.title = product_title
             mapping.variant_title = variant_title
@@ -3454,13 +3468,24 @@ def process_product_webhook(store: ShopifyStore, payload: dict) -> CommandResult
             mapping.raw_data = variant
             mapping.save()
 
-            # Update auto-created Items (don't overwrite manually edited ones)
+            # Update auto-created Items. `auto_created` only means WE created the
+            # Item — not that its price is still ours. A merchant can edit an
+            # auto-created item's price in Nxentra, and pushing Shopify's price
+            # here unconditionally silently reverted that on every products/update.
+            # Only sync the price while the Item still matches the last price we
+            # synced (i.e. the merchant hasn't overridden it).
             if mapping.auto_created and mapping.item:
                 with command_writes_allowed():
                     item = mapping.item
                     item.name = f"{product_title} - {variant_title}" if variant_title else product_title
-                    item.default_unit_price = price
-                    item.save(update_fields=["name", "default_unit_price", "updated_at"])
+                    update_fields = ["name", "updated_at"]
+                    merchant_owns_price = (
+                        previous_shopify_price is not None and item.default_unit_price != previous_shopify_price
+                    )
+                    if not merchant_owns_price:
+                        item.default_unit_price = price
+                        update_fields.append("default_unit_price")
+                    item.save(update_fields=update_fields)
 
             updated += 1
         elif store.product_sync_enabled:
@@ -3563,12 +3588,25 @@ def _create_item_from_variant(
     return item
 
 
-def _update_item_defaults(item, cost, inv_account, cogs_account, sales_account, purchase_account):
-    """Update an existing Item with missing defaults from Shopify."""
+def _update_item_defaults(
+    item, cost, inv_account, cogs_account, sales_account, purchase_account, price=Decimal("0"), image_url=""
+):
+    """Update an existing Item with missing defaults from Shopify.
+
+    Every assignment is gated on the target field being blank, so this only
+    ever HEALS items that were created before a value was captured — it never
+    overwrites something the merchant set by hand.
+    """
     updates = []
     if cost > 0 and not item.default_cost:
         item.default_cost = cost
         updates.append("default_cost")
+    # Backfill the selling price only when it's still blank (e.g. an item that
+    # was order-line auto-created with a 0 price, then later seen by a product
+    # sync that carries the variant price). Never clobber a manual price.
+    if price > 0 and not item.default_unit_price:
+        item.default_unit_price = price
+        updates.append("default_unit_price")
     if sales_account and not item.sales_account:
         item.sales_account = sales_account
         updates.append("sales_account_id")
@@ -3584,6 +3622,14 @@ def _update_item_defaults(item, cost, inv_account, cogs_account, sales_account, 
     if updates:
         with command_writes_allowed():
             item.save(update_fields=updates)
+
+    # Backfill the product image too — a separate save because image.save()
+    # writes the file, not a plain field. Only when the item has no image yet,
+    # so we never re-download or clobber a photo the merchant uploaded. Heals
+    # items first created via a webhook or an order line — paths that don't pull
+    # the image (only the full product sync does).
+    if image_url and not item.image:
+        _download_item_image(item, image_url)
 
 
 def _download_item_image(item, image_url):

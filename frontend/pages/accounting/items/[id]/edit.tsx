@@ -149,32 +149,39 @@ export default function EditItemPage() {
   // arrow-key shortcut — anywhere we'd lose unsaved edits.
   useUnsavedChangesGuard(isDirty);
 
-  // Populate form when item data loads
+  // Populate the form once per item — but only after the async option sources
+  // for the Select fields (accounts, tax codes) have loaded. If we reset while
+  // `accounts`/`taxCodes` are still loading, react-hook-form sets the account
+  // and tax fields to their PKs while the matching <SelectItem> options don't
+  // exist yet, so the Radix <Select> can't map the value to a label and renders
+  // "None" even though the item HAS those accounts. A merchant then "fixes" the
+  // false None and overwrites the real GL accounts on save (A127 — data loss).
+  // Keying on item.id (not a one-shot ref) keeps Prev/Next record navigation
+  // working, while skipping background refetches so in-progress edits survive.
+  const populatedForId = useRef<number | null>(null);
   useEffect(() => {
-    if (item) {
-      reset({
-        code: item.code,
-        name: item.name,
-        name_ar: item.name_ar || "",
-        item_type: item.item_type,
-        sales_account_id: item.sales_account?.toString() || "",
-        purchase_account_id: item.purchase_account?.toString() || "",
-        default_unit_price: item.default_unit_price || "0",
-        default_tax_code_id: item.default_tax_code?.toString() || "",
-        uom: item.uom || "",
-        inventory_account_id: item.inventory_account?.toString() || "",
-        cogs_account_id: item.cogs_account?.toString() || "",
-        costing_method: item.costing_method || "WEIGHTED_AVERAGE",
-        default_cost: item.default_cost?.toString() || "0",
-        allow_negative_stock: !!item.allow_negative_stock,
-        external_url: item.external_url || "",
-      });
-      // Set existing image
-      if ((item as any).image_url) {
-        setExistingImageUrl((item as any).image_url);
-      }
-    }
-  }, [item, reset]);
+    if (!item || !accounts || !taxCodes) return;
+    if (populatedForId.current === item.id) return;
+    populatedForId.current = item.id;
+    reset({
+      code: item.code,
+      name: item.name,
+      name_ar: item.name_ar || "",
+      item_type: item.item_type,
+      sales_account_id: item.sales_account?.toString() || "",
+      purchase_account_id: item.purchase_account?.toString() || "",
+      default_unit_price: item.default_unit_price || "0",
+      default_tax_code_id: item.default_tax_code?.toString() || "",
+      uom: item.uom || "",
+      inventory_account_id: item.inventory_account?.toString() || "",
+      cogs_account_id: item.cogs_account?.toString() || "",
+      costing_method: item.costing_method || "WEIGHTED_AVERAGE",
+      default_cost: item.default_cost?.toString() || "0",
+      allow_negative_stock: !!item.allow_negative_stock,
+      external_url: item.external_url || "",
+    });
+    setExistingImageUrl((item as any).image_url || null);
+  }, [item, accounts, taxCodes, reset]);
 
   const onSubmit = async (data: ItemFormData) => {
     if (!item) return;
@@ -234,7 +241,13 @@ export default function EditItemPage() {
     }
   };
 
-  if (isLoading) {
+  // Hold the spinner until the Select option sources (accounts, tax codes) are
+  // loaded too — not just the item. This guarantees the form is populated
+  // (the reset effect above) before the merchant can interact, so there is no
+  // window to type into an empty field and have it wiped, and every account
+  // Select has its matching option mounted when its value is applied. Empty
+  // accounts (`[]`) are still "loaded" and pass the guard.
+  if (isLoading || !accounts || !taxCodes) {
     return (
       <AppLayout>
         <LoadingSpinner />
