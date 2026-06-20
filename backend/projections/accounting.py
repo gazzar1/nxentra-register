@@ -10,6 +10,7 @@ All writes use _projection_write=True to bypass the read-model guard.
 """
 
 import logging
+import uuid
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
@@ -57,6 +58,25 @@ def _parse_decimal(value, default="1.0"):
         return Decimal(str(value))
     except (InvalidOperation, ValueError, TypeError):
         return Decimal(default)
+
+
+def derive_journal_line_public_id(entry_public_id, line_no: int) -> uuid.UUID:
+    """ADR-0001 prerequisite P1: deterministic, replay-stable public_id for a
+    journal line.
+
+    Derived purely from (entry public_id, line_no) — both carried in every
+    journal_entry event payload — so re-materialization (re-post, edit, or a
+    from-scratch projection rebuild) always reproduces the SAME id. Before P1,
+    ``_replace_lines`` delete+recreated lines with a fresh ``uuid4`` on every
+    projecting event, churning the id and leaving any reference to it (e.g. a
+    reconciliation match's ``journal_line_public_id``, or a future
+    ReconciliationLink leg) dangling after a rebuild.
+
+    Note: line public_ids are derived, not stored on the event — the inputs
+    are. Forward-only: lines materialized before P1 carry legacy uuid4 ids and
+    take on the derived id on their next re-materialization (one-time churn).
+    """
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"nxentra:journal_line:{entry_public_id}:{line_no}")
 
 
 class AccountProjection(BaseProjection):
@@ -342,6 +362,9 @@ class JournalEntryProjection(BaseProjection):
                     "created_by_id": data.get("created_by_id"),
                     "currency": data.get("currency", event.company.default_currency),
                     "exchange_rate": _parse_decimal(data.get("exchange_rate"), "1.0"),
+                    # A116: materialize source provenance from the event payload.
+                    "source_module": data.get("source_module", ""),
+                    "source_document": data.get("source_document", ""),
                 },
             )
             lines = data.get("lines", [])
@@ -411,6 +434,10 @@ class JournalEntryProjection(BaseProjection):
                     "entry_number": data.get("entry_number", ""),
                     "currency": data.get("currency", event.company.default_currency),
                     "exchange_rate": _parse_decimal(data.get("exchange_rate"), "1.0"),
+                    # A116: materialize source provenance for direct create-and-post
+                    # paths that emit only a posted event (no prior CREATED event).
+                    "source_module": data.get("source_module", ""),
+                    "source_document": data.get("source_document", ""),
                 },
             )
             if data.get("date"):
@@ -428,6 +455,12 @@ class JournalEntryProjection(BaseProjection):
                 entry.currency = data.get("currency")
             if data.get("exchange_rate"):
                 entry.exchange_rate = _parse_decimal(data.get("exchange_rate"), str(entry.exchange_rate or "1.0"))
+            # A116: apply source provenance from the posted event, but only when
+            # present so a sourceless post never blanks a row stamped at create.
+            if data.get("source_module"):
+                entry.source_module = data["source_module"]
+            if data.get("source_document"):
+                entry.source_document = data["source_document"]
             entry.save(_projection_write=True)
             self._replace_lines(entry, data.get("lines", []))
             return
@@ -548,6 +581,8 @@ class JournalEntryProjection(BaseProjection):
                     entry=entry,
                     company=entry.company,
                     line_no=line_no,
+                    # P1: deterministic, replay-stable id (was a fresh uuid4 default).
+                    public_id=derive_journal_line_public_id(entry.public_id, line_no),
                     account=account,
                     description=line.get("description", ""),
                     description_ar=line.get("description_ar", ""),

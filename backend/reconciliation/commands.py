@@ -57,7 +57,7 @@ from accounting.models import (
 from accounts.authz import ActorContext, require
 from events.emitter import emit_event_no_actor
 from events.types import EventTypes
-from projections.write_barrier import command_writes_allowed
+from projections.write_barrier import command_writes_allowed, statement_delete_allowed
 
 from .matching import (
     AUTO_MATCH_THRESHOLD,
@@ -390,6 +390,10 @@ def _create_settlement_clearance_je(
         ],
         kind=JournalEntry.Kind.NORMAL,
         period=period,
+        # A116: source provenance travels in the event payload (not a post-hoc
+        # ORM update) so it survives a from-scratch projection rebuild.
+        source_module="payment_settlement_clearance",
+        source_document=settlement_entry.source_document or batch_id,
     )
     if not create_result.success:
         logger.error("Settlement clearance create failed: %s", create_result.error)
@@ -407,13 +411,6 @@ def _create_settlement_clearance_je(
         logger.error("Settlement clearance post failed: %s", post_result.error)
         return None
     entry = post_result.data
-
-    # Stamp source for traceability + idempotency on rebuild.
-    with command_writes_allowed():
-        JournalEntry.objects.filter(pk=entry.pk).update(
-            source_module="payment_settlement_clearance",
-            source_document=settlement_entry.source_document or batch_id,
-        )
 
     return entry.lines.filter(account=bank_account).first()
 
@@ -1524,6 +1521,63 @@ def unmatch_line(
     _run_reconciliation_projection_sync(actor.company)
 
     return CommandResult.ok()
+
+
+@transaction.atomic
+def unmatch_and_delete_statement(
+    actor: ActorContext,
+    statement_id: int,
+) -> CommandResult:
+    """A129b / ADR-0001 prerequisite P6: the sanctioned way to delete a bank
+    statement that has matched lines.
+
+    Reverses every match first — each ``unmatch_line`` reverses the clearance /
+    A16-adjustment JEs and releases the EBD residual — then deletes the
+    statement under ``statement_delete_allowed()`` so the pre_delete guard
+    permits it. Without this flow a raw delete would orphan the posted clearance
+    JE (``BankStatementLine.matched_journal_line`` is SET_NULL, so nothing
+    reverses it) and leave the EBD line stranded as reconciled.
+    """
+    require(actor, "accounting.reconciliation")
+
+    try:
+        statement = BankStatement.objects.get(id=statement_id, company=actor.company)
+    except BankStatement.DoesNotExist:
+        return CommandResult.fail("Statement not found.")
+
+    matched_statuses = [
+        BankStatementLine.MatchStatus.AUTO_MATCHED,
+        BankStatementLine.MatchStatus.MANUAL_MATCHED,
+        BankStatementLine.MatchStatus.MATCHED_WITH_DIFFERENCE,
+    ]
+    matched_line_ids = list(
+        BankStatementLine.objects.filter(
+            statement=statement,
+            match_status__in=matched_statuses,
+        ).values_list("id", flat=True)
+    )
+    if matched_line_ids:
+        # Reversing the matches needs journal.reverse (unmatch_line ->
+        # reverse_journal_entry requires it). Check upfront so a caller without
+        # the permission fails fast — before any unmatch work — rather than
+        # raising PermissionDenied mid-loop.
+        require(actor, "journal.reverse")
+    for line_id in matched_line_ids:
+        res = unmatch_line(actor, line_id)
+        if not res.success:
+            # A returned CommandResult.fail does NOT raise, so it would NOT
+            # roll back the outer @transaction.atomic — every line unmatched
+            # BEFORE this one (clearance reversed, EBD released, line set
+            # UNMATCHED) would commit, leaving a half-deleted statement with a
+            # partially-reversed match set. Force a rollback of the whole
+            # operation by flagging the atomic for rollback before returning.
+            transaction.set_rollback(True)
+            return CommandResult.fail(f"Could not unmatch line {line_id} before delete: {res.error}")
+
+    with statement_delete_allowed():
+        statement.delete()
+
+    return CommandResult.ok(data={"statement_id": statement_id, "unmatched_lines": len(matched_line_ids)})
 
 
 @transaction.atomic

@@ -102,3 +102,36 @@ def admin_emergency_writes_allowed():
         raise RuntimeError("admin_emergency writes are disabled.")
     with _push_write_context("admin_emergency"):
         yield
+
+
+# -----------------------------------------------------------------------------
+# A129b / ADR-0001 P6 — bank-statement deletion guard
+#
+# A separate boolean flag (not the write-context stack) because statement
+# deletion is orthogonal to read-model write permission: deleting a matched
+# BankStatement orphans its posted clearance JE (the SET_NULL cascade leaves
+# the JE without a reverser). A pre_delete signal blocks the delete unless this
+# flag is set. Legitimate deleters (the unmatch_and_delete command after it
+# reverses matches, the demo reseed, and offboarding) enter this context;
+# restore-clear bypasses it by using raw SQL (signals don't fire). NOTE:
+# offboarding's company.delete() is preempted by PROTECT FKs (BankStatement.
+# account etc.) for a bootstrapped company, so that wrap only matters for an
+# unverified company with no chart of accounts — see accounting/signals.py.
+# -----------------------------------------------------------------------------
+_statement_delete_allowed: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "nxentra.reconciliation.statement_delete_allowed",
+    default=False,
+)
+
+
+def is_statement_delete_allowed() -> bool:
+    return _statement_delete_allowed.get()
+
+
+@contextmanager
+def statement_delete_allowed():
+    token = _statement_delete_allowed.set(True)
+    try:
+        yield
+    finally:
+        _statement_delete_allowed.reset(token)
