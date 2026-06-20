@@ -530,6 +530,30 @@ export default function ReconciliationPage() {
                 ) : (
                   <p className="text-muted-foreground italic">No bank statement lines imported yet.</p>
                 )}
+
+                {/* U3: durable match summary from ReconciliationLink — surfaces
+                   the match confidence the engine computes but never showed. */}
+                {summary.matches && summary.matches.total > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-x-6 gap-y-1 border-t pt-3 text-xs text-muted-foreground">
+                    <span>
+                      Matches:{" "}
+                      <span className="font-medium text-foreground">{summary.matches.confirmed}</span> confirmed
+                      {summary.matches.needs_review > 0 && (
+                        <span className="text-amber-600"> · {summary.matches.needs_review} need review</span>
+                      )}
+                    </span>
+                    {summary.matches.avg_confidence && (
+                      <span>
+                        Avg confidence:{" "}
+                        <span className="font-medium text-foreground">{summary.matches.avg_confidence}%</span>
+                      </span>
+                    )}
+                    <span>
+                      Auto <span className="font-medium text-foreground">{summary.matches.auto_matched}</span> · Manual{" "}
+                      <span className="font-medium text-foreground">{summary.matches.manually_matched}</span>
+                    </span>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </>

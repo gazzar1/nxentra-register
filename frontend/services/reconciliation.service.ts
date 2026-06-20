@@ -110,10 +110,22 @@ export interface MoneyFlow {
   balanced: boolean;
 }
 
+export interface MatchesSummary {
+  total: number;
+  confirmed: number;
+  needs_review: number;
+  unmatched: number;
+  excluded: number;
+  avg_confidence: string | null;
+  auto_matched: number;
+  manually_matched: number;
+}
+
 export interface ReconciliationSummary {
   as_of: string;
   narrative: string;
   money_flow: MoneyFlow;
+  matches: MatchesSummary;
   stage1: {
     providers: ReconciliationProviderRow[];
     totals: Stage1Totals;

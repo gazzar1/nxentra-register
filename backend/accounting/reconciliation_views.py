@@ -588,6 +588,38 @@ def _needs_review_queue(company) -> dict:
     }
 
 
+def _matches_summary(company) -> dict:
+    """Unification U3 — surface the durable ReconciliationLink read model.
+
+    Matches are now first-class queryable rows (P5), so we can report how many
+    exist, by status, and at what confidence — the score the matcher has always
+    computed but the UI never rendered. `auto` vs `manual` is the operator-trust
+    signal (how much the engine did unattended).
+    """
+    from django.db.models import Avg, Count
+
+    from reconciliation.models import ReconciliationLink
+
+    qs = ReconciliationLink.objects.filter(company=company)
+    by_status = {r["status"]: r["n"] for r in qs.values("status").annotate(n=Count("id"))}
+
+    Status = ReconciliationLink.Status
+    active = qs.filter(status__in=[Status.CONFIRMED, Status.NEEDS_REVIEW])
+    avg_conf = active.aggregate(a=Avg("confidence"))["a"]
+
+    return {
+        "total": qs.count(),
+        "confirmed": by_status.get(Status.CONFIRMED, 0),
+        "needs_review": by_status.get(Status.NEEDS_REVIEW, 0),
+        "unmatched": by_status.get(Status.UNMATCHED, 0),
+        "excluded": by_status.get(Status.EXCLUDED, 0),
+        "avg_confidence": _money_str(avg_conf) if avg_conf is not None else None,
+        # Auto = engine-confirmed (heuristic/rule/payout); manual = operator pick.
+        "auto_matched": active.filter(confirmation_kind__in=["auto", "rule", "platform_payout_reconcile"]).count(),
+        "manually_matched": active.filter(confirmation_kind="manual").count(),
+    }
+
+
 class ReconciliationSummaryView(APIView):
     """
     GET /api/accounting/reconciliation/summary/
@@ -621,12 +653,14 @@ class ReconciliationSummaryView(APIView):
         )
 
         money_flow = _money_flow(stage1_totals, stage2, actor.company.default_currency or "")
+        matches = _matches_summary(actor.company)
 
         return Response(
             {
                 "as_of": today.isoformat(),
                 "narrative": narrative,
                 "money_flow": money_flow,
+                "matches": matches,
                 "stage1": {
                     "providers": stage1_rows,
                     "totals": stage1_totals,
