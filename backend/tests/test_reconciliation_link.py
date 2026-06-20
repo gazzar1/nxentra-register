@@ -166,6 +166,41 @@ def test_link_excluded_mirrors_bank_line_state(shopify_setup, company, actor, me
 
 
 @pytest.mark.django_db
+def test_link_has_u5_structural_legs_after_settlement_match(shopify_setup, company, actor, merchant_bank):
+    """U5a: a settlement-clearance match stores the provider / batch / clearance-JE
+    legs on the link (parsed once from the clearance JE's source_document), so
+    downstream reads use structured, provider-scoped fields instead of re-parsing."""
+    _import_paymob_and_post(company)
+    statement = _make_statement(company, actor, merchant_bank, line_amount=_BATCH_NET, line_date=date(2026, 4, 26))
+    auto_match_statement(actor, statement.id)
+
+    link = ReconciliationLink.objects.get(company=company)
+    assert link.settlement_batch_id == "LINK-BATCH"
+    assert link.provider_normalized_code == "paymob"
+    assert link.clearance_je_public_id  # the clearance JE whose bank line was matched
+
+
+@pytest.mark.django_db
+def test_matches_summary_reflects_links(shopify_setup, company, actor, merchant_bank):
+    """U3: the matches summary surfaces the durable link data — count, status,
+    and the previously-hidden confidence + auto/manual split."""
+    from accounting.reconciliation_views import _matches_summary
+
+    _import_paymob_and_post(company)
+    statement = _make_statement(company, actor, merchant_bank, line_amount=_BATCH_NET, line_date=date(2026, 4, 26))
+    auto_match_statement(actor, statement.id)
+
+    m = _matches_summary(company)
+    assert m["total"] == 1
+    assert m["confirmed"] == 1
+    assert m["needs_review"] == 0
+    assert m["auto_matched"] == 1
+    assert m["manually_matched"] == 0
+    assert m["avg_confidence"] is not None
+    assert Decimal(m["avg_confidence"]) == Decimal("100.00")
+
+
+@pytest.mark.django_db
 def test_link_needs_review_on_difference(shopify_setup, company, actor, merchant_bank):
     _import_paymob_and_post(company)
     # Deposit 55 short of the 1455 net (within the 15% near-match tolerance) →

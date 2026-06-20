@@ -430,6 +430,26 @@ class ReconciliationProjection(BaseProjection):
         )
         confirmed_at_raw = data.get("confirmed_at") or ""
 
+        # U5a: for a settlement-clearance match, parse the clearance JE's
+        # `{provider}:{batch}` source_document ONCE here and store it
+        # structurally, so reads don't re-parse. Blank for non-settlement
+        # matches. source_document is in the JE event payload (P4/A116), so
+        # these legs are replay-safe.
+        provider_code, batch_id, clearance_je_public_id = "", "", ""
+        if journal_line_public_id:
+            jl = (
+                JournalLine.objects.filter(company=event.company, public_id=journal_line_public_id)
+                .select_related("entry")
+                .first()
+            )
+            if jl and jl.entry_id and jl.entry.source_module == "payment_settlement_clearance":
+                clearance_je_public_id = str(jl.entry.public_id)
+                doc = jl.entry.source_document or ""
+                if ":" in doc:
+                    provider_code, batch_id = doc.split(":", 1)
+                elif doc:
+                    batch_id = doc
+
         ReconciliationLink.objects.projection().update_or_create(
             id=link_id,
             defaults={
@@ -444,6 +464,9 @@ class ReconciliationProjection(BaseProjection):
                 "additional_journal_line_public_ids": [str(p) for p in (additional_jl_public_ids or [])],
                 "difference_amount": difference_amount,
                 "difference_reason": data.get("difference_reason") or "",
+                "provider_normalized_code": provider_code,
+                "settlement_batch_id": batch_id,
+                "clearance_je_public_id": clearance_je_public_id,
                 "confirmed_by_user_id": data.get("confirmed_by_user_id"),
                 "confirmed_by_email": data.get("confirmed_by_email") or "",
                 "confirmed_at": parse_datetime(confirmed_at_raw) if confirmed_at_raw else None,

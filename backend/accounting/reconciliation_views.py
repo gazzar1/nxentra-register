@@ -293,6 +293,40 @@ def _stage1_totals(rows: list[dict]) -> dict:
     }
 
 
+def _money_flow(stage1_totals: dict, stage2: dict, currency: str) -> dict:
+    """Unification U1 — the 'Money Bridge': the where-is-my-money story as a
+    named, balanced breakdown the frontend renders as a waterfall.
+
+    Every EGP sold into clearing is accounted for by exactly one segment —
+    Settled (drained via provider settlements), Refunded (drained via customer
+    refunds), or Open (still expected). By construction the three segments sum
+    to `total_sold` (open is derived as sold − settled − refunded), so the bar
+    always balances regardless of per-row rounding. Two annotations sit on top:
+    `banked` (of Settled, how much reached the bank) and `aged_over_30d` (of
+    Open, how much is overdue). 'Every residual has a name.'
+    """
+    sold = Decimal(stage1_totals["total_expected"])
+    settled = Decimal(stage1_totals["total_settled"])
+    refunded = Decimal(stage1_totals["total_refunded"])
+    # Derived so the segments always sum back to `sold` exactly.
+    open_balance = sold - settled - refunded
+    banked = Decimal(stage2.get("settled_total") or "0") if stage2.get("available") else Decimal("0")
+
+    return {
+        "currency": currency,
+        "total_sold": _money_str(sold),
+        "segments": [
+            {"key": "settled", "label": "Settled via providers", "amount": _money_str(settled)},
+            {"key": "refunded", "label": "Refunded to customers", "amount": _money_str(refunded)},
+            {"key": "open", "label": "Still expected", "amount": _money_str(open_balance)},
+        ],
+        "banked": _money_str(banked),
+        "aged_over_30d": _money_str(Decimal(stage1_totals["aged_30_plus"])),
+        # Invariant the frontend can trust: the named segments reconstruct `sold`.
+        "balanced": (settled + refunded + open_balance) == sold,
+    }
+
+
 def _stage2_summary(company) -> dict:
     """Stage 2 — Clearing → Settlement.
 
@@ -554,6 +588,38 @@ def _needs_review_queue(company) -> dict:
     }
 
 
+def _matches_summary(company) -> dict:
+    """Unification U3 — surface the durable ReconciliationLink read model.
+
+    Matches are now first-class queryable rows (P5), so we can report how many
+    exist, by status, and at what confidence — the score the matcher has always
+    computed but the UI never rendered. `auto` vs `manual` is the operator-trust
+    signal (how much the engine did unattended).
+    """
+    from django.db.models import Avg, Count
+
+    from reconciliation.models import ReconciliationLink
+
+    qs = ReconciliationLink.objects.filter(company=company)
+    by_status = {r["status"]: r["n"] for r in qs.values("status").annotate(n=Count("id"))}
+
+    Status = ReconciliationLink.Status
+    active = qs.filter(status__in=[Status.CONFIRMED, Status.NEEDS_REVIEW])
+    avg_conf = active.aggregate(a=Avg("confidence"))["a"]
+
+    return {
+        "total": qs.count(),
+        "confirmed": by_status.get(Status.CONFIRMED, 0),
+        "needs_review": by_status.get(Status.NEEDS_REVIEW, 0),
+        "unmatched": by_status.get(Status.UNMATCHED, 0),
+        "excluded": by_status.get(Status.EXCLUDED, 0),
+        "avg_confidence": _money_str(avg_conf) if avg_conf is not None else None,
+        # Auto = engine-confirmed (heuristic/rule/payout); manual = operator pick.
+        "auto_matched": active.filter(confirmation_kind__in=["auto", "rule", "platform_payout_reconcile"]).count(),
+        "manually_matched": active.filter(confirmation_kind="manual").count(),
+    }
+
+
 class ReconciliationSummaryView(APIView):
     """
     GET /api/accounting/reconciliation/summary/
@@ -586,10 +652,15 @@ class ReconciliationSummaryView(APIView):
             stage1_rows=stage1_rows,
         )
 
+        money_flow = _money_flow(stage1_totals, stage2, actor.company.default_currency or "")
+        matches = _matches_summary(actor.company)
+
         return Response(
             {
                 "as_of": today.isoformat(),
                 "narrative": narrative,
+                "money_flow": money_flow,
+                "matches": matches,
                 "stage1": {
                     "providers": stage1_rows,
                     "totals": stage1_totals,
@@ -873,6 +944,178 @@ def _per_order_totals(rows: list[dict]) -> dict:
         "by_status": by_status,
         "shopify_paid_by_status": {k: _money_str(v) for k, v in paid_by_status.items()},
     }
+
+
+def _settlement_je_for_batch(company, source_module: str, batch_id: str):
+    """Find the POSTED JE for a batch by matching the `{provider}:{batch}`
+    source_document (parent provider may differ from the drilldown provider on
+    multi-gateway batches, so match on the batch suffix — same convention as
+    _per_order_drilldown).
+
+    CAVEAT (read-only display only): the suffix match is not provider-scoped, so
+    if two providers ever shared an IDENTICAL batch_id it would return whichever
+    matching JE comes first. Provider-assigned batch ids rarely collide, and
+    this is a display trace (no posting), but U5 removes the ambiguity entirely
+    by carrying the settlement/clearance JE as explicit FK legs on the link —
+    at which point this helper is deleted. Also O(all settlement/clearance JEs)
+    per call; U5's FK legs make the lookup O(1).
+    """
+    for je in JournalEntry.objects.filter(
+        company=company, source_module=source_module, status=JournalEntry.Status.POSTED
+    ).prefetch_related("lines"):
+        doc = je.source_document or ""
+        if doc and doc.split(":", 1)[-1] == batch_id:
+            return je
+    return None
+
+
+def _money_trace_for_order(company, provider, order_ref: str) -> dict | None:
+    """U4 — the 'proof button' for one order: assemble its Stage 1 -> 2 -> 3
+    chain (Sale -> Settlement -> Bank) so the merchant can prove where the
+    money is. Reuses _per_order_drilldown for the order's status + batch (so the
+    multi-gateway logic is shared), then resolves the actual JE and durable
+    ReconciliationLink references behind each stage.
+    """
+    from reconciliation.models import ReconciliationLink
+    from sales.models import SalesInvoice
+
+    order = next(
+        (r for r in _per_order_drilldown(company, provider) if order_ref in (r["shopify_order_id"], r["order_number"])),
+        None,
+    )
+    if order is None:
+        return None
+
+    order_id = order["shopify_order_id"]
+    batch_id = order.get("settled_batch_id")
+
+    # Stage 1 — the sale: the Shopify invoice + its posted clearing JE.
+    stage1 = None
+    inv = (
+        SalesInvoice.objects.filter(company=company, source="shopify", source_document_id=order_id)
+        .select_related("posted_journal_entry")
+        .first()
+    )
+    if inv:
+        stage1 = {
+            "invoice_number": inv.invoice_number,
+            "invoice_date": inv.invoice_date.isoformat() if inv.invoice_date else None,
+            "amount": order["shopify_paid"],
+            "je_entry_number": (inv.posted_journal_entry.entry_number if inv.posted_journal_entry_id else None),
+            "provider": provider.display_name,
+        }
+
+    # Prefer the durable U5a legs on the link; fall back to the legacy suffix
+    # lookup for links written before U5a (those have blank legs).
+    link = None
+    if batch_id:
+        link = (
+            ReconciliationLink.objects.filter(company=company, settlement_batch_id=batch_id)
+            .exclude(status=ReconciliationLink.Status.REVERSED)
+            .order_by("-confirmed_at")
+            .first()
+        )
+
+    # Stage 2 — the settlement JE that drained clearing for this batch.
+    stage2 = None
+    if batch_id:
+        if link and link.provider_normalized_code:
+            # Provider-scoped EXACT match via the link leg — no suffix ambiguity.
+            sje = JournalEntry.objects.filter(
+                company=company,
+                source_module="payment_settlement",
+                source_document=f"{link.provider_normalized_code}:{batch_id}",
+                status=JournalEntry.Status.POSTED,
+            ).first()
+        else:
+            sje = _settlement_je_for_batch(company, "payment_settlement", batch_id)
+        stage2 = {
+            "batch_id": batch_id,
+            "settled_amount": order.get("settled_amount"),
+            "je_entry_number": sje.entry_number if sje else None,
+        }
+
+    # Stage 3 — the bank: the clearance JE + the durable match (ReconciliationLink).
+    stage3 = None
+    if order["is_banked"] and batch_id:
+        cje = None
+        if link and link.clearance_je_public_id:
+            cje = JournalEntry.objects.filter(company=company, public_id=link.clearance_je_public_id).first()
+        if cje is None:
+            # Fallback (pre-U5a links): suffix lookup + link via the bank line.
+            cje = _settlement_je_for_batch(company, "payment_settlement_clearance", batch_id)
+            if link is None and cje:
+                bank_jl = cje.lines.filter(debit__gt=0).first()
+                if bank_jl:
+                    link = ReconciliationLink.objects.filter(
+                        company=company, journal_line_public_id=str(bank_jl.public_id)
+                    ).first()
+        stage3 = {
+            "clearance_je_entry_number": cje.entry_number if cje else None,
+            "match": (
+                {
+                    "status": link.status,
+                    "confidence": (_money_str(link.confidence) if link.confidence is not None else None),
+                    "confirmation_kind": link.confirmation_kind,
+                    "confirmed_at": (link.confirmed_at.isoformat() if link.confirmed_at else None),
+                }
+                if link
+                else None
+            ),
+        }
+
+    return {
+        "order_number": order["order_number"],
+        "shopify_order_id": order_id,
+        "status": order["status"],
+        "stage1_sale": stage1,
+        "stage2_settlement": stage2,
+        "stage3_bank": stage3,
+    }
+
+
+class ReconciliationTraceView(APIView):
+    """
+    U4: GET /api/accounting/reconciliation/trace/?provider_id=<id>&order_id=<order>
+
+    The Money Trace 'proof button' — the full Stage 1 -> 2 -> 3 chain for a
+    single order (Sale -> Settlement -> Bank), so a merchant can prove exactly
+    where an order's money is. `order_id` accepts either the shopify order id or
+    the display order number.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        provider_id = request.query_params.get("provider_id")
+        order_id = request.query_params.get("order_id")
+        if not provider_id or not order_id:
+            return Response(
+                {"detail": "provider_id and order_id query params are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            provider = SettlementProvider.objects.select_related(
+                "dimension_value", "posting_profile", "posting_profile__control_account"
+            ).get(company=actor.company, pk=int(provider_id))
+        except (ValueError, SettlementProvider.DoesNotExist):
+            return Response({"detail": "Provider not found."}, status=404)
+
+        if not provider.dimension_value_id or not provider.posting_profile:
+            return Response(
+                {"detail": "Provider has no dimension_value/posting_profile."},
+                status=400,
+            )
+
+        trace = _money_trace_for_order(actor.company, provider, order_id)
+        if trace is None:
+            return Response({"detail": "Order not found for this provider."}, status=404)
+        return Response(trace)
 
 
 class ReconciliationDrilldownView(APIView):

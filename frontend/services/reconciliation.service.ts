@@ -95,9 +95,37 @@ export interface NeedsReviewQueue {
   unresolved_difference_amount: string;
 }
 
+export interface MoneyFlowSegment {
+  key: "settled" | "refunded" | "open";
+  label: string;
+  amount: string;
+}
+
+export interface MoneyFlow {
+  currency: string;
+  total_sold: string;
+  segments: MoneyFlowSegment[];
+  banked: string;
+  aged_over_30d: string;
+  balanced: boolean;
+}
+
+export interface MatchesSummary {
+  total: number;
+  confirmed: number;
+  needs_review: number;
+  unmatched: number;
+  excluded: number;
+  avg_confidence: string | null;
+  auto_matched: number;
+  manually_matched: number;
+}
+
 export interface ReconciliationSummary {
   as_of: string;
   narrative: string;
+  money_flow: MoneyFlow;
+  matches: MatchesSummary;
   stage1: {
     providers: ReconciliationProviderRow[];
     totals: Stage1Totals;
@@ -160,6 +188,34 @@ export interface ReconciliationOrders {
   };
 }
 
+// U4: Money Trace — the proof chain for one order.
+export interface MoneyTrace {
+  order_number: string;
+  shopify_order_id: string;
+  status: OrderReconciliationStatus;
+  stage1_sale: {
+    invoice_number: string | null;
+    invoice_date: string | null;
+    amount: string;
+    je_entry_number: string | null;
+    provider: string;
+  } | null;
+  stage2_settlement: {
+    batch_id: string;
+    settled_amount: string | null;
+    je_entry_number: string | null;
+  } | null;
+  stage3_bank: {
+    clearance_je_entry_number: string | null;
+    match: {
+      status: string;
+      confidence: string | null;
+      confirmation_kind: string;
+      confirmed_at: string | null;
+    } | null;
+  } | null;
+}
+
 // =============================================================================
 // Service
 // =============================================================================
@@ -180,6 +236,11 @@ export const reconciliationService = {
   orders: (providerId: number) =>
     apiClient.get<ReconciliationOrders>("/accounting/reconciliation/orders/", {
       params: { provider_id: String(providerId) },
+    }),
+
+  trace: (providerId: number, orderId: string) =>
+    apiClient.get<MoneyTrace>("/accounting/reconciliation/trace/", {
+      params: { provider_id: String(providerId), order_id: orderId },
     }),
 
   resolveDifference: (

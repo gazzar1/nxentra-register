@@ -89,6 +89,16 @@ class ReconciliationLink(AccountingReadModel):
     difference_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     difference_reason = models.CharField(max_length=40, blank=True)
 
+    # U5a structural legs — for settlement-clearance matches, the projection
+    # parses the clearance JE's `{provider}:{batch}` source_document ONCE at
+    # write time and stores the result here, so reads (the Money Trace; U5c's
+    # Banked/Open) use structured, provider-scoped fields instead of re-parsing
+    # source_document with .split(':'). Blank for non-settlement matches and for
+    # links written before U5a (those fall back to the legacy suffix lookup).
+    provider_normalized_code = models.CharField(max_length=64, blank=True)
+    settlement_batch_id = models.CharField(max_length=128, blank=True)
+    clearance_je_public_id = models.CharField(max_length=64, blank=True)
+
     # Accountability (finally captured — the events define these but the
     # legacy BankStatementLine flags never recorded them).
     confirmed_by_user_id = models.IntegerField(null=True, blank=True)
@@ -111,6 +121,7 @@ class ReconciliationLink(AccountingReadModel):
             models.Index(fields=["company", "status"]),
             models.Index(fields=["company", "bank_line_public_id"]),
             models.Index(fields=["company", "journal_line_public_id"]),
+            models.Index(fields=["company", "settlement_batch_id"]),
         ]
 
     def __str__(self):

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import type { GetServerSideProps } from "next";
 import Link from "next/link";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
@@ -26,6 +26,8 @@ import {
   reconciliationService,
   type AgingBucket,
   type DifferenceReason,
+  type MoneyFlow,
+  type MoneyTrace,
   type NeedsReviewItem,
   type OrderReconciliationStatus,
   type ProviderType,
@@ -284,6 +286,11 @@ export default function ReconciliationPage() {
               </Card>
             )}
 
+            {/* U1: Money Bridge — the "where is my money?" story as a picture */}
+            {summary.money_flow && Number(summary.money_flow.total_sold) > 0 && (
+              <MoneyBridge flow={summary.money_flow} />
+            )}
+
             {/* A16: Needs Review queue — bank deposits matched within tolerance
                but with an unexplained difference. Operator picks a reason
                which posts the adjustment JE that drains the EBD residual. */}
@@ -524,6 +531,30 @@ export default function ReconciliationPage() {
                 ) : (
                   <p className="text-muted-foreground italic">No bank statement lines imported yet.</p>
                 )}
+
+                {/* U3: durable match summary from ReconciliationLink — surfaces
+                   the match confidence the engine computes but never showed. */}
+                {summary.matches && summary.matches.total > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-x-6 gap-y-1 border-t pt-3 text-xs text-muted-foreground">
+                    <span>
+                      Matches:{" "}
+                      <span className="font-medium text-foreground">{summary.matches.confirmed}</span> confirmed
+                      {summary.matches.needs_review > 0 && (
+                        <span className="text-amber-600"> · {summary.matches.needs_review} need review</span>
+                      )}
+                    </span>
+                    {summary.matches.avg_confidence && (
+                      <span>
+                        Avg confidence:{" "}
+                        <span className="font-medium text-foreground">{summary.matches.avg_confidence}%</span>
+                      </span>
+                    )}
+                    <span>
+                      Auto <span className="font-medium text-foreground">{summary.matches.auto_matched}</span> · Manual{" "}
+                      <span className="font-medium text-foreground">{summary.matches.manually_matched}</span>
+                    </span>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </>
@@ -578,6 +609,76 @@ function SummaryTile({
     );
   }
   return card;
+}
+
+const MONEY_FLOW_COLOR: Record<MoneyFlow["segments"][number]["key"], string> = {
+  settled: "bg-emerald-500",
+  refunded: "bg-amber-500",
+  open: "bg-sky-500",
+};
+
+function MoneyBridge({ flow }: { flow: MoneyFlow }) {
+  const sold = Number(flow.total_sold);
+  if (!Number.isFinite(sold) || sold <= 0) return null;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <ScrollText className="h-5 w-5" />
+          Money Bridge
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex items-baseline justify-between text-sm">
+          <span className="text-muted-foreground">Sold into clearing</span>
+          <span className="font-semibold">
+            {formatMoney(flow.total_sold)} {flow.currency}
+          </span>
+        </div>
+
+        {/* Segmented waterfall — widths proportional to Sold. */}
+        <div className="flex h-6 w-full overflow-hidden rounded-md border bg-muted">
+          {flow.segments.map((s) => {
+            const pct = Math.max(0, (Number(s.amount) / sold) * 100);
+            if (pct <= 0) return null;
+            return (
+              <div
+                key={s.key}
+                className={`${MONEY_FLOW_COLOR[s.key]} h-full`}
+                style={{ width: `${pct}%` }}
+                title={`${s.label}: ${formatMoney(s.amount)}`}
+              />
+            );
+          })}
+        </div>
+
+        {/* Legend — every segment named. */}
+        <div className="grid gap-2 sm:grid-cols-3">
+          {flow.segments.map((s) => (
+            <div key={s.key} className="flex items-center gap-1.5 text-xs">
+              <span className={`h-2.5 w-2.5 shrink-0 rounded-sm ${MONEY_FLOW_COLOR[s.key]}`} />
+              <span className="text-muted-foreground">{s.label}</span>
+              <span className="ms-auto font-medium">{formatMoney(s.amount)}</span>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex flex-wrap gap-x-6 gap-y-1 border-t pt-2 text-xs text-muted-foreground">
+          <span>
+            Reached the bank:{" "}
+            <span className="font-medium text-foreground">{formatMoney(flow.banked)}</span>
+          </span>
+          {Number(flow.aged_over_30d) > 0 && (
+            <span className="text-destructive">
+              Open &gt; 30 days:{" "}
+              <span className="font-medium">{formatMoney(flow.aged_over_30d)}</span>
+            </span>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
 }
 
 const ORDER_STATUS_VARIANT: Record<OrderReconciliationStatus, "secondary" | "warning" | "success"> = {
@@ -760,6 +861,31 @@ function OrdersTable({
   orders: ReconciliationOrders;
   row: ReconciliationProviderRow;
 }) {
+  const { toast } = useToast();
+  const [openOrder, setOpenOrder] = useState<string | null>(null);
+  const [traceByOrder, setTraceByOrder] = useState<Record<string, MoneyTrace>>({});
+  const [traceLoading, setTraceLoading] = useState<string | null>(null);
+
+  const handleTrace = async (orderId: string) => {
+    if (openOrder === orderId) {
+      setOpenOrder(null);
+      return;
+    }
+    setOpenOrder(orderId);
+    if (!traceByOrder[orderId] && row.provider_id) {
+      setTraceLoading(orderId);
+      try {
+        const { data } = await reconciliationService.trace(row.provider_id, orderId);
+        setTraceByOrder((prev) => ({ ...prev, [orderId]: data }));
+      } catch {
+        toast({ title: "Failed to load the money trace.", variant: "destructive" });
+        setOpenOrder(null);
+      } finally {
+        setTraceLoading(null);
+      }
+    }
+  };
+
   return (
     <>
       <div className="mb-2 grid grid-cols-4 gap-3 text-[11px]">
@@ -783,29 +909,110 @@ function OrdersTable({
               <th className="py-1 pr-3">Settlement Batch</th>
               <th className="py-1 pr-3 text-right">Settled</th>
               <th className="py-1 pr-3">Status</th>
+              <th className="py-1"></th>
             </tr>
           </thead>
           <tbody>
-            {orders.orders.map((o) => (
-              <tr key={`${o.shopify_order_id}-${o.order_number}`} className="border-b last:border-0">
-                <td className="py-1 pr-3 font-mono">{o.order_number}</td>
-                <td className="py-1 pr-3">{o.order_date ?? "—"}</td>
-                <td className="py-1 pr-3 text-right">{formatMoney(o.shopify_paid)}</td>
-                <td className="py-1 pr-3 font-mono">{o.settled_batch_id ?? "—"}</td>
-                <td className="py-1 pr-3 text-right">
-                  {o.settled_amount ? formatMoney(o.settled_amount) : "—"}
-                </td>
-                <td className="py-1 pr-3">
-                  <Badge variant={ORDER_STATUS_VARIANT[o.status]}>
-                    {ORDER_STATUS_LABEL[o.status]}
-                  </Badge>
-                </td>
-              </tr>
-            ))}
+            {orders.orders.map((o) => {
+              const isOpen = openOrder === o.shopify_order_id;
+              return (
+                <Fragment key={`${o.shopify_order_id}-${o.order_number}`}>
+                  <tr className="border-b last:border-0">
+                    <td className="py-1 pr-3 font-mono">{o.order_number}</td>
+                    <td className="py-1 pr-3">{o.order_date ?? "—"}</td>
+                    <td className="py-1 pr-3 text-right">{formatMoney(o.shopify_paid)}</td>
+                    <td className="py-1 pr-3 font-mono">{o.settled_batch_id ?? "—"}</td>
+                    <td className="py-1 pr-3 text-right">
+                      {o.settled_amount ? formatMoney(o.settled_amount) : "—"}
+                    </td>
+                    <td className="py-1 pr-3">
+                      <Badge variant={ORDER_STATUS_VARIANT[o.status]}>
+                        {ORDER_STATUS_LABEL[o.status]}
+                      </Badge>
+                    </td>
+                    <td className="py-1 text-right">
+                      <button
+                        type="button"
+                        onClick={() => handleTrace(o.shopify_order_id)}
+                        className="text-primary underline-offset-2 hover:underline"
+                      >
+                        {isOpen ? "Hide" : "Trace"}
+                      </button>
+                    </td>
+                  </tr>
+                  {isOpen && (
+                    <tr>
+                      <td colSpan={7} className="bg-background px-3 py-2">
+                        {traceLoading === o.shopify_order_id ? (
+                          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                        ) : (
+                          <MoneyTraceView trace={traceByOrder[o.shopify_order_id] ?? null} />
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>
     </>
+  );
+}
+
+function MoneyTraceView({ trace }: { trace: MoneyTrace | null }) {
+  if (!trace) {
+    return <span className="text-xs italic text-muted-foreground">No trace available.</span>;
+  }
+  const s1 = trace.stage1_sale;
+  const s2 = trace.stage2_settlement;
+  const s3 = trace.stage3_bank;
+  return (
+    <div className="space-y-1.5 text-xs">
+      <div className="flex items-center gap-2">
+        <span className="font-medium">Money trace · order {trace.order_number}</span>
+        <Badge variant={ORDER_STATUS_VARIANT[trace.status]}>{ORDER_STATUS_LABEL[trace.status]}</Badge>
+      </div>
+      <ol className="space-y-1">
+        <li>
+          <span className="text-muted-foreground">1 · Sale —</span>{" "}
+          {s1 ? (
+            <span>
+              {s1.invoice_number} ({formatMoney(s1.amount)}) via {s1.provider}
+              {s1.je_entry_number ? ` · ${s1.je_entry_number}` : ""}
+            </span>
+          ) : (
+            <span className="text-muted-foreground">—</span>
+          )}
+        </li>
+        <li>
+          <span className="text-muted-foreground">2 · Settlement —</span>{" "}
+          {s2 ? (
+            <span>
+              batch {s2.batch_id}
+              {s2.settled_amount ? ` (${formatMoney(s2.settled_amount)})` : ""}
+              {s2.je_entry_number ? ` · ${s2.je_entry_number}` : ""}
+            </span>
+          ) : (
+            <span className="text-muted-foreground">not settled yet</span>
+          )}
+        </li>
+        <li>
+          <span className="text-muted-foreground">3 · Bank —</span>{" "}
+          {s3 ? (
+            <span>
+              {s3.clearance_je_entry_number ?? "—"}
+              {s3.match
+                ? ` · ${s3.match.status}${s3.match.confidence ? ` (${s3.match.confidence}% confidence)` : ""}`
+                : ""}
+            </span>
+          ) : (
+            <span className="text-muted-foreground">not banked yet</span>
+          )}
+        </li>
+      </ol>
+    </div>
   );
 }
 
