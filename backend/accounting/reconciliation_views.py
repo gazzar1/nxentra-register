@@ -950,7 +950,16 @@ def _settlement_je_for_batch(company, source_module: str, batch_id: str):
     """Find the POSTED JE for a batch by matching the `{provider}:{batch}`
     source_document (parent provider may differ from the drilldown provider on
     multi-gateway batches, so match on the batch suffix — same convention as
-    _per_order_drilldown). Will be replaced by an FK leg in U5."""
+    _per_order_drilldown).
+
+    CAVEAT (read-only display only): the suffix match is not provider-scoped, so
+    if two providers ever shared an IDENTICAL batch_id it would return whichever
+    matching JE comes first. Provider-assigned batch ids rarely collide, and
+    this is a display trace (no posting), but U5 removes the ambiguity entirely
+    by carrying the settlement/clearance JE as explicit FK legs on the link —
+    at which point this helper is deleted. Also O(all settlement/clearance JEs)
+    per call; U5's FK legs make the lookup O(1).
+    """
     for je in JournalEntry.objects.filter(
         company=company, source_module=source_module, status=JournalEntry.Status.POSTED
     ).prefetch_related("lines"):
