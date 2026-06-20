@@ -95,9 +95,25 @@ export interface NeedsReviewQueue {
   unresolved_difference_amount: string;
 }
 
+export interface MoneyFlowSegment {
+  key: "settled" | "refunded" | "open";
+  label: string;
+  amount: string;
+}
+
+export interface MoneyFlow {
+  currency: string;
+  total_sold: string;
+  segments: MoneyFlowSegment[];
+  banked: string;
+  aged_over_30d: string;
+  balanced: boolean;
+}
+
 export interface ReconciliationSummary {
   as_of: string;
   narrative: string;
+  money_flow: MoneyFlow;
   stage1: {
     providers: ReconciliationProviderRow[];
     totals: Stage1Totals;

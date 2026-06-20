@@ -293,6 +293,40 @@ def _stage1_totals(rows: list[dict]) -> dict:
     }
 
 
+def _money_flow(stage1_totals: dict, stage2: dict, currency: str) -> dict:
+    """Unification U1 — the 'Money Bridge': the where-is-my-money story as a
+    named, balanced breakdown the frontend renders as a waterfall.
+
+    Every EGP sold into clearing is accounted for by exactly one segment —
+    Settled (drained via provider settlements), Refunded (drained via customer
+    refunds), or Open (still expected). By construction the three segments sum
+    to `total_sold` (open is derived as sold − settled − refunded), so the bar
+    always balances regardless of per-row rounding. Two annotations sit on top:
+    `banked` (of Settled, how much reached the bank) and `aged_over_30d` (of
+    Open, how much is overdue). 'Every residual has a name.'
+    """
+    sold = Decimal(stage1_totals["total_expected"])
+    settled = Decimal(stage1_totals["total_settled"])
+    refunded = Decimal(stage1_totals["total_refunded"])
+    # Derived so the segments always sum back to `sold` exactly.
+    open_balance = sold - settled - refunded
+    banked = Decimal(stage2.get("settled_total") or "0") if stage2.get("available") else Decimal("0")
+
+    return {
+        "currency": currency,
+        "total_sold": _money_str(sold),
+        "segments": [
+            {"key": "settled", "label": "Settled via providers", "amount": _money_str(settled)},
+            {"key": "refunded", "label": "Refunded to customers", "amount": _money_str(refunded)},
+            {"key": "open", "label": "Still expected", "amount": _money_str(open_balance)},
+        ],
+        "banked": _money_str(banked),
+        "aged_over_30d": _money_str(Decimal(stage1_totals["aged_30_plus"])),
+        # Invariant the frontend can trust: the named segments reconstruct `sold`.
+        "balanced": (settled + refunded + open_balance) == sold,
+    }
+
+
 def _stage2_summary(company) -> dict:
     """Stage 2 — Clearing → Settlement.
 
@@ -586,10 +620,13 @@ class ReconciliationSummaryView(APIView):
             stage1_rows=stage1_rows,
         )
 
+        money_flow = _money_flow(stage1_totals, stage2, actor.company.default_currency or "")
+
         return Response(
             {
                 "as_of": today.isoformat(),
                 "narrative": narrative,
+                "money_flow": money_flow,
                 "stage1": {
                     "providers": stage1_rows,
                     "totals": stage1_totals,
