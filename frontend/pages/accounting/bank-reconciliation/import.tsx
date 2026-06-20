@@ -7,6 +7,7 @@ import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { CompanyDateInput, type DateFormat } from "@/components/ui/CompanyDateInput";
 import { Label } from "@/components/ui/label";
 import { PageHeader, CsvMappingDialog, type ColumnMapping } from "@/components/common";
 import { useToast } from "@/components/ui/toaster";
@@ -45,6 +46,7 @@ export default function ImportStatementPage() {
   const { data: accounts } = useAccounts();
   const { company } = useAuth();
   const companyCurrency = company?.default_currency || "USD";
+  const companyDateFormat = (company?.date_format as DateFormat) || "YYYY-MM-DD";
 
   const [form, setForm] = useState({
     account_id: "",
@@ -242,10 +244,10 @@ export default function ImportStatementPage() {
               </div>
               <div className="space-y-1.5">
                 <Label>Statement Date *</Label>
-                <Input
-                  type="date"
+                <CompanyDateInput
                   value={form.statement_date}
-                  onChange={(e) => updateForm("statement_date", e.target.value)}
+                  onChange={(v) => updateForm("statement_date", v)}
+                  dateFormat={companyDateFormat}
                 />
               </div>
               <div className="space-y-1.5">
@@ -264,18 +266,18 @@ export default function ImportStatementPage() {
               </div>
               <div className="space-y-1.5">
                 <Label>Period Start</Label>
-                <Input
-                  type="date"
+                <CompanyDateInput
                   value={form.period_start}
-                  onChange={(e) => updateForm("period_start", e.target.value)}
+                  onChange={(v) => updateForm("period_start", v)}
+                  dateFormat={companyDateFormat}
                 />
               </div>
               <div className="space-y-1.5">
                 <Label>Period End</Label>
-                <Input
-                  type="date"
+                <CompanyDateInput
                   value={form.period_end}
-                  onChange={(e) => updateForm("period_end", e.target.value)}
+                  onChange={(v) => updateForm("period_end", v)}
+                  dateFormat={companyDateFormat}
                 />
               </div>
             </div>

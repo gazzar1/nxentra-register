@@ -27,9 +27,56 @@ const DATE_FORMATS = [
   { value: "%d/%m/%Y", label: "DD/MM/YYYY (e.g. 01/04/2026)" },
   { value: "%m/%d/%Y", label: "MM/DD/YYYY (e.g. 04/01/2026)" },
   { value: "%d-%m-%Y", label: "DD-MM-YYYY (e.g. 01-04-2026)" },
+  { value: "%m-%d-%Y", label: "MM-DD-YYYY (e.g. 04-01-2026)" },
   { value: "%d.%m.%Y", label: "DD.MM.YYYY (e.g. 01.04.2026)" },
+  { value: "%m.%d.%Y", label: "MM.DD.YYYY (e.g. 04.01.2026)" },
   { value: "%Y/%m/%d", label: "YYYY/MM/DD (e.g. 2026/04/01)" },
 ];
+
+/**
+ * Detect the strptime date format from ALL sample date cells.
+ *
+ * For NN<sep>NN<sep>YYYY dates we cannot tell DD/MM from MM/DD by looking at a
+ * single ambiguous row (e.g. "03/04/2026"). We scan every sample: a component
+ * greater than 12 can only be the day, which pins the order. If NO sample
+ * disambiguates, the file is genuinely ambiguous and the caller must make the
+ * user choose — silently assuming DD/MM is exactly what transposed day/month on
+ * US-format imports (A128). Returns `{ format: "", ambiguous: true }` in that
+ * case.
+ */
+export function detectDateFormat(samples: string[]): { format: string; ambiguous: boolean } {
+  const dates = samples.map((s) => (s ?? "").trim()).filter(Boolean);
+  if (dates.length === 0) return { format: "%Y-%m-%d", ambiguous: false };
+
+  // Year-first shapes are unambiguous.
+  if (dates.every((d) => /^\d{4}-\d{2}-\d{2}/.test(d))) return { format: "%Y-%m-%d", ambiguous: false };
+  if (dates.every((d) => /^\d{4}\/\d{2}\/\d{2}/.test(d))) return { format: "%Y/%m/%d", ambiguous: false };
+
+  // NN<sep>NN<sep>YYYY with sep ∈ { / - . }.
+  const shape = dates.find((d) => /^\d{1,2}[/.\-]\d{1,2}[/.\-]\d{4}/.test(d));
+  if (shape) {
+    const sep = shape.match(/^\d{1,2}([/.\-])/)![1];
+    let dayFirstEvidence = false; // first field > 12 → it must be the day
+    let monthFirstEvidence = false; // second field > 12 → the day is second → month first
+    for (const d of dates) {
+      const m = d.match(/^(\d{1,2})[/.\-](\d{1,2})[/.\-]\d{4}/);
+      if (!m) continue;
+      const a = parseInt(m[1], 10);
+      const b = parseInt(m[2], 10);
+      if (a > 12 && a <= 31) dayFirstEvidence = true;
+      if (b > 12 && b <= 31) monthFirstEvidence = true;
+    }
+    const dayFirst = sep === "/" ? "%d/%m/%Y" : sep === "-" ? "%d-%m-%Y" : "%d.%m.%Y";
+    const monthFirst = sep === "/" ? "%m/%d/%Y" : sep === "-" ? "%m-%d-%Y" : "%m.%d.%Y";
+    if (dayFirstEvidence && !monthFirstEvidence) return { format: dayFirst, ambiguous: false };
+    if (monthFirstEvidence && !dayFirstEvidence) return { format: monthFirst, ambiguous: false };
+    // Both kinds of evidence (garbled) or neither (every row ≤ 12) → can't tell.
+    return { format: "", ambiguous: true };
+  }
+
+  // Unrecognized shape (textual months, etc.) — don't block; the user can pick.
+  return { format: "%Y-%m-%d", ambiguous: false };
+}
 
 function matchHeader(headers: string[], hints: string[]): string {
   const lowered = headers.map((h) => h.toLowerCase());
@@ -59,16 +106,12 @@ export function suggestMapping(headers: string[], sampleRows: Array<Record<strin
     amount = matchHeader(headers, ["amount", "value", "قيمة"]);
   }
 
-  // Sniff date format from the first sample row's date cell.
-  let dateFormat = "%Y-%m-%d";
-  if (date && sampleRows.length > 0) {
-    const sample = String(sampleRows[0]?.[date] ?? "").trim();
-    if (/^\d{4}-\d{2}-\d{2}/.test(sample)) dateFormat = "%Y-%m-%d";
-    else if (/^\d{2}\/\d{2}\/\d{4}/.test(sample)) dateFormat = "%d/%m/%Y";
-    else if (/^\d{2}-\d{2}-\d{4}/.test(sample)) dateFormat = "%d-%m-%Y";
-    else if (/^\d{2}\.\d{2}\.\d{4}/.test(sample)) dateFormat = "%d.%m.%Y";
-    else if (/^\d{4}\/\d{2}\/\d{2}/.test(sample)) dateFormat = "%Y/%m/%d";
-  }
+  // Sniff the date format from ALL sample rows for the chosen date column. When
+  // the file is genuinely DD/MM-vs-MM/DD ambiguous this returns "" so the dialog
+  // forces an explicit pick instead of silently transposing day/month.
+  const dateFormat = date
+    ? detectDateFormat(sampleRows.map((r) => String(r?.[date] ?? ""))).format
+    : "%Y-%m-%d";
 
   return {
     date_column: date,
@@ -126,12 +169,32 @@ export function CsvMappingDialog({
   }, [open, initialMapping, suggested, headers]);
 
   const update = (key: keyof ColumnMapping, value: string) =>
-    setMapping((prev) => ({ ...prev, [key]: value === NONE ? "" : value }));
+    setMapping((prev) => {
+      const v = value === NONE ? "" : value;
+      if (key === "date_column") {
+        // Re-sniff the format against the newly chosen column's values.
+        return {
+          ...prev,
+          date_column: v,
+          date_format: detectDateFormat(sampleRows.map((r) => String(r?.[v] ?? ""))).format,
+        };
+      }
+      return { ...prev, [key]: v };
+    });
 
   const useDebitCredit = Boolean(mapping.debit_column && mapping.credit_column);
 
+  // When the date column's values could be DD/MM or MM/DD and the user hasn't
+  // picked yet, block Parse and warn instead of guessing.
+  const dateDetection = useMemo(
+    () => detectDateFormat(sampleRows.map((r) => String(r?.[mapping.date_column] ?? ""))),
+    [sampleRows, mapping.date_column],
+  );
+  const dateFormatAmbiguous = !mapping.date_format && dateDetection.ambiguous;
+
   const requiredOK =
     Boolean(mapping.date_column) &&
+    Boolean(mapping.date_format) &&
     Boolean(mapping.description_column) &&
     (Boolean(mapping.amount_column) ||
       (Boolean(mapping.debit_column) && Boolean(mapping.credit_column)));
@@ -178,18 +241,31 @@ export function CsvMappingDialog({
           <div className="grid gap-4 sm:grid-cols-2">
             {renderSelect("date_column", "Date column", true)}
             <div className="space-y-1.5">
-              <Label className="text-sm">Date format</Label>
+              <Label className="text-sm">
+                Date format
+                <span className="ms-0.5 text-destructive">*</span>
+              </Label>
               <select
-                className="w-full border rounded-md px-3 py-2 text-sm bg-background"
+                className={`w-full border rounded-md px-3 py-2 text-sm bg-background${
+                  dateFormatAmbiguous ? " border-destructive" : ""
+                }`}
                 value={mapping.date_format}
                 onChange={(e) => update("date_format", e.target.value)}
               >
+                <option value="">— Select date format —</option>
                 {DATE_FORMATS.map((f) => (
                   <option key={f.value} value={f.value}>
                     {f.label}
                   </option>
                 ))}
               </select>
+              {dateFormatAmbiguous && (
+                <p className="text-xs text-destructive">
+                  These dates could be DD/MM or MM/DD — we can&apos;t tell which.
+                  Pick the correct format; choosing wrong silently swaps the day
+                  and month.
+                </p>
+              )}
             </div>
             {renderSelect("description_column", "Description column", true)}
             {renderSelect(
