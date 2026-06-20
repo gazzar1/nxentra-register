@@ -315,7 +315,7 @@ export default function ReconciliationPage() {
                 <SummaryTile
                   label="Total Expected"
                   value={formatMoney(totals.total_expected)}
-                  caption="From Shopify orders, awaiting settlement"
+                  caption="Gross sold into clearing (Shopify)"
                   href="#stage-1"
                 />
                 <SummaryTile
@@ -653,13 +653,16 @@ function MoneyBridge({ flow }: { flow: MoneyFlow }) {
           })}
         </div>
 
-        {/* Legend — every segment named. */}
-        <div className="grid gap-2 sm:grid-cols-3">
+        {/* Legend — every segment named, value grouped directly under its label
+            (not edge-aligned, which detached the value from its name). */}
+        <div className="grid gap-x-6 gap-y-3 sm:grid-cols-3">
           {flow.segments.map((s) => (
-            <div key={s.key} className="flex items-center gap-1.5 text-xs">
-              <span className={`h-2.5 w-2.5 shrink-0 rounded-sm ${MONEY_FLOW_COLOR[s.key]}`} />
-              <span className="text-muted-foreground">{s.label}</span>
-              <span className="ms-auto font-medium">{formatMoney(s.amount)}</span>
+            <div key={s.key} className="space-y-1">
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <span className={`h-2.5 w-2.5 shrink-0 rounded-sm ${MONEY_FLOW_COLOR[s.key]}`} />
+                <span>{s.label}</span>
+              </div>
+              <div className="ps-4 text-sm font-semibold tabular-nums">{formatMoney(s.amount)}</div>
             </div>
           ))}
         </div>
