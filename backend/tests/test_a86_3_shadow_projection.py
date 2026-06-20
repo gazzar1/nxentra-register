@@ -186,7 +186,7 @@ def _emit_match_confirmed(
         company=company,
         event_type=EventTypes.RECONCILIATION_MATCH_CONFIRMED,
         aggregate_type="ReconciliationMatch",
-        aggregate_id=f"{bank_line.public_id}:{journal_line.public_id}",
+        aggregate_id=str(bank_line.public_id),
         idempotency_key=f"reconciliation.match_confirmed:{bank_line.public_id}:{journal_line.public_id}:{suffix}",
         data=data,
     )
@@ -205,7 +205,7 @@ def _emit_match_unmatched(company, bank_line, journal_line, *, final_status="UNM
         company=company,
         event_type=EventTypes.RECONCILIATION_MATCH_UNMATCHED,
         aggregate_type="ReconciliationMatch",
-        aggregate_id=f"{bank_line.public_id}:{journal_line.public_id}",
+        aggregate_id=str(bank_line.public_id),
         idempotency_key=f"reconciliation.match_unmatched:{bank_line.public_id}:{journal_line.public_id}:{suffix}",
         data=data,
     )
@@ -225,7 +225,7 @@ def _emit_match_proposed(company, bank_line, journal_line, *, suffix=""):
         company=company,
         event_type=EventTypes.RECONCILIATION_MATCH_PROPOSED,
         aggregate_type="ReconciliationMatch",
-        aggregate_id=f"{bank_line.public_id}:{journal_line.public_id}",
+        aggregate_id=str(bank_line.public_id),
         idempotency_key=f"reconciliation.match_proposed:{bank_line.public_id}:{journal_line.public_id}:{suffix}",
         data=data,
     )
@@ -242,7 +242,7 @@ def _emit_match_rejected(company, bank_line, journal_line, *, suffix=""):
         company=company,
         event_type=EventTypes.RECONCILIATION_MATCH_REJECTED,
         aggregate_type="ReconciliationMatch",
-        aggregate_id=f"{bank_line.public_id}:{journal_line.public_id}",
+        aggregate_id=str(bank_line.public_id),
         idempotency_key=f"reconciliation.match_rejected:{bank_line.public_id}:{journal_line.public_id}:{suffix}",
         data=data,
     )

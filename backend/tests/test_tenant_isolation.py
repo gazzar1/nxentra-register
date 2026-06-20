@@ -260,11 +260,13 @@ class TestCrossTenantIsolation:
         je_a = JournalEntry.objects.create(
             company=company,
             date="2026-01-01",
+            period=1,
             memo="Company A entry",
         )
         je_b = JournalEntry.objects.create(
             company=second_company,
             date="2026-01-01",
+            period=1,
             memo="Company B entry",
         )
 

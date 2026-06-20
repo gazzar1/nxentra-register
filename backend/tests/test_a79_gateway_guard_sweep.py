@@ -22,6 +22,8 @@ exists yet but the principle must be followed when one does).
 See docs/finance_event_first_policy.md §6.2 for the canonical rule.
 """
 
+from datetime import date
+
 from accounting.models import Account
 from projections.write_barrier import command_writes_allowed, projection_writes_allowed
 from sales.commands import create_sales_invoice, update_sales_invoice
@@ -108,6 +110,7 @@ def test_create_sales_invoice_allows_gateway_profile_for_platform_caller(actor_c
         actor=actor_context,
         customer_id=customer.id,
         posting_profile_id=profile.id,
+        invoice_date=date.today(),
         lines=_make_lines(revenue),
         auto_created=True,
     )
@@ -132,6 +135,7 @@ def test_update_sales_invoice_rejects_switch_to_gateway_profile_for_manual_calle
         actor=actor_context,
         customer_id=customer.id,
         posting_profile_id=manual_profile.id,
+        invoice_date=date.today(),
         lines=_make_lines(revenue),
     )
     assert created.success
@@ -172,6 +176,7 @@ def test_update_sales_invoice_allows_switch_to_gateway_profile_for_platform_call
         actor=actor_context,
         customer_id=customer.id,
         posting_profile_id=manual_profile.id,
+        invoice_date=date.today(),
         lines=_make_lines(revenue),
     )
     assert created.success
@@ -227,6 +232,7 @@ def test_create_and_update_have_identical_gateway_handling(actor_context):
         actor=actor_context,
         customer_id=customer.id,
         posting_profile_id=gateway_profile.id,
+        invoice_date=date.today(),
         lines=_make_lines(revenue),
         auto_created=True,
     )

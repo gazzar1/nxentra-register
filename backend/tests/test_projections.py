@@ -302,6 +302,7 @@ class TestJournalLineZeroZeroFiltering:
             data={
                 "entry_public_id": entry_public_id,
                 "date": date.today().isoformat(),
+                "period": date.today().month,
                 "memo": "Test with zero line",
                 "status": "INCOMPLETE",
                 "lines": [
@@ -372,6 +373,7 @@ class TestJournalEntryCurrencyProjection:
                 "entry_public_id": entry_public_id,
                 "entry_number": "JE-CURR-001",
                 "date": date.today().isoformat(),
+                "period": date.today().month,
                 "memo": "Currency test",
                 "kind": "NORMAL",
                 "posted_at": timezone.now().isoformat(),
