@@ -177,6 +177,14 @@ class ReconciliationProjection(BaseProjection):
                     reconciled_date_value,
                     event.id,
                 )
+                # P5: this path has no BankStatementLine — the link is keyed on
+                # the journal line alone (bank_line_public_id="").
+                self._upsert_link(
+                    event,
+                    bank_line_public_id="",
+                    journal_line_public_id=journal_line_public_id,
+                    additional_jl_public_ids=[],
+                )
             return
 
         if not bank_line_public_id:
@@ -279,6 +287,13 @@ class ReconciliationProjection(BaseProjection):
                 reconciled_date=reconciled_date_value if reconciled_date_value else None,
             )
 
+        self._upsert_link(
+            event,
+            bank_line_public_id=bank_line_public_id,
+            journal_line_public_id=journal_line_public_id,
+            additional_jl_public_ids=additional_jl_public_ids,
+        )
+
         logger.info(
             "Reconciliation write: bank_line=%s status=%s confidence=%s difference=%s "
             "primary_jl=%s additional_jls=%d via confirmation_kind=%s event_id=%s",
@@ -365,6 +380,12 @@ class ReconciliationProjection(BaseProjection):
                 reconciled_date=None,
             )
 
+        self._mark_link_unmatched(
+            event,
+            bank_line_public_id=bank_line_public_id,
+            journal_line_public_id=previously_matched_jl_public_id,
+        )
+
         logger.info(
             "Reconciliation clear: bank_line=%s final_status=%s unreconciled_jls=%d event_id=%s",
             bank_line_public_id,
@@ -372,3 +393,98 @@ class ReconciliationProjection(BaseProjection):
             len(jl_public_ids_to_unreconcile),
             event.id,
         )
+
+    # -------------------------------------------------------------------------
+    # P5: durable ReconciliationLink read model (written alongside the legacy
+    # BankStatementLine flags during cutover; the unification phase switches
+    # Banked/Open + Money Trace readers over to it).
+    # -------------------------------------------------------------------------
+
+    def _upsert_link(self, event, *, bank_line_public_id, journal_line_public_id, additional_jl_public_ids) -> None:
+        """Materialize/refresh the durable link for a confirmed match.
+
+        Identity is deterministic from (bank_line, journal_line) — both
+        replay-stable — so a from-scratch rebuild reproduces the same row and
+        unmatch→rematch of the same pair reuses it (CONFIRMED → UNMATCHED →
+        CONFIRMED) rather than spawning duplicates.
+        """
+        from django.utils.dateparse import parse_datetime
+
+        from reconciliation.models import ReconciliationLink, derive_link_id, derive_link_idempotency_key
+
+        data = event.get_data()
+        key = derive_link_idempotency_key(bank_line_public_id, journal_line_public_id)
+        link_id = derive_link_id(event.company_id, key)
+
+        try:
+            difference_amount = Decimal(str(data.get("difference_amount") or "0"))
+        except (ValueError, ArithmeticError):
+            difference_amount = Decimal("0")
+        try:
+            confidence = Decimal(str(data.get("confidence") or "0"))
+        except (ValueError, ArithmeticError):
+            confidence = None
+
+        link_status = (
+            ReconciliationLink.Status.NEEDS_REVIEW if difference_amount != 0 else ReconciliationLink.Status.CONFIRMED
+        )
+        confirmed_at_raw = data.get("confirmed_at") or ""
+
+        ReconciliationLink.objects.projection().update_or_create(
+            id=link_id,
+            defaults={
+                "company_id": event.company_id,
+                "idempotency_key": key,
+                "status": link_status,
+                "match_kind": data.get("match_kind") or "",
+                "confirmation_kind": data.get("confirmation_kind") or "",
+                "confidence": confidence,
+                "bank_line_public_id": bank_line_public_id or "",
+                "journal_line_public_id": journal_line_public_id or "",
+                "additional_journal_line_public_ids": [str(p) for p in (additional_jl_public_ids or [])],
+                "difference_amount": difference_amount,
+                "difference_reason": data.get("difference_reason") or "",
+                "confirmed_by_user_id": data.get("confirmed_by_user_id"),
+                "confirmed_by_email": data.get("confirmed_by_email") or "",
+                "confirmed_at": parse_datetime(confirmed_at_raw) if confirmed_at_raw else None,
+                "unmatched_at": None,
+                "reason": "",
+            },
+        )
+
+    def _mark_link_unmatched(self, event, *, bank_line_public_id, journal_line_public_id) -> None:
+        """Flip the link to UNMATCHED on reversal. Keyed identically to
+        _upsert_link so it finds the same row (no-op if no link exists, e.g. an
+        unmatch of a pre-P5 match)."""
+        from django.utils.dateparse import parse_datetime
+
+        from reconciliation.models import ReconciliationLink, derive_link_id, derive_link_idempotency_key
+
+        data = event.get_data()
+        key = derive_link_idempotency_key(bank_line_public_id, journal_line_public_id)
+        link_id = derive_link_id(event.company_id, key)
+        unmatched_at_raw = data.get("unmatched_at") or ""
+        # Mirror the bank line's terminal state: EXCLUDED (operator marked the
+        # line out of scope) vs UNMATCHED (returned to the queue). Both mean
+        # "no longer an active match" for Banked/Open, but the distinction is
+        # preserved for fidelity/audit.
+        target_status = (
+            ReconciliationLink.Status.EXCLUDED
+            if data.get("final_status") == "EXCLUDED"
+            else ReconciliationLink.Status.UNMATCHED
+        )
+        ReconciliationLink.objects.filter(company_id=event.company_id, id=link_id).update(
+            status=target_status,
+            unmatched_at=parse_datetime(unmatched_at_raw) if unmatched_at_raw else None,
+            reason=data.get("unmatch_reason") or "",
+        )
+
+    def _clear_projected_data(self, company) -> None:
+        """A8/P5: clear this projection's OWN table on rebuild. The inherited
+        BaseProjection._clear_projected_data is a no-op (the A115 bug class);
+        without this override, rebuild() would leave stale ReconciliationLink
+        rows. BankStatementLine match-state is mutated in place by the handlers
+        (idempotent get/update), so it is intentionally not cleared here."""
+        from reconciliation.models import ReconciliationLink
+
+        ReconciliationLink.objects.filter(company=company).delete()

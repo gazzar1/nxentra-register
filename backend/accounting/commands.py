@@ -614,6 +614,8 @@ def create_journal_entry(
     currency: str = None,
     exchange_rate: str = None,
     period: int = None,
+    source_module: str = "",
+    source_document: str = "",
 ) -> CommandResult:
     """
     Create a new journal entry.
@@ -754,6 +756,8 @@ def create_journal_entry(
             exchange_rate=str(entry_exchange_rate),
             created_by_id=actor.user.id,
             lines=line_data,
+            source_module=source_module,
+            source_document=source_document,
         ).to_dict(),
     )
 
@@ -1256,6 +1260,10 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
             total_debit=str(converted_total_debit),
             total_credit=str(converted_total_credit),
             lines=line_data,
+            # A116: echo the row's source provenance (set at create time from
+            # the CREATED event) onto the posted event so it survives rebuild.
+            source_module=entry.source_module or "",
+            source_document=entry.source_document or "",
         ).to_dict(),
     )
 

@@ -171,6 +171,22 @@ def _plan_settlement_prepass_matches(
     if not ebd_account:
         return []
 
+    # A129a/P2-P3: batch-scoped idempotency. A settlement whose batch has
+    # already been deposited+cleared (a non-reversed clearance JE exists for
+    # its full `{provider}:{batch}` source_document) must NOT be offered as a
+    # candidate again — even if its EBD line's `reconciled` flag was reset
+    # (e.g. by a statement delete/reimport). The clearance JE's source_document
+    # is the deterministic, provider-scoped key, and since P4 it lives in the
+    # event payload so this guard is replay-safe (unlike the resettable flag).
+    # We do this in the shared planner so preview and execute stay in lockstep.
+    cleared_source_docs = set(
+        JournalEntry.objects.filter(
+            company=company,
+            source_module="payment_settlement_clearance",
+            status=JournalEntry.Status.POSTED,
+        ).values_list("source_document", flat=True)
+    )
+
     # Pre-collect candidates: (entry, ebd_line, net, batch_id)
     candidates: list[tuple] = []
     for entry in settlement_entries:
@@ -178,6 +194,12 @@ def _plan_settlement_prepass_matches(
         if not ebd_line:
             continue
         source_doc = entry.source_document or ""
+        # Provider-scoped idempotency: a non-reversed clearance for this exact
+        # `{provider}:{batch}` means this batch is already cleared. Distinct
+        # providers with the same batch id (e.g. paymob:123 vs bosta:123) have
+        # distinct source_documents, so they never falsely collide here.
+        if source_doc and source_doc in cleared_source_docs:
+            continue
         batch_id = source_doc.split(":", 1)[1] if ":" in source_doc else source_doc
         candidates.append((entry, ebd_line, ebd_line.debit, batch_id))
 

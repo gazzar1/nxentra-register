@@ -20,5 +20,15 @@ class AccountingConfig(AppConfig):
 
     def ready(self):
         """Initialize app when Django starts."""
-        # Import signal handlers here if needed in the future
-        pass
+        # A129b/P6: guard against orphaning a clearance JE by deleting a matched
+        # bank statement outside the sanctioned unmatch-then-delete flow.
+        from django.db.models.signals import pre_delete
+
+        from accounting.models import BankStatement
+        from accounting.signals import guard_bank_statement_delete
+
+        pre_delete.connect(
+            guard_bank_statement_delete,
+            sender=BankStatement,
+            dispatch_uid="accounting.guard_bank_statement_delete",
+        )

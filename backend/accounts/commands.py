@@ -2364,7 +2364,13 @@ def delete_unverified_user(admin_user, user_id: int) -> CommandResult:
             if membership.role == "OWNER":
                 member_count = CompanyMembership.objects.filter(company=company).count()
                 if member_count == 1:
-                    company.delete()
+                    # P6: the company cascade reaches BankStatement; allow the
+                    # delete-guard to pass for legitimate offboarding (the whole
+                    # tenant is going away, so there is nothing to orphan).
+                    from projections.write_barrier import statement_delete_allowed
+
+                    with statement_delete_allowed():
+                        company.delete()
             membership.delete()
 
         # Delete email verification tokens

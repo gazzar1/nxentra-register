@@ -45,7 +45,6 @@ from accounts.authz import system_actor_for_company
 from events.models import BusinessEvent
 from events.types import EventTypes
 from projections.base import BaseProjection
-from projections.write_barrier import command_writes_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -360,6 +359,10 @@ class PaymentSettlementProjection(BaseProjection):
                 kind=JournalEntry.Kind.NORMAL,
                 currency=currency,
                 period=period_override,
+                # A116: source provenance travels in the event payload so the
+                # idempotency check (above) and Banked join survive rebuild.
+                source_module=PROJECTION_NAME,
+                source_document=source_document,
             )
             if not create_result.success:
                 logger.error(
@@ -389,13 +392,6 @@ class PaymentSettlementProjection(BaseProjection):
                 )
                 return
             entry = post_result.data
-
-            # Stamp source_module/source_document for the idempotency check.
-            with command_writes_allowed():
-                JournalEntry.objects.filter(pk=entry.pk).update(
-                    source_module=PROJECTION_NAME,
-                    source_document=source_document,
-                )
 
         logger.info(
             "PaymentSettlement: posted JE %s for %s batch %s (gross=%s net=%s fees=%s uncollected=%s)",

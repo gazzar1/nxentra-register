@@ -441,6 +441,11 @@ class JournalEntryCreatedData(BaseEventData):
     exchange_rate: Optional[str] = None
     created_by_id: Optional[int] = None
     lines: List[dict] = field(default_factory=list)
+    # A116: source provenance must live in the event payload (not a post-hoc
+    # ORM .update()) so it survives a from-scratch projection rebuild and the
+    # Stage1->Stage3 reconciliation join stays intact.
+    source_module: str = ""
+    source_document: str = ""
 
 
 @dataclass
@@ -471,6 +476,11 @@ class JournalEntryPostedData(BaseEventData):
     currency: Optional[str] = None
     exchange_rate: Optional[str] = None
     memo_ar: str = ""
+    # A116: carry source provenance on the posted event too, so direct
+    # create-and-post paths (and the standard create->post chain) both
+    # reconstruct it on rebuild.
+    source_module: str = ""
+    source_document: str = ""
 
 
 @dataclass

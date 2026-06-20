@@ -188,10 +188,13 @@ class Command(BaseCommand):
         """Delete existing Shopify demo data."""
         from accounting.models import BankStatement, BankStatementLine
         from events.models import BusinessEvent
+        from projections.write_barrier import statement_delete_allowed
 
-        # Delete bank statement lines and statements (for reconciliation demo)
+        # Delete bank statement lines and statements (for reconciliation demo).
+        # P6: allow the delete-guard to pass for the reseed flush (demo data).
         bsl_count, _ = BankStatementLine.objects.filter(company=company).delete()
-        bs_count, _ = BankStatement.objects.filter(company=company).delete()
+        with statement_delete_allowed():
+            bs_count, _ = BankStatement.objects.filter(company=company).delete()
         if bsl_count or bs_count:
             self.stdout.write(f"  Deleted {bs_count} BankStatements, {bsl_count} BankStatementLines")
 
