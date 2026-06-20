@@ -1005,10 +1005,30 @@ def _money_trace_for_order(company, provider, order_ref: str) -> dict | None:
             "provider": provider.display_name,
         }
 
-    # Stage 2 — the settlement: the settlement JE that drained clearing for this batch.
+    # Prefer the durable U5a legs on the link; fall back to the legacy suffix
+    # lookup for links written before U5a (those have blank legs).
+    link = None
+    if batch_id:
+        link = (
+            ReconciliationLink.objects.filter(company=company, settlement_batch_id=batch_id)
+            .exclude(status=ReconciliationLink.Status.REVERSED)
+            .order_by("-confirmed_at")
+            .first()
+        )
+
+    # Stage 2 — the settlement JE that drained clearing for this batch.
     stage2 = None
     if batch_id:
-        sje = _settlement_je_for_batch(company, "payment_settlement", batch_id)
+        if link and link.provider_normalized_code:
+            # Provider-scoped EXACT match via the link leg — no suffix ambiguity.
+            sje = JournalEntry.objects.filter(
+                company=company,
+                source_module="payment_settlement",
+                source_document=f"{link.provider_normalized_code}:{batch_id}",
+                status=JournalEntry.Status.POSTED,
+            ).first()
+        else:
+            sje = _settlement_je_for_batch(company, "payment_settlement", batch_id)
         stage2 = {
             "batch_id": batch_id,
             "settled_amount": order.get("settled_amount"),
@@ -1018,14 +1038,18 @@ def _money_trace_for_order(company, provider, order_ref: str) -> dict | None:
     # Stage 3 — the bank: the clearance JE + the durable match (ReconciliationLink).
     stage3 = None
     if order["is_banked"] and batch_id:
-        cje = _settlement_je_for_batch(company, "payment_settlement_clearance", batch_id)
-        link = None
-        if cje:
-            bank_jl = cje.lines.filter(debit__gt=0).first()
-            if bank_jl:
-                link = ReconciliationLink.objects.filter(
-                    company=company, journal_line_public_id=str(bank_jl.public_id)
-                ).first()
+        cje = None
+        if link and link.clearance_je_public_id:
+            cje = JournalEntry.objects.filter(company=company, public_id=link.clearance_je_public_id).first()
+        if cje is None:
+            # Fallback (pre-U5a links): suffix lookup + link via the bank line.
+            cje = _settlement_je_for_batch(company, "payment_settlement_clearance", batch_id)
+            if link is None and cje:
+                bank_jl = cje.lines.filter(debit__gt=0).first()
+                if bank_jl:
+                    link = ReconciliationLink.objects.filter(
+                        company=company, journal_line_public_id=str(bank_jl.public_id)
+                    ).first()
         stage3 = {
             "clearance_je_entry_number": cje.entry_number if cje else None,
             "match": (
