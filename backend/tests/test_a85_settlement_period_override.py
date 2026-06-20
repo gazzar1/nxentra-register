@@ -172,7 +172,7 @@ def test_override_rejected_without_permission(
     """User lacking accounting.je.override_period gets rejected by the
     command layer (defense-in-depth, even if the view also checks)."""
     # Do NOT grant override permission
-    with pytest.raises(SettlementImportError, match="lacks the .*override_period"):
+    with pytest.raises(SettlementImportError, match=r"lacks the .*override_period"):
         import_settlement_csv(
             company=company,
             provider_normalized_code="paymob",
