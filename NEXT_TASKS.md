@@ -820,6 +820,38 @@ Phase A continues. **A0 done** (`fb0e3d6`), **A1 done** (`b6b52b9`–`7d12432`, 
 
 ---
 
+## Phase S — Stripe integration via a canonical payment/settlement layer (2026-06-22)
+
+Full design: [docs/adr/0002-canonical-payments-stripe-adapter.md](docs/adr/0002-canonical-payments-stripe-adapter.md). Stripe is the **first reference adapter** for a small canonical provider-payment layer **inside** the existing event/projection architecture (NOT a parallel `payments_core`). It rides **alongside** Shopify (which stays untouched — the risky Shopify→canonical migration, old B5, is explicitly out of scope) by emitting the same provider-agnostic `PAYMENT_SETTLEMENT_RECEIVED` events the reconciliation engine already consumes. Grounding: ~80% of the "canonical module" already exists (`ReconciliationLink`=BankMatch, `ReconciliationException`=ReconciliationCase, `PlatformSettlement`/`PAYMENT_SETTLEMENT_RECEIVED`=ProviderPayout, `ModuleAccountMapping`+`SettlementProvider`=AccountMapping).
+
+### S0. Financial-trust hardening — **~1w** (BLOCKING; no real merchant connects Stripe until this lands)
+These are **financial-correctness** bugs, not cleanup (fees=0 → Stage 2 lies; module-key split → books silently incomplete; double-post → accounting lies; direct writes → replay lies; sign errors → reconciliation lies).
+- **Module-key unification (test-gated).** One canonical `module_key_for_provider()` routing all 3 sites: order/refund/dispute JEs ([platform_connectors/projections.py:94](backend/platform_connectors/projections.py#L94) `platform_stripe`), settlement JEs ([payment_settlement_projection.py:205](backend/accounting/payment_settlement_projection.py#L205) `stripe_connector` fallback), settlement EBD lookup ([bank_reconciliation.py:633](backend/accounting/bank_reconciliation.py#L633) **hardcoded `shopify_connector`**). Stripe → `platform_stripe`; shopify/paymob/bosta stay `shopify_connector`. Resolve shared-vs-per-provider EBD explicitly. Gate behind a failing characterization test FIRST.
+- Adapter registry replacing the `if code=='paymob'/'bosta'` dispatch ([settlement_imports.py:435](backend/accounting/settlement_imports.py#L435)).
+- `capabilities` property on `BasePlatformConnector` + `ParsedProviderTransaction`/`ParsedPayoutLine` DTOs in `platform_connectors/canonical.py`.
+- Auth-agnostic `StripeAccount`: `auth_type` (restricted_key|oauth) + encrypted `credential_ref`; re-key webhook resolution off the Connect-account-id.
+- **Raw ingestion cache** model `(provider, object_type, external_id, api_version, fetched_at, source, payload_hash, payload_json)` — explicitly raw/source-only (the event store keeps normalized output, not replayable raw input). Replaces the scattered `raw_payload` columns.
+
+### S1. Stripe read-only adapter — **~2w**
+`stripe` SDK + pull client (Payouts + Balance Transactions + Payout Reconciliation report) with sync cursor in `StripeAccount.last_sync_at`; `_setup_platform_accounts` seed under the unified key + `SettlementProvider(stripe, GATEWAY)`; emit `PAYMENT_SETTLEMENT_RECEIVED` with **derived** fees (fix fees=0 at [connector.py:209](backend/stripe_connector/connector.py#L209)); self-serve connect UI (replace "Contact your administrator"); fold/demote direct `store_charge/store_refund/store_payout` writes.
+
+### S2. Stage-2 payout-line breakdown FIRST (the convergence with the recon Stage-2 table) — **~2w**
+Populate `line_items[]` from Balance Transactions filtered by `payout=po_…`; emit `PROVIDER_PAYOUT_RECONCILED`; NEW sole-writer `PaymentsProjection` (uuid5 + `projection_writes_allowed()` guard) materializing `ProviderTransaction`/`ProviderPayoutLine`; re-point `reconcile_payout` variance at `ReconciliationException` via the event path (remove the direct `verified`-flag mutation); two-phase emit for `payout.reconciliation_completed` lag.
+
+### S2-gate. Architecture test — Paymob/Bosta through the canonical projection — **~2d** (early, cheap)
+They already emit `PAYMENT_SETTLEMENT_RECEIVED` with `line_items[]`. Run them through the new `PaymentsProjection` and confirm the read-models populate for messy CSV/COD data (uncollected, returns, multi-gateway). If it only works on Stripe's clean balance transactions, the Stripe-shaped leak surfaces while the abstraction is still soft. A continuous test, not a final phase.
+
+### S3. Shopify↔Stripe order match + dispute/reserve/adjustment events — **~2w**
+Generalize A26/A39 dedup beyond `invoice__source='shopify'` *additively*; dispute-resolution (won/lost/funds-withdrawn) + reserve + adjustment event types + `PlatformAccountingProjection` branches (**events are sole owner** — deprecate command-layer `DISPUTE_WON` to avoid double-post); NEW `PROVIDER_RESERVE`/`PROVIDER_ADJUSTMENT` roles + seed + `check_required_roles` + backfill for connected companies; derive chargeback fee (fix hardcoded $15 at [connector.py:227](backend/stripe_connector/connector.py#L227)).
+
+### S4. Bank deposit match end-to-end — **~1w**
+Verify Stripe EBD → `ReconciliationLink` flows unchanged ([matching.py:212](backend/reconciliation/matching.py#L212)); negative payouts (net debit) + per-currency clearing + realized-FX computation (reuse core `REALIZED_FX_GAIN/LOSS`); orphan Stripe-deposit exceptions on `/finance/exceptions`.
+
+### S5. Second *pull* provider (Paymob API or PayPal) — **~1.5w**
+Self-registers via the S0 registry; confirm only adapter + seed + capability declaration needed — no new events/projections/recon code. Document the adapter onboarding checklist.
+
+---
+
 ## References
 
 - [SESSION_LOG.md](SESSION_LOG.md) — cumulative session history and context
