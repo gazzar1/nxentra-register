@@ -38,7 +38,7 @@ from accounting.commands import (
     post_journal_entry,
     save_journal_entry_complete,
 )
-from accounting.mappings import ModuleAccountMapping
+from accounting.mappings import ModuleAccountMapping, module_key_for_provider
 from accounting.models import JournalEntry
 from accounting.settlement_provider import SettlementProvider
 from accounts.authz import system_actor_for_company
@@ -56,15 +56,6 @@ PROJECTION_NAME = "payment_settlement"
 ROLE_EXPECTED_BANK_DEPOSIT = "EXPECTED_BANK_DEPOSIT"
 ROLE_FEES = "PAYMENT_PROCESSING_FEES"
 ROLE_SALES_RETURNS = "SALES_RETURNS"
-
-# Module name used for the ModuleAccountMapping lookup. The settlement
-# accounts are bootstrapped under the shopify_connector module today; when
-# WooCommerce / Amazon connectors arrive they'll reuse the same role names
-# under their own module key, and this projection will resolve via the
-# provider's external_system.
-_MODULE_BY_EXTERNAL_SYSTEM = {
-    "shopify": "shopify_connector",
-}
 
 
 class PaymentSettlementProjection(BaseProjection):
@@ -202,7 +193,7 @@ class PaymentSettlementProjection(BaseProjection):
                 return
 
         # Resolve accounts.
-        module = _MODULE_BY_EXTERNAL_SYSTEM.get(external_system, f"{external_system}_connector")
+        module = module_key_for_provider(external_system)
         mapping = ModuleAccountMapping.get_mapping(company, module)
         expected_bank = mapping.get(ROLE_EXPECTED_BANK_DEPOSIT)
         fees_account = mapping.get(ROLE_FEES)

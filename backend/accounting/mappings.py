@@ -31,6 +31,32 @@ from projections.write_barrier import write_context_allowed
 logger = logging.getLogger(__name__)
 
 
+# Canonical ModuleAccountMapping module key per payment/settlement provider.
+#
+# Generic platform connectors (Stripe first; future WooCommerce/Amazon) resolve
+# "platform_{slug}" — matching PlatformAccountingProjection — so a provider's
+# order/refund/dispute JEs and its settlement JEs land on ONE mapping. Shopify
+# (and the gateways/couriers that settle *within* the Shopify store — paymob and
+# bosta ride external_system='shopify') keep the grandfathered "shopify_connector"
+# key, seeded by _setup_shopify_accounts and read by the shopify_accounting
+# projection.
+#
+# Single source for a key that was previously computed three inconsistent ways
+# ("platform_{slug}" for order JEs vs "{ext}_connector" for settlement JEs vs a
+# hardcoded "shopify_connector"). See ADR-0002 and test_stripe_module_key_gate.py.
+_PROVIDER_MODULE_OVERRIDES = {
+    "shopify": "shopify_connector",
+}
+
+
+def module_key_for_provider(provider: str) -> str:
+    """Canonical ModuleAccountMapping module key for a payment/settlement
+    provider, given its external_system / platform_slug (the same canonical
+    string for a given provider, e.g. 'stripe', 'shopify')."""
+    key = (provider or "").strip().lower()
+    return _PROVIDER_MODULE_OVERRIDES.get(key, f"platform_{key}")
+
+
 class ModuleAccountMapping(models.Model):
     """
     Maps an account role within a module to a GL Account for a company.

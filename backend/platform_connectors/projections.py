@@ -15,7 +15,7 @@ import logging
 from datetime import date, datetime
 from decimal import Decimal
 
-from accounting.mappings import ModuleAccountMapping
+from accounting.mappings import ModuleAccountMapping, module_key_for_provider
 from events.models import BusinessEvent
 from events.types import EventTypes
 from projections.base import BaseProjection
@@ -91,7 +91,7 @@ class PlatformAccountingProjection(BaseProjection):
         data = event.get_data()
         company = event.company
         platform_slug = data.get("platform_slug", "unknown")
-        module_key = f"platform_{platform_slug}"
+        module_key = module_key_for_provider(platform_slug)
 
         mapping = ModuleAccountMapping.get_mapping(company, module_key)
         if not mapping:
