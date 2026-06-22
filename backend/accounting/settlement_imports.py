@@ -41,7 +41,7 @@ import csv
 import io
 import logging
 from decimal import Decimal, InvalidOperation
-from typing import Iterable
+from typing import Callable, Iterable, NamedTuple
 
 from accounts.models import Company
 from events.emitter import emit_event_no_actor
@@ -396,6 +396,41 @@ def parse_bosta_csv(file_content: bytes | str) -> list[dict]:
 
 
 # =============================================================================
+# Settlement parser registry
+# =============================================================================
+#
+# Maps a provider's normalized code -> how to turn its settlement file into
+# canonical batch dicts (+ the default payment_method tag). Lets a new CSV
+# settlement provider self-register without editing the preview/import dispatch
+# (ADR-0002 S0). A pull-based provider like Stripe builds settlement events from
+# its API, not a CSV, so it does not register here.
+
+
+class SettlementParserSpec(NamedTuple):
+    parse: Callable[[bytes | str], list[dict]]
+    default_method: str
+
+
+_SETTLEMENT_PARSERS: dict[str, SettlementParserSpec] = {}
+
+
+def register_settlement_parser(code: str, parse: Callable[[bytes | str], list[dict]], default_method: str) -> None:
+    _SETTLEMENT_PARSERS[code.strip().lower()] = SettlementParserSpec(parse, default_method)
+
+
+def get_settlement_parser(code: str) -> SettlementParserSpec | None:
+    return _SETTLEMENT_PARSERS.get((code or "").strip().lower())
+
+
+def supported_settlement_providers() -> list[str]:
+    return sorted(_SETTLEMENT_PARSERS)
+
+
+register_settlement_parser("paymob", parse_paymob_csv, "card")
+register_settlement_parser("bosta", parse_bosta_csv, "cash_on_delivery")
+
+
+# =============================================================================
 # Event emission
 # =============================================================================
 
@@ -432,14 +467,13 @@ def preview_settlement_import(
     - import_settlement_csv() — the corresponding execute path
     """
     code = provider_normalized_code.strip().lower()
-    if code == "paymob":
-        batches = parse_paymob_csv(file_content)
-    elif code == "bosta":
-        batches = parse_bosta_csv(file_content)
-    else:
+    spec = get_settlement_parser(code)
+    if spec is None:
         raise SettlementImportError(
-            f"No CSV parser registered for provider {provider_normalized_code!r}. Supported: paymob, bosta."
+            f"No CSV parser registered for provider {provider_normalized_code!r}. "
+            f"Supported: {', '.join(supported_settlement_providers())}."
         )
+    batches = spec.parse(file_content)
 
     if not batches:
         return {
@@ -680,16 +714,14 @@ def import_settlement_csv(
     list of emitted-batch summaries (one per batch in the CSV).
     """
     code = provider_normalized_code.strip().lower()
-    if code == "paymob":
-        batches = parse_paymob_csv(file_content)
-        method = payment_method or "card"
-    elif code == "bosta":
-        batches = parse_bosta_csv(file_content)
-        method = payment_method or "cash_on_delivery"
-    else:
+    spec = get_settlement_parser(code)
+    if spec is None:
         raise SettlementImportError(
-            f"No CSV parser registered for provider {provider_normalized_code!r}. Supported: paymob, bosta."
+            f"No CSV parser registered for provider {provider_normalized_code!r}. "
+            f"Supported: {', '.join(supported_settlement_providers())}."
         )
+    batches = spec.parse(file_content)
+    method = payment_method or spec.default_method
 
     if not batches:
         return []
