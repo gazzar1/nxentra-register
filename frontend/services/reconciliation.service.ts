@@ -121,11 +121,27 @@ export interface MatchesSummary {
   manually_matched: number;
 }
 
+export type ExceptionSeverity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+
+export interface ExceptionItem {
+  public_id: string;
+  title: string;
+  severity: ExceptionSeverity;
+  exception_type: string;
+  amount: string | null;
+  currency: string;
+  platform: string;
+  exception_date: string | null;
+  reference_label: string;
+}
+
 export interface ExceptionsSummary {
   available: boolean;
   total_open: number;
-  by_severity: Partial<Record<"LOW" | "MEDIUM" | "HIGH" | "CRITICAL", number>>;
+  by_severity: Partial<Record<ExceptionSeverity, number>>;
   by_type: Record<string, number>;
+  // Top-N open exceptions (severity-ranked) for the recon-page card.
+  items?: ExceptionItem[];
 }
 
 export interface ReconciliationSummary {

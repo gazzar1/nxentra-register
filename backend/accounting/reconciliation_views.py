@@ -620,49 +620,83 @@ def _matches_summary(company) -> dict:
     }
 
 
-def _exceptions_summary(company) -> dict:
+def _exceptions_summary(company, *, item_limit: int = 8) -> dict:
     """Surface the (built-but-orphaned) reconciliation exception queue on the
     recon page, so the detect → investigate → resolve lifecycle has a home next
     to the numbers it explains.
 
-    Read-only rollup of OPEN exceptions; mirrors bank_connector's
+    Read-only rollup of OPEN exceptions plus a top-N `items` list (severity-
+    ranked, most-recent-first) so the recon-page card can render the actual
+    exceptions and deep-link each — not just counts. Mirrors bank_connector's
     `ExceptionSummaryView` so the recon-page card and the standalone
     `/banking/exceptions` queue always agree. Resilient: if the exception
     app/table isn't present, returns an `available: False` zeroed shape so the
     summary endpoint never 500s on the queue's account.
     """
+    unavailable = {"available": False, "total_open": 0, "by_severity": {}, "by_type": {}, "items": []}
     try:
         # Lazy import — keep accounting decoupled from bank_connector at module
         # load (same idiom as the ReconciliationLink/SalesCreditNote reads above).
         from bank_connector.models import ReconciliationException
     except Exception:
-        return {"available": False, "total_open": 0, "by_severity": {}, "by_type": {}}
+        return unavailable
 
     try:
-        qs = ReconciliationException.objects.filter(company=company)
-        open_qs = qs.filter(
-            status__in=[
-                ReconciliationException.Status.OPEN,
-                ReconciliationException.Status.IN_PROGRESS,
-                ReconciliationException.Status.ESCALATED,
-            ]
+        # Materialize the (bounded) open set once — counts + items both derive
+        # from it, so this stays a single query instead of one-per-severity/type.
+        open_list = list(
+            ReconciliationException.objects.filter(
+                company=company,
+                status__in=[
+                    ReconciliationException.Status.OPEN,
+                    ReconciliationException.Status.IN_PROGRESS,
+                    ReconciliationException.Status.ESCALATED,
+                ],
+            )
         )
-        by_severity = {sev: open_qs.filter(severity=sev).count() for sev in ReconciliationException.Severity.values}
-        by_type = {}
-        for et in ReconciliationException.ExceptionType.values:
-            c = open_qs.filter(exception_type=et).count()
-            if c > 0:
-                by_type[et] = c
-        return {
-            "available": True,
-            "total_open": open_qs.count(),
-            "by_severity": by_severity,
-            "by_type": by_type,
-        }
     except Exception:
         # The table may not exist yet (migrations not run) — degrade gracefully
         # rather than breaking the whole reconciliation snapshot.
-        return {"available": False, "total_open": 0, "by_severity": {}, "by_type": {}}
+        return unavailable
+
+    by_severity = {sev: 0 for sev in ReconciliationException.Severity.values}
+    by_type: dict = {}
+    for e in open_list:
+        by_severity[e.severity] = by_severity.get(e.severity, 0) + 1
+        by_type[e.exception_type] = by_type.get(e.exception_type, 0) + 1
+
+    # Most-urgent first: severity rank, then most-recent exception_date.
+    sev_rank = {
+        ReconciliationException.Severity.CRITICAL: 0,
+        ReconciliationException.Severity.HIGH: 1,
+        ReconciliationException.Severity.MEDIUM: 2,
+        ReconciliationException.Severity.LOW: 3,
+    }
+    top = sorted(
+        open_list,
+        key=lambda e: (sev_rank.get(e.severity, 9), -(e.exception_date.toordinal() if e.exception_date else 0)),
+    )[:item_limit]
+    items = [
+        {
+            "public_id": str(e.public_id),
+            "title": e.title,
+            "severity": e.severity,
+            "exception_type": e.exception_type,
+            "amount": str(e.amount) if e.amount is not None else None,
+            "currency": e.currency,
+            "platform": e.platform,
+            "exception_date": e.exception_date.isoformat() if e.exception_date else None,
+            "reference_label": e.reference_label,
+        }
+        for e in top
+    ]
+    return {
+        "available": True,
+        "total_open": len(open_list),
+        "by_severity": by_severity,
+        "by_type": by_type,
+        "items": items,
+    }
 
 
 class ReconciliationSummaryView(APIView):

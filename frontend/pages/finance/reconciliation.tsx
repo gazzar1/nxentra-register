@@ -26,6 +26,7 @@ import {
   reconciliationService,
   type AgingBucket,
   type DifferenceReason,
+  type ExceptionSeverity,
   type MoneyFlow,
   type MoneyTrace,
   type NeedsReviewItem,
@@ -59,6 +60,13 @@ const AGING_VARIANT: Record<AgingBucket, "secondary" | "warning" | "destructive"
   "30_plus": "destructive",
 };
 
+const SEVERITY_VARIANT: Record<ExceptionSeverity, "secondary" | "warning" | "destructive" | "outline"> = {
+  LOW: "outline",
+  MEDIUM: "secondary",
+  HIGH: "warning",
+  CRITICAL: "destructive",
+};
+
 function formatMoney(s: string): string {
   // Server returns "150.00" already 2dp. Pretty-print with thousands separator.
   const n = Number(s);
@@ -67,6 +75,21 @@ function formatMoney(s: string): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
+}
+
+// /finance/settlements/import only has Paymob + Bosta uploaders; a sub-gateway
+// like paymob_accept settles within the Paymob CSV, so match on prefix and
+// label the action with the importable parent. Anything else (Shopify Payments
+// auto-payouts, manual receipts) is NOT CSV-importable — don't prescribe it.
+const IMPORTABLE_SETTLEMENT_TARGETS: ReadonlyArray<{ prefix: string; label: string }> = [
+  { prefix: "paymob", label: "Paymob" },
+  { prefix: "bosta", label: "Bosta" },
+];
+
+function settlementImportTarget(dimensionValueCode: string): string | null {
+  const code = (dimensionValueCode || "").toLowerCase();
+  const match = IMPORTABLE_SETTLEMENT_TARGETS.find((t) => code.startsWith(t.prefix));
+  return match ? match.label : null;
 }
 
 export default function ReconciliationPage() {
@@ -189,6 +212,18 @@ export default function ReconciliationPage() {
   const totals = summary?.stage1.totals;
   const needsReview = summary?.needs_review;
 
+  // "What to do next" — providers still owed money, most-aged first. Derived
+  // entirely from the Stage-1 rows already on the wire (no extra request); the
+  // exception queue can't surface this because no detector reads the clearing
+  // balances these numbers come from.
+  const attentionProviders = useMemo(
+    () =>
+      stage1Rows
+        .filter((r) => Number(r.open_balance) > 0)
+        .sort((a, b) => b.days_outstanding - a.days_outstanding),
+    [stage1Rows]
+  );
+
   const updateResolve = (
     lineId: number,
     patch: Partial<{ reason: DifferenceReason | ""; notes: string; submitting: boolean }>
@@ -303,6 +338,74 @@ export default function ReconciliationPage() {
               />
             )}
 
+            {/* "What to do next" — per-provider open balances ranked by age,
+               each with a concrete next action. Pure client-side derivation
+               from the Stage-1 rows; answers the merchant's "where do I look
+               first?" without an extra request. */}
+            {attentionProviders.length > 0 && (
+              <Card className="border-amber-500/40 bg-amber-500/5">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <ClipboardCheck className="h-5 w-5 text-amber-600" />
+                    What to do next
+                    <Badge variant="warning">{attentionProviders.length}</Badge>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {attentionProviders.slice(0, 6).map((p) => (
+                    <div
+                      key={`${p.provider_id ?? p.dimension_value_code}-${p.account_id}`}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-background px-3 py-2 text-sm"
+                    >
+                      <div className="flex flex-wrap items-center gap-2">
+                        {PROVIDER_ICON[p.provider_type]}
+                        <span className="font-medium">{p.provider_name}</span>
+                        <span className="text-muted-foreground">
+                          {formatMoney(p.open_balance)} open
+                        </span>
+                        {p.oldest_entry_date && (
+                          <span className="text-muted-foreground">
+                            · oldest {p.oldest_entry_date}
+                          </span>
+                        )}
+                        <Badge variant={AGING_VARIANT[p.aging_bucket]}>
+                          {AGING_LABEL[p.aging_bucket]}
+                        </Badge>
+                      </div>
+                      {(() => {
+                        const target = settlementImportTarget(p.dimension_value_code);
+                        if (target) {
+                          return (
+                            <Link
+                              href="/finance/settlements/import"
+                              className="inline-flex items-center gap-1 font-medium text-primary hover:underline"
+                            >
+                              Import {target} settlement
+                              <ChevronRight className="h-4 w-4" />
+                            </Link>
+                          );
+                        }
+                        // Not CSV-importable: don't send the operator to a page
+                        // that can't act. Gateways/marketplaces settle via
+                        // automated payout sync; manual/bank receipts reconcile
+                        // against the bank statement.
+                        const hint =
+                          p.provider_type === "gateway" || p.provider_type === "marketplace"
+                            ? "Awaiting payout sync"
+                            : "Reconcile manually";
+                        return <span className="text-xs text-muted-foreground">{hint}</span>;
+                      })()}
+                    </div>
+                  ))}
+                  {attentionProviders.length > 6 && (
+                    <p className="text-xs text-muted-foreground">
+                      +{attentionProviders.length - 6} more provider(s) with open balances — see Stage 1 below.
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+
             {/* Exception queue — surface the (previously orphaned) detect →
                investigate → resolve lifecycle next to the numbers it explains.
                Links to the full /banking/exceptions queue. */}
@@ -333,15 +436,44 @@ export default function ReconciliationPage() {
                         </Badge>
                       </CardTitle>
                     </CardHeader>
-                    <CardContent className="flex flex-wrap items-center justify-between gap-3 text-sm">
-                      <p className="text-muted-foreground">{parts.join(" · ")}</p>
-                      <Link
-                        href="/banking/exceptions"
-                        className="inline-flex items-center gap-1 font-medium text-primary hover:underline"
-                      >
-                        Review queue
-                        <ChevronRight className="h-4 w-4" />
-                      </Link>
+                    <CardContent className="space-y-3 text-sm">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <p className="text-muted-foreground">{parts.join(" · ")}</p>
+                        <Link
+                          href="/banking/exceptions"
+                          className="inline-flex items-center gap-1 font-medium text-primary hover:underline"
+                        >
+                          Review queue
+                          <ChevronRight className="h-4 w-4" />
+                        </Link>
+                      </div>
+                      {(summary.exceptions.items?.length ?? 0) > 0 && (
+                        <div className="space-y-1.5">
+                          {summary.exceptions.items!.map((it) => (
+                            <div
+                              key={it.public_id}
+                              className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-background px-3 py-2"
+                            >
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Badge variant={SEVERITY_VARIANT[it.severity] ?? "secondary"}>
+                                  {it.severity}
+                                </Badge>
+                                <span className="font-medium">{it.title}</span>
+                                {it.reference_label && (
+                                  <span className="text-xs text-muted-foreground">
+                                    {it.reference_label}
+                                  </span>
+                                )}
+                              </div>
+                              {it.amount && Number(it.amount) !== 0 && (
+                                <span className="text-muted-foreground">
+                                  {formatMoney(it.amount)} {it.currency}
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </CardContent>
                   </Card>
                 );

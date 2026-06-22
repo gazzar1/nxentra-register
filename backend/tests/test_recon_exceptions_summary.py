@@ -45,10 +45,31 @@ def test_exceptions_summary_counts_only_open_states(db, company):
     assert summary["by_type"][Type.UNMATCHED_PAYOUT] == 2
     assert Type.MISSING_JE not in summary["by_type"]
 
+    # items: only the 3 open rows, severity-ranked (CRITICAL first), shaped for
+    # the recon-page card.
+    items = summary["items"]
+    assert len(items) == 3
+    assert items[0]["severity"] == Sev.CRITICAL
+    assert {i["severity"] for i in items} == {Sev.CRITICAL, Sev.HIGH}
+    assert set(items[0]) >= {"public_id", "title", "severity", "exception_type", "amount", "exception_date"}
+
+
+def test_exceptions_summary_items_respect_limit_and_severity_order(db, company):
+    # 5 LOW + 1 CRITICAL; with a limit of 3 the CRITICAL must still surface first.
+    for _ in range(5):
+        _exc(company, severity=Sev.LOW)
+    _exc(company, severity=Sev.CRITICAL)
+
+    summary = _exceptions_summary(company, item_limit=3)
+    assert summary["total_open"] == 6  # counts are not limited
+    assert len(summary["items"]) == 3  # items are
+    assert summary["items"][0]["severity"] == Sev.CRITICAL
+
 
 def test_exceptions_summary_empty_company_is_available_and_zeroed(db, company):
     summary = _exceptions_summary(company)
     assert summary["available"] is True
     assert summary["total_open"] == 0
     assert summary["by_type"] == {}
+    assert summary["items"] == []
     assert all(v == 0 for v in summary["by_severity"].values())
