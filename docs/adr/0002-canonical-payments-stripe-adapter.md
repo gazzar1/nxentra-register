@@ -42,9 +42,10 @@ Build the **Stripe adapter** + a **small canonical provider-payment layer inside
 
 The use case is reading a **merchant's own** Stripe account, not a platform onboarding sub-merchants — so the "Connect Onboarding / OAuth-not-recommended" caveat does **not** apply (verified against current Stripe docs).
 
-- **Phase 1 (prove the engine, fastest/simplest):** restricted read-only API key (`Balance/Charges/Payouts/Disputes = Read`), entered by the merchant, **encrypted at rest** (mirror A122 token storage).
+- **Phase 1 (prove the engine, fastest/simplest):** restricted read-only API key (`Balance/Charges/Payouts/Disputes = Read`), entered by the merchant.
 - **Public destination:** OAuth via a **Stripe App** when many merchants self-connect.
-- **Design rule:** the connection is **auth-method-agnostic** — `StripeAccount.auth_type` (`restricted_key | oauth`) + an encrypted `credential_ref`; the pull client asks the connection for "a Stripe client" and never cares how it was authorized. The OAuth upgrade then touches only the connect/credential layer, not the engine. Restricted key buys zero less engine-proof and ships in days.
+- **Design rule:** the connection is **auth-method-agnostic** — `StripeAccount.auth_type` (`restricted_key | oauth`) + a `credential_ref`; the pull client asks the connection for "a Stripe client" and never cares how it was authorized. The OAuth upgrade then touches only the connect/credential layer, not the engine. Restricted key buys zero less engine-proof and ships in days.
+- **Encryption-at-rest is A47, and it is a HARD gate before Phase 1.** The codebase has *no* field encryption today (Shopify `access_token` + Stripe `webhook_secret` are plaintext; A122 rotated tokens but did not encrypt). The S0 connection ships the auth-agnostic *shape* with `credential_ref` plaintext **but empty** — nothing populates it until Phase 1's connect UI. **A47 (encrypt all provider credentials — Stripe `credential_ref` + Shopify token + webhook secrets — one key rollout) MUST land before Phase 1 ever writes a real key.** Encrypting only the new field while Shopify tokens stay plaintext would not reduce the DB-breach threat, so it is done once, consistently, deliberately.
 
 ### Raw data — an explicit raw cache IS warranted (reverses the first draft)
 

@@ -22,6 +22,10 @@ class StripeAccount(models.Model):
         DISCONNECTED = "DISCONNECTED", "Disconnected"
         ERROR = "ERROR", "Error"
 
+    class AuthType(models.TextChoices):
+        RESTRICTED_KEY = "restricted_key", "Restricted read-only API key"
+        OAUTH = "oauth", "OAuth (Stripe App)"
+
     company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="stripe_accounts")
     public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     stripe_account_id = models.CharField(max_length=255, help_text="Stripe account ID (acct_...)")
@@ -29,6 +33,21 @@ class StripeAccount(models.Model):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     livemode = models.BooleanField(default=False)
     webhook_secret = models.CharField(max_length=255, default="")
+
+    # Auth-agnostic connection (ADR-0002): restricted read key now, OAuth/Stripe
+    # App later — the pull client asks the connection for a client and never
+    # cares how it was authorized, so the OAuth upgrade touches only this layer.
+    auth_type = models.CharField(max_length=20, choices=AuthType.choices, default=AuthType.RESTRICTED_KEY)
+    credential_ref = models.TextField(
+        default="",
+        blank=True,
+        help_text=(
+            "Read credential for pulling this account's data — a restricted "
+            "read-only API key (Phase 1) or an OAuth token reference (Stripe App). "
+            "Plaintext today; MUST be encrypted at rest (A47) before a real "
+            "credential is stored — that gates Phase 1. See ADR-0002."
+        ),
+    )
     last_sync_at = models.DateTimeField(null=True, blank=True)
     error_message = models.TextField(default="")
     created_at = models.DateTimeField(auto_now_add=True)

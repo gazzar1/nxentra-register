@@ -120,8 +120,6 @@ class StripeConnector(BasePlatformConnector):
 
     def verify_webhook(self, request: HttpRequest) -> bool:
         sig_header = request.META.get("HTTP_STRIPE_SIGNATURE", "")
-        # Look up the webhook secret from the account
-        # For the generic handler, we accept if any account's secret matches
         account_id = self._extract_account_id(request)
         if account_id:
             try:
@@ -133,12 +131,9 @@ class StripeConnector(BasePlatformConnector):
             except StripeAccount.DoesNotExist:
                 pass
 
-        # Fallback: try all active accounts
-        for account in StripeAccount.objects.filter(status=StripeAccount.Status.ACTIVE):
-            if verify_stripe_signature(request.body, sig_header, account.webhook_secret):
-                return True
-
-        return False
+        # Single-merchant / restricted-key accounts carry no Connect account id,
+        # so accept if any active account's webhook secret verifies the request.
+        return self._account_by_webhook_signature(request) is not None
 
     def parse_webhook_topic(self, request: HttpRequest) -> str:
         """Stripe sends event type in the JSON body."""
@@ -154,19 +149,37 @@ class StripeConnector(BasePlatformConnector):
         return STRIPE_TOPIC_MAP.get(topic)
 
     def resolve_company_from_webhook(self, request: HttpRequest):
-        """Resolve company from the Stripe Connect account ID."""
-        account_id = self._extract_account_id(request)
-        if not account_id:
-            return None
+        """Resolve the company for an incoming Stripe webhook.
 
-        try:
-            account = StripeAccount.objects.select_related("company").get(
-                stripe_account_id=account_id,
-                status=StripeAccount.Status.ACTIVE,
-            )
-            return account.company
-        except StripeAccount.DoesNotExist:
-            return None
+        Connect events carry the account id; a single-merchant restricted-key
+        account does not, so fall back to the active account whose webhook secret
+        verifies the request signature (re-keyed off the Connect-account-id
+        assumption, ADR-0002).
+        """
+        account_id = self._extract_account_id(request)
+        if account_id:
+            try:
+                return (
+                    StripeAccount.objects.select_related("company")
+                    .get(stripe_account_id=account_id, status=StripeAccount.Status.ACTIVE)
+                    .company
+                )
+            except StripeAccount.DoesNotExist:
+                pass
+
+        account = self._account_by_webhook_signature(request)
+        return account.company if account else None
+
+    @staticmethod
+    def _account_by_webhook_signature(request: HttpRequest):
+        """The active StripeAccount whose webhook secret verifies this request's
+        signature, or None. Resolves single-merchant accounts that carry no
+        Connect account id (pull + signed webhooks, not Connect routing)."""
+        sig_header = request.META.get("HTTP_STRIPE_SIGNATURE", "")
+        for account in StripeAccount.objects.filter(status=StripeAccount.Status.ACTIVE).select_related("company"):
+            if account.webhook_secret and verify_stripe_signature(request.body, sig_header, account.webhook_secret):
+                return account
+        return None
 
     def parse_order(self, payload: dict) -> ParsedOrder:
         """Parse a Stripe charge.captured event → ParsedOrder."""
