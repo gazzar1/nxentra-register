@@ -103,6 +103,71 @@ class ParsedDispute:
 
 
 @dataclass
+class ParsedProviderTransaction:
+    """One money movement inside a payment provider — a Stripe BalanceTransaction,
+    a PayPal transaction, etc. — the grain *below* a payout. Populated by an
+    adapter's pull/normalize step (ADR-0002). The canonical form of the brief's
+    `ProviderTransaction`; a sole-writer projection materializes the durable
+    read-model from these.
+    """
+
+    external_id: str = ""  # provider id for this txn (e.g. txn_…, bt_…)
+    txn_type: str = ""  # charge / refund / fee / dispute / adjustment / reserve / payout / transfer
+    gross_amount: Decimal = Decimal("0")
+    fee_amount: Decimal = Decimal("0")
+    net_amount: Decimal = Decimal("0")
+    currency: str = "USD"
+    status: str = ""
+    occurred_at: str = ""  # when the money moved (created)
+    available_at: str = ""  # when funds become available / land in a payout
+    payout_external_id: str = ""  # the payout this txn settled in (po_…), if any
+    source_id: str = ""  # the charge / payment_intent this txn relates to
+    source_order_reference: str = ""  # merchant/platform order ref, if resolvable
+
+
+@dataclass
+class ParsedPayoutLine:
+    """One transaction's contribution to a provider payout — the breakdown that
+    answers 'what made up this payout?' (the brief's `ProviderPayoutLine` and the
+    Stage-2 per-batch detail). Feeds `PaymentSettlementReceivedData.line_items[]`.
+    """
+
+    payout_external_id: str = ""
+    transaction_external_id: str = ""
+    line_type: str = ""  # charge / refund / fee / dispute / adjustment
+    gross_amount: Decimal = Decimal("0")
+    fee_amount: Decimal = Decimal("0")
+    net_amount: Decimal = Decimal("0")
+    currency: str = "USD"
+
+
+@dataclass(frozen=True)
+class ProviderCapabilities:
+    """What a payment/commerce connector can do, so the engine and UI adapt per
+    provider (Stripe pulls rich balance transactions; a CSV gateway only imports
+    a file). Declared by each connector's `capabilities` property — a typed,
+    dict-like descriptor, NOT a table (ADR-0002).
+    """
+
+    # Outbound, accounting-grade reads
+    pull_payouts: bool = False
+    pull_transactions: bool = False  # balance-transaction-level pull
+    payout_line_breakdown: bool = False  # can attribute a payout to its txns
+    webhooks: bool = False
+    # Money lifecycle modeled
+    refunds: bool = True
+    disputes: bool = False
+    dispute_resolution: bool = False  # won / lost / funds-withdrawn
+    reserves: bool = False
+    adjustments: bool = False
+    multi_currency: bool = False  # realized-FX possible
+    # Money shape / connection
+    fee_in_payout: str = "none"  # "given" (in payout) | "derived" (from txns) | "none"
+    auth: str = ""  # "restricted_read_key" | "oauth" | "offline_token" | "csv"
+    csv_import: bool = False  # settlement-CSV import path
+
+
+@dataclass
 class ParsedFulfillment:
     """
     Platform-agnostic representation of a fulfillment/shipment.

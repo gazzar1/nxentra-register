@@ -20,6 +20,7 @@ from platform_connectors.canonical import (
     ParsedOrder,
     ParsedPayout,
     ParsedRefund,
+    ProviderCapabilities,
 )
 
 from .models import StripeAccount
@@ -93,8 +94,29 @@ class StripeConnector(BasePlatformConnector):
     def webhook_topics(self) -> list[str]:
         return list(STRIPE_TOPIC_MAP.keys())
 
-    def get_module_key(self) -> str:
-        return "stripe_connector"
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        # Stripe's BalanceTransactions API gives gross/fee/net per txn + the link
+        # to payouts; payout.paid alone lacks the fee split, so fees are DERIVED
+        # from balance transactions (not given in the payout). See ADR-0002.
+        return ProviderCapabilities(
+            pull_payouts=True,
+            pull_transactions=True,
+            payout_line_breakdown=True,
+            webhooks=True,
+            refunds=True,
+            disputes=True,
+            dispute_resolution=True,
+            reserves=True,
+            adjustments=True,
+            multi_currency=True,
+            fee_in_payout="derived",
+            auth="restricted_read_key",
+            csv_import=False,
+        )
+
+    # get_module_key() inherited from BasePlatformConnector → resolves
+    # 'platform_stripe' via module_key_for_provider (ADR-0002 module-key unify).
 
     def verify_webhook(self, request: HttpRequest) -> bool:
         sig_header = request.META.get("HTTP_STRIPE_SIGNATURE", "")

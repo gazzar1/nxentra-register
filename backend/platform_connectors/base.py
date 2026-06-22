@@ -22,6 +22,7 @@ from .canonical import (
     ParsedOrder,
     ParsedPayout,
     ParsedRefund,
+    ProviderCapabilities,
 )
 
 
@@ -81,6 +82,17 @@ class BasePlatformConnector(ABC):
         Override in subclass to declare supported topics.
         """
         return []
+
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        """What this connector can do, so the engine and UI adapt per provider
+        (e.g. pull rich balance transactions vs only import a settlement CSV).
+
+        Default is conservative — webhook-driven, no outbound pull. Override per
+        connector to declare richer reads (pull, payout-line breakdown, disputes/
+        reserves/adjustments, auth shape). See ADR-0002.
+        """
+        return ProviderCapabilities(webhooks=True)
 
     @abstractmethod
     def verify_webhook(self, request: HttpRequest) -> bool:
@@ -157,10 +169,13 @@ class BasePlatformConnector(ABC):
         """
         Module key for ModuleAccountMapping lookups.
 
-        Defaults to 'platform_{slug}'. Override to use an existing
-        module key (e.g. Shopify uses 'shopify_connector').
+        Routes through the canonical `module_key_for_provider` so every site
+        agrees: 'platform_{slug}' for generic platform connectors, the
+        grandfathered 'shopify_connector' for Shopify. See ADR-0002.
         """
-        return f"platform_{self.platform_slug}"
+        from accounting.mappings import module_key_for_provider
+
+        return module_key_for_provider(self.platform_slug)
 
     def resolve_company_from_webhook(self, request: HttpRequest):
         """
