@@ -359,3 +359,95 @@ class PlatformSettlement(models.Model):
 
     def __str__(self):
         return f"{self.platform} {self.settlement_type} {self.platform_document_id} ({self.net_amount} {self.currency})"
+
+
+class ProviderRawObject(models.Model):
+    """Raw, source-of-record copy of one external provider object — a Stripe
+    BalanceTransaction/Payout, a webhook event, a settlement CSV row — WITH
+    provenance (api_version, fetched_at, source channel, payload hash), so
+    normalization is REPLAYABLE after a bug.
+
+    Explicitly RAW / source-only, NOT a truth model: truth lives in events +
+    projections. The normalizer reads from here; replay = re-run it over
+    `payload_json`. Consolidates the scattered per-connector `raw_payload`
+    columns (the event store keeps normalized OUTPUT, not replayable raw INPUT).
+    See ADR-0002.
+
+    Dedup key `(company, provider, object_type, external_id, payload_hash)`: a
+    re-fetch of the SAME payload is idempotent; a CHANGED payload appends a new
+    row, giving an append-only snapshot history per object.
+    """
+
+    class Source(models.TextChoices):
+        API = "api", "API pull"
+        WEBHOOK = "webhook", "Webhook"
+        REPORT = "report", "Reporting API / report"
+        CSV = "csv", "CSV import"
+        MANUAL = "manual", "Manual"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="provider_raw_objects")
+    provider = models.CharField(max_length=40)  # 'stripe' / 'shopify' / 'paymob' / …
+    object_type = models.CharField(max_length=60)  # 'balance_transaction' / 'payout' / 'charge' / 'event' / …
+    external_id = models.CharField(max_length=255)  # provider id (bt_… / po_… / evt_…)
+    api_version = models.CharField(max_length=40, default="", blank=True)
+    source = models.CharField(max_length=20, choices=Source.choices)
+    fetched_at = models.DateTimeField(help_text="When WE fetched/received it (not the provider's created time).")
+    payload_hash = models.CharField(max_length=64)  # SHA-256 of the canonical payload
+    payload_json = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "provider_raw_object"
+        ordering = ["-fetched_at", "-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "provider", "object_type", "external_id", "payload_hash"],
+                name="uniq_provider_raw_object",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["company", "provider", "object_type"]),
+            models.Index(fields=["company", "provider", "external_id"]),
+            models.Index(fields=["company", "payload_hash"]),
+        ]
+        verbose_name = "Provider Raw Object"
+        verbose_name_plural = "Provider Raw Objects"
+
+    def __str__(self):
+        return f"ProviderRawObject({self.provider}:{self.object_type}:{self.external_id})"
+
+    @classmethod
+    def record(
+        cls,
+        *,
+        company,
+        provider: str,
+        object_type: str,
+        external_id: str,
+        payload: dict,
+        source: str,
+        api_version: str = "",
+        fetched_at=None,
+    ):
+        """Idempotently record a raw provider object (the replay/audit seam an
+        adapter calls at ingestion). Dedups on payload_hash: the same payload is
+        a no-op; a changed payload appends a new snapshot. Returns (obj, created).
+        """
+        from django.utils import timezone
+
+        from events.serialization import compute_payload_hash
+
+        return cls.objects.get_or_create(
+            company=company,
+            provider=(provider or "").strip().lower(),
+            object_type=object_type,
+            external_id=external_id,
+            payload_hash=compute_payload_hash(payload),
+            defaults={
+                "payload_json": payload,
+                "source": source,
+                "api_version": api_version,
+                "fetched_at": fetched_at or timezone.now(),
+            },
+        )
