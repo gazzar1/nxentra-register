@@ -927,4 +927,55 @@ See [NEXT_TASKS.md](NEXT_TASKS.md) "What to do right now, today" for the full pl
 4. **A37 (Subledger tieout)** worth scheduling early — likely also fixes the A10 false-positive warning.
 5. **A3 + A4 + A5** architectural cleanup, but only after first-merchant feedback informs the actual loopholes that matter.
 
+---
+
+## Session: 2026-05-23 — App Store submission prep (paper deliverables)
+
+### Goal
+
+Ship the Nxentra Shopify App Store listing submission. Per the latest evaluation refresh, "Stop building. Start selling." — this session was scoped entirely to closing A45 + A52 + assembling submission deliverables. **No new feature work.**
+
+### What this session actually delivered
+
+- **New artifact:** [APP_STORE_SUBMISSION_KIT.md](APP_STORE_SUBMISSION_KIT.md) — 10-section operator playbook covering the A45 Partners Dashboard click-path, email forwarding setup, A52 diagnosis + recommendation, 5-shot screenshot list, 4m30s screencast script with timed voiceover, App Store listing copy (tagline, short, long, features, pricing, support), reviewer instructions block (paste-ready), Path 3 demo-data recipe, submission click-path, and a top-to-bottom operator checklist.
+- **A52 diagnosis without live retest** (operator was not available to click through reviewer login):
+  - Refuted the briefing hypothesis (`updated_at_min` vs `created_at_min`). `tasks.py:178-183` already uses `created_at_min`.
+  - Ranked alternative root causes: (1) test orders excluded by Shopify REST default — most likely given Bogus Gateway dev store, (2) refunded-status handler skip — refuted because `fetched=0` toast wouldn't show "0 already synced" if `skipped++`, (3) API version 2025-01 stale — refuted because `sync_payouts` works on the same version, (4) timezone — low likelihood given 7-day window.
+  - **Recommendation: take Path 3 for the submission.** Per briefing guardrails: don't ship sync-logic changes during the review window. The proper A52 fix is GraphQL migration, post-listing.
+- **Code changes:** none. No commits. No deploys.
+
+### What is NOT done (operator-only work, blocked on you-at-the-keyboard)
+
+All blockers are external actions Claude cannot perform. The kit covers each step-by-step:
+1. `admin@nxentra.com` email forwarding — DNS / Google Workspace config (Kit §3).
+2. Partners Dashboard A45 config — privacy URL + support email + 3 compliance webhook URLs (Kit §2).
+3. Droplet `git log --oneline -3` + `pm2 status` verification (Kit §0).
+4. `shopify app deploy` from laptop → release `nxentra-sync-5` (Kit §10 step 3).
+5. Reviewer login smoke test on production `app.nxentra.com` (Kit §0).
+6. Path 3 demo data creation in Shopify_R (Kit §8).
+7. 5 screenshots @ 1280x800 (Kit §4).
+8. 4m30s screencast → unlisted YouTube upload (Kit §5).
+9. Paste listing copy + reviewer instructions into Partners Dashboard (Kit §6, §7).
+10. Submit. Capture submission ID. Append to this file with the entry template (Kit §9).
+
+### A52 retest
+
+Did **not** happen this session. Live retest requires reviewer login + clicking "Re-sync Orders (7d)" + tailing the droplet's Django log for the `[A52]` log lines that commit `104a453` added. Operator action.
+
+If you do retest and the log shows `fetched=0`, the kit's stretch attempt (add `"test": "any"` to params) is safe to try on Shopify_R before any commit — confirms or refutes the test-orders hypothesis without shipping anything. If the log shows `fetched>0, created=0`, the handler is skipping orders that don't match `paid/pending/cancelled` — likely refunded orders need their own path (post-listing work).
+
+### Files touched
+
+- New: `APP_STORE_SUBMISSION_KIT.md` (10 sections, ~300 lines).
+- Edit: `SESSION_LOG.md` (this entry).
+
+### Expected next state
+
+After the operator works through Kit §10:
+- App Store listing submitted via Partners Dashboard.
+- Submission ID captured.
+- Expected Shopify review window: 5-7 business days per their stated SLA; historically 7-14 days based on community reports.
+- **If approved:** start the post-listing queue per `NEXT_TASKS.md` (A53 → A55 → A54 → A52 proper fix via GraphQL).
+- **If rejected:** kit §9 covers the four most common rejection reasons + responses.
+
 **Do not start Phase B** until first merchant has been live ~30 days. Phase B on an unverified foundation is where accounting systems die.
