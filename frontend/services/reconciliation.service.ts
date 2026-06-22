@@ -121,6 +121,13 @@ export interface MatchesSummary {
   manually_matched: number;
 }
 
+export interface ExceptionsSummary {
+  available: boolean;
+  total_open: number;
+  by_severity: Partial<Record<"LOW" | "MEDIUM" | "HIGH" | "CRITICAL", number>>;
+  by_type: Record<string, number>;
+}
+
 export interface ReconciliationSummary {
   as_of: string;
   narrative: string;
@@ -133,6 +140,9 @@ export interface ReconciliationSummary {
   stage2: Stage2Summary;
   stage3: Stage3Summary;
   needs_review: NeedsReviewQueue;
+  // Surfaces the (previously orphaned) exception queue on the recon page.
+  // Optional so an older backend response still type-checks.
+  exceptions?: ExceptionsSummary;
 }
 
 export interface ReconciliationDrilldownLine {

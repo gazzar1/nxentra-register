@@ -303,6 +303,50 @@ export default function ReconciliationPage() {
               />
             )}
 
+            {/* Exception queue — surface the (previously orphaned) detect →
+               investigate → resolve lifecycle next to the numbers it explains.
+               Links to the full /banking/exceptions queue. */}
+            {summary.exceptions?.available &&
+              summary.exceptions.total_open > 0 &&
+              (() => {
+                const critical = summary.exceptions.by_severity?.CRITICAL ?? 0;
+                const high = summary.exceptions.by_severity?.HIGH ?? 0;
+                const parts = [
+                  `${summary.exceptions.total_open} open`,
+                  critical > 0 ? `${critical} critical` : null,
+                  high > 0 ? `${high} high` : null,
+                ].filter(Boolean);
+                return (
+                  <Card
+                    className={
+                      critical > 0
+                        ? "border-destructive/40 bg-destructive/5"
+                        : "border-amber-500/40 bg-amber-500/5"
+                    }
+                  >
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2 text-base">
+                        <AlertCircle className="h-5 w-5 text-destructive" />
+                        Exceptions to investigate
+                        <Badge variant={critical > 0 ? "destructive" : "warning"}>
+                          {summary.exceptions.total_open}
+                        </Badge>
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="flex flex-wrap items-center justify-between gap-3 text-sm">
+                      <p className="text-muted-foreground">{parts.join(" · ")}</p>
+                      <Link
+                        href="/banking/exceptions"
+                        className="inline-flex items-center gap-1 font-medium text-primary hover:underline"
+                      >
+                        Review queue
+                        <ChevronRight className="h-4 w-4" />
+                      </Link>
+                    </CardContent>
+                  </Card>
+                );
+              })()}
+
             {/* Top-line totals */}
             {totals && (
               <div

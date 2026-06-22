@@ -620,6 +620,51 @@ def _matches_summary(company) -> dict:
     }
 
 
+def _exceptions_summary(company) -> dict:
+    """Surface the (built-but-orphaned) reconciliation exception queue on the
+    recon page, so the detect → investigate → resolve lifecycle has a home next
+    to the numbers it explains.
+
+    Read-only rollup of OPEN exceptions; mirrors bank_connector's
+    `ExceptionSummaryView` so the recon-page card and the standalone
+    `/banking/exceptions` queue always agree. Resilient: if the exception
+    app/table isn't present, returns an `available: False` zeroed shape so the
+    summary endpoint never 500s on the queue's account.
+    """
+    try:
+        # Lazy import — keep accounting decoupled from bank_connector at module
+        # load (same idiom as the ReconciliationLink/SalesCreditNote reads above).
+        from bank_connector.models import ReconciliationException
+    except Exception:
+        return {"available": False, "total_open": 0, "by_severity": {}, "by_type": {}}
+
+    try:
+        qs = ReconciliationException.objects.filter(company=company)
+        open_qs = qs.filter(
+            status__in=[
+                ReconciliationException.Status.OPEN,
+                ReconciliationException.Status.IN_PROGRESS,
+                ReconciliationException.Status.ESCALATED,
+            ]
+        )
+        by_severity = {sev: open_qs.filter(severity=sev).count() for sev in ReconciliationException.Severity.values}
+        by_type = {}
+        for et in ReconciliationException.ExceptionType.values:
+            c = open_qs.filter(exception_type=et).count()
+            if c > 0:
+                by_type[et] = c
+        return {
+            "available": True,
+            "total_open": open_qs.count(),
+            "by_severity": by_severity,
+            "by_type": by_type,
+        }
+    except Exception:
+        # The table may not exist yet (migrations not run) — degrade gracefully
+        # rather than breaking the whole reconciliation snapshot.
+        return {"available": False, "total_open": 0, "by_severity": {}, "by_type": {}}
+
+
 class ReconciliationSummaryView(APIView):
     """
     GET /api/accounting/reconciliation/summary/
@@ -654,6 +699,7 @@ class ReconciliationSummaryView(APIView):
 
         money_flow = _money_flow(stage1_totals, stage2, actor.company.default_currency or "")
         matches = _matches_summary(actor.company)
+        exceptions = _exceptions_summary(actor.company)
 
         return Response(
             {
@@ -668,6 +714,7 @@ class ReconciliationSummaryView(APIView):
                 "stage2": stage2,
                 "stage3": stage3,
                 "needs_review": needs_review,
+                "exceptions": exceptions,
             }
         )
 
