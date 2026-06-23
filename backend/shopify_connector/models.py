@@ -11,6 +11,7 @@ import uuid
 from django.db import models
 
 from accounts.models import Company
+from nxentra_backend.crypto import EncryptedTextField
 
 
 class ShopifyStore(models.Model):
@@ -38,10 +39,9 @@ class ShopifyStore(models.Model):
         max_length=255,
         help_text="e.g. my-store.myshopify.com",
     )
-    access_token = models.CharField(
-        max_length=255,
+    access_token = EncryptedTextField(
         blank=True,
-        help_text="Shopify Admin API access token (encrypted at rest in production).",
+        help_text="Shopify Admin API access token. Encrypted at rest (A47).",
     )
     # A122 (2026-06-02): Shopify deprecated non-expiring offline tokens
     # (deadline 2027-01-01, partially enforced today). We now request expiring
@@ -49,13 +49,12 @@ class ShopifyStore(models.Model):
     # before each API call. Existing rows from before A122 have empty
     # refresh_token / null token_expires_at — those tokens are non-expiring
     # legacy ones and must be re-OAuthed before Shopify rejects them.
-    refresh_token = models.CharField(
-        max_length=255,
+    refresh_token = EncryptedTextField(
         blank=True,
         help_text=(
-            "Shopify refresh token (shprt_*). Used to obtain a new access "
-            "token before the current one expires. Empty for legacy "
-            "non-expiring tokens issued before A122."
+            "Shopify refresh token (shprt_*). Encrypted at rest (A47). Used to "
+            "obtain a new access token before the current one expires. Empty "
+            "for legacy non-expiring tokens issued before A122."
         ),
     )
     token_expires_at = models.DateTimeField(
@@ -204,8 +203,8 @@ class PendingShopifyInstall(models.Model):
 
     public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     shop_domain = models.CharField(max_length=255, db_index=True)
-    access_token = models.CharField(max_length=255)
-    refresh_token = models.CharField(max_length=255, blank=True)
+    access_token = EncryptedTextField(help_text="Encrypted at rest (A47).")
+    refresh_token = EncryptedTextField(blank=True, help_text="Encrypted at rest (A47).")
     token_expires_at = models.DateTimeField(null=True, blank=True)
     refresh_token_expires_at = models.DateTimeField(null=True, blank=True)
     scopes = models.CharField(max_length=500, blank=True)

@@ -219,10 +219,17 @@ def get_export_registry():
     return registry
 
 
-# Fields to exclude from export (secrets, auto-generated timestamps)
+# Fields to exclude from export (secrets, auto-generated timestamps).
+# These are nulled by NAME on export — a name that doesn't match a real
+# concrete field silently redacts NOTHING (that was the A47 bug below).
 EXCLUDED_FIELDS = {
-    "shopify_connector.ShopifyStore": ["access_token"],
-    "stripe_connector.StripeAccount": ["access_token", "refresh_token"],
+    # access_token alone left the rotating refresh_token (shprt_*) — which can
+    # re-mint access — exporting in clear; oauth_nonce is a live OAuth secret.
+    "shopify_connector.ShopifyStore": ["access_token", "refresh_token", "oauth_nonce"],
+    # A47 fix: the old ["access_token","refresh_token"] named fields that don't
+    # exist on StripeAccount, so webhook_secret + credential_ref leaked. These
+    # are the real secret fields.
+    "stripe_connector.StripeAccount": ["webhook_secret", "credential_ref"],
     "events.ExternalAPIKey": ["key_hash"],
 }
 

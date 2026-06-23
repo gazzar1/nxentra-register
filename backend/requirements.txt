@@ -7,6 +7,9 @@ openpyxl>=3.1.0
 dj-database-url>=2.1.0
 python-dotenv>=1.0.0
 
+# Field encryption at rest (A47) — Fernet/MultiFernet for provider credentials
+cryptography>=42.0
+
 # Email (Postmark)
 postmarker>=1.0
 

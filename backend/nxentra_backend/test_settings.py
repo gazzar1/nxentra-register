@@ -68,6 +68,12 @@ for key in list(DATABASES.keys()):
     if key.startswith('tenant_'):
         del DATABASES[key]
 
+# A47: a fixed Fernet key so EncryptedTextField round-trips deterministically
+# across runs (--reuse-db persists ciphertext between runs; a generated key
+# would fail to decrypt prior rows). Tests that exercise rotation override
+# this via override_settings.
+FIELD_ENCRYPTION_KEY = "q2jxAVYf7CLIEoWl4kirqfmtKwYHX-ne4zcmToWNVRM="
+
 # Ensure test flags are set
 TESTING = True
 DISABLE_EVENT_VALIDATION = True

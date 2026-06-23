@@ -74,6 +74,22 @@ RLS_BYPASS = os.getenv("RLS_BYPASS", "False") == "True" or TESTING
 PROJECTIONS_SYNC = os.getenv("PROJECTIONS_SYNC", "") == "True" or DEBUG or TESTING
 ALLOW_ADMIN_EMERGENCY_WRITES = os.getenv("ALLOW_ADMIN_EMERGENCY_WRITES", "False") == "True"
 
+# =============================================================================
+# Field encryption at rest (A47)
+# =============================================================================
+# Drives nxentra_backend.crypto: encrypts provider credentials (Shopify
+# access/refresh tokens, Stripe webhook secret + read key) before they hit
+# the DB. One or more comma-separated urlsafe-base64 Fernet keys — the FIRST
+# encrypts, ALL decrypt (MultiFernet), so rotation is: prepend new key →
+# re-encrypt rows → drop the old key. Generate one with:
+#   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+FIELD_ENCRYPTION_KEY = os.getenv("FIELD_ENCRYPTION_KEY", "")
+if not DEBUG and not TESTING and not FIELD_ENCRYPTION_KEY:
+    raise ValueError(
+        "FIELD_ENCRYPTION_KEY is not set. Provider credentials (Shopify/Stripe) "
+        "would be stored in plaintext. Set a Fernet key — see nxentra_backend.crypto."
+    )
+
 # A86.7b (2026-05-26): event-driven reconciliation state is now the
 # default. The ReconciliationProjection is the canonical writer for
 # BankStatementLine match state — driven by the ReconciliationMatch*
