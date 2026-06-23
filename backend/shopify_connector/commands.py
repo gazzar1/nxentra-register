@@ -1041,6 +1041,11 @@ def disconnect_store(actor: ActorContext, store_public_id: str = None) -> Comman
     with command_writes_allowed():
         store.status = ShopifyStore.Status.DISCONNECTED
         store.access_token = ""
+        # A47: also clear the rotating refresh token + expiries — otherwise a
+        # disconnected store keeps a live shprt_* token that can re-mint access.
+        store.refresh_token = ""
+        store.token_expires_at = None
+        store.refresh_token_expires_at = None
         store.save()
 
     emit_event(
@@ -1441,6 +1446,10 @@ def process_app_uninstalled(store: ShopifyStore, payload: dict) -> CommandResult
     with command_writes_allowed():
         store.status = ShopifyStore.Status.DISCONNECTED
         store.access_token = ""
+        # A47: clear the rotating refresh token + expiries on uninstall too.
+        store.refresh_token = ""
+        store.token_expires_at = None
+        store.refresh_token_expires_at = None
         store.error_message = "App uninstalled by merchant"
         store.save()
 

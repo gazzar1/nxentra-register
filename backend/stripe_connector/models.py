@@ -11,6 +11,7 @@ import uuid
 from django.db import models
 
 from accounts.models import Company
+from nxentra_backend.crypto import EncryptedTextField
 
 
 class StripeAccount(models.Model):
@@ -32,20 +33,23 @@ class StripeAccount(models.Model):
     display_name = models.CharField(max_length=255, default="")
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     livemode = models.BooleanField(default=False)
-    webhook_secret = models.CharField(max_length=255, default="")
+    webhook_secret = EncryptedTextField(
+        default="",
+        blank=True,
+        help_text="Stripe webhook signing secret (whsec_*). Encrypted at rest (A47).",
+    )
 
     # Auth-agnostic connection (ADR-0002): restricted read key now, OAuth/Stripe
     # App later — the pull client asks the connection for a client and never
     # cares how it was authorized, so the OAuth upgrade touches only this layer.
     auth_type = models.CharField(max_length=20, choices=AuthType.choices, default=AuthType.RESTRICTED_KEY)
-    credential_ref = models.TextField(
+    credential_ref = EncryptedTextField(
         default="",
         blank=True,
         help_text=(
             "Read credential for pulling this account's data — a restricted "
             "read-only API key (Phase 1) or an OAuth token reference (Stripe App). "
-            "Plaintext today; MUST be encrypted at rest (A47) before a real "
-            "credential is stored — that gates Phase 1. See ADR-0002."
+            "Encrypted at rest (A47). See ADR-0002."
         ),
     )
     last_sync_at = models.DateTimeField(null=True, blank=True)
