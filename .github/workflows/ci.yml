@@ -263,6 +263,9 @@ jobs:
           ALLOWED_HOSTS: "ci.nxentra.com"
           CORS_ALLOWED_ORIGINS: "https://ci.nxentra.com"
           CSRF_TRUSTED_ORIGINS: "https://ci.nxentra.com"
+          # A47: prod settings hard-fail without an encryption key (DEBUG=False,
+          # not TESTING). Inject a throwaway CI Fernet key, same as SECRET_KEY.
+          FIELD_ENCRYPTION_KEY: "q2jxAVYf7CLIEoWl4kirqfmtKwYHX-ne4zcmToWNVRM="
         run: python manage.py check --deploy --fail-level WARNING
 
       - name: Django migration check (no uncommitted model changes)
