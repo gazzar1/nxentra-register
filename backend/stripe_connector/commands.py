@@ -195,3 +195,86 @@ def _resolve_account(company, payload):
             pass
     # Fallback: first active account for this company
     return StripeAccount.objects.filter(company=company, status=StripeAccount.Status.ACTIVE).first()
+
+
+def connect_stripe_account(company, credential: str, display_name: str = ""):
+    """Validate + persist a restricted read key as an ACTIVE Stripe connection
+    (ADR-0002 S1). The single place a real Stripe credential first enters the
+    system, so it enforces the safety invariants:
+
+      * reject SECRET (sk_) + publishable (pk_) keys — only restricted READ keys
+        (rk_…) are accepted, so Nxentra can never write to a merchant's Stripe;
+      * live-probe the key against Stripe to confirm it's valid + read-scoped and
+        to capture the account id + livemode;
+      * store the credential A47-encrypted (credential_ref is an EncryptedTextField);
+      * seed the platform_stripe accounts + SettlementProvider and kick an
+        initial backfill.
+    """
+    from django.conf import settings as dj_settings
+
+    from accounting.commands import CommandResult
+    from projections.write_barrier import command_writes_allowed
+
+    from .api_client import StripeAccessDenied, StripeApiClient, StripeApiError
+    from .seed import setup_stripe_platform
+
+    credential = (credential or "").strip()
+    if not credential:
+        return CommandResult.fail("Enter your Stripe restricted read-only API key.")
+    if credential.startswith("sk_"):
+        return CommandResult.fail(
+            "That looks like a SECRET key (sk_…), which grants write access. Nxentra is "
+            "read-only — create a RESTRICTED key (rk_…) with Balance, Charges, Payouts and "
+            "Disputes set to Read."
+        )
+    if credential.startswith("pk_"):
+        return CommandResult.fail("That's a publishable key (pk_…). Provide a restricted read-only key (rk_…).")
+    if not credential.startswith(("rk_test_", "rk_live_")):
+        return CommandResult.fail(
+            "Invalid key format. Provide a Stripe restricted read-only API key (starts with rk_test_ or rk_live_)."
+        )
+
+    client = StripeApiClient(credential, api_version=getattr(dj_settings, "STRIPE_API_VERSION", "") or None)
+    try:
+        acct = client.retrieve_account()
+    except StripeAccessDenied:
+        return CommandResult.fail(
+            "Stripe rejected that key — it's invalid or lacks read scope. Ensure the restricted "
+            "key has Account, Balance, Charges and Payouts set to Read."
+        )
+    except StripeApiError as exc:
+        return CommandResult.fail(f"Couldn't validate the key with Stripe: {exc}")
+
+    acct_id = acct.get("id") or ""
+    if not acct_id:
+        return CommandResult.fail("Stripe didn't return an account id for that key.")
+    livemode = bool(acct.get("livemode", credential.startswith("rk_live_")))
+    name = display_name or (acct.get("business_profile") or {}).get("name") or acct.get("email") or "Stripe"
+
+    account, _ = StripeAccount.objects.update_or_create(
+        company=company,
+        stripe_account_id=acct_id,
+        defaults={
+            "auth_type": StripeAccount.AuthType.RESTRICTED_KEY,
+            "credential_ref": credential,  # EncryptedTextField → encrypted at rest (A47)
+            "status": StripeAccount.Status.ACTIVE,
+            "livemode": livemode,
+            "display_name": name,
+            "error_message": "",
+        },
+    )
+
+    # Seed the platform_stripe accounts + SettlementProvider so the first synced
+    # payout's JE can resolve its mapping (idempotent).
+    with command_writes_allowed():
+        setup_stripe_platform(company)
+
+    # Kick an initial backfill (best-effort — a broker hiccup must not fail connect).
+    try:
+        from .tasks import initial_stripe_sync
+
+        initial_stripe_sync.delay(account.id)
+    except Exception:
+        logger.warning("Could not enqueue initial Stripe sync for account %s", account.id)
+
+    return CommandResult.ok(data={"account": account})

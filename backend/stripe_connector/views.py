@@ -434,6 +434,43 @@ class StripeAccountMappingView(APIView):
         return Response({"status": "saved"})
 
 
+class StripeConnectView(APIView):
+    """POST a Stripe restricted read-only API key (rk_…) to connect (ADR-0002 S1).
+
+    Body: {"credential": "rk_live_…", "display_name": "optional"}. The command
+    validates the key is read-only, live-probes it, stores it A47-encrypted,
+    seeds the platform accounts, and kicks an initial backfill.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        actor = resolve_actor(request)
+        require(actor, "settings.edit")
+
+        from .commands import connect_stripe_account
+
+        result = connect_stripe_account(
+            actor.company,
+            request.data.get("credential", ""),
+            request.data.get("display_name", ""),
+        )
+        if not result.success:
+            return Response({"error": result.error}, status=status.HTTP_400_BAD_REQUEST)
+
+        account = result.data["account"]
+        return Response(
+            {
+                "connected": True,
+                "stripe_account_id": account.stripe_account_id,
+                "status": account.status,
+                "livemode": account.livemode,
+                "display_name": account.display_name,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 class StripeDisconnectView(APIView):
     permission_classes = [IsAuthenticated]
 
