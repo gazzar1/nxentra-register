@@ -630,13 +630,18 @@ def get_match_candidates_for_bank_line(bank_line, limit: int = 200) -> list:
         ).select_related("entry")
     )
 
-    ebd_account = ModuleAccountMapping.get_account(company, "shopify_connector", "EXPECTED_BANK_DEPOSIT")
+    # Per-provider EBD (ADR-0002): each provider seeds its own
+    # EXPECTED_BANK_DEPOSIT under its own module key (shopify_connector,
+    # platform_stripe, …). Union the EBD accounts across all providers so a
+    # deposit surfaces here no matter which provider settled it — the old
+    # hardcoded "shopify_connector" lookup hid every Stripe deposit.
+    ebd_accounts = ModuleAccountMapping.get_accounts_for_role(company, "EXPECTED_BANK_DEPOSIT")
     ebd_jls: list = []
-    if ebd_account:
+    if ebd_accounts:
         ebd_jls = list(
             JournalLine.objects.filter(
                 company=company,
-                account=ebd_account,
+                account__in=ebd_accounts,
                 reconciled=False,
                 entry__status=JournalEntry.Status.POSTED,
                 entry__source_module="payment_settlement",

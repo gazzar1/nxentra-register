@@ -17,7 +17,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounting.mappings import ModuleAccountMapping
+from accounting.mappings import ModuleAccountMapping, module_key_for_provider
 from accounting.models import Account
 from accounts.authz import require, resolve_actor
 from projections.write_barrier import command_writes_allowed
@@ -29,7 +29,11 @@ from .models import (
     StripePayoutTransaction,
 )
 
-STRIPE_MODULE = "stripe_connector"
+# Canonical mapping key for Stripe — must match what the JE projections read
+# (ADR-0002 module-key unify). The account-mapping UI previously wrote under the
+# stale "stripe_connector" key the projection never read; migration 0039 moves
+# existing rows onto this canonical key.
+STRIPE_MODULE = module_key_for_provider("stripe")  # -> "platform_stripe"
 STRIPE_ACCOUNT_ROLES = [
     "SALES_REVENUE",
     "STRIPE_CLEARING",
@@ -37,6 +41,10 @@ STRIPE_ACCOUNT_ROLES = [
     "SALES_TAX_PAYABLE",
     "CASH_BANK",
     "CHARGEBACK_EXPENSE",
+    # Settlement-drain roles the PaymentSettlementProjection requires; the
+    # projection skips the whole batch if EXPECTED_BANK_DEPOSIT is unmapped.
+    "EXPECTED_BANK_DEPOSIT",
+    "SALES_RETURNS",
 ]
 
 
