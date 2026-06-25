@@ -67,6 +67,31 @@ def _get_cipher():
     return _multifernet(keys)
 
 
+def validate_keys(raw: str | None) -> None:
+    """Validate a comma-separated FIELD_ENCRYPTION_KEY value, fail-fast.
+
+    Raises ``ValueError`` if the value is set but any key is malformed (typo,
+    wrong length, bad base64 padding) or parses to no usable key. No-op when
+    empty/None. Called from settings at boot so a bad key fails the deploy
+    rather than surfacing only at the first OAuth/token-refresh/webhook.
+    """
+    if not raw or not raw.strip():
+        return
+    from cryptography.fernet import Fernet
+
+    keys = [k.strip() for k in raw.split(",") if k.strip()]
+    if not keys:
+        raise ValueError("FIELD_ENCRYPTION_KEY is set but contains no usable key.")
+    for i, key in enumerate(keys):
+        try:
+            Fernet(key.encode())
+        except (ValueError, TypeError) as exc:
+            raise ValueError(
+                f"FIELD_ENCRYPTION_KEY entry #{i + 1} is not a valid Fernet key "
+                f"(expected 32 url-safe base64-encoded bytes): {exc}"
+            ) from exc
+
+
 def is_encrypted(value: object) -> bool:
     """True if ``value`` is one of our self-describing ciphertext strings."""
     return isinstance(value, str) and value.startswith(ENC_PREFIX)
