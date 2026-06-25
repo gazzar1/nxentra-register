@@ -88,6 +88,10 @@ class StripeConnector(BasePlatformConnector):
             "SALES_TAX_PAYABLE",
             "CASH_BANK",
             "CHARGEBACK_EXPENSE",
+            # Settlement-drain roles (PaymentSettlementProjection): EBD is
+            # load-bearing — the projection skips the batch if it's unmapped.
+            "EXPECTED_BANK_DEPOSIT",
+            "SALES_RETURNS",
         ]
 
     @property

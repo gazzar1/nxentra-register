@@ -415,11 +415,14 @@ def _create_payout_je(company, platform, payout_obj):
       DR Processing Fees  (fees)
         CR Platform Clearing  (gross_amount)
     """
-    from accounting.mappings import ModuleAccountMapping
+    from accounting.mappings import ModuleAccountMapping, module_key_for_provider
     from platform_connectors.je_builder import JELine, JERequest, build_journal_entry
 
-    # Module keys in DB: "shopify_connector", "stripe_connector"
-    module_key = f"{platform}_connector"
+    # Canonical per-provider mapping key (ADR-0002): shopify -> shopify_connector,
+    # stripe -> platform_stripe. The old f"{platform}_connector" produced
+    # "stripe_connector", which the projection never seeds -> Stripe payout JEs
+    # silently found no mapping.
+    module_key = module_key_for_provider(platform)
     mapping = ModuleAccountMapping.get_mapping(company, module_key)
     if not mapping:
         logger.warning("No account mapping found for module %s", module_key)

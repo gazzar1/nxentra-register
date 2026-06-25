@@ -14,6 +14,9 @@ class StripeConnectorConfig(AppConfig):
         "SALES_TAX_PAYABLE",
         "CASH_BANK",
         "CHARGEBACK_EXPENSE",
+        # Settlement-drain roles required by PaymentSettlementProjection.
+        "EXPECTED_BANK_DEPOSIT",
+        "SALES_RETURNS",
     ]
 
     def ready(self):

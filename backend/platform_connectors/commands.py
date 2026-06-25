@@ -18,7 +18,7 @@ from accounting.commands import (
     post_journal_entry,
     save_journal_entry_complete,
 )
-from accounting.mappings import ModuleAccountMapping
+from accounting.mappings import ModuleAccountMapping, module_key_for_provider
 from accounts.authz import system_actor_for_company
 from projections.write_barrier import command_writes_allowed
 
@@ -56,11 +56,10 @@ SETTLEMENT_ACCOUNT_ROLES = {
     },
 }
 
-# Platform → module name mapping for ModuleAccountMapping lookups
-PLATFORM_MODULE_MAP = {
-    "shopify": "shopify_connector",
-    "stripe": "stripe_connector",
-}
+# Platform → ModuleAccountMapping module key is resolved canonically via
+# module_key_for_provider() (ADR-0002 module-key unify): shopify ->
+# shopify_connector, stripe -> platform_stripe. A stale per-platform map here
+# previously resolved stripe to "stripe_connector", a key no projection seeds.
 
 
 def _resolve_clearing_role(platform):
@@ -128,8 +127,8 @@ def create_and_post_settlement(
             data={"settlement": existing, "journal_entry": existing.posted_journal_entry},
         )
 
-    # Resolve accounts from module mapping
-    module_name = PLATFORM_MODULE_MAP.get(platform, f"{platform}_connector")
+    # Resolve accounts from module mapping (canonical per-provider key).
+    module_name = module_key_for_provider(platform)
     mapping = ModuleAccountMapping.get_mapping(company, module_name)
     if not mapping:
         return CommandResult.fail(

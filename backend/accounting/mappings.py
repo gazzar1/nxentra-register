@@ -164,6 +164,24 @@ class ModuleAccountMapping(models.Model):
             return None
 
     @classmethod
+    def get_accounts_for_role(cls, company: Company, role: str) -> list[Account]:
+        """All distinct accounts mapped to ``role`` across EVERY module for the
+        company.
+
+        Used where a role is seeded per-provider (e.g. EXPECTED_BANK_DEPOSIT
+        lives under ``platform_stripe`` for Stripe and ``shopify_connector`` for
+        Shopify) and the caller must consider all providers' accounts, not just
+        one module's — e.g. the bank-match candidate picker, which must surface
+        an unreconciled deposit regardless of which provider settled it
+        (ADR-0002 per-provider EBD).
+        """
+        seen: dict[int, Account] = {}
+        for m in cls.objects.filter(company=company, role=role).select_related("account"):
+            if m.account_id and m.account_id not in seen:
+                seen[m.account_id] = m.account
+        return list(seen.values())
+
+    @classmethod
     def check_required_roles(
         cls,
         company: Company,

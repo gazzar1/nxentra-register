@@ -18,7 +18,7 @@ from decimal import Decimal
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from accounting.mappings import ModuleAccountMapping
+from accounting.mappings import ModuleAccountMapping, module_key_for_provider
 from accounting.models import Account
 from accounts.models import Company
 from projections.write_barrier import projection_writes_allowed
@@ -178,7 +178,7 @@ class Command(BaseCommand):
 
             ModuleAccountMapping.objects.update_or_create(
                 company=company,
-                module="stripe_connector",
+                module=module_key_for_provider("stripe"),  # canonical: platform_stripe
                 role=role,
                 defaults={"account": account},
             )
