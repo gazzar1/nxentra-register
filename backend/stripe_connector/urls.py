@@ -6,6 +6,7 @@ from . import views
 urlpatterns = [
     # Account management
     path("account/", views.StripeAccountView.as_view(), name="stripe-account"),
+    path("connect/", views.StripeConnectView.as_view(), name="stripe-connect"),
     path("disconnect/", views.StripeDisconnectView.as_view(), name="stripe-disconnect"),
     # Account mapping
     path("account-mapping/", views.StripeAccountMappingView.as_view(), name="stripe-account-mapping"),
