@@ -103,6 +103,29 @@ def test_sync_cursors_on_arrival_date(db, company, stripe_account, monkeypatch):
     assert "created_gte" not in fake.list_payouts_kwargs
 
 
+def test_sync_cursor_extends_back_to_old_last_sync(db, company, stripe_account, monkeypatch):
+    # last_sync_at older than the rescan window → the cursor must reach back to
+    # it (catch up after an outage longer than the window), not just now-lookback.
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from stripe_connector import sync as sync_mod
+
+    old = timezone.now() - timedelta(days=20)
+    stripe_account.last_sync_at = old
+    stripe_account.save(update_fields=["last_sync_at"])
+
+    fake = _CapturingClient([], {})
+    monkeypatch.setattr(sync_mod, "_stripe_client", lambda acct: fake)
+    sync_mod.sync_payouts(stripe_account, lookback_hours=168)  # 7-day rescan window
+
+    cutoff = fake.list_payouts_kwargs["arrival_date_gte"]
+    # Reaches back to ~last_sync_at (20d ago), well before the 7-day window.
+    assert cutoff <= int(old.timestamp())
+    assert cutoff < int((timezone.now() - timedelta(days=10)).timestamp())
+
+
 # ── 3. skip in_progress / un-itemized payouts ─────────────────────────
 
 
