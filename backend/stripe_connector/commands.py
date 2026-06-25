@@ -237,6 +237,10 @@ def connect_stripe_account(company, credential: str, display_name: str = ""):
     client = StripeApiClient(credential, api_version=getattr(dj_settings, "STRIPE_API_VERSION", "") or None)
     try:
         acct = client.retrieve_account()
+        # Confirm the scopes the SYNC path actually needs (Payouts + Balance
+        # Transactions read), so we never persist a key that connects but then
+        # can't pull — leaving a connected-but-unusable account (Codex P2).
+        client.probe()
     except StripeAccessDenied:
         return CommandResult.fail(
             "Stripe rejected that key — it's invalid or lacks read scope. Ensure the restricted "
