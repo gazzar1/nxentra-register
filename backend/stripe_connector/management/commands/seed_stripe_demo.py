@@ -18,8 +18,6 @@ from decimal import Decimal
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from accounting.mappings import ModuleAccountMapping, module_key_for_provider
-from accounting.models import Account
 from accounts.models import Company
 from projections.write_barrier import projection_writes_allowed
 from stripe_connector.models import (
@@ -65,15 +63,6 @@ CHARGE_AMOUNTS = [
     Decimal("9.99"),
     Decimal("14.99"),
     Decimal("59.00"),
-]
-
-DEMO_ACCOUNTS = [
-    ("SALES_REVENUE", "4100", "Sales Revenue", "REVENUE", "SALES"),
-    ("STRIPE_CLEARING", "1160", "Stripe Clearing", "ASSET", "LIQUIDITY"),
-    ("PAYMENT_PROCESSING_FEES", "5200", "Payment Processing Fees", "EXPENSE", "OPERATING_EXPENSE"),
-    ("SALES_TAX_PAYABLE", "2200", "Sales Tax Payable", "LIABILITY", "TAX_PAYABLE"),
-    ("CASH_BANK", "1100", "Cash and Bank", "ASSET", "LIQUIDITY"),
-    ("CHARGEBACK_EXPENSE", "5210", "Chargeback Expense", "EXPENSE", "OTHER_EXPENSE"),
 ]
 
 CUSTOMER_NAMES = [
@@ -161,27 +150,13 @@ class Command(BaseCommand):
         self.stdout.write(f"  Deleted {count} accounts")
 
     def _ensure_accounts(self, company):
-        for role, code, name, acct_type, acct_role in DEMO_ACCOUNTS:
-            account, created = Account.objects.get_or_create(
-                company=company,
-                code=code,
-                defaults={
-                    "name": name,
-                    "account_type": acct_type,
-                    "role": acct_role,
-                    "ledger_domain": "FINANCIAL",
-                    "status": "ACTIVE",
-                },
-            )
-            if created:
-                self.stdout.write(f"  Created account {code} - {name}")
+        # Use the real S1 seed so demo data carries the full role set
+        # (incl. EXPECTED_BANK_DEPOSIT + SALES_RETURNS) and the
+        # SettlementProvider(stripe, GATEWAY) — i.e. demo == the live connect path.
+        from stripe_connector.seed import setup_stripe_platform
 
-            ModuleAccountMapping.objects.update_or_create(
-                company=company,
-                module=module_key_for_provider("stripe"),  # canonical: platform_stripe
-                role=role,
-                defaults={"account": account},
-            )
+        setup_stripe_platform(company)
+        self.stdout.write("  Seeded Stripe platform accounts + settlement provider (platform_stripe)")
 
     def _create_account(self, company):
         account, created = StripeAccount.objects.get_or_create(
