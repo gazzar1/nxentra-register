@@ -25,11 +25,17 @@ from platform_connectors.canonical import (
 
 from .models import StripeAccount
 
-# Stripe event → canonical topic
+# Stripe event → canonical topic.
+#
+# payout.paid is intentionally ABSENT (ADR-0002 S1): the pull/backfill
+# (sync.py) is the SOLE settlement emitter — it derives the real fee/net split
+# from Balance Transactions and emits PAYMENT_SETTLEMENT_RECEIVED, whereas the
+# webhook payout.paid carries no fee split (would post fees=0) and emitting both
+# would double-credit clearing. The webhook payload is acknowledged (200) but
+# does not post.
 STRIPE_TOPIC_MAP = {
     "charge.captured": "order_paid",
     "charge.refunded": "refund_created",
-    "payout.paid": "payout_settled",
     "charge.dispute.created": "dispute_created",
     "charge.dispute.updated": "dispute_created",
 }
@@ -238,7 +244,12 @@ class StripeConnector(BasePlatformConnector):
         )
 
     def parse_payout(self, payload: dict) -> ParsedPayout:
-        """Parse a payout.paid event → ParsedPayout."""
+        """Parse a payout.paid event → ParsedPayout.
+
+        SUPERSEDED by the pull (sync.py / normalize.derive_payout_breakdown),
+        which derives real fees from Balance Transactions. Retained only for the
+        abstract contract; payout.paid is no longer in STRIPE_TOPIC_MAP, so this
+        is not on any live path. fees=0 below is therefore inert."""
         obj = payload.get("data", {}).get("object", {})
         amount_cents = obj.get("amount", 0)
         net = Decimal(amount_cents) / 100
@@ -273,13 +284,15 @@ class StripeConnector(BasePlatformConnector):
     # ── Local record storage ──────────────────────────────────────
 
     def store_webhook_record(self, canonical_topic, parsed, payload, company, event_id):
-        """Store a local StripeCharge/StripeRefund/StripePayout for reconciliation."""
-        from .commands import store_charge, store_payout, store_refund
+        """Store a local StripeCharge/StripeRefund for reconciliation.
+
+        Payouts are intentionally NOT handled here — the pull (sync.py) owns the
+        StripePayout read-model with real derived fees (ADR-0002 S1)."""
+        from .commands import store_charge, store_refund
 
         handler = {
             "order_paid": store_charge,
             "refund_created": store_refund,
-            "payout_settled": store_payout,
         }.get(canonical_topic)
 
         if handler:

@@ -370,6 +370,16 @@ SHOPIFY_SCOPES = os.getenv(
 )
 
 # =============================================================================
+# Stripe Connector (ADR-0002 — read-only adapter)
+# =============================================================================
+# Per-merchant restricted read keys live encrypted in StripeAccount.credential_ref
+# (A47), NOT here. This pins the Stripe API VERSION the pull client + connect
+# probe request, so normalization stays replayable (provenance is recorded on
+# ProviderRawObject). Empty = use the SDK's default pinned version; set a dated
+# version (e.g. "2024-06-20") in production for stable Balance Transaction shapes.
+STRIPE_API_VERSION = os.getenv("STRIPE_API_VERSION", "")
+
+# =============================================================================
 # Rate Limiting
 # =============================================================================
 REST_FRAMEWORK["DEFAULT_THROTTLE_CLASSES"] = [
