@@ -71,17 +71,22 @@ def validate_keys(raw: str | None) -> None:
     """Validate a comma-separated FIELD_ENCRYPTION_KEY value, fail-fast.
 
     Raises ``ValueError`` if the value is set but any key is malformed (typo,
-    wrong length, bad base64 padding) or parses to no usable key. No-op when
-    empty/None. Called from settings at boot so a bad key fails the deploy
-    rather than surfacing only at the first OAuth/token-refresh/webhook.
+    wrong length, bad base64 padding) or yields no usable key (e.g.
+    whitespace-only — which would otherwise boot clean and store plaintext).
+    No-op only when truly unset (``None`` or ``""``). Called from settings at
+    boot so a bad key fails the deploy rather than surfacing only at the first
+    OAuth/token-refresh/webhook.
     """
-    if not raw or not raw.strip():
+    if raw is None or raw == "":
         return
     from cryptography.fernet import Fernet
 
     keys = [k.strip() for k in raw.split(",") if k.strip()]
     if not keys:
-        raise ValueError("FIELD_ENCRYPTION_KEY is set but contains no usable key.")
+        raise ValueError(
+            "FIELD_ENCRYPTION_KEY is set but contains no usable key "
+            "(whitespace/empty) — provider secrets would be stored in plaintext."
+        )
     for i, key in enumerate(keys):
         try:
             Fernet(key.encode())

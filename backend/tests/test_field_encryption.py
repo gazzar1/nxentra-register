@@ -295,10 +295,19 @@ def test_validate_keys_accepts_valid_single_and_rotation():
     validate_keys(f"{Fernet.generate_key().decode()},{Fernet.generate_key().decode()}")  # rotation pair
 
 
-def test_validate_keys_noop_when_empty():
+def test_validate_keys_noop_when_unset():
+    # Only truly-unset is a no-op — dev runs keyless (plaintext pass-through).
     validate_keys("")
     validate_keys(None)
-    validate_keys("   ")
+
+
+def test_validate_keys_rejects_set_but_no_usable_key():
+    # A whitespace-only value is truthy, so the settings guard wouldn't catch it
+    # and it would boot clean then store plaintext. It must fail validation.
+    with pytest.raises(ValueError):
+        validate_keys("   ")
+    with pytest.raises(ValueError):
+        validate_keys(" , ")
 
 
 def test_validate_keys_rejects_malformed():
