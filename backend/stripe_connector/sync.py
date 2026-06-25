@@ -59,16 +59,23 @@ def _stripe_client(account: StripeAccount) -> StripeApiClient | None:
     return StripeApiClient(credential, stripe_account_id=connect_acct, api_version=_api_version() or None)
 
 
-def _arrival_cutoff(lookback_hours: int) -> int:
-    """Unix `arrival_date >=` filter — a fixed rescan window back from NOW.
+def _arrival_cutoff(account: StripeAccount, lookback_hours: int) -> int:
+    """Unix `arrival_date >=` filter.
 
-    Re-listing the whole window each run (idempotency dedups) means a payout
-    that was ``in_progress`` on a prior run is re-caught once it completes, and a
-    payout that only flips to ``paid`` late is still found by its arrival_date.
-    The window must exceed Stripe's reconciliation/settlement delay; the periodic
-    task uses ~7 days.
+    Reaches back to whichever is EARLIER:
+      * a fixed rescan window back from NOW (re-lists recent payouts each run so
+        an ``in_progress`` one is re-caught once it completes — idempotency
+        dedups), and
+      * ``last_sync_at`` minus a small overlap, so after an outage LONGER than
+        the rescan window the catch-up still covers every payout that arrived
+        while we were down (Codex P2).
+
+    With no prior sync (initial backfill), only the window applies.
     """
-    return int((timezone.now() - timedelta(hours=lookback_hours)).timestamp())
+    rescan = timezone.now() - timedelta(hours=lookback_hours)
+    if account.last_sync_at:
+        rescan = min(rescan, account.last_sync_at - timedelta(hours=1))
+    return int(rescan.timestamp())
 
 
 def sync_payouts(account: StripeAccount, *, lookback_hours: int = 168) -> dict:
@@ -83,7 +90,7 @@ def sync_payouts(account: StripeAccount, *, lookback_hours: int = 168) -> dict:
         return {"status": "unavailable", "reason": "no credential stored", "created": 0, "skipped": 0}
 
     try:
-        payouts = client.list_payouts(arrival_date_gte=_arrival_cutoff(lookback_hours), status="paid")
+        payouts = client.list_payouts(arrival_date_gte=_arrival_cutoff(account, lookback_hours), status="paid")
     except StripeAccessDenied as exc:
         logger.info("Stripe payout sync unavailable for account %s: %s", account.id, exc)
         _mark_error(account, f"Stripe access denied: {exc}")
