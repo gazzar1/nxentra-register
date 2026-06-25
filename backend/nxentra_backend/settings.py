@@ -89,6 +89,12 @@ if not DEBUG and not TESTING and not FIELD_ENCRYPTION_KEY:
         "FIELD_ENCRYPTION_KEY is not set. Provider credentials (Shopify/Stripe) "
         "would be stored in plaintext. Set a Fernet key — see nxentra_backend.crypto."
     )
+if FIELD_ENCRYPTION_KEY:
+    # Fail fast at boot on a malformed key (typo / bad padding / wrong length)
+    # rather than at the first OAuth / token-refresh / webhook (Codex review P2).
+    from nxentra_backend.crypto import validate_keys as _validate_field_keys
+
+    _validate_field_keys(FIELD_ENCRYPTION_KEY)
 
 # A86.7b (2026-05-26): event-driven reconciliation state is now the
 # default. The ReconciliationProjection is the canonical writer for

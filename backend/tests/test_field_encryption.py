@@ -18,6 +18,7 @@ from nxentra_backend.crypto import (
     decrypt_secret,
     encrypt_secret,
     is_encrypted,
+    validate_keys,
 )
 
 SECRET = "shpat_super_secret_token_value"
@@ -282,3 +283,35 @@ def test_migration_backfill_encrypts_legacy_plaintext(db, company):
     with connection.cursor() as cur:
         cur.execute(f'SELECT access_token FROM "{table}" WHERE id = %s', [store.id])
         assert cur.fetchone()[0] == legacy_plaintext
+
+
+# ─────────────────────────────────────────────────────────────────────
+# key validation (fail-fast at boot — Codex review P2)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_validate_keys_accepts_valid_single_and_rotation():
+    validate_keys(Fernet.generate_key().decode())  # single
+    validate_keys(f"{Fernet.generate_key().decode()},{Fernet.generate_key().decode()}")  # rotation pair
+
+
+def test_validate_keys_noop_when_empty():
+    validate_keys("")
+    validate_keys(None)
+    validate_keys("   ")
+
+
+def test_validate_keys_rejects_malformed():
+    with pytest.raises(ValueError):
+        validate_keys("not-a-real-fernet-key")
+    # truncated/typo'd key
+    bad = Fernet.generate_key().decode()[:-4]
+    with pytest.raises(ValueError):
+        validate_keys(bad)
+
+
+def test_validate_keys_rejects_one_bad_among_good():
+    good = Fernet.generate_key().decode()
+    # second entry malformed → must raise and point at entry #2
+    with pytest.raises(ValueError, match="#2"):
+        validate_keys(f"{good},not-valid")
