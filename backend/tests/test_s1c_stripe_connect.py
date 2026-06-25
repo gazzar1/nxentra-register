@@ -25,6 +25,8 @@ def _no_async(monkeypatch):
 
 def _mock_probe(monkeypatch, acct):
     monkeypatch.setattr("stripe_connector.api_client.StripeApiClient.retrieve_account", lambda self: acct)
+    # connect also exercises the pull-path scopes (Payouts + Balance Transactions).
+    monkeypatch.setattr("stripe_connector.api_client.StripeApiClient.probe", lambda self: True)
 
 
 # ── security: only restricted read keys are accepted ──────────────────

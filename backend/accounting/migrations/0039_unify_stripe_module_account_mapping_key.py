@@ -16,13 +16,18 @@ def unify_key(apps, schema_editor):
     # Historical model from apps.get_model has no custom save() write-barrier.
     with rls_bypass(conn=schema_editor.connection):
         for row in ModuleAccountMapping.objects.filter(module=OLD_KEY):
-            collision = ModuleAccountMapping.objects.filter(
+            canonical = ModuleAccountMapping.objects.filter(
                 company_id=row.company_id, module=NEW_KEY, role=row.role
-            ).exists()
-            if collision:
-                # A canonical row already owns this (company, role) — the stale
-                # duplicate is redundant; drop it (unique_together would reject
-                # a rename onto it anyway).
+            ).first()
+            if canonical is not None:
+                # A canonical row already owns this (company, role). But if it's
+                # only an unmapped placeholder (account is null) while the stale
+                # row carries the merchant's configured account, copy the account
+                # over before dropping the stale duplicate — otherwise the rename
+                # would leave the role unmapped (Codex review P2).
+                if canonical.account_id is None and row.account_id is not None:
+                    canonical.account_id = row.account_id
+                    canonical.save(update_fields=["account"])
                 row.delete()
             else:
                 row.module = NEW_KEY

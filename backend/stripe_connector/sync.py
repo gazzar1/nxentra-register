@@ -59,14 +59,19 @@ def _stripe_client(account: StripeAccount) -> StripeApiClient | None:
     return StripeApiClient(credential, stripe_account_id=connect_acct, api_version=_api_version() or None)
 
 
-def _watermark(account: StripeAccount, lookback_hours: int) -> int:
-    """Unix `created>=` filter: from last_sync_at with overlap, else lookback."""
-    base = account.last_sync_at or (timezone.now() - timedelta(hours=lookback_hours))
-    # 1h overlap so a payout straddling the boundary isn't missed (dedup handles it).
-    return int((base - timedelta(hours=1)).timestamp())
+def _arrival_cutoff(lookback_hours: int) -> int:
+    """Unix `arrival_date >=` filter — a fixed rescan window back from NOW.
+
+    Re-listing the whole window each run (idempotency dedups) means a payout
+    that was ``in_progress`` on a prior run is re-caught once it completes, and a
+    payout that only flips to ``paid`` late is still found by its arrival_date.
+    The window must exceed Stripe's reconciliation/settlement delay; the periodic
+    task uses ~7 days.
+    """
+    return int((timezone.now() - timedelta(hours=lookback_hours)).timestamp())
 
 
-def sync_payouts(account: StripeAccount, *, lookback_hours: int = 48) -> dict:
+def sync_payouts(account: StripeAccount, *, lookback_hours: int = 168) -> dict:
     """Pull recent paid payouts for one account, emit canonical settlement
     events, and refresh the read-models. Idempotent (event idempotency_key +
     read-model upsert), so re-runs are safe."""
@@ -78,7 +83,7 @@ def sync_payouts(account: StripeAccount, *, lookback_hours: int = 48) -> dict:
         return {"status": "unavailable", "reason": "no credential stored", "created": 0, "skipped": 0}
 
     try:
-        payouts = client.list_payouts(created_gte=_watermark(account, lookback_hours), status="paid")
+        payouts = client.list_payouts(arrival_date_gte=_arrival_cutoff(lookback_hours), status="paid")
     except StripeAccessDenied as exc:
         logger.info("Stripe payout sync unavailable for account %s: %s", account.id, exc)
         _mark_error(account, f"Stripe access denied: {exc}")
@@ -87,11 +92,13 @@ def sync_payouts(account: StripeAccount, *, lookback_hours: int = 48) -> dict:
     company = account.company
     now = timezone.now()
     created = 0
+    skipped = 0
 
     for po in payouts:
         payout_id = po.get("id")
         if not payout_id:
             continue
+        # Provenance snapshot of the payout itself (idempotent on payload hash).
         ProviderRawObject.record(
             company=company,
             provider="stripe",
@@ -102,12 +109,23 @@ def sync_payouts(account: StripeAccount, *, lookback_hours: int = 48) -> dict:
             api_version=_api_version(),
             fetched_at=now,
         )
+
+        # Only `completed` reconciliation guarantees the payout's balance
+        # transactions are all available; `in_progress` means "soon". Emitting on
+        # an incomplete payout would derive understated fees that the idempotent
+        # event then locks in (Codex P1). Skip — the arrival_date rescan window
+        # re-catches it once it completes.
+        if po.get("reconciliation_status") == "in_progress":
+            logger.info("Stripe payout %s reconciliation in_progress — deferring to next sync", payout_id)
+            skipped += 1
+            continue
+
         try:
             txns = client.list_balance_transactions(payout_id)
         except StripeAccessDenied as exc:
             logger.info("Stripe balance-txn fetch denied for %s: %s", payout_id, exc)
             _mark_error(account, f"Stripe access denied: {exc}")
-            return {"status": "unavailable", "reason": str(exc), "created": created, "skipped": 0}
+            return {"status": "unavailable", "reason": str(exc), "created": created, "skipped": skipped}
 
         for bt in txns:
             ProviderRawObject.record(
@@ -121,6 +139,20 @@ def sync_payouts(account: StripeAccount, *, lookback_hours: int = 48) -> dict:
                 fetched_at=now,
             )
 
+        # Defensive: a non-zero payout with no itemized constituent transactions
+        # would derive fees=0/gross=net — the very bug we're fixing. Skip rather
+        # than emit a wrong (and idempotently-locked) settlement.
+        has_constituents = any(bt.get("type") != "payout" for bt in txns)
+        if not has_constituents and int(po.get("amount") or 0) != 0:
+            logger.warning(
+                "Stripe payout %s has no itemized balance transactions "
+                "(reconciliation_status=%s) — skipping to avoid an understated settlement.",
+                payout_id,
+                po.get("reconciliation_status"),
+            )
+            skipped += 1
+            continue
+
         breakdown = derive_payout_breakdown(po, txns)
         _emit_settlement(company, payout_id, breakdown)
         _upsert_read_models(account, payout_id, po, txns, breakdown)
@@ -129,7 +161,7 @@ def sync_payouts(account: StripeAccount, *, lookback_hours: int = 48) -> dict:
     account.last_sync_at = now
     account.error_message = ""
     account.save(update_fields=["last_sync_at", "error_message", "updated_at"])
-    return {"status": "ok", "created": created, "skipped": 0}
+    return {"status": "ok", "created": created, "skipped": skipped}
 
 
 def _emit_settlement(company, payout_id: str, breakdown: dict):

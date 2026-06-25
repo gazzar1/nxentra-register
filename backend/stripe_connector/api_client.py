@@ -63,17 +63,22 @@ class StripeApiClient:
                 raise StripeAccessDenied(str(exc)) from exc
             raise StripeApiError(str(exc)) from exc
 
-    def list_payouts(self, *, created_gte: int | None = None, status: str = "paid", limit: int = 100) -> list[dict]:
-        """Payouts (newest first), optionally since a unix timestamp. Returns
-        plain dicts. Volume per sync window is small, so this materializes the
-        auto-paginated result rather than streaming."""
+    def list_payouts(
+        self, *, arrival_date_gte: int | None = None, status: str = "paid", limit: int = 100
+    ) -> list[dict]:
+        """Payouts (newest first), filtered by ARRIVAL date (when the payout
+        settles to the bank), not creation time. A payout is created as
+        pending/in_transit and flips to ``paid`` on its arrival_date — cursoring
+        on ``created`` would permanently miss a payout created before the cursor
+        that only later became paid (Codex P1). Returns plain dicts; volume per
+        window is small, so the auto-paginated result is materialized."""
         import stripe
 
         params: dict = {"limit": limit, **self._base_kwargs()}
         if status:
             params["status"] = status
-        if created_gte:
-            params["created"] = {"gte": int(created_gte)}
+        if arrival_date_gte:
+            params["arrival_date"] = {"gte": int(arrival_date_gte)}
 
         def _call():
             return [_to_dict(po) for po in stripe.Payout.list(**params).auto_paging_iter()]
@@ -98,5 +103,19 @@ class StripeApiClient:
 
         def _call():
             return _to_dict(stripe.Account.retrieve(**self._base_kwargs()))
+
+        return self._run(_call)
+
+    def probe(self) -> bool:
+        """Confirm the credential can READ the resources the pull actually needs
+        (Payouts + Balance Transactions) — so connect never persists a key the
+        sync path can't use (Codex P2). Single requests (no pagination); raises
+        StripeAccessDenied on insufficient scope."""
+        import stripe
+
+        def _call():
+            stripe.Payout.list(limit=1, **self._base_kwargs())
+            stripe.BalanceTransaction.list(limit=1, **self._base_kwargs())
+            return True
 
         return self._run(_call)

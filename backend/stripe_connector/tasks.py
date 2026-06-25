@@ -24,8 +24,12 @@ logger = logging.getLogger(__name__)
     autoretry_for=(Exception,),
     retry_backoff=True,
 )
-def sync_stripe_all(self, lookback_hours: int = 48) -> dict:
-    """Periodic catch-up: pull recent payouts for every ACTIVE Stripe account."""
+def sync_stripe_all(self, lookback_hours: int = 168) -> dict:
+    """Periodic catch-up: pull recent payouts for every ACTIVE Stripe account.
+
+    The 7-day default arrival_date rescan window re-catches payouts that were
+    in_progress on a prior run once they complete (idempotency dedups re-listed
+    ones)."""
     from .models import StripeAccount
     from .sync import sync_payouts
 
