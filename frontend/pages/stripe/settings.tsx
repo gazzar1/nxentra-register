@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import {
@@ -33,6 +33,10 @@ const ROLE_LABELS: Record<string, string> = {
   SALES_TAX_PAYABLE: "Sales Tax Payable",
   CASH_BANK: "Cash / Bank Account",
   CHARGEBACK_EXPENSE: "Chargeback Expense",
+  // Settlement-drain roles the connect seed also maps (platform_stripe). Without
+  // these the rows would render the raw role key.
+  EXPECTED_BANK_DEPOSIT: "Expected Bank Deposit",
+  SALES_RETURNS: "Sales Returns / Failed Delivery",
 };
 
 export default function StripeSettingsPage() {
@@ -46,7 +50,8 @@ export default function StripeSettingsPage() {
   const [connecting, setConnecting] = useState(false);
 
   // Account mapping
-  const { data: accounts } = useAccounts();
+  const accountsQuery = useAccounts();
+  const accounts = accountsQuery.data;
   const [mappings, setMappings] = useState<StripeAccountMapping[]>([]);
   const [mappingForm, setMappingForm] = useState<Record<string, number | null>>({});
   const [savingMappings, setSavingMappings] = useState(false);
@@ -105,6 +110,12 @@ export default function StripeSettingsPage() {
       // a "Save Mappings" click would PUT those nulls back, wiping the seeded
       // mapping and leaving Stripe accounting unmapped (Codex P1).
       await fetchMappings();
+      // The seed also creates Stripe-specific GL accounts (Stripe Clearing 11510,
+      // Expected Bank Deposit 11610) that weren't in the accounts list when this
+      // page mounted. Refetch it so those accounts are selectable in the mapping
+      // dropdowns — otherwise a <select> whose value is a brand-new account id has
+      // no matching <option> and falsely renders as "Not mapped".
+      await accountsQuery.refetch();
     } catch (err) {
       // The backend rejects sk_/pk_ and invalid/under-scoped keys with a clear,
       // user-facing message — surface it verbatim instead of a generic error.
@@ -149,8 +160,29 @@ export default function StripeSettingsPage() {
   }
 
   const isConnected = account?.status === "ACTIVE";
-  const postableAccounts =
-    accounts?.filter((a) => !a.is_header && a.status === "ACTIVE") || [];
+
+  // Dropdown options = postable accounts UNION each role's currently-mapped
+  // account. The connect seed can map a role to an account that isn't in the
+  // postable list yet (freshly created at connect, before the accounts query
+  // refetches; or filtered out). A controlled <select> whose value matches no
+  // <option> silently renders as "Not mapped" — so we fold in the mapped account
+  // (from the mapping API response, which carries its code + name) and dedupe by
+  // id, guaranteeing the select can always render — and truthfully show — its
+  // current value.
+  const optionAccounts = useMemo(() => {
+    const byId = new Map<number, { id: number; code: string; name: string }>();
+    for (const a of accounts ?? []) {
+      if (!a.is_header && a.status === "ACTIVE") {
+        byId.set(a.id, { id: a.id, code: a.code, name: a.name });
+      }
+    }
+    for (const m of mappings) {
+      if (m.account_id != null && !byId.has(m.account_id)) {
+        byId.set(m.account_id, { id: m.account_id, code: m.account_code, name: m.account_name });
+      }
+    }
+    return Array.from(byId.values()).sort((a, b) => a.code.localeCompare(b.code));
+  }, [accounts, mappings]);
 
   return (
     <AppLayout>
@@ -302,7 +334,7 @@ export default function StripeSettingsPage() {
                     }
                   >
                     <option value="">— Not mapped —</option>
-                    {postableAccounts.map((a) => (
+                    {optionAccounts.map((a) => (
                       <option key={a.id} value={a.id}>
                         {a.code} — {a.name}
                       </option>
