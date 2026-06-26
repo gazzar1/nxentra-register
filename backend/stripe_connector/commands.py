@@ -21,6 +21,22 @@ from .models import StripeAccount, StripeCharge, StripePayout, StripeRefund
 
 logger = logging.getLogger(__name__)
 
+# The Stripe restricted-key READ scopes a merchant must grant. ONE canonical list
+# so the connect validation, every rejection message, and the settings-page hint
+# stay in lockstep (drift here is what made the sk_ and access-denied messages
+# previously disagree — one said "Disputes", the other "Account"). The connect
+# probe enforces Account (retrieve_account) + Balance + Payouts (api_client.probe);
+# Charges is included because the pull reads charge-sourced balance transactions
+# and Phase-3 dispute/charge matching needs it. Disputes is NOT required in S1.
+REQUIRED_READ_SCOPES = ("Account", "Balance", "Charges", "Payouts")
+
+
+def required_scopes_phrase() -> str:
+    """Render the canonical scope list for a user-facing message, e.g.
+    'Account, Balance, Charges and Payouts'."""
+    *head, last = REQUIRED_READ_SCOPES
+    return f"{', '.join(head)} and {last}" if head else last
+
 
 def store_charge(company, parsed, payload, event_id):
     """
@@ -224,8 +240,7 @@ def connect_stripe_account(company, credential: str, display_name: str = ""):
     if credential.startswith("sk_"):
         return CommandResult.fail(
             "That looks like a SECRET key (sk_…), which grants write access. Nxentra is "
-            "read-only — create a RESTRICTED key (rk_…) with Balance, Charges, Payouts and "
-            "Disputes set to Read."
+            f"read-only — create a RESTRICTED key (rk_…) with {required_scopes_phrase()} set to Read."
         )
     if credential.startswith("pk_"):
         return CommandResult.fail("That's a publishable key (pk_…). Provide a restricted read-only key (rk_…).")
@@ -244,7 +259,7 @@ def connect_stripe_account(company, credential: str, display_name: str = ""):
     except StripeAccessDenied:
         return CommandResult.fail(
             "Stripe rejected that key — it's invalid or lacks read scope. Ensure the restricted "
-            "key has Account, Balance, Charges and Payouts set to Read."
+            f"key has {required_scopes_phrase()} set to Read."
         )
     except StripeApiError as exc:
         return CommandResult.fail(f"Couldn't validate the key with Stripe: {exc}")
