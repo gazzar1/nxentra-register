@@ -70,6 +70,8 @@ function mockGetEndpoints() {
 
 const accountGetCount = () =>
   client.get.mock.calls.filter((c: unknown[]) => c[0] === '/stripe/account/').length;
+const mappingGetCount = () =>
+  client.get.mock.calls.filter((c: unknown[]) => c[0] === '/stripe/account-mapping/').length;
 
 describe('Stripe connect form (not connected)', () => {
   beforeEach(() => {
@@ -127,6 +129,9 @@ describe('Stripe connect form (not connected)', () => {
       expect(field.value).toBe('');
     });
     expect(accountGetCount()).toBe(2);
+    // connect seeds default mappings server-side; the form MUST refetch them so
+    // a later "Save Mappings" can't PUT stale nulls over the seed (Codex P1).
+    expect(mappingGetCount()).toBe(2);
     expect(screen.getByRole('button', { name: /connect/i })).not.toBeDisabled();
   });
 

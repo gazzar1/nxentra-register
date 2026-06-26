@@ -99,6 +99,12 @@ export default function StripeSettingsPage() {
         description: "Payouts will sync shortly.",
       });
       await loadAccount();
+      // connect seeds the default platform_stripe ModuleAccountMappings
+      // server-side. Refetch them so the Account Mappings form reflects the
+      // seeded accounts — otherwise it keeps the pre-connect all-null rows and
+      // a "Save Mappings" click would PUT those nulls back, wiping the seeded
+      // mapping and leaving Stripe accounting unmapped (Codex P1).
+      await fetchMappings();
     } catch (err) {
       // The backend rejects sk_/pk_ and invalid/under-scoped keys with a clear,
       // user-facing message — surface it verbatim instead of a generic error.
