@@ -51,16 +51,51 @@ def test_rejects_malformed_key(db, company):
 
 
 def test_probe_access_denied_fails_without_persisting(db, company, monkeypatch):
+    # probe() (Payouts + Balance read) is the gate — its denial rejects the key.
     from stripe_connector.api_client import StripeAccessDenied
 
     def _denied(self):
         raise StripeAccessDenied("insufficient read scope")
 
-    monkeypatch.setattr("stripe_connector.api_client.StripeApiClient.retrieve_account", _denied)
+    monkeypatch.setattr("stripe_connector.api_client.StripeApiClient.probe", _denied)
     result = connect_stripe_account(company, "rk_test_badscope")
     assert not result.success
     assert "read scope" in result.error
     assert not StripeAccount.objects.filter(company=company).exists()
+
+
+def test_connects_without_account_read_permission(db, company, monkeypatch, _no_async):
+    """The pull only needs Balance + Payouts read. A key that can pull but CAN'T
+    read /v1/account (the KYC scope Stripe doesn't expose in the restricted-key
+    editor) must still connect — account id + livemode captured best-effort."""
+    from stripe_connector.api_client import StripeAccessDenied
+
+    def _account_denied(self):
+        raise StripeAccessDenied("accounts_kyc_basic_read not granted")
+
+    monkeypatch.setattr("stripe_connector.api_client.StripeApiClient.retrieve_account", _account_denied)
+    monkeypatch.setattr("stripe_connector.api_client.StripeApiClient.probe", lambda self: True)
+
+    result = connect_stripe_account(company, "rk_live_pullonly")
+    assert result.success
+
+    acct = StripeAccount.objects.get(company=company)
+    assert acct.status == StripeAccount.Status.ACTIVE
+    assert acct.credential_ref == "rk_live_pullonly"
+    assert acct.livemode is True  # derived from the rk_live_ prefix, not /v1/account
+    assert acct.stripe_account_id  # a stable synthetic id was assigned
+
+
+def test_distinct_real_accounts_get_distinct_rows(db, company, monkeypatch, _no_async):
+    """Connecting a key for a DIFFERENT real Stripe account must not clobber the
+    first account's identity (its payouts FK to that row) — it gets its own row."""
+    _mock_probe(monkeypatch, {"id": "acct_A", "livemode": False})
+    connect_stripe_account(company, "rk_test_a")
+    _mock_probe(monkeypatch, {"id": "acct_B", "livemode": False})
+    connect_stripe_account(company, "rk_test_b")
+
+    ids = set(StripeAccount.objects.filter(company=company).values_list("stripe_account_id", flat=True))
+    assert ids == {"acct_A", "acct_B"}
 
 
 # ── happy path: connect + encrypt + seed ──────────────────────────────

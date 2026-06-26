@@ -203,9 +203,9 @@ export default function StripeSettingsPage() {
                 <p className="text-sm font-medium">How to create a restricted read key</p>
                 <p className="text-xs text-muted-foreground">
                   In Stripe: <strong>Developers → API keys → Create restricted key</strong>. Set{" "}
-                  <strong>Balance</strong>, <strong>Charges</strong>, <strong>Payouts</strong> and{" "}
-                  <strong>Account</strong> to <strong>Read</strong> (leave everything else None),
-                  then paste the <code className="bg-muted px-1 py-0.5 rounded">rk_…</code> key here.
+                  <strong>Balance</strong> and <strong>Payouts</strong> to <strong>Read</strong>{" "}
+                  (leave everything else None), then paste the{" "}
+                  <code className="bg-muted px-1 py-0.5 rounded">rk_…</code> key here.
                 </p>
               </div>
             </CardContent>
