@@ -441,6 +441,8 @@ if SENTRY_DSN:
     from sentry_sdk.integrations.celery import CeleryIntegration
     from sentry_sdk.integrations.django import DjangoIntegration
 
+    from ops.sentry_scrub import before_send as sentry_before_send
+
     sentry_sdk.init(
         dsn=SENTRY_DSN,
         integrations=[
@@ -450,6 +452,11 @@ if SENTRY_DSN:
         traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.1")),
         profiles_sample_rate=float(os.getenv("SENTRY_PROFILES_SAMPLE_RATE", "0.1")),
         send_default_pii=False,  # Don't send user PII by default
+        # Redact provider credentials (Stripe restricted keys, webhook secrets,
+        # auth tokens) before any error event leaves the process. The Django
+        # integration captures POST bodies on errors, so the connect endpoint's
+        # rk_ key would otherwise ship to Sentry. See ops/sentry_scrub.py.
+        before_send=sentry_before_send,
         environment=os.getenv("SENTRY_ENVIRONMENT", "production" if not DEBUG else "development"),
         release=os.getenv("APP_VERSION", "dev"),
     )

@@ -1,4 +1,5 @@
 import * as Sentry from "@sentry/nextjs";
+import { scrubBreadcrumb, scrubSentryEvent } from "@/lib/sentry-scrub";
 
 const SENTRY_DSN = process.env.NEXT_PUBLIC_SENTRY_DSN;
 
@@ -13,6 +14,12 @@ if (SENTRY_DSN) {
 
     // Don't send PII
     sendDefaultPii: false,
+
+    // Redact provider credentials (Stripe rk_ keys, webhook secrets, tokens)
+    // before any event/breadcrumb leaves the browser — the connect form posts a
+    // live key and replaysOnErrorSampleRate is 1.0. See lib/sentry-scrub.ts.
+    beforeSend: (event) => scrubSentryEvent(event),
+    beforeBreadcrumb: (breadcrumb) => scrubBreadcrumb(breadcrumb),
 
     // Ignore common non-actionable errors
     ignoreErrors: [
