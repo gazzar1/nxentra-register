@@ -161,28 +161,32 @@ export default function StripeSettingsPage() {
 
   const isConnected = account?.status === "ACTIVE";
 
-  // Dropdown options = postable accounts UNION each role's currently-mapped
-  // account. The connect seed can map a role to an account that isn't in the
-  // postable list yet (freshly created at connect, before the accounts query
-  // refetches; or filtered out). A controlled <select> whose value matches no
-  // <option> silently renders as "Not mapped" — so we fold in the mapped account
-  // (from the mapping API response, which carries its code + name) and dedupe by
-  // id, guaranteeing the select can always render — and truthfully show — its
-  // current value.
-  const optionAccounts = useMemo(() => {
-    const byId = new Map<number, { id: number; code: string; name: string }>();
-    for (const a of accounts ?? []) {
-      if (!a.is_header && a.status === "ACTIVE") {
-        byId.set(a.id, { id: a.id, code: a.code, name: a.name });
-      }
-    }
-    for (const m of mappings) {
-      if (m.account_id != null && !byId.has(m.account_id)) {
-        byId.set(m.account_id, { id: m.account_id, code: m.account_code, name: m.account_name });
-      }
-    }
-    return Array.from(byId.values()).sort((a, b) => a.code.localeCompare(b.code));
-  }, [accounts, mappings]);
+  // Postable GL accounts (active, non-header), sorted by code — the base option
+  // set every mapping row offers. Each row may additionally fold in its OWN
+  // currently-mapped account when that account isn't postable (see optionsForRow).
+  const postableAccounts = useMemo(
+    () =>
+      (accounts ?? [])
+        .filter((a) => !a.is_header && a.status === "ACTIVE")
+        .map((a) => ({ id: a.id, code: a.code, name: a.name }))
+        .sort((a, b) => a.code.localeCompare(b.code)),
+    [accounts],
+  );
+  const postableIds = useMemo(() => new Set(postableAccounts.map((a) => a.id)), [postableAccounts]);
+
+  // Options for one mapping row: postable accounts + this row's currently-mapped
+  // account when it isn't postable (freshly seeded at connect before the accounts
+  // query refetches, or filtered out as inactive/header). Scoped to THIS row so a
+  // display-only account never becomes a newly-selectable choice for another role
+  // — the PUT only checks company ownership, not active/non-header (Codex P2).
+  // Without it a <select> whose value matches no <option> silently renders as
+  // "Not mapped" even though the role IS mapped server-side.
+  const optionsForRow = (m: StripeAccountMapping) => {
+    if (m.account_id == null || postableIds.has(m.account_id)) return postableAccounts;
+    return [...postableAccounts, { id: m.account_id, code: m.account_code, name: m.account_name }].sort(
+      (a, b) => a.code.localeCompare(b.code),
+    );
+  };
 
   return (
     <AppLayout>
@@ -334,7 +338,7 @@ export default function StripeSettingsPage() {
                     }
                   >
                     <option value="">— Not mapped —</option>
-                    {optionAccounts.map((a) => (
+                    {optionsForRow(m).map((a) => (
                       <option key={a.id} value={a.id}>
                         {a.code} — {a.name}
                       </option>

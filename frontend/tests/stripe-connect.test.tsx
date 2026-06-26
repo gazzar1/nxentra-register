@@ -8,7 +8,7 @@
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 
 const { mockToast, accountsMock } = vi.hoisted(() => ({
   mockToast: vi.fn(),
@@ -253,6 +253,14 @@ describe('Stripe Account Mappings display (connected)', () => {
     expect(
       screen.getAllByRole('option', { name: '11610 — Expected Bank Deposit — Stripe' }).length,
     ).toBeGreaterThan(0);
+
+    // ...but the synthesized option is scoped to ITS OWN row: a non-postable
+    // mapped account must not become selectable for another role (Codex P2). The
+    // SALES_REVENUE row (index 0) offers neither 11510 nor 11610.
+    expect(within(selects[0]).queryByRole('option', { name: '11510 — Stripe Clearing' })).toBeNull();
+    expect(
+      within(selects[0]).queryByRole('option', { name: '11610 — Expected Bank Deposit — Stripe' }),
+    ).toBeNull();
   });
 
   it('labels the EXPECTED_BANK_DEPOSIT and SALES_RETURNS roles with friendly names (not raw role keys)', async () => {
