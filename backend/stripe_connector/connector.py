@@ -8,6 +8,7 @@ into canonical dataclasses consumed by PlatformAccountingProjection.
 
 import hashlib
 import hmac
+import logging
 import time
 from datetime import UTC
 from decimal import Decimal
@@ -24,6 +25,8 @@ from platform_connectors.canonical import (
 )
 
 from .models import StripeAccount
+
+logger = logging.getLogger(__name__)
 
 # Stripe event → canonical topic.
 #
@@ -297,6 +300,41 @@ class StripeConnector(BasePlatformConnector):
 
         if handler:
             handler(company, parsed, payload, event_id)
+
+    def on_unhandled_topic(self, *, company, topic, payload):
+        """`payout.paid` TRIGGERS the pull (the sole settlement emitter) so it
+        picks up the new payout with REAL fees derived from Balance Transactions.
+
+        Hard boundary (ADR-0002 S1): this must NOT emit a settlement event, post
+        a JE, or write the settlement read-model — it only enqueues the
+        idempotent, debounced backfill. The pull dedupes by payout id, so a
+        duplicate payout.paid delivery cannot double-post or double-emit.
+        """
+        if topic != "payout.paid":
+            return
+        from .tasks import enqueue_account_sync
+
+        accounts = self._resolve_sync_accounts(company, payload)
+        if not accounts:
+            # Connection resolution failed — acknowledge safely, log non-secret.
+            logger.warning(
+                "Stripe payout.paid webhook for company %s: no ACTIVE account to sync; acknowledging.",
+                getattr(company, "id", "?"),
+            )
+            return
+        for account in accounts:
+            enqueue_account_sync(account.id)
+
+    @staticmethod
+    def _resolve_sync_accounts(company, payload):
+        """ACTIVE StripeAccount(s) to sync for this payout. A Connect event names
+        the account; a restricted-key (single-merchant) one doesn't, so fall back
+        to the company's active account(s)."""
+        qs = StripeAccount.objects.filter(company=company, status=StripeAccount.Status.ACTIVE)
+        account_id = payload.get("account")
+        if account_id:
+            qs = qs.filter(stripe_account_id=account_id)
+        return list(qs)
 
     # ── Helpers ──────────────────────────────────────────────────
 

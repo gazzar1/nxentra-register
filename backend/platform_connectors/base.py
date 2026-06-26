@@ -165,6 +165,17 @@ class BasePlatformConnector(ABC):
         """
         return None
 
+    def on_unhandled_topic(self, *, company, topic: str, payload: dict) -> None:
+        """Hook for webhook topics NOT mapped to a JE-posting canonical handler.
+
+        Default: no-op. A connector may override to react WITHOUT touching the
+        ledger — e.g. Stripe enqueues its pull/backfill on `payout.paid` so the
+        pull (the SOLE settlement emitter) picks up the new payout. An override
+        MUST NOT emit settlement events, post journal entries, or write
+        settlement read-models from here.
+        """
+        return None
+
     def get_module_key(self) -> str:
         """
         Module key for ModuleAccountMapping lookups.

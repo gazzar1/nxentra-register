@@ -108,6 +108,14 @@ class PlatformWebhookView(APIView):
         )
 
         if not canonical_topic or canonical_topic not in TOPIC_HANDLERS:
+            # Not a JE-posting topic. Give the connector a chance to react
+            # WITHOUT touching the ledger — e.g. Stripe enqueues its pull on
+            # payout.paid (the pull is the sole settlement emitter). Never let
+            # this fail the webhook ack.
+            try:
+                connector.on_unhandled_topic(company=company, topic=topic, payload=payload)
+            except Exception:
+                logger.exception("Error in %s on_unhandled_topic for %s", platform_slug, topic)
             logger.info("Unhandled %s webhook topic: %s", platform_slug, topic)
             return HttpResponse(status=200)
 
