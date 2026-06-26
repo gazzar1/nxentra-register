@@ -79,12 +79,45 @@ def test_setup_stripe_platform_seeds_mappings_provider_and_distinct_accounts(db,
     # Per-provider isolation: Stripe clearing + EBD are distinct codes, NOT Shopify's.
     assert Account.objects.get(company=company, code="11510").id == mapping["STRIPE_CLEARING"].id
     assert Account.objects.get(company=company, code="11610").id == mapping["EXPECTED_BANK_DEPOSIT"].id
+    # Gateway fees land on a DEDICATED account (53100), never a generic
+    # admin-expense code (53000 "Office & General") — fees are a first-class
+    # reconciliation metric and must be reportable on their own line.
+    assert Account.objects.get(company=company, code="53100").id == mapping["PAYMENT_PROCESSING_FEES"].id
 
     provider = SettlementProvider.objects.get(company=company, external_system="stripe", normalized_code="stripe")
     assert provider.provider_type == SettlementProvider.ProviderType.GATEWAY
     assert provider.is_active and not provider.needs_review
     assert provider.posting_profile.control_account_id == mapping["STRIPE_CLEARING"].id
     assert provider.dimension_value_id is not None
+
+
+def test_fee_account_avoids_collision_with_occupied_code(db, company):
+    """A tenant already using 53100 for an unrelated account must NOT have Stripe
+    fees bound to it — the fee role gets its OWN dedicated account (Codex P2)."""
+    from accounting.mappings import ModuleAccountMapping
+    from accounting.models import Account
+    from projections.write_barrier import projection_writes_allowed
+    from stripe_connector.seed import setup_stripe_platform
+
+    with projection_writes_allowed():
+        Account.objects.create(
+            company=company,
+            code="53100",
+            name="Marketing & Ads",
+            account_type="EXPENSE",
+            role="OPERATING_EXPENSE",
+            ledger_domain="FINANCIAL",
+            status="ACTIVE",
+            normal_balance="DEBIT",
+        )
+
+    setup_stripe_platform(company)
+
+    fee = ModuleAccountMapping.get_account(company, "platform_stripe", "PAYMENT_PROCESSING_FEES")
+    assert fee.name == "Payment Processing Fees"
+    assert fee.code != "53100"  # did NOT bind to the occupied account
+    # The pre-existing 53100 account is left untouched.
+    assert Account.objects.get(company=company, code="53100").name == "Marketing & Ads"
 
 
 # ─────────────────────────────────────────────────────────────────────
