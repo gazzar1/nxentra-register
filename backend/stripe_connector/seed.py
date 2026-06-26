@@ -32,10 +32,10 @@ STRIPE_MODULE_KEY = module_key_for_provider("stripe")  # "platform_stripe"
 STRIPE_ACCOUNTS = [
     ("SALES_REVENUE", "41000", "Sales Revenue", "REVENUE", "SALES"),
     ("STRIPE_CLEARING", "11510", "Stripe Clearing", "ASSET", "LIQUIDITY"),
-    # Dedicated fee account (53100), NOT a generic admin-expense code like 53000
-    # (which many charts already use for "Office & General"). Processing fees are
-    # a core ecommerce-reconciliation metric and must stand on their own line.
-    ("PAYMENT_PROCESSING_FEES", "53100", "Payment Processing Fees", "EXPENSE", "OPERATING_EXPENSE"),
+    # NOTE: PAYMENT_PROCESSING_FEES is intentionally NOT here — it's resolved by
+    # _resolve_fee_account() to a DEDICATED fee account, collision-aware, because a
+    # hardcoded code can clash with a tenant's existing chart (e.g. 53000 was
+    # already "Office & General").
     ("SALES_TAX_PAYABLE", "22000", "Sales Tax Payable", "LIABILITY", "TAX_PAYABLE"),
     ("CASH_BANK", "11000", "Cash and Bank", "ASSET", "LIQUIDITY"),
     ("CHARGEBACK_EXPENSE", "52100", "Chargeback Expense", "EXPENSE", "OTHER_EXPENSE"),
@@ -45,6 +45,41 @@ STRIPE_ACCOUNTS = [
     ("EXPECTED_BANK_DEPOSIT", "11610", "Expected Bank Deposit — Stripe", "ASSET", "LIQUIDITY"),
     ("SALES_RETURNS", "41200", "Sales Returns / Failed Delivery", "REVENUE", "CONTRA_REVENUE"),
 ]
+
+
+FEE_ACCOUNT_NAME = "Payment Processing Fees"
+
+
+def _resolve_fee_account(company, Account):
+    """Resolve a DEDICATED 'Payment Processing Fees' expense account.
+
+    Account codes are tenant-editable and only unique per company, so a hardcoded
+    code can collide with an unrelated account (53000 was already "Office & General"
+    on a live chart). So we never bind the fee role to whatever happens to occupy a
+    fixed code:
+      * reuse an existing account named "Payment Processing Fees" (our prior seed,
+        or one the merchant already created) — idempotent; else
+      * create one at the first FREE code in 53100–53199 (preferring 53100).
+    Gateway fees are a core reconciliation metric and must stand on their own line.
+    """
+    existing = Account.objects.filter(company=company, name=FEE_ACCOUNT_NAME).first()
+    if existing is not None:
+        return existing
+    used = set(Account.objects.filter(company=company).values_list("code", flat=True))
+    code = next((c for c in (f"531{n:02d}" for n in range(100)) if c not in used), "53100")
+    account, _ = Account.objects.get_or_create(
+        company=company,
+        code=code,
+        defaults={
+            "name": FEE_ACCOUNT_NAME,
+            "account_type": "EXPENSE",
+            "role": "OPERATING_EXPENSE",
+            "ledger_domain": "FINANCIAL",
+            "status": "ACTIVE",
+            "normal_balance": "DEBIT",
+        },
+    )
+    return account
 
 
 def setup_stripe_accounts(company):
@@ -79,6 +114,14 @@ def setup_stripe_accounts(company):
             )
             if role == "STRIPE_CLEARING":
                 clearing = account
+
+        # Fees get a dedicated, collision-aware account (never a generic code).
+        ModuleAccountMapping.objects.update_or_create(
+            company=company,
+            module=STRIPE_MODULE_KEY,
+            role="PAYMENT_PROCESSING_FEES",
+            defaults={"account": _resolve_fee_account(company, Account)},
+        )
     return clearing
 
 
