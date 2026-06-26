@@ -8,9 +8,14 @@
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 
-const { mockToast } = vi.hoisted(() => ({ mockToast: vi.fn() }));
+const { mockToast, accountsMock } = vi.hoisted(() => ({
+  mockToast: vi.fn(),
+  // Mutable holder so each describe block can vary what useAccounts() returns
+  // (the accounts list that feeds the mapping dropdowns) without re-mocking.
+  accountsMock: { current: { data: [] as any[], refetch: vi.fn() } },
+}));
 
 // Mock ONLY the axios client; keep the REAL getErrorMessage so the
 // verbatim-error surfacing is exercised end-to-end (not stubbed).
@@ -36,7 +41,7 @@ vi.mock('@/components/common', () => ({
   PageHeader: ({ title }: { title: string }) => <h1>{title}</h1>,
 }));
 vi.mock('@/components/ui/toaster', () => ({ useToast: () => ({ toast: mockToast }) }));
-vi.mock('@/queries/useAccounts', () => ({ useAccounts: () => ({ data: [] }) }));
+vi.mock('@/queries/useAccounts', () => ({ useAccounts: () => accountsMock.current }));
 vi.mock('next-i18next/serverSideTranslations', () => ({
   serverSideTranslations: vi.fn().mockResolvedValue({}),
 }));
@@ -173,5 +178,119 @@ describe('Stripe connect form (not connected)', () => {
       );
     });
     expect(client.post).not.toHaveBeenCalled();
+  });
+});
+
+// ── Account Mappings display (connected) ─────────────────────────
+// Regression for the "Not mapped" display bug: the connect seed maps
+// STRIPE_CLEARING -> 11510 and EXPECTED_BANK_DEPOSIT -> 11610 (Stripe-specific
+// GL accounts created AT connect). The accounts list that feeds the dropdown is
+// fetched on mount and not yet refreshed, so those accounts are absent from the
+// options. A controlled <select> whose value matches no <option> silently
+// renders as "— Not mapped —" even though the role IS mapped server-side.
+describe('Stripe Account Mappings display (connected)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Stale accounts cache: the shared accounts exist, but the Stripe-only
+    // clearing / expected-bank-deposit accounts (ids 9001/9002) are NOT in the
+    // list — exactly the post-connect state before the accounts query refetches.
+    accountsMock.current = {
+      data: [
+        { id: 1, code: '41000', name: 'Sales Revenue', is_header: false, status: 'ACTIVE' },
+        { id: 2, code: '11000', name: 'Cash and Bank', is_header: false, status: 'ACTIVE' },
+      ],
+      refetch: vi.fn(),
+    };
+    client.get.mockImplementation((url: string) => {
+      if (url === '/stripe/account/')
+        return Promise.resolve({
+          data: {
+            connected: true,
+            status: 'ACTIVE',
+            display_name: 'Acme',
+            livemode: false,
+            stripe_account_id: 'acct_1',
+            created_at: '2026-06-01T00:00:00Z',
+          },
+        });
+      if (url === '/stripe/account-mapping/')
+        return Promise.resolve({
+          data: [
+            { role: 'SALES_REVENUE', account_id: 1, account_code: '41000', account_name: 'Sales Revenue' },
+            { role: 'STRIPE_CLEARING', account_id: 9001, account_code: '11510', account_name: 'Stripe Clearing' },
+            {
+              role: 'EXPECTED_BANK_DEPOSIT',
+              account_id: 9002,
+              account_code: '11610',
+              account_name: 'Expected Bank Deposit — Stripe',
+            },
+            { role: 'SALES_RETURNS', account_id: null, account_code: '', account_name: '' },
+          ],
+        });
+      return Promise.resolve({ data: {} });
+    });
+  });
+
+  afterEach(() => {
+    accountsMock.current = { data: [], refetch: vi.fn() };
+  });
+
+  it('renders the seeded Stripe Clearing / Expected Bank Deposit mapping even when those accounts are absent from the (stale) accounts list', async () => {
+    render(<StripeSettingsPage />);
+    await screen.findByText('Account Mappings');
+
+    // Mapping rows render in the order the API returns them:
+    // [0] SALES_REVENUE, [1] STRIPE_CLEARING, [2] EXPECTED_BANK_DEPOSIT, [3] SALES_RETURNS.
+    const selects = (await screen.findAllByRole('combobox')) as HTMLSelectElement[];
+    expect(selects[1].value).toBe('9001'); // STRIPE_CLEARING shows its seeded account, not "" (Not mapped)
+    expect(selects[2].value).toBe('9002'); // EXPECTED_BANK_DEPOSIT shows its seeded account
+
+    // The seeded accounts are real, labeled options (the union of postable
+    // accounts + each role's currently-mapped account), not the blank fallback.
+    // Each select renders the shared option list, so the option appears once per
+    // role row — assert it exists at all (getByRole would reject the duplicates).
+    expect(screen.getAllByRole('option', { name: '11510 — Stripe Clearing' }).length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByRole('option', { name: '11610 — Expected Bank Deposit — Stripe' }).length,
+    ).toBeGreaterThan(0);
+
+    // ...but the synthesized option is scoped to ITS OWN row: a non-postable
+    // mapped account must not become selectable for another role (Codex P2). The
+    // SALES_REVENUE row (index 0) offers neither 11510 nor 11610.
+    expect(within(selects[0]).queryByRole('option', { name: '11510 — Stripe Clearing' })).toBeNull();
+    expect(
+      within(selects[0]).queryByRole('option', { name: '11610 — Expected Bank Deposit — Stripe' }),
+    ).toBeNull();
+  });
+
+  it('labels the EXPECTED_BANK_DEPOSIT and SALES_RETURNS roles with friendly names (not raw role keys)', async () => {
+    render(<StripeSettingsPage />);
+    await screen.findByText('Account Mappings');
+
+    expect(screen.getByText('Expected Bank Deposit')).toBeInTheDocument();
+    expect(screen.getByText('Sales Returns / Failed Delivery')).toBeInTheDocument();
+    // The raw role keys must not leak into the UI.
+    expect(screen.queryByText('EXPECTED_BANK_DEPOSIT')).not.toBeInTheDocument();
+    expect(screen.queryByText('SALES_RETURNS')).not.toBeInTheDocument();
+  });
+
+  it('refetches the accounts list after a successful connect so freshly-seeded accounts become selectable', async () => {
+    // Start disconnected so the connect form renders.
+    client.get.mockImplementation((url: string) => {
+      if (url === '/stripe/account/') return Promise.resolve({ data: { connected: false } });
+      if (url === '/stripe/account-mapping/') return Promise.resolve({ data: [] });
+      return Promise.resolve({ data: {} });
+    });
+    client.post.mockResolvedValueOnce({
+      data: { connected: true, stripe_account_id: 'acct_1', status: 'ACTIVE', livemode: false, display_name: 'Acme' },
+    });
+    const refetch = accountsMock.current.refetch;
+
+    render(<StripeSettingsPage />);
+    const input = (await screen.findByLabelText(/restricted api key/i)) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'rk_test_abc123' } });
+    fireEvent.click(screen.getByRole('button', { name: /connect/i }));
+
+    await waitFor(() => expect(refetch).toHaveBeenCalled());
   });
 });
