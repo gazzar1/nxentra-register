@@ -40,26 +40,32 @@ def _mock_probe(monkeypatch, acct):
 
 
 def test_required_scopes_phrase_is_canonical():
-    assert REQUIRED_READ_SCOPES == ("Account", "Balance", "Charges", "Payouts")
-    assert required_scopes_phrase() == "Account, Balance, Charges and Payouts"
-    # Disputes is a Phase-3 scope, never advertised as required in S1.
-    assert "Disputes" not in required_scopes_phrase()
+    assert REQUIRED_READ_SCOPES == ("Balance", "Payouts")
+    assert required_scopes_phrase() == "Balance and Payouts"
+    # We never ask a merchant for account/KYC read just to connect, nor for
+    # Charges (read via webhooks, not the API) or Disputes (Phase 3).
+    phrase = required_scopes_phrase()
+    for scope in ("Account", "Basic Business", "Charges", "Disputes"):
+        assert scope not in phrase
 
 
 def test_sk_rejection_uses_canonical_scope_phrase(db, company):
     result = connect_stripe_account(company, "sk_live_x")
     assert not result.success
     assert required_scopes_phrase() in result.error
+    assert "Account" not in result.error
     assert "Disputes" not in result.error
 
 
 def test_access_denied_uses_canonical_scope_phrase(db, company, monkeypatch):
+    # The pull-scope probe (Payouts + Balance) is the gate — its denial is what
+    # rejects a key, and the message names the canonical scopes.
     from stripe_connector.api_client import StripeAccessDenied
 
     def _denied(self):
         raise StripeAccessDenied("insufficient read scope")
 
-    monkeypatch.setattr("stripe_connector.api_client.StripeApiClient.retrieve_account", _denied)
+    monkeypatch.setattr("stripe_connector.api_client.StripeApiClient.probe", _denied)
     result = connect_stripe_account(company, "rk_test_badscope")
     assert not result.success
     assert required_scopes_phrase() in result.error

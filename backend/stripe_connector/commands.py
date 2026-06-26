@@ -23,17 +23,22 @@ logger = logging.getLogger(__name__)
 
 # The Stripe restricted-key READ scopes a merchant must grant. ONE canonical list
 # so the connect validation, every rejection message, and the settings-page hint
-# stay in lockstep (drift here is what made the sk_ and access-denied messages
-# previously disagree — one said "Disputes", the other "Account"). The connect
-# probe enforces Account (retrieve_account) + Balance + Payouts (api_client.probe);
-# Charges is included because the pull reads charge-sourced balance transactions
-# and Phase-3 dispute/charge matching needs it. Disputes is NOT required in S1.
-REQUIRED_READ_SCOPES = ("Account", "Balance", "Charges", "Payouts")
+# stay in lockstep. These are the ONLY scopes the S1 reconciliation pull needs:
+# sync_payouts reads Payouts + their Balance Transactions, and the connect probe
+# (api_client.probe) validates exactly those. We deliberately do NOT require:
+#   * reading the account's business/KYC info (GET /v1/account, scope
+#     accounts_kyc_basic_read) — Stripe doesn't even expose that toggle in the
+#     restricted-key editor, so account id + livemode are captured BEST-EFFORT and
+#     connect never depends on it;
+#   * Charges — never read via the API key (StripeCharge rows arrive via webhooks);
+#   * Disputes — Phase 3.
+# Asking a merchant for any of those just to connect reconciliation is wrong.
+REQUIRED_READ_SCOPES = ("Balance", "Payouts")
 
 
 def required_scopes_phrase() -> str:
     """Render the canonical scope list for a user-facing message, e.g.
-    'Account, Balance, Charges and Payouts'."""
+    'Balance and Payouts'."""
     *head, last = REQUIRED_READ_SCOPES
     return f"{', '.join(head)} and {last}" if head else last
 
@@ -250,11 +255,12 @@ def connect_stripe_account(company, credential: str, display_name: str = ""):
         )
 
     client = StripeApiClient(credential, api_version=getattr(dj_settings, "STRIPE_API_VERSION", "") or None)
+
+    # The ONLY hard requirement: the key can READ the resources the pull needs
+    # (Payouts + Balance Transactions). probe() is the gate — a key that passes it
+    # can do the whole reconciliation pull, so we never persist a connected-but-
+    # unusable account (Codex P2). Reading /v1/account is NOT required.
     try:
-        acct = client.retrieve_account()
-        # Confirm the scopes the SYNC path actually needs (Payouts + Balance
-        # Transactions read), so we never persist a key that connects but then
-        # can't pull — leaving a connected-but-unusable account (Codex P2).
         client.probe()
     except StripeAccessDenied:
         return CommandResult.fail(
@@ -264,24 +270,38 @@ def connect_stripe_account(company, credential: str, display_name: str = ""):
     except StripeApiError as exc:
         return CommandResult.fail(f"Couldn't validate the key with Stripe: {exc}")
 
-    acct_id = acct.get("id") or ""
-    if not acct_id:
-        return CommandResult.fail("Stripe didn't return an account id for that key.")
-    livemode = bool(acct.get("livemode", credential.startswith("rk_live_")))
-    name = display_name or (acct.get("business_profile") or {}).get("name") or acct.get("email") or "Stripe"
+    # Best-effort metadata: the real account id + livemode + name come from
+    # GET /v1/account, which needs the account-read (KYC) permission Stripe doesn't
+    # expose in the restricted-key editor. If it's denied we fall back to the key
+    # prefix for livemode and a stable per-company id — connect still succeeds.
+    acct_id = ""
+    livemode = credential.startswith("rk_live_")
+    name = display_name or "Stripe"
+    try:
+        acct = client.retrieve_account()
+        acct_id = acct.get("id") or ""
+        livemode = bool(acct.get("livemode", livemode))
+        name = display_name or (acct.get("business_profile") or {}).get("name") or acct.get("email") or "Stripe"
+    except StripeApiError:
+        logger.info("Stripe account read unavailable for the connect key — using best-effort metadata.")
 
-    account, _ = StripeAccount.objects.update_or_create(
-        company=company,
-        stripe_account_id=acct_id,
-        defaults={
-            "auth_type": StripeAccount.AuthType.RESTRICTED_KEY,
-            "credential_ref": credential,  # EncryptedTextField → encrypted at rest (A47)
-            "status": StripeAccount.Status.ACTIVE,
-            "livemode": livemode,
-            "display_name": name,
-            "error_message": "",
-        },
-    )
+    # One Stripe connection per company in Phase 1 — reuse the existing row so a
+    # reconnect (rotated key, or a later key that CAN read /v1/account) updates in
+    # place rather than creating a duplicate under a different id.
+    account = StripeAccount.objects.filter(company=company).order_by("-id").first()
+    if account is None:
+        account = StripeAccount(company=company)
+    if acct_id:
+        account.stripe_account_id = acct_id
+    elif not account.stripe_account_id:
+        account.stripe_account_id = f"stripe:company:{company.id}"
+    account.auth_type = StripeAccount.AuthType.RESTRICTED_KEY
+    account.credential_ref = credential  # EncryptedTextField → encrypted at rest (A47)
+    account.status = StripeAccount.Status.ACTIVE
+    account.livemode = livemode
+    account.display_name = name
+    account.error_message = ""
+    account.save()
 
     # Seed the platform_stripe accounts + SettlementProvider so the first synced
     # payout's JE can resolve its mapping (idempotent).
