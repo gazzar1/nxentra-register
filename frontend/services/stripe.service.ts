@@ -121,6 +121,15 @@ export interface StripeAccountMapping {
   account_name: string;
 }
 
+// ADR-0002 S1 — response from POST /stripe/connect/ on a successful connect.
+export interface StripeConnectResponse {
+  connected: boolean;
+  stripe_account_id: string;
+  status: string;
+  livemode: boolean;
+  display_name: string;
+}
+
 // =============================================================================
 // Service
 // =============================================================================
@@ -132,6 +141,12 @@ export const stripeService = {
 
   disconnect: () =>
     apiClient.post<{ status: string }>("/stripe/disconnect/"),
+
+  // ADR-0002 S1 — connect by posting a restricted READ key (rk_…). The backend
+  // validates the key is read-only (rejects sk_/pk_), live-probes its scopes,
+  // stores it encrypted, and kicks an initial backfill. No OAuth in Phase 1.
+  connect: (credential: string) =>
+    apiClient.post<StripeConnectResponse>("/stripe/connect/", { credential }),
 
   // Account mapping
   getAccountMapping: () =>

@@ -14,9 +14,11 @@ import { AppLayout } from "@/components/layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/common";
 import { useToast } from "@/components/ui/toaster";
+import { getErrorMessage } from "@/lib/api-client";
 import {
   stripeService,
   StripeAccount,
@@ -38,6 +40,10 @@ export default function StripeSettingsPage() {
   const [account, setAccount] = useState<StripeAccount | null>(null);
   const [loading, setLoading] = useState(true);
   const [disconnecting, setDisconnecting] = useState(false);
+
+  // Connect form (ADR-0002 S1): merchant pastes a restricted READ key (rk_…).
+  const [apiKey, setApiKey] = useState("");
+  const [connecting, setConnecting] = useState(false);
 
   // Account mapping
   const { data: accounts } = useAccounts();
@@ -75,6 +81,36 @@ export default function StripeSettingsPage() {
     loadAccount();
     fetchMappings();
   }, []);
+
+  async function handleConnect() {
+    const key = apiKey.trim();
+    if (!key) {
+      toast({
+        title: "Enter your Stripe restricted read-only key (rk_…).",
+        variant: "destructive",
+      });
+      return;
+    }
+    setConnecting(true);
+    try {
+      await stripeService.connect(key);
+      toast({
+        title: "Stripe connected.",
+        description: "Payouts will sync shortly.",
+      });
+      await loadAccount();
+    } catch (err) {
+      // The backend rejects sk_/pk_ and invalid/under-scoped keys with a clear,
+      // user-facing message — surface it verbatim instead of a generic error.
+      toast({ title: getErrorMessage(err), variant: "destructive" });
+    } finally {
+      // Never retain the raw secret in component state / the DOM after an
+      // attempt — clearing on every outcome (not just success) keeps cleartext
+      // out of the Sentry session-replay-on-error window.
+      setApiKey("");
+      setConnecting(false);
+    }
+  }
 
   async function handleDisconnect() {
     if (!confirm("Are you sure you want to disconnect this Stripe account?")) return;
@@ -132,18 +168,38 @@ export default function StripeSettingsPage() {
                 Connect Stripe
               </CardTitle>
             </CardHeader>
-            <CardContent>
-              <p className="text-sm text-muted-foreground mb-4">
-                Stripe integration requires setting up a webhook endpoint in your Stripe dashboard.
-                Contact your administrator to configure the connection.
+            <CardContent className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                Paste a Stripe <strong>restricted</strong> API key to let Nxentra read your
+                payouts and balance transactions for reconciliation. Nxentra is read-only and
+                never receives a key that can move money.
               </p>
-              <div className="rounded-lg border p-4 bg-muted/30">
-                <p className="text-sm font-medium mb-2">Webhook Setup</p>
+              <div className="flex flex-col gap-3 max-w-lg sm:flex-row sm:items-end">
+                <div className="flex-1 space-y-1.5">
+                  <Label htmlFor="stripe-key">Restricted API key</Label>
+                  <Input
+                    id="stripe-key"
+                    type="password"
+                    autoComplete="off"
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    placeholder="rk_live_…"
+                  />
+                </div>
+                <div className="flex items-end">
+                  <Button onClick={handleConnect} disabled={connecting}>
+                    {connecting && <Loader2 className="me-2 h-4 w-4 animate-spin" />}
+                    Connect
+                  </Button>
+                </div>
+              </div>
+              <div className="rounded-lg border p-4 bg-muted/30 space-y-1">
+                <p className="text-sm font-medium">How to create a restricted read key</p>
                 <p className="text-xs text-muted-foreground">
-                  Point your Stripe webhook to: <code className="bg-muted px-1 py-0.5 rounded">/api/platforms/stripe/webhooks/</code>
-                </p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Events: charge.captured, charge.refunded, payout.paid, charge.dispute.created
+                  In Stripe: <strong>Developers → API keys → Create restricted key</strong>. Set{" "}
+                  <strong>Balance</strong>, <strong>Charges</strong>, <strong>Payouts</strong> and{" "}
+                  <strong>Account</strong> to <strong>Read</strong> (leave everything else None),
+                  then paste the <code className="bg-muted px-1 py-0.5 rounded">rk_…</code> key here.
                 </p>
               </div>
             </CardContent>
