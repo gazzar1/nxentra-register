@@ -60,3 +60,40 @@ def initial_stripe_sync(self, account_id: int) -> dict:
         except StripeAccount.DoesNotExist:
             return {"status": "error", "error": "account not found"}
         return sync_payouts(account, lookback_hours=24 * 90)
+
+
+@shared_task(name="stripe.sync_account", bind=True, max_retries=2, default_retry_delay=60)
+def sync_stripe_account(self, account_id: int) -> dict:
+    """Pull recent payouts for ONE account — the webhook-triggered, near-real-time
+    path. Reuses the idempotent sync_payouts (dedupes by payout id), so a repeat
+    run is safe."""
+    from .models import StripeAccount
+    from .sync import sync_payouts
+
+    with rls_bypass():
+        try:
+            account = StripeAccount.objects.select_related("company").get(id=account_id)
+        except StripeAccount.DoesNotExist:
+            return {"status": "error", "error": "account not found"}
+        return sync_payouts(account)
+
+
+# How long to suppress re-enqueuing a sync for the same account (debounce a burst
+# of webhooks into one pull). A missed debounce is still safe — the pull is
+# idempotent — this only avoids a sync storm.
+_SYNC_ENQUEUE_DEBOUNCE_SECONDS = 60
+
+
+def enqueue_account_sync(account_id: int) -> bool:
+    """Enqueue a single-account pull, debounced so a burst of payout.paid
+    webhooks doesn't spawn a sync storm. Returns True if enqueued, False if a
+    recent enqueue already covers it."""
+    from django.core.cache import cache
+
+    # cache.add() is atomic set-if-absent: only the first caller within the
+    # window enqueues. If the cache backend is unavailable it raises → caller's
+    # try/except keeps the webhook ack safe.
+    if not cache.add(f"stripe:sync:enqueued:{account_id}", 1, timeout=_SYNC_ENQUEUE_DEBOUNCE_SECONDS):
+        return False
+    sync_stripe_account.delay(account_id)
+    return True
