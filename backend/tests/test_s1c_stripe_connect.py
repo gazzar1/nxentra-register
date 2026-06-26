@@ -86,6 +86,18 @@ def test_connects_without_account_read_permission(db, company, monkeypatch, _no_
     assert acct.stripe_account_id  # a stable synthetic id was assigned
 
 
+def test_distinct_real_accounts_get_distinct_rows(db, company, monkeypatch, _no_async):
+    """Connecting a key for a DIFFERENT real Stripe account must not clobber the
+    first account's identity (its payouts FK to that row) — it gets its own row."""
+    _mock_probe(monkeypatch, {"id": "acct_A", "livemode": False})
+    connect_stripe_account(company, "rk_test_a")
+    _mock_probe(monkeypatch, {"id": "acct_B", "livemode": False})
+    connect_stripe_account(company, "rk_test_b")
+
+    ids = set(StripeAccount.objects.filter(company=company).values_list("stripe_account_id", flat=True))
+    assert ids == {"acct_A", "acct_B"}
+
+
 # ── happy path: connect + encrypt + seed ──────────────────────────────
 
 

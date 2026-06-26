@@ -285,23 +285,24 @@ def connect_stripe_account(company, credential: str, display_name: str = ""):
     except StripeApiError:
         logger.info("Stripe account read unavailable for the connect key — using best-effort metadata.")
 
-    # One Stripe connection per company in Phase 1 — reuse the existing row so a
-    # reconnect (rotated key, or a later key that CAN read /v1/account) updates in
-    # place rather than creating a duplicate under a different id.
-    account = StripeAccount.objects.filter(company=company).order_by("-id").first()
-    if account is None:
-        account = StripeAccount(company=company)
-    if acct_id:
-        account.stripe_account_id = acct_id
-    elif not account.stripe_account_id:
-        account.stripe_account_id = f"stripe:company:{company.id}"
-    account.auth_type = StripeAccount.AuthType.RESTRICTED_KEY
-    account.credential_ref = credential  # EncryptedTextField → encrypted at rest (A47)
-    account.status = StripeAccount.Status.ACTIVE
-    account.livemode = livemode
-    account.display_name = name
-    account.error_message = ""
-    account.save()
+    # Key on the account's REAL id when we have it, so a different real account
+    # gets its own row and the same one updates in place — never clobbering a
+    # synced account's identity (its payouts FK to this row). When /v1/account is
+    # denied we fall back to a stable per-company synthetic id (reused across
+    # account-read-denied reconnects). update_or_create resolves the unique
+    # (company, stripe_account_id) safely either way.
+    account, _ = StripeAccount.objects.update_or_create(
+        company=company,
+        stripe_account_id=acct_id or f"stripe:company:{company.id}",
+        defaults={
+            "auth_type": StripeAccount.AuthType.RESTRICTED_KEY,
+            "credential_ref": credential,  # EncryptedTextField → encrypted at rest (A47)
+            "status": StripeAccount.Status.ACTIVE,
+            "livemode": livemode,
+            "display_name": name,
+            "error_message": "",
+        },
+    )
 
     # Seed the platform_stripe accounts + SettlementProvider so the first synced
     # payout's JE can resolve its mapping (idempotent).
