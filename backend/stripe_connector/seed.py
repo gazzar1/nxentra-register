@@ -8,8 +8,10 @@ Mirrors the Shopify onboarding seed (``_setup_shopify_accounts`` +
 
 Per-provider isolation (ADR-0002): Stripe gets its OWN clearing + expected-bank-
 deposit accounts (distinct codes 11510 / 11610) so its balances reconcile
-independently of Shopify's. Company-wide accounts (revenue, fees, tax, cash,
-chargeback, returns) are shared via get_or_create on the standard codes.
+independently of Shopify's. Company-wide accounts (revenue, tax, cash, chargeback,
+returns) are shared via get_or_create on the standard codes. Gateway FEES get a
+dedicated code (53100), not a generic admin-expense code — burying processing
+fees in "Office & General" would defeat reconciliation reporting.
 
 Idempotent: safe to call on every connect.
 """
@@ -30,7 +32,10 @@ STRIPE_MODULE_KEY = module_key_for_provider("stripe")  # "platform_stripe"
 STRIPE_ACCOUNTS = [
     ("SALES_REVENUE", "41000", "Sales Revenue", "REVENUE", "SALES"),
     ("STRIPE_CLEARING", "11510", "Stripe Clearing", "ASSET", "LIQUIDITY"),
-    ("PAYMENT_PROCESSING_FEES", "53000", "Payment Processing Fees", "EXPENSE", "OPERATING_EXPENSE"),
+    # Dedicated fee account (53100), NOT a generic admin-expense code like 53000
+    # (which many charts already use for "Office & General"). Processing fees are
+    # a core ecommerce-reconciliation metric and must stand on their own line.
+    ("PAYMENT_PROCESSING_FEES", "53100", "Payment Processing Fees", "EXPENSE", "OPERATING_EXPENSE"),
     ("SALES_TAX_PAYABLE", "22000", "Sales Tax Payable", "LIABILITY", "TAX_PAYABLE"),
     ("CASH_BANK", "11000", "Cash and Bank", "ASSET", "LIQUIDITY"),
     ("CHARGEBACK_EXPENSE", "52100", "Chargeback Expense", "EXPENSE", "OTHER_EXPENSE"),

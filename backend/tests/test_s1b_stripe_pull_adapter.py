@@ -79,6 +79,10 @@ def test_setup_stripe_platform_seeds_mappings_provider_and_distinct_accounts(db,
     # Per-provider isolation: Stripe clearing + EBD are distinct codes, NOT Shopify's.
     assert Account.objects.get(company=company, code="11510").id == mapping["STRIPE_CLEARING"].id
     assert Account.objects.get(company=company, code="11610").id == mapping["EXPECTED_BANK_DEPOSIT"].id
+    # Gateway fees land on a DEDICATED account (53100), never a generic
+    # admin-expense code (53000 "Office & General") — fees are a first-class
+    # reconciliation metric and must be reportable on their own line.
+    assert Account.objects.get(company=company, code="53100").id == mapping["PAYMENT_PROCESSING_FEES"].id
 
     provider = SettlementProvider.objects.get(company=company, external_system="stripe", normalized_code="stripe")
     assert provider.provider_type == SettlementProvider.ProviderType.GATEWAY
