@@ -451,3 +451,81 @@ class ProviderRawObject(models.Model):
                 "fetched_at": fetched_at or timezone.now(),
             },
         )
+
+
+def derive_provider_payout_line_id(company_id: int, provider: str, payout_batch_id: str, line_index: int) -> uuid.UUID:
+    """Deterministic primary key so the same payout line → the same row across a
+    from-scratch projection rebuild (mirrors reconciliation.derive_link_id).
+
+    Keyed on line_index — the position within the event's frozen line_items[].
+    The settlement event is idempotent (one per payout id), so its line ordering
+    never changes after first emit; replay reproduces identical ids.
+    """
+    return uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"nxentra:provider_payout_line:{company_id}:{provider}:{payout_batch_id}:{line_index}",
+    )
+
+
+class ProviderPayoutLine(models.Model):
+    """One constituent line of a provider payout — a charge/refund/adjustment that
+    settled into the batch — materialized by the sole-writer PaymentsProjection
+    from ``PAYMENT_SETTLEMENT_RECEIVED.line_items[]`` (ADR-0002 Phase 2).
+
+    Provider-agnostic (Stripe first; Paymob/Bosta ride the same settlement event).
+    A READ MODEL, not truth: truth is the event. Sole writer is PaymentsProjection
+    within ``projection_writes_allowed()`` (mirrors ReconciliationLink). Identity is
+    the deterministic ``derive_provider_payout_line_id`` so replay/rebuild upserts
+    the same rows instead of duplicating.
+
+    Dual-write phase (PR-A): ``stripe_connector.sync._upsert_read_models`` still
+    direct-writes the legacy StripePayout/StripePayoutTransaction caches; PR-C
+    removes them once this projection is the source of truth.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="provider_payout_lines")
+    provider = models.CharField(max_length=40)  # 'stripe' / 'paymob' / 'bosta' / …
+    payout_batch_id = models.CharField(max_length=255)  # the payout/settlement id this line settled into
+    line_index = models.PositiveIntegerField()  # stable position within the frozen event line_items[]
+    source_id = models.CharField(max_length=255, blank=True)  # the line's order/charge id (line_items.order_id)
+    kind = models.CharField(max_length=40, blank=True)  # the line type (line_items.status: charge/refund/adjustment/…)
+    gross_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    fee = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    net_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    currency = models.CharField(max_length=3, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "provider_payout_line"
+        ordering = ["company", "provider", "payout_batch_id", "line_index"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "provider", "payout_batch_id", "line_index"],
+                name="uniq_provider_payout_line",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["company", "provider", "payout_batch_id"]),
+            models.Index(fields=["company", "provider", "source_id"]),
+        ]
+        verbose_name = "Provider Payout Line"
+        verbose_name_plural = "Provider Payout Lines"
+
+    def __str__(self):
+        return f"ProviderPayoutLine({self.provider}:{self.payout_batch_id}#{self.line_index})"
+
+    def save(self, *args, **kwargs):
+        # Guard: a read model. Sole writer is PaymentsProjection within
+        # projection_writes_allowed(). TESTING bypasses (matches ReconciliationLink).
+        from django.conf import settings
+
+        from projections.write_barrier import write_context_allowed
+
+        if not write_context_allowed({"projection"}) and not getattr(settings, "TESTING", False):
+            raise RuntimeError(
+                "ProviderPayoutLine is a read model. It is written only by "
+                "PaymentsProjection within projection_writes_allowed()."
+            )
+        super().save(*args, **kwargs)
