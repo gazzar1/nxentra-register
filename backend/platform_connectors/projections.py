@@ -372,3 +372,71 @@ class PlatformAccountingProjection(BaseProjection):
                 platform_slug,
                 dispute_id,
             )
+
+
+# =============================================================================
+# PaymentsProjection — ADR-0002 Phase 2 PR-A
+# =============================================================================
+
+PAYMENTS_PROJECTION_NAME = "payments"
+
+
+class PaymentsProjection(BaseProjection):
+    """Materialize the per-payout line breakdown (ProviderPayoutLine) from
+    ``PAYMENT_SETTLEMENT_RECEIVED.line_items[]`` (ADR-0002 Phase 2).
+
+    A SECOND, independent consumer of the settlement event: PaymentSettlementProjection
+    keeps posting the drain JE; this projection only builds the read-model. Sole
+    writer of ProviderPayoutLine, with deterministic ids so replay/rebuild upserts
+    the same rows.
+
+    Dual-write phase (PR-A): the legacy StripePayout/StripePayoutTransaction caches
+    are still direct-written by stripe_connector.sync._upsert_read_models. PR-C flips
+    this projection to the source of truth and removes those direct writes.
+    """
+
+    @property
+    def name(self) -> str:
+        return PAYMENTS_PROJECTION_NAME
+
+    @property
+    def consumes(self) -> list[str]:
+        return [EventTypes.PAYMENT_SETTLEMENT_RECEIVED]
+
+    def _clear_projected_data(self, company) -> None:
+        from .models import ProviderPayoutLine
+
+        ProviderPayoutLine.objects.filter(company=company).delete()
+
+    def handle(self, event: BusinessEvent) -> None:
+        from .models import ProviderPayoutLine, derive_provider_payout_line_id
+
+        data = event.get_data()
+        company = event.company
+
+        # The settling provider for the lines. provider_normalized_code is the
+        # canonical code ("stripe"); fall back to external_system for older payloads.
+        provider = (data.get("provider_normalized_code") or data.get("external_system") or "").strip().lower()
+        payout_batch_id = data.get("payout_batch_id") or ""
+        line_items = data.get("line_items") or []
+        if not provider or not payout_batch_id or not line_items:
+            return
+
+        currency = (data.get("currency") or company.default_currency or "").upper()
+
+        for index, line in enumerate(line_items):
+            ProviderPayoutLine.objects.update_or_create(
+                id=derive_provider_payout_line_id(company.id, provider, payout_batch_id, index),
+                defaults={
+                    "company": company,
+                    "provider": provider,
+                    "payout_batch_id": payout_batch_id,
+                    "line_index": index,
+                    "source_id": str(line.get("order_id") or ""),
+                    "kind": str(line.get("status") or ""),
+                    "gross_amount": Decimal(str(line.get("gross") or "0")),
+                    "fee": Decimal(str(line.get("fee") or "0")),
+                    "net_amount": Decimal(str(line.get("net") or "0")),
+                    "currency": currency,
+                },
+            )

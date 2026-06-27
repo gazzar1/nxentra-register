@@ -17,7 +17,11 @@ class PlatformConnectorsConfig(AppConfig):
     name = "platform_connectors"
     verbose_name = "Platform Connectors"
 
-    # Projection that creates JEs from PLATFORM_* events
+    # Projections discovered + registered by ProjectionsConfig.ready().
     projections = [
+        # Creates JEs from PLATFORM_* events.
         "platform_connectors.projections.PlatformAccountingProjection",
+        # ADR-0002 Phase 2: materializes ProviderPayoutLine from the per-payout
+        # line breakdown of PAYMENT_SETTLEMENT_RECEIVED (2nd, independent consumer).
+        "platform_connectors.projections.PaymentsProjection",
     ]
