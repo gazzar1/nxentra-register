@@ -453,6 +453,83 @@ class ProviderRawObject(models.Model):
         )
 
 
+def derive_provider_payout_id(company_id: int, provider: str, payout_batch_id: str) -> uuid.UUID:
+    """Deterministic primary key for the canonical payout HEADER, so the same payout
+    → the same row across a from-scratch projection rebuild (mirrors
+    reconciliation.derive_link_id)."""
+    return uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"nxentra:provider_payout:{company_id}:{provider}:{payout_batch_id}",
+    )
+
+
+class ProviderPayout(models.Model):
+    """Canonical, provider-agnostic payout/settlement HEADER, materialized by the
+    sole-writer PaymentsProjection from PAYMENT_SETTLEMENT_RECEIVED (ADR-0002 PR-C1).
+
+    The header companion to ProviderPayoutLine — carries the batch-level totals +
+    provider-NEUTRAL status/account fields the legacy stripe_connector.StripePayout
+    header exposes to the recon views + bank-reconciliation match engine. A READ
+    MODEL, not truth (truth is the event). Deterministic id → replay/rebuild upserts
+    the same row. Sole writer is PaymentsProjection within projection_writes_allowed().
+
+    Cutover (PR-C) is staged: this is the additive "expand" step — reads are NOT
+    switched here. journal_entry_id is intentionally absent: it's bank-match-mutated
+    state with no settlement event (a documented C2/C3 parity gap, candidate source
+    = ReconciliationLink), the same category as the line cache's `verified` (PR-D).
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="provider_payouts")
+    provider = models.CharField(max_length=40)  # 'stripe' / 'paymob' / 'bosta' / …
+    payout_batch_id = models.CharField(max_length=255)
+    provider_status = models.CharField(max_length=40, blank=True)  # the provider's own status (Stripe "paid")
+    provider_account_reference = models.CharField(max_length=255, blank=True)  # provider account id
+    provider_account_name = models.CharField(max_length=255, blank=True)
+    gross_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    fees = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    net_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    uncollected_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    currency = models.CharField(max_length=3, blank=True)
+    payout_date = models.DateField(null=True, blank=True)
+    provider_metadata = models.JSONField(default=dict, blank=True)  # provider-specific residue only
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "provider_payout"
+        ordering = ["company", "provider", "-payout_date"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "provider", "payout_batch_id"],
+                name="uniq_provider_payout",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["company", "provider"]),
+            models.Index(fields=["company", "provider", "provider_status"]),
+        ]
+        verbose_name = "Provider Payout"
+        verbose_name_plural = "Provider Payouts"
+
+    def __str__(self):
+        return f"ProviderPayout({self.provider}:{self.payout_batch_id})"
+
+    def save(self, *args, **kwargs):
+        # Read model — sole writer is PaymentsProjection within projection_writes_allowed().
+        # TESTING bypasses (matches ProviderPayoutLine / ReconciliationLink).
+        from django.conf import settings
+
+        from projections.write_barrier import write_context_allowed
+
+        if not write_context_allowed({"projection"}) and not getattr(settings, "TESTING", False):
+            raise RuntimeError(
+                "ProviderPayout is a read model. It is written only by "
+                "PaymentsProjection within projection_writes_allowed()."
+            )
+        super().save(*args, **kwargs)
+
+
 def derive_provider_payout_line_id(company_id: int, provider: str, payout_batch_id: str, line_index: int) -> uuid.UUID:
     """Deterministic primary key so the same payout line → the same row across a
     from-scratch projection rebuild (mirrors reconciliation.derive_link_id).

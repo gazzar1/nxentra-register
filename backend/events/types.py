@@ -2527,6 +2527,18 @@ class PaymentSettlementReceivedData(FinancialEventData):
     # Defaults of 0 mean "no override; use auto-resolution from date".
     period_override: int = 0
     fiscal_year_override: int = 0
+    # ADR-0002 PR-C1: provider-NEUTRAL settlement-header enrichment, so a canonical
+    # ProviderPayout read-model can be materialized from the event. Deliberately not
+    # stripe_* — each adapter maps its own status/account into these. Defaults keep
+    # pre-PR-C1 events valid on replay (they deserialize blank).
+    #   provider_status: the provider's own payout/settlement status (Stripe "paid").
+    #   provider_account_reference: the provider account id the payout settled from.
+    #   provider_account_name: human label for that account.
+    #   provider_metadata: provider-specific residue only (kept out of named fields).
+    provider_status: str = ""
+    provider_account_reference: str = ""
+    provider_account_name: str = ""
+    provider_metadata: dict = field(default_factory=dict)
 
 
 # =============================================================================

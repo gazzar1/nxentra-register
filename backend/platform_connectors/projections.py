@@ -404,21 +404,26 @@ class PaymentsProjection(BaseProjection):
         return [EventTypes.PAYMENT_SETTLEMENT_RECEIVED]
 
     def _clear_projected_data(self, company) -> None:
-        # provider_payout_line has FORCE RLS (migration 0005). rebuild() calls this
-        # BEFORE process_pending() establishes the tenant session context, so when
-        # invoked via a direct rebuild path (rebuild_projection cmd / tasks), the
-        # DELETE would be RLS-filtered to zero rows and stale lines would survive a
-        # replay (Codex P2). Bypass RLS for the clear — the explicit company filter
-        # keeps it tenant-scoped.
+        # provider_payout / provider_payout_line have FORCE RLS (migrations 0005/0008).
+        # rebuild() calls this BEFORE process_pending() establishes the tenant session
+        # context, so via a direct rebuild path the DELETE would be RLS-filtered to
+        # zero rows and stale rows would survive a replay (Codex P2). Bypass RLS for
+        # the clear — the explicit company filter keeps it tenant-scoped.
         from accounts.rls import rls_bypass
 
-        from .models import ProviderPayoutLine
+        from .models import ProviderPayout, ProviderPayoutLine
 
         with rls_bypass():
             ProviderPayoutLine.objects.filter(company=company).delete()
+            ProviderPayout.objects.filter(company=company).delete()
 
     def handle(self, event: BusinessEvent) -> None:
-        from .models import ProviderPayoutLine, derive_provider_payout_line_id
+        from .models import (
+            ProviderPayout,
+            ProviderPayoutLine,
+            derive_provider_payout_id,
+            derive_provider_payout_line_id,
+        )
 
         data = event.get_data()
         company = event.company
@@ -427,12 +432,33 @@ class PaymentsProjection(BaseProjection):
         # canonical code ("stripe"); fall back to external_system for older payloads.
         provider = (data.get("provider_normalized_code") or data.get("external_system") or "").strip().lower()
         payout_batch_id = data.get("payout_batch_id") or ""
-        line_items = data.get("line_items") or []
-        if not provider or not payout_batch_id or not line_items:
+        if not provider or not payout_batch_id:
             return
 
         currency = (data.get("currency") or company.default_currency or "").upper()
 
+        # Header (one per event). Totals come from the event's TOP-LEVEL fields
+        # (not the line aggregate) so they match the legacy StripePayout header.
+        ProviderPayout.objects.update_or_create(
+            id=derive_provider_payout_id(company.id, provider, payout_batch_id),
+            defaults={
+                "company": company,
+                "provider": provider,
+                "payout_batch_id": payout_batch_id,
+                "provider_status": str(data.get("provider_status") or ""),
+                "provider_account_reference": str(data.get("provider_account_reference") or ""),
+                "provider_account_name": str(data.get("provider_account_name") or ""),
+                "gross_amount": Decimal(str(data.get("gross_amount") or "0")),
+                "fees": Decimal(str(data.get("fees") or "0")),
+                "net_amount": Decimal(str(data.get("net_amount") or "0")),
+                "uncollected_amount": Decimal(str(data.get("uncollected_amount") or "0")),
+                "currency": currency,
+                "payout_date": _parse_date(data.get("payout_date")),
+                "provider_metadata": data.get("provider_metadata") or {},
+            },
+        )
+
+        line_items = data.get("line_items") or []
         for index, line in enumerate(line_items):
             ProviderPayoutLine.objects.update_or_create(
                 id=derive_provider_payout_line_id(company.id, provider, payout_batch_id, index),
