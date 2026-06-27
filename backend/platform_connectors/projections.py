@@ -446,6 +446,10 @@ class PaymentsProjection(BaseProjection):
                     "gross_amount": Decimal(str(line.get("gross") or "0")),
                     "fee": Decimal(str(line.get("fee") or "0")),
                     "net_amount": Decimal(str(line.get("net") or "0")),
+                    # Provider-agnostic: Bosta carries the failed-delivery value in
+                    # "uncollected", Paymob the refund/chargeback in "refund". Reading
+                    # only gross/fee/net would zero those lines (the Stripe-shaped leak).
+                    "uncollected_amount": Decimal(str(line.get("uncollected") or line.get("refund") or "0")),
                     "currency": currency,
                 },
             )
