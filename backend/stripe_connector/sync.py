@@ -161,7 +161,7 @@ def sync_payouts(account: StripeAccount, *, lookback_hours: int = 168) -> dict:
             continue
 
         breakdown = derive_payout_breakdown(po, txns)
-        _emit_settlement(company, payout_id, breakdown)
+        _emit_settlement(company, account, payout_id, breakdown)
         _upsert_read_models(account, payout_id, po, txns, breakdown)
         created += 1
 
@@ -171,8 +171,12 @@ def sync_payouts(account: StripeAccount, *, lookback_hours: int = 168) -> dict:
     return {"status": "ok", "created": created, "skipped": skipped}
 
 
-def _emit_settlement(company, payout_id: str, breakdown: dict):
-    """Emit the canonical settlement event (idempotent on the payout id)."""
+def _emit_settlement(company, account: StripeAccount, payout_id: str, breakdown: dict):
+    """Emit the canonical settlement event (idempotent on the payout id).
+
+    PR-C1: maps Stripe's payout status + connected account into the provider-NEUTRAL
+    header fields so a canonical ProviderPayout header is event-reproducible.
+    """
     payout_date = breakdown["payout_date"]
     event = emit_event_no_actor(
         company=company,
@@ -196,6 +200,10 @@ def _emit_settlement(company, payout_id: str, breakdown: dict):
             payment_method="card",
             payout_date=payout_date,
             line_items=breakdown["line_items"],
+            # Provider-neutral header enrichment (the Stripe adapter's mapping).
+            provider_status=breakdown.get("status") or "",
+            provider_account_reference=account.stripe_account_id or "",
+            provider_account_name=account.display_name or "",
         ),
     )
     return event
