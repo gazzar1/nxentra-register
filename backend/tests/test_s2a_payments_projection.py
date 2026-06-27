@@ -110,6 +110,40 @@ def test_payments_projection_is_idempotent_on_rebuild(db, company, stripe_accoun
     assert ProviderPayoutLine.objects.filter(company=company, payout_batch_id="po_1").count() == 2
 
 
+def test_rebuild_removes_stale_lines(db, company, stripe_account, monkeypatch):
+    """rebuild()'s clear must remove rows no replayed event produces. Deterministic
+    ids alone would mask a broken clear (re-materialization updates in place), so we
+    inject a stale line and assert it's gone after rebuild. On Postgres this also
+    exercises the RLS-bypass in _clear_projected_data (the clear runs before the
+    tenant session context is established)."""
+    from platform_connectors.models import ProviderPayoutLine, derive_provider_payout_line_id
+    from platform_connectors.projections import PaymentsProjection
+
+    _run_sync(stripe_account, monkeypatch)
+    PaymentsProjection().process_pending(company)
+
+    # A line no event produces (TESTING bypasses the read-model save-guard).
+    ProviderPayoutLine.objects.create(
+        id=derive_provider_payout_line_id(company.id, "stripe", "po_OLD", 0),
+        company=company,
+        provider="stripe",
+        payout_batch_id="po_OLD",
+        line_index=0,
+        source_id="ch_old",
+        kind="charge",
+        gross_amount=Decimal("1.00"),
+        fee=Decimal("0"),
+        net_amount=Decimal("1.00"),
+        currency="USD",
+    )
+    assert ProviderPayoutLine.objects.filter(company=company, payout_batch_id="po_OLD").exists()
+
+    PaymentsProjection().rebuild(company)
+
+    assert not ProviderPayoutLine.objects.filter(company=company, payout_batch_id="po_OLD").exists()
+    assert ProviderPayoutLine.objects.filter(company=company, payout_batch_id="po_1").count() == 2
+
+
 def test_payments_projection_independent_of_settlement_je(db, company, stripe_account, owner_membership, monkeypatch):
     """Both consumers process the same event independently: the JE projection
     posts the drain entry AND the payments projection materializes the lines."""

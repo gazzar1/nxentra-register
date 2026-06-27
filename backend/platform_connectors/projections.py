@@ -404,9 +404,18 @@ class PaymentsProjection(BaseProjection):
         return [EventTypes.PAYMENT_SETTLEMENT_RECEIVED]
 
     def _clear_projected_data(self, company) -> None:
+        # provider_payout_line has FORCE RLS (migration 0005). rebuild() calls this
+        # BEFORE process_pending() establishes the tenant session context, so when
+        # invoked via a direct rebuild path (rebuild_projection cmd / tasks), the
+        # DELETE would be RLS-filtered to zero rows and stale lines would survive a
+        # replay (Codex P2). Bypass RLS for the clear — the explicit company filter
+        # keeps it tenant-scoped.
+        from accounts.rls import rls_bypass
+
         from .models import ProviderPayoutLine
 
-        ProviderPayoutLine.objects.filter(company=company).delete()
+        with rls_bypass():
+            ProviderPayoutLine.objects.filter(company=company).delete()
 
     def handle(self, event: BusinessEvent) -> None:
         from .models import ProviderPayoutLine, derive_provider_payout_line_id
