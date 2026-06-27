@@ -83,10 +83,14 @@ def test_reconcile_payout_contract(db, company, synced_payout):
         Decimal("0"),
         Decimal("0"),
     )
-    # No local StripeCharge rows (those arrive via webhooks) → nothing auto-matches.
+    # No local StripeCharge rows (those arrive via webhooks) → nothing auto-matches,
+    # so the two lines are unmatched → the recon UI shows "discrepancy". Pinned
+    # EXACTLY (not a set): a cutover that returned "verified"/"unverified" for the
+    # same payout is a contract break, not an acceptable variation.
     assert recon.matched_transactions == 0
     assert recon.unmatched_transactions == 2
-    assert recon.status in {"unverified", "discrepancy", "verified", "no_transactions"}
+    assert recon.status == "discrepancy"
+    assert recon.discrepancies == ["2 unmatched transaction(s)"]
 
 
 def test_bank_match_stripe_payout_header_contract(db, company, synced_payout):
