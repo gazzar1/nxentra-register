@@ -32,6 +32,10 @@ from django.core.management.base import BaseCommand
 # canonical/legacy line breakdown.
 _PAYOUT_TXN_TYPE = "payout"
 
+# Per-batch event-processing limit for the --apply drain loop (matches
+# BaseProjection.process_pending's default).
+_BATCH_LIMIT = 1000
+
 
 def build_summary(*, apply: bool, company_id: int | None = None) -> dict:
     """Rebuild (if apply) + report canonical-vs-event-vs-legacy parity. Returns a
@@ -56,9 +60,16 @@ def build_summary(*, apply: bool, company_id: int | None = None) -> dict:
         with rls_bypass():
             company = Company.objects.get(id=cid)
         if apply:
-            # rebuild() clears (RLS-bypassed) + replays all events through handle();
-            # deterministic ids → idempotent, no duplicates.
+            # rebuild() clears (RLS-bypassed) + replays through handle(), but its
+            # internal process_pending stops at limit=1000 per call. Drain the rest
+            # so a company with >1000 settlement events is FULLY replayed before we
+            # certify parity (Codex P2). Deterministic ids keep it idempotent; the
+            # loop terminates because each batch advances the bookmark (and a
+            # persistently-erroring event returns 0 → exits). The per-company `lag`
+            # in the report below is the post-condition: it must be 0 after --apply.
             proj.rebuild(company)
+            while proj.process_pending(company, limit=_BATCH_LIMIT):
+                pass
         report = _report_company(company, proj)
         summary["companies"].append(report)
         _add_totals(summary["totals"], report)

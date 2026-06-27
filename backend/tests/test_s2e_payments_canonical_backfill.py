@@ -159,6 +159,55 @@ def test_paymob_event_reconstructs_with_uncollected(db, company):
     assert co["reconstruct_mismatch"] == []
 
 
+def test_apply_drains_beyond_one_rebuild_batch(db, company, monkeypatch):
+    """--apply must keep processing until the projection drains, not stop at the
+    single limit=1000 batch rebuild() runs (Codex P2: >1000 events). Proven by
+    stubbing the projection so process_pending reports successive non-zero batches
+    then zero, and asserting the drain loop runs until zero."""
+    from events.emitter import emit_event_no_actor
+    from events.types import EventTypes, PaymentSettlementReceivedData
+    from platform_connectors.management.commands import payments_canonical_backfill as cmd
+    from platform_connectors.projections import PaymentsProjection
+
+    emit_event_no_actor(
+        company=company,
+        event_type=EventTypes.PAYMENT_SETTLEMENT_RECEIVED,
+        aggregate_type="PaymentSettlement",
+        aggregate_id="stripe:po_x",
+        idempotency_key="payment.settlement.received:stripe:po_x",
+        data=PaymentSettlementReceivedData(
+            currency="USD",
+            provider_normalized_code="stripe",
+            external_system="stripe",
+            payout_batch_id="po_x",
+            gross_amount="1",
+            net_amount="1",
+            fees="0",
+            uncollected_amount="0",
+            line_items=[],
+        ),
+    )
+
+    calls = {"rebuild": 0, "process_pending": 0}
+    monkeypatch.setattr(
+        PaymentsProjection, "rebuild", lambda self, c: calls.__setitem__("rebuild", calls["rebuild"] + 1)
+    )
+    batches = iter([500, 500, 73, 0])  # >1000 events drained across batches, then 0
+
+    def fake_process_pending(self, c, limit=1000):
+        calls["process_pending"] += 1
+        return next(batches, 0)
+
+    monkeypatch.setattr(PaymentsProjection, "process_pending", fake_process_pending)
+    monkeypatch.setattr(PaymentsProjection, "get_lag", lambda self, c: 0)
+
+    cmd.build_summary(apply=True)
+
+    assert calls["rebuild"] == 1
+    # Looped until process_pending returned 0 (500, 500, 73, 0 → 4 calls).
+    assert calls["process_pending"] == 4
+
+
 def test_call_command_runs_and_prints_cleanly(db, company, stripe_event_no_canonical):
     """The management entrypoint must not crash on its printed report (handle()
     returns None — call_command writes any truthy return to stdout)."""
