@@ -108,7 +108,7 @@ _PHONE_RE = re.compile(
     r"(?<!\d)(?:\+|00)\d{8,14}(?!\d)"  # compact intl: +201001234567 / 00201001234567
     r"|(?<!\d)(?:\+|00)\d{1,3}(?:[\s\-]\d{2,4}){2,5}"  # grouped intl:  +1 415 555 1234
     r"|\(\d{2,4}\)[\s\-]?\d{3,4}[\s\-]?\d{4}"  # parenthesized: (415) 555-1234
-    r"|\b01[0125]\d{8}\b"  # Egyptian mobile: 01X XXXXXXXX
+    r"|\b01[0125][-\s]?\d{4}[-\s]?\d{4}\b"  # Egyptian mobile: 01X XXXX XXXX (separators optional)
     r"|\b0[23]\d{7,8}\b"  # Egyptian landline: 02/03 + 7-8 digits
     r"|\b\d{3}[.\-\s]\d{3}[.\-\s]\d{4}\b"  # NANP: 415-555-1234 / 415.555.1234
 )
@@ -184,6 +184,11 @@ def _scrub(value: Any) -> Any:
     """
     if isinstance(value, str):
         return _scrub_text(value)
+    # A numeric card number / national ID under a benign key bypasses string
+    # scrubbing (e.g. logentry.params=[4242424242424242]); redact if it looks
+    # like one. bool is an int subclass — leave booleans alone.
+    if isinstance(value, int) and not isinstance(value, bool):
+        return REDACTED if _scrub_text(str(value)) != str(value) else value
     if isinstance(value, dict):
         return {k: (REDACTED if _is_sensitive_key(k) else _scrub(v)) for k, v in value.items()}
     if isinstance(value, list | tuple):

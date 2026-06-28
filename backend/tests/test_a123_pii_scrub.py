@@ -250,3 +250,24 @@ def test_query_string_pii_params_are_redacted():
     assert "29801011234567" not in qs
     assert "a@b.com" not in qs and "a%40b.com" not in qs
     assert "page=2" in qs  # benign param preserved for debugging
+
+
+def test_numeric_card_value_is_redacted_but_benign_ints_survive():
+    # A PAN/national-ID captured as a NUMBER (e.g. logentry.params=[4242...])
+    # bypasses string scrubbing unless numeric values are handled too.
+    event = {"logentry": {"message": "charge failed", "params": [4242424242424242, 41, 1719500000, "ok"]}}
+    out = scrub_event(event)
+    params = out["logentry"]["params"]
+    assert params[0] == REDACTED  # Luhn-valid 16-digit card
+    assert params[1] == 41  # small int survives
+    assert params[2] == 1719500000  # 10-digit timestamp survives
+    assert params[3] == "ok"
+    # booleans are ints in Python — must not be touched
+    assert scrub_event({"extra": {"flag": True}})["extra"]["flag"] is True
+
+
+def test_separated_egyptian_mobile_is_redacted():
+    for text in ["010 1234 5678", "010-1234-5678", "01012345678"]:
+        blob = _blob({"message": f"call {text}"})
+        assert REDACTED in blob, text
+        assert "1234 5678" not in blob and "1234-5678" not in blob
