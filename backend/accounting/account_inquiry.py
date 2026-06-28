@@ -38,7 +38,7 @@ a balance that does not tie out to the trial balance whenever reversals exist.
 
 from decimal import Decimal
 
-from django.db.models import Prefetch, Sum
+from django.db.models import DecimalField, F, Prefetch, Sum, Window
 
 from .models import (
     Account,
@@ -227,19 +227,10 @@ def build_account_inquiry(
 
     closing_raw = opening_raw + (period_debits - period_credits)
 
-    # Deterministic order so the running balance is stable across pages.
-    ordered = period_qs.order_by("entry__date", "entry__posted_at", "id")
-    total_count = ordered.count()
+    total_count = period_qs.count()
     total_pages = max(1, -(-total_count // page_size))  # ceil
     page = min(page, total_pages)
     offset = (page - 1) * page_size
-
-    # Running balance carried into the page = opening + movement of all rows
-    # before the page (single bounded query; no large IN clause).
-    running_raw = opening_raw
-    if offset:
-        for debit, credit in ordered.values_list("debit", "credit")[:offset]:
-            running_raw += debit - credit
 
     analysis_prefetch = Prefetch(
         "analysis_tags",
@@ -250,14 +241,26 @@ def build_account_inquiry(
         ),
     )
 
-    page_lines = (ordered.select_related("entry", "account", "customer", "vendor").prefetch_related(analysis_prefetch))[
-        offset : offset + page_size
-    ]
+    # The per-line running movement is computed in the DB with a window
+    # function (cumulative debit-credit over the deterministic order), so a
+    # later page never materializes the rows before it. The page's carried
+    # balance = opening + the window value already attached to each row.
+    running_window = Window(
+        expression=Sum(F("debit") - F("credit")),
+        order_by=[F("entry__date").asc(), F("entry__posted_at").asc(), F("id").asc()],
+        output_field=DecimalField(max_digits=20, decimal_places=2),
+    )
+    page_lines = (
+        period_qs.annotate(_running_movement=running_window)
+        .select_related("entry", "account", "customer", "vendor")
+        .prefetch_related(analysis_prefetch)
+        .order_by("entry__date", "entry__posted_at", "id")
+    )[offset : offset + page_size]
 
     rows = []
     for line in page_lines:
         entry = line.entry
-        running_raw += line.debit - line.credit
+        running_raw = opening_raw + line._running_movement
         running_signed, running_side = _normalize_balance(running_raw, account.normal_balance)
         rows.append(
             {

@@ -184,6 +184,18 @@ describe("AccountInquiryPage", () => {
     });
   });
 
+  it("clears the date filter and drops date_from from the query", async () => {
+    render(<AccountInquiryPage />);
+    const dateInputs = screen.getAllByPlaceholderText("YYYY-MM-DD");
+    fireEvent.change(dateInputs[0], { target: { value: "2026-01-15" } });
+    const clear = await screen.findByText("Clear");
+    fireEvent.click(clear);
+    await waitFor(() => {
+      const lastCall = mockUseInquiry.mock.calls[mockUseInquiry.mock.calls.length - 1];
+      expect(lastCall[1]).not.toHaveProperty("date_from");
+    });
+  });
+
   it("shows an empty state when there are no rows", () => {
     mockUseInquiry.mockReturnValue({
       data: {

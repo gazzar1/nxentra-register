@@ -225,7 +225,21 @@ export default function AccountInquiryPage() {
           <CardContent className="pt-6">
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
               <div className="space-y-1">
-                <Label>{t("accounting:inquiry.dateFrom", "Date From")}</Label>
+                <div className="flex items-center justify-between">
+                  <Label>{t("accounting:inquiry.dateFrom", "Date From")}</Label>
+                  {dateFrom && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDateFrom("");
+                        resetPage();
+                      }}
+                      className="text-xs text-muted-foreground underline hover:text-foreground"
+                    >
+                      {t("common:actions.clear", "Clear")}
+                    </button>
+                  )}
+                </div>
                 <CompanyDateInput
                   value={dateFrom}
                   onChange={(v) => {
@@ -236,7 +250,21 @@ export default function AccountInquiryPage() {
                 />
               </div>
               <div className="space-y-1">
-                <Label>{t("accounting:inquiry.dateTo", "Date To")}</Label>
+                <div className="flex items-center justify-between">
+                  <Label>{t("accounting:inquiry.dateTo", "Date To")}</Label>
+                  {dateTo && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDateTo("");
+                        resetPage();
+                      }}
+                      className="text-xs text-muted-foreground underline hover:text-foreground"
+                    >
+                      {t("common:actions.clear", "Clear")}
+                    </button>
+                  )}
+                </div>
                 <CompanyDateInput
                   value={dateTo}
                   onChange={(v) => {
