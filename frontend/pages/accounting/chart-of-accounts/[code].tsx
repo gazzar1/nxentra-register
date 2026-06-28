@@ -2,6 +2,7 @@ import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import { useRouter } from "next/router";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { AppLayout } from "@/components/layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -24,7 +25,7 @@ import { useUnsavedChangesGuard } from "@/lib/useUnsavedChangesGuard";
 import { getErrorMessage } from "@/lib/api-client";
 import type { AccountCreatePayload, AccountAnalysisDefault } from "@/types/account";
 import { Badge } from "@/components/ui/badge";
-import { Trash2, BookOpen } from "lucide-react";
+import { Trash2, BookOpen, ScrollText } from "lucide-react";
 
 export default function EditAccountPage() {
   const { t } = useTranslation(["common", "accounting"]);
@@ -204,6 +205,12 @@ export default function EditAccountPage() {
                   {t("accounting:chartOfAccounts.hasTransactions", "Transactions Present")}
                 </Badge>
               )}
+              <Link href={`/accounting/chart-of-accounts/${accountCode}/inquiry`}>
+                <Button variant="outline">
+                  <ScrollText className="me-2 h-4 w-4" />
+                  {t("accounting:inquiry.viewTransactions", "View Transactions")}
+                </Button>
+              </Link>
               <Button
                 variant="destructive"
                 onClick={handleDelete}
