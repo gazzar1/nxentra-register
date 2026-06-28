@@ -67,10 +67,14 @@ as the source of truth for downstream projections.
 Structured application logs are shipped to Sentry for error
 monitoring. The Sentry SDK is configured with `send_default_pii=False`
 so per-user request data is not automatically captured by the SDK.
-Explicit `before_send` redaction of PII that may appear in exception
-messages or log arguments is on the engineering roadmap (tracked as
-NEXT_TASKS A123) and prioritized ahead of merchant onboarding at
-volume.
+In addition, a `before_send` hook (`backend/ops/sentry_scrub.py`)
+redacts PII that may still appear in the *content* of an event —
+email addresses, phone numbers, and Luhn-valid card numbers found in
+exception messages, log arguments, breadcrumbs, and captured request
+bodies, plus any field named like PII (email, phone, address, SSN,
+tax ID, card number, …). The same hook strips provider credentials
+(Stripe restricted keys, Shopify access tokens, webhook secrets, auth
+tokens) before any event leaves the process.
 
 ## 6. Egress restrictions
 
