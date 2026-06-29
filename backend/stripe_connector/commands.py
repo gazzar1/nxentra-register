@@ -15,7 +15,7 @@ import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 
 from .models import StripeAccount, StripeCharge, StripePayout, StripeRefund
 
@@ -65,32 +65,56 @@ def store_charge(company, parsed, payload, event_id):
     fee = Decimal(fee_cents) / 100
     net = amount - fee
 
-    billing = obj.get("billing_details", {})
+    # Stripe sends optional string fields as explicit JSON null (e.g. a test
+    # charge has billing_details.name = null). dict.get(key, "") returns None for
+    # a present-but-null key — the default only applies when the key is ABSENT —
+    # so these must be coalesced with `or ""` before hitting the NOT NULL CharFields
+    # (customer_name/description/etc.), or the INSERT raises IntegrityError and the
+    # charge is silently dropped. billing_details itself can also be null.
+    billing = obj.get("billing_details") or {}
     created_ts = obj.get("created", 0)
     created_dt = datetime.fromtimestamp(created_ts, tz=UTC) if created_ts else datetime.now(tz=UTC)
 
     try:
-        StripeCharge.objects.create(
-            company=company,
-            account=account,
-            stripe_charge_id=stripe_charge_id,
-            stripe_payment_intent_id=obj.get("payment_intent", ""),
-            amount=amount,
-            fee=fee,
-            net=net,
-            currency=(obj.get("currency") or "usd").upper(),
-            description=obj.get("description", ""),
-            customer_email=billing.get("email") or obj.get("receipt_email", ""),
-            customer_name=billing.get("name", ""),
-            charge_date=created_dt.date(),
-            stripe_created_at=created_dt,
-            status=StripeCharge.Status.PROCESSED,
-            event_id=event_id,
-            raw_payload=payload,
-        )
+        # Savepoint: an IntegrityError must roll back only this INSERT, leaving any
+        # enclosing transaction usable so the duplicate check below can still run
+        # (production runs autocommit, but tests/future callers may be atomic).
+        with transaction.atomic():
+            StripeCharge.objects.create(
+                company=company,
+                account=account,
+                stripe_charge_id=stripe_charge_id,
+                stripe_payment_intent_id=obj.get("payment_intent") or "",
+                amount=amount,
+                fee=fee,
+                net=net,
+                currency=(obj.get("currency") or "usd").upper(),
+                description=obj.get("description") or "",
+                customer_email=billing.get("email") or obj.get("receipt_email") or "",
+                customer_name=billing.get("name") or "",
+                charge_date=created_dt.date(),
+                stripe_created_at=created_dt,
+                status=StripeCharge.Status.PROCESSED,
+                event_id=event_id,
+                raw_payload=payload,
+            )
         logger.info("Stored StripeCharge %s for company %s", stripe_charge_id, company)
     except IntegrityError:
-        logger.info("StripeCharge %s already exists — skipping", stripe_charge_id)
+        # A genuine idempotent re-delivery (row already present) is benign. Any
+        # OTHER IntegrityError was previously masked here as "already exists",
+        # silently dropping the charge while the webhook still returned 200 —
+        # surface it instead so the real constraint is visible in logs/Sentry.
+        if StripeCharge.objects.filter(company=company, stripe_charge_id=stripe_charge_id).exists():
+            logger.info("StripeCharge %s already exists — skipping", stripe_charge_id)
+        else:
+            logger.error(
+                "StripeCharge %s insert failed and was NOT stored (company=%s, account=%s)",
+                stripe_charge_id,
+                getattr(company, "id", None),
+                getattr(account, "id", None),
+                exc_info=True,
+            )
+            raise
 
 
 def store_refund(company, parsed, payload, event_id):
@@ -150,7 +174,7 @@ def store_refund(company, parsed, payload, event_id):
             stripe_refund_id=stripe_refund_id,
             amount=refund_amount,
             currency=(obj.get("currency") or "usd").upper(),
-            reason=latest.get("reason", ""),
+            reason=latest.get("reason") or "",
             stripe_created_at=refund_dt,
             status=StripeRefund.Status.PROCESSED,
             event_id=event_id,
@@ -191,7 +215,7 @@ def store_payout(company, parsed, payload, event_id):
             fees=Decimal("0"),
             net_amount=net,
             currency=(obj.get("currency") or "usd").upper(),
-            stripe_status=obj.get("status", ""),
+            stripe_status=obj.get("status") or "",
             payout_date=arrival_date or datetime.now(tz=UTC).date(),
             status=StripePayout.Status.PROCESSED,
             event_id=event_id,
