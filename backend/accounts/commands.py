@@ -1591,6 +1591,10 @@ def update_company_settings(
         "decimal_separator",
         "decimal_places",
         "date_format",
+        # A138: Arabic data-entry field visibility (UI preference; no schema/data
+        # removal). Rides the existing COMPANY_SETTINGS_CHANGED audit event +
+        # CompanyProjection generic apply — no new event type introduced.
+        "enable_arabic_fields",
     }
     changes = {}
 
@@ -3335,6 +3339,7 @@ def complete_onboarding(
     decimal_separator: str = "",
     decimal_places: int = -1,
     date_format: str = "",
+    enable_arabic_fields: bool = False,
     # Step 2: Fiscal year
     fiscal_year: int = 0,
     num_periods: int = 12,
@@ -3381,6 +3386,9 @@ def complete_onboarding(
         profile_fields["decimal_places"] = decimal_places
     if date_format:
         profile_fields["date_format"] = date_format
+    # A138: always persist the Arabic-fields choice made during onboarding
+    # (it's a boolean, so a falsy value is still a meaningful explicit "English-only").
+    profile_fields["enable_arabic_fields"] = bool(enable_arabic_fields)
 
     if profile_fields:
         with command_writes_allowed():

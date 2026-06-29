@@ -7,6 +7,8 @@ import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ArabicField } from "@/components/forms/ArabicField";
+import { useArabicFields } from "@/hooks/useArabicFields";
 import { CompanyDateInput } from "@/components/ui/CompanyDateInput";
 import { FormattedAmountInput } from "@/components/ui/FormattedAmountInput";
 import {
@@ -346,6 +348,9 @@ export function JournalEntryForm({
     enabled: !isSubmitting,
   });
 
+  // A138: hide the optional Arabic memo field unless the company enabled Arabic fields.
+  const showArabic = useArabicFields();
+
   return (
     <form ref={formRef} className="space-y-6">
       {/* Header Fields */}
@@ -431,7 +436,7 @@ export function JournalEntryForm({
         )}
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className={showArabic ? "grid gap-4 sm:grid-cols-2" : "grid gap-4"}>
         <div className="space-y-2">
           <Label htmlFor="memo">{t("accounting:journalEntry.memo")}</Label>
           <Input
@@ -440,15 +445,17 @@ export function JournalEntryForm({
             placeholder="Description..."
           />
         </div>
-        <div className="space-y-2">
-          <Label htmlFor="memo_ar">{t("accounting:journalEntry.memoAr")}</Label>
-          <Input
-            id="memo_ar"
-            {...form.register("memo_ar")}
-            placeholder="البيان..."
-            dir="rtl"
-          />
-        </div>
+        <ArabicField>
+          <div className="space-y-2">
+            <Label htmlFor="memo_ar">{t("accounting:journalEntry.memoAr")}</Label>
+            <Input
+              id="memo_ar"
+              {...form.register("memo_ar")}
+              placeholder="البيان..."
+              dir="rtl"
+            />
+          </div>
+        </ArabicField>
       </div>
 
       {/* Lines */}

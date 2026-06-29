@@ -192,6 +192,8 @@ class OnboardingSetupInputSerializer(serializers.Serializer):
     decimal_separator = serializers.CharField(max_length=5, required=False, allow_blank=True, default="")
     decimal_places = serializers.IntegerField(required=False, default=-1)
     date_format = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
+    # A138: English-only vs Arabic/bilingual choice (drives Arabic field visibility).
+    enable_arabic_fields = serializers.BooleanField(required=False, default=False)
 
     # Step 2: Fiscal year
     fiscal_year = serializers.IntegerField(required=False, default=0)
@@ -348,6 +350,7 @@ class CompanyOutputSerializer(serializers.Serializer):
     decimal_separator = serializers.CharField(read_only=True)
     decimal_places = serializers.IntegerField(read_only=True)
     date_format = serializers.CharField(read_only=True)
+    enable_arabic_fields = serializers.BooleanField(read_only=True)
 
 
 class CompanyBriefOutputSerializer(serializers.Serializer):
@@ -482,6 +485,7 @@ class CompanyModelSerializer(serializers.ModelSerializer):
             "decimal_separator",
             "decimal_places",
             "date_format",
+            "enable_arabic_fields",
         ]
         read_only_fields = fields
 

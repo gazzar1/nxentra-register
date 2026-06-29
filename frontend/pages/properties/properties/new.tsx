@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { useToast } from "@/components/ui/toaster";
 import { useCreateProperty } from "@/queries/useProperties";
+import { ArabicField } from "@/components/forms/ArabicField";
 import type { PropertyType } from "@/types/properties";
 import { useState } from "react";
 
@@ -95,15 +96,17 @@ export default function NewPropertyPage() {
                 />
               </div>
 
-              <div>
-                <label className="text-sm font-medium">Name (Arabic)</label>
-                <Input
-                  value={form.name_ar}
-                  onChange={(e) => setForm({ ...form, name_ar: e.target.value })}
-                  placeholder="اسم العقار"
-                  dir="rtl"
-                />
-              </div>
+              <ArabicField>
+                <div>
+                  <label className="text-sm font-medium">Name (Arabic)</label>
+                  <Input
+                    value={form.name_ar}
+                    onChange={(e) => setForm({ ...form, name_ar: e.target.value })}
+                    placeholder="اسم العقار"
+                    dir="rtl"
+                  />
+                </div>
+              </ArabicField>
 
               <div>
                 <label className="text-sm font-medium">Address</label>

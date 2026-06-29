@@ -183,6 +183,19 @@ class Company(ProjectionWriteGuard):
         help_text="Preferred date display format.",
     )
 
+    # A138: whether the optional Arabic data-entry fields (name_ar, description_ar,
+    # address_ar, ...) are SHOWN on forms/tables for this company. This is a UI
+    # visibility preference only — Arabic columns and any existing Arabic values
+    # are always preserved in the DB regardless of this flag. It is intentionally
+    # distinct from interface language (which is route/next-i18next driven): a
+    # company can run an English UI yet still want Arabic invoice/customer names.
+    # ALL companies (new and existing) default to False (English-first); existing
+    # Arabic data is preserved and reappears if the flag is re-enabled in Settings.
+    enable_arabic_fields = models.BooleanField(
+        default=False,
+        help_text="Show optional Arabic data-entry fields on forms. Does not delete Arabic data when off.",
+    )
+
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

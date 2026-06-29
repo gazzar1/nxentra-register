@@ -15,6 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useAccounts } from "@/queries/useAccounts";
+import { ArabicField } from "@/components/forms/ArabicField";
 import type { Account, AccountCreatePayload, AccountType, AccountRole, LedgerDomain } from "@/types/account";
 
 const accountSchema = z.object({
@@ -228,15 +229,17 @@ export function AccountForm({
       </div>
 
       {/* Name (Arabic) */}
-      <div className="space-y-2">
-        <Label htmlFor="name_ar">{t("accounting:account.nameAr")}</Label>
-        <Input
-          id="name_ar"
-          {...form.register("name_ar")}
-          placeholder="النقدية"
-          dir="rtl"
-        />
-      </div>
+      <ArabicField>
+        <div className="space-y-2">
+          <Label htmlFor="name_ar">{t("accounting:account.nameAr")}</Label>
+          <Input
+            id="name_ar"
+            {...form.register("name_ar")}
+            placeholder="النقدية"
+            dir="rtl"
+          />
+        </div>
+      </ArabicField>
 
       {/* Ledger Domain */}
       <div className="space-y-2">
@@ -383,15 +386,17 @@ export function AccountForm({
       </div>
 
       {/* Description (Arabic) */}
-      <div className="space-y-2">
-        <Label htmlFor="description_ar">{t("accounting:account.descriptionAr")}</Label>
-        <textarea
-          id="description_ar"
-          {...form.register("description_ar")}
-          dir="rtl"
-          className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-        />
-      </div>
+      <ArabicField>
+        <div className="space-y-2">
+          <Label htmlFor="description_ar">{t("accounting:account.descriptionAr")}</Label>
+          <textarea
+            id="description_ar"
+            {...form.register("description_ar")}
+            dir="rtl"
+            className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+          />
+        </div>
+      </ArabicField>
 
       {/* Extra content (e.g., analysis dimensions) */}
       {extraContent}

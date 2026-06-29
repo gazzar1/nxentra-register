@@ -9,6 +9,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { useToast } from "@/components/ui/toaster";
 import { useCreateLessee } from "@/queries/useProperties";
 import type { LesseeType } from "@/types/properties";
+import { ArabicField } from "@/components/forms/ArabicField";
 import { useState } from "react";
 
 export default function NewLesseePage() {
@@ -98,15 +99,17 @@ export default function NewLesseePage() {
                 />
               </div>
 
-              <div>
-                <label className="text-sm font-medium">Display Name (Arabic)</label>
-                <Input
-                  value={form.display_name_ar}
-                  onChange={(e) => setForm({ ...form, display_name_ar: e.target.value })}
-                  placeholder="الاسم بالعربي"
-                  dir="rtl"
-                />
-              </div>
+              <ArabicField>
+                <div>
+                  <label className="text-sm font-medium">Display Name (Arabic)</label>
+                  <Input
+                    value={form.display_name_ar}
+                    onChange={(e) => setForm({ ...form, display_name_ar: e.target.value })}
+                    placeholder="الاسم بالعربي"
+                    dir="rtl"
+                  />
+                </div>
+              </ArabicField>
 
               <div>
                 <label className="text-sm font-medium">National ID / CR Number</label>

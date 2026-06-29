@@ -26,6 +26,10 @@ export interface Company {
   created_at: string;
   updated_at: string;
   onboarding_completed?: boolean;
+  // A138: whether optional Arabic data-entry fields are shown on forms.
+  // Optional so older cached company objects (pre-feature) degrade to "hidden"
+  // (English-first) via shouldShowArabicFields(). Data is never deleted when off.
+  enable_arabic_fields?: boolean;
 }
 
 export interface CompanySettings {
