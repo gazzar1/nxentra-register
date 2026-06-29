@@ -207,12 +207,15 @@ class StripeConnector(BasePlatformConnector):
         shipping = Decimal(shipping_cents) / 100
         subtotal = amount - tax - shipping
 
-        billing = obj.get("billing_details", {})
+        # Stripe sends optional string fields as explicit null; `dict.get(k, "")`
+        # returns None for a present-but-null key, so coalesce with `or ""`.
+        # billing_details itself can be null too.
+        billing = obj.get("billing_details") or {}
 
         return ParsedOrder(
             platform_order_id=obj.get("id", ""),
             order_number=obj.get("id", ""),
-            order_name=obj.get("description", obj.get("id", "")),
+            order_name=obj.get("description") or obj.get("id") or "",
             total_price=amount,
             subtotal=subtotal,
             total_tax=tax,
@@ -221,8 +224,8 @@ class StripeConnector(BasePlatformConnector):
             currency=(obj.get("currency") or "usd").upper(),
             financial_status="captured",
             gateway="stripe",
-            customer_email=billing.get("email") or obj.get("receipt_email", ""),
-            customer_name=billing.get("name", ""),
+            customer_email=billing.get("email") or obj.get("receipt_email") or "",
+            customer_name=billing.get("name") or "",
             order_date=self._ts_to_date(obj.get("created", 0)),
         )
 
