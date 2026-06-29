@@ -189,8 +189,8 @@ class Company(ProjectionWriteGuard):
     # are always preserved in the DB regardless of this flag. It is intentionally
     # distinct from interface language (which is route/next-i18next driven): a
     # company can run an English UI yet still want Arabic invoice/customer names.
-    # New companies default to False (English-first); a data migration sets
-    # pre-existing companies to True to preserve their prior always-shown behavior.
+    # ALL companies (new and existing) default to False (English-first); existing
+    # Arabic data is preserved and reappears if the flag is re-enabled in Settings.
     enable_arabic_fields = models.BooleanField(
         default=False,
         help_text="Show optional Arabic data-entry fields on forms. Does not delete Arabic data when off.",
