@@ -9,6 +9,10 @@ class StripeAccountAdmin(admin.ModelAdmin):
     list_display = ("stripe_account_id", "company", "display_name", "status", "livemode", "created_at")
     list_filter = ("status", "livemode")
     search_fields = ("stripe_account_id", "display_name")
+    # Never surface the encrypted secrets in the admin change form — they would
+    # render DECRYPTED (EncryptedTextField.from_db_value) and be editable in
+    # plaintext. They are write-only via the API; keep them out of admin too.
+    exclude = ("webhook_secret", "credential_ref")
 
 
 @admin.register(StripeCharge)

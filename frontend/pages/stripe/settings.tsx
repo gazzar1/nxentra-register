@@ -9,6 +9,7 @@ import {
   Unplug,
   Settings,
   Save,
+  Webhook,
 } from "lucide-react";
 import { AppLayout } from "@/components/layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -48,6 +49,10 @@ export default function StripeSettingsPage() {
   // Connect form (ADR-0002 S1): merchant pastes a restricted READ key (rk_…).
   const [apiKey, setApiKey] = useState("");
   const [connecting, setConnecting] = useState(false);
+
+  // Webhook signing secret (whsec_…) — write-only; backend stores it encrypted.
+  const [webhookSecret, setWebhookSecret] = useState("");
+  const [savingWebhook, setSavingWebhook] = useState(false);
 
   // Account mapping
   const accountsQuery = useAccounts();
@@ -126,6 +131,33 @@ export default function StripeSettingsPage() {
       // out of the Sentry session-replay-on-error window.
       setApiKey("");
       setConnecting(false);
+    }
+  }
+
+  async function handleSaveWebhookSecret() {
+    const secret = webhookSecret.trim();
+    if (!secret.startsWith("whsec_")) {
+      toast({
+        title: "Enter the Stripe webhook signing secret (whsec_…).",
+        variant: "destructive",
+      });
+      return;
+    }
+    setSavingWebhook(true);
+    try {
+      await stripeService.setWebhookSecret(secret);
+      toast({
+        title: "Webhook signing secret saved.",
+        description: "Nxentra can now verify Stripe webhooks for this account.",
+      });
+      await loadAccount();
+    } catch (err) {
+      toast({ title: getErrorMessage(err), variant: "destructive" });
+    } finally {
+      // Never retain the raw secret in component state / the DOM after an
+      // attempt — mirrors the restricted-key handling above.
+      setWebhookSecret("");
+      setSavingWebhook(false);
     }
   }
 
@@ -303,6 +335,88 @@ export default function StripeSettingsPage() {
                 </CardContent>
               </Card>
             )}
+
+            {/* Webhook signing secret — required to receive signed Stripe webhooks
+                (charges, refunds). Write-only; stored encrypted, never shown again. */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center justify-between">
+                  <span className="flex items-center gap-2">
+                    <Webhook className="h-5 w-5" />
+                    Webhook
+                  </span>
+                  {account.webhook_secret_configured ? (
+                    <Badge variant="success" className="gap-1">
+                      <CheckCircle2 className="h-3 w-3" />
+                      Webhook secret configured
+                    </Badge>
+                  ) : (
+                    <Badge variant="warning" className="gap-1">
+                      <AlertTriangle className="h-3 w-3" />
+                      Not configured
+                    </Badge>
+                  )}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-sm text-muted-foreground">
+                  Add a webhook signing secret so Nxentra can verify and record incoming
+                  Stripe events (charges and refunds) into your ledger. The secret is stored
+                  encrypted and never displayed again — paste a new one to replace it.
+                </p>
+
+                <div className="flex flex-col gap-3 max-w-lg sm:flex-row sm:items-end">
+                  <div className="flex-1 space-y-1.5">
+                    <Label htmlFor="stripe-webhook-secret">Webhook signing secret</Label>
+                    <Input
+                      id="stripe-webhook-secret"
+                      type="password"
+                      autoComplete="off"
+                      value={webhookSecret}
+                      onChange={(e) => setWebhookSecret(e.target.value)}
+                      placeholder="whsec_…"
+                    />
+                  </div>
+                  <div className="flex items-end">
+                    <Button onClick={handleSaveWebhookSecret} disabled={savingWebhook}>
+                      {savingWebhook ? (
+                        <Loader2 className="me-2 h-4 w-4 animate-spin" />
+                      ) : (
+                        <Save className="me-2 h-4 w-4" />
+                      )}
+                      Save secret
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border p-4 bg-muted/30 space-y-1">
+                  <p className="text-sm font-medium">How to set up the webhook</p>
+                  <ol className="text-xs text-muted-foreground list-decimal ms-4 space-y-1">
+                    <li>
+                      In Stripe: <strong>Developers → Workbench → Webhooks → Add endpoint</strong>.
+                    </li>
+                    <li>
+                      Endpoint URL:{" "}
+                      <code className="bg-muted px-1 py-0.5 rounded">
+                        https://app.nxentra.com/api/platforms/stripe/webhooks/
+                      </code>
+                    </li>
+                    <li>
+                      Subscribe to:{" "}
+                      <code className="bg-muted px-1 py-0.5 rounded">charge.captured</code>,{" "}
+                      <code className="bg-muted px-1 py-0.5 rounded">charge.refunded</code>,{" "}
+                      <code className="bg-muted px-1 py-0.5 rounded">charge.dispute.created</code>,{" "}
+                      <code className="bg-muted px-1 py-0.5 rounded">charge.dispute.updated</code>.
+                    </li>
+                    <li>
+                      Copy the endpoint&apos;s{" "}
+                      <code className="bg-muted px-1 py-0.5 rounded">whsec_…</code> signing secret
+                      and paste it above.
+                    </li>
+                  </ol>
+                </div>
+              </CardContent>
+            </Card>
           </>
         )}
 

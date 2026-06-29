@@ -14,6 +14,9 @@ export interface StripeAccount {
   last_sync_at: string | null;
   error_message: string;
   connected: boolean;
+  // Masked status — true when a webhook signing secret is stored (the secret
+  // itself is never returned). Optional so older cached responses degrade safely.
+  webhook_secret_configured?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -147,6 +150,14 @@ export const stripeService = {
   // stores it encrypted, and kicks an initial backfill. No OAuth in Phase 1.
   connect: (credential: string) =>
     apiClient.post<StripeConnectResponse>("/stripe/connect/", { credential }),
+
+  // Write-only: store the Stripe webhook signing secret (whsec_…). The backend
+  // encrypts it at rest and never returns it; the response only confirms status.
+  setWebhookSecret: (webhookSecret: string) =>
+    apiClient.post<{ webhook_secret_configured: boolean }>(
+      "/stripe/account/webhook-secret/",
+      { webhook_secret: webhookSecret }
+    ),
 
   // Account mapping
   getAccountMapping: () =>

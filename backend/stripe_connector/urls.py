@@ -6,6 +6,7 @@ from . import views
 urlpatterns = [
     # Account management
     path("account/", views.StripeAccountView.as_view(), name="stripe-account"),
+    path("account/webhook-secret/", views.StripeWebhookSecretView.as_view(), name="stripe-webhook-secret"),
     path("connect/", views.StripeConnectView.as_view(), name="stripe-connect"),
     path("disconnect/", views.StripeDisconnectView.as_view(), name="stripe-disconnect"),
     # Account mapping

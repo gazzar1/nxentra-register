@@ -72,10 +72,51 @@ class StripeAccountView(APIView):
                 "last_sync_at": account.last_sync_at,
                 "error_message": account.error_message,
                 "connected": account.status == StripeAccount.Status.ACTIVE,
+                # Masked status only — never expose the secret itself.
+                "webhook_secret_configured": bool(account.webhook_secret),
                 "created_at": account.created_at.isoformat(),
                 "updated_at": account.updated_at.isoformat(),
             }
         )
+
+
+class StripeWebhookSecretView(APIView):
+    """POST a Stripe webhook signing secret (whsec_…) for this company's Stripe
+    connection so inbound webhooks can be HMAC-verified (charge.captured etc.).
+
+    WRITE-ONLY: the secret is stored A47-encrypted at rest and is never returned.
+    The response (and the account GET) only expose a masked
+    ``webhook_secret_configured`` boolean. Validates the ``whsec_`` prefix and
+    never logs the secret.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        actor = resolve_actor(request)
+        require(actor, "settings.edit")
+
+        account = StripeAccount.objects.filter(company=actor.company).first()
+        if not account:
+            return Response(
+                {"error": "Connect Stripe before configuring the webhook secret."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        secret = (request.data.get("webhook_secret") or "").strip()
+        # Validate without echoing the value back (no secret in error messages).
+        if not secret.startswith("whsec_") or len(secret) < 12:
+            return Response(
+                {"error": "Invalid webhook signing secret. It must start with 'whsec_'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # EncryptedTextField encrypts on save() (A47). No event/projection write —
+        # this is connector config, not a ledger read-model.
+        account.webhook_secret = secret
+        account.save(update_fields=["webhook_secret", "updated_at"])
+
+        return Response({"webhook_secret_configured": True}, status=status.HTTP_200_OK)
 
 
 class StripeChargesView(APIView):
