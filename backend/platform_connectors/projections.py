@@ -118,8 +118,21 @@ class PlatformAccountingProjection(BaseProjection):
         if handler:
             handler(event, data, mapping, platform_slug, dimension_context)
 
+    @staticmethod
+    def _clearing_account(mapping, platform_slug):
+        """Resolve the platform-clearing account from the module mapping.
+
+        Connectors may register their clearing account under the canonical
+        ``PLATFORM_CLEARING`` role OR a provider-specific ``{PROVIDER}_CLEARING``
+        role — Stripe seeds ``STRIPE_CLEARING`` for its dedicated per-provider
+        clearing account (code 11510, ADR-0002), so accept either. Without this,
+        the projection couldn't find the clearing account and skipped every JE
+        (the charge→JE path silently posted nothing once charges first flowed).
+        """
+        return mapping.get(ROLE_CLEARING) or mapping.get(f"{platform_slug.upper()}_CLEARING")
+
     def _handle_order_paid(self, event, data, mapping, platform_slug, dimension_context=None):
-        clearing = mapping.get(ROLE_CLEARING)
+        clearing = self._clearing_account(mapping, platform_slug)
         revenue = mapping.get(ROLE_SALES_REVENUE)
         if not clearing or not revenue:
             logger.warning(
@@ -193,7 +206,7 @@ class PlatformAccountingProjection(BaseProjection):
             )
 
     def _handle_refund_created(self, event, data, mapping, platform_slug, dimension_context=None):
-        clearing = mapping.get(ROLE_CLEARING)
+        clearing = self._clearing_account(mapping, platform_slug)
         revenue = mapping.get(ROLE_SALES_REVENUE)
         if not clearing or not revenue:
             return
@@ -236,7 +249,7 @@ class PlatformAccountingProjection(BaseProjection):
             )
 
     def _handle_payout_settled(self, event, data, mapping, platform_slug, dimension_context=None):
-        clearing = mapping.get(ROLE_CLEARING)
+        clearing = self._clearing_account(mapping, platform_slug)
         bank = mapping.get(ROLE_CASH_BANK)
         if not clearing or not bank:
             logger.warning(
@@ -313,7 +326,7 @@ class PlatformAccountingProjection(BaseProjection):
             )
 
     def _handle_dispute_created(self, event, data, mapping, platform_slug, dimension_context=None):
-        clearing = mapping.get(ROLE_CLEARING)
+        clearing = self._clearing_account(mapping, platform_slug)
         chargeback = mapping.get(ROLE_CHARGEBACK_EXPENSE)
         if not clearing or not chargeback:
             logger.warning(
