@@ -258,6 +258,71 @@ class AccountDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+class AccountInquiryView(APIView):
+    """
+    GET /api/accounting/accounts/<code>/inquiry/  (A137)
+
+    Read-only GL account drilldown. Resolves the account by ``code`` within the
+    actor's company, then delegates ALL balance/running-balance logic to the
+    pure ``accounting.account_inquiry`` query module (no balance math in the
+    view, no mutation, no events, no projection writes).
+
+    Query params:
+    - date_from / date_to : inclusive period bounds (YYYY-MM-DD)
+    - dimension_type      : AnalysisDimension.code (applied with dimension_value)
+    - dimension_value     : AnalysisDimensionValue.code
+    - source_module       : JournalEntry.source_module exact match
+    - posted_only         : "false" to include drafts (default true)
+    - page / page_size    : 1-based pagination (page_size default 50, max 200)
+
+    Response: {account, period, summary, rows[], pagination}.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @staticmethod
+    def _parse_date(raw):
+        from datetime import date as date_type
+
+        if not raw:
+            return None
+        try:
+            return date_type.fromisoformat(raw)
+        except (ValueError, TypeError):
+            raise DjangoValidationError(f"Invalid date '{raw}'. Use YYYY-MM-DD.")
+
+    def get(self, request, code):
+        from .account_inquiry import build_account_inquiry
+
+        actor = resolve_actor(request)
+        require(actor, "accounts.view")
+
+        account = get_object_or_404(Account, company=actor.company, code=code)
+
+        params = request.query_params
+        try:
+            date_from = self._parse_date(params.get("date_from"))
+            date_to = self._parse_date(params.get("date_to"))
+        except DjangoValidationError as exc:
+            return Response({"detail": exc.messages[0]}, status=status.HTTP_400_BAD_REQUEST)
+
+        posted_only = params.get("posted_only", "true").lower() != "false"
+
+        payload = build_account_inquiry(
+            company=actor.company,
+            account=account,
+            date_from=date_from,
+            date_to=date_to,
+            dimension_type=params.get("dimension_type") or None,
+            dimension_value=params.get("dimension_value") or None,
+            source_module=params.get("source_module") or None,
+            posted_only=posted_only,
+            page=params.get("page", 1),
+            page_size=params.get("page_size", 50),
+        )
+        return Response(payload)
+
+
 # =============================================================================
 # Journal Entry Views
 # =============================================================================

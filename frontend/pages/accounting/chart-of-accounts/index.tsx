@@ -3,7 +3,7 @@ import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import { Plus, ChevronRight, ChevronDown, Pencil, BookOpen, Download, FileSpreadsheet, FileText } from "lucide-react";
+import { Plus, ChevronRight, ChevronDown, Pencil, BookOpen, Download, FileSpreadsheet, FileText, ScrollText } from "lucide-react";
 import { useState } from "react";
 import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
@@ -137,6 +137,22 @@ export default function ChartOfAccountsPage() {
           )}
 
           <StatusBadge status={account.status} />
+
+          {!account.is_header && (
+            <button
+              type="button"
+              title={t("accounting:inquiry.viewTransactions", "View Transactions")}
+              aria-label={t("accounting:inquiry.viewTransactions", "View Transactions")}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                router.push(`/accounting/chart-of-accounts/${account.code}/inquiry`);
+              }}
+              className="rounded p-1 text-muted-foreground hover:bg-background hover:text-foreground"
+            >
+              <ScrollText className="h-4 w-4" />
+            </button>
+          )}
 
           <Pencil className="h-4 w-4 text-muted-foreground" />
         </Link>
