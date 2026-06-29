@@ -17,7 +17,7 @@ import pytest
 from django.urls import reverse
 from django.utils import timezone
 
-from accounting.account_inquiry import build_account_inquiry
+from accounting.account_drilldown import build_account_drilldown
 from accounting.models import (
     Account,
     AnalysisDimension,
@@ -132,7 +132,7 @@ class TestDebitNormalMath:
         _je(company, user, date(2026, 1, 10), [(clearing, "50", "0", None), (sales, "0", "50", None)])
         _je(company, user, date(2026, 1, 20), [(bank, "30", "0", None), (clearing, "0", "30", None)])
 
-        result = build_account_inquiry(
+        result = build_account_drilldown(
             company=company,
             account=clearing,
             date_from=date(2026, 1, 1),
@@ -161,7 +161,7 @@ class TestDebitNormalMath:
         _je(company, user, date(2026, 1, 20), [(bank, "30", "0", None), (clearing, "0", "30", None)])
 
         # Period starts mid-month: the first two entries become the opening.
-        result = build_account_inquiry(
+        result = build_account_drilldown(
             company=company,
             account=clearing,
             date_from=date(2026, 1, 15),
@@ -187,7 +187,7 @@ class TestCreditNormalMath:
         _je(company, user, date(2026, 2, 1), [(bank, "200", "0", None), (vat, "0", "200", None)])
         _je(company, user, date(2026, 2, 10), [(vat, "50", "0", None), (bank, "0", "50", None)])
 
-        result = build_account_inquiry(company=company, account=vat)
+        result = build_account_drilldown(company=company, account=vat)
 
         summary = result["summary"]
         # Credit-normal: a credit balance is a POSITIVE normal-side amount.
@@ -213,7 +213,7 @@ class TestFilters:
         _je(company, user, date(2026, 1, 5), [(clearing, "100", "0", None), (sales, "0", "100", None)])
         _je(company, user, date(2026, 3, 5), [(clearing, "70", "0", None), (sales, "0", "70", None)])
 
-        result = build_account_inquiry(
+        result = build_account_drilldown(
             company=company,
             account=clearing,
             date_from=date(2026, 1, 1),
@@ -233,11 +233,11 @@ class TestFilters:
             status=JournalEntry.Status.DRAFT,
         )
 
-        posted = build_account_inquiry(company=company, account=clearing)
+        posted = build_account_drilldown(company=company, account=clearing)
         assert posted["pagination"]["count"] == 1
         assert posted["summary"]["closing_balance"] == "100.00"
 
-        with_drafts = build_account_inquiry(company=company, account=clearing, posted_only=False)
+        with_drafts = build_account_drilldown(company=company, account=clearing, posted_only=False)
         assert with_drafts["pagination"]["count"] == 2
         assert with_drafts["summary"]["closing_balance"] == "1099.00"
 
@@ -263,7 +263,7 @@ class TestFilters:
             reverses=original,
         )
 
-        result = build_account_inquiry(company=company, account=clearing)
+        result = build_account_drilldown(company=company, account=clearing)
         assert result["pagination"]["count"] == 2  # both legs visible
         assert result["summary"]["closing_balance"] == "0.00"
 
@@ -280,7 +280,7 @@ class TestDimensions:
         _dim, stripe, _paymob = _provider_dimension(company)
         _je(company, user, date(2026, 1, 5), [(clearing, "100", "0", stripe), (sales, "0", "100", None)])
 
-        result = build_account_inquiry(company=company, account=clearing)
+        result = build_account_drilldown(company=company, account=clearing)
         dims = result["rows"][0]["dimensions"]
         assert dims == [
             {
@@ -294,7 +294,7 @@ class TestDimensions:
     def test_row_without_dimensions_is_empty_list(self, company, user, chart):
         clearing, sales = chart["clearing"], chart["sales"]
         _je(company, user, date(2026, 1, 5), [(clearing, "100", "0", None), (sales, "0", "100", None)])
-        result = build_account_inquiry(company=company, account=clearing)
+        result = build_account_drilldown(company=company, account=clearing)
         assert result["rows"][0]["dimensions"] == []
 
     def test_dimension_filter_restricts_rows_and_balance(self, company, user, chart):
@@ -303,7 +303,7 @@ class TestDimensions:
         _je(company, user, date(2026, 1, 5), [(clearing, "100", "0", stripe), (sales, "0", "100", None)])
         _je(company, user, date(2026, 1, 6), [(clearing, "40", "0", paymob), (sales, "0", "40", None)])
 
-        result = build_account_inquiry(
+        result = build_account_drilldown(
             company=company,
             account=clearing,
             dimension_type="SETTLEMENT_PROVIDER",
@@ -322,7 +322,7 @@ class TestDimensions:
 @pytest.mark.django_db
 class TestEmptyAndPagination:
     def test_empty_account_zero_summary_empty_rows(self, company, chart):
-        result = build_account_inquiry(company=company, account=chart["clearing"])
+        result = build_account_drilldown(company=company, account=chart["clearing"])
         assert result["rows"] == []
         assert result["pagination"]["count"] == 0
         assert result["pagination"]["total_pages"] == 1
@@ -336,14 +336,14 @@ class TestEmptyAndPagination:
         for i in range(1, 6):  # 5 entries, +10 each
             _je(company, user, date(2026, 1, i), [(clearing, "10", "0", None), (sales, "0", "10", None)])
 
-        p1 = build_account_inquiry(company=company, account=clearing, page=1, page_size=2)
+        p1 = build_account_drilldown(company=company, account=clearing, page=1, page_size=2)
         assert p1["pagination"] == {"page": 1, "page_size": 2, "count": 5, "total_pages": 3}
         assert [r["running_balance"] for r in p1["rows"]] == ["10.00", "20.00"]
 
-        p2 = build_account_inquiry(company=company, account=clearing, page=2, page_size=2)
+        p2 = build_account_drilldown(company=company, account=clearing, page=2, page_size=2)
         assert [r["running_balance"] for r in p2["rows"]] == ["30.00", "40.00"]
 
-        p3 = build_account_inquiry(company=company, account=clearing, page=3, page_size=2)
+        p3 = build_account_drilldown(company=company, account=clearing, page=3, page_size=2)
         assert [r["running_balance"] for r in p3["rows"]] == ["50.00"]
 
 
@@ -355,7 +355,7 @@ class TestEmptyAndPagination:
 @pytest.mark.django_db
 class TestInquiryAPI:
     def _url(self, code):
-        return reverse("accounting:account-inquiry", kwargs={"code": code})
+        return reverse("accounting:account-drilldown", kwargs={"code": code})
 
     def test_happy_path(self, authenticated_client, company, user, owner_membership, chart):
         clearing, sales = chart["clearing"], chart["sales"]

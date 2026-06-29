@@ -258,14 +258,17 @@ class AccountDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class AccountInquiryView(APIView):
+class AccountDrilldownView(APIView):
     """
-    GET /api/accounting/accounts/<code>/inquiry/  (A137)
+    GET /api/accounting/accounts/<code>/drilldown/  (A137)
 
     Read-only GL account drilldown. Resolves the account by ``code`` within the
     actor's company, then delegates ALL balance/running-balance logic to the
-    pure ``accounting.account_inquiry`` query module (no balance math in the
+    pure ``accounting.account_drilldown`` query module (no balance math in the
     view, no mutation, no events, no projection writes).
+
+    Distinct from the Reports "Account Inquiry" line-search report at
+    ``/api/reports/account-inquiry/`` (``projections.views``).
 
     Query params:
     - date_from / date_to : inclusive period bounds (YYYY-MM-DD)
@@ -292,7 +295,7 @@ class AccountInquiryView(APIView):
             raise DjangoValidationError(f"Invalid date '{raw}'. Use YYYY-MM-DD.")
 
     def get(self, request, code):
-        from .account_inquiry import build_account_inquiry
+        from .account_drilldown import build_account_drilldown
 
         actor = resolve_actor(request)
         require(actor, "accounts.view")
@@ -308,7 +311,7 @@ class AccountInquiryView(APIView):
 
         posted_only = params.get("posted_only", "true").lower() != "false"
 
-        payload = build_account_inquiry(
+        payload = build_account_drilldown(
             company=actor.company,
             account=account,
             date_from=date_from,

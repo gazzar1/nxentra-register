@@ -205,10 +205,10 @@ export default function EditAccountPage() {
                   {t("accounting:chartOfAccounts.hasTransactions", "Transactions Present")}
                 </Badge>
               )}
-              <Link href={`/accounting/chart-of-accounts/${accountCode}/inquiry`}>
+              <Link href={`/accounting/chart-of-accounts/${accountCode}/drilldown`}>
                 <Button variant="outline">
                   <ScrollText className="me-2 h-4 w-4" />
-                  {t("accounting:inquiry.viewTransactions", "View Transactions")}
+                  {t("accounting:drilldown.viewTransactions", "View Transactions")}
                 </Button>
               </Link>
               <Button
