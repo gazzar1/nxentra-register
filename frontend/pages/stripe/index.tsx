@@ -112,9 +112,17 @@ export default function StripeDashboardPage() {
                       <p className="font-semibold">
                         Connected: {account.display_name || account.stripe_account_id}
                       </p>
-                      <p className="text-sm text-muted-foreground">
-                        {account.livemode ? "Live mode" : "Test mode"}
-                      </p>
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <span>{account.livemode ? "Live mode" : "Test mode"}</span>
+                        <span>·</span>
+                        {account.webhook_secret_configured ? (
+                          <span className="text-green-600">Webhook configured</span>
+                        ) : (
+                          <Link href="/stripe/settings" className="text-yellow-600 underline">
+                            Webhook not configured
+                          </Link>
+                        )}
+                      </div>
                     </div>
                   </div>
                   <Link href="/stripe/settings">
