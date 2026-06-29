@@ -197,7 +197,14 @@ def _canonical_to_event_data(parsed, data_class, platform_slug):
         if f.name == "platform_slug":
             continue
         if f.name in parsed_dict:
-            kwargs[f.name] = str(parsed_dict[f.name])
+            val = parsed_dict[f.name]
+            # List/dict fields (e.g. line_items) must keep their native type —
+            # the event schema validates line_items as a list. Only scalar fields
+            # (Decimal/date/str) are stringified for the payload. Without this a
+            # Stripe charge's empty line_items[] became the string "[]" and the
+            # platform.order_paid validator raised InvalidEventPayload (the
+            # webhook 500'd before the charge could be stored).
+            kwargs[f.name] = val if isinstance(val, list | dict) else str(val)
         elif f.name == "amount" and "total_price" in parsed_dict:
             kwargs["amount"] = str(parsed_dict["total_price"])
         elif f.name == "amount" and "amount" in parsed_dict:
