@@ -919,6 +919,7 @@ class MeView(APIView):
                     "decimal_separator": active_company.decimal_separator if active_company else ".",
                     "decimal_places": active_company.decimal_places if active_company else 2,
                     "date_format": active_company.date_format if active_company else "YYYY-MM-DD",
+                    "enable_arabic_fields": active_company.enable_arabic_fields if active_company else False,
                     "created_at": active_company.created_at.isoformat() if active_company else None,
                     "updated_at": active_company.updated_at.isoformat() if active_company else None,
                 }
@@ -1522,6 +1523,7 @@ class CompanySettingsView(APIView):
                 "decimal_separator": company.decimal_separator,
                 "decimal_places": company.decimal_places,
                 "date_format": company.date_format,
+                "enable_arabic_fields": company.enable_arabic_fields,
             }
         )
 
@@ -1544,6 +1546,7 @@ class CompanySettingsView(APIView):
                 "default_currency": company.default_currency,
                 "fiscal_year_start_month": company.fiscal_year_start_month,
                 "logo_url": self._get_logo_url(company),
+                "enable_arabic_fields": company.enable_arabic_fields,
             }
         )
 
@@ -1589,6 +1592,7 @@ class OnboardingSetupView(APIView):
                     "decimal_separator": company.decimal_separator,
                     "decimal_places": company.decimal_places,
                     "date_format": company.date_format,
+                    "enable_arabic_fields": company.enable_arabic_fields,
                 },
                 "templates": templates,
             }
@@ -1611,12 +1615,20 @@ class OnboardingSetupView(APIView):
             "decimal_separator": "decimal_separator",
             "decimal_places": "decimal_places",
             "date_format": "date_format",
+            "enable_arabic_fields": "enable_arabic_fields",
         }
+
+        # Booleans are meaningful even when False, so don't apply the
+        # "skip empty string" guard to them.
+        bool_fields = {"enable_arabic_fields"}
 
         for payload_key, model_field in field_map.items():
             if payload_key in request.data:
                 val = request.data[payload_key]
-                if val is not None and val != "":
+                if payload_key in bool_fields:
+                    setattr(company, model_field, bool(val))
+                    updates[model_field] = bool(val)
+                elif val is not None and val != "":
                     setattr(company, model_field, val)
                     updates[model_field] = val
 
@@ -1645,6 +1657,7 @@ class OnboardingSetupView(APIView):
             decimal_separator=data.get("decimal_separator", ""),
             decimal_places=data.get("decimal_places", -1),
             date_format=data.get("date_format", ""),
+            enable_arabic_fields=data.get("enable_arabic_fields", False),
             fiscal_year=data.get("fiscal_year", 0),
             num_periods=data.get("num_periods", 12),
             current_period=data.get("current_period", 1),

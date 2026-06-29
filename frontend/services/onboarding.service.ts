@@ -22,6 +22,7 @@ export interface OnboardingStatus {
     decimal_separator: string;
     decimal_places: number;
     date_format: string;
+    enable_arabic_fields?: boolean;
   };
   templates: CoaTemplate[];
 }
@@ -37,6 +38,7 @@ export interface OnboardingSetupPayload {
   decimal_separator?: string;
   decimal_places?: number;
   date_format?: string;
+  enable_arabic_fields?: boolean;
   // Step 2
   fiscal_year?: number;
   num_periods?: number;

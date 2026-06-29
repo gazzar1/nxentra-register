@@ -26,6 +26,8 @@ import {
 import { useToast } from "@/components/ui/toaster";
 import { getErrorMessage } from "@/lib/api-client";
 import { currencyOptions } from "@/lib/constants";
+import { ArabicField } from "@/components/forms/ArabicField";
+import { useAuth } from "@/contexts/AuthContext";
 
 interface CompanySettingsForm {
   name: string;
@@ -36,6 +38,7 @@ interface CompanySettingsForm {
   thousand_separator: string;
   decimal_separator: string;
   decimal_places: number;
+  enable_arabic_fields: boolean;
 }
 
 export default function CompanySettingsPage() {
@@ -45,6 +48,7 @@ export default function CompanySettingsPage() {
   const updateSettings = useUpdateCompanySettings();
   const uploadLogo = useUploadCompanyLogo();
   const deleteLogo = useDeleteCompanyLogo();
+  const { refreshProfile } = useAuth();
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -59,6 +63,7 @@ export default function CompanySettingsPage() {
       thousand_separator: settings?.thousand_separator || ",",
       decimal_separator: settings?.decimal_separator || ".",
       decimal_places: settings?.decimal_places ?? 2,
+      enable_arabic_fields: settings?.enable_arabic_fields ?? false,
     },
   });
 
@@ -74,6 +79,7 @@ export default function CompanySettingsPage() {
         thousand_separator: settings.thousand_separator || ",",
         decimal_separator: settings.decimal_separator || ".",
         decimal_places: settings.decimal_places ?? 2,
+        enable_arabic_fields: settings.enable_arabic_fields ?? false,
       });
     }
   }, [settings]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -89,6 +95,9 @@ export default function CompanySettingsPage() {
   const handleSubmit = async (data: CompanySettingsForm) => {
     try {
       await updateSettings.mutateAsync(data);
+      // A138: refresh auth context so the new Arabic-fields preference takes
+      // effect app-wide immediately (forms read it from useAuth().company).
+      await refreshProfile();
       toast({
         title: t("messages.success"),
         description: t("messages.saved"),
@@ -309,15 +318,40 @@ export default function CompanySettingsPage() {
                     />
                   </div>
 
-                  {/* Company Name (Arabic) */}
-                  <div className="space-y-2">
-                    <Label htmlFor="name_ar">{t("settings:company.nameAr")}</Label>
-                    <Input
-                      id="name_ar"
-                      {...form.register("name_ar")}
-                      dir="rtl"
-                    />
+                  {/* A138: Show Arabic fields toggle */}
+                  <div className="rounded-lg border p-4">
+                    <div className="flex items-start gap-3">
+                      <input
+                        id="enable_arabic_fields"
+                        type="checkbox"
+                        className="mt-1 h-4 w-4 rounded border-input"
+                        {...form.register("enable_arabic_fields")}
+                      />
+                      <div className="space-y-1">
+                        <Label htmlFor="enable_arabic_fields" className="font-medium">
+                          {t("settings:company.enableArabicFields", "Show Arabic fields")}
+                        </Label>
+                        <p className="text-sm text-muted-foreground">
+                          {t(
+                            "settings:company.enableArabicFieldsHelp",
+                            "Show Arabic names, descriptions, and address fields on forms. You can enable this later if you need bilingual records or Arabic invoices."
+                          )}
+                        </p>
+                      </div>
+                    </div>
                   </div>
+
+                  {/* Company Name (Arabic) — shown only when Arabic fields are enabled */}
+                  <ArabicField show={form.watch("enable_arabic_fields")}>
+                    <div className="space-y-2">
+                      <Label htmlFor="name_ar">{t("settings:company.nameAr")}</Label>
+                      <Input
+                        id="name_ar"
+                        {...form.register("name_ar")}
+                        dir="rtl"
+                      />
+                    </div>
+                  </ArabicField>
 
                   {/* Default Currency */}
                   <div className="space-y-2">

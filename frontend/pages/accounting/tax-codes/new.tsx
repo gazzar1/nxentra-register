@@ -11,6 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/common";
+import { ArabicField } from "@/components/forms/ArabicField";
 import {
   Select,
   SelectContent,
@@ -164,15 +165,17 @@ export default function NewTaxCodePage() {
               )}
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="name_ar">Name (Arabic)</Label>
-              <Input
-                id="name_ar"
-                {...register("name_ar")}
-                placeholder="ضريبة القيمة المضافة 15%"
-                dir="rtl"
-              />
-            </div>
+            <ArabicField>
+              <div className="space-y-2">
+                <Label htmlFor="name_ar">Name (Arabic)</Label>
+                <Input
+                  id="name_ar"
+                  {...register("name_ar")}
+                  placeholder="ضريبة القيمة المضافة 15%"
+                  dir="rtl"
+                />
+              </div>
+            </ArabicField>
 
             <div className="space-y-2">
               <Label htmlFor="rate">Tax Rate (decimal) *</Label>

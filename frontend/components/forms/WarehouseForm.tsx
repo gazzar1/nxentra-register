@@ -9,6 +9,7 @@ import { useTranslation } from "next-i18next";
 
 import { Button } from "@/components/ui/button";
 import { useFormKeyboardShortcuts } from "@/lib/useFormKeyboardShortcuts";
+import { ArabicField } from "@/components/forms/ArabicField";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -110,16 +111,18 @@ export function WarehouseForm({
       </div>
 
       {/* Name (Arabic) */}
-      <div className="space-y-2">
-        <Label htmlFor="name_ar">{t("common:nameAr")}</Label>
-        <Input
-          id="name_ar"
-          {...register("name_ar")}
-          placeholder="اسم المستودع"
-          dir="rtl"
-          autoComplete="off"
-        />
-      </div>
+      <ArabicField>
+        <div className="space-y-2">
+          <Label htmlFor="name_ar">{t("common:nameAr")}</Label>
+          <Input
+            id="name_ar"
+            {...register("name_ar")}
+            placeholder="اسم المستودع"
+            dir="rtl"
+            autoComplete="off"
+          />
+        </div>
+      </ArabicField>
 
       {/* Address */}
       <div className="space-y-2">

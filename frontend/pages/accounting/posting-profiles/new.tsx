@@ -11,6 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { ArabicField } from "@/components/forms/ArabicField";
 import { PageHeader } from "@/components/common";
 import {
   Select,
@@ -223,15 +224,17 @@ export default function NewPostingProfilePage() {
               )}
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="name_ar">Name (Arabic)</Label>
-              <Input
-                id="name_ar"
-                {...register("name_ar")}
-                placeholder="ملف الترحيل الافتراضي"
-                dir="rtl"
-              />
-            </div>
+            <ArabicField>
+              <div className="space-y-2">
+                <Label htmlFor="name_ar">Name (Arabic)</Label>
+                <Input
+                  id="name_ar"
+                  {...register("name_ar")}
+                  placeholder="ملف الترحيل الافتراضي"
+                  dir="rtl"
+                />
+              </div>
+            </ArabicField>
 
             <div className="space-y-2">
               <Label htmlFor="control_account_id">Control Account *</Label>

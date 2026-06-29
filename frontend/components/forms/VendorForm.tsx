@@ -5,6 +5,8 @@ import { z } from "zod";
 import { useTranslation } from "next-i18next";
 import { Button } from "@/components/ui/button";
 import { useFormKeyboardShortcuts } from "@/lib/useFormKeyboardShortcuts";
+import { ArabicField } from "@/components/forms/ArabicField";
+import { useArabicFields } from "@/hooks/useArabicFields";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -121,6 +123,9 @@ export function VendorForm({
     enabled: !isSubmitting,
   });
 
+  // A138: hide optional Arabic data-entry fields unless the company enabled them.
+  const showArabic = useArabicFields();
+
   return (
     <form ref={formRef} onSubmit={form.handleSubmit(handleSubmit)} className="space-y-6">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -169,10 +174,12 @@ export function VendorForm({
         </div>
 
         {/* Name Arabic */}
-        <div className="space-y-2">
-          <Label htmlFor="name_ar">Name (Arabic)</Label>
-          <Input id="name_ar" {...form.register("name_ar")} placeholder="اسم المورد" dir="rtl" />
-        </div>
+        <ArabicField>
+          <div className="space-y-2">
+            <Label htmlFor="name_ar">Name (Arabic)</Label>
+            <Input id="name_ar" {...form.register("name_ar")} placeholder="اسم المورد" dir="rtl" />
+          </div>
+        </ArabicField>
 
         {/* Email */}
         <div className="space-y-2">
@@ -282,8 +289,8 @@ export function VendorForm({
         </div>
       </div>
 
-      {/* Address */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      {/* Address — single column when Arabic is hidden so no empty cell remains */}
+      <div className={showArabic ? "grid grid-cols-1 md:grid-cols-2 gap-6" : "grid grid-cols-1 gap-6"}>
         <div className="space-y-2">
           <Label htmlFor="address">Address (English)</Label>
           <textarea
@@ -294,20 +301,22 @@ export function VendorForm({
           />
         </div>
 
-        <div className="space-y-2">
-          <Label htmlFor="address_ar">Address (Arabic)</Label>
-          <textarea
-            id="address_ar"
-            {...form.register("address_ar")}
-            dir="rtl"
-            className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-            placeholder="العنوان الكامل"
-          />
-        </div>
+        <ArabicField>
+          <div className="space-y-2">
+            <Label htmlFor="address_ar">Address (Arabic)</Label>
+            <textarea
+              id="address_ar"
+              {...form.register("address_ar")}
+              dir="rtl"
+              className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              placeholder="العنوان الكامل"
+            />
+          </div>
+        </ArabicField>
       </div>
 
-      {/* Notes */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      {/* Notes — single column when Arabic is hidden */}
+      <div className={showArabic ? "grid grid-cols-1 md:grid-cols-2 gap-6" : "grid grid-cols-1 gap-6"}>
         <div className="space-y-2">
           <Label htmlFor="notes">Notes (English)</Label>
           <textarea
@@ -317,15 +326,17 @@ export function VendorForm({
           />
         </div>
 
-        <div className="space-y-2">
-          <Label htmlFor="notes_ar">Notes (Arabic)</Label>
-          <textarea
-            id="notes_ar"
-            {...form.register("notes_ar")}
-            dir="rtl"
-            className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-          />
-        </div>
+        <ArabicField>
+          <div className="space-y-2">
+            <Label htmlFor="notes_ar">Notes (Arabic)</Label>
+            <textarea
+              id="notes_ar"
+              {...form.register("notes_ar")}
+              dir="rtl"
+              className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+            />
+          </div>
+        </ArabicField>
       </div>
 
       {/* Actions */}

@@ -12,6 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader, LoadingSpinner } from "@/components/common";
+import { ArabicField } from "@/components/forms/ArabicField";
 import {
   Select,
   SelectContent,
@@ -352,15 +353,17 @@ export default function EditItemPage() {
               )}
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="name_ar">Name (Arabic)</Label>
-              <Input
-                id="name_ar"
-                {...register("name_ar")}
-                placeholder="اسم الصنف"
-                dir="rtl"
-              />
-            </div>
+            <ArabicField>
+              <div className="space-y-2">
+                <Label htmlFor="name_ar">Name (Arabic)</Label>
+                <Input
+                  id="name_ar"
+                  {...register("name_ar")}
+                  placeholder="اسم الصنف"
+                  dir="rtl"
+                />
+              </div>
+            </ArabicField>
 
             <div className="space-y-2">
               <Label htmlFor="default_unit_price">Default Unit Price</Label>

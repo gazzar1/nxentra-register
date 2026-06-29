@@ -35,6 +35,8 @@ import { PageHeader, LoadingSpinner, ConfirmDialog } from "@/components/common";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/components/ui/toaster";
 import { useBilingualText } from "@/components/common/BilingualText";
+import { ArabicField } from "@/components/forms/ArabicField";
+import { useArabicFields } from "@/hooks/useArabicFields";
 import { dimensionsService } from "@/services/accounts.service";
 import type {
   AnalysisDimension,
@@ -48,6 +50,10 @@ export default function DimensionsPage() {
   const { toast } = useToast();
   const { hasPermission } = useAuth();
   const getText = useBilingualText();
+  // A138: hide optional Arabic data-entry inputs in the dimension/value dialogs
+  // unless the company enabled Arabic fields. The table getText() display below
+  // is locale-driven and intentionally left untouched.
+  const showArabic = useArabicFields();
 
   const [dimensions, setDimensions] = useState<AnalysisDimension[]>([]);
   const [loading, setLoading] = useState(true);
@@ -555,7 +561,7 @@ export default function DimensionsPage() {
                   />
                 </div>
               </div>
-              <div className="grid gap-4 sm:grid-cols-2">
+              <div className={showArabic ? "grid gap-4 sm:grid-cols-2" : "grid gap-4"}>
                 <div className="space-y-2">
                   <Label>{t("accounting:dimensions.name", "Name")} *</Label>
                   <Input
@@ -564,17 +570,19 @@ export default function DimensionsPage() {
                     placeholder="Cost Center"
                   />
                 </div>
-                <div className="space-y-2">
-                  <Label>{t("accounting:dimensions.nameAr", "Name (Arabic)")}</Label>
-                  <Input
-                    value={dimForm.name_ar || ""}
-                    onChange={(e) => setDimForm({ ...dimForm, name_ar: e.target.value })}
-                    placeholder="مركز التكلفة"
-                    dir="rtl"
-                  />
-                </div>
+                <ArabicField>
+                  <div className="space-y-2">
+                    <Label>{t("accounting:dimensions.nameAr", "Name (Arabic)")}</Label>
+                    <Input
+                      value={dimForm.name_ar || ""}
+                      onChange={(e) => setDimForm({ ...dimForm, name_ar: e.target.value })}
+                      placeholder="مركز التكلفة"
+                      dir="rtl"
+                    />
+                  </div>
+                </ArabicField>
               </div>
-              <div className="grid gap-4 sm:grid-cols-2">
+              <div className={showArabic ? "grid gap-4 sm:grid-cols-2" : "grid gap-4"}>
                 <div className="space-y-2">
                   <Label>{t("accounting:dimensions.description", "Description")}</Label>
                   <Input
@@ -582,14 +590,16 @@ export default function DimensionsPage() {
                     onChange={(e) => setDimForm({ ...dimForm, description: e.target.value })}
                   />
                 </div>
-                <div className="space-y-2">
-                  <Label>{t("accounting:dimensions.descriptionAr", "Description (Arabic)")}</Label>
-                  <Input
-                    value={dimForm.description_ar || ""}
-                    onChange={(e) => setDimForm({ ...dimForm, description_ar: e.target.value })}
-                    dir="rtl"
-                  />
-                </div>
+                <ArabicField>
+                  <div className="space-y-2">
+                    <Label>{t("accounting:dimensions.descriptionAr", "Description (Arabic)")}</Label>
+                    <Input
+                      value={dimForm.description_ar || ""}
+                      onChange={(e) => setDimForm({ ...dimForm, description_ar: e.target.value })}
+                      dir="rtl"
+                    />
+                  </div>
+                </ArabicField>
               </div>
               <div className="space-y-2">
                 <Label>Dimension Kind</Label>
@@ -718,7 +728,7 @@ export default function DimensionsPage() {
                   disabled={!!editingCode}
                 />
               </div>
-              <div className="grid gap-4 sm:grid-cols-2">
+              <div className={showArabic ? "grid gap-4 sm:grid-cols-2" : "grid gap-4"}>
                 <div className="space-y-2">
                   <Label>{t("accounting:dimensions.codeName", "Name")} *</Label>
                   <Input
@@ -727,17 +737,19 @@ export default function DimensionsPage() {
                     placeholder="Sales Department"
                   />
                 </div>
-                <div className="space-y-2">
-                  <Label>{t("accounting:dimensions.codeNameAr", "Name (Arabic)")}</Label>
-                  <Input
-                    value={codeForm.name_ar || ""}
-                    onChange={(e) => setCodeForm({ ...codeForm, name_ar: e.target.value })}
-                    placeholder="قسم المبيعات"
-                    dir="rtl"
-                  />
-                </div>
+                <ArabicField>
+                  <div className="space-y-2">
+                    <Label>{t("accounting:dimensions.codeNameAr", "Name (Arabic)")}</Label>
+                    <Input
+                      value={codeForm.name_ar || ""}
+                      onChange={(e) => setCodeForm({ ...codeForm, name_ar: e.target.value })}
+                      placeholder="قسم المبيعات"
+                      dir="rtl"
+                    />
+                  </div>
+                </ArabicField>
               </div>
-              <div className="grid gap-4 sm:grid-cols-2">
+              <div className={showArabic ? "grid gap-4 sm:grid-cols-2" : "grid gap-4"}>
                 <div className="space-y-2">
                   <Label>{t("accounting:dimensions.codeDescription", "Description")}</Label>
                   <Input
@@ -745,14 +757,16 @@ export default function DimensionsPage() {
                     onChange={(e) => setCodeForm({ ...codeForm, description: e.target.value })}
                   />
                 </div>
-                <div className="space-y-2">
-                  <Label>{t("accounting:dimensions.codeDescriptionAr", "Description (Arabic)")}</Label>
-                  <Input
-                    value={codeForm.description_ar || ""}
-                    onChange={(e) => setCodeForm({ ...codeForm, description_ar: e.target.value })}
-                    dir="rtl"
-                  />
-                </div>
+                <ArabicField>
+                  <div className="space-y-2">
+                    <Label>{t("accounting:dimensions.codeDescriptionAr", "Description (Arabic)")}</Label>
+                    <Input
+                      value={codeForm.description_ar || ""}
+                      onChange={(e) => setCodeForm({ ...codeForm, description_ar: e.target.value })}
+                      dir="rtl"
+                    />
+                  </div>
+                </ArabicField>
               </div>
               {selectedDimension && (() => {
                 const parentCodes = selectedDimension.values?.filter(v => v.id !== editingCode?.id) || [];

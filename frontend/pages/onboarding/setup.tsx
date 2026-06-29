@@ -110,6 +110,9 @@ export default function OnboardingSetupPage() {
   const [decimalSep, setDecimalSep] = useState(".");
   const [decimalPlaces, setDecimalPlaces] = useState(2);
   const [dateFormat, setDateFormat] = useState("YYYY-MM-DD");
+  // A138: English-only (false) vs Arabic/bilingual (true). Drives whether the
+  // optional Arabic data-entry fields are shown across the app. English-first default.
+  const [enableArabicFields, setEnableArabicFields] = useState(false);
 
   // Step: Fiscal year
   const [fiscalYear, setFiscalYear] = useState(new Date().getFullYear());
@@ -160,6 +163,8 @@ export default function OnboardingSetupPage() {
           setDecimalPlaces(data.company.decimal_places);
         if (data.company.date_format)
           setDateFormat(data.company.date_format);
+        if (data.company.enable_arabic_fields !== undefined)
+          setEnableArabicFields(!!data.company.enable_arabic_fields);
         if (data.business_type === "shopify" || data.business_type === "general")
           setBusinessType(data.business_type);
         // Restore local draft (step, fiscal fields)
@@ -234,6 +239,7 @@ export default function OnboardingSetupPage() {
         decimal_separator: decimalSep,
         decimal_places: decimalPlaces,
         date_format: dateFormat,
+        enable_arabic_fields: enableArabicFields,
         fiscal_year: fiscalYear,
         num_periods: numPeriods,
         current_period: currentPeriod,
@@ -278,6 +284,7 @@ export default function OnboardingSetupPage() {
     if (decimalSep) draft.decimal_separator = decimalSep;
     if (decimalPlaces >= 0) draft.decimal_places = decimalPlaces;
     if (dateFormat) draft.date_format = dateFormat;
+    draft.enable_arabic_fields = enableArabicFields;
     if (Object.keys(draft).length > 0) {
       onboardingService.saveDraft(draft).catch(() => {});
     }
@@ -423,6 +430,8 @@ export default function OnboardingSetupPage() {
                 setDecimalPlaces={setDecimalPlaces}
                 dateFormat={dateFormat}
                 setDateFormat={setDateFormat}
+                enableArabicFields={enableArabicFields}
+                setEnableArabicFields={setEnableArabicFields}
                 months={MONTHS}
                 dateFormats={DATE_FORMATS}
               />
@@ -903,6 +912,8 @@ function StepCompanyProfile({
   setDecimalPlaces,
   dateFormat,
   setDateFormat,
+  enableArabicFields,
+  setEnableArabicFields,
   months,
   dateFormats,
 }: {
@@ -920,6 +931,8 @@ function StepCompanyProfile({
   setDecimalPlaces: (v: number) => void;
   dateFormat: string;
   setDateFormat: (v: string) => void;
+  enableArabicFields: boolean;
+  setEnableArabicFields: (v: boolean) => void;
   months: string[];
   dateFormats: string[];
 }) {
@@ -931,7 +944,26 @@ function StepCompanyProfile({
       </p>
 
       <div className="grid gap-4">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {/* A138: data-entry language choice. English-only hides the optional
+            Arabic fields across the app; bilingual shows them. */}
+        <div>
+          <Label htmlFor="dataLanguage">Data entry fields</Label>
+          <select
+            id="dataLanguage"
+            value={enableArabicFields ? "bilingual" : "english"}
+            onChange={(e) => setEnableArabicFields(e.target.value === "bilingual")}
+            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+          >
+            <option value="english">English only</option>
+            <option value="bilingual">Bilingual (English &amp; Arabic)</option>
+          </select>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Bilingual adds optional Arabic name, description, and address fields on
+            forms. You can change this later in Company Settings.
+          </p>
+        </div>
+
+        <div className={enableArabicFields ? "grid grid-cols-1 sm:grid-cols-2 gap-4" : "grid grid-cols-1 gap-4"}>
           <div>
             <Label htmlFor="companyName">Company Name</Label>
             <Input
@@ -940,16 +972,18 @@ function StepCompanyProfile({
               onChange={(e) => setCompanyName(e.target.value)}
             />
           </div>
-          <div>
-            <Label htmlFor="companyNameAr">Company Name (Arabic)</Label>
-            <Input
-              id="companyNameAr"
-              value={companyNameAr}
-              onChange={(e) => setCompanyNameAr(e.target.value)}
-              dir="rtl"
-              placeholder="Optional"
-            />
-          </div>
+          {enableArabicFields && (
+            <div>
+              <Label htmlFor="companyNameAr">Company Name (Arabic)</Label>
+              <Input
+                id="companyNameAr"
+                value={companyNameAr}
+                onChange={(e) => setCompanyNameAr(e.target.value)}
+                dir="rtl"
+                placeholder="Optional"
+              />
+            </div>
+          )}
         </div>
 
         <div>

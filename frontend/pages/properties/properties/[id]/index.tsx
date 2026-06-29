@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/components/ui/toaster";
 import { useProperty, useUpdateProperty, useUnits } from "@/queries/useProperties";
+import { ArabicField } from "@/components/forms/ArabicField";
 import type { PropertyType, PropertyStatus } from "@/types/properties";
 import { useState, useEffect } from "react";
 import { cn } from "@/lib/cn";
@@ -134,10 +135,12 @@ export default function PropertyDetailPage() {
                   <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
                 </div>
 
-                <div>
-                  <label className="text-sm font-medium">Name (Arabic)</label>
-                  <Input value={form.name_ar} onChange={(e) => setForm({ ...form, name_ar: e.target.value })} dir="rtl" />
-                </div>
+                <ArabicField>
+                  <div>
+                    <label className="text-sm font-medium">Name (Arabic)</label>
+                    <Input value={form.name_ar} onChange={(e) => setForm({ ...form, name_ar: e.target.value })} dir="rtl" />
+                  </div>
+                </ArabicField>
 
                 <div>
                   <label className="text-sm font-medium">Address</label>
