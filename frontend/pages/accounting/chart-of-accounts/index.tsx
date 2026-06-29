@@ -141,12 +141,12 @@ export default function ChartOfAccountsPage() {
           {!account.is_header && (
             <button
               type="button"
-              title={t("accounting:inquiry.viewTransactions", "View Transactions")}
-              aria-label={t("accounting:inquiry.viewTransactions", "View Transactions")}
+              title={t("accounting:drilldown.viewTransactions", "View Transactions")}
+              aria-label={t("accounting:drilldown.viewTransactions", "View Transactions")}
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                router.push(`/accounting/chart-of-accounts/${account.code}/inquiry`);
+                router.push(`/accounting/chart-of-accounts/${account.code}/drilldown`);
               }}
               className="rounded p-1 text-muted-foreground hover:bg-background hover:text-foreground"
             >

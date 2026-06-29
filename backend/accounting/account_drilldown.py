@@ -1,6 +1,11 @@
-# accounting/account_inquiry.py
+# accounting/account_drilldown.py
 """
-A137 — Account Inquiry (GL account drilldown).
+A137 — Account Drilldown (read-only GL account drilldown).
+
+Note: distinct from the Reports "Account Inquiry" line-search report
+(``projections/views.py`` ``/api/reports/account-inquiry/``). This module is
+the balance-reconciling drilldown (opening/period/closing + running balance)
+opened from a Chart-of-Accounts row.
 
 Pure, **read-only** query layer that explains an account balance from the
 canonical ledger: opening balance, period debits/credits, closing balance,
@@ -147,7 +152,7 @@ def _counterparty_label(line: JournalLine) -> str:
     return cp.name or cp.code
 
 
-def build_account_inquiry(
+def build_account_drilldown(
     *,
     company,
     account: Account,

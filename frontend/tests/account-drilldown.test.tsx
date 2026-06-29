@@ -54,9 +54,9 @@ vi.mock("@/components/layout", () => ({
   AppLayout: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 
-const mockUseInquiry = vi.fn();
-vi.mock("@/queries/useAccountInquiry", () => ({
-  useAccountInquiry: (...args: unknown[]) => mockUseInquiry(...args),
+const mockUseDrilldown = vi.fn();
+vi.mock("@/queries/useAccountDrilldown", () => ({
+  useAccountDrilldown: (...args: unknown[]) => mockUseDrilldown(...args),
 }));
 
 const mockData = {
@@ -125,21 +125,21 @@ const mockData = {
   pagination: { page: 1, page_size: 50, count: 2, total_pages: 1 },
 };
 
-import AccountInquiryPage from "@/pages/accounting/chart-of-accounts/[code]/inquiry";
+import AccountDrilldownPage from "@/pages/accounting/chart-of-accounts/[code]/drilldown";
 
-describe("AccountInquiryPage", () => {
+describe("AccountDrilldownPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockUseInquiry.mockReturnValue({ data: mockData, isLoading: false, isError: false });
+    mockUseDrilldown.mockReturnValue({ data: mockData, isLoading: false, isError: false });
   });
 
   it("renders the account header", () => {
-    render(<AccountInquiryPage />);
+    render(<AccountDrilldownPage />);
     expect(screen.getByText(/11510.*Stripe Clearing/)).toBeInTheDocument();
   });
 
   it("renders the four summary cards with values", () => {
-    render(<AccountInquiryPage />);
+    render(<AccountDrilldownPage />);
     expect(screen.getByText("Opening Balance")).toBeInTheDocument();
     expect(screen.getByText("Period Debits")).toBeInTheDocument();
     expect(screen.getByText("Period Credits")).toBeInTheDocument();
@@ -150,7 +150,7 @@ describe("AccountInquiryPage", () => {
   });
 
   it("renders rows with debit/credit and running balance", () => {
-    render(<AccountInquiryPage />);
+    render(<AccountDrilldownPage />);
     expect(screen.getByText("JE-0001")).toBeInTheDocument();
     expect(screen.getByText("JE-0002")).toBeInTheDocument();
     // row 1 debit AND its running balance both render $100.00.
@@ -160,7 +160,7 @@ describe("AccountInquiryPage", () => {
   });
 
   it("renders dimension chips (first two then +N)", () => {
-    render(<AccountInquiryPage />);
+    render(<AccountDrilldownPage />);
     // Row 1 has a single dimension chip.
     expect(screen.getAllByText("Provider: Stripe").length).toBeGreaterThan(0);
     // Row 2 has three dimensions → first two shown + a "+1" toggle.
@@ -173,11 +173,11 @@ describe("AccountInquiryPage", () => {
   });
 
   it("passes the date filter to the query as date_from", async () => {
-    render(<AccountInquiryPage />);
+    render(<AccountDrilldownPage />);
     const dateInputs = screen.getAllByPlaceholderText("YYYY-MM-DD");
     fireEvent.change(dateInputs[0], { target: { value: "2026-01-15" } });
     await waitFor(() => {
-      expect(mockUseInquiry).toHaveBeenCalledWith(
+      expect(mockUseDrilldown).toHaveBeenCalledWith(
         "11510",
         expect.objectContaining({ date_from: "2026-01-15", page: 1 })
       );
@@ -185,19 +185,19 @@ describe("AccountInquiryPage", () => {
   });
 
   it("clears the date filter and drops date_from from the query", async () => {
-    render(<AccountInquiryPage />);
+    render(<AccountDrilldownPage />);
     const dateInputs = screen.getAllByPlaceholderText("YYYY-MM-DD");
     fireEvent.change(dateInputs[0], { target: { value: "2026-01-15" } });
     const clear = await screen.findByText("Clear");
     fireEvent.click(clear);
     await waitFor(() => {
-      const lastCall = mockUseInquiry.mock.calls[mockUseInquiry.mock.calls.length - 1];
+      const lastCall = mockUseDrilldown.mock.calls[mockUseDrilldown.mock.calls.length - 1];
       expect(lastCall[1]).not.toHaveProperty("date_from");
     });
   });
 
   it("shows an empty state when there are no rows", () => {
-    mockUseInquiry.mockReturnValue({
+    mockUseDrilldown.mockReturnValue({
       data: {
         ...mockData,
         rows: [],
@@ -206,20 +206,20 @@ describe("AccountInquiryPage", () => {
       isLoading: false,
       isError: false,
     });
-    render(<AccountInquiryPage />);
+    render(<AccountDrilldownPage />);
     expect(
       screen.getByText("No journal lines found for this account in the selected period.")
     ).toBeInTheDocument();
   });
 
   it("shows an error state when the query fails", () => {
-    mockUseInquiry.mockReturnValue({ data: undefined, isLoading: false, isError: true });
-    render(<AccountInquiryPage />);
+    mockUseDrilldown.mockReturnValue({ data: undefined, isLoading: false, isError: true });
+    render(<AccountDrilldownPage />);
     expect(screen.getByText(/Failed to load account transactions/)).toBeInTheDocument();
   });
 
   it("renders NO edit/post/reconcile actions (read-only)", () => {
-    render(<AccountInquiryPage />);
+    render(<AccountDrilldownPage />);
     expect(screen.queryByRole("button", { name: /reconcile/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^post$/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /edit/i })).toBeNull();

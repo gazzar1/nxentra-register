@@ -1,17 +1,19 @@
-// A137 — Account Inquiry (read-only GL account drilldown) types.
+// A137 — Account Drilldown (read-only GL account drilldown) types.
 // Mirrors the backend payload from
-// GET /api/accounting/accounts/<code>/inquiry/ (accounting.account_inquiry).
+// GET /api/accounting/accounts/<code>/drilldown/ (accounting.account_drilldown).
+// Distinct from the Reports "Account Inquiry" line-search report under
+// /reports/account-inquiry (periods.service.ts AccountInquiry* types).
 
 export type BalanceSide = "DEBIT" | "CREDIT";
 
-export interface InquiryDimension {
+export interface DrilldownDimension {
   type: string; // AnalysisDimension.code, e.g. "SETTLEMENT_PROVIDER"
   label: string; // AnalysisDimension.name, e.g. "Settlement Provider"
   value: string; // AnalysisDimensionValue.code, e.g. "STRIPE"
   display: string; // human value, e.g. "Stripe"
 }
 
-export interface InquiryRow {
+export interface DrilldownRow {
   date: string; // ISO YYYY-MM-DD
   journal_entry_public_id: string;
   journal_entry_number: string;
@@ -23,10 +25,10 @@ export interface InquiryRow {
   credit: string;
   running_balance: string; // signed, in the account's normal-side convention
   running_balance_side: BalanceSide;
-  dimensions: InquiryDimension[];
+  dimensions: DrilldownDimension[];
 }
 
-export interface InquiryAccount {
+export interface DrilldownAccount {
   public_id: string;
   code: string;
   name: string;
@@ -35,7 +37,7 @@ export interface InquiryAccount {
   currency: string; // company functional currency
 }
 
-export interface InquirySummary {
+export interface DrilldownSummary {
   opening_balance: string;
   opening_balance_side: BalanceSide;
   period_debits: string;
@@ -46,15 +48,15 @@ export interface InquirySummary {
   closing_balance_side: BalanceSide;
 }
 
-export interface InquiryPagination {
+export interface DrilldownPagination {
   page: number;
   page_size: number;
   count: number;
   total_pages: number;
 }
 
-export interface AccountInquiryResponse {
-  account: InquiryAccount;
+export interface AccountDrilldownResponse {
+  account: DrilldownAccount;
   period: {
     date_from: string | null;
     date_to: string | null;
@@ -63,12 +65,12 @@ export interface AccountInquiryResponse {
     dimension_value: string | null;
     source_module: string | null;
   };
-  summary: InquirySummary;
-  rows: InquiryRow[];
-  pagination: InquiryPagination;
+  summary: DrilldownSummary;
+  rows: DrilldownRow[];
+  pagination: DrilldownPagination;
 }
 
-export interface AccountInquiryParams {
+export interface AccountDrilldownParams {
   date_from?: string;
   date_to?: string;
   dimension_type?: string;

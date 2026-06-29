@@ -52,8 +52,8 @@ from .views import (
     AccountAnalysisDefaultDeleteView,
     AccountAnalysisDefaultView,
     AccountDetailView,
+    AccountDrilldownView,
     AccountExportView,
-    AccountInquiryView,
     # Account views
     AccountListCreateView,
     AnalysisDimensionDetailView,
@@ -109,11 +109,13 @@ urlpatterns = [
     ),
     # A137: read-only GL account drilldown. Registered before the bare
     # <code>/ detail route for readability; Django's path() disambiguates on
-    # the trailing "inquiry/" segment regardless of order.
+    # the trailing "drilldown/" segment regardless of order. Named
+    # "account-drilldown" to avoid confusion with the Reports "account-inquiry"
+    # line-search report (projections app, different namespace).
     path(
-        "accounts/<str:code>/inquiry/",
-        AccountInquiryView.as_view(),
-        name="account-inquiry",
+        "accounts/<str:code>/drilldown/",
+        AccountDrilldownView.as_view(),
+        name="account-drilldown",
     ),
     path(
         "accounts/<str:code>/",
