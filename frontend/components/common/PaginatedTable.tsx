@@ -42,6 +42,8 @@ interface PaginatedTableProps<T> {
   onOrderingChange?: (ordering: string) => void;
   // Row interaction
   onRowClick?: (item: T) => void;
+  // Optional per-row className (e.g. to grey out reversed entries)
+  rowClassName?: (item: T) => string | undefined;
   // State
   isLoading?: boolean;
   emptyState?: ReactNode;
@@ -62,6 +64,7 @@ export function PaginatedTable<T>({
   ordering,
   onOrderingChange,
   onRowClick,
+  rowClassName,
   isLoading,
   emptyState,
 }: PaginatedTableProps<T>) {
@@ -126,7 +129,7 @@ export function PaginatedTable<T>({
             data.map((item) => (
               <TableRow
                 key={keyExtractor(item)}
-                className={onRowClick ? "cursor-pointer" : ""}
+                className={`${onRowClick ? "cursor-pointer" : ""} ${rowClassName?.(item) || ""}`}
                 onClick={onRowClick ? () => onRowClick(item) : undefined}
               >
                 {columns.map((col) => (

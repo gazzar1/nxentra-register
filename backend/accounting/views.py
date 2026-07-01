@@ -347,12 +347,20 @@ class JournalEntryListCreateView(APIView):
 
         from nxentra_backend.pagination import paginate_queryset
 
-        entries = JournalEntry.objects.filter(company=actor.company).prefetch_related("lines", "lines__account")
+        entries = (
+            JournalEntry.objects.filter(company=actor.company)
+            .prefetch_related("lines", "lines__account")
+            # Reversal cross-links (reverses_entry forward + reversal_entry reverse
+            # OneToOne) so the serializer doesn't N+1 across the page.
+            .select_related("reverses_entry", "reversal_entry")
+        )
 
-        # Optional filters
+        # Optional filters. `status` accepts a comma-separated list so the UI can
+        # ask for e.g. "DRAFT,INCOMPLETE" (the Drafts tab) in one request.
         status_filter = request.query_params.get("status")
         if status_filter:
-            entries = entries.filter(status=status_filter)
+            statuses = [s.strip() for s in status_filter.split(",") if s.strip()]
+            entries = entries.filter(status__in=statuses)
 
         search = request.query_params.get("search", "")
         if search:
