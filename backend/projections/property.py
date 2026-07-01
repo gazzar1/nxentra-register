@@ -602,7 +602,11 @@ class PropertyAccountingProjection(BaseProjection):
 
         period = _resolve_period(company, entry_date)
         now = timezone.now()
-        currency = getattr(company, "default_currency", "USD")
+        # A JE records a books event, so stamp the FUNCTIONAL (books) currency, not
+        # default_currency (presentation). For a company where they differ (e.g.
+        # default USD / functional EGP) the old default stamp mislabeled the entry;
+        # property amounts are already in the books currency, so no conversion.
+        currency = getattr(company, "functional_currency", "") or getattr(company, "default_currency", "USD")
 
         # Generate proper entry number using the same sequence as manual entries
         sequence_value = _next_company_sequence(company, "journal_entry_number")

@@ -248,7 +248,10 @@ class ClinicAccountingProjection(BaseProjection):
 
         period = _resolve_period(company, entry_date)
         now = timezone.now()
-        currency = getattr(company, "default_currency", "USD")
+        # A JE records a books event, so stamp the FUNCTIONAL (books) currency, not
+        # default_currency (presentation). Clinic amounts are already in the books
+        # currency, so no conversion — only the stamp is corrected.
+        currency = getattr(company, "functional_currency", "") or getattr(company, "default_currency", "USD")
 
         entry = JournalEntry.objects.projection().create(
             company=company,
