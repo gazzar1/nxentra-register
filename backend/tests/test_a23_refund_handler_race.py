@@ -370,6 +370,22 @@ def test_a41_process_pending_rewinds_bookmark_on_defer(db, company, owner_member
     )
     _ensure_shopify_sales_setup(store)
 
+    # This EGP order rides on the USD-functional `company` fixture, so its
+    # invoice/credit-note lines are FOREIGN. post_journal_entry no longer posts a
+    # foreign line at a silent 1:1 (it quarantines when no rate is on file), so
+    # seed a 1.0 EGP→USD rate — this test is about bookmark rewind, not FX, and a
+    # 1.0 rate leaves its amounts unchanged.
+    from accounting.models import ExchangeRate
+
+    ExchangeRate.objects.create(
+        company=company,
+        from_currency="EGP",
+        to_currency="USD",
+        rate=Decimal("1.0"),
+        effective_date=date(2026, 5, 1),
+        rate_type="SPOT",
+    )
+
     ShopifyOrder.objects.create(
         company=company,
         store=store,
