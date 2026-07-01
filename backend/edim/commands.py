@@ -1416,8 +1416,21 @@ def commit_batch(
                     "description": payload.get("description", ""),
                     "debit": debit,
                     "credit": credit,
+                    # Thread the payload's currency/exchange_rate onto the line
+                    # (validators.py validates them). Dropping them stamped every
+                    # imported JE as functional, so a FOREIGN-currency CSV posted at
+                    # a silent 1:1 (e.g. USD 20 as EGP 20) — it bypassed the
+                    # post_journal_entry FX guard because the currency was gone.
+                    "currency": payload.get("currency") or None,
+                    "exchange_rate": payload.get("exchange_rate") or None,
                 }
             )
+
+        # Stamp the entry header with the imported currency/rate too, so the JE is
+        # recorded in the transaction currency and post_journal_entry can
+        # convert-or-quarantine foreign lines instead of booking them at 1:1.
+        entry_currency = next((ln["currency"] for ln in lines if ln.get("currency")), None)
+        entry_exchange_rate = next((ln["exchange_rate"] for ln in lines if ln.get("exchange_rate")), None)
 
         # Create journal entry
         result = create_journal_entry(
@@ -1425,6 +1438,8 @@ def commit_batch(
             date=parsed_date,
             memo=f"Imported from {batch.original_filename}",
             lines=lines,
+            currency=entry_currency,
+            exchange_rate=str(entry_exchange_rate) if entry_exchange_rate else None,
         )
         if not result.success:
             raise ValueError(f"Failed to create journal entry: {result.error}")
