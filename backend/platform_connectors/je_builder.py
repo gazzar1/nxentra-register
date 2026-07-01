@@ -213,22 +213,33 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
         )
         force_incomplete = True
 
-    # Multi-currency: auto-resolve exchange rate if not explicitly provided
+    # Multi-currency: resolve the FX rate. A FOREIGN entry must NOT silently post
+    # at 1:1 when no rate is on file — that books e.g. USD 20 as EGP 20. If the
+    # caller passed no explicit rate and none exists for the entry date, quarantine
+    # the entry as INCOMPLETE (needs FX rate) so wrong amounts never post; it can be
+    # reposted once a rate is added. An explicitly-supplied rate (!= 1.0) is trusted.
     functional_currency = req.company.functional_currency or req.company.default_currency or "USD"
     is_foreign = req.currency != functional_currency
     fx_rate = req.exchange_rate
+    fx_error = ""
 
     if is_foreign and fx_rate == Decimal("1.0"):
         looked_up_rate = ExchangeRate.get_rate(req.company, req.currency, functional_currency, req.entry_date)
         if looked_up_rate:
             fx_rate = looked_up_rate
         else:
+            fx_error = (
+                f"Missing {req.currency}→{functional_currency} exchange rate for {req.entry_date} — "
+                f"add the rate, then repost."
+            )
+            force_incomplete = True
             logger.warning(
-                "No exchange rate found for %s→%s on %s (company %s) — using 1.0",
+                "No %s→%s exchange rate for %s (company %s) — quarantining '%s' as INCOMPLETE (needs FX rate)",
                 req.currency,
                 functional_currency,
                 req.entry_date,
                 req.company,
+                req.memo,
             )
 
     period = _resolve_period(req.company, req.entry_date)
@@ -309,7 +320,7 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
     if entry.status == JournalEntry.Status.INCOMPLETE:
         from accounts.models import Notification
 
-        error_detail = (
+        error_detail = fx_error or (
             "; ".join(validation.errors)
             if validation.errors
             else f"Unbalanced: debit={total_debit} credit={total_credit}"
