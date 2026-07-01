@@ -26,7 +26,7 @@ from uuid import uuid4
 import pytest
 from django.contrib.auth import get_user_model
 
-from accounting.commands import create_journal_entry
+from accounting.commands import create_journal_entry, post_journal_entry, save_journal_entry_complete
 from accounting.models import Account
 from accounts.authz import system_actor_for_company
 from accounts.models import Company, CompanyMembership
@@ -159,6 +159,82 @@ def test_create_journal_entry_explicit_currency_still_wins(
 
     assert result.success
     assert result.data.currency == "USD"
+
+
+@pytest.mark.django_db
+def test_post_foreign_entry_without_rate_is_quarantined(usd_default_egp_functional_company):
+    # The choke point (PR-A): a foreign line (USD) in an EGP-functional company
+    # with NO exchange rate on file must NOT post at a silent 1:1 (USD 20 -> EGP 20).
+    # post_journal_entry now FAILS with a clear "add the rate, then repost" and
+    # leaves the entry unposted (quarantined), mirroring build_journal_entry (#33).
+    from accounting.models import JournalEntry
+
+    company = usd_default_egp_functional_company
+    actor = system_actor_for_company(company)
+    bank = Account.objects.get(company=company, code="1010")
+    revenue = Account.objects.get(company=company, code="4000")
+
+    created = create_journal_entry(
+        actor=actor,
+        date=date.today(),
+        memo="USD JE, no rate",
+        currency="USD",  # foreign to functional EGP
+        lines=[
+            {"account_id": bank.id, "description": "DR Bank", "debit": Decimal("20"), "credit": Decimal("0")},
+            {"account_id": revenue.id, "description": "CR Revenue", "debit": Decimal("0"), "credit": Decimal("20")},
+        ],
+    )
+    assert created.success, created.error
+    assert save_journal_entry_complete(actor, created.data.id).success  # INCOMPLETE -> DRAFT
+
+    posted = post_journal_entry(actor, created.data.id)
+    assert not posted.success
+    assert "exchange rate" in (posted.error or "").lower()
+
+    created.data.refresh_from_db()
+    assert created.data.status != JournalEntry.Status.POSTED  # not booked at 1:1
+
+
+@pytest.mark.django_db
+def test_post_foreign_entry_with_rate_converts(usd_default_egp_functional_company):
+    # With a USD->EGP rate on file, the same entry posts and every line converts
+    # into the functional currency: USD 20 -> EGP 960 at 48 (NOT EGP 20).
+    from accounting.models import ExchangeRate, JournalLine
+
+    company = usd_default_egp_functional_company
+    actor = system_actor_for_company(company)
+    ExchangeRate.objects.create(
+        company=company,
+        from_currency="USD",
+        to_currency="EGP",
+        rate=Decimal("48"),
+        effective_date=date.today().replace(day=1),
+        rate_type="SPOT",
+    )
+    bank = Account.objects.get(company=company, code="1010")
+    revenue = Account.objects.get(company=company, code="4000")
+
+    created = create_journal_entry(
+        actor=actor,
+        date=date.today(),
+        memo="USD JE, with rate",
+        currency="USD",
+        lines=[
+            {"account_id": bank.id, "description": "DR Bank", "debit": Decimal("20"), "credit": Decimal("0")},
+            {"account_id": revenue.id, "description": "CR Revenue", "debit": Decimal("0"), "credit": Decimal("20")},
+        ],
+    )
+    assert created.success, created.error
+    assert save_journal_entry_complete(actor, created.data.id).success  # INCOMPLETE -> DRAFT
+
+    posted = post_journal_entry(actor, created.data.id)
+    assert posted.success, posted.error
+
+    lines = {
+        ln.account.code: ln for ln in JournalLine.objects.filter(entry_id=created.data.id).select_related("account")
+    }
+    assert lines["1010"].debit == Decimal("960.00")  # 20 USD * 48 -> EGP, NOT 20
+    assert lines["4000"].credit == Decimal("960.00")
 
 
 # The full SalesInvoice → JE pipeline regression is covered indirectly by
