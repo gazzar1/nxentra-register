@@ -9,7 +9,7 @@ import { AppLayout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -30,6 +30,16 @@ import { useToast } from "@/components/ui/toaster";
 import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 import type { JournalEntry } from "@/types/journal";
 
+// Tab → status filter. "Drafts" = DRAFT + INCOMPLETE (both unposted/editable);
+// the list API accepts a comma-separated list (status__in). "Reversed" surfaces
+// undone entries that used to vanish from the Posted-only view.
+const TAB_STATUS: Record<string, string | undefined> = {
+  all: undefined,
+  posted: "POSTED",
+  reversed: "REVERSED",
+  drafts: "DRAFT,INCOMPLETE",
+};
+
 export default function JournalEntriesPage() {
   const { t } = useTranslation(["common", "accounting"]);
   const router = useRouter();
@@ -45,7 +55,7 @@ export default function JournalEntriesPage() {
   const [pageSize, setPageSize] = useState(25);
   const [ordering, setOrdering] = useState("-entry_number");
 
-  const statusFilter = activeTab === "posted" ? "POSTED" : undefined;
+  const statusFilter = TAB_STATUS[activeTab];
 
   const { data: response, isLoading } = usePaginatedJournalEntries({
     status: statusFilter,
@@ -75,7 +85,7 @@ export default function JournalEntriesPage() {
       await exportService.exportJournalEntries({
         format,
         detail,
-        status: activeTab === "posted" ? "POSTED" : undefined,
+        status: TAB_STATUS[activeTab],
       });
       toast({
         title: t("common:success"),
@@ -100,7 +110,11 @@ export default function JournalEntriesPage() {
       label: t("accounting:journalEntry.entryNumber"),
       sortable: true,
       render: (entry) => (
-        <span className="font-mono ltr-code">
+        <span
+          className={`font-mono ltr-code ${
+            entry.status === "REVERSED" ? "line-through text-muted-foreground" : ""
+          }`}
+        >
           {entry.entry_number || `#${entry.id}`}
         </span>
       ),
@@ -242,8 +256,14 @@ export default function JournalEntriesPage() {
             <Tabs value={activeTab} onValueChange={handleTabChange}>
               <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 mb-6">
                 <TabsList>
+                  <TabsTrigger value="all">
+                    {t("common:all", "All")}
+                  </TabsTrigger>
                   <TabsTrigger value="posted">
                     {t("status.posted", "Posted")}
+                  </TabsTrigger>
+                  <TabsTrigger value="reversed">
+                    {t("accounting:journalEntries.reversed", "Reversed")}
                   </TabsTrigger>
                   <TabsTrigger value="drafts">
                     {t("accounting:journalEntries.drafts", "Drafts")}
@@ -257,66 +277,38 @@ export default function JournalEntriesPage() {
                 />
               </div>
 
-              <TabsContent value="posted">
-                <PaginatedTable
-                  data={entries}
-                  columns={columns}
-                  keyExtractor={(e) => e.id}
-                  page={page}
-                  pageSize={pageSize}
-                  totalCount={totalCount}
-                  totalPages={totalPages}
-                  onPageChange={setPage}
-                  onPageSizeChange={setPageSize}
-                  ordering={ordering}
-                  onOrderingChange={setOrdering}
-                  onRowClick={(entry) => router.push(`/accounting/journal-entries/${entry.id}`)}
-                  isLoading={isLoading}
-                  emptyState={
-                    <EmptyState
-                      title={t("messages.noData")}
-                      action={
-                        <Link href="/accounting/journal-entries/new">
-                          <Button>
-                            <Plus className="me-2 h-4 w-4" />
-                            {t("accounting:journalEntries.createEntry")}
-                          </Button>
-                        </Link>
-                      }
-                    />
-                  }
-                />
-              </TabsContent>
-              <TabsContent value="drafts">
-                <PaginatedTable
-                  data={entries}
-                  columns={columns}
-                  keyExtractor={(e) => e.id}
-                  page={page}
-                  pageSize={pageSize}
-                  totalCount={totalCount}
-                  totalPages={totalPages}
-                  onPageChange={setPage}
-                  onPageSizeChange={setPageSize}
-                  ordering={ordering}
-                  onOrderingChange={setOrdering}
-                  onRowClick={(entry) => router.push(`/accounting/journal-entries/${entry.id}`)}
-                  isLoading={isLoading}
-                  emptyState={
-                    <EmptyState
-                      title={t("messages.noData")}
-                      action={
-                        <Link href="/accounting/journal-entries/new">
-                          <Button>
-                            <Plus className="me-2 h-4 w-4" />
-                            {t("accounting:journalEntries.createEntry")}
-                          </Button>
-                        </Link>
-                      }
-                    />
-                  }
-                />
-              </TabsContent>
+              {/* Single table driven by the active tab's status filter. Reversed
+                  entries are greyed (via rowClassName) + strikethrough (entry
+                  number) + carry a Reversed status badge, instead of vanishing. */}
+              <PaginatedTable
+                data={entries}
+                columns={columns}
+                keyExtractor={(e) => e.id}
+                page={page}
+                pageSize={pageSize}
+                totalCount={totalCount}
+                totalPages={totalPages}
+                onPageChange={setPage}
+                onPageSizeChange={setPageSize}
+                ordering={ordering}
+                onOrderingChange={setOrdering}
+                onRowClick={(entry) => router.push(`/accounting/journal-entries/${entry.id}`)}
+                rowClassName={(entry) => (entry.status === "REVERSED" ? "opacity-60" : "")}
+                isLoading={isLoading}
+                emptyState={
+                  <EmptyState
+                    title={t("messages.noData")}
+                    action={
+                      <Link href="/accounting/journal-entries/new">
+                        <Button>
+                          <Plus className="me-2 h-4 w-4" />
+                          {t("accounting:journalEntries.createEntry")}
+                        </Button>
+                      </Link>
+                    }
+                  />
+                }
+              />
             </Tabs>
           </CardContent>
         </Card>

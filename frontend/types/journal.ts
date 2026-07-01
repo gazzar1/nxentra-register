@@ -120,7 +120,9 @@ export interface JournalEntrySaveCompletePayload {
 
 // Filters for journal entry list
 export interface JournalEntryFilters {
-  status?: JournalEntryStatus;
+  // A single status, or a comma-separated list (e.g. "DRAFT,INCOMPLETE") — the
+  // list endpoint filters status__in.
+  status?: string;
   kind?: JournalEntryKind;
   date_from?: string;
   date_to?: string;

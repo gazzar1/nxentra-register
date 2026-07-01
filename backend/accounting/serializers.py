@@ -367,6 +367,14 @@ class JournalEntrySerializer(serializers.ModelSerializer):
     total_credit = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
     is_balanced = serializers.BooleanField(read_only=True)
 
+    # Reversal cross-links exposed by the user-facing entry NUMBER (not the
+    # internal pk, which leaked into the memo as "JE#1677"):
+    #   reverses_entry_number   — for a reversal entry: the original it reverses
+    #   reversed_by_entry[_number] — for an original entry: the reversal that undid it
+    reverses_entry_number = serializers.CharField(source="reverses_entry.entry_number", read_only=True, default=None)
+    reversed_by_entry = serializers.SerializerMethodField()
+    reversed_by_entry_number = serializers.SerializerMethodField()
+
     class Meta:
         model = JournalEntry
         fields = [
@@ -389,6 +397,9 @@ class JournalEntrySerializer(serializers.ModelSerializer):
             "reversed_at",
             "reversed_by",
             "reverses_entry",
+            "reverses_entry_number",
+            "reversed_by_entry",
+            "reversed_by_entry_number",
             "created_at",
             "created_by",
             "updated_at",
@@ -416,6 +427,19 @@ class JournalEntrySerializer(serializers.ModelSerializer):
             "total_credit",
             "is_balanced",
         ]
+
+    def get_reversed_by_entry(self, obj):
+        # Reverse side of the reverses_entry OneToOne (related_name="reversal_entry").
+        try:
+            return obj.reversal_entry.id
+        except JournalEntry.DoesNotExist:
+            return None
+
+    def get_reversed_by_entry_number(self, obj):
+        try:
+            return obj.reversal_entry.entry_number
+        except JournalEntry.DoesNotExist:
+            return None
 
 
 class JournalEntryAutoSaveSerializer(serializers.ModelSerializer):

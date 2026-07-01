@@ -180,6 +180,38 @@ export default function JournalEntryDetailPage() {
           }
         />
 
+        {/* Reversal cross-link — original ↔ reversal, by user-facing entry number */}
+        {entry.reverses_entry && (
+          <div className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm">
+            <Undo2 className="h-4 w-4 shrink-0 text-amber-600" />
+            <span>
+              {t("accounting:journalEntries.reversalOf", "This entry reverses")}{" "}
+              <Link
+                href={`/accounting/journal-entries/${entry.reverses_entry}`}
+                className="font-mono font-medium text-primary hover:underline"
+              >
+                {entry.reverses_entry_number || `#${entry.reverses_entry}`}
+              </Link>
+              .
+            </span>
+          </div>
+        )}
+        {entry.reversed_by_entry && (
+          <div className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm">
+            <Undo2 className="h-4 w-4 shrink-0 text-amber-600" />
+            <span>
+              {t("accounting:journalEntries.reversedBy", "This entry was reversed by")}{" "}
+              <Link
+                href={`/accounting/journal-entries/${entry.reversed_by_entry}`}
+                className="font-mono font-medium text-primary hover:underline"
+              >
+                {entry.reversed_by_entry_number || `#${entry.reversed_by_entry}`}
+              </Link>
+              .
+            </span>
+          </div>
+        )}
+
         {/* Entry Info */}
         <Card>
           <CardHeader>

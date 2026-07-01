@@ -1422,8 +1422,12 @@ def reverse_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
             entry_public_id=str(reversal_public_id),
             entry_number=reversal_entry_number,
             date=original_date.isoformat(),
-            memo=f"Reversal of JE#{original.id}: {aggregate.memo}",
-            memo_ar=f"عكس قيد #{original.id}: {aggregate.memo_ar}" if aggregate.memo_ar else "",
+            memo=f"Reversal of {original.entry_number or f'JE#{original.id}'}: {aggregate.memo}",
+            memo_ar=(
+                f"عكس قيد {original.entry_number or f'JE#{original.id}'}: {aggregate.memo_ar}"
+                if aggregate.memo_ar
+                else ""
+            ),
             kind=JournalEntry.Kind.REVERSAL,
             period=reversal_period,
             currency=aggregate.currency or original.currency or actor.company.default_currency,
