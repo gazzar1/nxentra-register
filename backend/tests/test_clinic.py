@@ -523,6 +523,22 @@ class TestClinicAccountingProjection:
         assert lines[0].debit == Decimal("250")  # AR
         assert lines[1].credit == Decimal("250")  # Revenue
 
+    def test_je_stamps_functional_currency_not_presentation(self, actor_context, invoice, clinic_mapping):
+        # The `company` fixture is default_currency=USD; set functional_currency=EGP.
+        # A JE records a books event, so it must be stamped in the functional (books)
+        # currency (EGP), not the presentation currency (USD). Pre-fix the bespoke
+        # writer stamped default_currency.
+        company = actor_context.company
+        company.functional_currency = "EGP"
+        company.save(update_fields=["functional_currency"])
+
+        result = issue_invoice(actor_context, invoice_id=invoice.id)
+        ClinicAccountingProjection().handle(result.event)
+
+        je = JournalEntry.objects.filter(company=company, memo__startswith="Clinic invoice:").first()
+        assert je is not None
+        assert je.currency == "EGP"  # functional, not the USD presentation currency
+
     def test_payment_received_creates_je(self, actor_context, invoice, clinic_mapping):
         issue_invoice(actor_context, invoice_id=invoice.id)
         pay_result = receive_payment(
