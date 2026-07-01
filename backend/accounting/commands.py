@@ -1178,7 +1178,13 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
         # preserve the original amounts in amount_currency.
         # EXCEPTION: ADJUSTMENT entries (e.g. revaluation) have amounts
         # already expressed in functional currency — skip conversion.
-        line_currency = line.get("currency") or aggregate.currency or entry.currency or actor.company.default_currency
+        line_currency = (
+            line.get("currency")
+            or aggregate.currency
+            or entry.currency
+            or actor.company.functional_currency
+            or actor.company.default_currency
+        )
         line_exchange_rate = Decimal(
             str(line.get("exchange_rate") or aggregate.exchange_rate or entry.exchange_rate or "1.0")
         )
@@ -1189,7 +1195,13 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
         is_adjustment = aggregate.kind == JournalEntry.Kind.ADJUSTMENT
 
         if line_currency != functional_currency and not is_adjustment:
-            # Auto-lookup rate if not explicitly provided (still default 1.0)
+            # Foreign line: resolve the FX rate. When no explicit rate was given
+            # (still the 1.0 default), look one up. A foreign line must NOT post at
+            # a silent 1:1 — that books e.g. USD 20 as EGP 20 (the reviewer's
+            # Shopify_R config: default USD / functional EGP). If no rate is on
+            # file, QUARANTINE by failing the post (entry stays unposted with a
+            # clear reason); it posts once a rate — even a genuine 1.0 peg — is
+            # added for the pair. Mirrors build_journal_entry (PR #33).
             if line_exchange_rate == Decimal("1.0"):
                 from datetime import datetime
 
@@ -1199,6 +1211,11 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
                 looked_up_rate = ExchangeRate.get_rate(actor.company, line_currency, functional_currency, entry_date)
                 if looked_up_rate:
                     line_exchange_rate = looked_up_rate
+                else:
+                    return CommandResult.fail(
+                        f"Missing {line_currency}→{functional_currency} exchange rate for {entry_date}. "
+                        f"Add the rate, then repost."
+                    )
 
             # Store original foreign amount, convert debit/credit
             amount_currency_val = (
