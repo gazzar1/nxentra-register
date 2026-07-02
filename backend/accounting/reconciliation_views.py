@@ -371,11 +371,14 @@ def _stage2_summary(company) -> dict:
     # Per-batch "settled" amount = the DR Expected Bank Deposit line on
     # the JE. That's what hit the EBD account; gross may differ when
     # there are uncollected/refund lines.
-    ebd_account = ModuleAccountMapping.get_account(company, "shopify_connector", "EXPECTED_BANK_DEPOSIT")
-    if ebd_account:
+    # A141: EBD is seeded per provider module (shopify_connector for Shopify,
+    # platform_stripe for Stripe, ...) — union across all of them, else the
+    # settlement COUNT increments while "Net to bank" misses the amount.
+    ebd_accounts = ModuleAccountMapping.get_accounts_for_role(company, "EXPECTED_BANK_DEPOSIT")
+    if ebd_accounts:
         manual_total = JournalLine.objects.filter(
             company=company,
-            account=ebd_account,
+            account__in=ebd_accounts,
             entry__in=manual_je_qs,
         ).aggregate(total=Sum("debit"))["total"] or Decimal("0")
         settled_total += manual_total

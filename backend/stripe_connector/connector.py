@@ -37,6 +37,13 @@ logger = logging.getLogger(__name__)
 # would double-credit clearing. The webhook payload is acknowledged (200) but
 # does not post.
 STRIPE_TOPIC_MAP = {
+    # A140: immediate-capture charges (all normal PaymentIntents / Checkout /
+    # Charges-API traffic) fire ONLY charge.succeeded — charge.captured fires
+    # solely for auth-then-capture flows. Both map to order_paid; double
+    # delivery on a capture flow is safe (emit idempotency key
+    # stripe.order_paid:<charge_id> + store_charge's (company,
+    # stripe_charge_id) unique constraint dedupe the second event).
+    "charge.succeeded": "order_paid",
     "charge.captured": "order_paid",
     "charge.refunded": "refund_created",
     "charge.dispute.created": "dispute_created",
