@@ -104,9 +104,15 @@ class PlatformAccountingProjection(BaseProjection):
             return
 
         # Resolve dimension context for JE line tagging
-        from platform_connectors.dimensions import resolve_platform_dimensions
+        from platform_connectors.dimensions import (
+            resolve_platform_dimensions,
+            resolve_settlement_provider_value,
+        )
 
         dimension_context = resolve_platform_dimensions(company, platform_slug)
+        # A139: the SETTLEMENT_PROVIDER value tagged on clearing lines only —
+        # /finance/reconciliation Stage 1 pivots on it.
+        provider_value = resolve_settlement_provider_value(company, platform_slug)
 
         handler = {
             EventTypes.PLATFORM_ORDER_PAID: self._handle_order_paid,
@@ -116,7 +122,7 @@ class PlatformAccountingProjection(BaseProjection):
         }.get(event.event_type)
 
         if handler:
-            handler(event, data, mapping, platform_slug, dimension_context)
+            handler(event, data, mapping, platform_slug, dimension_context, provider_value)
 
     @staticmethod
     def _clearing_account(mapping, platform_slug):
@@ -131,7 +137,7 @@ class PlatformAccountingProjection(BaseProjection):
         """
         return mapping.get(ROLE_CLEARING) or mapping.get(f"{platform_slug.upper()}_CLEARING")
 
-    def _handle_order_paid(self, event, data, mapping, platform_slug, dimension_context=None):
+    def _handle_order_paid(self, event, data, mapping, platform_slug, dimension_context=None, provider_value=None):
         clearing = self._clearing_account(mapping, platform_slug)
         revenue = mapping.get(ROLE_SALES_REVENUE)
         if not clearing or not revenue:
@@ -146,7 +152,7 @@ class PlatformAccountingProjection(BaseProjection):
         total_tax = Decimal(str(data.get("total_tax", "0")))
         total_shipping = Decimal(str(data.get("total_shipping", "0")))
         order_name = data.get("order_name", data.get("order_number", ""))
-        entry_date = _parse_date(data.get("transaction_date")) or event.created_at.date()
+        entry_date = _parse_date(data.get("transaction_date")) or event.occurred_at.date()
         currency = data.get("currency") or "USD"
         memo = f"{platform_slug.title()} order: {order_name}"
 
@@ -154,7 +160,14 @@ class PlatformAccountingProjection(BaseProjection):
             return
 
         lines = [
-            JELine(account=clearing, description=memo, debit=total_price),
+            # A139: SETTLEMENT_PROVIDER on the clearing line ONLY — Stage 1 of
+            # /finance/reconciliation pivots on it (Expected = tagged debits).
+            JELine(
+                account=clearing,
+                description=memo,
+                debit=total_price,
+                analysis_values=[provider_value] if provider_value else [],
+            ),
         ]
 
         revenue_amount = subtotal if subtotal > 0 else total_price - total_tax
@@ -205,7 +218,7 @@ class PlatformAccountingProjection(BaseProjection):
                 order_name,
             )
 
-    def _handle_refund_created(self, event, data, mapping, platform_slug, dimension_context=None):
+    def _handle_refund_created(self, event, data, mapping, platform_slug, dimension_context=None, provider_value=None):
         clearing = self._clearing_account(mapping, platform_slug)
         revenue = mapping.get(ROLE_SALES_REVENUE)
         if not clearing or not revenue:
@@ -214,7 +227,7 @@ class PlatformAccountingProjection(BaseProjection):
         amount = Decimal(str(data.get("amount", "0")))
         order_number = data.get("order_number", "")
         refund_id = data.get("platform_refund_id", "")
-        entry_date = _parse_date(data.get("transaction_date")) or event.created_at.date()
+        entry_date = _parse_date(data.get("transaction_date")) or event.occurred_at.date()
         currency = data.get("currency") or "USD"
         memo = f"{platform_slug.title()} refund: Order {order_number} (Ref {refund_id})"
 
@@ -231,7 +244,14 @@ class PlatformAccountingProjection(BaseProjection):
                 currency=currency,
                 lines=[
                     JELine(account=revenue, description=memo, debit=amount),
-                    JELine(account=clearing, description=memo, credit=amount),
+                    # A139: tagged so the refund lands in Stage 1 "Refunded"
+                    # (classified by source_module platform_* + credit>0).
+                    JELine(
+                        account=clearing,
+                        description=memo,
+                        credit=amount,
+                        analysis_values=[provider_value] if provider_value else [],
+                    ),
                 ],
                 caused_by_event=event,
                 projection_name=PROJECTION_NAME,
@@ -248,7 +268,7 @@ class PlatformAccountingProjection(BaseProjection):
                 order_number,
             )
 
-    def _handle_payout_settled(self, event, data, mapping, platform_slug, dimension_context=None):
+    def _handle_payout_settled(self, event, data, mapping, platform_slug, dimension_context=None, provider_value=None):
         clearing = self._clearing_account(mapping, platform_slug)
         bank = mapping.get(ROLE_CASH_BANK)
         if not clearing or not bank:
@@ -264,7 +284,7 @@ class PlatformAccountingProjection(BaseProjection):
         fees = Decimal(str(data.get("fees", "0")))
         net_amount = Decimal(str(data.get("net_amount", "0")))
         payout_id = data.get("platform_payout_id", "")
-        entry_date = _parse_date(data.get("payout_date") or data.get("transaction_date")) or event.created_at.date()
+        entry_date = _parse_date(data.get("payout_date") or data.get("transaction_date")) or event.occurred_at.date()
         currency = data.get("currency") or "USD"
         memo = f"{platform_slug.title()} payout: {payout_id}"
 
@@ -325,7 +345,10 @@ class PlatformAccountingProjection(BaseProjection):
                 payout_id,
             )
 
-    def _handle_dispute_created(self, event, data, mapping, platform_slug, dimension_context=None):
+    def _handle_dispute_created(self, event, data, mapping, platform_slug, dimension_context=None, provider_value=None):
+        # A139 note: dispute JEs (CR clearing) are deliberately NOT tagged yet —
+        # Stage 1 has no "clawed back" classification; revisit with Phase 3
+        # dispute-resolution events.
         clearing = self._clearing_account(mapping, platform_slug)
         chargeback = mapping.get(ROLE_CHARGEBACK_EXPENSE)
         if not clearing or not chargeback:
@@ -341,7 +364,7 @@ class PlatformAccountingProjection(BaseProjection):
         chargeback_fee = Decimal(str(data.get("chargeback_fee", "0")))
         dispute_id = data.get("platform_dispute_id", "")
         order_name = data.get("order_name", "")
-        entry_date = _parse_date(data.get("transaction_date")) or event.created_at.date()
+        entry_date = _parse_date(data.get("transaction_date")) or event.occurred_at.date()
         currency = data.get("currency") or "USD"
         memo = f"{platform_slug.title()} chargeback: {order_name} (Dispute {dispute_id})"
         total = dispute_amount + chargeback_fee

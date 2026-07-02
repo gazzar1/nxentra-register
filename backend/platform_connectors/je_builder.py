@@ -35,6 +35,11 @@ class JELine:
     description: str
     debit: Decimal = Decimal("0")
     credit: Decimal = Decimal("0")
+    # A139: AnalysisDimensionValue instances to tag on THIS line only —
+    # unlike JERequest.dimension_context, which tags every line. Used for
+    # SETTLEMENT_PROVIDER on the clearing line (tagging revenue/tax lines
+    # would mint bogus per-account rows on /finance/reconciliation Stage 1).
+    analysis_values: list = field(default_factory=list)
 
 
 @dataclass
@@ -345,26 +350,40 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
     entry.entry_number = entry_number
     entry.save(update_fields=["entry_number"])
 
+    # A139: resolve analysis tags ONCE — attached directly for immediate reads
+    # AND carried per-line in the JOURNAL_ENTRY_POSTED payload. The
+    # JournalEntryProjection replaces lines from that payload (events as
+    # truth), so tags existing only as directly-attached rows are wiped on the
+    # first replay — exactly how the platform/store context dims were being
+    # silently lost before A139.
+    line_analysis_plan = _resolve_line_analysis_plan(req.company, req.lines, db_lines, req.dimension_context)
+
     # Build lines data for the posted event
     lines_data = []
-    for db_line in db_lines:
-        lines_data.append(
-            {
-                "line_public_id": str(db_line.public_id),
-                "line_no": db_line.line_no,
-                "account_public_id": str(db_line.account.public_id),
-                "account_code": db_line.account.code,
-                "description": db_line.description,
-                "debit": str(db_line.debit),
-                "credit": str(db_line.credit),
-                "currency": req.currency,
-                "exchange_rate": str(fx_rate),
-            }
-        )
+    for db_line, tag_pairs in zip(db_lines, line_analysis_plan):
+        line_payload = {
+            "line_public_id": str(db_line.public_id),
+            "line_no": db_line.line_no,
+            "account_public_id": str(db_line.account.public_id),
+            "account_code": db_line.account.code,
+            "description": db_line.description,
+            "debit": str(db_line.debit),
+            "credit": str(db_line.credit),
+            "currency": req.currency,
+            "exchange_rate": str(fx_rate),
+        }
+        if db_line.amount_currency is not None:
+            # Replay fidelity: _replace_lines rebuilds lines from this payload;
+            # without the key, foreign entries lose their original-currency
+            # amount on replay.
+            line_payload["amount_currency"] = str(db_line.amount_currency)
+        if tag_pairs:
+            line_payload["analysis_tags"] = [
+                {"dimension_public_id": str(d.public_id), "value_public_id": str(v.public_id)} for d, v in tag_pairs
+            ]
+        lines_data.append(line_payload)
 
-    # Attach dimension tags if context provided
-    if req.dimension_context:
-        _attach_dimensions(req.company, db_lines, req.dimension_context)
+    _attach_line_analysis(req.company, db_lines, line_analysis_plan)
 
     # Emit JOURNAL_ENTRY_POSTED
     idem_prefix = req.projection_name or req.source_module
@@ -397,65 +416,37 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
     return entry
 
 
-def _attach_dimensions(company, lines, dimension_context):
+def _resolve_line_analysis_plan(company, req_lines, db_lines, dimension_context):
+    """Per-db_line list of ``(dimension, value)`` pairs to tag.
+
+    Combines the JE-wide ``dimension_context`` (every line — the platform/
+    store CONTEXT dims) with each ``JELine.analysis_values`` (that line only —
+    e.g. SETTLEMENT_PROVIDER on the clearing line, A139). ``db_lines`` is
+    built 1:1 in order from ``req_lines``; an FX rounding line appended by
+    ``_fix_fx_rounding`` gets context tags only.
     """
-    Create JournalLineAnalysis records for the given journal lines.
+    from accounting.models import AnalysisDimension, AnalysisDimensionValue
 
-    Mirrors the pattern from PropertyAccountingProjection._attach_dimensions().
-
-    Args:
-        company: Company instance
-        lines: list of JournalLine instances
-        dimension_context: dict of {dimension_code: value_code}
-    """
-    if not dimension_context:
-        return
-
-    from accounting.models import (
-        AnalysisDimension,
-        AnalysisDimensionValue,
-        JournalLineAnalysis,
-    )
-
-    dim_codes = list(dimension_context.keys())
-    dimensions = {
-        d.code: d
-        for d in AnalysisDimension.objects.filter(
-            company=company,
-            code__in=dim_codes,
-            is_active=True,
-        )
-    }
-
-    if not dimensions:
-        return
-
-    from django.db.models import Q
-
-    value_lookups = []
-    for dim_code, val_code in dimension_context.items():
-        dim = dimensions.get(dim_code)
-        if dim:
-            value_lookups.append((dim.id, val_code))
-
-    if not value_lookups:
-        return
-
-    q = Q()
-    for dim_id, val_code in value_lookups:
-        q |= Q(dimension_id=dim_id, code=val_code)
-
-    values = {
-        (v.dimension_id, v.code): v for v in AnalysisDimensionValue.objects.filter(q, company=company, is_active=True)
-    }
-
-    analysis_records = []
-    for line in lines:
+    context_pairs = []
+    if dimension_context:
+        dimensions = {
+            d.code: d
+            for d in AnalysisDimension.objects.filter(
+                company=company,
+                code__in=list(dimension_context.keys()),
+                is_active=True,
+            )
+        }
         for dim_code, val_code in dimension_context.items():
             dim = dimensions.get(dim_code)
             if not dim:
                 continue
-            val = values.get((dim.id, val_code))
+            val = AnalysisDimensionValue.objects.filter(
+                dimension=dim,
+                company=company,
+                code=val_code,
+                is_active=True,
+            ).first()
             if not val:
                 logger.debug(
                     "Dimension value %s=%s not found for company %s — skipping",
@@ -464,17 +455,45 @@ def _attach_dimensions(company, lines, dimension_context):
                     company,
                 )
                 continue
-            analysis_records.append(
-                JournalLineAnalysis(
-                    journal_line=line,
-                    company=company,
-                    dimension=dim,
-                    dimension_value=val,
-                )
-            )
+            context_pairs.append((dim, val))
 
-    if analysis_records:
-        JournalLineAnalysis.objects.projection().bulk_create(
-            analysis_records,
-            ignore_conflicts=True,
+    plan = []
+    for i, _db_line in enumerate(db_lines):
+        pairs = list(context_pairs)
+        if i < len(req_lines):
+            for value in req_lines[i].analysis_values:
+                if value is not None:
+                    pairs.append((value.dimension, value))
+        plan.append(pairs)
+    return plan
+
+
+def _attach_dimensions(company, lines, dimension_context):
+    """Back-compat: attach a JE-wide ``dimension_context`` to already-created
+    JournalLine rows.
+
+    KEEP THIS — external callers import it directly (shopify_connector's
+    restock-JE path, shopify_connector/projections.py, inside a broad
+    ``try/except`` that would swallow an ImportError into a silent no-op and
+    strip every dimension off restock JEs).
+    """
+    plan = _resolve_line_analysis_plan(company, [], lines, dimension_context)
+    _attach_line_analysis(company, lines, plan)
+
+
+def _attach_line_analysis(company, db_lines, line_analysis_plan):
+    """Create the JournalLineAnalysis rows for the resolved plan."""
+    from accounting.models import JournalLineAnalysis
+
+    records = [
+        JournalLineAnalysis(
+            journal_line=db_line,
+            company=company,
+            dimension=dimension,
+            dimension_value=value,
         )
+        for db_line, pairs in zip(db_lines, line_analysis_plan)
+        for dimension, value in pairs
+    ]
+    if records:
+        JournalLineAnalysis.objects.projection().bulk_create(records, ignore_conflicts=True)
