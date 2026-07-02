@@ -163,6 +163,8 @@ def resolve_settlement_provider_value(company, platform_slug):
             normalized_code=platform_slug,
             is_active=True,
             dimension_value__isnull=False,
+            dimension_value__is_active=True,
+            dimension_value__dimension__is_active=True,
         )
         .select_related("dimension_value__dimension")
         .first()

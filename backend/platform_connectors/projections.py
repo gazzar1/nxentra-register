@@ -152,7 +152,7 @@ class PlatformAccountingProjection(BaseProjection):
         total_tax = Decimal(str(data.get("total_tax", "0")))
         total_shipping = Decimal(str(data.get("total_shipping", "0")))
         order_name = data.get("order_name", data.get("order_number", ""))
-        entry_date = _parse_date(data.get("transaction_date")) or event.created_at.date()
+        entry_date = _parse_date(data.get("transaction_date")) or event.occurred_at.date()
         currency = data.get("currency") or "USD"
         memo = f"{platform_slug.title()} order: {order_name}"
 
@@ -227,7 +227,7 @@ class PlatformAccountingProjection(BaseProjection):
         amount = Decimal(str(data.get("amount", "0")))
         order_number = data.get("order_number", "")
         refund_id = data.get("platform_refund_id", "")
-        entry_date = _parse_date(data.get("transaction_date")) or event.created_at.date()
+        entry_date = _parse_date(data.get("transaction_date")) or event.occurred_at.date()
         currency = data.get("currency") or "USD"
         memo = f"{platform_slug.title()} refund: Order {order_number} (Ref {refund_id})"
 
@@ -284,7 +284,7 @@ class PlatformAccountingProjection(BaseProjection):
         fees = Decimal(str(data.get("fees", "0")))
         net_amount = Decimal(str(data.get("net_amount", "0")))
         payout_id = data.get("platform_payout_id", "")
-        entry_date = _parse_date(data.get("payout_date") or data.get("transaction_date")) or event.created_at.date()
+        entry_date = _parse_date(data.get("payout_date") or data.get("transaction_date")) or event.occurred_at.date()
         currency = data.get("currency") or "USD"
         memo = f"{platform_slug.title()} payout: {payout_id}"
 
@@ -364,7 +364,7 @@ class PlatformAccountingProjection(BaseProjection):
         chargeback_fee = Decimal(str(data.get("chargeback_fee", "0")))
         dispute_id = data.get("platform_dispute_id", "")
         order_name = data.get("order_name", "")
-        entry_date = _parse_date(data.get("transaction_date")) or event.created_at.date()
+        entry_date = _parse_date(data.get("transaction_date")) or event.occurred_at.date()
         currency = data.get("currency") or "USD"
         memo = f"{platform_slug.title()} chargeback: {order_name} (Dispute {dispute_id})"
         total = dispute_amount + chargeback_fee

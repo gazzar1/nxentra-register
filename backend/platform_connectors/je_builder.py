@@ -372,6 +372,11 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
             "currency": req.currency,
             "exchange_rate": str(fx_rate),
         }
+        if db_line.amount_currency is not None:
+            # Replay fidelity: _replace_lines rebuilds lines from this payload;
+            # without the key, foreign entries lose their original-currency
+            # amount on replay.
+            line_payload["amount_currency"] = str(db_line.amount_currency)
         if tag_pairs:
             line_payload["analysis_tags"] = [
                 {"dimension_public_id": str(d.public_id), "value_public_id": str(v.public_id)} for d, v in tag_pairs
@@ -461,6 +466,19 @@ def _resolve_line_analysis_plan(company, req_lines, db_lines, dimension_context)
                     pairs.append((value.dimension, value))
         plan.append(pairs)
     return plan
+
+
+def _attach_dimensions(company, lines, dimension_context):
+    """Back-compat: attach a JE-wide ``dimension_context`` to already-created
+    JournalLine rows.
+
+    KEEP THIS — external callers import it directly (shopify_connector's
+    restock-JE path, shopify_connector/projections.py, inside a broad
+    ``try/except`` that would swallow an ImportError into a silent no-op and
+    strip every dimension off restock JEs).
+    """
+    plan = _resolve_line_analysis_plan(company, [], lines, dimension_context)
+    _attach_line_analysis(company, lines, plan)
 
 
 def _attach_line_analysis(company, db_lines, line_analysis_plan):

@@ -279,3 +279,140 @@ def test_resolver_never_picks_a_courier_row(db, company):
         is_active=True,
     )
     assert resolve_settlement_provider_value(company, "shopify") is None
+
+
+def _dispute_event(charge_id: str, dispute_cents: int):
+    return {
+        "id": f"evt_{uuid4().hex[:12]}",
+        "type": "charge.dispute.created",
+        "data": {
+            "object": {
+                "id": f"dp_{uuid4().hex[:10]}",
+                "charge": charge_id,
+                "amount": dispute_cents,
+                "currency": "usd",
+                "reason": "fraudulent",
+                "status": "needs_response",
+                "evidence_details": {"due_by": 1700000000},
+            }
+        },
+    }
+
+
+@pytest.mark.django_db
+def test_journal_entry_replay_reconstructs_tags(client, company, stripe_ready):
+    """The durability fix itself: JournalEntryProjection._replace_lines wipes
+    and rebuilds lines from the JOURNAL_ENTRY_POSTED payload — the payload's
+    per-line analysis_tags must reconstruct the tags (public-id resolution +
+    line rekeying), clearing line tagged, revenue line not."""
+    from accounting.models import AnalysisDimension, JournalEntry
+    from events.models import BusinessEvent
+    from events.types import EventTypes
+    from projections.accounting import JournalEntryProjection
+
+    assert _post_webhook(client, _charge_event("ch_replay")).status_code == 200
+    _process_platform_projection(company)
+
+    je = JournalEntry.objects.get(company=company, source_module="platform_stripe", source_document="ch_replay")
+    posted = BusinessEvent.objects.get(
+        company=company, event_type=EventTypes.JOURNAL_ENTRY_POSTED, aggregate_id=str(je.public_id)
+    )
+
+    JournalEntryProjection()._replace_lines(je, posted.get_data()["lines"])
+
+    dim = AnalysisDimension.objects.get(company=company, code=SETTLEMENT_DIM_CODE)
+    clearing_line = je.lines.get(debit__gt=0)
+    revenue_line = je.lines.get(credit__gt=0)
+    assert clearing_line.analysis_tags.filter(dimension=dim, dimension_value__code="STRIPE").exists()
+    assert not revenue_line.analysis_tags.filter(dimension=dim).exists()
+
+
+@pytest.mark.django_db
+def test_dispute_je_stays_untagged_even_after_backfill(client, company, stripe_ready):
+    """Dispute JEs (DR chargeback expense / CR clearing) are deliberately
+    untagged — and the backfill must not tag them either, or Stage 1 would
+    misread historical chargebacks as customer refunds."""
+    from accounting.models import AnalysisDimension, JournalEntry
+    from platform_connectors.management.commands.backfill_platform_settlement_dims import backfill_company
+
+    assert _post_webhook(client, _charge_event("ch_dsp")).status_code == 200
+    assert _post_webhook(client, _dispute_event("ch_dsp", 5000)).status_code == 200
+    _process_platform_projection(company)
+
+    dispute_jes = JournalEntry.objects.filter(company=company, source_module="platform_stripe").exclude(
+        source_document="ch_dsp"
+    )
+    assert dispute_jes.exists(), "the dispute webhook must post a JE for this test to mean anything"
+
+    backfill_company(company, apply=True)
+
+    dim = AnalysisDimension.objects.get(company=company, code=SETTLEMENT_DIM_CODE)
+    for je in dispute_jes:
+        for line in je.lines.all():
+            assert not line.analysis_tags.filter(dimension=dim).exists()
+
+    # Stage 1: the dispute is not "Refunded"; the charge is Expected.
+    row = _stripe_stage1_row(company)
+    assert Decimal(row["total_refunded"]) == Decimal("0.00")
+    assert Decimal(row["total_debit"]) == Decimal("100.00")
+
+
+@pytest.mark.django_db
+def test_backfill_tags_survive_projection_replay(client, company, stripe_ready):
+    """The backfilled tag must survive a full JE-projection replay: the
+    pre-A139 POSTED payload (no analysis_tags) wipes the row, and the
+    JOURNAL_LINE_ANALYSIS_SET event the backfill emitted restores it."""
+    from accounting.models import AnalysisDimension, JournalEntry, JournalLineAnalysis
+    from events.models import BusinessEvent
+    from events.types import EventTypes
+    from platform_connectors.management.commands.backfill_platform_settlement_dims import backfill_company
+    from projections.accounting import JournalEntryProjection
+
+    assert _post_webhook(client, _charge_event("ch_durable")).status_code == 200
+    _process_platform_projection(company)
+
+    # Simulate a pre-A139 entry: strip tags from rows AND from the stored
+    # POSTED payload (a real pre-A139 event carries none).
+    dim = AnalysisDimension.objects.get(company=company, code=SETTLEMENT_DIM_CODE)
+    JournalLineAnalysis.objects.filter(company=company).delete()
+    je = JournalEntry.objects.get(company=company, source_module="platform_stripe", source_document="ch_durable")
+    posted = BusinessEvent.objects.get(
+        company=company, event_type=EventTypes.JOURNAL_ENTRY_POSTED, aggregate_id=str(je.public_id)
+    )
+    pre_a139_lines = [{k: v for k, v in line.items() if k != "analysis_tags"} for line in posted.get_data()["lines"]]
+
+    assert backfill_company(company, apply=True)[0]["tagged"] == 1
+    assert _stripe_stage1_row(company) is not None
+
+    # Replay wipes the direct rows (pre-A139 payload has no tags)...
+    JournalEntryProjection()._replace_lines(je, pre_a139_lines)
+    assert _stripe_stage1_row(company) is None
+
+    # ...and the backfill's JOURNAL_LINE_ANALYSIS_SET event restores them.
+    analysis_set = BusinessEvent.objects.get(
+        company=company, event_type=EventTypes.JOURNAL_LINE_ANALYSIS_SET, aggregate_id=str(je.public_id)
+    )
+    JournalEntryProjection().handle(analysis_set)
+    row = _stripe_stage1_row(company)
+    assert row is not None
+    assert Decimal(row["total_debit"]) == Decimal("100.00")
+
+
+@pytest.mark.django_db
+def test_attach_dimensions_compat_import(client, company, stripe_ready):
+    """shopify_connector imports _attach_dimensions inside a broad try/except —
+    if the symbol disappears, restock JEs silently lose all dims. Pin both the
+    import path and the behavior."""
+    from accounting.models import JournalEntry
+    from platform_connectors.dimensions import sync_platform_dimensions
+    from platform_connectors.je_builder import _attach_dimensions
+
+    sync_platform_dimensions(company)
+    assert _post_webhook(client, _charge_event("ch_compat")).status_code == 200
+    _process_platform_projection(company)
+
+    je = JournalEntry.objects.get(company=company, source_module="platform_stripe", source_document="ch_compat")
+    lines = list(je.lines.all())
+    _attach_dimensions(company, lines, {"platform": "stripe"})
+    for line in lines:
+        assert line.analysis_tags.filter(dimension__code="platform", dimension_value__code="stripe").exists()
