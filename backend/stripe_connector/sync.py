@@ -22,7 +22,7 @@ from events.emitter import emit_event_no_actor
 from events.types import EventTypes, PaymentSettlementReceivedData
 from platform_connectors.models import ProviderRawObject
 
-from .api_client import StripeAccessDenied, StripeApiClient
+from .api_client import StripeAccessDenied, StripeApiClient, StripeApiError
 from .models import StripeAccount, StripePayout, StripePayoutTransaction
 from .normalize import derive_payout_breakdown
 
@@ -127,12 +127,40 @@ def sync_payouts(account: StripeAccount, *, lookback_hours: int = 168) -> dict:
             skipped += 1
             continue
 
+        # MANUAL payouts (dashboard "Pay out" / POST /v1/payouts) cannot be
+        # itemized: Stripe only attaches constituent balance transactions to
+        # automatic transfers ("Balance transaction history can only be
+        # filtered on automatic transfers, not manual."). Fees are underivable,
+        # so never emit a settlement for one — and never let it break the rest
+        # of the window (it sits inside the arrival rescan for 7 days).
+        if po.get("automatic") is False:
+            logger.warning(
+                "Stripe payout %s is a manual payout — skipping (constituent balance "
+                "transactions and fees are only available for automatic payouts).",
+                payout_id,
+            )
+            skipped += 1
+            continue
+
         try:
             txns = client.list_balance_transactions(payout_id)
         except StripeAccessDenied as exc:
             logger.info("Stripe balance-txn fetch denied for %s: %s", payout_id, exc)
             _mark_error(account, f"Stripe access denied: {exc}")
             return {"status": "unavailable", "reason": str(exc), "created": created, "skipped": skipped}
+        except StripeApiError as exc:
+            # Per-payout isolation: one payout whose balance transactions can't
+            # be fetched (e.g. a manual payout the `automatic` flag missed, or a
+            # transient API error) must not abort the whole account's sync. The
+            # payout is not marked processed anywhere, so the arrival-date
+            # rescan window retries it on every run until it leaves the window.
+            logger.warning(
+                "Stripe balance-txn fetch failed for payout %s — skipping this payout, continuing the sync window: %s",
+                payout_id,
+                exc,
+            )
+            skipped += 1
+            continue
 
         for bt in txns:
             ProviderRawObject.record(
