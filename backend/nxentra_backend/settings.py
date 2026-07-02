@@ -108,6 +108,17 @@ if FIELD_ENCRYPTION_KEY:
 # read kept to avoid a config-shape break; remove in A86.9.
 RECONCILIATION_EVENT_DRIVEN_STATE = os.getenv("RECONCILIATION_EVENT_DRIVEN_STATE", "True") == "True"
 
+# ADR-0002 PR-C3 (Stripe payout read cutover). When True, Stripe payout
+# HEADER/LINE money reads (stripe payout views, bank-match discovery/explain,
+# reconcile variance math) are served from the canonical
+# platform_connectors.ProviderPayout/ProviderPayoutLine read-models instead of
+# the legacy StripePayout tables. journal_entry_id, the integer pk namespace
+# and verified/local_charge match-state stay legacy until PR-D / C4.
+# Default False until the real-droplet parity gate is green
+# (payments_canonical_backfill: stripe_parity_ok>0 AND stripe_parity_mismatch=0).
+# Rollback = set False + restart: reads only, legacy dual-writes are untouched.
+STRIPE_CANONICAL_PAYOUT_READS = os.getenv("STRIPE_CANONICAL_PAYOUT_READS", "False") == "True"
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",

@@ -28,6 +28,12 @@ from .models import (
     StripePayout,
     StripePayoutTransaction,
 )
+from .payout_reads import (
+    canonical_header,
+    canonical_headers,
+    canonical_line_counts,
+    canonical_payout_reads_enabled,
+)
 
 # Canonical mapping key for Stripe — must match what the JE projections read
 # (ADR-0002 module-key unify). The account-mapping UI previously wrote under the
@@ -152,6 +158,32 @@ class StripeChargesView(APIView):
         )
 
 
+def _reconciliation_status(t_total, t_verified):
+    if t_total == 0:
+        return "no_transactions"
+    if t_verified == t_total:
+        return "verified"
+    if t_verified > 0:
+        return "partial"
+    return "unverified"
+
+
+def _legacy_verified_counts(company, batch_ids):
+    """{stripe_payout_id: (verified line count, journal_entry_id str|None)}.
+
+    The verified match-state and the bank-match journal_entry_id stamp live
+    only on the legacy models (PR-D / C4 gap) — canonical reads join them in.
+    """
+    counts = {}
+    legacy = StripePayout.objects.filter(company=company, stripe_payout_id__in=list(batch_ids)).annotate(
+        t_verified=Count("transactions", filter=Q(transactions__verified=True)),
+    )
+    for p in legacy:
+        je = str(p.journal_entry_id) if p.journal_entry_id else None
+        counts[p.stripe_payout_id] = (p.t_verified, je)
+    return counts
+
+
 class StripePayoutsListView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -164,8 +196,23 @@ class StripePayoutsListView(APIView):
         page_size = 25
         offset = (page - 1) * page_size
 
+        if canonical_payout_reads_enabled():
+            results, total = self._canonical_page(actor.company, offset, page_size)
+        else:
+            results, total = self._legacy_page(actor.company, offset, page_size)
+
+        return Response(
+            {
+                "results": results,
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+            }
+        )
+
+    def _legacy_page(self, company, offset, page_size):
         qs = (
-            StripePayout.objects.filter(company=actor.company)
+            StripePayout.objects.filter(company=company)
             .annotate(
                 transactions_total=Count("transactions"),
                 transactions_verified=Count("transactions", filter=Q(transactions__verified=True)),
@@ -180,16 +227,6 @@ class StripePayoutsListView(APIView):
         for p in payouts:
             t_total = p.transactions_total
             t_verified = p.transactions_verified
-
-            if t_total == 0:
-                recon_status = "no_transactions"
-            elif t_verified == t_total:
-                recon_status = "verified"
-            elif t_verified > 0:
-                recon_status = "partial"
-            else:
-                recon_status = "unverified"
-
             results.append(
                 {
                     "stripe_payout_id": p.stripe_payout_id,
@@ -200,21 +237,45 @@ class StripePayoutsListView(APIView):
                     "currency": p.currency,
                     "stripe_status": p.stripe_status,
                     "account_name": p.account.display_name if hasattr(p, "account") else "",
-                    "reconciliation_status": recon_status,
+                    "reconciliation_status": _reconciliation_status(t_total, t_verified),
                     "transactions_total": t_total,
                     "transactions_verified": t_verified,
                     "journal_entry_id": str(p.journal_entry_id) if p.journal_entry_id else None,
                 }
             )
+        return results, total
 
-        return Response(
-            {
-                "results": results,
-                "total": total,
-                "page": page,
-                "page_size": page_size,
-            }
-        )
+    def _canonical_page(self, company, offset, page_size):
+        """C3: headers + line counts from the canonical read-models; the
+        verified counts and journal_entry_id are joined from legacy."""
+        qs = canonical_headers(company).order_by("-payout_date")
+        total = qs.count()
+        headers = list(qs[offset : offset + page_size])
+        batch_ids = [h.payout_batch_id for h in headers]
+        line_counts = canonical_line_counts(company, batch_ids)
+        legacy = _legacy_verified_counts(company, batch_ids)
+
+        results = []
+        for h in headers:
+            t_total = line_counts.get(h.payout_batch_id, 0)
+            t_verified, journal_entry_id = legacy.get(h.payout_batch_id, (0, None))
+            results.append(
+                {
+                    "stripe_payout_id": h.payout_batch_id,
+                    "payout_date": h.payout_date.isoformat() if h.payout_date else None,
+                    "gross_amount": str(h.gross_amount),
+                    "fees": str(h.fees),
+                    "net_amount": str(h.net_amount),
+                    "currency": h.currency,
+                    "stripe_status": h.provider_status,
+                    "account_name": h.provider_account_name,
+                    "reconciliation_status": _reconciliation_status(t_total, t_verified),
+                    "transactions_total": t_total,
+                    "transactions_verified": t_verified,
+                    "journal_entry_id": journal_entry_id,
+                }
+            )
+        return results, total
 
 
 class StripeReconciliationSummaryView(APIView):
@@ -234,9 +295,44 @@ class StripeReconciliationSummaryView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        if canonical_payout_reads_enabled():
+            rows, totals = self._canonical_rows(actor.company, date_from, date_to)
+        else:
+            rows, totals = self._legacy_rows(actor.company, date_from, date_to)
+
+        total_txns = sum(r["total"] for r in rows)
+        matched_txns = sum(r["matched"] for r in rows)
+
+        verified = sum(1 for r in rows if r["total"] > 0 and r["matched"] == r["total"])
+        discrepancy = sum(1 for r in rows if r["total"] > 0 and 0 < r["matched"] < r["total"])
+        unverified = sum(1 for r in rows if r["total"] > 0 and r["matched"] == 0)
+
+        match_rate = f"{(matched_txns / total_txns * 100):.1f}" if total_txns > 0 else "0.0"
+
+        return Response(
+            {
+                "date_from": date_from,
+                "date_to": date_to,
+                "total_payouts": len(rows),
+                "verified_payouts": verified,
+                "discrepancy_payouts": discrepancy,
+                "unverified_payouts": unverified,
+                "total_gross": str(totals["total_gross"] or Decimal("0.00")),
+                "total_fees": str(totals["total_fees"] or Decimal("0.00")),
+                "total_net": str(totals["total_net"] or Decimal("0.00")),
+                "total_transactions": total_txns,
+                "matched_transactions": matched_txns,
+                "unmatched_transactions": total_txns - matched_txns,
+                "match_rate": match_rate,
+                "unmatched_order_total": "0.00",
+                "payouts": rows,
+            }
+        )
+
+    def _legacy_rows(self, company, date_from, date_to):
         payouts = (
             StripePayout.objects.filter(
-                company=actor.company,
+                company=company,
                 payout_date__gte=date_from,
                 payout_date__lte=date_to,
             )
@@ -252,46 +348,54 @@ class StripeReconciliationSummaryView(APIView):
             total_fees=Sum("fees"),
             total_net=Sum("net_amount"),
         )
-
-        total_txns = sum(p.t_total for p in payouts)
-        matched_txns = sum(p.t_verified for p in payouts)
-
-        verified = sum(1 for p in payouts if p.t_total > 0 and p.t_verified == p.t_total)
-        discrepancy = sum(1 for p in payouts if p.t_total > 0 and 0 < p.t_verified < p.t_total)
-        unverified = sum(1 for p in payouts if p.t_total > 0 and p.t_verified == 0)
-
-        match_rate = f"{(matched_txns / total_txns * 100):.1f}" if total_txns > 0 else "0.0"
-
-        return Response(
+        rows = [
             {
-                "date_from": date_from,
-                "date_to": date_to,
-                "total_payouts": payouts.count(),
-                "verified_payouts": verified,
-                "discrepancy_payouts": discrepancy,
-                "unverified_payouts": unverified,
-                "total_gross": str(totals["total_gross"] or Decimal("0.00")),
-                "total_fees": str(totals["total_fees"] or Decimal("0.00")),
-                "total_net": str(totals["total_net"] or Decimal("0.00")),
-                "total_transactions": total_txns,
-                "matched_transactions": matched_txns,
-                "unmatched_transactions": total_txns - matched_txns,
-                "match_rate": match_rate,
-                "unmatched_order_total": "0.00",
-                "payouts": [
-                    {
-                        "stripe_payout_id": p.stripe_payout_id,
-                        "payout_date": p.payout_date.isoformat(),
-                        "net_amount": str(p.net_amount),
-                        "fees": str(p.fees),
-                        "status": p.stripe_status,
-                        "matched": p.t_verified,
-                        "total": p.t_total,
-                    }
-                    for p in payouts
-                ],
+                "stripe_payout_id": p.stripe_payout_id,
+                "payout_date": p.payout_date.isoformat(),
+                "net_amount": str(p.net_amount),
+                "fees": str(p.fees),
+                "status": p.stripe_status,
+                "matched": p.t_verified,
+                "total": p.t_total,
             }
+            for p in payouts
+        ]
+        return rows, totals
+
+    def _canonical_rows(self, company, date_from, date_to):
+        """C3: header aggregates + line counts from the canonical read-models;
+        verified counts joined from legacy."""
+        headers = (
+            canonical_headers(company)
+            .filter(
+                payout_date__gte=date_from,
+                payout_date__lte=date_to,
+            )
+            .order_by("payout_date")
         )
+
+        totals = headers.aggregate(
+            total_gross=Sum("gross_amount"),
+            total_fees=Sum("fees"),
+            total_net=Sum("net_amount"),
+        )
+        headers = list(headers)
+        batch_ids = [h.payout_batch_id for h in headers]
+        line_counts = canonical_line_counts(company, batch_ids)
+        legacy = _legacy_verified_counts(company, batch_ids)
+        rows = [
+            {
+                "stripe_payout_id": h.payout_batch_id,
+                "payout_date": h.payout_date.isoformat() if h.payout_date else None,
+                "net_amount": str(h.net_amount),
+                "fees": str(h.fees),
+                "status": h.provider_status,
+                "matched": legacy.get(h.payout_batch_id, (0, None))[0],
+                "total": line_counts.get(h.payout_batch_id, 0),
+            }
+            for h in headers
+        ]
+        return rows, totals
 
 
 class StripePayoutReconciliationView(APIView):
@@ -302,26 +406,51 @@ class StripePayoutReconciliationView(APIView):
         if not actor:
             return Response(status=status.HTTP_403_FORBIDDEN)
 
-        try:
-            payout = StripePayout.objects.get(
+        from .reconciliation import PayoutReconciliation, reconcile_payout
+
+        if canonical_payout_reads_enabled():
+            # C3: existence + header money are keyed on the canonical model;
+            # reconcile still matches against the legacy line cache (PR-D).
+            header = canonical_header(actor.company, payout_id)
+            if header is None:
+                return Response(status=status.HTTP_404_NOT_FOUND)
+            payout = StripePayout.objects.filter(
                 company=actor.company,
                 stripe_payout_id=payout_id,
-            )
-        except StripePayout.DoesNotExist:
-            return Response(status=status.HTTP_404_NOT_FOUND)
+            ).first()
+            if payout is not None:
+                recon = reconcile_payout(actor.company, payout)
+            else:
+                # Canonical-only row (no legacy twin): no legacy line cache
+                # to match against yet.
+                recon = PayoutReconciliation(
+                    stripe_payout_id=header.payout_batch_id,
+                    payout_date=header.payout_date,
+                    gross_amount=header.gross_amount,
+                    fees=header.fees,
+                    net_amount=header.net_amount,
+                    currency=header.currency,
+                    status="no_transactions",
+                )
+        else:
+            try:
+                payout = StripePayout.objects.get(
+                    company=actor.company,
+                    stripe_payout_id=payout_id,
+                )
+            except StripePayout.DoesNotExist:
+                return Response(status=status.HTTP_404_NOT_FOUND)
 
-        from .reconciliation import reconcile_payout
-
-        recon = reconcile_payout(actor.company, payout)
+            recon = reconcile_payout(actor.company, payout)
 
         return Response(
             {
-                "stripe_payout_id": payout.stripe_payout_id,
-                "payout_date": payout.payout_date.isoformat(),
-                "gross_amount": str(payout.gross_amount),
-                "fees": str(payout.fees),
-                "net_amount": str(payout.net_amount),
-                "currency": payout.currency,
+                "stripe_payout_id": recon.stripe_payout_id,
+                "payout_date": recon.payout_date.isoformat() if recon.payout_date else None,
+                "gross_amount": str(recon.gross_amount),
+                "fees": str(recon.fees),
+                "net_amount": str(recon.net_amount),
+                "currency": recon.currency,
                 "status": recon.status,
                 "total_transactions": recon.total_transactions,
                 "matched_transactions": recon.matched_transactions,

@@ -24,6 +24,7 @@ from .models import (
     StripePayoutTransaction,
     StripeRefund,
 )
+from .payout_reads import canonical_header, canonical_payout_reads_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -84,18 +85,36 @@ def reconcile_payout(company, payout):
     to local charges and refunds.
 
     Returns a PayoutReconciliation with variance computations.
+
+    C3 (STRIPE_CANONICAL_PAYOUT_READS): header money comes from the canonical
+    ProviderPayout, so variances compare canonical totals against the legacy
+    line cache. Line matching stays on the legacy StripePayoutTransaction —
+    verified/local_charge have no canonical home until PR-D.
     """
+    header_source = payout
+    if canonical_payout_reads_enabled():
+        header = canonical_header(company, payout.stripe_payout_id)
+        if header is not None:
+            header_source = header
+        else:
+            logger.warning(
+                "C3 canonical reads enabled but no canonical header exists for stripe "
+                "payout %s (company %s); reconciling with legacy header values",
+                payout.stripe_payout_id,
+                company.id,
+            )
+
     txns = StripePayoutTransaction.objects.filter(
         payout=payout,
     ).select_related("local_charge")
 
     recon = PayoutReconciliation(
         stripe_payout_id=payout.stripe_payout_id,
-        payout_date=payout.payout_date,
-        gross_amount=payout.gross_amount,
-        fees=payout.fees,
-        net_amount=payout.net_amount,
-        currency=payout.currency,
+        payout_date=header_source.payout_date or payout.payout_date,
+        gross_amount=header_source.gross_amount,
+        fees=header_source.fees,
+        net_amount=header_source.net_amount,
+        currency=header_source.currency or payout.currency,
     )
 
     if not txns.exists():
@@ -167,10 +186,10 @@ def reconcile_payout(company, payout):
     recon.transactions_fee_sum = fee_sum
     recon.transactions_net_sum = net_sum
 
-    # Compute variances
-    recon.gross_variance = payout.gross_amount - gross_sum
-    recon.fee_variance = payout.fees - fee_sum
-    recon.net_variance = payout.net_amount - net_sum
+    # Compute variances (against the header the flag selected above)
+    recon.gross_variance = recon.gross_amount - gross_sum
+    recon.fee_variance = recon.fees - fee_sum
+    recon.net_variance = recon.net_amount - net_sum
 
     # Determine status
     discrepancies = []
