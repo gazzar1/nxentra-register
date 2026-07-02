@@ -403,10 +403,12 @@ export default function StripeSettingsPage() {
                     </li>
                     <li>
                       Subscribe to:{" "}
+                      <code className="bg-muted px-1 py-0.5 rounded">charge.succeeded</code>,{" "}
                       <code className="bg-muted px-1 py-0.5 rounded">charge.captured</code>,{" "}
                       <code className="bg-muted px-1 py-0.5 rounded">charge.refunded</code>,{" "}
                       <code className="bg-muted px-1 py-0.5 rounded">charge.dispute.created</code>,{" "}
-                      <code className="bg-muted px-1 py-0.5 rounded">charge.dispute.updated</code>.
+                      <code className="bg-muted px-1 py-0.5 rounded">charge.dispute.updated</code>,{" "}
+                      <code className="bg-muted px-1 py-0.5 rounded">payout.paid</code>.
                     </li>
                     <li>
                       Copy the endpoint&apos;s{" "}
