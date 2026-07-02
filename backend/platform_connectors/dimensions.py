@@ -140,6 +140,36 @@ def ensure_store_dimension_value(company, platform_slug, store_code, store_name=
         )
 
 
+def resolve_settlement_provider_value(company, platform_slug):
+    """The SETTLEMENT_PROVIDER AnalysisDimensionValue for a platform's OWN
+    gateway (external_system == normalized_code == platform_slug), or None.
+
+    A139: platform charge/refund JEs must tag their clearing line with this
+    value — /finance/reconciliation Stage 1 pivots on the SETTLEMENT_PROVIDER
+    dimension, so untagged clearing movement is invisible there and the
+    settlement drain then reads as a negative balance on healthy books.
+
+    The double filter (external_system AND normalized_code) is deliberate:
+    Shopify's external_system carries many providers (paymob, bosta,
+    shopify_payments, ...) and none of them is the platform itself — this
+    resolver must never pick an arbitrary courier row.
+    """
+    from accounting.settlement_provider import SettlementProvider
+
+    provider = (
+        SettlementProvider.objects.filter(
+            company=company,
+            external_system=platform_slug,
+            normalized_code=platform_slug,
+            is_active=True,
+            dimension_value__isnull=False,
+        )
+        .select_related("dimension_value__dimension")
+        .first()
+    )
+    return provider.dimension_value if provider else None
+
+
 def resolve_platform_dimensions(company, platform_slug, store_code=None):
     """
     Resolve dimension context for a platform event.

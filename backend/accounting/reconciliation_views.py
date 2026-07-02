@@ -147,26 +147,50 @@ def _refunded_by_provider(company, dimension) -> dict[int, Decimal]:
     The Shopify refund path (`create_and_post_credit_note_for_platform`)
     tags the AR Control credit line with the provider dimension, which is
     what makes the join work.
+
+    A139: platform refund JEs (Stripe charge.refunded → source_module
+    ``platform_<slug>``) post a bare JE with a tagged clearing CREDIT — no
+    SalesCreditNote exists. Classified here by source_module + credit>0
+    (the platform charge JE only ever tags its clearing DEBIT).
     """
     from sales.models import SalesCreditNote
 
-    posted_cn_je_ids = SalesCreditNote.objects.filter(
-        company=company,
-        status=SalesCreditNote.Status.POSTED,
-        posted_journal_entry__isnull=False,
-    ).values_list("posted_journal_entry_id", flat=True)
+    posted_cn_je_ids = list(
+        SalesCreditNote.objects.filter(
+            company=company,
+            status=SalesCreditNote.Status.POSTED,
+            posted_journal_entry__isnull=False,
+        ).values_list("posted_journal_entry_id", flat=True)
+    )
 
     rows = (
         JournalLine.objects.filter(
             company=company,
-            entry_id__in=list(posted_cn_je_ids),
+            entry_id__in=posted_cn_je_ids,
             entry__status=JournalEntry.Status.POSTED,
             analysis_tags__dimension=dimension,
         )
         .values("analysis_tags__dimension_value_id")
         .annotate(refunded=Sum("credit"))
     )
-    return {row["analysis_tags__dimension_value_id"]: (row["refunded"] or Decimal("0")) for row in rows}
+    refunded = {row["analysis_tags__dimension_value_id"]: (row["refunded"] or Decimal("0")) for row in rows}
+
+    platform_rows = (
+        JournalLine.objects.filter(
+            company=company,
+            entry__status=JournalEntry.Status.POSTED,
+            entry__source_module__startswith="platform_",
+            credit__gt=0,
+            analysis_tags__dimension=dimension,
+        )
+        .exclude(entry_id__in=posted_cn_je_ids)
+        .values("analysis_tags__dimension_value_id")
+        .annotate(refunded=Sum("credit"))
+    )
+    for row in platform_rows:
+        key = row["analysis_tags__dimension_value_id"]
+        refunded[key] = refunded.get(key, Decimal("0")) + (row["refunded"] or Decimal("0"))
+    return refunded
 
 
 def _stage1_per_provider(company, today: date) -> list[dict]:
