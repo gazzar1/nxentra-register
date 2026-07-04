@@ -828,7 +828,16 @@ def import_settlement_csv(
             }
         )
 
-        currency = company.default_currency or "USD"
+        # A146: settlement CSVs carry no currency column, so this is a guess
+        # stamped into the immutable event — and the books truth is the
+        # FUNCTIONAL currency (post_journal_entry converts foreign lines into
+        # it, or quarantines). default-first stamped USD onto EGP amounts on
+        # default=USD/functional=EGP companies; since the FX sweep (#34) that
+        # meant converting EGP magnitudes at the USD rate. Functional-first
+        # matches je_builder/create_journal_entry (2026-06-04 FX sweep). A
+        # true foreign-currency CSV batch needs a currency column/selector on
+        # the import (logged, rides A30).
+        currency = company.functional_currency or company.default_currency or "USD"
 
         event_data = PaymentSettlementReceivedData(
             amount=batch["gross_amount"],
