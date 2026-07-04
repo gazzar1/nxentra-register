@@ -163,6 +163,75 @@ def test_csv_import_emits_functional_currency_and_posts_unconverted(egp_paymob_c
     assert ebd_line.debit == Decimal("1455.00")
 
 
+# Same batch, but the CSV SAYS the amounts are USD (Nxentra's own test pack
+# carries a currency column) — the label must win over the functional guess.
+PAYMOB_CSV_USD = b"""order_id,gross,fee,net,payout_batch_id,payout_date,currency
+ORD-1,1000.00,30.00,970.00,PMB-A146-USD,2026-07-01,USD
+ORD-2,500.00,15.00,485.00,PMB-A146-USD,2026-07-01,USD
+"""
+
+PAYMOB_CSV_MIXED = b"""order_id,gross,fee,net,payout_batch_id,payout_date,currency
+ORD-1,1000.00,30.00,970.00,PMB-A146-MIX,2026-07-01,USD
+ORD-2,500.00,15.00,485.00,PMB-A146-MIX,2026-07-01,EUR
+"""
+
+
+@pytest.mark.django_db
+def test_csv_currency_column_wins_and_converts(egp_paymob_company):
+    """An explicit USD label on EGP books flows through the convert path:
+    the event stamps USD and the JE converts at the 48 rate on file."""
+    company = egp_paymob_company
+
+    import_settlement_csv(
+        company=company,
+        provider_normalized_code="paymob",
+        file_content=PAYMOB_CSV_USD,
+        source_filename="paymob_usd.csv",
+    )
+    event = BusinessEvent.objects.get(
+        company=company,
+        event_type=EventTypes.PAYMENT_SETTLEMENT_RECEIVED,
+    )
+    assert event.get_data()["currency"] == "USD"
+
+    PaymentSettlementProjection().process_pending(company)
+    je = JournalEntry.objects.get(
+        company=company,
+        source_module="payment_settlement",
+        source_document="paymob:PMB-A146-USD",
+    )
+    assert je.status == je.Status.POSTED
+    assert je.currency == "USD"
+    assert Decimal(str(je.exchange_rate)) == USD_EGP_RATE
+    ebd_line = je.lines.get(debit__gt=0, account__code="11600")
+    assert ebd_line.debit == (Decimal("1455.00") * USD_EGP_RATE).quantize(Decimal("0.01"))
+
+
+@pytest.mark.django_db
+def test_csv_mixed_currencies_in_one_batch_rejected(egp_paymob_company):
+    from accounting.settlement_imports import SettlementImportError
+
+    with pytest.raises(SettlementImportError, match="mixes currencies"):
+        import_settlement_csv(
+            company=egp_paymob_company,
+            provider_normalized_code="paymob",
+            file_content=PAYMOB_CSV_MIXED,
+            source_filename="paymob_mixed.csv",
+        )
+
+
+@pytest.mark.django_db
+def test_bosta_parser_captures_currency_column():
+    from accounting.settlement_imports import parse_bosta_csv
+
+    csv_bytes = b"""tracking_number,order_id,cod_amount,courier_fee,net,batch_id,payout_date,status,currency
+AWB-1,ORD-1,500.00,20.00,480.00,BST-A146,2026-07-01,delivered,EGP
+"""
+    batches = parse_bosta_csv(csv_bytes)
+    assert len(batches) == 1
+    assert batches[0]["currency"] == "EGP"
+
+
 def _emit_currency_less_settlement(company, batch_id: str):
     """A hand-built event with currency omitted — unreachable from today's
     emitters (both always set it), which is exactly why the fallbacks are
