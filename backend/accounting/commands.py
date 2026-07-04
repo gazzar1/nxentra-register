@@ -1133,6 +1133,13 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
 
     # Build line data for event (including analysis tags and counterparty)
     line_data = []
+    # A142: collect the FX rate(s) actually used to convert lines carried in
+    # the ENTRY's currency. When the rate is looked up per-line
+    # (convert-or-quarantine, PR #34) the aggregate still holds the 1.0
+    # default, and stamping that on the header/event misreports the JE
+    # (live: JE-000070 showed "1 USD = 1.000000 EGP" over lines converted @48).
+    entry_currency = aggregate.currency or entry.currency or actor.company.default_currency
+    converted_entry_rates: set = set()
     for line in aggregate.lines:
         account_public_id = line.get("account_public_id")
         account = Account.objects.filter(
@@ -1223,6 +1230,8 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
             )
             converted_debit = (original_debit * line_exchange_rate).quantize(Decimal("0.01"))
             converted_credit = (original_credit * line_exchange_rate).quantize(Decimal("0.01"))
+            if line_currency == entry_currency:
+                converted_entry_rates.add(line_exchange_rate)
         else:
             # Same currency, or ADJUSTMENT entry — no conversion needed
             amount_currency_val = line.get("amount_currency")
@@ -1254,6 +1263,13 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
     converted_total_debit = sum(Decimal(ld.get("debit", "0")) for ld in line_data if not ld.get("is_memo_line"))
     converted_total_credit = sum(Decimal(ld.get("credit", "0")) for ld in line_data if not ld.get("is_memo_line"))
 
+    # A142: the header rate must match what converted the lines. Only override
+    # the stored 1.0 default when the converted lines agree on ONE rate —
+    # mixed explicit per-line rates stay ambiguous and keep the stored value.
+    header_exchange_rate = aggregate.exchange_rate or entry.exchange_rate or "1.0"
+    if len(converted_entry_rates) == 1 and Decimal(str(header_exchange_rate)) == Decimal("1.0"):
+        header_exchange_rate = converted_entry_rates.pop()
+
     # Emit event
     event = emit_event(
         actor=actor,
@@ -1269,8 +1285,8 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
             memo_ar=aggregate.memo_ar,
             kind=aggregate.kind,
             period=entry.period,
-            currency=aggregate.currency or entry.currency or actor.company.default_currency,
-            exchange_rate=str(aggregate.exchange_rate or entry.exchange_rate or "1.0"),
+            currency=entry_currency,
+            exchange_rate=str(header_exchange_rate),
             posted_at=posted_at.isoformat(),
             posted_by_id=actor.user.id,
             posted_by_email=actor.user.email,
