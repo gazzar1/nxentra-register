@@ -604,12 +604,6 @@ def _settlement_prepass_match(
     # outer function holds.
     bl_by_id = {bl.id: bl for bl in unmatched_bank_lines}
 
-    from accounting.mappings import ModuleAccountMapping
-
-    ebd_account = ModuleAccountMapping.get_account(company, "shopify_connector", "EXPECTED_BANK_DEPOSIT")
-    if not ebd_account:
-        return 0
-
     matched = 0
 
     for plan in plans:
@@ -623,7 +617,10 @@ def _settlement_prepass_match(
             company=company,
             settlement_entry=settlement_entry,
             bank_account=statement.account,
-            ebd_account=ebd_account,
+            # A144: credit the SAME EBD account the settlement debited — the
+            # matched line knows its own account; a global (shopify-hardcoded)
+            # lookup credited the wrong EBD for any other provider.
+            ebd_account=ebd_line.account,
             net_amount=bank_line.amount,
             batch_id=plan["batch_id"],
             statement_date=statement.statement_date,
@@ -1257,9 +1254,11 @@ def _reverse_match_side_effects(
             source_document=clearance_je.source_document,
         ).first()
         if settlement_je:
-            ebd_account = ModuleAccountMapping.get_account(actor.company, "shopify_connector", "EXPECTED_BANK_DEPOSIT")
-            if ebd_account:
-                settlement_ebd_line = settlement_je.lines.filter(account=ebd_account).first()
+            # A144: union EBD accounts across provider modules (Stripe's EBD
+            # lives under platform_stripe, not shopify_connector).
+            ebd_accounts = ModuleAccountMapping.get_accounts_for_role(actor.company, "EXPECTED_BANK_DEPOSIT")
+            if ebd_accounts:
+                settlement_ebd_line = settlement_je.lines.filter(account__in=ebd_accounts).first()
 
     reversed_je_public_ids: list = []
 
@@ -1720,20 +1719,34 @@ def resolve_difference(
     from accounting.mappings import ModuleAccountMapping
     from accounts.authz import system_actor_for_company
 
-    # Resolve the reason's offsetting account.
+    # Resolve the reason's offsetting account — provider-aware (A144): a
+    # Stripe difference books against Stripe's fee/chargeback accounts
+    # (platform_stripe module), falling back to the shopify_connector
+    # mappings for providers without their own module (Paymob/Bosta CSV).
     role = _DIFFERENCE_REASON_ROLE.get(reason)
     if not role:
         return CommandResult.fail(f"No account mapping registered for reason {reason!r}.")
-    reason_account = ModuleAccountMapping.get_account(actor.company, "shopify_connector", role)
+    from accounting.mappings import module_key_for_provider
+
+    provider_code = (clearance_je.source_document or "").split(":", 1)[0].strip().lower()
+    reason_account = None
+    if provider_code:
+        reason_account = ModuleAccountMapping.get_account(actor.company, module_key_for_provider(provider_code), role)
+    if not reason_account:
+        reason_account = ModuleAccountMapping.get_account(actor.company, "shopify_connector", role)
     if not reason_account:
         return CommandResult.fail(
             f"Module mapping missing for role {role!r}. Run "
             "backfill_settlement_providers and ensure all settlement accounts exist."
         )
 
-    ebd_account = ModuleAccountMapping.get_account(actor.company, "shopify_connector", "EXPECTED_BANK_DEPOSIT")
-    if not ebd_account:
-        return CommandResult.fail("EXPECTED_BANK_DEPOSIT account mapping missing.")
+    # A144: the clearance JE's credit line IS the EBD the settlement used —
+    # resolve from it instead of the shopify_connector hardcode so a Stripe
+    # difference drains Stripe's EBD (11610), not Shopify's.
+    clearance_ebd_line = clearance_je.lines.filter(credit__gt=0).first()
+    if not clearance_ebd_line:
+        return CommandResult.fail("Clearance JE has no EBD credit line — data may be inconsistent.")
+    ebd_account = clearance_ebd_line.account
 
     sys_actor = system_actor_for_company(actor.company)
     batch_id = (
