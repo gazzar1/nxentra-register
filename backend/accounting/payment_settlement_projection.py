@@ -217,9 +217,12 @@ class PaymentSettlementProjection(BaseProjection):
         # provider_breakdown is read above (A39 pre-pass mutates it).
         clearing_lines: list[dict] = []
 
-        memo = (
-            f"Settlement: {provider.display_name} batch {payout_batch_id} ({data.get('source_filename') or 'manual'})"
-        )
+        # A142: CSV imports carry their filename as provenance; API-pulled
+        # settlements (Stripe sync) carry none — don't label those "(manual)".
+        source_filename = data.get("source_filename")
+        memo = f"Settlement: {provider.display_name} batch {payout_batch_id}"
+        if source_filename:
+            memo += f" ({source_filename})"
 
         if provider_breakdown:
             for sub in provider_breakdown:
