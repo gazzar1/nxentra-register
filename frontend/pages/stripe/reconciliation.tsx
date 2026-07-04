@@ -263,9 +263,19 @@ export default function StripeReconciliationPage() {
                   <Banknote className="h-4 w-4 text-muted-foreground" />
                 </CardHeader>
                 <CardContent>
-                  <div className="text-2xl font-bold">{formatCurrency(summary.total_net)}</div>
+                  {/* A143: label totals with the PAYOUT currency, not the company
+                      default (a USD payout on EGP books used to render "EGP").
+                      When the range mixes currencies the backend sends "", the
+                      totals are a blend, and we say so instead of mislabeling. */}
+                  <div className="text-2xl font-bold">
+                    {formatCurrency(summary.total_net, summary.currency || undefined)}
+                  </div>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Gross {formatCurrency(summary.total_gross)} &minus; Fees {formatCurrency(summary.total_fees)}
+                    Gross {formatCurrency(summary.total_gross, summary.currency || undefined)} &minus; Fees{" "}
+                    {formatCurrency(summary.total_fees, summary.currency || undefined)}
+                    {summary.currencies && summary.currencies.length > 1 && (
+                      <span className="text-yellow-600"> · mixed currencies ({summary.currencies.join(", ")})</span>
+                    )}
                   </p>
                 </CardContent>
               </Card>
@@ -276,7 +286,9 @@ export default function StripeReconciliationPage() {
                   <Clock className="h-4 w-4 text-muted-foreground" />
                 </CardHeader>
                 <CardContent>
-                  <div className="text-2xl font-bold text-red-400">{formatCurrency(summary.total_fees)}</div>
+                  <div className="text-2xl font-bold text-red-400">
+                    {formatCurrency(summary.total_fees, summary.currency || undefined)}
+                  </div>
                   <p className="mt-1 text-xs text-muted-foreground">
                     Stripe processing fees
                   </p>

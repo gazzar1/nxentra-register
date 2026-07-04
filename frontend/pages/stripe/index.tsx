@@ -20,21 +20,25 @@ import {
   stripeService,
   StripeAccount,
   StripeChargeItem,
+  StripeDashboardSummary,
+  StripeMoneyByCurrency,
 } from "@/services/stripe.service";
 
 export default function StripeDashboardPage() {
   const { formatCurrency, formatAmount, formatDate } = useCompanyFormat();
   const [account, setAccount] = useState<StripeAccount | null>(null);
   const [charges, setCharges] = useState<StripeChargeItem[]>([]);
+  const [summary, setSummary] = useState<StripeDashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function load() {
       setLoading(true);
       try {
-        const [acctRes, chargesRes] = await Promise.allSettled([
+        const [acctRes, chargesRes, summaryRes] = await Promise.allSettled([
           stripeService.getAccount(),
           stripeService.getCharges(),
+          stripeService.getDashboardSummary(),
         ]);
 
         if (acctRes.status === "fulfilled") {
@@ -49,6 +53,9 @@ export default function StripeDashboardPage() {
         if (chargesRes.status === "fulfilled") {
           setCharges(chargesRes.value.data);
         }
+        if (summaryRes.status === "fulfilled") {
+          setSummary(summaryRes.value.data);
+        }
       } finally {
         setLoading(false);
       }
@@ -58,17 +65,58 @@ export default function StripeDashboardPage() {
 
   const isConnected = account?.status === "ACTIVE";
 
-  const stats = {
-    total: charges.length,
-    processed: charges.filter((c) => c.status === "PROCESSED").length,
-    errors: charges.filter((c) => c.status === "ERROR").length,
-    revenue: charges
-      .filter((c) => c.status === "PROCESSED")
-      .reduce((sum, c) => sum + Number(c.amount), 0),
-    fees: charges
-      .filter((c) => c.status === "PROCESSED")
-      .reduce((sum, c) => sum + Number(c.fee), 0),
-    currency: charges[0]?.currency ?? "USD",
+  // A143: counts and revenue come from the server-side summary (all charges,
+  // per-currency — the charges list is capped at 100 rows). Fees come from
+  // canonical payout headers: charge rows carry fee=0 by design, since real
+  // Stripe fees only become known at payout time. If the summary endpoint is
+  // unavailable, fall back to charge-derived counts/revenue and show no fee
+  // figure rather than a false 0.
+  const stats = summary
+    ? {
+        total: summary.charges.total,
+        processed: summary.charges.processed,
+        errors: summary.charges.errors,
+        revenue: summary.charges.revenue,
+        fees: summary.fees as StripeMoneyByCurrency[],
+      }
+    : {
+        total: charges.length,
+        processed: charges.filter((c) => c.status === "PROCESSED").length,
+        errors: charges.filter((c) => c.status === "ERROR").length,
+        revenue: Object.entries(
+          charges
+            .filter((c) => c.status === "PROCESSED")
+            .reduce<Record<string, number>>((acc, c) => {
+              acc[c.currency] = (acc[c.currency] ?? 0) + Number(c.amount);
+              return acc;
+            }, {})
+        ).map(([currency, amount]) => ({ currency, amount: String(amount) })),
+        fees: null,
+      };
+
+  // First entry renders big, the rest as smaller lines — multi-currency
+  // amounts are listed per currency, never summed across currencies.
+  // null = the summary endpoint was unavailable: show a dash, not a false 0.
+  const renderMoneyTile = (entries: StripeMoneyByCurrency[] | null, tone = "") => {
+    if (entries === null) {
+      return <div className={`text-2xl font-bold ${tone}`}>&mdash;</div>;
+    }
+    if (entries.length === 0) {
+      return <div className={`text-2xl font-bold ${tone}`}>{formatCurrency(0)}</div>;
+    }
+    const [first, ...rest] = entries;
+    return (
+      <>
+        <div className={`text-2xl font-bold ${tone}`}>
+          {formatCurrency(first.amount, first.currency)}
+        </div>
+        {rest.map((e) => (
+          <div key={e.currency} className={`text-sm font-semibold ${tone || "text-muted-foreground"}`}>
+            {formatCurrency(e.amount, e.currency)}
+          </div>
+        ))}
+      </>
+    );
   };
 
   return (
@@ -162,7 +210,10 @@ export default function StripeDashboardPage() {
                   <CreditCard className="h-4 w-4 text-muted-foreground" />
                 </CardHeader>
                 <CardContent>
-                  <div className="text-2xl font-bold">{formatCurrency(stats.revenue, stats.currency)}</div>
+                  {renderMoneyTile(stats.revenue)}
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Gross charge volume, before fees
+                  </p>
                 </CardContent>
               </Card>
 
@@ -172,7 +223,10 @@ export default function StripeDashboardPage() {
                   <AlertCircle className="h-4 w-4 text-muted-foreground" />
                 </CardHeader>
                 <CardContent>
-                  <div className="text-2xl font-bold text-red-400">{formatCurrency(stats.fees, stats.currency)}</div>
+                  {renderMoneyTile(stats.fees, "text-red-400")}
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Actual fees from Stripe payout reports, as posted to your fee account
+                  </p>
                 </CardContent>
               </Card>
             </div>

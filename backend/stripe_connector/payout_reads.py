@@ -54,6 +54,31 @@ def canonical_lines(company, stripe_payout_id):
     ).order_by("line_index")
 
 
+def canonical_fee_summary(company):
+    """Per-currency Stripe fee totals from the canonical payout headers.
+
+    ``[{"currency": "USD", "fees": Decimal, "payouts": int}, ...]`` — grouped
+    by currency so multi-currency merchants are never silently blended.
+
+    Deliberately NOT behind ``canonical_payout_reads_enabled()`` (A143): the
+    dashboard fees tile never had a legacy payout read to keep parity with —
+    it summed charge-side ``StripeCharge.fee``, which is 0 by design (webhooks
+    carry no fee; real fees come from payout balance transactions). These are
+    the same numbers PaymentSettlementProjection posts to the fee account, so
+    this read intentionally survives a C3 flag rollback. Note that
+    ``PaymentsProjection.rebuild()`` clears ProviderPayout first, so the tile
+    can transiently read 0 mid-rebuild until the upsert restores rows.
+    """
+    from django.db.models import Count, Sum
+
+    return list(
+        canonical_headers(company)
+        .values("currency")
+        .annotate(fees=Sum("fees"), payouts=Count("id"))
+        .order_by("currency")
+    )
+
+
 def canonical_line_counts(company, batch_ids):
     """``{payout_batch_id: line count}`` for a batch of canonical payouts."""
     from django.db.models import Count

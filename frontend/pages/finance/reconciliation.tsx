@@ -335,7 +335,7 @@ export default function ReconciliationPage() {
         ) : !summary ? (
           <Card>
             <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No reconciliation data available. Connect a Shopify store to get started.
+              No reconciliation data available. Connect a store or payment provider to get started.
             </CardContent>
           </Card>
         ) : (
@@ -522,7 +522,7 @@ export default function ReconciliationPage() {
                 <SummaryTile
                   label="Total Expected"
                   value={formatMoney(totals.total_expected)}
-                  caption="Gross sold into clearing (Shopify)"
+                  caption="Gross sold into clearing (all channels)"
                   href="#stage-1"
                 />
                 <SummaryTile

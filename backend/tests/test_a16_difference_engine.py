@@ -452,7 +452,8 @@ def test_narrative_zero_activity_prompts_to_connect_store():
     }
     needs_review = {"unresolved_difference_count": 0, "unresolved_difference_amount": "0.00"}
     text = _build_narrative(stage1_totals, {}, {}, needs_review, "USD")
-    assert "No Shopify activity yet" in text
+    assert "No sales activity yet" in text
+    assert "Connect a store or payment provider" in text
 
 
 def test_narrative_includes_currency_and_amounts():
@@ -464,9 +465,47 @@ def test_narrative_includes_currency_and_amounts():
     }
     needs_review = {"unresolved_difference_count": 0, "unresolved_difference_amount": "0.00"}
     text = _build_narrative(stage1_totals, {}, {}, needs_review, "EGP")
-    assert "Shopify says 150,000.00 EGP sold" in text
+    # No stage1_rows supplied → the channel-neutral fallback subject.
+    assert "Your sales channels say 150,000.00 EGP sold" in text
     assert "147,900.00" in text  # settled
     assert "2,100.00" in text  # still expected
+
+
+def test_narrative_names_single_provider():
+    """A143: Stage 1 includes every SETTLEMENT_PROVIDER-tagged channel since
+    A139, so the subject names the channel(s) that actually sold instead of
+    hardcoding 'Shopify'."""
+    stage1_totals = {
+        "total_expected": "150000.00",
+        "total_settled": "147900.00",
+        "open_balance": "2100.00",
+        "aged_30_plus": "0.00",
+    }
+    needs_review = {"unresolved_difference_count": 0, "unresolved_difference_amount": "0.00"}
+    stage1_rows = [
+        {"provider_name": "Shopify Payments", "total_debit": "150000.00", "open_balance": "2100.00"},
+    ]
+    text = _build_narrative(stage1_totals, {}, {}, needs_review, "EGP", stage1_rows=stage1_rows)
+    assert "Shopify Payments says 150,000.00 EGP sold" in text
+
+
+def test_narrative_names_multiple_providers():
+    stage1_totals = {
+        "total_expected": "155760.00",
+        "total_settled": "147900.00",
+        "open_balance": "7860.00",
+        "aged_30_plus": "0.00",
+    }
+    needs_review = {"unresolved_difference_count": 0, "unresolved_difference_amount": "0.00"}
+    stage1_rows = [
+        {"provider_name": "Shopify Payments", "total_debit": "150000.00", "open_balance": "2100.00"},
+        {"provider_name": "Stripe", "total_debit": "5760.00", "open_balance": "5760.00"},
+        # Zero-sales channels stay out of the subject.
+        {"provider_name": "Bosta", "total_debit": "0.00", "open_balance": "0.00"},
+    ]
+    text = _build_narrative(stage1_totals, {}, {}, needs_review, "EGP", stage1_rows=stage1_rows)
+    assert "Shopify Payments + Stripe say 155,760.00 EGP sold" in text
+    assert "Bosta say" not in text
 
 
 def test_narrative_flags_unresolved_differences():

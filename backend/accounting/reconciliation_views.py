@@ -537,10 +537,10 @@ def _build_narrative(
     merchant's reconciliation position.
 
     Example output:
-        Shopify says 150,000.00 EGP sold. After 5,900.00 in fees and
-        2,000.00 in failed deliveries, the bank should show 142,100.00.
-        Bank shows 141,600.00. Unexplained difference: 500.00 EGP needs
-        review.
+        Shopify Payments + Stripe say 150,000.00 EGP sold. After 5,900.00
+        in fees and 2,000.00 in failed deliveries, the bank should show
+        142,100.00. Bank shows 141,600.00. Unexplained difference: 500.00
+        EGP needs review.
     """
 
     def _fmt(amount: str) -> str:
@@ -553,7 +553,7 @@ def _build_narrative(
     expected = Decimal(stage1_totals.get("total_expected") or "0")
     if expected <= 0:
         return (
-            "No Shopify activity yet. Connect a store and import orders to start tracking your reconciliation position."
+            "No sales activity yet. Connect a store or payment provider to start tracking your reconciliation position."
         )
 
     settled = Decimal(stage1_totals.get("total_settled") or "0")
@@ -581,7 +581,27 @@ def _build_narrative(
                     f"Investigate {row['provider_name']} drilldown."
                 )
 
-    parts.append(f"Shopify says {_fmt(stage1_totals.get('total_expected'))} {company_currency} sold.")
+    # A143: Stage 1 pivots on the SETTLEMENT_PROVIDER dimension, so since A139
+    # the totals include every tagged channel (Shopify Payments, Stripe, COD
+    # providers, ...) — name the channels that actually sold instead of
+    # hardcoding "Shopify". provider_name may be a raw dimension-value name
+    # when no SettlementProvider row exists; that's fine for display.
+    channels: list[str] = []
+    for row in stage1_rows or []:
+        try:
+            sold = Decimal(row.get("total_debit") or "0")
+        except (ValueError, ArithmeticError):
+            sold = Decimal("0")
+        name = row.get("provider_name")
+        if sold > 0 and name and name not in channels:
+            channels.append(name)
+    if not channels:
+        subject, verb = "Your sales channels", "say"
+    elif len(channels) == 1:
+        subject, verb = channels[0], "says"
+    else:
+        subject, verb = " + ".join(channels), "say"
+    parts.append(f"{subject} {verb} {_fmt(stage1_totals.get('total_expected'))} {company_currency} sold.")
 
     if settled > 0:
         clause = f"{_fmt(stage1_totals.get('total_settled'))} has been drained from clearing via provider settlements"

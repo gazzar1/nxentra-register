@@ -13,6 +13,7 @@ urlpatterns = [
     path("account-mapping/", views.StripeAccountMappingView.as_view(), name="stripe-account-mapping"),
     # Data views
     path("charges/", views.StripeChargesView.as_view(), name="stripe-charges"),
+    path("summary/", views.StripeDashboardSummaryView.as_view(), name="stripe-dashboard-summary"),
     # Payout reconciliation
     path("payouts/", views.StripePayoutsListView.as_view(), name="stripe-payouts-list"),
     path("reconciliation/", views.StripeReconciliationSummaryView.as_view(), name="stripe-reconciliation-summary"),

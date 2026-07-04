@@ -29,6 +29,7 @@ from .models import (
     StripePayoutTransaction,
 )
 from .payout_reads import (
+    canonical_fee_summary,
     canonical_header,
     canonical_headers,
     canonical_line_counts,
@@ -155,6 +156,57 @@ class StripeChargesView(APIView):
                 }
                 for c in charges
             ]
+        )
+
+
+class StripeDashboardSummaryView(APIView):
+    """A143: server-side tile aggregates for the /stripe dashboard.
+
+    The old tiles were computed client-side from the charges list, which (a)
+    silently capped revenue at the 100-row page and (b) summed charge-side
+    ``fee`` — 0 by design, because real Stripe fees only become known at
+    payout time from balance transactions. Fees here come from the canonical
+    ProviderPayout headers (see ``canonical_fee_summary``), the same numbers
+    the settlement JE posts to the fee account. All money is grouped per
+    currency — never blended across currencies.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        actor = resolve_actor(request)
+        if not actor:
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        company = actor.company
+
+        charges = StripeCharge.objects.filter(company=company)
+        counts = charges.aggregate(
+            total=Count("id"),
+            processed=Count("id", filter=Q(status=StripeCharge.Status.PROCESSED)),
+            errors=Count("id", filter=Q(status=StripeCharge.Status.ERROR)),
+        )
+        revenue = (
+            charges.filter(status=StripeCharge.Status.PROCESSED)
+            .values("currency")
+            .annotate(amount=Sum("amount"))
+            .order_by("currency")
+        )
+
+        return Response(
+            {
+                "charges": {
+                    "total": counts["total"],
+                    "processed": counts["processed"],
+                    "errors": counts["errors"],
+                    # Gross charge volume per currency (before fees — fees are
+                    # deducted at payout, not at charge time).
+                    "revenue": [{"currency": r["currency"], "amount": str(r["amount"])} for r in revenue],
+                },
+                "fees": [
+                    {"currency": f["currency"], "amount": str(f["fees"]), "payouts": f["payouts"]}
+                    for f in canonical_fee_summary(company)
+                ],
+            }
         )
 
 
@@ -296,9 +348,9 @@ class StripeReconciliationSummaryView(APIView):
             )
 
         if canonical_payout_reads_enabled():
-            rows, totals = self._canonical_rows(actor.company, date_from, date_to)
+            rows, totals, currencies = self._canonical_rows(actor.company, date_from, date_to)
         else:
-            rows, totals = self._legacy_rows(actor.company, date_from, date_to)
+            rows, totals, currencies = self._legacy_rows(actor.company, date_from, date_to)
 
         total_txns = sum(r["total"] for r in rows)
         matched_txns = sum(r["matched"] for r in rows)
@@ -320,6 +372,11 @@ class StripeReconciliationSummaryView(APIView):
                 "total_gross": str(totals["total_gross"] or Decimal("0.00")),
                 "total_fees": str(totals["total_fees"] or Decimal("0.00")),
                 "total_net": str(totals["total_net"] or Decimal("0.00")),
+                # A143: the payout currency for the money totals above — single
+                # currency in range, or "" when mixed (totals are then a blend
+                # and the frontend should say so rather than mislabel them).
+                "currency": currencies[0] if len(currencies) == 1 else "",
+                "currencies": currencies,
                 "total_transactions": total_txns,
                 "matched_transactions": matched_txns,
                 "unmatched_transactions": total_txns - matched_txns,
@@ -360,7 +417,8 @@ class StripeReconciliationSummaryView(APIView):
             }
             for p in payouts
         ]
-        return rows, totals
+        currencies = sorted({p.currency for p in payouts})
+        return rows, totals, currencies
 
     def _canonical_rows(self, company, date_from, date_to):
         """C3: header aggregates + line counts from the canonical read-models;
@@ -395,7 +453,8 @@ class StripeReconciliationSummaryView(APIView):
             }
             for h in headers
         ]
-        return rows, totals
+        currencies = sorted({h.currency for h in headers})
+        return rows, totals, currencies
 
 
 class StripePayoutReconciliationView(APIView):
