@@ -167,8 +167,13 @@ def _plan_settlement_prepass_matches(
     if not settlement_entries:
         return []
 
-    ebd_account = ModuleAccountMapping.get_account(company, "shopify_connector", "EXPECTED_BANK_DEPOSIT")
-    if not ebd_account:
+    # A144: EXPECTED_BANK_DEPOSIT is seeded per provider module
+    # (shopify_connector for Shopify, platform_stripe for Stripe, ...) —
+    # union them. The hardcoded shopify_connector lookup made every
+    # non-Shopify settlement invisible to auto-match (the manual candidate
+    # picker got this exact fix in S1 PR-A; this planner kept the hardcode).
+    ebd_accounts = ModuleAccountMapping.get_accounts_for_role(company, "EXPECTED_BANK_DEPOSIT")
+    if not ebd_accounts:
         return []
 
     # A129a/P2-P3: batch-scoped idempotency. A settlement whose batch has
@@ -190,7 +195,7 @@ def _plan_settlement_prepass_matches(
     # Pre-collect candidates: (entry, ebd_line, net, batch_id)
     candidates: list[tuple] = []
     for entry in settlement_entries:
-        ebd_line = entry.lines.filter(account=ebd_account, reconciled=False).first()
+        ebd_line = entry.lines.filter(account__in=ebd_accounts, reconciled=False).first()
         if not ebd_line:
             continue
         source_doc = entry.source_document or ""
