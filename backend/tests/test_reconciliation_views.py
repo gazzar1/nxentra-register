@@ -328,6 +328,37 @@ def test_summary_empty_when_no_dimension(db, company, owner_membership, authenti
     assert body["stage1"]["totals"]["total_expected"] == "0.00"
 
 
+def test_summary_labels_money_with_functional_currency(reconciliation_setup, company, user, authenticated_client):
+    """A143 review: stage-1 totals are functional-currency magnitudes
+    (post_journal_entry stores all balances in the books currency), so the
+    narrative and Money Bridge must label them functional-first — on the
+    live default=USD/functional=EGP shape the narrative used to read
+    '… USD sold' over EGP book amounts."""
+    from accounting.settlement_provider import SettlementProvider
+
+    company.default_currency = "USD"
+    company.functional_currency = "EGP"
+    company.save(update_fields=["default_currency", "functional_currency"])
+
+    paymob = SettlementProvider.objects.get(company=company, normalized_code="paymob")
+    _post_clearing_je(
+        company,
+        user,
+        reconciliation_setup["clearing"],
+        reconciliation_setup["revenue"],
+        paymob.dimension_value,
+        debit=Decimal("100.00"),
+        entry_date=date.today(),
+    )
+
+    response = authenticated_client.get("/api/accounting/reconciliation/summary/")
+    assert response.status_code == 200
+    body = response.json()
+    assert "EGP sold" in body["narrative"]
+    assert "USD" not in body["narrative"]
+    assert body["money_flow"]["currency"] == "EGP"
+
+
 def test_summary_excludes_unposted_entries(reconciliation_setup, company, user, authenticated_client):
     # An INCOMPLETE entry must NOT contribute to the reconciliation
     # snapshot — only POSTED money moves the merchant's actual position.

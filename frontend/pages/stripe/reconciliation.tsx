@@ -93,6 +93,18 @@ export default function StripeReconciliationPage() {
   const [payoutDetail, setPayoutDetail] = useState<StripePayoutReconciliation | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
+  // A143: label summary money with the PAYOUT currency (a USD payout on EGP
+  // books used to render "EGP"). When the range mixes currencies the backend
+  // sends currency:"" and the totals are a cross-currency arithmetic blend —
+  // render them WITHOUT any currency label (formatAmount), never under the
+  // company default, and flag the mix on every money tile.
+  const mixedCurrencies = (summary?.currencies?.length ?? 0) > 1;
+  const payoutMoney = (value: string) =>
+    summary?.currency ? formatCurrency(value, summary.currency) : formatAmount(value);
+  const mixedNote = mixedCurrencies && summary ? (
+    <span className="text-yellow-600"> · mixed currencies ({summary.currencies.join(", ")})</span>
+  ) : null;
+
   async function loadData() {
     setLoading(true);
     try {
@@ -263,9 +275,10 @@ export default function StripeReconciliationPage() {
                   <Banknote className="h-4 w-4 text-muted-foreground" />
                 </CardHeader>
                 <CardContent>
-                  <div className="text-2xl font-bold">{formatCurrency(summary.total_net)}</div>
+                  <div className="text-2xl font-bold">{payoutMoney(summary.total_net)}</div>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Gross {formatCurrency(summary.total_gross)} &minus; Fees {formatCurrency(summary.total_fees)}
+                    Gross {payoutMoney(summary.total_gross)} &minus; Fees {payoutMoney(summary.total_fees)}
+                    {mixedNote}
                   </p>
                 </CardContent>
               </Card>
@@ -276,9 +289,10 @@ export default function StripeReconciliationPage() {
                   <Clock className="h-4 w-4 text-muted-foreground" />
                 </CardHeader>
                 <CardContent>
-                  <div className="text-2xl font-bold text-red-400">{formatCurrency(summary.total_fees)}</div>
+                  <div className="text-2xl font-bold text-red-400">{payoutMoney(summary.total_fees)}</div>
                   <p className="mt-1 text-xs text-muted-foreground">
                     Stripe processing fees
+                    {mixedNote}
                   </p>
                 </CardContent>
               </Card>

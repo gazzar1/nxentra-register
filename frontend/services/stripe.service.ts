@@ -38,6 +38,27 @@ export interface StripeChargeItem {
   created_at: string;
 }
 
+// A143: server-side dashboard tile aggregates. Money is grouped per currency
+// (never blended); fees come from canonical payout headers, not charge rows.
+export interface StripeMoneyByCurrency {
+  currency: string;
+  amount: string;
+}
+
+export interface StripeFeeSummaryEntry extends StripeMoneyByCurrency {
+  payouts: number;
+}
+
+export interface StripeDashboardSummary {
+  charges: {
+    total: number;
+    processed: number;
+    errors: number;
+    revenue: StripeMoneyByCurrency[];
+  };
+  fees: StripeFeeSummaryEntry[];
+}
+
 export interface StripePayoutListItem {
   stripe_payout_id: string;
   payout_date: string;
@@ -70,6 +91,10 @@ export interface StripeReconciliationSummary {
   total_gross: string;
   total_fees: string;
   total_net: string;
+  // A143: the payout currency for the money totals — single currency in the
+  // date range, or "" when payouts mix currencies (totals are then a blend).
+  currency: string;
+  currencies: string[];
   total_transactions: number;
   matched_transactions: number;
   unmatched_transactions: number;
@@ -169,6 +194,10 @@ export const stripeService = {
   // Charges
   getCharges: () =>
     apiClient.get<StripeChargeItem[]>("/stripe/charges/"),
+
+  // A143: dashboard tile aggregates (all charges, canonical payout fees).
+  getDashboardSummary: () =>
+    apiClient.get<StripeDashboardSummary>("/stripe/summary/"),
 
   // Payouts & Reconciliation
   getPayouts: (page = 1) => {
