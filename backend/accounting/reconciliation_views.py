@@ -351,6 +351,92 @@ def _money_flow(stage1_totals: dict, stage2: dict, currency: str) -> dict:
     }
 
 
+def _stage2_payouts(company, limit: int = 15) -> list[dict]:
+    """Stage 2 payout ledger — recent canonical ProviderPayout headers with
+    their settlement/clearance JE state (all providers: Stripe pull, Paymob/
+    Bosta CSV — anything that emitted PAYMENT_SETTLEMENT_RECEIVED).
+
+    Status chip per payout:
+      attention — the matched bank deposit carries an unresolved difference
+      banked    — a POSTED clearance JE exists for ``{provider}:{batch}``
+      posted    — settlement JE posted; deposit not yet matched to the bank
+      pending   — canonical header exists but no settlement JE yet
+                  (projection lag or posting skipped) — surfaced, not hidden
+
+    A144 rule: everything is keyed by the payout's own provider/batch
+    (source_document join), never a module-hardcoded account.
+    """
+    try:
+        from platform_connectors.models import ProviderPayout
+    except ImportError:
+        return []
+
+    from .models import BankStatementLine
+
+    headers = list(ProviderPayout.objects.filter(company=company).order_by("-payout_date", "-created_at")[:limit])
+    if not headers:
+        return []
+
+    source_docs = [f"{h.provider}:{h.payout_batch_id}" for h in headers]
+    settlement_by_doc: dict[str, dict] = {}
+    clearance_by_doc: dict[str, dict] = {}
+    for entry in JournalEntry.objects.filter(
+        company=company,
+        source_module__in=["payment_settlement", "payment_settlement_clearance"],
+        source_document__in=source_docs,
+        status=JournalEntry.Status.POSTED,
+    ).values("source_module", "source_document", "entry_number", "id"):
+        target = settlement_by_doc if entry["source_module"] == "payment_settlement" else clearance_by_doc
+        target[entry["source_document"]] = entry
+
+    unresolved_difference_docs = set(
+        BankStatementLine.objects.filter(
+            company=company,
+            match_status=BankStatementLine.MatchStatus.MATCHED_WITH_DIFFERENCE,
+            difference_resolved_at__isnull=True,
+            matched_journal_line__entry__source_module="payment_settlement_clearance",
+            matched_journal_line__entry__source_document__in=source_docs,
+        ).values_list("matched_journal_line__entry__source_document", flat=True)
+    )
+
+    providers_by_code = {sp.normalized_code: sp for sp in SettlementProvider.objects.filter(company=company)}
+
+    rows = []
+    for h in headers:
+        doc = f"{h.provider}:{h.payout_batch_id}"
+        settlement = settlement_by_doc.get(doc)
+        clearance = clearance_by_doc.get(doc)
+        if doc in unresolved_difference_docs:
+            payout_status = "attention"
+        elif clearance:
+            payout_status = "banked"
+        elif settlement:
+            payout_status = "posted"
+        else:
+            payout_status = "pending"
+
+        provider = providers_by_code.get(h.provider)
+        rows.append(
+            {
+                "provider": h.provider,
+                "provider_name": provider.display_name if provider else h.provider.title(),
+                "provider_type": provider.provider_type if provider else "gateway",
+                "batch_id": h.payout_batch_id,
+                "payout_date": h.payout_date.isoformat() if h.payout_date else None,
+                "gross_amount": _money_str(h.gross_amount),
+                "fees": _money_str(h.fees),
+                "net_amount": _money_str(h.net_amount),
+                "currency": h.currency,
+                "status": payout_status,
+                "settlement_entry_id": settlement["id"] if settlement else None,
+                "settlement_entry_number": settlement["entry_number"] if settlement else "",
+                "clearance_entry_id": clearance["id"] if clearance else None,
+                "clearance_entry_number": clearance["entry_number"] if clearance else "",
+            }
+        )
+    return rows
+
+
 def _stage2_summary(company) -> dict:
     """Stage 2 — Clearing → Settlement.
 
@@ -411,6 +497,10 @@ def _stage2_summary(company) -> dict:
         "available": True,
         "settled_count": settled_count,
         "settled_total": _money_str(settled_total),
+        # Stage-2 payout ledger: per-payout rows from the canonical
+        # ProviderPayout read-models (amounts in the payout's own currency;
+        # the tiles above stay functional-currency totals).
+        "payouts": _stage2_payouts(company),
     }
 
 

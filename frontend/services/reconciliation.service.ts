@@ -44,12 +44,32 @@ export interface Stage1Totals {
   aged_30_plus: string;
 }
 
+export type Stage2PayoutStatus = "pending" | "posted" | "banked" | "attention";
+
+export interface Stage2Payout {
+  provider: string;
+  provider_name: string;
+  provider_type: string;
+  batch_id: string;
+  payout_date: string | null;
+  gross_amount: string;
+  fees: string;
+  net_amount: string;
+  currency: string;
+  status: Stage2PayoutStatus;
+  settlement_entry_id: number | null;
+  settlement_entry_number: string;
+  clearance_entry_id: number | null;
+  clearance_entry_number: string;
+}
+
 export interface Stage2Summary {
   available: boolean;
   reason?: string;
   settled_count?: number;
   settled_total?: string;
   pending_csv_import_note?: string;
+  payouts?: Stage2Payout[];
 }
 
 export interface Stage3Summary {

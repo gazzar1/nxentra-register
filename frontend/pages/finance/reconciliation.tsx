@@ -36,6 +36,8 @@ import {
   type ReconciliationOrders,
   type ReconciliationProviderRow,
   type ReconciliationSummary,
+  type Stage2Payout,
+  type Stage2PayoutStatus,
 } from "@/services/reconciliation.service";
 
 const PROVIDER_ICON: Record<ProviderType, JSX.Element> = {
@@ -51,6 +53,20 @@ const AGING_LABEL: Record<AgingBucket, string> = {
   "0_7d": "0–7 days",
   "7_30d": "7–30 days",
   "30_plus": "30+ days",
+};
+
+const PAYOUT_STATUS_VARIANT: Record<Stage2PayoutStatus, "success" | "info" | "warning" | "outline"> = {
+  banked: "success",
+  posted: "info",
+  attention: "warning",
+  pending: "outline",
+};
+
+const PAYOUT_STATUS_LABEL: Record<Stage2PayoutStatus, string> = {
+  banked: "Banked",
+  posted: "Posted",
+  attention: "Needs attention",
+  pending: "Pending",
 };
 
 const AGING_VARIANT: Record<AgingBucket, "secondary" | "warning" | "destructive" | "outline"> = {
@@ -223,6 +239,21 @@ export default function ReconciliationPage() {
         .sort((a, b) => b.days_outstanding - a.days_outstanding),
     [stage1Rows]
   );
+
+  const stage2Payouts = useMemo(() => summary?.stage2.payouts ?? [], [summary]);
+
+  // Stage-2 prompt rows: Stage-1 providers still owed money that have NO
+  // payout in the ledger — every empty state gets a next action (import the
+  // CSV, or wait for the connector's payout sync). Same derivation family as
+  // the "What to do next" panel: purely from data already on the wire.
+  const stage2PromptRows = useMemo(() => {
+    const payoutProviders = new Set(stage2Payouts.map((p) => p.provider.toLowerCase()));
+    return stage1Rows.filter(
+      (r) =>
+        Number(r.open_balance) > 0 &&
+        !payoutProviders.has((r.dimension_value_code || "").toLowerCase())
+    );
+  }, [stage1Rows, stage2Payouts]);
 
   const updateResolve = (
     lineId: number,
@@ -633,6 +664,58 @@ export default function ReconciliationPage() {
                         <span>{summary.stage2.pending_csv_import_note}</span>
                       </div>
                     )}
+
+                    {(stage2Payouts.length > 0 || stage2PromptRows.length > 0) && (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead className="border-b text-left text-xs uppercase text-muted-foreground">
+                            <tr>
+                              <th className="py-2 pr-3">Provider</th>
+                              <th className="py-2 pr-3">Payout / Batch</th>
+                              <th className="py-2 pr-3">Date</th>
+                              <th className="py-2 pr-3 text-right">Gross</th>
+                              <th className="py-2 pr-3 text-right">Fees</th>
+                              <th className="py-2 pr-3 text-right">Net</th>
+                              <th className="py-2 pr-3">Status</th>
+                              <th className="py-2">Entry</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {stage2Payouts.map((p) => (
+                              <Stage2PayoutRow key={`${p.provider}-${p.batch_id}`} payout={p} />
+                            ))}
+                            {stage2PromptRows.map((r) => {
+                              const importTarget = settlementImportTarget(r.dimension_value_code);
+                              return (
+                                <tr
+                                  key={`prompt-${r.account_id}-${r.dimension_value_id}`}
+                                  className="border-b text-muted-foreground"
+                                >
+                                  <td className="py-2 pr-3">{r.provider_name}</td>
+                                  <td className="py-2 pr-3 italic" colSpan={5}>
+                                    No settlements yet — {formatMoney(r.open_balance)} still in clearing
+                                  </td>
+                                  <td className="py-2 pr-3" colSpan={2}>
+                                    {importTarget ? (
+                                      <Link
+                                        href="/finance/settlements/import"
+                                        className="font-medium text-primary hover:underline"
+                                      >
+                                        Import {importTarget} settlement →
+                                      </Link>
+                                    ) : r.provider_type === "gateway" || r.provider_type === "marketplace" ? (
+                                      <span>Awaiting payout sync</span>
+                                    ) : (
+                                      <span>Reconcile manually</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
                   </>
                 ) : (
                   <p className="text-muted-foreground italic">
@@ -871,6 +954,40 @@ const ORDER_STATUS_LABEL: Record<OrderReconciliationStatus, string> = {
   settled: "Settled",
   banked: "Banked",
 };
+
+function Stage2PayoutRow({ payout }: { payout: Stage2Payout }) {
+  // Banked payouts link to the clearance entry (the bank-side truth);
+  // otherwise the settlement drain entry.
+  const entryId = payout.clearance_entry_id ?? payout.settlement_entry_id;
+  const entryNumber = payout.clearance_entry_number || payout.settlement_entry_number;
+  return (
+    <tr className="border-b">
+      <td className="py-2 pr-3 font-medium">{payout.provider_name}</td>
+      <td className="py-2 pr-3 font-mono text-xs">{payout.batch_id}</td>
+      <td className="py-2 pr-3 whitespace-nowrap">{payout.payout_date ?? "—"}</td>
+      <td className="py-2 pr-3 text-right font-mono">
+        {formatMoney(payout.gross_amount)} <span className="text-xs text-muted-foreground">{payout.currency}</span>
+      </td>
+      <td className="py-2 pr-3 text-right font-mono">{formatMoney(payout.fees)}</td>
+      <td className="py-2 pr-3 text-right font-mono font-semibold">{formatMoney(payout.net_amount)}</td>
+      <td className="py-2 pr-3">
+        <Badge variant={PAYOUT_STATUS_VARIANT[payout.status]}>{PAYOUT_STATUS_LABEL[payout.status]}</Badge>
+      </td>
+      <td className="py-2 whitespace-nowrap">
+        {entryId ? (
+          <Link
+            href={`/accounting/journal-entries/${entryId}`}
+            className="text-primary hover:underline"
+          >
+            {entryNumber}
+          </Link>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        )}
+      </td>
+    </tr>
+  );
+}
 
 function ProviderRow({
   row,
