@@ -332,7 +332,12 @@ class PaymentSettlementProjection(BaseProjection):
         je_lines.extend(clearing_lines)
 
         actor = system_actor_for_company(company)
-        currency = data.get("currency") or company.default_currency or "USD"
+        # A146: both production emitters always set currency, so this fallback
+        # is hardening for future emitters — and it must agree with the books
+        # currency (functional-first, like create_journal_entry/je_builder).
+        # default-first would stamp USD on an EGP-books company and convert
+        # functional-magnitude amounts at the USD rate (or quarantine).
+        currency = data.get("currency") or company.functional_currency or company.default_currency or "USD"
         entry_date = data.get("payout_date") or data.get("transaction_date")
 
         # A85 chunk 3b (2026-05-26): honor optional period override carried

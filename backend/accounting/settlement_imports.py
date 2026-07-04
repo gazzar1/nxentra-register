@@ -121,6 +121,11 @@ _PAYMOB_HEADER_ALIASES = {
     "gateway": ("gateway", "payment_method", "method", "channel"),
     "payout_batch_id": ("payout_batch_id", "batch_id", "payout_id", "settlement_id"),
     "payout_date": ("payout_date", "settlement_date", "date"),
+    # A146: real exports (incl. Nxentra's own test pack) carry a currency
+    # column. When present it is the truth — explicitly-labeled foreign
+    # batches flow through post_journal_entry's convert-or-quarantine path
+    # instead of being booked under a guessed currency.
+    "currency": ("currency", "currency_code", "curr"),
 }
 
 
@@ -183,11 +188,13 @@ def parse_paymob_csv(file_content: bytes | str) -> list[dict]:
         gateway_normalized = normalize_gateway_code(gateway_raw)
         order_id = (row.get(columns["order_id"]) or "").strip() if columns["order_id"] else ""
         payout_date = (row.get(columns["payout_date"]) or "").strip() if columns["payout_date"] else ""
+        row_currency = (row.get(columns["currency"]) or "").strip().upper() if columns["currency"] else ""
 
         if batch_id not in batches:
             batches[batch_id] = {
                 "payout_batch_id": batch_id,
                 "payout_date": payout_date,
+                "currency": "",
                 "gross_amount": Decimal("0"),
                 "fees": Decimal("0"),
                 "net_amount": Decimal("0"),
@@ -196,6 +203,13 @@ def parse_paymob_csv(file_content: bytes | str) -> list[dict]:
                 "_per_gateway": {},  # normalized_code -> {gross, fees, net, uncollected}
             }
         batch = batches[batch_id]
+        if row_currency:
+            if batch["currency"] and batch["currency"] != row_currency:
+                raise SettlementImportError(
+                    f"Paymob batch {batch_id} mixes currencies in one payout "
+                    f"({batch['currency']} and {row_currency}). Split the file per currency."
+                )
+            batch["currency"] = row_currency
         batch["gross_amount"] += gross
         batch["fees"] += fee
         batch["net_amount"] += net
@@ -287,6 +301,8 @@ _BOSTA_HEADER_ALIASES = {
     "batch_id": ("batch_id", "payout_batch_id", "settlement_id", "payout_id"),
     "payout_date": ("payout_date", "settlement_date", "date"),
     "status": ("status", "delivery_status", "shipment_status"),
+    # A146: honor an explicit currency column when present (see Paymob map).
+    "currency": ("currency", "currency_code", "curr"),
 }
 
 
@@ -335,11 +351,13 @@ def parse_bosta_csv(file_content: bytes | str) -> list[dict]:
         if not order_id and columns["shipment_id"]:
             order_id = (row.get(columns["shipment_id"]) or "").strip()
         payout_date = (row.get(columns["payout_date"]) or "").strip() if columns["payout_date"] else ""
+        row_currency = (row.get(columns["currency"]) or "").strip().upper() if columns["currency"] else ""
 
         if batch_id not in batches:
             batches[batch_id] = {
                 "payout_batch_id": batch_id,
                 "payout_date": payout_date,
+                "currency": "",
                 "gross_amount": Decimal("0"),
                 "fees": Decimal("0"),
                 "net_amount": Decimal("0"),
@@ -347,6 +365,13 @@ def parse_bosta_csv(file_content: bytes | str) -> list[dict]:
                 "line_items": [],
             }
         batch = batches[batch_id]
+        if row_currency:
+            if batch["currency"] and batch["currency"] != row_currency:
+                raise SettlementImportError(
+                    f"Bosta batch {batch_id} mixes currencies in one payout "
+                    f"({batch['currency']} and {row_currency}). Split the file per currency."
+                )
+            batch["currency"] = row_currency
         if is_delivered:
             batch["gross_amount"] += gross
             batch["fees"] += fee
@@ -385,6 +410,7 @@ def parse_bosta_csv(file_content: bytes | str) -> list[dict]:
             {
                 "payout_batch_id": batch["payout_batch_id"],
                 "payout_date": batch["payout_date"],
+                "currency": batch["currency"],
                 "gross_amount": str(full_gross.quantize(_MONEY)),
                 "fees": str(batch["fees"].quantize(_MONEY)),
                 "net_amount": str(batch["net_amount"].quantize(_MONEY)),
@@ -606,6 +632,20 @@ def preview_settlement_import(
             batch_warnings.append(f"Batch {batch_id} already imported previously; will be deduplicated.")
         if period_info.get("warning"):
             batch_warnings.append(period_info["warning"])
+        # A146: surface the currency the import would book under, and warn
+        # when it is a guess on a company whose default ≠ functional.
+        csv_currency = str(batch.get("currency") or "").strip().upper()
+        assumed_currency = csv_currency or company.functional_currency or company.default_currency or "USD"
+        if (
+            not csv_currency
+            and company.functional_currency
+            and company.default_currency
+            and company.functional_currency != company.default_currency
+        ):
+            batch_warnings.append(
+                f"CSV has no currency column; amounts will be booked as {assumed_currency}. "
+                f"If this file is denominated in another currency, add a 'currency' column before importing."
+            )
         if unknown_order_ids:
             batch_warnings.append(
                 f"References {len(unknown_order_ids)} order ID(s) not found in Shopify orders: "
@@ -654,6 +694,8 @@ def preview_settlement_import(
                 "fees": batch["fees"],
                 "net": batch["net_amount"],
                 "uncollected": batch["uncollected_amount"],
+                "currency": assumed_currency,
+                "currency_from_csv": bool(csv_currency),
                 "line_count": len(batch.get("line_items") or []),
                 "resolved_period": period_info,
                 "already_imported": already_emitted,
@@ -828,7 +870,31 @@ def import_settlement_csv(
             }
         )
 
-        currency = company.default_currency or "USD"
+        # A146: an explicit currency column on the CSV is the truth — an
+        # explicitly-labeled foreign batch flows through post_journal_entry's
+        # convert-or-quarantine path. Without the column this is a GUESS
+        # stamped into the immutable event, and the books truth is the
+        # FUNCTIONAL currency: default-first stamped USD onto EGP amounts on
+        # default=USD/functional=EGP companies, which post-FX-sweep (#34)
+        # meant converting EGP magnitudes at the USD rate. Functional-first
+        # matches je_builder/create_journal_entry (2026-06-04 FX sweep).
+        csv_currency = str(batch.get("currency") or "").strip().upper()
+        currency = csv_currency or company.functional_currency or company.default_currency or "USD"
+        if (
+            not csv_currency
+            and company.functional_currency
+            and company.default_currency
+            and company.functional_currency != company.default_currency
+        ):
+            logger.warning(
+                "Settlement import %s:%s has no currency column; amounts assumed %s "
+                "(company default is %s). Add a 'currency' column if this file is "
+                "denominated differently.",
+                code,
+                batch["payout_batch_id"],
+                currency,
+                company.default_currency,
+            )
 
         event_data = PaymentSettlementReceivedData(
             amount=batch["gross_amount"],
@@ -911,6 +977,10 @@ def import_settlement_csv(
                 "net": batch["net_amount"],
                 "uncollected": batch["uncollected_amount"],
                 "line_count": len(batch["line_items"]),
+                # A146: what the event was stamped with, and whether the CSV
+                # said so or we assumed the books currency.
+                "currency": currency,
+                "currency_from_csv": bool(csv_currency),
                 "deduplicated": already_existed,
                 # A26: orphan order_ids for this batch — non-empty list
                 # is a UI signal to surface a "needs review" badge so

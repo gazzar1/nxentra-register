@@ -471,7 +471,10 @@ class PaymentsProjection(BaseProjection):
         if not provider or not payout_batch_id:
             return
 
-        currency = (data.get("currency") or company.default_currency or "").upper()
+        # A146: fallback for currency-less events prefers the FUNCTIONAL
+        # (books) currency, in lockstep with the JE consumer — default-first
+        # displayed "USD" payout headers on EGP books (Paymob demo artifact).
+        currency = (data.get("currency") or company.functional_currency or company.default_currency or "").upper()
 
         # Header (one per event). Totals come from the event's TOP-LEVEL fields
         # (not the line aggregate) so they match the legacy StripePayout header.
