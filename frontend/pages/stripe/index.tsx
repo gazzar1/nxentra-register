@@ -225,7 +225,7 @@ export default function StripeDashboardPage() {
                 <CardContent>
                   {renderMoneyTile(stats.fees, "text-red-400")}
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Actual fees from Stripe payout reports, as posted to your fee account
+                    Actual fees from Stripe payout reports
                   </p>
                 </CardContent>
               </Card>

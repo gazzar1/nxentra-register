@@ -211,10 +211,15 @@ describe('Payout Verification tiles label money with the payout currency (A143)'
     expect(screen.queryByText('EGP 96.80')).not.toBeInTheDocument();
   });
 
-  it('mixed-currency range says so instead of mislabeling the blend', async () => {
+  it('mixed-currency range: unlabeled amounts + a note on BOTH money tiles, never a company-default blend', async () => {
     mockRecon({ currency: '', currencies: ['EUR', 'USD'] });
     render(<StripeReconciliationPage />);
 
-    expect(await screen.findByText(/mixed currencies \(EUR, USD\)/)).toBeInTheDocument();
+    // The note renders on the Net Deposited caption AND the Fees caption.
+    expect((await screen.findAllByText(/mixed currencies \(EUR, USD\)/)).length).toBe(2);
+    // Blended totals render via formatAmount (no currency label) — the
+    // company-default (EGP) label must not appear anywhere.
+    expect(screen.getByText('96.80')).toBeInTheDocument();
+    expect(screen.queryByText(/EGP/)).not.toBeInTheDocument();
   });
 });

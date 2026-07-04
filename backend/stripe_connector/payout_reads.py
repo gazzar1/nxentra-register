@@ -68,6 +68,11 @@ def canonical_fee_summary(company):
     this read intentionally survives a C3 flag rollback. Note that
     ``PaymentsProjection.rebuild()`` clears ProviderPayout first, so the tile
     can transiently read 0 mid-rebuild until the upsert restores rows.
+
+    NB: aggregates every canonical header, including payouts whose settlement
+    JE was skipped or quarantined (missing FX rate / provider / fee mapping) —
+    the tile reports what Stripe said, which can briefly lead the fee-account
+    balance.
     """
     from django.db.models import Count, Sum
 

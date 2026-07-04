@@ -577,7 +577,7 @@ def _build_narrative(
                     f"⚠ {row['provider_name']} clearing is negative ("
                     f"-{_fmt(str(deficit))} {company_currency}) — likely a "
                     f"settlement for an order with no original sale, or a "
-                    f"refund that was already credit-noted in Shopify. "
+                    f"refund that was already credit-noted on the source platform. "
                     f"Investigate {row['provider_name']} drilldown."
                 )
 
@@ -859,16 +859,21 @@ class ReconciliationSummaryView(APIView):
         stage2 = _stage2_summary(actor.company)
         stage3 = _stage3_summary(actor.company)
         needs_review = _needs_review_queue(actor.company)
+        # A143 review: stage-1 totals are Sum(JournalLine.debit/credit), and
+        # post_journal_entry stores all balances in the FUNCTIONAL currency —
+        # labeling them with default_currency mislabeled EGP books as "USD"
+        # on default=USD/functional=EGP companies (same class as A146).
+        books_currency = actor.company.functional_currency or actor.company.default_currency or ""
         narrative = _build_narrative(
             stage1_totals=stage1_totals,
             stage2=stage2,
             stage3=stage3,
             needs_review=needs_review,
-            company_currency=actor.company.default_currency or "",
+            company_currency=books_currency,
             stage1_rows=stage1_rows,
         )
 
-        money_flow = _money_flow(stage1_totals, stage2, actor.company.default_currency or "")
+        money_flow = _money_flow(stage1_totals, stage2, books_currency)
         matches = _matches_summary(actor.company)
         exceptions = _exceptions_summary(actor.company)
 
