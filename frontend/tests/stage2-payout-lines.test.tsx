@@ -61,6 +61,11 @@ const STAGE2_PAYOUT = {
   settlement_entry_number: 'JE-000007',
   clearance_entry_id: null,
   clearance_entry_number: '',
+  // FX bridge: USD payout on EGP books, posted @48.
+  exchange_rate: '48',
+  gross_functional: '7200.00',
+  fees_functional: '424.80',
+  net_functional: '6775.20',
 };
 
 const SUMMARY = {
@@ -100,9 +105,38 @@ const SUMMARY = {
     available: true,
     settled_count: 1,
     settled_total: '6774.00',
+    functional_currency: 'EGP',
     payouts: [STAGE2_PAYOUT],
   },
-  stage3: { available: false },
+  stage3: {
+    available: true,
+    total_lines: 12,
+    matched_lines: 2,
+    unmatched_lines: 10,
+    matched_with_unresolved_difference: 0,
+    unmatched_items: [
+      {
+        line_id: 31,
+        statement_id: 5,
+        line_date: '2026-05-26',
+        description: 'OLD WIRE',
+        reference: 'REF-9',
+        amount: '500.00',
+        currency: 'USD',
+        age_days: 40,
+      },
+      {
+        line_id: 32,
+        statement_id: 5,
+        line_date: '2026-07-08',
+        description: 'MISPARSED DDMM',
+        reference: '',
+        amount: '80.00',
+        currency: 'USD',
+        age_days: -3,
+      },
+    ],
+  },
   needs_review: {
     items: [],
     unresolved_difference_count: 0,
@@ -221,7 +255,9 @@ describe('Stage-2 payout per-line detail (PR-D3)', () => {
     expect(await screen.findByText('Discrepancy')).toBeInTheDocument();
     expect(screen.getByText(/1\/2 lines matched/)).toBeInTheDocument();
     expect(screen.getByText(/Matched ch_1/)).toBeInTheDocument();
-    expect(screen.getByText('Unmatched')).toBeInTheDocument();
+    // selector: the Stage-3 tile caption is also "Unmatched" (a <p>); the
+    // per-line match verdict is a <span>.
+    expect(screen.getByText('Unmatched', { selector: 'span' })).toBeInTheDocument();
     // Line money is labeled with the payout's own currency.
     expect(screen.getByText('ch_2')).toBeInTheDocument();
   });
@@ -239,6 +275,54 @@ describe('Stage-2 payout per-line detail (PR-D3)', () => {
     await waitFor(() =>
       expect(client.post).toHaveBeenCalledWith('/stripe/payouts/po_1/verify/')
     );
+  });
+
+  it('FX bridge renders functional equivalent on the row and the posted rate in the expansion', async () => {
+    const user = userEvent.setup();
+    render(<ReconciliationPage />);
+
+    // Row-level: net carries the books-currency equivalent.
+    expect(await screen.findByText(/≈ 6,775.20 EGP/)).toBeInTheDocument();
+
+    await user.click(screen.getByText('po_1'));
+    // Expansion: the full as-posted conversion sentence.
+    expect(await screen.findByText(/1 USD = 48 EGP/)).toBeInTheDocument();
+    expect(screen.getByText(/6,775.20 EGP/, { selector: 'span' })).toBeInTheDocument();
+  });
+
+  it('FX bridge is absent when the backend sent no conversion story', async () => {
+    const bare = {
+      ...SUMMARY,
+      stage2: {
+        ...SUMMARY.stage2,
+        payouts: [
+          { ...STAGE2_PAYOUT, exchange_rate: null, gross_functional: null, fees_functional: null, net_functional: null },
+        ],
+      },
+    };
+    client.get.mockImplementation((url: string) => {
+      if (url === '/accounting/reconciliation/summary/') return Promise.resolve({ data: bare });
+      return Promise.resolve({ data: {} });
+    });
+    render(<ReconciliationPage />);
+
+    await screen.findByText('po_1');
+    expect(screen.queryByText(/≈/)).toBeNull();
+  });
+
+  it('Stage 3 lists unmatched bank lines inline with a statement deep-link and overflow note', async () => {
+    render(<ReconciliationPage />);
+
+    expect(await screen.findByText('OLD WIRE')).toBeInTheDocument();
+    expect(screen.getByText('40d')).toBeInTheDocument();
+    const matchLinks = screen.getAllByRole('link', { name: /Match →/ });
+    expect(matchLinks[0]).toHaveAttribute('href', '/accounting/bank-reconciliation/5');
+    // 10 unmatched total, 2 shown inline → the overflow note names the rest.
+    expect(screen.getByText(/\+8 more/)).toBeInTheDocument();
+    // A future-dated line (DD/MM mis-parse class) is flagged as an anomaly,
+    // never rendered as a calm negative age.
+    expect(screen.getByText('future date')).toBeInTheDocument();
+    expect(screen.queryByText('-3d')).toBeNull();
   });
 
   it('verify button is hidden when the provider has no verify endpoint', async () => {
