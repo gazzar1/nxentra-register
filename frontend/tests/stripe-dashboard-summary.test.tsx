@@ -1,12 +1,15 @@
 /**
- * A143 — Stripe dashboard tiles read canonical payout fees, and the
- * Payout Verification tiles label money with the PAYOUT currency.
+ * A143 — Stripe dashboard tiles read canonical payout fees.
  *
  * The old dashboard summed charge-side `fee` client-side, which is 0 by
  * design (webhooks carry no fee — real fees only become known at payout
  * time). The tiles now come from GET /stripe/summary/, grouped per currency.
- * The Payout Verification summary tiles used to call formatCurrency with no
- * currency arg, mislabeling USD payout totals with the company default (EGP).
+ *
+ * PR-D3 note: the standalone Payout Verification page (and its A143
+ * mixed-currency tile tests) was absorbed into /finance/reconciliation
+ * Stage-2 — there every money value is labeled with its own payout/line
+ * currency by construction (single-payout expansions, no blended tiles);
+ * see stage2-payout-lines.test.tsx.
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -47,7 +50,6 @@ vi.mock('@/hooks/useCompanyFormat', () => ({
 
 import apiClient from '@/lib/api-client';
 import StripeDashboardPage from '@/pages/stripe/index';
-import StripeReconciliationPage from '@/pages/stripe/reconciliation';
 
 const client = vi.mocked(apiClient);
 
@@ -169,57 +171,3 @@ describe('Stripe dashboard tiles (A143)', () => {
   });
 });
 
-describe('Payout Verification tiles label money with the payout currency (A143)', () => {
-  beforeEach(() => vi.clearAllMocks());
-
-  function mockRecon(summaryOverrides: Record<string, unknown>) {
-    const summary = {
-      date_from: '2026-06-01',
-      date_to: '2026-06-30',
-      total_payouts: 1,
-      verified_payouts: 0,
-      discrepancy_payouts: 0,
-      unverified_payouts: 1,
-      total_gross: '103.20',
-      total_fees: '6.40',
-      total_net: '96.80',
-      currency: 'USD',
-      currencies: ['USD'],
-      total_transactions: 2,
-      matched_transactions: 2,
-      unmatched_transactions: 0,
-      match_rate: '100.0',
-      unmatched_order_total: '0.00',
-      payouts: [],
-      ...summaryOverrides,
-    };
-    client.get.mockImplementation((url: string) => {
-      if (url.startsWith('/stripe/reconciliation/')) return Promise.resolve({ data: summary });
-      if (url === '/stripe/payouts/') return Promise.resolve({ data: { results: [], total: 0, page: 1, page_size: 25 } });
-      return Promise.resolve({ data: {} });
-    });
-  }
-
-  it('renders Net/Gross/Fees in the payout currency, not the company default', async () => {
-    mockRecon({});
-    render(<StripeReconciliationPage />);
-
-    // USD payout on EGP books: the tiles must say USD.
-    expect(await screen.findByText('USD 96.80')).toBeInTheDocument();
-    expect(screen.getByText(/Gross USD 103.20/)).toBeInTheDocument();
-    expect(screen.getAllByText('USD 6.40').length).toBeGreaterThan(0);
-    expect(screen.queryByText('EGP 96.80')).not.toBeInTheDocument();
-  });
-
-  it('mixed-currency range: unlabeled amounts + a note on BOTH money tiles, never a company-default blend', async () => {
-    mockRecon({ currency: '', currencies: ['EUR', 'USD'] });
-    render(<StripeReconciliationPage />);
-
-    // The note renders on the Net Deposited caption AND the Fees caption.
-    expect((await screen.findAllByText(/mixed currencies \(EUR, USD\)/)).length).toBe(2);
-    // Blended totals render via formatAmount (no currency label) — the
-    // company-default (EGP) label must not appear anywhere.
-    expect(screen.getByText('96.80')).toBeInTheDocument();
-    expect(screen.queryByText(/EGP/)).not.toBeInTheDocument();
-  });
-});

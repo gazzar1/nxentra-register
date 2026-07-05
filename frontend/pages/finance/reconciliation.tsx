@@ -31,6 +31,7 @@ import {
   type MoneyTrace,
   type NeedsReviewItem,
   type OrderReconciliationStatus,
+  type PayoutLinesResponse,
   type ProviderType,
   type ReconciliationDrilldown,
   type ReconciliationOrders,
@@ -39,6 +40,7 @@ import {
   type Stage2Payout,
   type Stage2PayoutStatus,
 } from "@/services/reconciliation.service";
+import { stripeService } from "@/services/stripe.service";
 
 const PROVIDER_ICON: Record<ProviderType, JSX.Element> = {
   gateway: <Wallet className="h-4 w-4" />,
@@ -131,6 +133,80 @@ export default function ReconciliationPage() {
     Record<number, { reason: DifferenceReason | ""; notes: string; submitting: boolean }>
   >({});
 
+  // PR-D3: Stage-2 expandable per-line detail (absorbs the old standalone
+  // Payout Verification page). Keyed `${provider}:${batch_id}` — the same
+  // provider-derived key every Stage-2 join uses.
+  const [expandedPayoutKey, setExpandedPayoutKey] = useState<string | null>(null);
+  const [payoutLinesByKey, setPayoutLinesByKey] = useState<Record<string, PayoutLinesResponse | null>>({});
+  const [payoutLinesLoading, setPayoutLinesLoading] = useState<string | null>(null);
+  const [verifyingPayoutKey, setVerifyingPayoutKey] = useState<string | null>(null);
+
+  const payoutKey = (p: Stage2Payout) => `${p.provider}:${p.batch_id}`;
+
+  // Always refetch on expand (the endpoint is cheap and read-only): the cache
+  // only makes stale-while-revalidate possible — cached detail renders while
+  // the fresh read is in flight, so state stamped by another session or the
+  // periodic projection sweep is picked up on every open.
+  const fetchPayoutLines = async (p: Stage2Payout) => {
+    const key = payoutKey(p);
+    setPayoutLinesLoading(key);
+    try {
+      const { data } = await reconciliationService.payoutLines(p.provider, p.batch_id);
+      setPayoutLinesByKey((prev) => ({ ...prev, [key]: data }));
+      return data;
+    } catch {
+      toast({
+        title: `Failed to load ${p.provider_name} payout detail.`,
+        variant: "destructive",
+      });
+      return null;
+    } finally {
+      // Functional update: a fetch for another row must not clear this one's
+      // in-flight marker (single shared slot).
+      setPayoutLinesLoading((prev) => (prev === key ? null : prev));
+    }
+  };
+
+  const handleTogglePayout = async (p: Stage2Payout) => {
+    const key = payoutKey(p);
+    if (expandedPayoutKey === key) {
+      setExpandedPayoutKey(null);
+      return;
+    }
+    setExpandedPayoutKey(key);
+    await fetchPayoutLines(p);
+  };
+
+  const handleVerifyPayout = async (p: Stage2Payout) => {
+    const key = payoutKey(p);
+    setVerifyingPayoutKey(key);
+    try {
+      const before = payoutLinesByKey[key]?.header.last_reconciled_at ?? null;
+      // The verify ACTION lives on the provider connector (Stripe today) —
+      // it persists legacy matches AND emits the reconciled snapshot the
+      // canonical lines are stamped from.
+      await stripeService.verifyPayout(p.batch_id);
+      // The stamp lands via an async projection worker — poll (bounded)
+      // until last_reconciled_at advances instead of trusting a blind sleep.
+      // If the verify changed nothing (already reconciled), the timestamp
+      // never moves and the loop just exhausts its short budget.
+      for (let attempt = 0; attempt < 4; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 900));
+        const data = await fetchPayoutLines(p);
+        if (data && data.header.last_reconciled_at && data.header.last_reconciled_at !== before) break;
+      }
+      toast({ title: `Verification run for payout ${p.batch_id}.` });
+      await fetchSummary(false);
+    } catch {
+      toast({
+        title: `Verification failed for payout ${p.batch_id}.`,
+        variant: "destructive",
+      });
+    } finally {
+      setVerifyingPayoutKey((prev) => (prev === key ? null : prev));
+    }
+  };
+
   const fetchSummary = async (showSpinner = true) => {
     if (showSpinner) setLoading(true);
     else setRefreshing(true);
@@ -151,6 +227,16 @@ export default function ReconciliationPage() {
   useEffect(() => {
     fetchSummary();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Cross-page anchors (e.g. the /stripe/payouts "Reconciliation" button →
+  // #stage-2) fire the router's hash scroll before the summary-gated cards
+  // exist — retry once the content has rendered.
+  useEffect(() => {
+    if (!summary || typeof window === "undefined") return;
+    const hash = window.location.hash;
+    if (!hash) return;
+    document.getElementById(hash.slice(1))?.scrollIntoView({ behavior: "smooth" });
+  }, [summary === null]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleToggleProvider = async (row: ReconciliationProviderRow) => {
     if (!row.provider_id) return; // can't drill into a row without a provider
@@ -682,7 +768,16 @@ export default function ReconciliationPage() {
                           </thead>
                           <tbody>
                             {stage2Payouts.map((p) => (
-                              <Stage2PayoutRow key={`${p.provider}-${p.batch_id}`} payout={p} />
+                              <Stage2PayoutRow
+                                key={`${p.provider}-${p.batch_id}`}
+                                payout={p}
+                                isExpanded={expandedPayoutKey === payoutKey(p)}
+                                isLoading={payoutLinesLoading === payoutKey(p)}
+                                detail={payoutLinesByKey[payoutKey(p)] ?? null}
+                                verifying={verifyingPayoutKey === payoutKey(p)}
+                                onToggle={() => handleTogglePayout(p)}
+                                onVerify={() => handleVerifyPayout(p)}
+                              />
                             ))}
                             {stage2PromptRows.map((r) => {
                               const importTarget = settlementImportTarget(r.dimension_value_code);
@@ -955,37 +1050,187 @@ const ORDER_STATUS_LABEL: Record<OrderReconciliationStatus, string> = {
   banked: "Banked",
 };
 
-function Stage2PayoutRow({ payout }: { payout: Stage2Payout }) {
+// PR-D3: outcome vocabulary is DISTINCT from the row's banked/posted status —
+// the status chip tracks JE/bank progress, the outcome chip tracks whether the
+// payout's constituent lines reconcile against local records.
+const OUTCOME_BADGE: Record<string, { variant: "success" | "warning" | "outline"; label: string }> = {
+  verified: { variant: "success", label: "Reconciled clean" },
+  discrepancy: { variant: "warning", label: "Discrepancy" },
+  "": { variant: "outline", label: "Not reconciled yet" },
+};
+
+function Stage2PayoutRow({
+  payout,
+  isExpanded,
+  isLoading,
+  detail,
+  verifying,
+  onToggle,
+  onVerify,
+}: {
+  payout: Stage2Payout;
+  isExpanded: boolean;
+  isLoading: boolean;
+  detail: PayoutLinesResponse | null;
+  verifying: boolean;
+  onToggle: () => void;
+  onVerify: () => void;
+}) {
   // Banked payouts link to the clearance entry (the bank-side truth);
   // otherwise the settlement drain entry.
   const entryId = payout.clearance_entry_id ?? payout.settlement_entry_id;
   const entryNumber = payout.clearance_entry_number || payout.settlement_entry_number;
+  const header = detail?.header;
+  const outcome = header ? OUTCOME_BADGE[header.reconciliation_outcome] ?? OUTCOME_BADGE[""] : null;
+  const hasVariance =
+    header &&
+    (Number(header.gross_variance) !== 0 ||
+      Number(header.fee_variance) !== 0 ||
+      Number(header.net_variance) !== 0);
   return (
-    <tr className="border-b">
-      <td className="py-2 pr-3 font-medium">{payout.provider_name}</td>
-      <td className="py-2 pr-3 font-mono text-xs">{payout.batch_id}</td>
-      <td className="py-2 pr-3 whitespace-nowrap">{payout.payout_date ?? "—"}</td>
-      <td className="py-2 pr-3 text-right font-mono">
-        {formatMoney(payout.gross_amount)} <span className="text-xs text-muted-foreground">{payout.currency}</span>
-      </td>
-      <td className="py-2 pr-3 text-right font-mono">{formatMoney(payout.fees)}</td>
-      <td className="py-2 pr-3 text-right font-mono font-semibold">{formatMoney(payout.net_amount)}</td>
-      <td className="py-2 pr-3">
-        <Badge variant={PAYOUT_STATUS_VARIANT[payout.status]}>{PAYOUT_STATUS_LABEL[payout.status]}</Badge>
-      </td>
-      <td className="py-2 whitespace-nowrap">
-        {entryId ? (
-          <Link
-            href={`/accounting/journal-entries/${entryId}`}
-            className="text-primary hover:underline"
-          >
-            {entryNumber}
-          </Link>
-        ) : (
-          <span className="text-muted-foreground">—</span>
-        )}
-      </td>
-    </tr>
+    <Fragment>
+      <tr className="cursor-pointer border-b hover:bg-muted/50" onClick={onToggle}>
+        <td className="py-2 pr-3 font-medium">
+          <div className="flex items-center gap-1.5">
+            {isExpanded ? (
+              <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            )}
+            {payout.provider_name}
+          </div>
+        </td>
+        <td className="py-2 pr-3 font-mono text-xs">{payout.batch_id}</td>
+        <td className="py-2 pr-3 whitespace-nowrap">{payout.payout_date ?? "—"}</td>
+        <td className="py-2 pr-3 text-right font-mono">
+          {formatMoney(payout.gross_amount)} <span className="text-xs text-muted-foreground">{payout.currency}</span>
+        </td>
+        <td className="py-2 pr-3 text-right font-mono">{formatMoney(payout.fees)}</td>
+        <td className="py-2 pr-3 text-right font-mono font-semibold">{formatMoney(payout.net_amount)}</td>
+        <td className="py-2 pr-3">
+          <Badge variant={PAYOUT_STATUS_VARIANT[payout.status]}>{PAYOUT_STATUS_LABEL[payout.status]}</Badge>
+        </td>
+        <td className="py-2 whitespace-nowrap">
+          {entryId ? (
+            <Link
+              href={`/accounting/journal-entries/${entryId}`}
+              className="text-primary hover:underline"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {entryNumber}
+            </Link>
+          ) : (
+            <span className="text-muted-foreground">—</span>
+          )}
+        </td>
+      </tr>
+      {isExpanded && (
+        <tr>
+          <td colSpan={8} className="bg-muted/30 px-3 py-3">
+            {/* Stale-while-revalidate: keep showing cached detail during a
+                refetch; the spinner only renders on a cold first open. */}
+            {detail && header && outcome ? (
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center gap-3 text-xs">
+                  <Badge variant={outcome.variant}>{outcome.label}</Badge>
+                  {header.reconciliation_outcome !== "" && (
+                    <span className="text-muted-foreground">
+                      {header.matched_line_count}/{header.total_line_count} lines matched ·{" "}
+                      {header.verified_line_count} verified
+                      {header.last_reconciled_at
+                        ? ` · last checked ${header.last_reconciled_at.slice(0, 10)}`
+                        : ""}
+                    </span>
+                  )}
+                  {header.verify_supported && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={verifying}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onVerify();
+                      }}
+                    >
+                      {verifying ? (
+                        <>
+                          <Loader2 className="mr-1 h-3 w-3 animate-spin" /> Verifying…
+                        </>
+                      ) : (
+                        "Verify against local records"
+                      )}
+                    </Button>
+                  )}
+                </div>
+                {hasVariance && (
+                  <div className="flex items-start gap-2 rounded-md border border-yellow-500/30 bg-yellow-500/10 p-2 text-xs">
+                    <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-yellow-500" />
+                    <span>
+                      Payout totals don&apos;t equal the sum of its lines: gross{" "}
+                      {formatMoney(header.gross_variance)}, fees {formatMoney(header.fee_variance)}, net{" "}
+                      {formatMoney(header.net_variance)} {header.currency}
+                    </span>
+                  </div>
+                )}
+                {detail.lines.length > 0 ? (
+                  <table className="w-full text-xs">
+                    <thead className="border-b text-left uppercase text-muted-foreground">
+                      <tr>
+                        <th className="py-1.5 pr-3">#</th>
+                        <th className="py-1.5 pr-3">Type</th>
+                        <th className="py-1.5 pr-3">Reference</th>
+                        <th className="py-1.5 pr-3 text-right">Gross</th>
+                        <th className="py-1.5 pr-3 text-right">Fee</th>
+                        <th className="py-1.5 pr-3 text-right">Net</th>
+                        <th className="py-1.5">Match</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {detail.lines.map((line) => (
+                        <tr key={line.line_index} className="border-b last:border-0">
+                          <td className="py-1.5 pr-3 text-muted-foreground">{line.line_index + 1}</td>
+                          <td className="py-1.5 pr-3">{line.kind || "—"}</td>
+                          <td className="py-1.5 pr-3 font-mono">
+                            {line.source_id || line.provider_line_ref || "—"}
+                          </td>
+                          <td className="py-1.5 pr-3 text-right font-mono">
+                            {formatMoney(line.gross_amount)}{" "}
+                            <span className="text-muted-foreground">{line.currency}</span>
+                          </td>
+                          <td className="py-1.5 pr-3 text-right font-mono">{formatMoney(line.fee)}</td>
+                          <td className="py-1.5 pr-3 text-right font-mono">{formatMoney(line.net_amount)}</td>
+                          <td className="py-1.5">
+                            {line.verified ? (
+                              <span className="text-green-600 dark:text-green-500">
+                                ✓ {line.matched_ref ? `Matched ${line.matched_ref}` : "Verified"}
+                              </span>
+                            ) : line.match_kind === "auto_type" ? (
+                              <span className="text-muted-foreground">Auto ({line.kind})</span>
+                            ) : (
+                              <span className="text-yellow-600 dark:text-yellow-500">Unmatched</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <p className="text-xs italic text-muted-foreground">
+                    No per-line breakdown for this payout.
+                  </p>
+                )}
+              </div>
+            ) : isLoading ? (
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" /> Loading payout detail…
+              </div>
+            ) : (
+              <p className="text-xs italic text-muted-foreground">Detail unavailable.</p>
+            )}
+          </td>
+        </tr>
+      )}
+    </Fragment>
   );
 }
 

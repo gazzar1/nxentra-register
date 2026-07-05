@@ -46,7 +46,9 @@ class StripeConnectorConfig(AppConfig):
                 {"label": "Dashboard", "href": "/stripe", "icon": "LayoutDashboard"},
                 {"label": "Charges", "href": "/stripe/charges", "icon": "Receipt"},
                 {"label": "Payouts", "href": "/stripe/payouts", "icon": "Banknote"},
-                {"label": "Payout Verification", "href": "/stripe/reconciliation", "icon": "Scale"},
+                # PR-D3: the standalone Payout Verification page was absorbed
+                # into /finance/reconciliation Stage-2 (expandable per-line
+                # detail + verify action on each payout row).
             ],
         )
 
