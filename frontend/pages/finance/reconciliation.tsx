@@ -771,6 +771,7 @@ export default function ReconciliationPage() {
                               <Stage2PayoutRow
                                 key={`${p.provider}-${p.batch_id}`}
                                 payout={p}
+                                functionalCurrency={summary.stage2.functional_currency ?? ""}
                                 isExpanded={expandedPayoutKey === payoutKey(p)}
                                 isLoading={payoutLinesLoading === payoutKey(p)}
                                 detail={payoutLinesByKey[payoutKey(p)] ?? null}
@@ -884,6 +885,77 @@ export default function ReconciliationPage() {
                   </div>
                 ) : (
                   <p className="text-muted-foreground italic">No bank statement lines imported yet.</p>
+                )}
+
+                {/* Inline unmatched lines — the counts alone forced a page-switch
+                   to even see WHICH deposits were open. Oldest first (the page's
+                   aging framing); each row deep-links to its statement workspace. */}
+                {(summary.stage3.unmatched_items?.length ?? 0) > 0 && (
+                  <div className="mt-3 border-t pt-3">
+                    <p className="mb-2 text-xs uppercase text-muted-foreground">
+                      Unmatched bank lines — oldest first
+                    </p>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead className="border-b text-left uppercase text-muted-foreground">
+                          <tr>
+                            <th className="py-1.5 pr-3">Date</th>
+                            <th className="py-1.5 pr-3">Description</th>
+                            <th className="py-1.5 pr-3 text-right">Amount</th>
+                            <th className="py-1.5 pr-3">Age</th>
+                            <th className="py-1.5"></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {summary.stage3.unmatched_items?.map((item) => (
+                            <tr key={item.line_id} className="border-b last:border-0">
+                              <td className="py-1.5 pr-3 whitespace-nowrap">{item.line_date}</td>
+                              <td className="py-1.5 pr-3">
+                                {item.description}
+                                {item.reference && (
+                                  <span className="ms-1 font-mono text-muted-foreground">{item.reference}</span>
+                                )}
+                              </td>
+                              <td className="py-1.5 pr-3 text-right font-mono">
+                                {formatMoney(item.amount)}{" "}
+                                <span className="text-muted-foreground">{item.currency}</span>
+                              </td>
+                              <td className="py-1.5 pr-3 whitespace-nowrap">
+                                {/* Negative age = future-dated line (usually a
+                                    DD/MM import mis-parse, the A128 class) —
+                                    an anomaly, not a calm "-37d". */}
+                                {item.age_days < 0 ? (
+                                  <Badge variant="destructive">future date</Badge>
+                                ) : (
+                                  <Badge
+                                    variant={item.age_days > 30 ? "destructive" : item.age_days > 7 ? "warning" : "outline"}
+                                  >
+                                    {item.age_days}d
+                                  </Badge>
+                                )}
+                              </td>
+                              <td className="py-1.5 text-right whitespace-nowrap">
+                                <Link
+                                  href={`/accounting/bank-reconciliation/${item.statement_id}`}
+                                  className="font-medium text-primary hover:underline"
+                                >
+                                  Match →
+                                </Link>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {(summary.stage3.unmatched_lines ?? 0) > (summary.stage3.unmatched_items?.length ?? 0) && (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        +{(summary.stage3.unmatched_lines ?? 0) - (summary.stage3.unmatched_items?.length ?? 0)} more —{" "}
+                        <Link href="/accounting/bank-reconciliation" className="text-primary hover:underline">
+                          open Bank Reconciliation
+                        </Link>
+                      </p>
+                    )}
+                  </div>
                 )}
 
                 {/* U3: durable match summary from ReconciliationLink — surfaces
@@ -1061,6 +1133,7 @@ const OUTCOME_BADGE: Record<string, { variant: "success" | "warning" | "outline"
 
 function Stage2PayoutRow({
   payout,
+  functionalCurrency,
   isExpanded,
   isLoading,
   detail,
@@ -1069,6 +1142,7 @@ function Stage2PayoutRow({
   onVerify,
 }: {
   payout: Stage2Payout;
+  functionalCurrency: string;
   isExpanded: boolean;
   isLoading: boolean;
   detail: PayoutLinesResponse | null;
@@ -1080,6 +1154,9 @@ function Stage2PayoutRow({
   // otherwise the settlement drain entry.
   const entryId = payout.clearance_entry_id ?? payout.settlement_entry_id;
   const entryNumber = payout.clearance_entry_number || payout.settlement_entry_number;
+  // FX bridge: present only when the backend proved the conversion story
+  // (posted settlement JE, in this currency, real stamped rate).
+  const hasFxBridge = Boolean(payout.exchange_rate && payout.net_functional && functionalCurrency);
   const header = detail?.header;
   const outcome = header ? OUTCOME_BADGE[header.reconciliation_outcome] ?? OUTCOME_BADGE[""] : null;
   const hasVariance =
@@ -1106,7 +1183,17 @@ function Stage2PayoutRow({
           {formatMoney(payout.gross_amount)} <span className="text-xs text-muted-foreground">{payout.currency}</span>
         </td>
         <td className="py-2 pr-3 text-right font-mono">{formatMoney(payout.fees)}</td>
-        <td className="py-2 pr-3 text-right font-mono font-semibold">{formatMoney(payout.net_amount)}</td>
+        <td className="py-2 pr-3 text-right font-mono font-semibold">
+          {formatMoney(payout.net_amount)}
+          {hasFxBridge && (
+            <div
+              className="text-xs font-normal text-muted-foreground"
+              title={`Posted at 1 ${payout.currency} = ${payout.exchange_rate} ${functionalCurrency}`}
+            >
+              ≈ {formatMoney(payout.net_functional as string)} {functionalCurrency}
+            </div>
+          )}
+        </td>
         <td className="py-2 pr-3">
           <Badge variant={PAYOUT_STATUS_VARIANT[payout.status]}>{PAYOUT_STATUS_LABEL[payout.status]}</Badge>
         </td>
@@ -1131,6 +1218,23 @@ function Stage2PayoutRow({
                 refetch; the spinner only renders on a cold first open. */}
             {detail && header && outcome ? (
               <div className="space-y-3">
+                {hasFxBridge && (
+                  <p className="text-xs text-muted-foreground">
+                    {/* "at the posted rate", NOT "posted to the books": these are
+                        statement amounts × the JE's stamped rate — the JE's own
+                        lines can differ at cent level (per-line rounding, A39
+                        reductions, 6dp header rate), hence the ≈. */}
+                    Statement amounts at the posted rate{" "}
+                    <span className="font-medium text-foreground">
+                      1 {payout.currency} = {payout.exchange_rate} {functionalCurrency}
+                    </span>
+                    : ≈ gross {formatMoney(payout.gross_functional as string)} · fees{" "}
+                    {formatMoney(payout.fees_functional as string)} · net{" "}
+                    <span className="font-medium text-foreground">
+                      {formatMoney(payout.net_functional as string)} {functionalCurrency}
+                    </span>
+                  </p>
+                )}
                 <div className="flex flex-wrap items-center gap-3 text-xs">
                   <Badge variant={outcome.variant}>{outcome.label}</Badge>
                   {header.reconciliation_outcome !== "" && (

@@ -61,6 +61,14 @@ export interface Stage2Payout {
   settlement_entry_number: string;
   clearance_entry_id: number | null;
   clearance_entry_number: string;
+  // FX bridge (null unless a POSTED settlement JE converted this payout's
+  // currency into the books currency at a real stamped rate): the
+  // functional-currency amounts AS POSTED. Optional so older backends
+  // still type-check.
+  exchange_rate?: string | null;
+  gross_functional?: string | null;
+  fees_functional?: string | null;
+  net_functional?: string | null;
 }
 
 export interface Stage2Summary {
@@ -69,6 +77,8 @@ export interface Stage2Summary {
   settled_count?: number;
   settled_total?: string;
   pending_csv_import_note?: string;
+  // The books currency the FX bridge converts into.
+  functional_currency?: string;
   payouts?: Stage2Payout[];
 }
 
@@ -115,12 +125,26 @@ export interface PayoutLinesResponse {
   lines: PayoutLineDetail[];
 }
 
+export interface Stage3UnmatchedItem {
+  line_id: number;
+  statement_id: number;
+  line_date: string;
+  description: string;
+  reference: string;
+  amount: string;
+  currency: string;
+  age_days: number;
+}
+
 export interface Stage3Summary {
   available: boolean;
   total_lines?: number;
   matched_lines?: number;
   unmatched_lines?: number;
   matched_with_unresolved_difference?: number;
+  // Oldest open unmatched bank lines, inline (capped server-side;
+  // unmatched_lines carries the full count).
+  unmatched_items?: Stage3UnmatchedItem[];
 }
 
 export type DifferenceReason =

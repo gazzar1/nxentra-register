@@ -390,7 +390,7 @@ def _stage2_payouts(company, limit: int = 25) -> list[dict]:
         source_module__in=["payment_settlement", "payment_settlement_clearance"],
         source_document__in=source_docs,
         status=JournalEntry.Status.POSTED,
-    ).values("source_module", "source_document", "entry_number", "id"):
+    ).values("source_module", "source_document", "entry_number", "id", "currency", "exchange_rate"):
         target = settlement_by_doc if entry["source_module"] == "payment_settlement" else clearance_by_doc
         target[entry["source_document"]] = entry
 
@@ -405,6 +405,7 @@ def _stage2_payouts(company, limit: int = 25) -> list[dict]:
     )
 
     providers_by_code = {sp.normalized_code: sp for sp in SettlementProvider.objects.filter(company=company)}
+    functional_currency = (company.functional_currency or company.default_currency or "").upper()
 
     rows = []
     for h in headers:
@@ -421,25 +422,71 @@ def _stage2_payouts(company, limit: int = 25) -> list[dict]:
             payout_status = "pending"
 
         provider = providers_by_code.get(h.provider)
-        rows.append(
-            {
-                "provider": h.provider,
-                "provider_name": provider.display_name if provider else h.provider.title(),
-                "provider_type": provider.provider_type if provider else "gateway",
-                "batch_id": h.payout_batch_id,
-                "payout_date": h.payout_date.isoformat() if h.payout_date else None,
-                "gross_amount": _money_str(h.gross_amount),
-                "fees": _money_str(h.fees),
-                "net_amount": _money_str(h.net_amount),
-                "currency": h.currency,
-                "status": payout_status,
-                "settlement_entry_id": settlement["id"] if settlement else None,
-                "settlement_entry_number": settlement["entry_number"] if settlement else "",
-                "clearance_entry_id": clearance["id"] if clearance else None,
-                "clearance_entry_number": clearance["entry_number"] if clearance else "",
-            }
-        )
+        row = {
+            "provider": h.provider,
+            "provider_name": provider.display_name if provider else h.provider.title(),
+            "provider_type": provider.provider_type if provider else "gateway",
+            "batch_id": h.payout_batch_id,
+            "payout_date": h.payout_date.isoformat() if h.payout_date else None,
+            "gross_amount": _money_str(h.gross_amount),
+            "fees": _money_str(h.fees),
+            "net_amount": _money_str(h.net_amount),
+            "currency": h.currency,
+            "status": payout_status,
+            "settlement_entry_id": settlement["id"] if settlement else None,
+            "settlement_entry_number": settlement["entry_number"] if settlement else "",
+            "clearance_entry_id": clearance["id"] if clearance else None,
+            "clearance_entry_number": clearance["entry_number"] if clearance else "",
+        }
+        row.update(_fx_bridge(h, settlement, functional_currency))
+        rows.append(row)
     return rows
+
+
+def _fx_bridge(header, settlement_je: dict | None, functional_currency: str) -> dict:
+    """FX bridge for a foreign-currency payout row: the settlement STATEMENT
+    amounts converted at the settlement JE's stamped rate (A142) — so a
+    merchant seeing Stage 1 in books currency and this row in payout currency
+    doesn't have to do the conversion in their head.
+
+    These are reconstructions (the UI renders them with ≈ and words them as
+    "at the posted rate", never "posted to the books"): the JE's own lines can
+    differ at cent level (per-line quantization on multi-gateway breakdowns;
+    the header rate is stored 6dp while lines converted at the 8dp lookup) and
+    the posted gross is REDUCED when A39 skipped already-credited lines. The
+    cent-exact upgrade is reading functional amounts off the JE lines —
+    deliberately not done here (account-role classification per line for a
+    display hint); revisit if a merchant ever reconciles against the bridge.
+
+    Rendered ONLY when the story is provably coherent:
+    - the payout currency differs from the books currency,
+    - a POSTED settlement JE exists,
+    - that JE was posted IN the payout's currency (a mismatch means the row's
+      currency label and the books disagree — e.g. the accepted Paymob demo
+      artifact whose event baked USD over EGP magnitudes; bridging it would
+      assert a conversion that never happened),
+    - the stamped rate is a real conversion (> 0 and != 1 — pre-A142 JEs
+      carry the 1.0 default while their lines converted at the real rate).
+    Absent any of these the fields are null and the UI shows no bridge.
+    """
+    payout_currency = (header.currency or "").upper()
+    empty = {"exchange_rate": None, "gross_functional": None, "fees_functional": None, "net_functional": None}
+    if not payout_currency or not functional_currency or payout_currency == functional_currency:
+        return empty
+    if not settlement_je:
+        return empty
+    je_currency = (settlement_je.get("currency") or "").upper()
+    rate = settlement_je.get("exchange_rate") or Decimal("0")
+    if je_currency != payout_currency or rate <= 0 or rate == Decimal("1"):
+        return empty
+    return {
+        # normalize() strips trailing zeros; format(..., "f") keeps plain
+        # notation (str(Decimal("50.000000").normalize()) would be "5E+1").
+        "exchange_rate": format(rate.normalize(), "f"),
+        "gross_functional": _money_str(header.gross_amount * rate),
+        "fees_functional": _money_str(header.fees * rate),
+        "net_functional": _money_str(header.net_amount * rate),
+    }
 
 
 def _stage2_summary(company) -> dict:
@@ -502,6 +549,9 @@ def _stage2_summary(company) -> dict:
         "available": True,
         "settled_count": settled_count,
         "settled_total": _money_str(settled_total),
+        # The books currency the FX bridge converts INTO (and the currency of
+        # the tiles above) — explicit so the frontend never guesses it.
+        "functional_currency": (company.functional_currency or company.default_currency or "").upper(),
         # Stage-2 payout ledger: per-payout rows from the canonical
         # ProviderPayout read-models (amounts in the payout's own currency;
         # the tiles above stay functional-currency totals).
@@ -509,24 +559,56 @@ def _stage2_summary(company) -> dict:
     }
 
 
+_STAGE3_UNMATCHED_LIMIT = 8
+
+
 def _stage3_summary(company) -> dict:
-    """Stage 3 — Bank Match. Reads existing bank-rec data."""
+    """Stage 3 — Bank Match. Reads existing bank-rec data.
+
+    ``unmatched_items``: the oldest open unmatched bank lines, inline — the
+    counts alone forced a page-switch to even see WHICH deposits were
+    unresolved. Oldest-first (the aging framing the rest of the page uses);
+    capped at ``_STAGE3_UNMATCHED_LIMIT`` with the count still carrying the
+    full total, and each row deep-links to its statement's match workspace.
+    Matched-with-difference rows are NOT here — they have their own inline
+    queue (needs_review) with the resolve flow.
+    """
+    from datetime import date as _date
+
     from accounting.models import BankStatementLine
 
     lines = BankStatementLine.objects.filter(company=company)
     total = lines.count()
-    unmatched = lines.filter(match_status=BankStatementLine.MatchStatus.UNMATCHED).count()
+    unmatched_qs = lines.filter(match_status=BankStatementLine.MatchStatus.UNMATCHED)
+    unmatched = unmatched_qs.count()
     with_diff = lines.filter(
         match_status=BankStatementLine.MatchStatus.MATCHED_WITH_DIFFERENCE,
         difference_reason=BankStatementLine.DifferenceReason.UNRESOLVED,
     ).count()
     matched = total - unmatched
+
+    today = _date.today()
+    unmatched_items = [
+        {
+            "line_id": line.id,
+            "statement_id": line.statement_id,
+            "line_date": line.line_date.isoformat(),
+            "description": line.description,
+            "reference": line.reference,
+            "amount": _money_str(line.amount),
+            "currency": line.statement.currency,
+            "age_days": (today - line.line_date).days,
+        }
+        for line in unmatched_qs.select_related("statement").order_by("line_date", "id")[:_STAGE3_UNMATCHED_LIMIT]
+    ]
+
     return {
         "available": True,
         "total_lines": total,
         "matched_lines": matched,
         "unmatched_lines": unmatched,
         "matched_with_unresolved_difference": with_diff,
+        "unmatched_items": unmatched_items,
     }
 
 
