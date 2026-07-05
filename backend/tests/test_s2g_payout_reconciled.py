@@ -452,15 +452,13 @@ def test_backfill_captures_preexisting_verified_state(db, company, monkeypatch):
     assert len(_reconciled_events(company)) == 1  # unchanged → guard suppressed
 
 
-# ── PR-D2 forward gate ──────────────────────────────────────────────
+# ── PR-D2 gate (promoted from strict-xfail when D2 landed, 2026-07-05) ──
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="PR-D2: PaymentsProjection consumes PROVIDER_PAYOUT_RECONCILED and stamps "
-    "match state onto ProviderPayoutLine — this flips green when D2 lands.",
-)
 def test_payments_projection_consumes_reconciled_events(db):
+    """Was xfail(strict) in PR-D1; PR-D2 wired the consumer — now a permanent
+    guard that the reconciled stream can never silently drop out of the
+    payments projection (test_s2h covers the stamping behavior)."""
     from platform_connectors.projections import PaymentsProjection
 
     assert EventTypes.PROVIDER_PAYOUT_RECONCILED in PaymentsProjection().consumes

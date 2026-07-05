@@ -884,15 +884,18 @@ def _explain_stripe_payout(company, payout):
 def _explain_stripe_payout_canonical(company, payout):
     """C3: line money from the canonical ProviderPayoutLine read-model.
 
-    Per-line ``verified`` (and the int row id) are joined from the legacy line
-    cache by source_id — match-state has no canonical home until PR-D. Returns
-    None when the payout has no canonical header, so the caller can fall back
-    to the legacy read instead of rendering an empty explainer.
+    Per-line ``verified``: canonical (``line.verified``, PR-D2) behind
+    STRIPE_CANONICAL_VERIFIED_READS, else joined from the legacy line cache by
+    source_id. The int row ``id`` keeps the legacy twin when present (frontend
+    key + the pk namespace bank matching persists — C4 scope). Returns None
+    when the payout has no canonical header, so the caller can fall back to
+    the legacy read instead of rendering an empty explainer.
     """
     from stripe_connector.models import StripePayoutTransaction
     from stripe_connector.payout_reads import (
         canonical_header,
         canonical_lines,
+        canonical_verified_reads_enabled,
         normalize_line_kind,
     )
 
@@ -918,6 +921,7 @@ def _explain_stripe_payout_canonical(company, payout):
     adjustments_total = Decimal("0")
     transactions = []
 
+    canonical_verified = canonical_verified_reads_enabled()
     for line in lines:
         kind = normalize_line_kind(line.kind)
         twin = legacy_by_source.get(line.source_id)
@@ -929,7 +933,7 @@ def _explain_stripe_payout_canonical(company, payout):
                 "fee": str(line.fee),
                 "net": str(line.net_amount),
                 "source_id": line.source_id,
-                "verified": bool(twin.verified) if twin else False,
+                "verified": bool(line.verified) if canonical_verified else (bool(twin.verified) if twin else False),
             }
         )
 

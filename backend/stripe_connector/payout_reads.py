@@ -1,20 +1,25 @@
 # stripe_connector/payout_reads.py
-"""ADR-0002 PR-C3 — flag-aware canonical payout read helpers.
+"""ADR-0002 PR-C3/PR-D2 — flag-aware canonical payout read helpers.
 
 ``STRIPE_CANONICAL_PAYOUT_READS=True`` switches Stripe payout HEADER and LINE
 *money* reads to the canonical read-models (``ProviderPayout`` /
 ``ProviderPayoutLine``, sole writer = PaymentsProjection).
+
+``STRIPE_CANONICAL_VERIFIED_READS=True`` (PR-D2, only meaningful when the
+flag above is also on) additionally switches VERIFIED line match-state reads
+to ``ProviderPayoutLine.verified`` — stamped by PaymentsProjection from
+PROVIDER_PAYOUT_RECONCILED snapshots.
 
 What deliberately does NOT switch (no canonical home yet):
 - ``journal_entry_id`` (the bank-match write-back stamp) and the integer
   ``StripePayout`` pk namespace persisted in
   ``BankTransaction.matched_object_id`` — legacy until C4 reworks the id
   contract;
-- ``verified`` / ``local_charge`` line match-state — legacy until PR-D routes
-  verification through reconciliation events.
+- the ``verified``/``local_charge`` WRITE path (reconcile auto-match + the
+  verify endpoint) — legacy dual-writes until C4b removes them.
 
-Legacy dual-writes are untouched either way: flipping the flag back to False
-is a pure read rollback (edit .env + restart, no migration).
+Legacy dual-writes are untouched either way: flipping either flag back to
+False is a pure read rollback (edit .env + restart, no migration).
 """
 
 from django.conf import settings
@@ -29,6 +34,20 @@ def canonical_payout_reads_enabled() -> bool:
     contract tests (and the .env flip on the droplet).
     """
     return bool(getattr(settings, "STRIPE_CANONICAL_PAYOUT_READS", False))
+
+
+def canonical_verified_reads_enabled() -> bool:
+    """Read the PR-D2 flag at call time (same A86.7a shape as above).
+
+    Switches VERIFIED match-state reads to the canonical ProviderPayoutLine
+    (stamped by PaymentsProjection from PROVIDER_PAYOUT_RECONCILED snapshots).
+    Only meaningful when ``STRIPE_CANONICAL_PAYOUT_READS`` is also on — every
+    flipped site sits on a canonical-only branch. Flip gate:
+    ``payments_canonical_backfill`` reports ``verified_parity_mismatch == 0``
+    (event-backed payouts; event-less ones are counted under
+    ``verified_parity_skipped_no_event`` and stay legacy-only until C4b).
+    """
+    return bool(getattr(settings, "STRIPE_CANONICAL_VERIFIED_READS", False))
 
 
 def canonical_headers(company):
@@ -95,6 +114,27 @@ def canonical_line_counts(company, batch_ids):
             company=company,
             provider=CANONICAL_PROVIDER,
             payout_batch_id__in=list(batch_ids),
+        )
+        .values("payout_batch_id")
+        .annotate(n=Count("id"))
+        .values_list("payout_batch_id", "n")
+    )
+
+
+def canonical_verified_counts(company, batch_ids):
+    """``{payout_batch_id: verified line count}`` from the canonical match
+    state (PR-D2). Mirrors ``canonical_line_counts``; batches missing from the
+    dict have zero verified lines."""
+    from django.db.models import Count
+
+    from platform_connectors.models import ProviderPayoutLine
+
+    return dict(
+        ProviderPayoutLine.objects.filter(
+            company=company,
+            provider=CANONICAL_PROVIDER,
+            payout_batch_id__in=list(batch_ids),
+            verified=True,
         )
         .values("payout_batch_id")
         .annotate(n=Count("id"))

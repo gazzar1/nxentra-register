@@ -493,6 +493,21 @@ class ProviderPayout(models.Model):
     currency = models.CharField(max_length=3, blank=True)
     payout_date = models.DateField(null=True, blank=True)
     provider_metadata = models.JSONField(default=dict, blank=True)  # provider-specific residue only
+    # ADR-0002 PR-D2: header reconciliation outcome, stamped from the latest
+    # PROVIDER_PAYOUT_RECONCILED snapshot (last-write-wins). "" = never reconciled.
+    # Variances are the snapshot's event-frozen numbers (settlement-event header
+    # totals vs its line sums), NOT the legacy header-vs-cache comparison.
+    reconciliation_outcome = models.CharField(max_length=20, blank=True, default="")  # ""|verified|discrepancy
+    matched_line_count = models.PositiveIntegerField(default=0)
+    unmatched_line_count = models.PositiveIntegerField(default=0)
+    verified_line_count = models.PositiveIntegerField(default=0)
+    gross_variance = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    fee_variance = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    net_variance = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    last_reconciled_at = models.DateTimeField(null=True, blank=True)
+    reconciliation_source = models.CharField(
+        max_length=20, blank=True, default=""
+    )  # auto_reconcile|manual_verify|backfill
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -577,6 +592,18 @@ class ProviderPayoutLine(models.Model):
     # to zero (ADR-0002 Phase 2 architecture gate).
     uncollected_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
     currency = models.CharField(max_length=3, blank=True)
+    # ADR-0002 PR-D2: match state, stamped from PROVIDER_PAYOUT_RECONCILED
+    # snapshots (last-write-wins) — the replay-durable home for the legacy
+    # StripePayoutTransaction.verified/local_charge direct writes. `verified`
+    # mirrors the persisted legacy value at snapshot time (parity target for
+    # the STRIPE_CANONICAL_VERIFIED_READS switch); matched_ref replaces the
+    # local_charge FK with the matched object's external id.
+    verified = models.BooleanField(default=False)
+    match_kind = models.CharField(max_length=20, blank=True, default="")  # charge|refund|auto_type|none|""
+    matched_ref = models.CharField(max_length=255, blank=True, default="")
+    matched_ref_type = models.CharField(max_length=20, blank=True, default="")  # charge|refund|""
+    provider_line_ref = models.CharField(max_length=255, blank=True, default="")  # provider's line id (balance txn)
+    verified_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -592,6 +619,8 @@ class ProviderPayoutLine(models.Model):
         indexes = [
             models.Index(fields=["company", "provider", "payout_batch_id"]),
             models.Index(fields=["company", "provider", "source_id"]),
+            # Serves the per-batch verified-count aggregation (PR-D2 read switch).
+            models.Index(fields=["company", "provider", "payout_batch_id", "verified"]),
         ]
         verbose_name = "Provider Payout Line"
         verbose_name_plural = "Provider Payout Lines"

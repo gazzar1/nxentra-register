@@ -144,10 +144,23 @@ provider_line_ref/verified_at`) + header outcome columns to `ProviderPayout`;
 re-apply would zero verdicts); verified-count reads flip behind default-OFF
 `STRIPE_CANONICAL_VERIFIED_READS`; `payments_canonical_backfill` gains
 `verified_parity_ok/mismatch/skipped_no_event` counters — the flip gate is
-`verified_parity_mismatch == 0` **among event-backed payouts**. Deploy runbook
-MUST run `payments_canonical_backfill --apply` (rebuild + drain): reconciled
-events emitted before D2 registers the type sit behind the projection bookmark
-(`company_sequence__gt`) and are otherwise silently skipped.
+`verified_parity_mismatch == 0` **among event-backed payouts**.
+
+**D2 deploy runbook (ordering is load-bearing — C3 canonical reads are LIVE):**
+1. `git pull` → `migrate platform_connectors` (0009) **BEFORE** restarting
+   api/celery — the new model selects the new columns on every canonical
+   query, so new code on an un-migrated DB 500s the payout pages.
+2. Restart api/celery/celery-beat.
+3. `payments_canonical_backfill --apply` — MANDATORY, not optional:
+   reconciled events emitted before D2 registered the type sit **behind** the
+   projection bookmark (`company_sequence__gt`; lag reads 0 for them) and are
+   otherwise silently skipped. NB `--apply`'s rebuild DELETEs then replays the
+   canonical rows per company — live C3 reads render empty/partial for a few
+   seconds mid-rebuild; run in a quiet window or per `--company-id`.
+4. Read the gate off the post-`--apply` report (report-only output annotates
+   that un-replayed events read as false mismatches).
+5. `verified_parity_mismatch == 0` → set `STRIPE_CANONICAL_VERIFIED_READS=True`
+   in `.env` + restart. Rollback = flip back + restart (reads only).
 
 **C4b checklist additions (from the blast-radius verify pass):**
 `stripe_connector/admin.py` (list_display/list_filter on `verified`) and
