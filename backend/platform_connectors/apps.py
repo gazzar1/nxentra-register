@@ -17,6 +17,9 @@ class PlatformConnectorsConfig(AppConfig):
     name = "platform_connectors"
     verbose_name = "Platform Connectors"
 
+    # Event dataclasses merged into EVENT_DATA_CLASSES by ProjectionsConfig.ready().
+    event_types_module = "platform_connectors.event_types"
+
     # Projections discovered + registered by ProjectionsConfig.ready().
     projections = [
         # Creates JEs from PLATFORM_* events.

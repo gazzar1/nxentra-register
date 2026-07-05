@@ -17,8 +17,23 @@ from .models import ReconciliationException
 logger = logging.getLogger(__name__)
 
 
+_SEVERITY_RANK = {
+    ReconciliationException.Severity.LOW: 0,
+    ReconciliationException.Severity.MEDIUM: 1,
+    ReconciliationException.Severity.HIGH: 2,
+    ReconciliationException.Severity.CRITICAL: 3,
+}
+
+
 def _create_exception(company, **kwargs):
-    """Create a ReconciliationException, deduplicating by reference."""
+    """Create a ReconciliationException, deduplicating by reference.
+
+    On a dedup hit the open row is REFRESHED (title/description/amount/details)
+    when the new detection differs — a variance that grew from 50 to 5,000 must
+    not keep a stale title/amount on the open row (PR-D). Severity only ever
+    UPGRADES: a shrinking-but-still-open anomaly keeps its peak severity so it
+    can't silently drop off an operator's severity-sorted triage view.
+    """
     ref_type = kwargs.get("reference_type", "")
     ref_id = kwargs.get("reference_id")
     exc_type = kwargs["exception_type"]
@@ -37,10 +52,22 @@ def _create_exception(company, **kwargs):
             ],
         ).first()
         if existing:
-            # Update details if they changed
-            if kwargs.get("details") and existing.details != kwargs["details"]:
-                existing.details = kwargs["details"]
-                existing.save(update_fields=["details", "updated_at"])
+            update_fields = []
+            for field_name in ("title", "description", "details"):
+                new_value = kwargs.get(field_name)
+                if new_value and getattr(existing, field_name) != new_value:
+                    setattr(existing, field_name, new_value)
+                    update_fields.append(field_name)
+            new_severity = kwargs.get("severity")
+            if new_severity and _SEVERITY_RANK.get(new_severity, 0) > _SEVERITY_RANK.get(existing.severity, 0):
+                existing.severity = new_severity
+                update_fields.append("severity")
+            new_amount = kwargs.get("amount")
+            if new_amount is not None and existing.amount != new_amount:
+                existing.amount = new_amount
+                update_fields.append("amount")
+            if update_fields:
+                existing.save(update_fields=[*update_fields, "updated_at"])
             return existing
 
     exc = ReconciliationException.objects.create(company=company, **kwargs)
@@ -190,6 +217,9 @@ def _detect_platform_discrepancies(company, platform, payouts, reconcile_fn, pay
                 reference_label=f"{platform.title()} payout {payout_id_str}",
                 details={
                     "payout_id": payout_id_str,
+                    # Same shape sync_payout_variance_exception writes, so the two
+                    # producers of this dedup key never churn each other's details.
+                    "payout_batch_id": payout_id_str,
                     "gross_variance": str(recon.gross_variance),
                     "fee_variance": str(recon.fee_variance),
                     "net_variance": str(recon.net_variance),
@@ -291,6 +321,120 @@ def detect_payout_discrepancies(company, date_from=None, date_to=None):
         pass
 
     return created
+
+
+def sync_payout_variance_exception(
+    company,
+    *,
+    platform,
+    payout_pk,
+    payout_batch_id,
+    payout_date,
+    currency,
+    snapshot,
+):
+    """PR-D: route a PROVIDER_PAYOUT_RECONCILED snapshot's outcome into the
+    exception queue (called by the adapter's emit path on every state change).
+
+    - outcome "discrepancy" → upsert a PAYOUT_DISCREPANCY on EXACTLY the scan
+      detector's dedup key (reference_type=f"{platform}_payout", reference_id=
+      legacy payout pk), so event-driven production and the 30-day
+      detect_payout_discrepancies scan fold onto the same open row. The key
+      stays legacy-shaped in PR-D deliberately — re-keying to the canonical
+      ProviderPayout pk now would fork open rows away from the still-running
+      scan; details carry payout_batch_id so rows stay meaningful after C4.
+    - outcome "verified" → auto-resolve open PAYOUT_DISCREPANCY / FEE_VARIANCE
+      rows for that payout (machine-detected facts close when the fact clears;
+      the scan never closed these types).
+    """
+    outcome = snapshot.get("outcome") or ""
+    if outcome == "verified":
+        return resolve_payout_variance_exceptions(company, platform=platform, payout_pk=payout_pk)
+    if outcome != "discrepancy":
+        return None
+
+    gross_variance = Decimal(str(snapshot.get("gross_variance") or "0"))
+    fee_variance = Decimal(str(snapshot.get("fee_variance") or "0"))
+    net_variance = Decimal(str(snapshot.get("net_variance") or "0"))
+    unmatched = int(snapshot.get("unmatched_count") or 0)
+
+    # Same strings reconcile_payout builds, so the scan path and this path
+    # write identical rows in the normal (no-drift) case.
+    discrepancies = []
+    if gross_variance != 0:
+        discrepancies.append(f"Gross variance: {gross_variance}")
+    if fee_variance != 0:
+        discrepancies.append(f"Fee variance: {fee_variance}")
+    if net_variance != 0:
+        discrepancies.append(f"Net variance: {net_variance}")
+    if unmatched > 0:
+        discrepancies.append(f"{unmatched} unmatched transaction(s)")
+
+    severity = ReconciliationException.Severity.HIGH
+    if abs(net_variance) > Decimal("100"):
+        severity = ReconciliationException.Severity.CRITICAL
+
+    return _create_exception(
+        company,
+        exception_type=ReconciliationException.ExceptionType.PAYOUT_DISCREPANCY,
+        severity=severity,
+        title=f"Payout discrepancy: {net_variance} on {payout_date}",
+        description=(
+            f"{platform.title()} payout {payout_batch_id} has a net variance of "
+            f"{net_variance}. {'; '.join(discrepancies)}"
+        ),
+        amount=abs(net_variance),
+        currency=currency,
+        exception_date=payout_date,
+        platform=platform,
+        reference_type=f"{platform}_payout",
+        reference_id=payout_pk,
+        reference_label=f"{platform.title()} payout {payout_batch_id}",
+        # Byte-identical shape to _detect_platform_discrepancies' details: both
+        # producers share the dedup key, and _create_exception refreshes details
+        # on difference — divergent shapes would churn on every alternation.
+        details={
+            "payout_id": payout_batch_id,
+            "payout_batch_id": payout_batch_id,
+            "gross_variance": str(gross_variance),
+            "fee_variance": str(fee_variance),
+            "net_variance": str(net_variance),
+            "matched_transactions": int(snapshot.get("matched_count") or 0),
+            "unmatched_transactions": unmatched,
+            "discrepancies": discrepancies,
+        },
+    )
+
+
+def resolve_payout_variance_exceptions(company, *, platform, payout_pk):
+    """Auto-resolve open payout-variance exceptions for a payout that now
+    reconciles clean. Returns the number resolved.
+
+    ESCALATED rows are deliberately excluded (matching auto_resolve_matched):
+    an operator explicitly parked those for review — a machine verdict must
+    not close them behind their back.
+    """
+    open_rows = ReconciliationException.objects.filter(
+        company=company,
+        exception_type__in=[
+            ReconciliationException.ExceptionType.PAYOUT_DISCREPANCY,
+            ReconciliationException.ExceptionType.FEE_VARIANCE,
+        ],
+        reference_type=f"{platform}_payout",
+        reference_id=payout_pk,
+        status__in=[
+            ReconciliationException.Status.OPEN,
+            ReconciliationException.Status.IN_PROGRESS,
+        ],
+    )
+    resolved = 0
+    for exc in open_rows:
+        exc.status = ReconciliationException.Status.RESOLVED
+        exc.resolved_at = timezone.now()
+        exc.resolution_note = "Auto-resolved: payout reconciled clean."
+        exc.save(update_fields=["status", "resolved_at", "resolution_note", "updated_at"])
+        resolved += 1
+    return resolved
 
 
 def auto_resolve_matched(company):

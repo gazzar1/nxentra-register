@@ -25,6 +25,7 @@ from .models import (
     StripeRefund,
 )
 from .payout_reads import canonical_header, canonical_payout_reads_enabled
+from .reconciled_emit import SOURCE_AUTO, maybe_emit_payout_reconciled
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +211,11 @@ def reconcile_payout(company, payout):
         recon.status = "verified"
     else:
         recon.status = "unverified"
+
+    # PR-D: snapshot the (just-persisted) match state as an event — the
+    # replay-durable home for verified/local_charge. Emit-on-change, failure-
+    # isolated, flag-independent; the returned dataclass is untouched.
+    maybe_emit_payout_reconciled(company, payout, source=SOURCE_AUTO)
 
     return recon
 
