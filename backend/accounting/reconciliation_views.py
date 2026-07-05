@@ -351,7 +351,7 @@ def _money_flow(stage1_totals: dict, stage2: dict, currency: str) -> dict:
     }
 
 
-def _stage2_payouts(company, limit: int = 15) -> list[dict]:
+def _stage2_payouts(company, limit: int = 25) -> list[dict]:
     """Stage 2 payout ledger — recent canonical ProviderPayout headers with
     their settlement/clearance JE state (all providers: Stripe pull, Paymob/
     Bosta CSV — anything that emitted PAYMENT_SETTLEMENT_RECEIVED).
@@ -365,6 +365,11 @@ def _stage2_payouts(company, limit: int = 15) -> list[dict]:
 
     A144 rule: everything is keyed by the payout's own provider/batch
     (source_document join), never a module-hardcoded account.
+
+    PR-D3: the ledger is the ONLY verify/per-line-detail surface after the
+    standalone Payout Verification page retired — limit matches that page's
+    reach (25 most recent). Older payouts need pagination here when a real
+    merchant outgrows it (logged as an accepted cap in the ADR).
     """
     try:
         from platform_connectors.models import ProviderPayout
@@ -834,6 +839,103 @@ def _exceptions_summary(company, *, item_limit: int = 8) -> dict:
         "by_type": by_type,
         "items": items,
     }
+
+
+class ReconciliationPayoutLinesView(APIView):
+    """
+    GET /api/accounting/reconciliation/payout-lines/?provider=<code>&batch_id=<id>
+
+    PR-D3: per-line detail for one Stage-2 payout ledger row — the canonical
+    ProviderPayoutLine breakdown plus the header's reconciliation outcome
+    (both stamped by PaymentsProjection from PROVIDER_PAYOUT_RECONCILED
+    snapshots). Keyed provider+batch like every Stage-2 join (A144 rule),
+    never a Stripe-shaped id.
+
+    READ-ONLY by design: unlike the legacy /stripe/reconciliation detail GET
+    (which runs reconcile_payout and mutates match state on view), this
+    endpoint never triggers a reconcile. The verify ACTION stays on the
+    provider connector (POST /api/stripe/payouts/<batch>/verify/); the
+    frontend renders it only when header.verify_supported.
+
+    Deliberately flag-free (the canonical_fee_summary precedent): a NEW
+    surface with no legacy twin to keep parity with. Match-state columns are
+    stamped from events regardless of the read flags; a payout that has never
+    been reconciled shows outcome "" and verified=false lines — "not yet
+    reconciled", not "failed".
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        actor = resolve_actor(request)
+        if not actor.company:
+            return Response({"detail": "No active company."}, status=400)
+
+        provider = (request.query_params.get("provider") or "").strip().lower()
+        batch_id = request.query_params.get("batch_id") or ""
+        if not provider or not batch_id:
+            return Response(
+                {"detail": "provider and batch_id query params are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            from platform_connectors.models import ProviderPayout, ProviderPayoutLine
+        except ImportError:
+            return Response({"detail": "Payments module unavailable."}, status=404)
+
+        header = ProviderPayout.objects.filter(
+            company=actor.company, provider=provider, payout_batch_id=batch_id
+        ).first()
+        if header is None:
+            return Response({"detail": "No canonical payout for that provider/batch."}, status=404)
+
+        lines = [
+            {
+                "line_index": ln.line_index,
+                "kind": ln.kind,
+                "source_id": ln.source_id,
+                "gross_amount": _money_str(ln.gross_amount),
+                "fee": _money_str(ln.fee),
+                "net_amount": _money_str(ln.net_amount),
+                "uncollected_amount": _money_str(ln.uncollected_amount),
+                "currency": ln.currency,
+                "verified": ln.verified,
+                "match_kind": ln.match_kind,
+                "matched_ref": ln.matched_ref,
+                "matched_ref_type": ln.matched_ref_type,
+                "provider_line_ref": ln.provider_line_ref,
+                "verified_at": ln.verified_at.isoformat() if ln.verified_at else None,
+            }
+            for ln in ProviderPayoutLine.objects.filter(
+                company=actor.company, provider=provider, payout_batch_id=batch_id
+            ).order_by("line_index")
+        ]
+
+        return Response(
+            {
+                "provider": provider,
+                "batch_id": batch_id,
+                "header": {
+                    "reconciliation_outcome": header.reconciliation_outcome,
+                    "matched_line_count": header.matched_line_count,
+                    "unmatched_line_count": header.unmatched_line_count,
+                    "verified_line_count": header.verified_line_count,
+                    "total_line_count": len(lines),
+                    "gross_variance": _money_str(header.gross_variance),
+                    "fee_variance": _money_str(header.fee_variance),
+                    "net_variance": _money_str(header.net_variance),
+                    "last_reconciled_at": header.last_reconciled_at.isoformat() if header.last_reconciled_at else None,
+                    "reconciliation_source": header.reconciliation_source,
+                    "currency": header.currency,
+                    # Verify is a CONNECTOR capability, not a provider-account
+                    # lookup — Stripe is the only connector with a verify
+                    # endpoint today. Revisit if a second one grows one.
+                    "verify_supported": provider == "stripe",
+                },
+                "lines": lines,
+            }
+        )
 
 
 class ReconciliationSummaryView(APIView):

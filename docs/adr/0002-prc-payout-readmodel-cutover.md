@@ -162,6 +162,26 @@ re-apply would zero verdicts); verified-count reads flip behind default-OFF
 5. `verified_parity_mismatch == 0` → set `STRIPE_CANONICAL_VERIFIED_READS=True`
    in `.env` + restart. Rollback = flip back + restart (reads only).
 
+**D3 (Stage-2 absorb):** new read-only endpoint
+`GET /api/accounting/reconciliation/payout-lines/?provider=&batch_id=`
+(canonical lines + header outcome, keyed provider+batch per A144; flag-free —
+new surface, no legacy twin; NEVER triggers a reconcile, unlike the legacy
+stripe detail GET). `/finance/reconciliation` Stage-2 rows expand into
+per-line match detail with a verify action when `header.verify_supported`
+(the connector's existing verify endpoint — Stripe only today). Retired: the
+standalone `/stripe/reconciliation` page, its sidebar nav item
+(`stripe_connector/apps.py`), the payouts-page button (retargeted to
+`#stage-2`), and the seed hint. The stripe summary/detail API endpoints stay
+until C4b.
+
+Accepted degradations (from the D3 adversarial review, revisit on demand):
+the Stage-2 ledger reaches the 25 most-recent payouts (matches the old
+page's reach; pagination when a merchant outgrows it), and the old page's
+date-range verification totals (period Net Deposited / Fees / match-rate)
+have no UI replacement — the raw API
+(`/api/stripe/reconciliation/?date_from&date_to`) still holds the capability
+and C4b must decide its fate before deleting it.
+
 **C4b checklist additions (from the blast-radius verify pass):**
 `stripe_connector/admin.py` (list_display/list_filter on `verified`) and
 `backups/model_registry.py` (StripePayoutTransaction registration) break at

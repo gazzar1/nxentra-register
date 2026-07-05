@@ -72,6 +72,49 @@ export interface Stage2Summary {
   payouts?: Stage2Payout[];
 }
 
+// PR-D3: expandable per-line detail for one Stage-2 payout row (canonical
+// ProviderPayoutLine + the header's PROVIDER_PAYOUT_RECONCILED outcome).
+export type PayoutReconciliationOutcome = "" | "verified" | "discrepancy";
+
+export interface PayoutLineDetail {
+  line_index: number;
+  kind: string;
+  source_id: string;
+  gross_amount: string;
+  fee: string;
+  net_amount: string;
+  uncollected_amount: string;
+  currency: string;
+  verified: boolean;
+  match_kind: string; // "charge" | "refund" | "auto_type" | "none" | ""
+  matched_ref: string;
+  matched_ref_type: string;
+  provider_line_ref: string;
+  verified_at: string | null;
+}
+
+export interface PayoutLinesHeader {
+  reconciliation_outcome: PayoutReconciliationOutcome;
+  matched_line_count: number;
+  unmatched_line_count: number;
+  verified_line_count: number;
+  total_line_count: number;
+  gross_variance: string;
+  fee_variance: string;
+  net_variance: string;
+  last_reconciled_at: string | null;
+  reconciliation_source: string;
+  currency: string;
+  verify_supported: boolean;
+}
+
+export interface PayoutLinesResponse {
+  provider: string;
+  batch_id: string;
+  header: PayoutLinesHeader;
+  lines: PayoutLineDetail[];
+}
+
 export interface Stage3Summary {
   available: boolean;
   total_lines?: number;
@@ -288,6 +331,12 @@ export const reconciliationService = {
     apiClient.get<MoneyTrace>("/accounting/reconciliation/trace/", {
       params: { provider_id: String(providerId), order_id: orderId },
     }),
+
+  payoutLines: (provider: string, batchId: string) =>
+    apiClient.get<PayoutLinesResponse>(
+      "/accounting/reconciliation/payout-lines/",
+      { params: { provider, batch_id: batchId } }
+    ),
 
   resolveDifference: (
     bankLineId: number,

@@ -133,7 +133,7 @@ class Command(BaseCommand):
         self.stdout.write(
             self.style.SUCCESS(
                 f"Done! Created {len(charges)} charges, 1 refund, and payouts. "
-                f"Visit /stripe/reconciliation to see the dashboard."
+                f"Visit /finance/reconciliation (Stage 2) to see the payout ledger."
             )
         )
 

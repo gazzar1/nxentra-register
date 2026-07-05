@@ -74,7 +74,9 @@ export default function StripePayoutsPage() {
           subtitle="Payout history from Stripe"
           actions={
             <div className="flex gap-2">
-              <Link href="/stripe/reconciliation">
+              {/* PR-D3: payout verification lives in the Stage-2 payout
+                  ledger on /finance/reconciliation (expandable rows). */}
+              <Link href="/finance/reconciliation#stage-2">
                 <Button variant="outline" size="sm">
                   Reconciliation
                   <ArrowRight className="ms-2 h-4 w-4" />

@@ -40,6 +40,7 @@ from .period_override_audit_views import PeriodOverrideAuditListView
 from .reconciliation_views import (
     ReconciliationDrilldownView,
     ReconciliationOrdersView,
+    ReconciliationPayoutLinesView,
     ReconciliationSummaryView,
     ReconciliationTraceView,
 )
@@ -417,6 +418,11 @@ urlpatterns = [
         "reconciliation/trace/",
         ReconciliationTraceView.as_view(),
         name="reconciliation-trace",
+    ),
+    path(
+        "reconciliation/payout-lines/",
+        ReconciliationPayoutLinesView.as_view(),
+        name="reconciliation-payout-lines",
     ),
     # ==========================================================================
     # Settlement CSV Import (A14) + dry-run preview (A85)
