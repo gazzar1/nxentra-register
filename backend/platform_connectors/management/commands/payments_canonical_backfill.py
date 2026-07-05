@@ -86,6 +86,9 @@ def _report_company(company, proj) -> dict:
 
     with rls_bypass():
         events = list(BusinessEvent.objects.filter(company=company, event_type=EventTypes.PAYMENT_SETTLEMENT_RECEIVED))
+        reconciled_events = BusinessEvent.objects.filter(
+            company=company, event_type=EventTypes.PROVIDER_PAYOUT_RECONCILED
+        ).count()
         headers = {(h.provider, h.payout_batch_id): h for h in ProviderPayout.objects.filter(company=company)}
         lines_by_key: dict[tuple, list] = {}
         for line in ProviderPayoutLine.objects.filter(company=company):
@@ -95,6 +98,7 @@ def _report_company(company, proj) -> dict:
             "company_id": company.id,
             "company": company.name,
             "events": len(events),
+            "reconciled_events": reconciled_events,
             "headers": len(headers),
             "lines": sum(len(v) for v in lines_by_key.values()),
             "missing_line_items": 0,
@@ -105,14 +109,19 @@ def _report_company(company, proj) -> dict:
             "reconstruct_mismatch": [],
             "stripe_parity_ok": 0,
             "stripe_parity_mismatch": [],
+            "verified_parity_ok": 0,
+            "verified_parity_mismatch": [],
+            "verified_parity_skipped_no_event": 0,
             "lag": proj.get_lag(company),
         }
 
+        event_keys = set()
         for ev in events:
             d = ev.get_data()
             provider = (d.get("provider_normalized_code") or d.get("external_system") or "").strip().lower()
             batch = d.get("payout_batch_id") or ""
             key = (provider, batch)
+            event_keys.add(key)
             if not (d.get("line_items") or []):
                 rep["missing_line_items"] += 1
             if not (d.get("provider_status") or ""):
@@ -129,14 +138,22 @@ def _report_company(company, proj) -> dict:
             else:
                 rep["reconstruct_mismatch"].append(f"{provider}:{batch}")
 
-        _stripe_parity(company, headers, lines_by_key, rep)
+        _stripe_parity(company, headers, lines_by_key, rep, event_keys)
 
     return rep
 
 
-def _stripe_parity(company, headers, lines_by_key, rep) -> None:
+def _stripe_parity(company, headers, lines_by_key, rep, event_keys) -> None:
     """For Stripe payouts that still have a legacy StripePayout, compare the
-    canonical header/lines against it — the parity the C3 read-switch needs."""
+    canonical header/lines against it — the parity the C3 read-switch needs.
+
+    PR-D2 adds VERIFIED parity (the STRIPE_CANONICAL_VERIFIED_READS flip gate):
+    per payout, legacy Count(transactions.verified=True) vs canonical verified
+    line count. Scoped to payouts that HAVE a settlement event — event-less
+    payouts (pre-PR-A history, seeded demos) have no canonical rows to stamp
+    and are counted under verified_parity_skipped_no_event, visibly outside
+    the gate (their verified state stays legacy-only until C4b retires it).
+    """
     try:
         from stripe_connector.models import StripePayout, StripePayoutTransaction
     except ImportError:
@@ -144,6 +161,19 @@ def _stripe_parity(company, headers, lines_by_key, rep) -> None:
 
     for sp in StripePayout.objects.filter(company=company):
         key = ("stripe", sp.stripe_payout_id)
+
+        if key not in event_keys:
+            rep["verified_parity_skipped_no_event"] += 1
+        else:
+            legacy_verified = StripePayoutTransaction.objects.filter(company=company, payout=sp, verified=True).count()
+            canon_verified = sum(1 for line in lines_by_key.get(key, []) if line.verified)
+            if legacy_verified == canon_verified:
+                rep["verified_parity_ok"] += 1
+            else:
+                rep["verified_parity_mismatch"].append(
+                    f"stripe:{sp.stripe_payout_id}: verified {canon_verified}!={legacy_verified}"
+                )
+
         header = headers.get(key)
         if header is None:
             rep["stripe_parity_mismatch"].append(f"stripe:{sp.stripe_payout_id}: no canonical header")
@@ -204,11 +234,15 @@ def _reconstructs(header, lines, data) -> bool:
 def _zero_totals() -> dict:
     return {
         "events": 0,
+        "reconciled_events": 0,
         "headers": 0,
         "lines": 0,
         "header_missing": 0,
         "reconstruct_mismatch": 0,
         "stripe_parity_mismatch": 0,
+        "verified_parity_ok": 0,
+        "verified_parity_mismatch": 0,
+        "verified_parity_skipped_no_event": 0,
         "provider_status_blank": 0,
         "account_ref_blank": 0,
     }
@@ -216,11 +250,15 @@ def _zero_totals() -> dict:
 
 def _add_totals(t, r) -> None:
     t["events"] += r["events"]
+    t["reconciled_events"] += r["reconciled_events"]
     t["headers"] += r["headers"]
     t["lines"] += r["lines"]
     t["header_missing"] += r["header_missing"]
     t["reconstruct_mismatch"] += len(r["reconstruct_mismatch"])
     t["stripe_parity_mismatch"] += len(r["stripe_parity_mismatch"])
+    t["verified_parity_ok"] += r["verified_parity_ok"]
+    t["verified_parity_mismatch"] += len(r["verified_parity_mismatch"])
+    t["verified_parity_skipped_no_event"] += r["verified_parity_skipped_no_event"]
     t["provider_status_blank"] += r["provider_status_blank"]
     t["account_ref_blank"] += r["account_ref_blank"]
 
@@ -242,6 +280,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **opts):
         apply = bool(opts["apply"])
+        self._apply_mode = apply
         self.stdout.write(
             self.style.WARNING("[payments_canonical_backfill] mode=%s" % ("APPLY" if apply else "REPORT"))
         )
@@ -254,16 +293,30 @@ class Command(BaseCommand):
 
     def _print_company(self, r) -> None:
         self.stdout.write(
-            f"  company {r['company_id']} ({r['company']}): events={r['events']} headers={r['headers']} "
+            f"  company {r['company_id']} ({r['company']}): events={r['events']} "
+            f"reconciled_events={r['reconciled_events']} headers={r['headers']} "
             f"lines={r['lines']} lag={r['lag']} | header_missing={r['header_missing']} "
             f"reconstruct_ok={r['reconstruct_ok']} provider_status_blank={r['provider_status_blank']} "
             f"account_ref_blank={r['account_ref_blank']} missing_line_items={r['missing_line_items']} "
-            f"stripe_parity_ok={r['stripe_parity_ok']}"
+            f"stripe_parity_ok={r['stripe_parity_ok']} verified_parity_ok={r['verified_parity_ok']} "
+            f"verified_parity_skipped_no_event={r['verified_parity_skipped_no_event']}"
         )
         for m in r["reconstruct_mismatch"]:
             self.stdout.write(self.style.ERROR(f"      reconstruct MISMATCH: {m}"))
         for m in r["stripe_parity_mismatch"]:
             self.stdout.write(self.style.ERROR(f"      stripe parity: {m}"))
+        for m in r["verified_parity_mismatch"]:
+            self.stdout.write(self.style.ERROR(f"      verified parity: {m}"))
+        if r["verified_parity_mismatch"] and not self._apply_mode:
+            # Report mode can't tell replay lag from real divergence: reconciled
+            # events emitted before the projection consumed the type sit BEHIND
+            # the bookmark (lag reads 0!) and only --apply's rebuild replays them.
+            self.stdout.write(
+                self.style.WARNING(
+                    "      NOTE: report-only mode — un-replayed reconciled events read as "
+                    "verified-parity mismatches. Run --apply, then re-read this gate."
+                )
+            )
 
     def _print_runner(self, runner) -> None:
         sched = runner["periodic_catchup_scheduled"]
@@ -282,19 +335,30 @@ class Command(BaseCommand):
             )
 
     def _print_totals(self, t, apply) -> None:
-        clean = t["header_missing"] == 0 and t["reconstruct_mismatch"] == 0 and t["stripe_parity_mismatch"] == 0
+        clean = (
+            t["header_missing"] == 0
+            and t["reconstruct_mismatch"] == 0
+            and t["stripe_parity_mismatch"] == 0
+            and t["verified_parity_mismatch"] == 0
+        )
         style = self.style.SUCCESS if clean else self.style.WARNING
         self.stdout.write(
             style(
-                "[totals] events=%d headers=%d lines=%d header_missing=%d reconstruct_mismatch=%d "
-                "stripe_parity_mismatch=%d provider_status_blank=%d account_ref_blank=%d"
+                "[totals] events=%d reconciled_events=%d headers=%d lines=%d header_missing=%d "
+                "reconstruct_mismatch=%d stripe_parity_mismatch=%d verified_parity_ok=%d "
+                "verified_parity_mismatch=%d verified_parity_skipped_no_event=%d "
+                "provider_status_blank=%d account_ref_blank=%d"
                 % (
                     t["events"],
+                    t["reconciled_events"],
                     t["headers"],
                     t["lines"],
                     t["header_missing"],
                     t["reconstruct_mismatch"],
                     t["stripe_parity_mismatch"],
+                    t["verified_parity_ok"],
+                    t["verified_parity_mismatch"],
+                    t["verified_parity_skipped_no_event"],
                     t["provider_status_blank"],
                     t["account_ref_blank"],
                 )

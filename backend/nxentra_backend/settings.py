@@ -119,6 +119,15 @@ RECONCILIATION_EVENT_DRIVEN_STATE = os.getenv("RECONCILIATION_EVENT_DRIVEN_STATE
 # Rollback = set False + restart: reads only, legacy dual-writes are untouched.
 STRIPE_CANONICAL_PAYOUT_READS = os.getenv("STRIPE_CANONICAL_PAYOUT_READS", "False") == "True"
 
+# ADR-0002 PR-D2: verified match-state reads from the canonical
+# ProviderPayoutLine (stamped by PaymentsProjection from PROVIDER_PAYOUT_RECONCILED
+# snapshots). Only meaningful when STRIPE_CANONICAL_PAYOUT_READS is also on —
+# the flipped sites execute on canonical branches only. Default False until the
+# verified-parity gate is green (payments_canonical_backfill:
+# verified_parity_mismatch=0 among event-backed payouts). Rollback = set False
+# + restart: reads only, legacy dual-writes are untouched until C4b.
+STRIPE_CANONICAL_VERIFIED_READS = os.getenv("STRIPE_CANONICAL_VERIFIED_READS", "False") == "True"
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",

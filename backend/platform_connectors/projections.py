@@ -437,7 +437,15 @@ class PaymentsProjection(BaseProjection):
 
     @property
     def consumes(self) -> list[str]:
-        return [EventTypes.PAYMENT_SETTLEMENT_RECEIVED]
+        return [
+            EventTypes.PAYMENT_SETTLEMENT_RECEIVED,
+            # PR-D2: match-state snapshots stamped onto the rows the settlement
+            # event materialized. NOTE deploy ordering: reconciled events emitted
+            # BEFORE this type entered `consumes` sit behind the bookmark — the
+            # D2 runbook must run `payments_canonical_backfill --apply`
+            # (rebuild + drain) to replay them.
+            EventTypes.PROVIDER_PAYOUT_RECONCILED,
+        ]
 
     def _clear_projected_data(self, company) -> None:
         # provider_payout / provider_payout_line have FORCE RLS (migrations 0005/0008).
@@ -454,6 +462,12 @@ class PaymentsProjection(BaseProjection):
             ProviderPayout.objects.filter(company=company).delete()
 
     def handle(self, event: BusinessEvent) -> None:
+        if event.event_type == EventTypes.PROVIDER_PAYOUT_RECONCILED:
+            self._handle_payout_reconciled(event)
+            return
+        self._handle_settlement(event)
+
+    def _handle_settlement(self, event: BusinessEvent) -> None:
         from .models import (
             ProviderPayout,
             ProviderPayoutLine,
@@ -478,6 +492,10 @@ class PaymentsProjection(BaseProjection):
 
         # Header (one per event). Totals come from the event's TOP-LEVEL fields
         # (not the line aggregate) so they match the legacy StripePayout header.
+        # PR-D2 LOAD-BEARING: the defaults dicts here and on the lines below must
+        # NEVER grow the reconciliation/match-state fields — update_or_create only
+        # writes the keys listed, which is what keeps a settlement re-apply from
+        # zeroing the verdicts _handle_payout_reconciled stamped.
         ProviderPayout.objects.update_or_create(
             id=derive_provider_payout_id(company.id, provider, payout_batch_id),
             defaults={
@@ -516,5 +534,98 @@ class PaymentsProjection(BaseProjection):
                     # only gross/fee/net would zero those lines (the Stripe-shaped leak).
                     "uncollected_amount": Decimal(str(line.get("uncollected") or line.get("refund") or "0")),
                     "currency": currency,
+                    # PR-D2: match-state fields deliberately absent — see the
+                    # header comment above.
                 },
             )
+
+    def _handle_payout_reconciled(self, event: BusinessEvent) -> None:
+        """Stamp a PROVIDER_PAYOUT_RECONCILED snapshot onto the canonical rows.
+
+        A dumb last-write-wins stamp (A139): the snapshot is self-sufficient, so
+        replay in company_sequence order reconstructs match state exactly. Rows
+        are addressed by their deterministic ids recomputed from the event's
+        correlation keys; a verdict for a missing line is a warn + no-op (NOT a
+        defer — the emitter refuses to emit without a settlement event, so a
+        missing row means the settlement handler skipped, and deferring would
+        head-of-line-block the company's stream forever).
+
+        Uses queryset .update() (never creates stubs); updated_at is stamped
+        explicitly because .update() bypasses auto_now.
+        """
+        from django.utils import timezone as dj_timezone
+
+        from .models import (
+            ProviderPayout,
+            ProviderPayoutLine,
+            derive_provider_payout_id,
+            derive_provider_payout_line_id,
+        )
+
+        data = event.get_data()
+        company = event.company
+        provider = (data.get("provider") or "").strip().lower()
+        payout_batch_id = str(data.get("payout_batch_id") or "")
+        if not provider or not payout_batch_id:
+            return
+
+        # Defensive parse: reconciled_at is convention-only (not validator-
+        # enforced); a malformed value must not stop the whole payments stream.
+        reconciled_at = None
+        raw_reconciled_at = data.get("reconciled_at") or ""
+        if raw_reconciled_at:
+            try:
+                reconciled_at = datetime.fromisoformat(raw_reconciled_at)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "PROVIDER_PAYOUT_RECONCILED %s: unparseable reconciled_at %r — stamping without it",
+                    event.id,
+                    raw_reconciled_at,
+                )
+
+        now = dj_timezone.now()
+        for verdict in data.get("line_verdicts") or []:
+            try:
+                line_index = int(verdict.get("line_index"))
+            except (TypeError, ValueError):
+                logger.warning(
+                    "PROVIDER_PAYOUT_RECONCILED %s: verdict without a usable line_index (%r) — skipped",
+                    event.id,
+                    verdict.get("line_index"),
+                )
+                continue
+            line_pk = derive_provider_payout_line_id(company.id, provider, payout_batch_id, line_index)
+            is_verified = bool(verdict.get("verified"))
+            updated = ProviderPayoutLine.objects.filter(id=line_pk).update(
+                verified=is_verified,
+                match_kind=str(verdict.get("match_kind") or ""),
+                matched_ref=str(verdict.get("matched_ref") or ""),
+                matched_ref_type=str(verdict.get("matched_ref_type") or ""),
+                provider_line_ref=str(verdict.get("provider_line_ref") or ""),
+                # "When was this line verified" — None for unverified lines
+                # (snapshot time lives on header.last_reconciled_at).
+                verified_at=reconciled_at if is_verified else None,
+                updated_at=now,
+            )
+            if not updated:
+                logger.warning(
+                    "PROVIDER_PAYOUT_RECONCILED %s: no canonical line %s:%s#%s to stamp "
+                    "(settlement handler skipped this payout?)",
+                    event.id,
+                    provider,
+                    payout_batch_id,
+                    line_index,
+                )
+
+        ProviderPayout.objects.filter(id=derive_provider_payout_id(company.id, provider, payout_batch_id)).update(
+            reconciliation_outcome=str(data.get("outcome") or ""),
+            matched_line_count=int(data.get("matched_count") or 0),
+            unmatched_line_count=int(data.get("unmatched_count") or 0),
+            verified_line_count=int(data.get("verified_count") or 0),
+            gross_variance=Decimal(str(data.get("gross_variance") or "0")),
+            fee_variance=Decimal(str(data.get("fee_variance") or "0")),
+            net_variance=Decimal(str(data.get("net_variance") or "0")),
+            last_reconciled_at=reconciled_at,
+            reconciliation_source=str(data.get("source") or ""),
+            updated_at=now,
+        )

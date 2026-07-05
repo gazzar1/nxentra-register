@@ -34,6 +34,8 @@ from .payout_reads import (
     canonical_headers,
     canonical_line_counts,
     canonical_payout_reads_enabled,
+    canonical_verified_counts,
+    canonical_verified_reads_enabled,
 )
 
 # Canonical mapping key for Stripe — must match what the JE projections read
@@ -220,20 +222,32 @@ def _reconciliation_status(t_total, t_verified):
     return "unverified"
 
 
-def _legacy_verified_counts(company, batch_ids):
-    """{stripe_payout_id: (verified line count, journal_entry_id str|None)}.
+def _verified_counts(company, batch_ids):
+    """{stripe_payout_id: verified line count} for canonical view pages.
 
-    The verified match-state and the bank-match journal_entry_id stamp live
-    only on the legacy models (PR-D / C4 gap) — canonical reads join them in.
+    PR-D2 split of the old _legacy_verified_counts seam: verified match-state
+    now HAS a canonical home (ProviderPayoutLine.verified, stamped by
+    PaymentsProjection from PROVIDER_PAYOUT_RECONCILED snapshots) — served from
+    it behind STRIPE_CANONICAL_VERIFIED_READS, legacy annotation otherwise.
     """
-    counts = {}
+    if canonical_verified_reads_enabled():
+        return canonical_verified_counts(company, batch_ids)
     legacy = StripePayout.objects.filter(company=company, stripe_payout_id__in=list(batch_ids)).annotate(
         t_verified=Count("transactions", filter=Q(transactions__verified=True)),
     )
-    for p in legacy:
-        je = str(p.journal_entry_id) if p.journal_entry_id else None
-        counts[p.stripe_payout_id] = (p.t_verified, je)
-    return counts
+    return {p.stripe_payout_id: p.t_verified for p in legacy}
+
+
+def _legacy_je_ids(company, batch_ids):
+    """{stripe_payout_id: journal_entry_id str|None} — ALWAYS legacy.
+
+    The bank-match write-back stamp has no canonical home yet (its candidate
+    source is ReconciliationLink — C4 scope, deliberately not PR-D).
+    """
+    rows = StripePayout.objects.filter(company=company, stripe_payout_id__in=list(batch_ids)).values_list(
+        "stripe_payout_id", "journal_entry_id"
+    )
+    return {batch: (str(je) if je else None) for batch, je in rows}
 
 
 class StripePayoutsListView(APIView):
@@ -298,19 +312,21 @@ class StripePayoutsListView(APIView):
         return results, total
 
     def _canonical_page(self, company, offset, page_size):
-        """C3: headers + line counts from the canonical read-models; the
-        verified counts and journal_entry_id are joined from legacy."""
+        """C3: headers + line counts from the canonical read-models; verified
+        counts flag-switched (PR-D2), journal_entry_id joined from legacy (C4)."""
         qs = canonical_headers(company).order_by("-payout_date")
         total = qs.count()
         headers = list(qs[offset : offset + page_size])
         batch_ids = [h.payout_batch_id for h in headers]
         line_counts = canonical_line_counts(company, batch_ids)
-        legacy = _legacy_verified_counts(company, batch_ids)
+        verified_counts = _verified_counts(company, batch_ids)
+        je_ids = _legacy_je_ids(company, batch_ids)
 
         results = []
         for h in headers:
             t_total = line_counts.get(h.payout_batch_id, 0)
-            t_verified, journal_entry_id = legacy.get(h.payout_batch_id, (0, None))
+            t_verified = verified_counts.get(h.payout_batch_id, 0)
+            journal_entry_id = je_ids.get(h.payout_batch_id)
             results.append(
                 {
                     "stripe_payout_id": h.payout_batch_id,
@@ -422,7 +438,7 @@ class StripeReconciliationSummaryView(APIView):
 
     def _canonical_rows(self, company, date_from, date_to):
         """C3: header aggregates + line counts from the canonical read-models;
-        verified counts joined from legacy."""
+        verified counts flag-switched (PR-D2)."""
         headers = (
             canonical_headers(company)
             .filter(
@@ -440,7 +456,7 @@ class StripeReconciliationSummaryView(APIView):
         headers = list(headers)
         batch_ids = [h.payout_batch_id for h in headers]
         line_counts = canonical_line_counts(company, batch_ids)
-        legacy = _legacy_verified_counts(company, batch_ids)
+        verified_counts = _verified_counts(company, batch_ids)
         rows = [
             {
                 "stripe_payout_id": h.payout_batch_id,
@@ -448,7 +464,7 @@ class StripeReconciliationSummaryView(APIView):
                 "net_amount": str(h.net_amount),
                 "fees": str(h.fees),
                 "status": h.provider_status,
-                "matched": legacy.get(h.payout_batch_id, (0, None))[0],
+                "matched": verified_counts.get(h.payout_batch_id, 0),
                 "total": line_counts.get(h.payout_batch_id, 0),
             }
             for h in headers
