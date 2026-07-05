@@ -589,6 +589,12 @@ class StripePayoutVerifyView(APIView):
             else:
                 unmatched += 1
 
+        # PR-D: snapshot the persisted match state as an event (emit-on-change,
+        # failure-isolated); the response contract above stays byte-identical.
+        from .reconciled_emit import SOURCE_MANUAL, maybe_emit_payout_reconciled
+
+        maybe_emit_payout_reconciled(actor.company, payout, source=SOURCE_MANUAL, actor=actor)
+
         return Response(
             {
                 "status": "verified",

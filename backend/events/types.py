@@ -2362,6 +2362,14 @@ class EventTypes:
     # debits Expected Bank Deposit + Fees.
     PAYMENT_SETTLEMENT_RECEIVED = "payment.settlement_received"
 
+    # ADR-0002 PR-D: full-state snapshot of one payout's per-line match verdicts
+    # + header reconciliation outcome, emitted by a provider adapter after its
+    # reconcile/verify pass. Consumed by PaymentsProjection to materialize match
+    # state onto ProviderPayout/ProviderPayoutLine (replay-durable home for the
+    # legacy StripePayoutTransaction.verified direct writes). Never drives a JE.
+    # Dataclass: platform_connectors/event_types.py (AppConfig convention).
+    PROVIDER_PAYOUT_RECONCILED = "provider_payout.reconciled"
+
     # =========================================================================
     # Reconciliation domain events (A86 — bounded context)
     # =========================================================================

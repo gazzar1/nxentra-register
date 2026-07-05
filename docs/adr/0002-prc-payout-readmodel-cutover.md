@@ -1,6 +1,6 @@
 # ADR-0002 — PR-C: Stripe payout read-model cutover plan (PR-C0 grounding)
 
-- **Status:** Grounding complete (PR-C0), cutover staged (PR-C1–C4 not yet started)
+- **Status:** C1–C3 shipped (canonical reads live behind `STRIPE_CANONICAL_PAYOUT_READS`); PR-D in flight (see the PR-D section below); C4a/C4b pending
 - **Parent:** [ADR-0002 Canonical payment/settlement layer](0002-canonical-payments-stripe-adapter.md)
 - **Builds on:** PR-A (`ProviderPayoutLine` + `PaymentsProjection`, dual-write) and PR-B (provider-agnostic lines + the Paymob/Bosta architecture gate), both shipped + deployed 2026-06-27.
 
@@ -71,3 +71,87 @@ The blast radius is wider than the Stripe settings UI — the **bank-reconciliat
 
 - Synthetic: the characterization tests in `test_s2c_payout_read_contracts.py` keep passing when reads are repointed.
 - Real data: a management command run on the droplet reporting **zero** per-payout diffs between legacy and canonical for: header `gross/fees/net/currency/payout_date/stripe_status`, settlement id, `journal_entry_id`, line count, and per-line `gross/fee/net/uncollected`.
+
+## PR-D design (grounded 2026-07-05, 8-mapper workflow + 3-lens adversarial verify)
+
+**Event: `PROVIDER_PAYOUT_RECONCILED` (`provider_payout.reconciled`)** — a
+provider-neutral, FULL-STATE snapshot of one payout's line match verdicts +
+header outcome; replay is last-write-wins in `company_sequence` order. Dataclass
+in `platform_connectors/event_types.py`; aggregate `ProviderPayout` /
+`{provider}:{batch_id}`; idempotency key is per-emit uuid4 (deterministic keys
+would lock the first outcome; content-hash keys would corrupt A→B→A replay).
+Verdicts correlate to canonical lines by **`line_index`** (the settlement
+event's frozen `line_items[]` position — replay-stable because the settlement
+event is idempotency-locked at first emit). Legacy txns map to event lines by
+`(source_id or stripe_balance_txn_id) == line_items[i].order_id` (exact:
+normalize builds `order_id = bt.source or bt.id`; both sides exclude the
+`type=="payout"` txn). Verdict fields avoid ALL validator-reserved names —
+notably `kind` (enum-bound to `JournalEntry.Kind`; the draft design had this
+and every emit would have 500'd — caught by the adversarial pass, pinned by
+`test_s2g_payout_reconciled`).
+
+**Variances are event-frozen**: header totals vs line sums of the SAME
+settlement event — never the flag-selected header `reconcile_payout` used
+(flag-dependent event content is poison) and never the mutable legacy header
+(re-sync drift). Per-line `verified` mirrors the **persisted DB value** at
+snapshot time, warts included (reconcile persists charge/refund matches only;
+the verify endpoint also persists adjustment/payout) — so canonical verified
+counts are byte-comparable to `_legacy_verified_counts` and the read switch is
+parity-provable. Header `matched_count` mirrors reconcile's in-memory
+semantics (auto-type lines count as matched). Unifying the two vocabularies is
+post-C4b work.
+
+**Emitters (dual-write, D1):** `reconcile_payout` (post-loop, source
+`auto_reconcile`) and `StripePayoutVerifyView` (source `manual_verify`,
+actor-stamped), both through `stripe_connector/reconciled_emit.py`'s
+`maybe_emit_payout_reconciled` — emit-on-change (steady-state reconciles emit
+nothing) and failure-isolated (an emit exception must never break the
+read/verify path). Payouts with **no settlement event** (pre-PR-A history,
+`seed_stripe_demo` rows) skip the emit: no canonical lines exist to stamp;
+their verified state stays legacy-only and is **excluded from the D2 parity
+gate** (reported under a named skip counter, never silently).
+`manage.py stripe_reconciled_backfill --apply` seeds snapshots capturing
+pre-PR-D verified state (one pass suffices — snapshots read current DB state).
+
+**Exception producer (D1):** variance outcomes feed the existing
+`ReconciliationException` queue by **direct write** via `_create_exception` —
+the table is an operator table with four existing detector writers, not a
+projection read-model (never wiped by rebuild), and its dormant event twin
+(`RECONCILIATION_EXCEPTION_RAISED`, consumed as a no-op) is unfinished A86.8
+work, out of PR-D scope. Dedup key = the scan detector's exact key
+(`PAYOUT_DISCREPANCY`, `f"{platform}_payout"`, legacy payout pk) so
+event-driven and scan production fold onto one open row; details are
+byte-identical between the two producers; `outcome == "verified"`
+auto-resolves open variance rows — but never ESCALATED ones (operator-parked,
+matching `auto_resolve_matched`'s convention). The shared `_create_exception`
+dedup-refresh keeps title/description/amount/details current and upgrades
+severity **monotonically** (a shrinking-but-open anomaly keeps its peak
+severity so it can't silently drop off a severity-sorted triage view).
+Re-keying to the canonical pk is C4b (with `details.payout_batch_id` as the
+bridge). Two deliberate behavior boundaries (from the adversarial review of
+the diff): (1) viewing a payout detail page (which reconciles, which emits on
+change) can now open a variance exception — previously only the on-demand
+scan did; (2) the **backfill source is excluded from the exception feed** —
+seeding months of event history must not flood the live queue with, or
+re-open triaged, stale discrepancies; the bounded 30-day scan remains the
+producer for history.
+
+**D2 (projection + read switch):** migration adds match-state columns to
+`ProviderPayoutLine` (`verified/match_kind/matched_ref/matched_ref_type/
+provider_line_ref/verified_at`) + header outcome columns to `ProviderPayout`;
+`PaymentsProjection` consumes the second event type (settlement handler's
+`update_or_create` defaults must NOT include the new columns — a settlement
+re-apply would zero verdicts); verified-count reads flip behind default-OFF
+`STRIPE_CANONICAL_VERIFIED_READS`; `payments_canonical_backfill` gains
+`verified_parity_ok/mismatch/skipped_no_event` counters — the flip gate is
+`verified_parity_mismatch == 0` **among event-backed payouts**. Deploy runbook
+MUST run `payments_canonical_backfill --apply` (rebuild + drain): reconciled
+events emitted before D2 registers the type sit behind the projection bookmark
+(`company_sequence__gt`) and are otherwise silently skipped.
+
+**C4b checklist additions (from the blast-radius verify pass):**
+`stripe_connector/admin.py` (list_display/list_filter on `verified`) and
+`backups/model_registry.py` (StripePayoutTransaction registration) break at
+column/table drop — retire them in the C4b PR alongside `reconcile_payout`'s
+re-point to canonical lines, the verify endpoint's emit-only rewrite, and the
+exception-reference re-key.
