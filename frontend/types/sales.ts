@@ -376,6 +376,7 @@ export interface CreditNote extends CreditNoteListItem {
   posted_at: string | null;
   posted_by: number | null;
   posted_journal_entry_id: number | null;
+  posted_journal_entry_number: string | null;
   notes: string;
   reference: string;
   created_by: number | null;

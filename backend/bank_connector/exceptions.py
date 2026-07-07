@@ -494,6 +494,38 @@ def auto_resolve_matched(company):
             exc.save(update_fields=["status", "resolved_at", "resolution_note", "updated_at"])
             resolved += 1
 
+    # F1 follow-up (2026-07-07): CLEARING_BALANCE is a machine-detected fact,
+    # so it must close when the fact clears. The detector skips zero balances
+    # entirely, so without this pass an exception opened on a mid-cycle
+    # residual stayed OPEN forever at its stale peak amount after the payout
+    # drained the account. (ESCALATED rows are deliberately left alone, per
+    # the existing convention.)
+    open_clearing_excs = ReconciliationException.objects.filter(
+        company=company,
+        exception_type=ReconciliationException.ExceptionType.CLEARING_BALANCE,
+        status__in=[
+            ReconciliationException.Status.OPEN,
+            ReconciliationException.Status.IN_PROGRESS,
+        ],
+        reference_type="account",
+        reference_id__isnull=False,
+    )
+    if open_clearing_excs.exists():
+        from projections.models import AccountBalance
+
+        for exc in open_clearing_excs:
+            balance_now = (
+                AccountBalance.objects.filter(company=company, account_id=exc.reference_id)
+                .values_list("balance", flat=True)
+                .first()
+            )
+            if balance_now is None or balance_now == 0:
+                exc.status = ReconciliationException.Status.RESOLVED
+                exc.resolved_at = timezone.now()
+                exc.resolution_note = "Auto-resolved: clearing balance returned to zero."
+                exc.save(update_fields=["status", "resolved_at", "resolution_note", "updated_at"])
+                resolved += 1
+
     return resolved
 
 
@@ -505,17 +537,39 @@ def detect_clearing_balance_anomalies(company):
     indicates unmatched payouts or missing journal entries.
     """
     try:
+        from accounting.mappings import ModuleAccountMapping
         from accounting.models import Account
         from projections.models import AccountBalance
     except ImportError:
         return []
 
     clearing_roles = ["SHOPIFY_CLEARING", "STRIPE_CLEARING"]
-    clearing_accounts = Account.objects.filter(
+
+    # F1 (2026-07-07): clearing accounts are keyed by ModuleAccountMapping
+    # role, NOT Account.role — onboarding seeds 11500/11510 with
+    # role=LIQUIDITY (accounts/commands.py), so filtering Account.role alone
+    # matched nothing on any real onboarded company and this detector never
+    # fired. Source from the mapping first; keep the legacy Account.role
+    # filter as a fallback union for pre-mapping data and fixtures.
+    clearing_account_roles: dict[int, str] = {}
+    mapped = ModuleAccountMapping.objects.filter(
+        company=company,
+        role__in=clearing_roles,
+        account__isnull=False,
+    ).select_related("account")
+    for m in mapped:
+        if not m.account.is_header:
+            clearing_account_roles.setdefault(m.account_id, m.role)
+
+    legacy_accounts = Account.objects.filter(
         company=company,
         role__in=clearing_roles,
         is_header=False,
     )
+    for acct in legacy_accounts:
+        clearing_account_roles.setdefault(acct.id, acct.role)
+
+    clearing_accounts = Account.objects.filter(id__in=clearing_account_roles.keys())
 
     created = []
     for acct in clearing_accounts:
@@ -534,7 +588,8 @@ def detect_clearing_balance_anomalies(company):
         if abs_balance > Decimal("5000"):
             severity = ReconciliationException.Severity.HIGH
 
-        platform = "shopify" if "SHOPIFY" in acct.role else "stripe"
+        clearing_role = clearing_account_roles[acct.id]
+        platform = "shopify" if "SHOPIFY" in clearing_role else "stripe"
         exc = _create_exception(
             company,
             exception_type=ReconciliationException.ExceptionType.CLEARING_BALANCE,
@@ -556,7 +611,7 @@ def detect_clearing_balance_anomalies(company):
                 "account_code": acct.code,
                 "account_name": acct.name,
                 "balance": str(bal.balance),
-                "role": acct.role,
+                "role": clearing_role,
             },
         )
         created.append(exc)

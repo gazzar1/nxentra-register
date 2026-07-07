@@ -172,7 +172,7 @@ export default function CreditNoteDetailPage() {
               className="flex items-center font-mono text-sm hover:text-primary hover:underline ltr-code"
             >
               <FileText className="ltr:mr-2 rtl:ml-2 h-4 w-4" />
-              JE #{creditNote.posted_journal_entry_id}
+              {creditNote.posted_journal_entry_number || `JE #${creditNote.posted_journal_entry_id}`}
             </Link>
           </CardContent>
         </Card>
