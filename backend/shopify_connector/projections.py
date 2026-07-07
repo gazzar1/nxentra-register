@@ -1358,6 +1358,8 @@ class ShopifyAccountingHandler(BaseProjection):
                     "total_cost": total_cost,
                     "inventory_account": item.inventory_account,
                     "cogs_account": item.cogs_account,
+                    "item": item,
+                    "location_id": rli.get("location_id"),
                 }
             )
 
@@ -1368,11 +1370,18 @@ class ShopifyAccountingHandler(BaseProjection):
         order_number = refund_record.order.shopify_order_name if refund_record.order else ""
         memo = f"Shopify restock: Order {order_number} (Refund {refund_record.shopify_refund_id})"
 
-        if JournalEntry.objects.filter(
+        existing_entry = JournalEntry.objects.filter(
             company=event.company,
             memo=memo,
             status=JournalEntry.Status.POSTED,
-        ).exists():
+        ).first()
+        if existing_entry:
+            # JE already posted (duplicate refund event / pre-fix data). F12:
+            # the stock receipt may still be missing — backfill it
+            # idempotently. Values are anchored to the existing JE's own
+            # lines inside the helper, NOT recomputed from replay-time item
+            # costs (which drift via product cost sync).
+            self._record_restock_receipt(event.company, refund_record, restock_lines, existing_entry)
             return
 
         period = _resolve_period(event.company, entry_date)
@@ -1396,7 +1405,14 @@ class ShopifyAccountingHandler(BaseProjection):
         lines = []
         line_no = 0
         for rl in restock_lines:
-            converted = _convert_amount(rl["total_cost"], fx_rate) if is_foreign else rl["total_cost"]
+            # Review fix (2026-07-07): item costs are BOOKS-currency by system
+            # convention — product sync converts store-currency costs at fetch
+            # (_convert_costs_to_functional), and the fulfillment COGS/issue
+            # path posts them unconverted. Converting again by the refund's
+            # fx_rate double-converted the restock JE on foreign-currency
+            # stores (rate× overstated) and would have poisoned avg_cost via
+            # the F12 stock receipt. Post the books amount as-is.
+            books_amount = rl["total_cost"]
 
             # DR Inventory (return to stock)
             line_no += 1
@@ -1408,7 +1424,7 @@ class ShopifyAccountingHandler(BaseProjection):
                     line_no=line_no,
                     account=rl["inventory_account"],
                     description=f"Restock: {rl['title']} x{rl['quantity']}",
-                    debit=converted,
+                    debit=books_amount,
                     credit=Decimal("0"),
                     currency=currency,
                     exchange_rate=fx_rate,
@@ -1426,7 +1442,7 @@ class ShopifyAccountingHandler(BaseProjection):
                     account=rl["cogs_account"],
                     description=f"COGS reversal: {rl['title']} x{rl['quantity']}",
                     debit=Decimal("0"),
-                    credit=converted,
+                    credit=books_amount,
                     currency=currency,
                     exchange_rate=fx_rate,
                 )
@@ -1460,9 +1476,7 @@ class ShopifyAccountingHandler(BaseProjection):
         entry.entry_number = entry_number
         entry.save(update_fields=["entry_number"])
 
-        total = sum(
-            _convert_amount(rl["total_cost"], fx_rate) if is_foreign else rl["total_cost"] for rl in restock_lines
-        )
+        total = sum(rl["total_cost"] for rl in restock_lines)
 
         lines_data = []
         for line in lines:
@@ -1506,12 +1520,119 @@ class ShopifyAccountingHandler(BaseProjection):
             caused_by_event=event,
         )
 
+        # F12 (2026-07-07): the restock JE alone put the VALUE back into the
+        # inventory GL account but never the QUANTITY — the stock subledger
+        # diverged from GL by every restocked return (and weighted-average
+        # costs computed off the wrong base thereafter). Mirror the
+        # fulfillment issue path (commands.record_stock_issue) with a receipt.
+        self._record_restock_receipt(event.company, refund_record, restock_lines, entry)
+
         logger.info(
             "Created restock journal entry %s for refund on order %s (%d items)",
             entry.public_id,
             order_number,
             len(restock_lines),
         )
+
+    def _record_restock_receipt(self, company, refund_record, restock_lines, journal_entry):
+        """
+        Record the stock-subledger side of a refund restock (F12).
+
+        One receipt per refund, keyed by (SALES_RETURN, refund.public_id) —
+        the SLE existence check makes it idempotent across duplicate refund
+        events and backfills. Unit costs are ANCHORED to the restock JE's own
+        inventory-debit lines (matched by account + the deterministic line
+        description rebuilt from the immutable refund payload), so GL and the
+        stock ledger move by identical values even when item costs drifted
+        between posting and a backfill (product cost sync rewrites
+        default_cost). Item costs are books-currency — never FX-converted.
+
+        Failure semantics: CommandResult failures are logged (parity with the
+        fulfillment issue path's record_stock_issue handling); real
+        exceptions PROPAGATE so BaseProjection.on_error writes an
+        operator-visible ProjectionFailureLog — on the fresh path the whole
+        per-event transaction (restock JE included) rolls back with it, so a
+        retry cleanly recreates everything past the memo-dedupe.
+        """
+        from inventory.models import StockLedgerEntry as SLE
+
+        if not restock_lines:
+            return
+
+        if SLE.objects.filter(
+            company=company,
+            source_type=SLE.SourceType.SALES_RETURN,
+            source_id=refund_record.public_id,
+        ).exists():
+            return
+
+        from accounts.authz import system_actor_for_company
+        from inventory.commands import record_stock_receipt
+        from inventory.models import Warehouse
+        from shopify_connector.commands import _get_shopify_warehouse
+
+        fallback_warehouse = _get_shopify_warehouse(company)
+
+        je_line_amounts = {}
+        if journal_entry is not None:
+            for jl in journal_entry.lines.filter(debit__gt=0):
+                je_line_amounts[(jl.account_id, jl.description)] = jl.debit
+
+        lines = []
+        for rl in restock_lines:
+            qty = Decimal(str(rl["quantity"]))
+            if qty <= 0:
+                continue
+
+            inv_account = rl.get("inventory_account")
+            key = (
+                inv_account.id if inv_account is not None else None,
+                f"Restock: {rl['title']} x{rl['quantity']}",
+            )
+            books_total = je_line_amounts.get(key, rl["total_cost"])
+
+            # Mirror the issue path's location awareness: receive into the
+            # warehouse of the refund line's Shopify location when mapped,
+            # else the platform default.
+            warehouse = fallback_warehouse
+            location_id = rl.get("location_id")
+            if location_id:
+                warehouse = (
+                    Warehouse.objects.filter(
+                        company=company,
+                        platform="shopify",
+                        platform_location_id=str(location_id),
+                        is_platform_managed=True,
+                    ).first()
+                    or fallback_warehouse
+                )
+
+            lines.append(
+                {
+                    "item": rl["item"],
+                    "warehouse": warehouse,
+                    "qty": qty,
+                    "unit_cost": (books_total / qty).quantize(Decimal("0.000001")),
+                }
+            )
+
+        if not lines:
+            return
+
+        actor = system_actor_for_company(company)
+        result = record_stock_receipt(
+            actor=actor,
+            source_type=SLE.SourceType.SALES_RETURN,
+            source_id=str(refund_record.public_id),
+            lines=lines,
+            journal_entry=journal_entry,
+        )
+        if not result.success:
+            logger.warning(
+                "Restock stock receipt failed for refund %s: %s",
+                refund_record.shopify_refund_id,
+                result.error,
+            )
 
     def _handle_payout_settled(self, event, data, mapping, dimension_context=None):
         """

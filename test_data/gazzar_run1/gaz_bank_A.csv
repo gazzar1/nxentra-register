@@ -1,0 +1,4 @@
+bank_txn_id,transaction_date,description,reference,debit_amount,credit_amount,currency,bank_account,notes
+BNK-001,2026-07-06,Paymob payout GAZ-PMB-001,GAZ-PMB-001,0,1600,EGP,CIB,full net
+BNK-002,2026-07-06,Bosta COD settlement GAZ-BST-001,GAZ-BST-001,0,205,EGP,CIB,25 short - tolerance test
+BNK-003,2026-07-06,Bank service fee,FEE-1,15,0,EGP,CIB,manual match test
