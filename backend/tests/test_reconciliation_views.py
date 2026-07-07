@@ -471,3 +471,399 @@ def test_drilldown_requires_provider_id(authenticated_client, company, owner_mem
 def test_drilldown_404_for_unknown_provider(authenticated_client, company, owner_membership):
     response = authenticated_client.get("/api/accounting/reconciliation/drilldown/?provider_id=999999")
     assert response.status_code == 404
+
+
+# =============================================================================
+# A152 — period-windowed flows, timeless stocks, roll-forward, FIFO aging
+# =============================================================================
+
+
+def _make_bank(company):
+    with projection_writes_allowed():
+        return Account.objects.projection().create(
+            company=company,
+            code="10100",
+            name="Bank",
+            account_type=Account.AccountType.ASSET,
+            status=Account.Status.ACTIVE,
+        )
+
+
+def _make_clearing2(company):
+    with projection_writes_allowed():
+        return Account.objects.projection().create(
+            company=company,
+            code="11501",
+            name="Shopify Clearing 2",
+            account_type=Account.AccountType.ASSET,
+            status=Account.Status.ACTIVE,
+        )
+
+
+def _post_platform_refund(
+    company, user, clearing, debit_account, dimension_value, *, credit: Decimal, entry_date: date
+):
+    """A platform refund JE (source_module ``platform_*``): CR clearing tagged
+    with the provider. Picked up by _refunded_by_provider's platform_ branch."""
+    with projection_writes_allowed():
+        entry = JournalEntry.objects.projection().create(
+            public_id=uuid4(),
+            company=company,
+            date=entry_date,
+            period=entry_date.month,
+            memo=f"Platform refund {entry_date}",
+            status=JournalEntry.Status.POSTED,
+            source_module="platform_paymob",
+            posted_at=timezone.now(),
+            posted_by=user,
+            created_by=user,
+            entry_number=f"JE-R-{entry_date.isoformat()}-{uuid4().hex[:6]}",
+        )
+        JournalLine.objects.projection().create(
+            entry=entry,
+            company=company,
+            line_no=1,
+            account=debit_account,
+            description="DR refund",
+            debit=credit,
+            credit=Decimal("0"),
+        )
+        clearing_line = JournalLine.objects.projection().create(
+            entry=entry,
+            company=company,
+            line_no=2,
+            account=clearing,
+            description="CR clearing (refund)",
+            debit=Decimal("0"),
+            credit=credit,
+        )
+        JournalLineAnalysis.objects.projection().create(
+            journal_line=clearing_line,
+            company=company,
+            dimension=dimension_value.dimension,
+            dimension_value=dimension_value,
+        )
+    return entry
+
+
+def test_multi_account_provider_refund_not_double_counted(reconciliation_setup, company, user, authenticated_client):
+    """A152 review Finding 2: a provider spanning two clearing accounts must not
+    double-count its refund total — money_flow, roll-forward, and the stock
+    open_balance must all foot at the same closing figure."""
+    from accounting.settlement_provider import SettlementProvider
+
+    paymob = SettlementProvider.objects.get(company=company, normalized_code="paymob")
+    clearing2 = _make_clearing2(company)
+
+    # Account A: 200 sold, no refund. Account B: a 30 platform refund, no sale.
+    _post_clearing_je(
+        company,
+        user,
+        reconciliation_setup["clearing"],
+        reconciliation_setup["revenue"],
+        paymob.dimension_value,
+        debit=Decimal("200.00"),
+        entry_date=date.today() - timedelta(days=3),
+    )
+    _post_platform_refund(
+        company,
+        user,
+        clearing2,
+        reconciliation_setup["revenue"],
+        paymob.dimension_value,
+        credit=Decimal("30.00"),
+        entry_date=date.today() - timedelta(days=1),
+    )
+
+    body = authenticated_client.get("/api/accounting/reconciliation/summary/").json()
+    # Refund attributed to account B only — total is 30, not 60.
+    assert body["stage1"]["totals"]["total_refunded"] == "30.00"
+    # Everything foots at closing = 200 − 30 = 170.
+    assert body["stage1"]["totals"]["open_balance"] == "170.00"
+    mf = body["money_flow"]
+    open_seg = {s["key"]: s["amount"] for s in mf["segments"]}["open"]
+    assert open_seg == "170.00"
+    assert mf["closing_outstanding"] == "170.00"
+    rf = body["roll_forward"]
+    assert rf["refunded"] == "30.00"
+    assert rf["closing_outstanding"] == "170.00"
+    assert rf["foots"] is True
+
+
+def test_default_no_params_is_all_time_and_exposes_roll_forward(
+    reconciliation_setup, company, user, authenticated_client
+):
+    """No params => unbounded (all_time), backward-compatible, and the response
+    now carries the period echo + roll-forward endpoints on money_flow."""
+    from accounting.settlement_provider import SettlementProvider
+
+    paymob = SettlementProvider.objects.get(company=company, normalized_code="paymob")
+    _post_clearing_je(
+        company,
+        user,
+        reconciliation_setup["clearing"],
+        reconciliation_setup["revenue"],
+        paymob.dimension_value,
+        debit=Decimal("100.00"),
+        entry_date=date.today() - timedelta(days=3),
+    )
+
+    body = authenticated_client.get("/api/accounting/reconciliation/summary/").json()
+    assert body["period"] == {"preset": "all_time", "start": None, "end": None}
+    mf = body["money_flow"]
+    assert mf["opening_outstanding"] == "0.00"  # nothing before an unbounded window
+    assert mf["closing_outstanding"] == "100.00"  # == current outstanding for all_time
+    rf = body["roll_forward"]
+    assert rf["opening_outstanding"] == "0.00"
+    assert rf["sold"] == "100.00"
+    assert rf["closing_outstanding"] == "100.00"
+    assert rf["foots"] is True
+
+
+def test_flows_windowed_stock_timeless(reconciliation_setup, company, user, authenticated_client):
+    """A June residual is still outstanding in December: windowing the flow
+    columns must NOT shrink the open-balance stock."""
+    from accounting.settlement_provider import SettlementProvider
+
+    paymob = SettlementProvider.objects.get(company=company, normalized_code="paymob")
+    today = date.today()
+    last_month_day = today.replace(day=1) - timedelta(days=1)
+
+    # 300 sold last month, 200 sold this month.
+    _post_clearing_je(
+        company,
+        user,
+        reconciliation_setup["clearing"],
+        reconciliation_setup["revenue"],
+        paymob.dimension_value,
+        debit=Decimal("300.00"),
+        entry_date=last_month_day,
+    )
+    _post_clearing_je(
+        company,
+        user,
+        reconciliation_setup["clearing"],
+        reconciliation_setup["revenue"],
+        paymob.dimension_value,
+        debit=Decimal("200.00"),
+        entry_date=today.replace(day=1),
+    )
+
+    body = authenticated_client.get("/api/accounting/reconciliation/summary/?period=this_month").json()
+    row = {r["dimension_value_code"]: r for r in body["stage1"]["providers"]}["PAYMOB"]
+    # FLOW: only this month's sale counts.
+    assert row["total_debit"] == "200.00"
+    # STOCK: the whole outstanding position, unfiltered by the window.
+    assert row["open_balance"] == "500.00"
+    assert body["stage1"]["totals"]["total_expected"] == "200.00"  # windowed flow
+    assert body["stage1"]["totals"]["open_balance"] == "500.00"  # timeless stock
+
+
+def test_roll_forward_foots_with_opening_carryover(reconciliation_setup, company, user, authenticated_client):
+    from accounting.settlement_provider import SettlementProvider
+
+    paymob = SettlementProvider.objects.get(company=company, normalized_code="paymob")
+    bank = _make_bank(company)
+    today = date.today()
+    last_month_day = today.replace(day=1) - timedelta(days=1)
+
+    # Opening carryover: 300 sold last month, undrained.
+    _post_clearing_je(
+        company,
+        user,
+        reconciliation_setup["clearing"],
+        reconciliation_setup["revenue"],
+        paymob.dimension_value,
+        debit=Decimal("300.00"),
+        entry_date=last_month_day,
+    )
+    # This month: sell 200, settle 100.
+    _post_clearing_je(
+        company,
+        user,
+        reconciliation_setup["clearing"],
+        reconciliation_setup["revenue"],
+        paymob.dimension_value,
+        debit=Decimal("200.00"),
+        entry_date=today.replace(day=1),
+    )
+    _post_clearing_credit(
+        company,
+        user,
+        reconciliation_setup["clearing"],
+        bank,
+        paymob.dimension_value,
+        credit=Decimal("100.00"),
+        entry_date=today,
+    )
+
+    rf = authenticated_client.get("/api/accounting/reconciliation/summary/?period=this_month").json()["roll_forward"]
+    assert rf["opening_outstanding"] == "300.00"  # carried in from last month
+    assert rf["sold"] == "200.00"
+    assert rf["settled"] == "100.00"
+    assert rf["refunded"] == "0.00"
+    # 300 + 200 − 100 − 0 = 400, and window_end covers all activity so it equals
+    # the current outstanding too.
+    assert rf["closing_outstanding"] == "400.00"
+    assert rf["foots"] is True
+
+
+def test_roll_forward_closing_diverges_from_stock_for_past_window(
+    reconciliation_setup, company, user, authenticated_client
+):
+    """Closing (as-of window_end) is a different, correct number from the
+    timeless open-balance stock (as-of today) when the window ends in the past."""
+    from accounting.settlement_provider import SettlementProvider
+
+    paymob = SettlementProvider.objects.get(company=company, normalized_code="paymob")
+    today = date.today()
+    last_month_day = today.replace(day=1) - timedelta(days=1)
+
+    _post_clearing_je(
+        company,
+        user,
+        reconciliation_setup["clearing"],
+        reconciliation_setup["revenue"],
+        paymob.dimension_value,
+        debit=Decimal("300.00"),
+        entry_date=last_month_day,
+    )
+    _post_clearing_je(
+        company,
+        user,
+        reconciliation_setup["clearing"],
+        reconciliation_setup["revenue"],
+        paymob.dimension_value,
+        debit=Decimal("200.00"),
+        entry_date=today.replace(day=1),
+    )
+
+    body = authenticated_client.get("/api/accounting/reconciliation/summary/?period=last_month").json()
+    rf = body["roll_forward"]
+    assert rf["opening_outstanding"] == "0.00"
+    assert rf["sold"] == "300.00"  # only last month's sale is in-window
+    assert rf["closing_outstanding"] == "300.00"  # outstanding as of end of last month
+    # ...but the timeless stock is the full current position.
+    assert body["stage1"]["totals"]["open_balance"] == "500.00"
+
+
+def test_aging_fifo_ages_oldest_unsettled_not_first_activity(reconciliation_setup, company, user, authenticated_client):
+    """A152 item 2: an old, fully-settled sale plus a tiny recent residual must
+    age from the residual (0-7d), NOT the provider's first-ever entry (which the
+    old Min(entry__date) proxy would have reported as 30+)."""
+    from accounting.settlement_provider import SettlementProvider
+
+    paymob = SettlementProvider.objects.get(company=company, normalized_code="paymob")
+    bank = _make_bank(company)
+    today = date.today()
+
+    # Old sale, fully settled a long time ago.
+    _post_clearing_je(
+        company,
+        user,
+        reconciliation_setup["clearing"],
+        reconciliation_setup["revenue"],
+        paymob.dimension_value,
+        debit=Decimal("100.00"),
+        entry_date=today - timedelta(days=400),
+    )
+    _post_clearing_credit(
+        company,
+        user,
+        reconciliation_setup["clearing"],
+        bank,
+        paymob.dimension_value,
+        credit=Decimal("100.00"),
+        entry_date=today - timedelta(days=390),
+    )
+    # Recent, still-unsettled residual.
+    _post_clearing_je(
+        company,
+        user,
+        reconciliation_setup["clearing"],
+        reconciliation_setup["revenue"],
+        paymob.dimension_value,
+        debit=Decimal("50.00"),
+        entry_date=today - timedelta(days=2),
+    )
+
+    body = authenticated_client.get("/api/accounting/reconciliation/summary/").json()
+    row = {r["dimension_value_code"]: r for r in body["stage1"]["providers"]}["PAYMOB"]
+    assert row["open_balance"] == "50.00"
+    assert row["aging_bucket"] == "0_7d"  # RED under the old lifetime-Min proxy
+    assert row["days_outstanding"] <= 3
+    assert row["oldest_entry_date"] == (today - timedelta(days=2)).isoformat()
+    assert body["stage1"]["totals"]["aged_30_plus"] == "0.00"
+
+
+def test_fully_covered_provider_has_no_aging(reconciliation_setup, company, user, authenticated_client):
+    """Over-drained / fully-settled provider ages to 'none' (no positive residual)."""
+    from accounting.settlement_provider import SettlementProvider
+
+    paymob = SettlementProvider.objects.get(company=company, normalized_code="paymob")
+    bank = _make_bank(company)
+    today = date.today()
+
+    _post_clearing_je(
+        company,
+        user,
+        reconciliation_setup["clearing"],
+        reconciliation_setup["revenue"],
+        paymob.dimension_value,
+        debit=Decimal("100.00"),
+        entry_date=today - timedelta(days=40),
+    )
+    _post_clearing_credit(
+        company,
+        user,
+        reconciliation_setup["clearing"],
+        bank,
+        paymob.dimension_value,
+        credit=Decimal("100.00"),
+        entry_date=today - timedelta(days=1),
+    )
+
+    body = authenticated_client.get("/api/accounting/reconciliation/summary/").json()
+    row = {r["dimension_value_code"]: r for r in body["stage1"]["providers"]}["PAYMOB"]
+    assert row["open_balance"] == "0.00"
+    assert row["aging_bucket"] == "none"
+    assert row["oldest_entry_date"] is None
+
+
+def test_custom_window_open_ended_from_only(reconciliation_setup, company, user, authenticated_client):
+    """A custom window with only date_from (no date_to) must not 500 and windows
+    correctly (>= from)."""
+    from accounting.settlement_provider import SettlementProvider
+
+    paymob = SettlementProvider.objects.get(company=company, normalized_code="paymob")
+    today = date.today()
+
+    _post_clearing_je(
+        company,
+        user,
+        reconciliation_setup["clearing"],
+        reconciliation_setup["revenue"],
+        paymob.dimension_value,
+        debit=Decimal("70.00"),
+        entry_date=today - timedelta(days=40),
+    )
+    _post_clearing_je(
+        company,
+        user,
+        reconciliation_setup["clearing"],
+        reconciliation_setup["revenue"],
+        paymob.dimension_value,
+        debit=Decimal("30.00"),
+        entry_date=today - timedelta(days=5),
+    )
+
+    df = (today - timedelta(days=10)).isoformat()
+    resp = authenticated_client.get(f"/api/accounting/reconciliation/summary/?date_from={df}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["period"]["preset"] == "custom"
+    assert body["period"]["start"] == df
+    assert body["period"]["end"] is None
+    row = {r["dimension_value_code"]: r for r in body["stage1"]["providers"]}["PAYMOB"]
+    assert row["total_debit"] == "30.00"  # only the in-window sale
+    assert row["open_balance"] == "100.00"  # stock unaffected
