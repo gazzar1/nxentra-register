@@ -126,8 +126,10 @@ class CommandResult:
         return cls(success=True, data=data, event=event)
 
     @classmethod
-    def fail(cls, error: str) -> "CommandResult":
-        return cls(success=False, error=error)
+    def fail(cls, error: str, data: object = None) -> "CommandResult":
+        # `data` lets a failure carry structured context (e.g. A152's close
+        # checklist) alongside the human-readable error.
+        return cls(success=False, error=error, data=data)
 
 
 def _changes_hash(changes: dict) -> str:
@@ -1538,22 +1540,60 @@ def delete_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
 # =============================================================================
 
 
+def _close_checklist_window(fiscal_period):
+    """Date window for the close readiness checks.
+
+    A NORMAL period uses its own start/end. The P13 ADJUSTMENT period
+    (start == end == P12's end) would give the checks a single-day window, so
+    widen it to the full fiscal year — the year-end checks (trial balance,
+    drafts, reconciliation) should cover the whole year being closed.
+    """
+    from projections.models import FiscalPeriod
+
+    is_adjustment = fiscal_period.period_type == FiscalPeriod.PeriodType.ADJUSTMENT or fiscal_period.period == 13
+    if is_adjustment:
+        normal = FiscalPeriod.objects.filter(
+            company=fiscal_period.company,
+            fiscal_year=fiscal_period.fiscal_year,
+            period_type=FiscalPeriod.PeriodType.NORMAL,
+        ).order_by("period")
+        first = normal.first()
+        last = normal.last()
+        if first and last:
+            return first.start_date, last.end_date
+    return fiscal_period.start_date, fiscal_period.end_date
+
+
 @transaction.atomic
 def close_period(
     actor: ActorContext,
     fiscal_year: int,
     period: int,
+    *,
+    force: bool = False,
+    reason: str | None = None,
 ) -> CommandResult:
     """
     Close a fiscal period.
 
+    A152 item 3: close is ADVISORY but no longer a bare status flip. The command
+    evaluates the 8-point readiness checklist (the same one the Month-End Close
+    view shows) server-side, so the periods-table Close button and the raw API
+    can't skip the gate. WARN never blocks; a FAILing check requires an explicit
+    ``force=True`` + a non-empty ``reason`` to override, and both are recorded on
+    the FISCAL_PERIOD_CLOSED event for audit. On a blocked close the failing
+    checklist is returned in ``CommandResult.data`` so the caller can surface it.
+
     Args:
         actor: The actor context
         fiscal_year: Fiscal year start (e.g., 2024)
-        period: Period number (1-12)
+        period: Period number (1-13)
+        force: Override a checklist FAIL (requires a reason).
+        reason: Why the close was forced despite failing checks.
     """
     require(actor, "periods.close")
 
+    from projections.close_checks import checklist_has_blocking_failure, run_close_checklist
     from projections.models import FiscalPeriod
 
     fiscal_period = FiscalPeriod.objects.filter(
@@ -1566,6 +1606,26 @@ def close_period(
 
     if fiscal_period.status == FiscalPeriod.Status.CLOSED:
         return CommandResult.fail("Fiscal period is already closed.")
+
+    # A152 item 3: server-side close gate — only a FAIL on a BLOCKING check
+    # (unbalanced trial balance, stranded drafts) requires force + reason.
+    date_from, date_to = _close_checklist_window(fiscal_period)
+    checklist = run_close_checklist(actor.company, date_from, date_to)
+    has_fail = checklist_has_blocking_failure(checklist)
+    if has_fail and not force:
+        return CommandResult.fail(
+            "Close blocked: one or more readiness checks failed. "
+            "Resolve them, or re-submit with force + a reason to override.",
+            data={"checklist": checklist, "requires_force": True},
+        )
+    if has_fail and force and not (reason and reason.strip()):
+        return CommandResult.fail(
+            "A reason is required to force-close a period with failing checks.",
+            data={"checklist": checklist, "requires_reason": True},
+        )
+
+    forced = has_fail  # reachable here only if checks passed, or force+reason given
+    force_reason = reason.strip() if (has_fail and reason) else None
 
     closed_at = timezone.now()
     event = emit_event(
@@ -1581,6 +1641,8 @@ def close_period(
             closed_at=closed_at.isoformat(),
             closed_by_id=actor.user.id,
             closed_by_email=actor.user.email,
+            forced=forced,
+            force_reason=force_reason,
         ).to_dict(),
     )
 

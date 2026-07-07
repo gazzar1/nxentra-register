@@ -162,6 +162,9 @@ export interface MonthEndCheck {
   message: string;
   resolution: string | null;
   detail: Record<string, unknown>;
+  // A152 item 3: whether a FAIL on this check actually blocks a close (only
+  // trial_balance + draft_entries do). Optional for older backends.
+  blocking?: boolean;
 }
 
 export interface MonthEndCloseResponse {

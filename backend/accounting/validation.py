@@ -155,20 +155,42 @@ def _check_period(company, entry_date) -> str | None:
     """
     from projections.models import FiscalPeriod
     from projections.models import FiscalYear as FiscalYearModel
+    from projections.periods import ensure_fiscal_periods_for_date
 
     if not entry_date:
         return None
 
-    fiscal_period = FiscalPeriod.objects.filter(
-        company=company,
-        start_date__lte=entry_date,
-        end_date__gte=entry_date,
-        period_type=FiscalPeriod.PeriodType.NORMAL,
-    ).first()
+    # A152 item 4: auto-provision the year's periods for an in-range date, then
+    # look up. This unifies the no-row behaviour with the manual gate
+    # (policies.can_post_to_period): pre-A152 the system path silently ALLOWED
+    # posting into an unconfigured year (stamping a degraded calendar-month
+    # period number) while the manual path refused — backwards, since the
+    # automated paths are the ones that must be strict for the Financial Truth
+    # Engine. After provisioning, an in-range date always resolves a row; only a
+    # genuinely out-of-range date (typo year) falls through to the refusal.
+    ensure_fiscal_periods_for_date(company, entry_date)
+
+    fiscal_period = (
+        FiscalPeriod.objects.filter(
+            company=company,
+            start_date__lte=entry_date,
+            end_date__gte=entry_date,
+            period_type=FiscalPeriod.PeriodType.NORMAL,
+        )
+        # Deterministic pick if rows from two labeling conventions ever cover
+        # the same date (defense in depth; provisioning refuses to create such
+        # overlaps, but legacy seeding paths could have).
+        .order_by("fiscal_year", "period")
+        .first()
+    )
 
     if not fiscal_period:
-        # No period defined — allow (some companies don't configure periods)
-        return None
+        # A152 item 4: refuse (was: silently allow). Auto-provisioning above
+        # means this only fires for out-of-sane-range dates — matching the
+        # manual gate's "No fiscal period defined for this date." When the
+        # caller uses on_closed_period="incomplete" the JE is created INCOMPLETE
+        # rather than posted with an unvalidated, degraded period number.
+        return "No fiscal period defined for this date."
 
     if fiscal_period.status != FiscalPeriod.Status.OPEN:
         return f"Fiscal period {fiscal_period.period} ({fiscal_period.fiscal_year}) is closed."

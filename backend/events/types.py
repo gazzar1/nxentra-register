@@ -603,6 +603,10 @@ class FiscalPeriodClosedData(BaseEventData):
     closed_at: str
     closed_by_id: int
     closed_by_email: str
+    # A152 item 3: audit trail when a close overrode a failing readiness check.
+    # Defaults keep the payload replay-safe for pre-A152 events.
+    forced: bool = False
+    force_reason: str | None = None
 
 
 @dataclass

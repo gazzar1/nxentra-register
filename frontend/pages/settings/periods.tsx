@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
@@ -18,6 +19,15 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { PageHeader, LoadingSpinner, ConfirmDialog } from "@/components/common";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/components/ui/toaster";
 import { useCompanyFormat } from "@/hooks/useCompanyFormat";
@@ -28,6 +38,7 @@ import {
   FiscalPeriodConfig,
   FiscalYearStatus,
   CloseReadinessResult,
+  CloseBlockedResponse,
 } from "@/services/periods.service";
 
 function formatPeriodNumber(period: number, fiscalYear: number): string {
@@ -40,6 +51,7 @@ export default function PeriodsPage() {
   const { toast } = useToast();
   const { hasPermission } = useAuth();
   const { formatDate } = useCompanyFormat();
+  const queryClient = useQueryClient();
   const [periods, setPeriods] = useState<FiscalPeriod[]>([]);
   const [config, setConfig] = useState<FiscalPeriodConfig | null>(null);
   const [fiscalYearStatus, setFiscalYearStatus] = useState<FiscalYearStatus | null>(null);
@@ -71,6 +83,11 @@ export default function PeriodsPage() {
   const [actionPeriod, setActionPeriod] = useState<FiscalPeriod | null>(null);
   const [actionType, setActionType] = useState<"close" | "open">("close");
   const [actionLoading, setActionLoading] = useState(false);
+
+  // A152 item 3: server-blocked close (failing readiness checks) → force + reason.
+  const [closeBlocked, setCloseBlocked] = useState<CloseBlockedResponse | null>(null);
+  const [forceReason, setForceReason] = useState("");
+  const [forcing, setForcing] = useState(false);
 
   // Fiscal Year Close wizard state
   const [closeReadiness, setCloseReadiness] = useState<CloseReadinessResult | null>(null);
@@ -251,17 +268,55 @@ export default function PeriodsPage() {
       });
       setCloseConfirmOpen(false);
       fetchPeriods();
+      // A152: refresh the shared fiscal-periods cache (header chip + date-input warnings).
+      queryClient.invalidateQueries({ queryKey: ["fiscal-periods"] });
+    } catch (err: unknown) {
+      const resp = (err as { response?: { status?: number; data?: CloseBlockedResponse } })?.response;
+      if (actionType === "close" && resp?.status === 400 && resp.data?.checklist) {
+        // Server blocked the close on a failing readiness check — swap the
+        // plain confirm for the force-with-reason dialog.
+        setCloseConfirmOpen(false);
+        setForceReason("");
+        setCloseBlocked(resp.data);
+      } else {
+        toast({
+          title: t("messages.error"),
+          description:
+            actionType === "close"
+              ? t("settings:periods.closedError", "Failed to close period")
+              : t("settings:periods.openedError", "Failed to open period"),
+          variant: "destructive",
+        });
+      }
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleForceClose = async () => {
+    if (!actionPeriod || !forceReason.trim()) return;
+    setForcing(true);
+    try {
+      await periodsService.close(actionPeriod.fiscal_year, actionPeriod.period, {
+        force: true,
+        reason: forceReason.trim(),
+      });
+      toast({
+        title: t("messages.success"),
+        description: t("settings:periods.closedSuccess", "Period closed successfully"),
+        variant: "success",
+      });
+      setCloseBlocked(null);
+      fetchPeriods();
+      queryClient.invalidateQueries({ queryKey: ["fiscal-periods"] });
     } catch {
       toast({
         title: t("messages.error"),
-        description:
-          actionType === "close"
-            ? t("settings:periods.closedError", "Failed to close period")
-            : t("settings:periods.openedError", "Failed to open period"),
+        description: t("settings:periods.closedError", "Failed to close period"),
         variant: "destructive",
       });
     } finally {
-      setActionLoading(false);
+      setForcing(false);
     }
   };
 
@@ -936,6 +991,73 @@ export default function PeriodsPage() {
           onConfirm={handleConfirmAction}
           isLoading={actionLoading}
         />
+
+        {/* A152 item 3: force-close-with-reason when readiness checks block */}
+        <Dialog
+          open={!!closeBlocked}
+          onOpenChange={(o) => {
+            if (!o) setCloseBlocked(null);
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>
+                {t("settings:periods.forceCloseTitle", "Close blocked by readiness checks")}
+              </DialogTitle>
+              <DialogDescription>
+                {t(
+                  "settings:periods.forceCloseDescription",
+                  "These checks must pass before closing. You can override with a reason — it is recorded on the close for audit."
+                )}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3">
+              <ul className="space-y-2 text-sm">
+                {(closeBlocked?.checklist ?? [])
+                  .filter((c) => c.status === "FAIL" && c.blocking)
+                  .map((c) => (
+                    <li key={c.check} className="rounded-md border border-destructive/40 bg-destructive/5 p-2">
+                      <div className="flex items-center gap-2 font-medium text-destructive">
+                        <XCircle className="h-4 w-4" />
+                        {c.title}
+                      </div>
+                      <p className="text-muted-foreground">{c.message}</p>
+                      {c.resolution && <p className="mt-1 text-xs text-muted-foreground">{c.resolution}</p>}
+                    </li>
+                  ))}
+              </ul>
+              <div className="space-y-1">
+                <Label htmlFor="force-reason">
+                  {t("settings:periods.forceReasonLabel", "Reason for override")}
+                </Label>
+                <Textarea
+                  id="force-reason"
+                  value={forceReason}
+                  onChange={(e) => setForceReason(e.target.value)}
+                  placeholder={t(
+                    "settings:periods.forceReasonPlaceholder",
+                    "Why are you closing despite the failing checks?"
+                  )}
+                  rows={3}
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setCloseBlocked(null)} disabled={forcing}>
+                {t("common:actions.cancel", "Cancel")}
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={handleForceClose}
+                disabled={!forceReason.trim() || forcing}
+              >
+                {forcing
+                  ? t("common:loading", "Loading…")
+                  : t("settings:periods.forceClose", "Force close")}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* Year-End Close Confirm Dialog */}
         <ConfirmDialog
