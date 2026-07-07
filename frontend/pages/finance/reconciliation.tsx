@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { GetServerSideProps } from "next";
 import Link from "next/link";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
@@ -14,14 +14,24 @@ import {
   RefreshCw,
   ScrollText,
   ClipboardCheck,
+  CalendarRange,
 } from "lucide-react";
 
 import { AppLayout } from "@/components/layout";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { CompanyDateInput, type DateFormat } from "@/components/ui/CompanyDateInput";
 import { PageHeader } from "@/components/common";
 import { useToast } from "@/components/ui/toaster";
+import { useCompanyFormat } from "@/hooks/useCompanyFormat";
 import {
   reconciliationService,
   type AgingBucket,
@@ -32,15 +42,26 @@ import {
   type NeedsReviewItem,
   type OrderReconciliationStatus,
   type PayoutLinesResponse,
+  type PeriodPreset,
+  type PeriodWindow,
   type ProviderType,
   type ReconciliationDrilldown,
   type ReconciliationOrders,
   type ReconciliationProviderRow,
   type ReconciliationSummary,
+  type ReconciliationSummaryParams,
+  type RollForward,
   type Stage2Payout,
   type Stage2PayoutStatus,
 } from "@/services/reconciliation.service";
 import { stripeService } from "@/services/stripe.service";
+
+const PERIOD_LABEL: Record<PeriodPreset, string> = {
+  this_month: "This month",
+  last_month: "Last month",
+  custom: "Custom range",
+  all_time: "All time",
+};
 
 const PROVIDER_ICON: Record<ProviderType, JSX.Element> = {
   gateway: <Wallet className="h-4 w-4" />,
@@ -110,12 +131,97 @@ function settlementImportTarget(dimensionValueCode: string): string | null {
   return match ? match.label : null;
 }
 
+// A152: the period roll-forward as a clickable money identity —
+// "opening + sold − settled − refunded = closing". Absorbs F15's banner and
+// makes carryover explicit. Each term deep-links to the stage that explains it.
+function RollForwardBanner({
+  rf,
+  period,
+  currency,
+  negatives,
+  formatDate,
+}: {
+  rf: RollForward;
+  period?: PeriodWindow;
+  currency: string;
+  negatives: ReconciliationProviderRow[];
+  formatDate: (v: string | Date | null | undefined) => string;
+}) {
+  const preset = period?.preset ?? "all_time";
+  const showOpening = preset !== "all_time";
+  const showRefunded = Number(rf.refunded) !== 0;
+  const rangeLabel =
+    preset === "custom"
+      ? `${period?.start ? formatDate(period.start) : "…"} – ${period?.end ? formatDate(period.end) : "…"}`
+      : PERIOD_LABEL[preset];
+
+  const Term = ({ href, children, strong }: { href: string; children: ReactNode; strong?: boolean }) => (
+    <Link
+      href={href}
+      className={`underline decoration-dotted underline-offset-2 hover:decoration-solid ${
+        strong ? "font-semibold text-foreground" : "text-foreground/90"
+      }`}
+    >
+      {children}
+    </Link>
+  );
+
+  return (
+    <Card className="border-primary/30 bg-primary/5">
+      <CardContent className="space-y-2 py-4 text-sm leading-relaxed">
+        <p className="text-xs uppercase text-muted-foreground">Where is my money — {rangeLabel}</p>
+        <p>
+          {showOpening && (
+            <>
+              Opening outstanding <Term href="#stage-1">{formatMoney(rf.opening_outstanding)}</Term>
+              {" + "}
+            </>
+          )}
+          <Term href="#stage-1">{formatMoney(rf.sold)}</Term> sold
+          {" − "}
+          <Term href="#stage-2">{formatMoney(rf.settled)}</Term> settled
+          {showRefunded && (
+            <>
+              {" − "}
+              <Term href="#stage-1">{formatMoney(rf.refunded)}</Term> refunded
+            </>
+          )}
+          {" = "}
+          <Term href="#stage-1" strong>
+            {formatMoney(rf.closing_outstanding)}
+          </Term>{" "}
+          closing outstanding <span className="text-muted-foreground">{currency}</span>
+        </p>
+        {negatives.length > 0 && (
+          <p className="text-xs text-destructive">
+            ⚠{" "}
+            {negatives
+              .map((n) => `${n.provider_name} clearing is negative (${formatMoney(n.open_balance)})`)
+              .join("; ")}
+            {" — investigate before trusting the numbers."}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function ReconciliationPage() {
   const { toast } = useToast();
+  const { dateFormat, formatDate } = useCompanyFormat();
 
   const [summary, setSummary] = useState<ReconciliationSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+
+  // A152: period window. Default "This month" (the API defaults to all_time
+  // when it gets no params, so we send the preset explicitly). Custom range is
+  // held in draft state and only applied — refetched — on Apply, not per
+  // keystroke.
+  const [period, setPeriod] = useState<PeriodPreset>("this_month");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+  const [appliedCustom, setAppliedCustom] = useState<{ from: string; to: string }>({ from: "", to: "" });
 
   const [drilldownByProvider, setDrilldownByProvider] = useState<
     Record<number, ReconciliationDrilldown | null>
@@ -207,11 +313,26 @@ export default function ReconciliationPage() {
     }
   };
 
+  // A152: build the period params for the summary request. all_time / an
+  // unapplied custom range send no window (backend => all_time).
+  const buildSummaryParams = (): ReconciliationSummaryParams | undefined => {
+    if (period === "all_time") return { period: "all_time" };
+    if (period === "custom") {
+      if (!appliedCustom.from && !appliedCustom.to) return { period: "all_time" };
+      return {
+        period: "custom",
+        ...(appliedCustom.from ? { date_from: appliedCustom.from } : {}),
+        ...(appliedCustom.to ? { date_to: appliedCustom.to } : {}),
+      };
+    }
+    return { period };
+  };
+
   const fetchSummary = async (showSpinner = true) => {
     if (showSpinner) setLoading(true);
     else setRefreshing(true);
     try {
-      const { data } = await reconciliationService.summary();
+      const { data } = await reconciliationService.summary(buildSummaryParams());
       setSummary(data);
     } catch {
       toast({
@@ -224,9 +345,17 @@ export default function ReconciliationPage() {
     }
   };
 
+  // Refetch when the window changes: on preset switch, and when a custom range
+  // is applied. Custom drafts (customFrom/customTo) deliberately do NOT trigger
+  // a fetch until Apply writes appliedCustom.
   useEffect(() => {
     fetchSummary();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [period, appliedCustom.from, appliedCustom.to]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const applyCustomRange = () => {
+    if (!customFrom && !customTo) return;
+    setAppliedCustom({ from: customFrom, to: customTo });
+  };
 
   // Cross-page anchors (e.g. the /stripe/payouts "Reconciliation" button →
   // #stage-2) fire the router's hash scroll before the summary-gated cards
@@ -396,7 +525,51 @@ export default function ReconciliationPage() {
           subtitle="Where is my money? — across Shopify, gateways, couriers, and the bank"
         />
 
-        <div className="flex justify-end">
+        {/* A152: period control. Flows (tiles, Stage-1 columns, Stage-2
+           ledger, roll-forward) window to the selection; stocks (open
+           balance, aging, bank match, exceptions) stay as-of-today. */}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <CalendarRange className="h-4 w-4 text-muted-foreground" />
+            <Select value={period} onValueChange={(v) => setPeriod(v as PeriodPreset)}>
+              <SelectTrigger className="h-9 w-[170px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="this_month">{PERIOD_LABEL.this_month}</SelectItem>
+                <SelectItem value="last_month">{PERIOD_LABEL.last_month}</SelectItem>
+                <SelectItem value="custom">{PERIOD_LABEL.custom}</SelectItem>
+                <SelectItem value="all_time">{PERIOD_LABEL.all_time}</SelectItem>
+              </SelectContent>
+            </Select>
+            {period === "custom" && (
+              <div className="flex flex-wrap items-center gap-2">
+                <CompanyDateInput
+                  value={customFrom}
+                  onChange={setCustomFrom}
+                  dateFormat={dateFormat as DateFormat}
+                  className="h-9 w-[140px]"
+                  aria-label="From date"
+                />
+                <span className="text-muted-foreground">–</span>
+                <CompanyDateInput
+                  value={customTo}
+                  onChange={setCustomTo}
+                  dateFormat={dateFormat as DateFormat}
+                  className="h-9 w-[140px]"
+                  aria-label="To date"
+                />
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={applyCustomRange}
+                  disabled={(!customFrom && !customTo) || loading || refreshing}
+                >
+                  Apply
+                </Button>
+              </div>
+            )}
+          </div>
           <Button
             variant="outline"
             size="sm"
@@ -426,8 +599,23 @@ export default function ReconciliationPage() {
           </Card>
         ) : (
           <>
-            {/* A16: 'Tell me the story' narrative banner */}
-            {summary.narrative && (
+            {/* A152: roll-forward money identity (absorbs A16's 'Tell me the
+               story' banner). Falls back to the server narrative string on an
+               older backend that doesn't return the structured roll_forward. */}
+            {summary.roll_forward &&
+            (Number(summary.roll_forward.sold) !== 0 ||
+              Number(summary.roll_forward.opening_outstanding) !== 0 ||
+              Number(summary.roll_forward.closing_outstanding) !== 0) ? (
+              <RollForwardBanner
+                rf={summary.roll_forward}
+                period={summary.period}
+                currency={summary.money_flow?.currency ?? ""}
+                negatives={(summary.stage1?.providers ?? []).filter(
+                  (r) => Number(r.open_balance) < 0
+                )}
+                formatDate={formatDate}
+              />
+            ) : summary.narrative ? (
               <Card className="border-primary/30 bg-primary/5">
                 <CardContent className="py-4 text-sm leading-relaxed">
                   <p className="text-xs uppercase text-muted-foreground mb-1">
@@ -436,7 +624,7 @@ export default function ReconciliationPage() {
                   {summary.narrative}
                 </CardContent>
               </Card>
-            )}
+            ) : null}
 
             {/* U1: Money Bridge — the "where is my money?" story as a picture */}
             {summary.money_flow && Number(summary.money_flow.total_sold) > 0 && (
@@ -628,7 +816,9 @@ export default function ReconciliationPage() {
                 <SummaryTile
                   label="Open Balance"
                   value={formatMoney(totals.open_balance)}
-                  caption={`Across ${totals.providers_with_open_balance} provider(s)`}
+                  caption={`Across ${totals.providers_with_open_balance} provider(s)${
+                    period !== "all_time" ? " · as of today" : ""
+                  }`}
                   emphasize
                   href="#stage-1"
                 />
@@ -636,9 +826,8 @@ export default function ReconciliationPage() {
                   label="Aged > 30 days"
                   value={formatMoney(totals.aged_30_plus)}
                   caption={
-                    Number(totals.aged_30_plus) > 0
-                      ? "Needs attention"
-                      : "Nothing overdue"
+                    (Number(totals.aged_30_plus) > 0 ? "Needs attention" : "Nothing overdue") +
+                    (period !== "all_time" ? " · as of today" : "")
                   }
                   variant={Number(totals.aged_30_plus) > 0 ? "destructive" : "default"}
                   href="#stage-1"

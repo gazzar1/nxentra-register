@@ -194,7 +194,38 @@ export interface MoneyFlow {
   segments: MoneyFlowSegment[];
   banked: string;
   aged_over_30d: string;
+  // A152 roll-forward endpoints (opening carryover + closing as-of window_end).
+  // Optional so an older backend response still type-checks.
+  opening_outstanding?: string;
+  closing_outstanding?: string;
   balanced: boolean;
+}
+
+// A152: the period roll-forward identity for the provider clearing position.
+// opening_outstanding + sold − settled − refunded = closing_outstanding.
+export interface RollForward {
+  opening_outstanding: string;
+  sold: string;
+  settled: string;
+  refunded: string;
+  closing_outstanding: string;
+  foots: boolean;
+}
+
+export type PeriodPreset = "this_month" | "last_month" | "custom" | "all_time";
+
+export interface PeriodWindow {
+  preset: PeriodPreset;
+  start: string | null;
+  end: string | null;
+}
+
+// A152: params the summary endpoint accepts. Omitting them => all_time
+// (backward-compatible lifetime totals).
+export interface ReconciliationSummaryParams {
+  period?: PeriodPreset;
+  date_from?: string;
+  date_to?: string;
 }
 
 export interface MatchesSummary {
@@ -233,8 +264,12 @@ export interface ExceptionsSummary {
 
 export interface ReconciliationSummary {
   as_of: string;
+  // A152: echo of the resolved period window (optional for older backends).
+  period?: PeriodWindow;
   narrative: string;
   money_flow: MoneyFlow;
+  // A152: structured roll-forward terms for the clickable narrative banner.
+  roll_forward?: RollForward;
   matches: MatchesSummary;
   stage1: {
     providers: ReconciliationProviderRow[];
@@ -334,8 +369,11 @@ export interface MoneyTrace {
 // =============================================================================
 
 export const reconciliationService = {
-  summary: () =>
-    apiClient.get<ReconciliationSummary>("/accounting/reconciliation/summary/"),
+  summary: (params?: ReconciliationSummaryParams) =>
+    apiClient.get<ReconciliationSummary>(
+      "/accounting/reconciliation/summary/",
+      params ? { params } : undefined
+    ),
 
   drilldown: (providerId: number, accountId?: number) => {
     const params: Record<string, string> = { provider_id: String(providerId) };

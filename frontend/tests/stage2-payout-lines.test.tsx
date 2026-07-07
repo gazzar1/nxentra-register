@@ -37,6 +37,18 @@ vi.mock('@/components/common', () => ({
   PageHeader: ({ title }: { title: string }) => <h1>{title}</h1>,
 }));
 vi.mock('@/components/ui/toaster', () => ({ useToast: () => ({ toast: mockToast }) }));
+// The page uses useCompanyFormat() (which reads AuthContext) for the A152
+// period control; stub it so the test needs no AuthProvider.
+vi.mock('@/hooks/useCompanyFormat', () => ({
+  useCompanyFormat: () => ({
+    dateFormat: 'YYYY-MM-DD',
+    formatDate: (v: unknown) => (v == null || v === '' ? '—' : String(v)),
+    formatAmount: (v: unknown) => String(v),
+    formatCurrency: (v: unknown) => String(v),
+    parseAmount: (v: string) => v,
+    settings: undefined,
+  }),
+}));
 vi.mock('next-i18next/serverSideTranslations', () => ({
   serverSideTranslations: vi.fn().mockResolvedValue({}),
 }));
