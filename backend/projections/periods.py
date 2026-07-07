@@ -29,6 +29,135 @@ def _period_dates(fiscal_year: int, start_month: int, period: int) -> tuple[date
     return date(year, month, 1), date(year, month, last_day)
 
 
+# A152 item 4 — sane range for on-demand fiscal-period provisioning. A date
+# whose fiscal year is within [today's FY − LOOKBACK, today's FY + LOOKAHEAD]
+# auto-provisions its 13 periods; anything outside (typo years like 0002/9999)
+# is left unprovisioned so both posting gates refuse it loudly. 10y back covers
+# A126 historical import and Shopify/settlement backfill.
+_AUTOPROVISION_LOOKBACK_YEARS = 10
+_AUTOPROVISION_LOOKAHEAD_YEARS = 1
+
+
+def ensure_fiscal_periods_for_date(company, target_date) -> bool:
+    """A152 item 4 — lazily provision a company's 13 fiscal periods for the
+    fiscal year containing ``target_date`` when they don't exist yet.
+
+    Both the manual (`accounting.policies.can_post_to_period`) and system
+    (`accounting.validation._check_period`) posting gates call this first, so a
+    postable date always resolves a real FiscalPeriod — which unifies their
+    no-row behaviour (both refuse only genuinely out-of-range dates) AND stamps
+    the correct fiscal period number instead of the degraded calendar month.
+
+    Mirrors the COMPANY_CREATED seeding but is idempotent + race-safe
+    (get_or_create against the uniq_fiscal_period/-year/-config constraints).
+    Returns True when the year's periods exist (already or freshly created);
+    False when ``target_date`` is empty/unparseable or outside the sane range,
+    in which case nothing is created and the caller refuses.
+
+    NOTE: this writes read-model rows directly rather than via the
+    COMPANY_CREATED projection (the gates need them synchronously; projection
+    processing is async). Consistent with the existing direct-write precedents
+    (accounts.commands._create_periods, seed_shopify_demo._ensure_fiscal_periods).
+    A full event replay does not recreate on-demand years — an accepted
+    limitation shared with those precedents; the rows are deterministically
+    re-derivable from the company's fiscal-year-start month + date.
+    """
+    from datetime import date as _date
+    from datetime import datetime as _datetime
+
+    from django.db import transaction
+
+    from projections.write_barrier import projection_writes_allowed
+
+    if not target_date:
+        return False
+    if isinstance(target_date, str):
+        try:
+            target_date = _datetime.fromisoformat(target_date).date()
+        except ValueError:
+            return False
+    elif isinstance(target_date, _datetime):
+        target_date = target_date.date()
+    elif not isinstance(target_date, _date):
+        return False
+
+    start_month = company.fiscal_year_start_month or 1
+    fiscal_year = _fiscal_year_for_date(target_date, start_month)
+
+    today_fy = _fiscal_year_for_date(date.today(), start_month)
+    if not (today_fy - _AUTOPROVISION_LOOKBACK_YEARS <= fiscal_year <= today_fy + _AUTOPROVISION_LOOKAHEAD_YEARS):
+        return False
+
+    # Idempotent fast path — COVERAGE-based, not label-based: if any NORMAL
+    # period already contains the date, the gates can resolve it, whatever
+    # fiscal-year label it carries. Labels are NOT trusted because two seeding
+    # conventions coexist (start-year labeling here vs the onboarding wizard's
+    # end-year labeling for Jul–Dec starts) and fiscal_year_start_month can be
+    # changed after seeding without regenerating rows.
+    if FiscalPeriod.objects.filter(
+        company=company,
+        start_date__lte=target_date,
+        end_date__gte=target_date,
+        period_type=FiscalPeriod.PeriodType.NORMAL,
+    ).exists():
+        return True
+
+    # Overlap guard: NEVER create a year whose computed span intersects any
+    # existing period (a fiscal-start change after seeding, or a labeling
+    # mismatch, would otherwise mint a second overlapping calendar — two NORMAL
+    # rows covering one date, nondeterministic gate results, closes landing on
+    # the wrong row). Refusing here means the gates refuse loudly (the pre-A152
+    # manual behaviour), surfacing the misconfiguration instead of papering
+    # over it with corrupted rows.
+    span_start, _ = _period_dates(fiscal_year, start_month, 1)
+    _, span_end = _period_dates(fiscal_year, start_month, 12)
+    if FiscalPeriod.objects.filter(
+        company=company,
+        start_date__lte=span_end,
+        end_date__gte=span_start,
+    ).exists():
+        return False
+
+    with projection_writes_allowed(), transaction.atomic():
+        for period in range(1, 13):
+            start_date, end_date = _period_dates(fiscal_year, start_month, period)
+            FiscalPeriod.objects.get_or_create(
+                company=company,
+                fiscal_year=fiscal_year,
+                period=period,
+                defaults={
+                    "period_type": FiscalPeriod.PeriodType.NORMAL,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "status": FiscalPeriod.Status.OPEN,
+                },
+            )
+        # Period 13: adjustment period sharing Period 12's end date.
+        _, p12_end = _period_dates(fiscal_year, start_month, 12)
+        FiscalPeriod.objects.get_or_create(
+            company=company,
+            fiscal_year=fiscal_year,
+            period=13,
+            defaults={
+                "period_type": FiscalPeriod.PeriodType.ADJUSTMENT,
+                "start_date": p12_end,
+                "end_date": p12_end,
+                "status": FiscalPeriod.Status.OPEN,
+            },
+        )
+        FiscalPeriodConfig.objects.get_or_create(
+            company=company,
+            fiscal_year=fiscal_year,
+            defaults={"period_count": 13, "current_period": 1},
+        )
+        FiscalYear.objects.get_or_create(
+            company=company,
+            fiscal_year=fiscal_year,
+            defaults={"status": FiscalYear.Status.OPEN},
+        )
+    return True
+
+
 class FiscalPeriodProjection(BaseProjection):
     @property
     def name(self) -> str:

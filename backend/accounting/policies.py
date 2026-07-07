@@ -665,6 +665,14 @@ def can_post_to_period(actor, target_date, period=None, fiscal_year=None) -> tup
         elif not isinstance(target_date, date_type):
             return False, "Invalid entry date."
 
+        # A152 item 4: auto-provision the fiscal year's periods for an in-range
+        # date so the lookups below resolve a real row. Out-of-sane-range dates
+        # leave nothing and still hit the no-row refusal at the bottom — which
+        # is exactly the behaviour the system gate now matches.
+        from projections.periods import ensure_fiscal_periods_for_date
+
+        ensure_fiscal_periods_for_date(actor.company, target_date)
+
     # If period 13 is explicitly requested, look up by period number + fiscal year
     if period is not None and period == 13:
         p13_qs = FiscalPeriod.objects.filter(
@@ -695,7 +703,9 @@ def can_post_to_period(actor, target_date, period=None, fiscal_year=None) -> tup
         )
         if period is not None:
             period_qs = period_qs.filter(period=period)
-        fiscal_period = period_qs.first()
+        # A152: deterministic pick if two labeling conventions ever cover the
+        # same date (mirrors validation._check_period).
+        fiscal_period = period_qs.order_by("fiscal_year", "period").first()
 
         # A85 chunk 2c (2026-05-26): when an explicit `period` was supplied
         # AND the (date, period) AND-filter yielded nothing, the operator

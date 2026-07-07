@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { useTranslation } from "next-i18next";
 import { useRouter } from "next/router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CheckCircle2, AlertTriangle, XCircle, ClipboardCheck,
   ChevronLeft, ChevronRight, Lock, RefreshCw, ArrowRight, BookOpen, ChevronDown,
@@ -18,6 +18,7 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Textarea } from "@/components/ui/textarea";
 import { reportsService, MonthEndCheck } from "@/services/reports.service";
 import apiClient from "@/lib/api-client";
 import { cn } from "@/lib/cn";
@@ -60,8 +61,26 @@ export default function MonthEndClosePage() {
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth()); // Previous month (0-indexed, so getMonth() = previous)
   const [showCloseDialog, setShowCloseDialog] = useState(false);
+  const [showForceDialog, setShowForceDialog] = useState(false);
+  const [forceReason, setForceReason] = useState("");
+  // A152: blocking failures returned by a 400 on close — the server's word
+  // beats the page-load snapshot (a draft can land between GET and click).
+  const [serverBlocking, setServerBlocking] = useState<MonthEndCheck[] | null>(null);
   const [closing, setClosing] = useState(false);
   const [showGuide, setShowGuide] = useState(false);
+  const qc = useQueryClient();
+
+  // A152 item 6: the header chip deep-links ?year=&month= so this page opens
+  // on the period the chip named instead of the previous-calendar-month default.
+  useEffect(() => {
+    if (!router.isReady) return;
+    const qy = Number(router.query.year);
+    const qm = Number(router.query.month);
+    if (qy >= 2000 && qy <= 2100 && qm >= 1 && qm <= 12) {
+      setYear(qy);
+      setMonth(qm - 1);
+    }
+  }, [router.isReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Adjust: if we're at month 0 (Jan), previous month is Dec of last year
   const displayMonth = month + 1; // 1-indexed for API
@@ -92,23 +111,53 @@ export default function MonthEndClosePage() {
     }
   };
 
-  const handleClosePeriod = async () => {
+  const handleClosePeriod = async (opts?: { force?: boolean; reason?: string }) => {
     if (!data?.fiscal_period) return;
     setClosing(true);
     try {
-      await apiClient.post(`/reports/periods/${data.fiscal_period.fiscal_year}/${data.fiscal_period.period}/close/`);
+      await apiClient.post(
+        `/reports/periods/${data.fiscal_period.fiscal_year}/${data.fiscal_period.period}/close/`,
+        opts ? { force: !!opts.force, reason: opts.reason } : undefined
+      );
       toast({ title: "Period closed", description: `Period ${displayMonth}/${year} has been closed successfully.` });
       refetch();
+      // Refresh the shared fiscal-periods cache so the header chip and the
+      // CompanyDateInput warnings reflect the close immediately.
+      qc.invalidateQueries({ queryKey: ["fiscal-periods"] });
+      // Close dialogs only on SUCCESS — a failed force keeps the typed reason.
+      setShowCloseDialog(false);
+      setShowForceDialog(false);
+      setServerBlocking(null);
     } catch (error: any) {
-      toast({ title: "Error", description: error?.response?.data?.detail || error?.response?.data?.error || "Failed to close period.", variant: "destructive" });
+      const resp = error?.response;
+      if (!opts?.force && resp?.status === 400 && Array.isArray(resp.data?.checklist)) {
+        // The server gate blocked a plain close (checklist went stale after
+        // page load) — swap to the force dialog seeded from the SERVER's
+        // checklist, mirroring periods.tsx, and refresh the on-page list.
+        setShowCloseDialog(false);
+        setServerBlocking(
+          (resp.data.checklist as MonthEndCheck[]).filter((c) => c.status === "FAIL" && c.blocking)
+        );
+        setForceReason("");
+        setShowForceDialog(true);
+        refetch();
+      } else {
+        toast({ title: "Error", description: resp?.data?.detail || resp?.data?.error || "Failed to close period.", variant: "destructive" });
+      }
     } finally {
       setClosing(false);
-      setShowCloseDialog(false);
     }
   };
 
   const periodLabel = `${MONTHS[month]} ${year}`;
   const isPeriodOpen = data?.fiscal_period?.status === "OPEN";
+  // A152 item 3: only a FAIL on a BLOCKING check (trial balance, drafts) stops
+  // a close. Non-blocking FAILs (e.g. Shopify store) and WARNs are advisory —
+  // the operator can close, or force past a blocking failure with a reason.
+  // Server-reported failures (from a blocked POST) supersede the GET snapshot.
+  const blockingFailures =
+    serverBlocking ?? (data?.checks ?? []).filter((c) => c.status === "FAIL" && c.blocking);
+  const hasBlocking = blockingFailures.length > 0;
 
   return (
     <AppLayout>
@@ -201,27 +250,44 @@ export default function MonthEndClosePage() {
         ) : data ? (
           <>
             {/* Summary */}
-            <Card className={cn("border", data.ready_to_close
+            <Card className={cn("border", !hasBlocking
               ? "bg-green-50 dark:bg-green-950/30 border-green-200"
               : "bg-red-50 dark:bg-red-950/30 border-red-200"
             )}>
               <CardContent className="py-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
-                    <ClipboardCheck className={cn("h-6 w-6", data.ready_to_close ? "text-green-600" : "text-red-600")} />
+                    <ClipboardCheck className={cn("h-6 w-6", !hasBlocking ? "text-green-600" : "text-red-600")} />
                     <div>
-                      <p className={cn("text-lg font-semibold", data.ready_to_close ? "text-green-700 dark:text-green-300" : "text-red-700 dark:text-red-300")}>
-                        {data.ready_to_close ? "Ready to Close" : "Not Ready — Resolve Issues Below"}
+                      <p className={cn("text-lg font-semibold", !hasBlocking ? "text-green-700 dark:text-green-300" : "text-red-700 dark:text-red-300")}>
+                        {hasBlocking
+                          ? "Blocking issues — resolve or force close"
+                          : data.failed > 0
+                            ? "Ready to close (advisory issues remain)"
+                            : "Ready to Close"}
                       </p>
                       <p className="text-sm text-muted-foreground">
                         {data.passed} passed, {data.warned} warnings, {data.failed} failures
                       </p>
                     </div>
                   </div>
-                  {data.ready_to_close && isPeriodOpen && (
+                  {isPeriodOpen && !hasBlocking && (
                     <Button onClick={() => setShowCloseDialog(true)} disabled={closing}>
                       <Lock className="h-4 w-4 me-2" />
                       Close Period
+                    </Button>
+                  )}
+                  {isPeriodOpen && hasBlocking && (
+                    <Button
+                      variant="destructive"
+                      onClick={() => {
+                        setForceReason("");
+                        setShowForceDialog(true);
+                      }}
+                      disabled={closing}
+                    >
+                      <Lock className="h-4 w-4 me-2" />
+                      Force Close
                     </Button>
                   )}
                   {!isPeriodOpen && data.fiscal_period && (
@@ -281,8 +347,68 @@ export default function MonthEndClosePage() {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleClosePeriod} disabled={closing}>
+            <AlertDialogAction
+              onClick={(e) => {
+                // Keep the dialog open while the request is in flight — the
+                // handler closes it on success (Radix otherwise auto-closes).
+                e.preventDefault();
+                handleClosePeriod();
+              }}
+              disabled={closing}
+            >
               {closing ? "Closing..." : "Close Period"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* A152 item 3: force-close-with-reason when blocking checks fail */}
+      <AlertDialog
+        open={showForceDialog}
+        onOpenChange={(o) => {
+          setShowForceDialog(o);
+          if (!o) setServerBlocking(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Force close {periodLabel}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The following checks must normally pass before closing. Closing anyway records your
+              reason on the period-close for audit.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-3">
+            <ul className="space-y-2 text-sm">
+              {blockingFailures.map((c) => (
+                <li key={c.check} className="rounded-md border border-red-200 bg-red-50 dark:bg-red-950/30 p-2">
+                  <div className="flex items-center gap-2 font-medium text-red-700 dark:text-red-300">
+                    <XCircle className="h-4 w-4" />
+                    {c.title}
+                  </div>
+                  <p className="text-muted-foreground">{c.message}</p>
+                </li>
+              ))}
+            </ul>
+            <Textarea
+              value={forceReason}
+              onChange={(e) => setForceReason(e.target.value)}
+              placeholder="Reason for closing despite the failing checks (required)"
+              rows={3}
+            />
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                // Stay open while in flight; a failed force keeps the typed
+                // reason instead of discarding it with the dialog.
+                e.preventDefault();
+                handleClosePeriod({ force: true, reason: forceReason.trim() });
+              }}
+              disabled={closing || !forceReason.trim()}
+            >
+              {closing ? "Closing..." : "Force Close"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

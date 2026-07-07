@@ -32,7 +32,8 @@ tagged with that provider, with running balance.
 
 from __future__ import annotations
 
-from datetime import date
+import calendar
+from datetime import date, timedelta
 from decimal import Decimal
 
 _MONEY = Decimal("0.01")
@@ -43,7 +44,7 @@ def _money_str(amount: Decimal) -> str:
     return str((amount or Decimal("0")).quantize(_MONEY))
 
 
-from django.db.models import Count, Min, Sum
+from django.db.models import Count, Q, Sum
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -74,9 +75,109 @@ def _aging_bucket(oldest: date | None, today: date) -> str:
     return "30_plus"
 
 
-def _banked_by_provider(company, dimension) -> dict[int, Decimal]:
-    """Compute, per settlement_provider dimension_value, the cumulative
-    bank-deposited amount.
+def _oldest_unsettled_date(debit_dates: list[tuple[date, Decimal]], drained: Decimal) -> date | None:
+    """A152: FIFO age basis for a provider's open clearing balance.
+
+    ``debit_dates`` is the provider's clearing DEBITS (money sold into clearing),
+    oldest-first. ``drained`` is the lifetime amount credited out of clearing
+    (settlements + refunds). Retire debits oldest-first against ``drained`` and
+    return the date of the first debit that is NOT fully covered — i.e. the
+    oldest money still unsettled. Returns None when everything is covered
+    (open balance <= 0).
+
+    Replaces the old ``Min(entry__date)`` proxy, which aged from the provider's
+    first-ever activity: a provider with two years of history and a one-day
+    residual would report "30+". Aging now tracks the oldest *outstanding*
+    amount, not the oldest amount ever.
+    """
+    remaining = drained
+    for entry_date, amount in debit_dates:  # ascending by date
+        if remaining >= amount:
+            remaining -= amount
+            continue
+        return entry_date
+    return None
+
+
+def _month_bounds(anchor: date) -> tuple[date, date]:
+    """First and last calendar day of ``anchor``'s month."""
+    start = anchor.replace(day=1)
+    end = anchor.replace(day=calendar.monthrange(anchor.year, anchor.month)[1])
+    return start, end
+
+
+def _resolve_window(request, today: date) -> tuple[str, date | None, date | None]:
+    """A152: resolve the reconciliation period window from query params.
+
+    Backward-compatible by design: with NO params the window is unbounded
+    (``all_time``), so the endpoint keeps returning the lifetime-cumulative
+    flows it always has. The frontend defaults its selector to ``this_month``
+    and sends it explicitly — the "default current month" is a UI default, not
+    an API contract change.
+
+    Only FLOWS are windowed (sold/settled/refunded/banked, Stage-2 tiles +
+    payout ledger). STOCKS — open balances, aging, Stage-3, needs-review,
+    exceptions — ignore the window entirely: a June residual is more urgent in
+    December, not expired.
+
+    Returns ``(preset, window_start, window_end)`` where the dates are ``None``
+    for ``all_time``.
+    """
+
+    def _parse(raw: str) -> date | None:
+        try:
+            return date.fromisoformat(raw)
+        except ValueError:
+            return None
+
+    preset = (request.query_params.get("period") or "").strip().lower()
+    raw_from = (request.query_params.get("date_from") or "").strip()
+    raw_to = (request.query_params.get("date_to") or "").strip()
+
+    # Explicit custom range — either period=custom, or bare date_from/date_to.
+    if preset == "custom" or (not preset and (raw_from or raw_to)):
+        start, end = _parse(raw_from), _parse(raw_to)
+        # A custom request that resolves to no usable bounds (empty or wholly
+        # unparseable dates) is effectively unbounded — label it all_time so the
+        # period echo, roll-forward gating, and narrative all stay consistent.
+        if start is None and end is None:
+            return "all_time", None, None
+        return "custom", start, end
+    if preset == "this_month":
+        start, end = _month_bounds(today)
+        return "this_month", start, end
+    if preset == "last_month":
+        last_month_day = today.replace(day=1) - timedelta(days=1)
+        start, end = _month_bounds(last_month_day)
+        return "last_month", start, end
+    # all_time, "all", "", or any unknown preset -> unbounded (never 500).
+    return "all_time", None, None
+
+
+def _window_q(window_start: date | None, window_end: date | None) -> Q:
+    """Build an ``entry__date`` range predicate for a JournalLine queryset."""
+    q = Q()
+    if window_start is not None:
+        q &= Q(entry__date__gte=window_start)
+    if window_end is not None:
+        q &= Q(entry__date__lte=window_end)
+    return q
+
+
+def _banked_by_provider(
+    company,
+    dimension,
+    window_start: date | None = None,
+    window_end: date | None = None,
+) -> dict[int, Decimal]:
+    """Compute, per settlement_provider dimension_value, the bank-deposited
+    amount.
+
+    A152: ``banked`` is a windowed FLOW — restricted to clearance JEs whose
+    entry date falls in ``[window_start, window_end]`` (money that reached the
+    bank *in the period*). The batch→provider attribution map (step 1) is NOT
+    windowed: a payout banked this month may settle a batch posted last month,
+    and we still need to attribute it to the right provider.
 
     Chain: settlement JE (source_module='payment_settlement') drains the
     provider clearing → posts a DR on Expected Bank Deposit. When the
@@ -110,12 +211,18 @@ def _banked_by_provider(company, dimension) -> dict[int, Decimal]:
                         batch_to_provider[je.source_document] = tag.dimension_value_id
                         break
 
-    # Step 2: batch_id -> bank-debit amount (sum of debits on clearance JE)
-    clearance_jes = JournalEntry.objects.filter(
+    # Step 2: batch_id -> bank-debit amount (sum of debits on clearance JE).
+    # Windowed on the clearance JE's own date — when the money reached the bank.
+    clearance_qs = JournalEntry.objects.filter(
         company=company,
         source_module="payment_settlement_clearance",
         status=JournalEntry.Status.POSTED,
-    ).prefetch_related("lines")
+    )
+    if window_start is not None:
+        clearance_qs = clearance_qs.filter(date__gte=window_start)
+    if window_end is not None:
+        clearance_qs = clearance_qs.filter(date__lte=window_end)
+    clearance_jes = clearance_qs.prefetch_related("lines")
 
     batch_to_banked: dict[str, Decimal] = {}
     for je in clearance_jes:
@@ -134,9 +241,23 @@ def _banked_by_provider(company, dimension) -> dict[int, Decimal]:
     return banked
 
 
-def _refunded_by_provider(company, dimension) -> dict[int, Decimal]:
-    """Compute, per settlement_provider dimension_value, the cumulative
-    amount drained from clearing by posted credit notes (refunds).
+def _refunded_by_provider(
+    company,
+    dimension,
+    window_start: date | None = None,
+    window_end: date | None = None,
+) -> dict[tuple, Decimal]:
+    """Compute, per (clearing account, settlement_provider dimension_value),
+    the amount drained from clearing by posted credit notes (refunds).
+
+    A152: ``refunded`` is a windowed FLOW — restricted to refund JEs whose
+    entry date falls in ``[window_start, window_end]``.
+
+    Keyed by ``(account_id, dimension_value_id)`` to match the Stage-1 pivot
+    groups: a provider split across two clearing sub-accounts must have each
+    account's refunds attributed to that account's row only, else the total
+    double-counts (each account row would otherwise pick up the provider's
+    whole refund figure).
 
     A119: pre-A119, refund CRs on the gateway control (= clearing) account
     were lumped into Stage 1 "Settled". They look identical to settlement
@@ -163,20 +284,26 @@ def _refunded_by_provider(company, dimension) -> dict[int, Decimal]:
         ).values_list("posted_journal_entry_id", flat=True)
     )
 
+    window = _window_q(window_start, window_end)
+
     rows = (
         JournalLine.objects.filter(
+            window,
             company=company,
             entry_id__in=posted_cn_je_ids,
             entry__status=JournalEntry.Status.POSTED,
             analysis_tags__dimension=dimension,
         )
-        .values("analysis_tags__dimension_value_id")
+        .values("account_id", "analysis_tags__dimension_value_id")
         .annotate(refunded=Sum("credit"))
     )
-    refunded = {row["analysis_tags__dimension_value_id"]: (row["refunded"] or Decimal("0")) for row in rows}
+    refunded = {
+        (row["account_id"], row["analysis_tags__dimension_value_id"]): (row["refunded"] or Decimal("0")) for row in rows
+    }
 
     platform_rows = (
         JournalLine.objects.filter(
+            window,
             company=company,
             entry__status=JournalEntry.Status.POSTED,
             entry__source_module__startswith="platform_",
@@ -184,16 +311,21 @@ def _refunded_by_provider(company, dimension) -> dict[int, Decimal]:
             analysis_tags__dimension=dimension,
         )
         .exclude(entry_id__in=posted_cn_je_ids)
-        .values("analysis_tags__dimension_value_id")
+        .values("account_id", "analysis_tags__dimension_value_id")
         .annotate(refunded=Sum("credit"))
     )
     for row in platform_rows:
-        key = row["analysis_tags__dimension_value_id"]
+        key = (row["account_id"], row["analysis_tags__dimension_value_id"])
         refunded[key] = refunded.get(key, Decimal("0")) + (row["refunded"] or Decimal("0"))
     return refunded
 
 
-def _stage1_per_provider(company, today: date) -> list[dict]:
+def _stage1_per_provider(
+    company,
+    today: date,
+    window_start: date | None = None,
+    window_end: date | None = None,
+) -> list[dict]:
     """Per-provider sales→clearing balances pivoted on
     (clearing_account, settlement_provider_dimension_value).
 
@@ -202,6 +334,14 @@ def _stage1_per_provider(company, today: date) -> list[dict]:
     per provider. If a provider is later split off to its own clearing
     sub-account, that provider may appear under multiple rows — one per
     account it has activity in.
+
+    A152 — flows vs stocks:
+    - ``total_debit`` (sold), ``total_credit`` (settled), ``total_refunded``,
+      ``banked`` are FLOWS, windowed to ``[window_start, window_end]`` on the
+      journal entry date. With no window they cover all history (unchanged).
+    - ``open_balance`` and the aging columns are STOCKS — always computed over
+      all history (the current outstanding), never period-filtered. A residual
+      from June is more urgent in December, not expired.
     """
     try:
         dimension = AnalysisDimension.objects.get(company=company, code=SETTLEMENT_PROVIDER_DIMENSION_CODE)
@@ -209,18 +349,23 @@ def _stage1_per_provider(company, today: date) -> list[dict]:
         # Bootstrap hasn't run for this company — no Shopify connection yet.
         return []
 
-    # Pre-compute banked totals per provider (joined via batch_id across
-    # settlement JE -> clearance JE pairs).
-    banked_by_provider = _banked_by_provider(company, dimension)
+    # Windowed FLOW annotations (banked/refunded reach the bank / drain clearing
+    # *in the period*).
+    banked_by_provider = _banked_by_provider(company, dimension, window_start, window_end)
+    refunded_by_provider = _refunded_by_provider(company, dimension, window_start, window_end)
 
-    # A119: pre-compute refunded totals per provider so Stage 1 "Settled"
-    # excludes credit-note CRs.
-    refunded_by_provider = _refunded_by_provider(company, dimension)
+    # A152: one aggregation carries both the windowed flows (debit/credit inside
+    # the window) and the timeless stock (debit/credit over all history ->
+    # current open balance). Conditional Sums keep it a single query.
+    if window_start is None and window_end is None:
+        window_debit = Sum("debit")
+        window_credit = Sum("credit")
+    else:
+        wq = _window_q(window_start, window_end)
+        window_debit = Sum("debit", filter=wq)
+        window_credit = Sum("credit", filter=wq)
 
-    # All journal lines tagged with the SETTLEMENT_PROVIDER dimension,
-    # restricted to posted entries (DRAFT / INCOMPLETE entries don't move
-    # money).
-    rows = (
+    rows = list(
         JournalLine.objects.filter(
             company=company,
             entry__status=JournalEntry.Status.POSTED,
@@ -235,13 +380,41 @@ def _stage1_per_provider(company, today: date) -> list[dict]:
             "analysis_tags__dimension_value__name",
         )
         .annotate(
-            total_debit=Sum("debit"),
-            total_credit=Sum("credit"),
-            oldest_entry_date=Min("entry__date"),
+            window_debit=window_debit,
+            window_credit=window_credit,
+            all_debit=Sum("debit"),
+            all_credit=Sum("credit"),
             line_count=Count("id"),
         )
         .order_by("account__code", "analysis_tags__dimension_value__code")
     )
+
+    # Aging is a STOCK: FIFO-age the oldest still-unsettled clearing DEBIT over
+    # all history. Only groups with a POSITIVE open balance can carry a residual
+    # to age, so we load their clearing debits (oldest-first) and skip the
+    # (typically many) fully-settled providers entirely — no full scan.
+    open_groups = {
+        (r["account_id"], r["analysis_tags__dimension_value_id"])
+        for r in rows
+        if (r["all_debit"] or Decimal("0")) - (r["all_credit"] or Decimal("0")) > 0
+    }
+    debits_by_group: dict[tuple, list[tuple[date, Decimal]]] = {}
+    if open_groups:
+        for line in (
+            JournalLine.objects.filter(
+                company=company,
+                entry__status=JournalEntry.Status.POSTED,
+                analysis_tags__dimension=dimension,
+                debit__gt=0,
+                account_id__in={g[0] for g in open_groups},
+                analysis_tags__dimension_value_id__in={g[1] for g in open_groups},
+            )
+            .values("account_id", "analysis_tags__dimension_value_id", "entry__date", "debit")
+            .order_by("entry__date")
+        ):
+            key = (line["account_id"], line["analysis_tags__dimension_value_id"])
+            if key in open_groups:  # the __in filters are a coarse cross-product; refine to exact tuples
+                debits_by_group.setdefault(key, []).append((line["entry__date"], line["debit"] or Decimal("0")))
 
     # Enrich with provider metadata (provider_type for tile iconography,
     # display_name for the friendly label, needs_review flag for the
@@ -256,36 +429,47 @@ def _stage1_per_provider(company, today: date) -> list[dict]:
 
     results = []
     for row in rows:
-        debit = row["total_debit"] or Decimal("0")
-        credit = row["total_credit"] or Decimal("0")
-        balance = debit - credit  # net open balance — refunds reduce expected, settlements drain it
-        provider = providers_by_dim_value.get(row["analysis_tags__dimension_value_id"])
-        banked = banked_by_provider.get(row["analysis_tags__dimension_value_id"], Decimal("0"))
-        refunded = refunded_by_provider.get(row["analysis_tags__dimension_value_id"], Decimal("0"))
-        # A119: total_credit raw = settlements + refund CRs. Settled-only =
-        # raw credit minus refunds. Clamp at zero in case of edge ordering.
-        settled = credit - refunded
+        dim_value_id = row["analysis_tags__dimension_value_id"]
+        debit_window = row["window_debit"] or Decimal("0")
+        credit_window = row["window_credit"] or Decimal("0")
+        all_debit = row["all_debit"] or Decimal("0")
+        all_credit = row["all_credit"] or Decimal("0")
+        # STOCK: current outstanding — all history, never windowed.
+        open_balance = all_debit - all_credit
+        group_key = (row["account_id"], dim_value_id)
+        provider = providers_by_dim_value.get(dim_value_id)
+        banked = banked_by_provider.get(dim_value_id, Decimal("0"))
+        refunded = refunded_by_provider.get(group_key, Decimal("0"))
+        # A119: windowed credit raw = settlements + refund CRs. Settled-only =
+        # windowed credit minus windowed refunds. Clamp at zero for edge ordering.
+        settled = credit_window - refunded
         if settled < Decimal("0"):
             settled = Decimal("0")
+        # A152: age the oldest clearing debit not yet covered by lifetime
+        # credits (settlements + refunds), not the provider's first-ever entry.
+        # Only positive-balance groups were loaded; others carry no residual.
+        oldest_open = (
+            _oldest_unsettled_date(debits_by_group.get(group_key, []), all_credit) if group_key in open_groups else None
+        )
         results.append(
             {
                 "account_id": row["account_id"],
                 "account_code": row["account__code"],
                 "account_name": row["account__name"],
-                "dimension_value_id": row["analysis_tags__dimension_value_id"],
+                "dimension_value_id": dim_value_id,
                 "dimension_value_code": row["analysis_tags__dimension_value__code"],
                 "provider_id": provider.id if provider else None,
                 "provider_name": (provider.display_name if provider else row["analysis_tags__dimension_value__name"]),
                 "provider_type": provider.provider_type if provider else "manual",
                 "needs_review": provider.needs_review if provider else False,
-                "total_debit": _money_str(debit),
-                "total_credit": _money_str(settled),  # A119: settlements only, refunds excluded
-                "total_refunded": _money_str(refunded),
-                "open_balance": _money_str(balance),
-                "banked": _money_str(banked),
-                "oldest_entry_date": (row["oldest_entry_date"].isoformat() if row["oldest_entry_date"] else None),
-                "days_outstanding": ((today - row["oldest_entry_date"]).days if row["oldest_entry_date"] else 0),
-                "aging_bucket": _aging_bucket(row["oldest_entry_date"], today),
+                "total_debit": _money_str(debit_window),  # FLOW: sold in window
+                "total_credit": _money_str(settled),  # FLOW: settlements only, refunds excluded
+                "total_refunded": _money_str(refunded),  # FLOW: refunded in window
+                "banked": _money_str(banked),  # FLOW: reached the bank in window
+                "open_balance": _money_str(open_balance),  # STOCK: current outstanding
+                "oldest_entry_date": oldest_open.isoformat() if oldest_open else None,  # STOCK
+                "days_outstanding": ((today - oldest_open).days if oldest_open else 0),  # STOCK
+                "aging_bucket": _aging_bucket(oldest_open, today),  # STOCK
                 "line_count": row["line_count"],
             }
         )
@@ -317,7 +501,104 @@ def _stage1_totals(rows: list[dict]) -> dict:
     }
 
 
-def _money_flow(stage1_totals: dict, stage2: dict, currency: str) -> dict:
+def _roll_forward(
+    company,
+    window_start: date | None,
+    window_end: date | None,
+    refunded_total: Decimal,
+) -> dict:
+    """A152 — the period roll-forward identity for the provider clearing
+    position, absorbing F15's money identity and making carryover explicit:
+
+        opening_outstanding + sold − settled − refunded = closing_outstanding
+
+    ``opening_outstanding`` is the net clearing balance dated strictly before
+    the window; ``sold``/``settled`` are the windowed debit/settlement flows;
+    ``refunded_total`` is the windowed refund flow (passed in from Stage-1 so it
+    matches ``stage1_totals.total_refunded`` exactly — one source of truth, no
+    recompute); ``closing_outstanding`` is the net clearing balance as of
+    window_end. For ``all_time`` (no window) opening is 0 and closing equals the
+    current outstanding, so the identity degenerates to F15's bar.
+
+    ``foots`` is an INDEPENDENT check, not a tautology: it recomputes closing
+    directly as the net clearing balance with ``entry__date <= window_end`` and
+    asserts it equals ``opening + sold − settled − refunded``. A boundary/
+    predicate bug (e.g. a gap at window_start) would make the two disagree.
+
+    Note ``closing_outstanding`` (as-of window_end) intentionally differs from
+    the timeless Stage-1 ``open_balance`` stock (as-of today) whenever the
+    window ends in the past — that is the point of a roll-forward.
+    """
+    zero = _money_str(Decimal("0"))
+    empty = {
+        "opening_outstanding": zero,
+        "sold": zero,
+        "settled": zero,
+        "refunded": zero,
+        "closing_outstanding": zero,
+        "foots": True,
+    }
+    try:
+        dimension = AnalysisDimension.objects.get(company=company, code=SETTLEMENT_PROVIDER_DIMENSION_CODE)
+    except AnalysisDimension.DoesNotExist:
+        return empty
+
+    base = JournalLine.objects.filter(
+        company=company,
+        entry__status=JournalEntry.Status.POSTED,
+        analysis_tags__dimension=dimension,
+    )
+
+    agg_kwargs: dict = {}
+    if window_start is None and window_end is None:
+        agg_kwargs["debit_window"] = Sum("debit")
+        agg_kwargs["credit_window"] = Sum("credit")
+    else:
+        wq = _window_q(window_start, window_end)
+        agg_kwargs["debit_window"] = Sum("debit", filter=wq)
+        agg_kwargs["credit_window"] = Sum("credit", filter=wq)
+    if window_start is not None:
+        before = Q(entry__date__lt=window_start)
+        agg_kwargs["debit_before"] = Sum("debit", filter=before)
+        agg_kwargs["credit_before"] = Sum("credit", filter=before)
+    # Independent closing basis: net clearing balance as of window_end (all
+    # history when the window is open-ended). Used only to validate `foots`.
+    if window_end is not None:
+        le = Q(entry__date__lte=window_end)
+        agg_kwargs["debit_le"] = Sum("debit", filter=le)
+        agg_kwargs["credit_le"] = Sum("credit", filter=le)
+    else:
+        agg_kwargs["debit_le"] = Sum("debit")
+        agg_kwargs["credit_le"] = Sum("credit")
+
+    agg = base.aggregate(**agg_kwargs)
+    debit_window = agg.get("debit_window") or Decimal("0")
+    credit_window = agg.get("credit_window") or Decimal("0")
+    opening = (agg.get("debit_before") or Decimal("0")) - (agg.get("credit_before") or Decimal("0"))
+
+    # `refunded_total` is the windowed refund flow from Stage-1 (single source of
+    # truth); it splits credit_window into settled vs refunded so the two named
+    # flows sum back to credit_window exactly.
+    refunded = refunded_total
+    sold = debit_window
+    settled = credit_window - refunded
+    closing = opening + sold - credit_window  # == opening + sold − settled − refunded
+
+    closing_direct = (agg.get("debit_le") or Decimal("0")) - (agg.get("credit_le") or Decimal("0"))
+
+    return {
+        "opening_outstanding": _money_str(opening),
+        "sold": _money_str(sold),
+        "settled": _money_str(settled),
+        "refunded": _money_str(refunded),
+        "closing_outstanding": _money_str(closing),
+        # Independent invariant: opening + windowed movement must equal the
+        # directly-measured net balance as of window_end.
+        "foots": closing == closing_direct,
+    }
+
+
+def _money_flow(stage1_totals: dict, stage2: dict, currency: str, roll_forward: dict | None = None) -> dict:
     """Unification U1 — the 'Money Bridge': the where-is-my-money story as a
     named, balanced breakdown the frontend renders as a waterfall.
 
@@ -328,6 +609,11 @@ def _money_flow(stage1_totals: dict, stage2: dict, currency: str) -> dict:
     always balances regardless of per-row rounding. Two annotations sit on top:
     `banked` (of Settled, how much reached the bank) and `aged_over_30d` (of
     Open, how much is overdue). 'Every residual has a name.'
+
+    A152: ``opening_outstanding``/``closing_outstanding`` carry the roll-forward
+    endpoints so the frontend can render "opening + [this bar] = closing". When
+    the window is ``all_time`` (no roll_forward) opening is 0 and closing equals
+    the derived open segment — i.e. the current outstanding.
     """
     sold = Decimal(stage1_totals["total_expected"])
     settled = Decimal(stage1_totals["total_settled"])
@@ -335,6 +621,12 @@ def _money_flow(stage1_totals: dict, stage2: dict, currency: str) -> dict:
     # Derived so the segments always sum back to `sold` exactly.
     open_balance = sold - settled - refunded
     banked = Decimal(stage2.get("settled_total") or "0") if stage2.get("available") else Decimal("0")
+
+    rf = roll_forward or {}
+    opening_outstanding = Decimal(rf.get("opening_outstanding") or "0")
+    closing_outstanding = (
+        Decimal(rf["closing_outstanding"]) if rf.get("closing_outstanding") is not None else open_balance
+    )
 
     return {
         "currency": currency,
@@ -346,15 +638,29 @@ def _money_flow(stage1_totals: dict, stage2: dict, currency: str) -> dict:
         ],
         "banked": _money_str(banked),
         "aged_over_30d": _money_str(Decimal(stage1_totals["aged_30_plus"])),
+        # A152 roll-forward endpoints (opening carryover + closing as-of window_end).
+        "opening_outstanding": _money_str(opening_outstanding),
+        "closing_outstanding": _money_str(closing_outstanding),
         # Invariant the frontend can trust: the named segments reconstruct `sold`.
         "balanced": (settled + refunded + open_balance) == sold,
     }
 
 
-def _stage2_payouts(company, limit: int = 25) -> list[dict]:
+def _stage2_payouts(
+    company,
+    window_start: date | None = None,
+    window_end: date | None = None,
+    limit: int = 25,
+) -> list[dict]:
     """Stage 2 payout ledger — recent canonical ProviderPayout headers with
     their settlement/clearance JE state (all providers: Stripe pull, Paymob/
     Bosta CSV — anything that emitted PAYMENT_SETTLEMENT_RECEIVED).
+
+    A152 (also delivers A150): when a window is given the ledger is filtered to
+    payouts whose ``payout_date`` falls in ``[window_start, window_end]`` — the
+    provider-neutral date-ranged payout report the retired /stripe/reconciliation
+    page used to offer. Null-dated payouts are excluded from a bounded window
+    (they can't be placed in a period); with no window they appear as before.
 
     Status chip per payout:
       attention — the matched bank deposit carries an unresolved difference
@@ -378,7 +684,12 @@ def _stage2_payouts(company, limit: int = 25) -> list[dict]:
 
     from .models import BankStatementLine
 
-    headers = list(ProviderPayout.objects.filter(company=company).order_by("-payout_date", "-created_at")[:limit])
+    header_qs = ProviderPayout.objects.filter(company=company)
+    if window_start is not None:
+        header_qs = header_qs.filter(payout_date__gte=window_start)
+    if window_end is not None:
+        header_qs = header_qs.filter(payout_date__lte=window_end)
+    headers = list(header_qs.order_by("-payout_date", "-created_at")[:limit])
     if not headers:
         return []
 
@@ -489,7 +800,7 @@ def _fx_bridge(header, settlement_je: dict | None, functional_currency: str) -> 
     }
 
 
-def _stage2_summary(company) -> dict:
+def _stage2_summary(company, window_start: date | None = None, window_end: date | None = None) -> dict:
     """Stage 2 — Clearing → Settlement.
 
     Counts every settlement that has drained provider clearing into the
@@ -502,6 +813,10 @@ def _stage2_summary(company) -> dict:
     showing "Settlements Posted: 0" for any merchant relying on
     manual CSV import even after A14 shipped. The widget now reads
     both sources and removes the outdated "coming with A14" banner.
+
+    A152: ``settled_count``/``settled_total`` are FLOWS — windowed on the
+    settlement's own date (PlatformSettlement.settlement_date; manual JE date).
+    The payout ledger is windowed by payout_date.
     """
     settled_count = 0
     settled_total = Decimal("0")
@@ -515,6 +830,10 @@ def _stage2_summary(company) -> dict:
             status=PlatformSettlement.Status.POSTED,
             settlement_type=PlatformSettlement.SettlementType.PAYOUT,
         )
+        if window_start is not None:
+            platform_qs = platform_qs.filter(settlement_date__gte=window_start)
+        if window_end is not None:
+            platform_qs = platform_qs.filter(settlement_date__lte=window_end)
         settled_count += platform_qs.count()
         settled_total += platform_qs.aggregate(total=Sum("net_amount"))["total"] or Decimal("0")
     except ImportError:
@@ -529,6 +848,10 @@ def _stage2_summary(company) -> dict:
         source_module="payment_settlement",
         status=JournalEntry.Status.POSTED,
     )
+    if window_start is not None:
+        manual_je_qs = manual_je_qs.filter(date__gte=window_start)
+    if window_end is not None:
+        manual_je_qs = manual_je_qs.filter(date__lte=window_end)
     settled_count += manual_je_qs.count()
     # Per-batch "settled" amount = the DR Expected Bank Deposit line on
     # the JE. That's what hit the EBD account; gross may differ when
@@ -554,8 +877,9 @@ def _stage2_summary(company) -> dict:
         "functional_currency": (company.functional_currency or company.default_currency or "").upper(),
         # Stage-2 payout ledger: per-payout rows from the canonical
         # ProviderPayout read-models (amounts in the payout's own currency;
-        # the tiles above stay functional-currency totals).
-        "payouts": _stage2_payouts(company),
+        # the tiles above stay functional-currency totals). Windowed by
+        # payout_date when a period is selected.
+        "payouts": _stage2_payouts(company, window_start, window_end),
     }
 
 
@@ -619,6 +943,8 @@ def _build_narrative(
     needs_review: dict,
     company_currency: str,
     stage1_rows: list[dict] | None = None,
+    roll_forward: dict | None = None,
+    period_label: str = "all_time",
 ) -> str:
     """A16: 'Tell me the story' — a single sentence summarizing the
     merchant's reconciliation position.
@@ -638,7 +964,11 @@ def _build_narrative(
         return f"{n:,.2f}"
 
     expected = Decimal(stage1_totals.get("total_expected") or "0")
-    if expected <= 0:
+    rf = roll_forward or {}
+    has_carryover = (
+        Decimal(rf.get("opening_outstanding") or "0") != 0 or Decimal(rf.get("closing_outstanding") or "0") != 0
+    )
+    if expected <= 0 and not has_carryover:
         return (
             "No sales activity yet. Connect a store or payment provider to start tracking your reconciliation position."
         )
@@ -667,6 +997,17 @@ def _build_narrative(
                     f"refund that was already credit-noted on the source platform. "
                     f"Investigate {row['provider_name']} drilldown."
                 )
+
+    # A152: lead with the period roll-forward when a window is selected — the
+    # carryover-explicit money identity (F15). For all_time the position
+    # sentences below already tell the cumulative story, so we skip it.
+    if rf and period_label not in ("all_time", ""):
+        label = {"this_month": "This month", "last_month": "Last month"}.get(period_label, "This period")
+        parts.append(
+            f"{label}: opening outstanding {_fmt(rf.get('opening_outstanding'))} {company_currency} "
+            f"+ {_fmt(rf.get('sold'))} sold − {_fmt(rf.get('settled'))} settled "
+            f"− {_fmt(rf.get('refunded'))} refunded = {_fmt(rf.get('closing_outstanding'))} closing outstanding."
+        )
 
     # A143: Stage 1 pivots on the SETTLEMENT_PROVIDER dimension, so since A139
     # the totals include every tagged channel (Shopify Payments, Stripe, COD
@@ -1038,11 +1379,20 @@ class ReconciliationSummaryView(APIView):
             return Response({"detail": "No active company."}, status=400)
 
         today = date.today()
-        stage1_rows = _stage1_per_provider(actor.company, today)
+        # A152: resolve the period window. FLOWS (Stage-1 flow columns, Money
+        # Bridge, Stage-2 tiles + ledger, roll-forward) are windowed; STOCKS
+        # (open balances, aging, Stage-3, needs-review, matches, exceptions)
+        # ignore it. No params => all_time => the historical (unchanged) shape.
+        period_label, window_start, window_end = _resolve_window(request, today)
+
+        stage1_rows = _stage1_per_provider(actor.company, today, window_start, window_end)
         stage1_totals = _stage1_totals(stage1_rows)
-        stage2 = _stage2_summary(actor.company)
-        stage3 = _stage3_summary(actor.company)
-        needs_review = _needs_review_queue(actor.company)
+        stage2 = _stage2_summary(actor.company, window_start, window_end)
+        stage3 = _stage3_summary(actor.company)  # STOCK — bank-match state as of now
+        needs_review = _needs_review_queue(actor.company)  # STOCK — open exceptions
+        # Roll-forward reuses Stage-1's windowed refund total (one source of
+        # truth) so money_flow, stage1 totals, and the roll-forward agree.
+        roll_forward = _roll_forward(actor.company, window_start, window_end, Decimal(stage1_totals["total_refunded"]))
         # A143 review: stage-1 totals are Sum(JournalLine.debit/credit), and
         # post_journal_entry stores all balances in the FUNCTIONAL currency —
         # labeling them with default_currency mislabeled EGP books as "USD"
@@ -1055,17 +1405,29 @@ class ReconciliationSummaryView(APIView):
             needs_review=needs_review,
             company_currency=books_currency,
             stage1_rows=stage1_rows,
+            roll_forward=roll_forward,
+            period_label=period_label,
         )
 
-        money_flow = _money_flow(stage1_totals, stage2, books_currency)
+        money_flow = _money_flow(stage1_totals, stage2, books_currency, roll_forward=roll_forward)
+        # Matches summary is the CURRENT reconciliation-link state (a STOCK), so
+        # it stays unwindowed. Windowing it by confirmation date is deferred —
+        # ReconciliationLink carries only DateTime timestamps, not a business
+        # date, so a period boundary would need a separate decision.
         matches = _matches_summary(actor.company)
-        exceptions = _exceptions_summary(actor.company)
+        exceptions = _exceptions_summary(actor.company)  # STOCK
 
         return Response(
             {
                 "as_of": today.isoformat(),
+                "period": {
+                    "preset": period_label,
+                    "start": window_start.isoformat() if window_start else None,
+                    "end": window_end.isoformat() if window_end else None,
+                },
                 "narrative": narrative,
                 "money_flow": money_flow,
+                "roll_forward": roll_forward,
                 "matches": matches,
                 "stage1": {
                     "providers": stage1_rows,

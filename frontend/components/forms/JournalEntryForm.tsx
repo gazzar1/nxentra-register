@@ -362,6 +362,7 @@ export function JournalEntryForm({
             value={form.watch("date")}
             onChange={(iso) => form.setValue("date", iso, { shouldValidate: true })}
             dateFormat={(company?.date_format as "DD/MM/YYYY" | "MM/DD/YYYY" | "DD-MM-YYYY" | "DD.MM.YYYY" | "YYYY-MM-DD") || "YYYY-MM-DD"}
+            showPeriodWarning
           />
           {form.formState.errors.date && (
             <p className="text-sm text-destructive">

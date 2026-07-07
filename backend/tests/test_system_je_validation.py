@@ -237,19 +237,42 @@ class TestValidateSystemJournalPostable:
         )
         assert result.ok
 
-    def test_no_period_defined_passes(self, company, accounts):
-        """No fiscal period defined for date → passes (some companies don't configure periods)."""
+    def test_no_period_in_range_auto_provisions_and_passes(self, company, accounts):
+        """A152 item 4: an in-range date with no configured period auto-provisions
+        the year's periods and passes — with a REAL period row (was: passed with
+        no row, so the JE got a degraded calendar-month period number)."""
+        from projections.models import FiscalPeriod
+
+        fy = date.today().year - 2  # in the sane window, but not seeded
         lines = [
             {"account": accounts["cash"], "debit": Decimal("100"), "credit": Decimal("0")},
             {"account": accounts["revenue"], "debit": Decimal("0"), "credit": Decimal("100")},
         ]
         result = validate_system_journal_postable(
             company=company,
-            entry_date=date(2030, 6, 15),  # Far future, no period defined
+            entry_date=date(fy, 6, 15),
             lines=lines,
             source_module="test",
         )
         assert result.ok
+        assert FiscalPeriod.objects.filter(company=company, fiscal_year=fy).count() == 13
+
+    def test_no_period_out_of_range_refuses(self, company, accounts):
+        """A152 item 4: a far-out-of-range date refuses (was: silently allowed).
+        This makes the system gate match the manual gate instead of stamping a
+        degraded, unvalidated period number onto an automated JE."""
+        lines = [
+            {"account": accounts["cash"], "debit": Decimal("100"), "credit": Decimal("0")},
+            {"account": accounts["revenue"], "debit": Decimal("0"), "credit": Decimal("100")},
+        ]
+        result = validate_system_journal_postable(
+            company=company,
+            entry_date=date(2050, 6, 15),  # far future, well outside the sane window
+            lines=lines,
+            source_module="test",
+        )
+        assert not result.ok
+        assert any("no fiscal period" in e.lower() for e in result.errors)
 
     def test_validation_result_factory_methods(self):
         """ValidationResult factory methods work correctly."""

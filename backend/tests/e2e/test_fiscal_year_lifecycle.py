@@ -235,8 +235,14 @@ def _post_simple_entry(actor, accts, debit_acct_key, credit_acct_key, amount, en
     return JournalEntry.objects.get(pk=entry.id)
 
 
-def _close_all_normal_periods(actor, fiscal_year=FISCAL_YEAR):
-    """Close periods 1-12 (skips already-closed periods)."""
+def _close_all_normal_periods(actor, fiscal_year=FISCAL_YEAR, force=False):
+    """Close periods 1-12 (skips already-closed periods).
+
+    A152 item 3: close_period now runs the readiness checklist server-side, so a
+    test that deliberately leaves a blocking condition (e.g. a draft entry) in a
+    period must pass force=True to close past it — mirroring the operator's
+    force-with-reason override.
+    """
     for p in range(1, 13):
         fp = FiscalPeriod.objects.filter(
             company=actor.company,
@@ -245,7 +251,13 @@ def _close_all_normal_periods(actor, fiscal_year=FISCAL_YEAR):
         ).first()
         if fp and fp.status == FiscalPeriod.Status.CLOSED:
             continue
-        r = close_period(actor, fiscal_year, p)
+        r = close_period(
+            actor,
+            fiscal_year,
+            p,
+            force=force,
+            reason="test override: closing past known blocking condition" if force else None,
+        )
         assert r.success, f"close period {p} failed: {r.error}"
 
 
@@ -471,7 +483,10 @@ class TestYearEndLifecycle:
         )
         assert result.success
 
-        _close_all_normal_periods(actor)
+        # A152 item 3: the period close itself now blocks on the draft (the new
+        # server-side gate) — force past it; the point HERE is that the
+        # year-level readiness check independently catches the same draft.
+        _close_all_normal_periods(actor, force=True)
         readiness = check_close_readiness(actor, FISCAL_YEAR)
         assert readiness.success
         assert readiness.data["is_ready"] is False

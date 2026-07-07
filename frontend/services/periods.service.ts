@@ -42,6 +42,25 @@ export interface CloseReadinessResult {
   }[];
 }
 
+// A152 item 3: the server-side close checklist (shared with Month-End Close).
+export interface CloseCheck {
+  check: string;
+  title: string;
+  status: 'PASS' | 'WARN' | 'FAIL';
+  message: string;
+  detail?: Record<string, unknown>;
+  resolution?: string | null;
+  blocking?: boolean;
+}
+
+// Shape of the 400 body when a close is blocked by a failing blocking check.
+export interface CloseBlockedResponse {
+  detail: string;
+  checklist?: CloseCheck[];
+  requires_force?: boolean;
+  requires_reason?: boolean;
+}
+
 export interface FiscalYearCloseResult {
   fiscal_year: number;
   status: string;
@@ -69,8 +88,12 @@ export const periodsService = {
       params: fiscalYear ? { fiscal_year: fiscalYear } : undefined,
     }),
 
-  close: (fiscalYear: number, period: number) =>
-    apiClient.post<FiscalPeriod>(`/reports/periods/${fiscalYear}/${period}/close/`),
+  close: (fiscalYear: number, period: number, opts?: { force?: boolean; reason?: string }) => {
+    const url = `/reports/periods/${fiscalYear}/${period}/close/`;
+    return opts
+      ? apiClient.post<FiscalPeriod>(url, { force: !!opts.force, reason: opts.reason })
+      : apiClient.post<FiscalPeriod>(url);
+  },
 
   open: (fiscalYear: number, period: number) =>
     apiClient.post<FiscalPeriod>(`/reports/periods/${fiscalYear}/${period}/open/`),

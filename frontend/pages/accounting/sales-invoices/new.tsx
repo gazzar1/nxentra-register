@@ -321,6 +321,7 @@ export default function NewSalesInvoicePage() {
                 value={watch("invoice_date")}
                 onChange={(iso) => setValue("invoice_date", iso, { shouldValidate: true })}
                 dateFormat={(company?.date_format as any) || "YYYY-MM-DD"}
+                showPeriodWarning
               />
             </div>
 
