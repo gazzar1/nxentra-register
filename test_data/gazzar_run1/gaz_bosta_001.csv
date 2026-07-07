@@ -1,0 +1,2 @@
+settlement_id,settlement_date,courier,order_id,collected_amount,courier_fee,returned_uncollected_amount,net_due,currency,status,notes
+GAZ-BST-001,2026-07-06,Bosta,7787540873507,250,20,0,230,EGP,settled,COD mug
