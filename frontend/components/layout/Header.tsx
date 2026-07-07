@@ -17,6 +17,7 @@ import { CompanySwitcher } from "./CompanySwitcher";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { HelpButton } from "./HelpButton";
 import { NotificationBell } from "./NotificationBell";
+import { PeriodCloseChip } from "./PeriodCloseChip";
 
 export function Header() {
   const { t } = useTranslation("common");
@@ -43,6 +44,9 @@ export function Header() {
           <Menu className="h-5 w-5" />
         </Button>
         <CompanySwitcher />
+        {/* A152 item 6: appears ONLY when a prior period is still open N days
+           into the next month — an actionable month-end nudge, not wallpaper. */}
+        <PeriodCloseChip />
       </div>
 
       {/* Right side */}

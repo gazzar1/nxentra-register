@@ -1,11 +1,20 @@
 import * as React from "react";
 import { Input } from "./input";
+import { cn } from "@/lib/cn";
+import { resolvePeriodLabel, usePeriods } from "@/queries/usePeriods";
 
 /**
  * A date input that displays and accepts dates in the company's date format
  * (e.g., DD/MM/YYYY) while storing the value internally as YYYY-MM-DD.
  *
  * Falls back to YYYY-MM-DD if no format is specified.
+ *
+ * A152 item 5: `showPeriodWarning` (opt-in, default OFF) renders the fiscal
+ * period the chosen date falls in — "Period N (start — end)", flagged
+ * "⚠ CLOSED" in destructive text — directly under the input, so a
+ * closed-period problem surfaces at the point of entry instead of as a
+ * generic toast at post time. Periods come from the shared usePeriods()
+ * react-query cache; nothing is fetched unless the prop is set.
  */
 
 export type DateFormat =
@@ -22,6 +31,20 @@ interface CompanyDateInputProps
   /** Called with ISO date string (YYYY-MM-DD) */
   onChange: (isoDate: string) => void;
   dateFormat?: DateFormat;
+  /** A152: render the resolved fiscal period (⚠ CLOSED when applicable) below the input. */
+  showPeriodWarning?: boolean;
+}
+
+/** Isolated so the periods query only mounts when the warning is opted into. */
+function PeriodWarning({ isoDate }: { isoDate: string }) {
+  const { data: periods } = usePeriods();
+  const resolved = resolvePeriodLabel(isoDate, periods ?? []);
+  if (!resolved) return null;
+  return (
+    <p className={cn("text-xs", resolved.isProblem ? "text-destructive" : "text-muted-foreground")}>
+      {resolved.text}
+    </p>
+  );
 }
 
 function isoToDisplay(iso: string, fmt: DateFormat): string {
@@ -83,7 +106,7 @@ function getSeparator(fmt: DateFormat): string {
 }
 
 const CompanyDateInput = React.forwardRef<HTMLInputElement, CompanyDateInputProps>(
-  ({ value, onChange, dateFormat = "YYYY-MM-DD", className, onBlur, ...props }, ref) => {
+  ({ value, onChange, dateFormat = "YYYY-MM-DD", className, onBlur, showPeriodWarning, ...props }, ref) => {
     const [displayValue, setDisplayValue] = React.useState(() =>
       isoToDisplay(value, dateFormat)
     );
@@ -144,7 +167,7 @@ const CompanyDateInput = React.forwardRef<HTMLInputElement, CompanyDateInputProp
       onBlur?.(e);
     };
 
-    return (
+    const input = (
       <Input
         ref={ref}
         type="text"
@@ -158,6 +181,14 @@ const CompanyDateInput = React.forwardRef<HTMLInputElement, CompanyDateInputProp
         maxLength={10}
         {...props}
       />
+    );
+
+    if (!showPeriodWarning) return input;
+    return (
+      <div className="space-y-1">
+        {input}
+        <PeriodWarning isoDate={value} />
+      </div>
     );
   }
 );

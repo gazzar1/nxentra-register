@@ -400,6 +400,7 @@ export default function NewPurchaseBillPage() {
                 value={watch("bill_date")}
                 onChange={(iso) => setValue("bill_date", iso, { shouldValidate: true })}
                 dateFormat={(company?.date_format as any) || "YYYY-MM-DD"}
+                showPeriodWarning
               />
             </div>
 

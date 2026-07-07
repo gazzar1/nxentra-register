@@ -39,7 +39,6 @@ import {
 } from "@/services/accounts.service";
 import { purchaseBillsService } from "@/services/purchases.service";
 import type { PurchaseBillListItem } from "@/types/purchases";
-import { periodsService, type FiscalPeriod } from "@/services/periods.service";
 import { exchangeRatesService } from "@/services/exchange-rates.service";
 import { useCompanySettings } from "@/queries/useCompanySettings";
 import { useAuth } from "@/contexts/AuthContext";
@@ -116,11 +115,8 @@ export default function NewVendorPaymentPage() {
   const watchedAllocations = useWatch({ control, name: "allocations" });
   const allocations = useMemo(() => watchedAllocations ?? [], [watchedAllocations]);
   const watchPaymentDate = watch("payment_date");
-  const watchAccountingDate = watch("accounting_date");
 
   const [vendorBills, setVendorBills] = useState<PurchaseBillListItem[]>([]);
-  const [periods, setPeriods] = useState<FiscalPeriod[]>([]);
-  const [resolvedPeriod, setResolvedPeriod] = useState<string>("");
   const [paymentCurrency, setPaymentCurrency] = useState<string>("");
   const [exchangeRate, setExchangeRate] = useState<string>("1");
   const [availableCurrencies, setAvailableCurrencies] = useState<string[]>([]);
@@ -134,12 +130,8 @@ export default function NewVendorPaymentPage() {
   const functionalCurrency = companySettings?.functional_currency || companySettings?.default_currency || "USD";
   const selectedVendorId = watch("vendor_id");
 
-  // Fetch fiscal periods and available currencies on mount
-  useEffect(() => {
-    periodsService.list().then((res) => {
-      setPeriods(res.data.periods || []);
-    }).catch(() => {});
-  }, []);
+  // A152 item 5: the fiscal-period fetch + resolve moved into CompanyDateInput
+  // (showPeriodWarning) backed by the shared usePeriods cache.
 
   useEffect(() => {
     if (!functionalCurrency) return;
@@ -199,25 +191,6 @@ export default function NewVendorPaymentPage() {
       setValue("accounting_date", watchPaymentDate);
     }
   }, [watchPaymentDate, setValue]);
-
-  // Resolve period from accounting_date
-  useEffect(() => {
-    if (!watchAccountingDate || periods.length === 0) {
-      setResolvedPeriod("");
-      return;
-    }
-    const d = new Date(watchAccountingDate);
-    const match = periods.find((p) => {
-      const start = new Date(p.start_date);
-      const end = new Date(p.end_date);
-      return d >= start && d <= end && p.period_type === "NORMAL";
-    });
-    if (match) {
-      setResolvedPeriod(`Period ${match.period} (${match.start_date} — ${match.end_date})${match.status === "OPEN" ? "" : " ⚠ CLOSED"}`);
-    } else {
-      setResolvedPeriod("No matching open period");
-    }
-  }, [watchAccountingDate, periods]);
 
   // Calculate total allocated amount
   const totalAllocated = useMemo(() => {
@@ -367,17 +340,8 @@ export default function NewVendorPaymentPage() {
                 value={watch("accounting_date")}
                 onChange={(iso) => setValue("accounting_date", iso, { shouldValidate: true })}
                 dateFormat={(company?.date_format as any) || "YYYY-MM-DD"}
+                showPeriodWarning
               />
-              {resolvedPeriod && (
-                <p className={cn(
-                  "text-xs",
-                  resolvedPeriod.includes("CLOSED") || resolvedPeriod.includes("No matching")
-                    ? "text-destructive"
-                    : "text-muted-foreground"
-                )}>
-                  {resolvedPeriod}
-                </p>
-              )}
               {errors.accounting_date && (
                 <p className="text-sm text-destructive">{errors.accounting_date.message}</p>
               )}
