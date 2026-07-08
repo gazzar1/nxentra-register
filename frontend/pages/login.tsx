@@ -95,10 +95,19 @@ export default function LoginPage() {
         return;
       }
 
-      // Normal login with tokens
+      // Direct token issuance — a single-company user (F2) now gets tokens on
+      // the first login instead of a one-option chooser. Full-page redirect
+      // (NOT router.push) so AuthContext re-initializes with the new tokens —
+      // otherwise the persistent context stays unauthenticated and /dashboard
+      // bounces straight back to /login. Mirrors select-company's approach.
       if (response.access && response.refresh) {
         storeTokens(response.access, response.refresh);
-        await router.push(handlerNext || "/dashboard");
+        const dest = handlerNext || "/dashboard";
+        if (dest.startsWith("/")) {
+          window.location.href = dest;
+        } else {
+          window.location.href = "/dashboard";
+        }
         return;
       }
 
