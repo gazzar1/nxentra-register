@@ -364,31 +364,38 @@ class LoginView(TokenObtainPairView):
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
-            # NO company_id provided - return companies list, NO tokens
+            # NO company_id provided
             if requested_company_id is None:
-                companies = [
-                    {
-                        "id": m.company.id,
-                        "public_id": str(m.company.public_id),
-                        "name": str(m.company),
-                        "role": m.role,
-                    }
-                    for m in memberships
-                ]
-                pending_token = mint_pending_login_token(
-                    user_id=user.id,
-                    valid_company_ids=list(valid_company_ids),
-                )
-                return Response(
-                    {
-                        "detail": "choose_company",
-                        "message": "Please select a company to continue.",
-                        "email": email,
-                        "companies": companies,
-                        "pending_login_token": pending_token,
-                    },
-                    status=status.HTTP_200_OK,  # 200 because credentials are valid
-                )
+                # F2: a single-company user shouldn't be forced through a
+                # one-option chooser. Auto-select their only company and fall
+                # through to standard token issuance below (same as if they'd
+                # passed that company_id). Multi-company users still choose.
+                if len(memberships) == 1:
+                    requested_company_id = memberships[0].company_id
+                else:
+                    companies = [
+                        {
+                            "id": m.company.id,
+                            "public_id": str(m.company.public_id),
+                            "name": str(m.company),
+                            "role": m.role,
+                        }
+                        for m in memberships
+                    ]
+                    pending_token = mint_pending_login_token(
+                        user_id=user.id,
+                        valid_company_ids=list(valid_company_ids),
+                    )
+                    return Response(
+                        {
+                            "detail": "choose_company",
+                            "message": "Please select a company to continue.",
+                            "email": email,
+                            "companies": companies,
+                            "pending_login_token": pending_token,
+                        },
+                        status=status.HTTP_200_OK,  # 200 because credentials are valid
+                    )
 
             # company_id provided - validate it
             requested_company_id = int(requested_company_id)

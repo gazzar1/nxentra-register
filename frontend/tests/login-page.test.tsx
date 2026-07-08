@@ -80,18 +80,32 @@ describe('LoginPage', () => {
     expect(screen.getByText('Get started')).toHaveAttribute('href', '/register');
   });
 
-  it('submits form and redirects to dashboard on successful login', async () => {
-    mockLogin.mockResolvedValue({ access: 'jwt-token', refresh: 'refresh-token' });
-    render(<LoginPage />);
+  it('full-page redirects to dashboard on direct-token login (F2 single-company)', async () => {
+    // F2: a single-company user gets tokens on the first login. The success
+    // path uses a full-page redirect (window.location.href), NOT router.push,
+    // so AuthContext re-initializes with the new tokens (no login loop).
+    const origLocation = window.location;
+    // @ts-expect-error — jsdom lets us swap location for a plain object
+    delete window.location;
+    // @ts-expect-error
+    window.location = { href: '' };
 
-    fireEvent.change(screen.getByTestId('email'), { target: { value: 'user@test.com' } });
-    fireEvent.change(screen.getByTestId('password'), { target: { value: 'password123' } });
-    fireEvent.click(screen.getByRole('button', { name: /login/i }));
+    try {
+      mockLogin.mockResolvedValue({ access: 'jwt-token', refresh: 'refresh-token' });
+      render(<LoginPage />);
 
-    await waitFor(() => {
-      expect(mockLogin).toHaveBeenCalledWith('user@test.com', 'password123');
-      expect(mockPush).toHaveBeenCalledWith('/dashboard');
-    });
+      fireEvent.change(screen.getByTestId('email'), { target: { value: 'user@test.com' } });
+      fireEvent.change(screen.getByTestId('password'), { target: { value: 'password123' } });
+      fireEvent.click(screen.getByRole('button', { name: /login/i }));
+
+      await waitFor(() => {
+        expect(mockLogin).toHaveBeenCalledWith('user@test.com', 'password123');
+        expect(window.location.href).toBe('/dashboard');
+      });
+      expect(mockPush).not.toHaveBeenCalled();
+    } finally {
+      window.location = origLocation;
+    }
   });
 
   it('redirects to company selection when choose_company response', async () => {
