@@ -378,7 +378,20 @@ export default function ShopifySettingsPage() {
     SALES_DISCOUNTS: "Sales Discounts",
     CASH_BANK: "Cash / Bank Account",
     PAYMENT_PROCESSING_FEES: "Payment Processing Fees",
+    // F7: these were missing, so they rendered as raw "CHARGEBACK_EXPENSE".
+    CHARGEBACK_EXPENSE: "Chargeback Expense",
+    EXPECTED_BANK_DEPOSIT: "Expected Bank Deposit",
   };
+
+  // F7: any role without an explicit label still reads as a friendly name
+  // (Title Case) rather than the raw SCREAMING_SNAKE key.
+  const roleLabel = (role: string) =>
+    ROLE_LABELS[role] ||
+    role
+      .toLowerCase()
+      .split("_")
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(" ");
 
   return (
     <AppLayout>
@@ -541,7 +554,7 @@ export default function ShopifySettingsPage() {
                 </p>
                 {mappings.map((m) => (
                   <div key={m.role}>
-                    <Label>{ROLE_LABELS[m.role] || m.role}</Label>
+                    <Label>{roleLabel(m.role)}</Label>
                     <select
                       className="w-full border border-input rounded-md bg-background text-foreground px-3 py-2 text-sm mt-1"
                       value={mappingForm[m.role] ?? ""}

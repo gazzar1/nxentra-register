@@ -57,7 +57,14 @@ def compute_clearing_balance(company):
     )
     total_debit = aggregation["total_debit"] or Decimal("0")
     total_credit = aggregation["total_credit"] or Decimal("0")
-    balance = total_credit - total_debit  # Clearing is a current asset, credit-normal
+    # F17: the clearing account is a current ASSET (debit-normal) — money in
+    # transit at the gateway. A positive DR balance (sold-but-not-yet-settled)
+    # must read POSITIVE. The old `credit - debit` inverted it, so System
+    # Health / Month-End Close showed "-650" for a +650 DR. Debit-normal now,
+    # matching AccountBalance's convention. Zero-checks are sign-agnostic, so
+    # every consumer (health, close checklist, command, pilot_readiness) is
+    # unaffected except the displayed sign, which is now correct.
+    balance = total_debit - total_credit
 
     # Count pending payouts (settled but not yet deposited)
     from shopify_connector.models import ShopifyPayout
