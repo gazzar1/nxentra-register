@@ -21,6 +21,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/common";
 import { useCompanyFormat } from "@/hooks/useCompanyFormat";
+import { useAuth } from "@/contexts/AuthContext";
 import {
   shopifyService,
   ShopifyStore,
@@ -30,6 +31,7 @@ import {
 export default function ShopifyDashboardPage() {
   const { t } = useTranslation(["common"]);
   const { formatDate } = useCompanyFormat();
+  const { company } = useAuth();
 
   const [store, setStore] = useState<ShopifyStore | null>(null);
   const [orders, setOrders] = useState<ShopifyOrder[]>([]);
@@ -82,7 +84,9 @@ export default function ShopifyDashboardPage() {
     revenue: grossRevenue,
     refunded,
     net: grossRevenue - refunded,
-    currency: orders[0]?.currency ?? "USD",
+    // F6: with no orders yet, fall back to the company's books currency, not a
+    // hardcoded "USD" (the empty state showed "USD 0.00" for an EGP company).
+    currency: orders[0]?.currency ?? company?.functional_currency ?? company?.default_currency ?? "USD",
   };
 
   return (
