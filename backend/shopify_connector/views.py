@@ -840,12 +840,28 @@ class ShopifyOrdersView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        from decimal import Decimal
+
+        from django.db.models import DecimalField, Sum
+        from django.db.models.functions import Coalesce
+
         actor = resolve_actor(request)
         require(actor, "settings.view")
 
-        orders = ShopifyOrder.objects.filter(
-            company=actor.company,
-        ).order_by("-shopify_created_at", "-shopify_order_id")[:100]
+        # F11: annotate each order's total refunded (Σ of its Shopify refunds)
+        # so the dashboard can surface returns/refunds against gross revenue —
+        # one aggregate query, no per-row N+1.
+        orders = (
+            ShopifyOrder.objects.filter(company=actor.company)
+            .annotate(
+                total_refunded=Coalesce(
+                    Sum("refunds__amount"),
+                    Decimal("0"),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                )
+            )
+            .order_by("-shopify_created_at", "-shopify_order_id")[:100]
+        )
 
         return Response(ShopifyOrderSerializer(orders, many=True).data)
 

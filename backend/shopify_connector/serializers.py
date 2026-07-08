@@ -44,6 +44,7 @@ class ShopifyStoreSerializer(serializers.ModelSerializer):
 class ShopifyOrderSerializer(serializers.ModelSerializer):
     journal_entry_pk = serializers.SerializerMethodField()
     journal_entry_number = serializers.SerializerMethodField()
+    total_refunded = serializers.SerializerMethodField()
 
     class Meta:
         model = ShopifyOrder
@@ -57,6 +58,7 @@ class ShopifyOrderSerializer(serializers.ModelSerializer):
             "subtotal_price",
             "total_tax",
             "total_discounts",
+            "total_refunded",
             "currency",
             "financial_status",
             "gateway",
@@ -69,6 +71,17 @@ class ShopifyOrderSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = fields
+
+    def get_total_refunded(self, obj):
+        # F11: from the queryset annotation; falls back to a direct sum when the
+        # serializer is used on an un-annotated instance.
+        annotated = getattr(obj, "total_refunded", None)
+        if annotated is not None:
+            return str(annotated)
+        from django.db.models import Sum
+
+        total = obj.refunds.aggregate(t=Sum("amount"))["t"]
+        return str(total or "0.00")
 
     def get_journal_entry_pk(self, obj):
         if not obj.journal_entry_id:

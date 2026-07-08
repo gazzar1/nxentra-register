@@ -1238,6 +1238,18 @@ class ShopifyAccountingHandler(BaseProjection):
         )
         refund_tags = self._build_provider_tags(refund_provider)
 
+        # F11: only a refund that restocked goods is a genuine RETURN ("Goods
+        # returned"). A money-only refund — price adjustment, goodwill, partial
+        # discount with no units back — must NOT be mislabelled as goods
+        # returned. Fetch the refund record up front so its restock lines can
+        # both pick the credit-note reason here AND drive the inventory restock
+        # below (reused, not re-queried).
+        refund_record = ShopifyRefund.objects.filter(
+            company=event.company,
+            shopify_refund_id=data.get("shopify_refund_id"),
+        ).first()
+        cn_reason = "RETURN" if self._refund_has_restocked_goods(refund_record) else "PRICE_ADJUSTMENT"
+
         # Build credit note lines — single revenue reversal line
         cn_lines = [
             {
@@ -1256,7 +1268,7 @@ class ShopifyAccountingHandler(BaseProjection):
             credit_note_date=entry_date,
             source="shopify",
             source_document_id=refund_id,
-            reason="RETURN",
+            reason=cn_reason,
             reason_notes=data.get("reason", ""),
             reference=f"Order {order_number}",
             control_line_analysis_tags=refund_tags,
@@ -1273,12 +1285,7 @@ class ShopifyAccountingHandler(BaseProjection):
         credit_note = result.data.get("credit_note")
         journal_entry = result.data.get("journal_entry")
 
-        # Update ShopifyRefund record
-        refund_record = ShopifyRefund.objects.filter(
-            company=event.company,
-            shopify_refund_id=data.get("shopify_refund_id"),
-        ).first()
-
+        # Update ShopifyRefund record (fetched above for the reason derivation).
         if refund_record:
             je_public_id = journal_entry.public_id if journal_entry else None
             refund_record.status = ShopifyRefund.Status.PROCESSED
@@ -1304,6 +1311,19 @@ class ShopifyAccountingHandler(BaseProjection):
             refund_id,
             order_number,
         )
+
+    def _refund_has_restocked_goods(self, refund_record) -> bool:
+        """F11: True when the refund physically returned units to stock
+        (restock_type return/cancel, qty > 0) — the signal that a credit note
+        is a genuine "Goods returned" RETURN rather than a money-only refund.
+        Mirrors the restock-line filter in ``_handle_refund_restock``."""
+        if not refund_record:
+            return False
+        raw = refund_record.raw_payload or {}
+        for rli in raw.get("refund_line_items", []):
+            if rli.get("restock_type", "") in ("return", "cancel") and (rli.get("quantity", 0) or 0) > 0:
+                return True
+        return False
 
     def _handle_refund_restock(
         self, event, refund_record, mapping, entry_date, currency, fx_rate, is_foreign, dimension_context

@@ -3459,13 +3459,32 @@ class DashboardWidgetsView(APIView):
 
         try:
             # ═══════════════════════════════════════════════════════════════
-            # 1. Cash Position — accounts with role LIQUIDITY
+            # 1. Cash Position — real bank/cash accounts only
             # ═══════════════════════════════════════════════════════════════
+            # F1b: gateway clearing (SHOPIFY/STRIPE/PLATFORM_CLEARING) and
+            # Expected Bank Deposit are seeded role=LIQUIDITY so they behave as
+            # assets in reports — but they are money still AT the processor /
+            # in transit, NOT cash on hand. Excluding them keeps Cash Position
+            # honest (was: EGP 2,440 counting 650 of Shopify clearing as cash).
+            from accounting.mappings import ModuleAccountMapping
+
+            in_transit_account_ids = set(
+                ModuleAccountMapping.objects.filter(
+                    company=actor.company,
+                    role__in=[
+                        "SHOPIFY_CLEARING",
+                        "STRIPE_CLEARING",
+                        "PLATFORM_CLEARING",
+                        "EXPECTED_BANK_DEPOSIT",
+                    ],
+                ).values_list("account_id", flat=True)
+            )
+
             liquidity_accounts = Account.objects.filter(
                 company=actor.company,
                 role=Account.AccountRole.LIQUIDITY,
                 is_header=False,
-            )
+            ).exclude(id__in=in_transit_account_ids)
             liquidity_ids = {a.id: a for a in liquidity_accounts}
 
             cash_balances = AccountBalance.objects.filter(
