@@ -30,6 +30,7 @@ export interface ShopifyOrder {
   subtotal_price: string;
   total_tax: string;
   total_discounts: string;
+  total_refunded: string;
   currency: string;
   financial_status: string;
   gateway: string;

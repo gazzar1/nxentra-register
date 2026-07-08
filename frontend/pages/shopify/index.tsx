@@ -69,13 +69,19 @@ export default function ShopifyDashboardPage() {
 
   const isConnected = store?.status === "ACTIVE";
 
+  const grossRevenue = orders
+    .filter((o) => o.status === "PROCESSED")
+    .reduce((sum, o) => sum + Number(o.total_price), 0);
+  // F11: refunds can land on any order (incl. after processing) — sum across
+  // all of them so the tile reflects returns/refunds against gross.
+  const refunded = orders.reduce((sum, o) => sum + Number(o.total_refunded || 0), 0);
   const stats = {
     total: orders.length,
     processed: orders.filter((o) => o.status === "PROCESSED").length,
     errors: orders.filter((o) => o.status === "ERROR").length,
-    revenue: orders
-      .filter((o) => o.status === "PROCESSED")
-      .reduce((sum, o) => sum + Number(o.total_price), 0),
+    revenue: grossRevenue,
+    refunded,
+    net: grossRevenue - refunded,
     currency: orders[0]?.currency ?? "USD",
   };
 
@@ -138,7 +144,7 @@ export default function ShopifyDashboardPage() {
             </Card>
 
             {/* Stats Grid */}
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
               <Link href="/shopify/orders" className="block transition hover:scale-[1.02]">
                 <Card className="h-full hover:border-primary/50 hover:shadow-md transition cursor-pointer">
                   <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -175,6 +181,22 @@ export default function ShopifyDashboardPage() {
                 </Card>
               </Link>
 
+              {/* F11: returns/refunds visibility next to gross revenue */}
+              <Link href="/shopify/orders" className="block transition hover:scale-[1.02]">
+                <Card className="h-full hover:border-primary/50 hover:shadow-md transition cursor-pointer">
+                  <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                    <CardTitle className="text-sm font-medium">Refunded</CardTitle>
+                    <Undo2 className="h-4 w-4 text-amber-500" />
+                  </CardHeader>
+                  <CardContent>
+                    <div className={`text-2xl font-bold ${stats.refunded > 0 ? "text-amber-600" : ""}`}>
+                      {stats.currency}{" "}
+                      {stats.refunded.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </div>
+                  </CardContent>
+                </Card>
+              </Link>
+
               <Link href="/shopify/orders" className="block transition hover:scale-[1.02]">
                 <Card className="h-full hover:border-primary/50 hover:shadow-md transition cursor-pointer">
                   <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -186,6 +208,12 @@ export default function ShopifyDashboardPage() {
                       {stats.currency}{" "}
                       {stats.revenue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </div>
+                    {stats.refunded > 0 && (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Net {stats.currency}{" "}
+                        {stats.net.toLocaleString(undefined, { minimumFractionDigits: 2 })} after refunds
+                      </p>
+                    )}
                   </CardContent>
                 </Card>
               </Link>
