@@ -58,7 +58,7 @@ ROLE_FEES = "PAYMENT_PROCESSING_FEES"
 ROLE_SALES_RETURNS = "SALES_RETURNS"
 
 
-def _raise_settlement_command_failure(company, entry_date, source_document, command_name, error):
+def _raise_settlement_command_failure(actor, entry_date, entry, source_document, command_name, error):
     """A80: surface a settlement-JE command failure LOUDLY instead of the
     pre-fix silent ``return``.
 
@@ -72,31 +72,33 @@ def _raise_settlement_command_failure(company, entry_date, source_document, comm
     undoing both the orphan DRAFT and the burned sequence number.
 
     Mirrors the Shopify order path (``shopify_connector/projections.py``):
-    - a CLOSED fiscal period is terminal (won't self-heal until an operator
-      reopens it) -> ``ProjectionTerminalSkip`` so a historical closed-period
-      payout can't head-of-line-stall the whole settlement stream (the
-      framework records the failure AND advances past it).
+    - a CLOSED (or undefined) fiscal period is terminal (won't self-heal until
+      an operator reopens/creates it) -> ``ProjectionTerminalSkip`` so a
+      historical closed-period payout can't head-of-line-stall the whole
+      settlement stream (the framework records the failure AND advances past it).
     - any other refusal -- notably a MISSING FX rate for the payout date -- is
       transient -> ``ProjectionCommandFailedError`` (DOWNSTREAM_FAILED), which
       surfaces in /finance/exceptions AND retries so it self-heals once the
       operator adds the rate.
-    """
-    from datetime import date as _date
 
-    from accounting.validation import _check_period
+    Classification uses the SAME gate ``post_journal_entry`` applies,
+    ``can_post_to_period(actor, date, period=entry.period)`` (commands.py:1127),
+    so an A85 ``period_override`` — where the posted period deliberately differs
+    from the date's calendar-month period — cannot make a date-only check
+    disagree with the period actually posted to (which would misroute: a
+    permanent head-of-line stall on a closed override period, or a wrong
+    quarantine of a retriable settlement). ``entry`` is ``None`` only on a
+    create failure, before any period was resolved.
+    """
+    from accounting.policies import can_post_to_period
     from projections.exceptions import (
         ProjectionCommandFailedError,
         ProjectionTerminalSkip,
     )
 
-    period_date = entry_date
-    if isinstance(entry_date, str):
-        try:
-            period_date = _date.fromisoformat(entry_date[:10])
-        except (ValueError, TypeError):
-            period_date = None
-
-    if period_date and _check_period(company, period_date):
+    period = entry.period if entry is not None else None
+    period_ok, _reason = can_post_to_period(actor, entry_date, period=period)
+    if not period_ok:
         raise ProjectionTerminalSkip(
             f"Settlement {source_document} dated {entry_date} cannot post: {error}",
             fix_hint=(
@@ -419,8 +421,9 @@ class PaymentSettlementProjection(BaseProjection):
             )
             if not create_result.success:
                 _raise_settlement_command_failure(
-                    company,
+                    actor,
                     entry_date,
+                    None,
                     source_document,
                     "create_journal_entry",
                     create_result.error,
@@ -430,8 +433,9 @@ class PaymentSettlementProjection(BaseProjection):
             save_result = save_journal_entry_complete(actor, entry.id)
             if not save_result.success:
                 _raise_settlement_command_failure(
-                    company,
+                    actor,
                     entry_date,
+                    entry,
                     source_document,
                     "save_journal_entry_complete",
                     save_result.error,
@@ -441,8 +445,9 @@ class PaymentSettlementProjection(BaseProjection):
             post_result = post_journal_entry(actor, entry.id)
             if not post_result.success:
                 _raise_settlement_command_failure(
-                    company,
+                    actor,
                     entry_date,
+                    entry,
                     source_document,
                     "post_journal_entry",
                     post_result.error,

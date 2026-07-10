@@ -21,7 +21,7 @@ Raising rolls back both the orphan DRAFT and the burned sequence number.
 """
 
 import calendar
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
 from uuid import uuid4
 
@@ -188,33 +188,61 @@ def test_missing_rate_settlement_does_not_silently_draft_and_self_heals(db):
 
 
 @pytest.mark.django_db
-def test_failure_helper_routes_closed_period_vs_retriable(db):
-    """The two-arm decision: an OPEN period is a transient refusal
-    (ProjectionCommandFailedError → visible + self-heal), while a CLOSED period
-    is terminal (ProjectionTerminalSkip → quarantine, so a historical
-    closed-period payout can't head-of-line-stall the whole settlement stream)."""
-    company = _make_company()
-    today = date.today()
+def test_failure_helper_classifies_by_override_period_not_just_date(db):
+    """The two-arm decision uses the SAME gate post applies —
+    can_post_to_period(actor, date, period=entry.period): OPEN → transient
+    ProjectionCommandFailedError (visible + self-heals), CLOSED/undefined →
+    terminal ProjectionTerminalSkip (quarantine, no head-of-line stall).
 
-    # OPEN period this month → retriable arm.
-    _open_period(company, today)
+    Adversarial-review P2: an A85 period_override whose period differs in
+    OPEN/CLOSED status from the date's calendar-month period must be classified
+    by the OVERRIDE period (entry.period), not a date-only lookup — else it
+    misroutes into a permanent head-of-line stall or a wrong quarantine."""
+    from accounts.authz import system_actor_for_company
+
+    company = _make_company()
+    actor = system_actor_for_company(company)
+
+    # July 2026 (period 7) OPEN; June 2026 (period 6) CLOSED — same fiscal year.
+    open_date = date(2026, 7, 15)
+    closed_date = date(2026, 6, 15)
+    _open_period(company, open_date)  # period 7 OPEN
+    _open_period(company, closed_date, status=FiscalPeriod.Status.CLOSED)  # period 6 CLOSED
+
+    # (a) No override, OPEN date → transient (retriable) arm.
     with projection_writes_allowed(), pytest.raises(ProjectionCommandFailedError):
         _raise_settlement_command_failure(
-            company,
-            today.isoformat(),
+            actor,
+            open_date.isoformat(),
+            None,
             "stripe:open",
             "post_journal_entry",
-            "Missing USD->EGP exchange rate for today. Add the rate, then repost.",
+            "Missing USD->EGP rate for the date.",
         )
 
-    # CLOSED period last month → terminal arm.
-    last_month_end = today.replace(day=1) - timedelta(days=1)
-    _open_period(company, last_month_end, status=FiscalPeriod.Status.CLOSED)
+    # (b) No override, CLOSED date → terminal arm.
     with projection_writes_allowed(), pytest.raises(ProjectionTerminalSkip):
         _raise_settlement_command_failure(
-            company,
-            last_month_end.isoformat(),
-            "stripe:closed",
+            actor,
+            closed_date.isoformat(),
+            None,
+            "stripe:date_closed",
             "post_journal_entry",
             "Fiscal period is closed.",
+        )
+
+    # (c) THE P2 regression: the date's own period (July) is OPEN, but the
+    # override period (June, entry.period=6) is CLOSED → terminal. A date-only
+    # classifier would have wrongly said "open" → a permanent head-of-line stall.
+    class _EntryWithOverridePeriod:
+        period = 6  # only .period is read by the helper
+
+    with projection_writes_allowed(), pytest.raises(ProjectionTerminalSkip):
+        _raise_settlement_command_failure(
+            actor,
+            open_date.isoformat(),
+            _EntryWithOverridePeriod(),
+            "stripe:override_closed",
+            "post_journal_entry",
+            "period closed",
         )
