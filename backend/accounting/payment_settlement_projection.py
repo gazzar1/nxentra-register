@@ -58,6 +58,60 @@ ROLE_FEES = "PAYMENT_PROCESSING_FEES"
 ROLE_SALES_RETURNS = "SALES_RETURNS"
 
 
+def _raise_settlement_command_failure(company, entry_date, source_document, command_name, error):
+    """A80: surface a settlement-JE command failure LOUDLY instead of the
+    pre-fix silent ``return``.
+
+    F27 (2026-07-10): the silent ``return`` on a ``create``/``save``/``post``
+    failure committed an orphan DRAFT entry AND burned a
+    ``journal_entry_number`` (a gap in the GL sequence) while the framework
+    marked the event applied — so a settlement whose foreign line had no FX
+    rate for its payout date (or landed in a closed period) silently vanished
+    from the posted ledger and NEVER self-healed, even after the operator
+    added the rate. Raising instead rolls back ``handle()``'s atomic block,
+    undoing both the orphan DRAFT and the burned sequence number.
+
+    Mirrors the Shopify order path (``shopify_connector/projections.py``):
+    - a CLOSED fiscal period is terminal (won't self-heal until an operator
+      reopens it) -> ``ProjectionTerminalSkip`` so a historical closed-period
+      payout can't head-of-line-stall the whole settlement stream (the
+      framework records the failure AND advances past it).
+    - any other refusal -- notably a MISSING FX rate for the payout date -- is
+      transient -> ``ProjectionCommandFailedError`` (DOWNSTREAM_FAILED), which
+      surfaces in /finance/exceptions AND retries so it self-heals once the
+      operator adds the rate.
+    """
+    from datetime import date as _date
+
+    from accounting.validation import _check_period
+    from projections.exceptions import (
+        ProjectionCommandFailedError,
+        ProjectionTerminalSkip,
+    )
+
+    period_date = entry_date
+    if isinstance(entry_date, str):
+        try:
+            period_date = _date.fromisoformat(entry_date[:10])
+        except (ValueError, TypeError):
+            period_date = None
+
+    if period_date and _check_period(company, period_date):
+        raise ProjectionTerminalSkip(
+            f"Settlement {source_document} dated {entry_date} cannot post: {error}",
+            fix_hint=(
+                "Reopen the fiscal period to post this settlement's journal "
+                "entry, or exclude pre-close history from the settlement import."
+            ),
+        )
+
+    raise ProjectionCommandFailedError(
+        f"PaymentSettlement {source_document} {command_name} failed: {error}",
+        command_name=command_name,
+        original_error=error or "",
+    )
+
+
 class PaymentSettlementProjection(BaseProjection):
     """Posts the GL entry for an imported settlement statement."""
 
@@ -364,32 +418,35 @@ class PaymentSettlementProjection(BaseProjection):
                 source_document=source_document,
             )
             if not create_result.success:
-                logger.error(
-                    "PaymentSettlement %s create_journal_entry failed: %s",
+                _raise_settlement_command_failure(
+                    company,
+                    entry_date,
                     source_document,
+                    "create_journal_entry",
                     create_result.error,
                 )
-                return
             entry = create_result.data
 
             save_result = save_journal_entry_complete(actor, entry.id)
             if not save_result.success:
-                logger.error(
-                    "PaymentSettlement %s save_journal_entry_complete failed: %s",
+                _raise_settlement_command_failure(
+                    company,
+                    entry_date,
                     source_document,
+                    "save_journal_entry_complete",
                     save_result.error,
                 )
-                return
             entry = save_result.data
 
             post_result = post_journal_entry(actor, entry.id)
             if not post_result.success:
-                logger.error(
-                    "PaymentSettlement %s post_journal_entry failed: %s",
+                _raise_settlement_command_failure(
+                    company,
+                    entry_date,
                     source_document,
+                    "post_journal_entry",
                     post_result.error,
                 )
-                return
             entry = post_result.data
 
         logger.info(
