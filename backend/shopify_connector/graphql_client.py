@@ -48,6 +48,11 @@ LINE_ITEMS_PER_ORDER = 50
 # and breaches Shopify's 1000-point single-query ceiling for large orders.
 FULFILLMENTS_PER_ORDER = 10
 FULFILLMENT_LINE_ITEMS = 50
+# A159: refunds are pulled per-order (never nested in iter_orders) for the
+# same 1000-point-ceiling reason as fulfillments.
+REFUNDS_PER_ORDER = 10
+REFUND_TRANSACTIONS = 10
+REFUND_LINE_ITEMS = 50
 
 _MAX_THROTTLE_RETRIES = 5
 
@@ -400,6 +405,55 @@ class ShopifyAdminClient:
         search = (
             f"created_at:>='{_iso_for_search(created_at_min)}' AND created_at:<='{_iso_for_search(created_at_max)}'"
         )
+        yield from self._iter_orders_search(query, search)
+
+    def iter_refunded_orders(self, updated_at_min: str, updated_at_max: str):
+        """A159: yield REST-shaped orders whose refund state changed in the
+        window. Searches by updated_at (a refund bumps the order's
+        updatedAt) + financial_status, so a refund issued today against an
+        order created months before the lookback window is still caught —
+        iter_orders' created_at filter can never see those."""
+        query = f"""
+        query Orders($cursor: String, $search: String) {{
+          orders(first: {ORDERS_PAGE_SIZE}, after: $cursor, query: $search, sortKey: UPDATED_AT) {{
+            pageInfo {{ hasNextPage endCursor }}
+            nodes {{
+              legacyResourceId
+              name
+              createdAt
+              cancelledAt
+              test
+              displayFinancialStatus
+              currencyCode
+              paymentGatewayNames
+              totalPriceSet {{ shopMoney {{ amount }} }}
+              subtotalPriceSet {{ shopMoney {{ amount }} }}
+              totalTaxSet {{ shopMoney {{ amount }} }}
+              totalDiscountsSet {{ shopMoney {{ amount }} }}
+              totalShippingPriceSet {{ shopMoney {{ amount }} }}
+              customer {{ email firstName lastName }}
+              lineItems(first: {LINE_ITEMS_PER_ORDER}) {{
+                nodes {{
+                  sku
+                  title
+                  quantity
+                  originalUnitPriceSet {{ shopMoney {{ amount }} }}
+                  variant {{ legacyResourceId }}
+                  product {{ legacyResourceId }}
+                }}
+              }}
+            }}
+          }}
+        }}
+        """
+        search = (
+            f"updated_at:>='{_iso_for_search(updated_at_min)}' "
+            f"AND updated_at:<='{_iso_for_search(updated_at_max)}' "
+            f"AND (financial_status:refunded OR financial_status:partially_refunded)"
+        )
+        yield from self._iter_orders_search(query, search)
+
+    def _iter_orders_search(self, query: str, search: str):
         cursor = None
         while True:
             # allow_partial: customer fields can be individually denied on
@@ -524,6 +578,101 @@ class ShopifyAdminClient:
                     "status": (f.get("status") or "").lower(),
                     "location_id": location.get("legacyResourceId") or "",
                     "line_items": line_items,
+                }
+            )
+        return results
+
+    # ------------------------------------------------------------------
+    # Refunds  (A159 refund backfill — REST shape: refunds/create)
+    # ------------------------------------------------------------------
+
+    def get_order_refunds(self, order_id) -> list[dict]:
+        """REST-shaped refund dicts for a single order (A159 backfill).
+
+        Pulled per-order (never nested in iter_orders) so the refunds ×
+        transactions × refundLineItems cost stays under Shopify's
+        1000-point single-query ceiling — same rationale as
+        get_order_fulfillments. Each dict matches the refunds/create
+        webhook payload process_refund consumes.
+
+        GraphQL enums come back UPPERCASE (REFUND/SUCCESS/RETURN) and are
+        lowercased here: process_refund compares kind == 'refund' and
+        status == 'success', and the accounting projection compares
+        restock_type in ('return', 'cancel'). Forgetting this yields a
+        silent refund_amount=0.
+        """
+        gid = f"gid://shopify/Order/{order_id}"
+        query = f"""
+        query OrderRefunds($id: ID!) {{
+          order(id: $id) {{
+            refunds(first: {REFUNDS_PER_ORDER}) {{
+              legacyResourceId
+              createdAt
+              note
+              transactions(first: {REFUND_TRANSACTIONS}) {{
+                nodes {{
+                  kind
+                  status
+                  amountSet {{ shopMoney {{ amount }} }}
+                }}
+              }}
+              refundLineItems(first: {REFUND_LINE_ITEMS}) {{
+                nodes {{
+                  quantity
+                  restockType
+                  subtotalSet {{ shopMoney {{ amount }} }}
+                  lineItem {{ sku title }}
+                }}
+              }}
+            }}
+          }}
+        }}
+        """
+        data = self.execute(query, {"id": gid}, allow_partial=True)
+        order = data.get("order") or {}
+        raw = order.get("refunds") or []
+        # Tolerate either the list shape or a connection shape ({nodes: [...]})
+        # across Admin API versions — same defense as get_order_fulfillments.
+        if isinstance(raw, dict):
+            raw = raw.get("nodes") or []
+
+        results = []
+        for r in raw:
+            txns_raw = r.get("transactions") or []
+            if isinstance(txns_raw, dict):
+                txns_raw = txns_raw.get("nodes") or []
+            transactions = [
+                {
+                    "kind": (t.get("kind") or "").lower(),
+                    "status": (t.get("status") or "").lower(),
+                    "amount": _money(t.get("amountSet")),
+                }
+                for t in txns_raw
+            ]
+
+            rli_raw = r.get("refundLineItems") or []
+            if isinstance(rli_raw, dict):
+                rli_raw = rli_raw.get("nodes") or []
+            refund_line_items = []
+            for li in rli_raw:
+                item = li.get("lineItem") or {}
+                refund_line_items.append(
+                    {
+                        "quantity": li.get("quantity", 0),
+                        "restock_type": (li.get("restockType") or "").lower(),
+                        "subtotal": _money(li.get("subtotalSet")),
+                        "line_item": {"sku": item.get("sku") or "", "title": item.get("title") or ""},
+                    }
+                )
+
+            results.append(
+                {
+                    "id": int(r["legacyResourceId"]),
+                    "order_id": int(order_id),
+                    "created_at": r.get("createdAt") or "",
+                    "note": r.get("note") or "",
+                    "transactions": transactions,
+                    "refund_line_items": refund_line_items,
                 }
             )
         return results

@@ -537,16 +537,27 @@ class ShopifyWebhookView(APIView):
                         shop_domain,
                         result.error,
                     )
+                    # A159: transient failures (e.g. a refund racing its
+                    # order) must NOT be acked — a 2xx makes Shopify never
+                    # redeliver and the data is lost until the poller runs.
+                    # 503 → Shopify retries with backoff for ~48h. Permanent
+                    # validation failures stay 200 so we don't burn the
+                    # subscription's consecutive-failure budget.
+                    if result.data and result.data.get("retryable"):
+                        return HttpResponse(status=503)
             except Exception:
                 logger.exception(
                     "Error processing Shopify webhook %s for %s",
                     topic,
                     shop_domain,
                 )
+                # A159: unexpected exceptions are retryable by definition —
+                # let Shopify redeliver instead of silently consuming.
+                return HttpResponse(status=500)
         else:
             logger.info("Unhandled Shopify webhook topic: %s", topic)
 
-        # Always return 200 to acknowledge receipt
+        # Acknowledge receipt (success, benign skip, or permanent failure).
         return HttpResponse(status=200)
 
 

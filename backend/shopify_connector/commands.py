@@ -1276,7 +1276,11 @@ def process_refund(store: ShopifyStore, payload: dict) -> CommandResult:
             shopify_order_id=order_id,
         )
     except ShopifyOrder.DoesNotExist:
-        return CommandResult.fail(f"Order {order_id} not found locally.")
+        # A159: transient — the refund webhook raced its order (or the order
+        # webhook was dropped). Marked retryable so the webhook view answers
+        # 5xx (Shopify redelivers with backoff for ~48h); the 4h poller's
+        # refund catch-up is the durable recovery either way.
+        return CommandResult.fail(f"Order {order_id} not found locally.", data={"retryable": True})
 
     # Calculate refund amount from transactions
     refund_amount = Decimal("0")
