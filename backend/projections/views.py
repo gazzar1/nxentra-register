@@ -5546,12 +5546,15 @@ class CurrencyRevaluationView(APIView):
         from accounting.models import Account
 
         core_mapping = ModuleAccountMapping.get_mapping(actor.company, "core")
+        # A156: is_postable is a @property, not a DB field — filtering on it
+        # raises FieldError. Use the underlying predicate.
         fx_gain_account = (
             core_mapping.get("FX_GAIN")
             or Account.objects.filter(
                 company=actor.company,
                 role="FINANCIAL_INCOME",
-                is_postable=True,
+                is_header=False,
+                status=Account.Status.ACTIVE,
             ).first()
         )
 
@@ -5560,7 +5563,8 @@ class CurrencyRevaluationView(APIView):
             or Account.objects.filter(
                 company=actor.company,
                 role="FINANCIAL_EXPENSE",
-                is_postable=True,
+                is_header=False,
+                status=Account.Status.ACTIVE,
             ).first()
         )
 

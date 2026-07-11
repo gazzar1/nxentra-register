@@ -175,12 +175,15 @@ def _revalue_company(company: Company, reval_date: date_type, auto_reverse: bool
     # Resolve FX gain/loss accounts
     from accounting.models import Account
 
+    # A156: is_postable is a @property, not a DB field — filtering on it
+    # raises FieldError. Use the underlying predicate.
     fx_gain_account = (
         core_mapping.get("FX_GAIN")
         or Account.objects.filter(
             company=company,
             role="FINANCIAL_INCOME",
-            is_postable=True,
+            is_header=False,
+            status=Account.Status.ACTIVE,
         ).first()
     )
     fx_loss_account = (
@@ -188,7 +191,8 @@ def _revalue_company(company: Company, reval_date: date_type, auto_reverse: bool
         or Account.objects.filter(
             company=company,
             role="FINANCIAL_EXPENSE",
-            is_postable=True,
+            is_header=False,
+            status=Account.Status.ACTIVE,
         ).first()
     )
     fx_rounding_account = core_mapping.get("FX_ROUNDING")
@@ -211,7 +215,12 @@ def _revalue_company(company: Company, reval_date: date_type, auto_reverse: bool
     if not admin_user:
         return {"status": "error", "error": "No user found for company"}
 
-    actor = ActorContext(user=admin_user.user, company=company, membership=admin_user)
+    # A156: ActorContext requires perms — omitting it raised TypeError on
+    # every scheduled revaluation run (masked behind the task's broad
+    # except). OWNER/ADMIN roles pass require() implicitly; explicit grants
+    # ride along for ordinary members.
+    perms = frozenset(admin_user.permissions.values_list("code", flat=True))
+    actor = ActorContext(user=admin_user.user, company=company, membership=admin_user, perms=perms)
 
     # Build JE lines
     from accounting.commands import create_journal_entry, post_journal_entry, save_journal_entry_complete
