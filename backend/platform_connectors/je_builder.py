@@ -104,10 +104,13 @@ def _fix_fx_rounding(lines, entry, company, currency, fx_rate):
 
     rounding_account = ModuleAccountMapping.get_account(company, "core", "FX_ROUNDING")
     if not rounding_account:
+        # A156: is_postable is a @property, not a DB field — filtering on it
+        # raises FieldError. Use the underlying predicate.
         rounding_account = Account.objects.filter(
             company=company,
             role=Account.AccountRole.FX_ROUNDING,
-            is_postable=True,
+            is_header=False,
+            status=Account.Status.ACTIVE,
         ).first()
 
     if not rounding_account:

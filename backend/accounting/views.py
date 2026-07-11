@@ -2644,10 +2644,14 @@ class CoreAccountMappingView(APIView):
 
         with command_writes_allowed():
             for core_role, account_role in CORE_ROLE_DEFAULTS.items():
+                # A156: is_postable is a @property, not a DB field — the old
+                # filter raised FieldError (swallowed by the caller), so
+                # auto-init had silently never worked.
                 account = Account.objects.filter(
                     company=company,
                     role=account_role,
-                    is_postable=True,
+                    is_header=False,
+                    status=Account.Status.ACTIVE,
                 ).first()
                 if account:
                     ModuleAccountMapping.objects.get_or_create(
