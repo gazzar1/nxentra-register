@@ -2,6 +2,8 @@
 
 Archive of completed items moved from NEXT_TASKS.md. See NEXT_TASKS.md for pending work.
 
+> **Format note (2026-07-11).** Existing entries below keep their full historical closeout text — they are the archive and the diligence evidence; do not compress them retroactively. **New closeouts from here on use one line each**: `ID — date — classification (shipped / superseded / refuted) — one-sentence outcome — commit/PR — link to detail if any`. Detail beyond one line goes in the PR description or an archive doc, not here.
+
 ## From: Phase A — First-user unblock + foundation hardening
 
 ### A1. Phase 1 dry-run on fresh Shopify dev store — ✅ **DONE 2026-04-28**
@@ -529,3 +531,55 @@ Related display nit: the statement page's "GL Balance" tile nets only unreconcil
 
 ### A123. Sentry `before_send` PII redaction filter — ✅ **DONE + DEPLOYED + VERIFIED LIVE 2026-06-28** (PR #25 `e3b8fd9`)
 Extended `backend/ops/sentry_scrub.py` (the pre-existing credential scrubber) to also redact **customer PII** from error telemetry — `send_default_pii=False` stops auto-captured PII, but it still leaks via exception messages, log args, breadcrumbs, and GET query strings. The existing `before_send` already walks the whole event, so PII redaction rides the same recursive pass: value patterns (email, phone — intl/Egyptian mobile+landline/NANP, Luhn-gated card numbers incl. numeric values, IBAN, Egyptian 14-digit national ID) + segment-anchored field-name patterns (email/phone/address/ssn/tax_id/card_number/iban/bank_account/…) + parsed `request.query_string` params. A 4-lens adversarial review caught a **ReDoS** in the email regex (a DoS vector since `before_send` runs inline — fixed by bounding the local part `{1,64}` → linear) + missing IBAN/bank coverage + phone over-redaction of signed decimals; Codex P1 (numeric PAN bypass) + P2 (separated mobiles) fixed; declined the IBAN-IGNORECASE P2 (would over-redact ~5.5% of hex trace IDs). Tests: `backend/tests/test_a123_pii_scrub.py` (24). `docs/security/data-loss-prevention.md` §5 drops the "roadmap" qualifier. All 7 CI green incl. Postgres E2E. Deployed (backend-only, no migration/build: pull + restart 3 procs) + verified live (`cust [redacted] card [redacted] phone [redacted]`). See [[session_2026_06_27_28_gate_a123]].
+
+## 2026-07-11 audit cleanup — items moved out of NEXT_TASKS.md
+
+Batch-moved during the full-repo audit. Full original ticket text for every item below is preserved in [docs/archive/NEXT_TASKS_pre-cleanup_2026-07-11.md](docs/archive/NEXT_TASKS_pre-cleanup_2026-07-11.md). Classifications were git/code-verified (evidence cited per item).
+
+### Shipped or partially shipped classifications (verified in code/git)
+
+- **A4 (implemented subset)** — A101/A102 shipped 5 blocking AST rules in CI. The original acceptance scope was not fully met: "every finance command has an event test" was not built, and the projection-emitter rule scans only files literally named `projections.py`, missing `projections/property.py`. The remaining boundary/scan outcome is active as A175.
+- **A6** — onboarding auto-launch shipped in `frontend/pages/dashboard/index.tsx:46-60` with the new-owner redirect in `frontend/contexts/AuthContext.tsx:102-110` (git blame `d9e691e0`, 2026-05-04). The later F3 Finish-Setup CTA supplements this; it did not supersede an unbuilt A6.
+- **A9** — no-SKU item auto-create fallback: `shopify_connector/commands.py:3057-3080` (explicit "A9:" docstring; SHOP-{variant_id} fallback).
+- **A10** — policy tie-out now includes accounts referenced by active CUSTOMER/VENDOR posting profiles, not only RECEIVABLE/PAYABLE_CONTROL roles (`accounting/policies.py:912-987`; test `test_a10_tieout_includes_non_ar_control_posting_profile_accounts`; commit `49f2a63`). The newer F16 defect is different: settlements drain platform clearing without reducing the pseudo-customer subledger, so that economic-state mismatch remains active.
+- **A28** — wizard final screen: `onboarding/setup.tsx:1449-1474` ("A28:" comment; Go to Dashboard primary CTA).
+- **A29** — date-format utility: `hooks/useCompanyFormat.ts`, imported in 55 files.
+- **A33** — PAYMENT_PROCESSING_FEES seed label: `accounts/commands.py:3662-3667`; Stripe fees got dedicated 53100 (#18 `721fff0`).
+- **A37** — subledger tieout FK-alias fix: `projections/views.py:3703-3710` ("A37:" comment).
+- **A39** — settlement double-credit vs Shopify credit note: `payment_settlement_projection.py:211-252` + `_detect_already_credited_lines`.
+- **A40** — seed pack emits orders before refunds: `seed_test_csv_pack.py:99-111` ("A40:" comment).
+- **A41** — defer-on-exhaust: `DeferEvent` in `projections/base.py:28` + bounded 24h defer in shopify projections (shipped with A134).
+- **A42** — settlement import success toast: `finance/settlements/import.tsx:145-148`.
+- **A43** — CN/invoice detail 404: detail pages exist and the original route/data fix shipped in `1d50ced`; later Run-1 coverage exercised the page as well.
+- **A47** — credential encryption at rest: commits `942ad17`/`b82df03`/`0388a6e` (#5-#7), verified live. (The old NEXT_TASKS entry still claimed "no encryption layer exists" — false since late June.)
+- **Next.js 14.2.35 security upgrade** — shipped in `bcd829e` and `d29091c`; it cleared the critical advisory present at the time and restored the Security gate. Active E11 is explicitly a later follow-on because 14.x subsequently became unsupported and the current dependency audit reports newer high/moderate findings—not a claim that this upgrade never happened.
+- **A53** — PCD Level 1 + PII webhook subscriptions: `shopify.app.toml` carries orders/refunds/fulfillments topics with the 2026-06-11 PCD-completion comment.
+- **A58 (partial, reopened)** — model/migration and edit control exist, but persistence never shipped: the submit payload, `ItemUpdateSerializer`, and `update_item` omit `external_url`. Returned to `NEXT_TASKS.md` for an end-to-end save test.
+- **A104** — je_builder FX fallback unified to quarantine: FX sweep #33 (`67fd754`); the warn-and-post-at-1.0 path is gone.
+- **A130** — demo order-number collision: code done (`f2512dc`); residual droplet reseed is now explicitly tracked in the M4 ops checklist.
+- **A137** — Account Inquiry / GL drilldown: shipped + deployed (#26/#27).
+- **A142** — settlement JE header rate stamp: commit `474e392` (#42); A147's shipped text references "the A142-stamped rate".
+- **A150** — date-ranged payout totals: resolved by A152 PR1 windowed Stage-2 ledger (docs commit `b7a302d` "resolves A150"). The C4b legacy-endpoint deletion decision rides with the C4b ticket when that work resumes.
+- **S0** — financial-trust hardening: full [S0] commit series (`1a1541b` module-key, `c37f663` parser registry, `d6fd9e7` capabilities+DTOs, `7dcf480` auth-agnostic StripeAccount, `ab1361a` raw cache "[S0 complete]").
+- **S1** — Stripe read-only adapter: commits #8-#17; sandbox connected; later real-payout C3 gate passed (#38-#41).
+- **S2 / S2-gate** — Stage-2 payout-line breakdown + Paymob/Bosta canonical-projection gate: ADR-0002 Phase-2 PR-A/B + PR-D (#47-#49); `test_s2b_payments_projection_gate.py`.
+- **A139/A140/A141/A143/A144/A146/A147+A148/PR-D/A152/F27** — already marked ✅ in the old file with commits (#40-#58 series); prose moved here wholesale via the archive. Outstanding **operational** steps extracted to the M4 ops checklist (A139 droplet backfill, A140 webhook resend, A126 reconnect, A146 restamp, PR-D ordered deploy).
+- **FX-sweep residue "wrong-currency stamps"** — done by A146 (`27dec2a`, functional-first at 3 sites); the 2026-07-01 bullet was never updated.
+
+### Obsolete / superseded (closed without shipping — superseded by a different design)
+
+- **A14 historical scope block, A35 bundle, A108, merchant-readiness exit-criteria, "What to do right now" blocks, critical-path diagram, week-4 gates, decision points** — April/May-era narrative; app published 2026-06-16. Unverified A30/A35 residue re-filed as a P3 re-triage ticket.
+- **A3** (reactor extraction) — the old all-at-once design is retired, not completed. Dormant clinic/property emitters are governed by the A170 archive decision; the live Shopify emitter and filename-based architecture-rule blind spot remain active as A175.
+- **A5** (bank connector + FX direct-write cleanup) — decomposed rather than silently dropped: remaining reconciliation writes are A99b; the duplicate bank engine is covered by A158/A166 retirement; FX posting paths were hardened by the FX sweep. No separate A5 epic remains.
+- **B1** (universal ingest inbox design) — abandoned/narrowed, not fully delivered. ProviderRawObject + ProjectionFailureLog/DeferEvent cover parts of the outcome, but Shopify still acknowledges failed financial webhooks without a durable received/failed/poison record. Durable retry/backfill remains in A159; do not read this closeout as proof of a universal inbox.
+- **B3/B4** (canonical platform models design/build) — superseded by ADR-0002 (canonical layer inside the existing event/projection architecture; ProviderPayout/Line shipped instead).
+- **B5** (Shopify→canonical migration) — explicitly retired by the Phase S header ("out of scope").
+- **B6/B7** (Stripe/Paymob on B4 models) — superseded by Phase S (S0-S2) and S5 respectively.
+- **C1/C2/C3** (generic recon engine + three-way UI) — the intended product outcome was superseded by ADR-0001 ReconciliationLink + the A86 bounded context + `/finance/reconciliation` + A145/A148. Consolidation is incomplete while `/banking/reconciliation` and `/shopify/reconciliation` remain live; that residue is active under A158/A166/F4. (Note: "C3" also named the ADR-0002 payout read-switch — ID collision recorded.)
+- **E3 (CSV half)** — Bosta CSV shipped via A14; API half stays deferred (S5-adjacent).
+- **E5** — unified settlements page: superseded by A145 Stage-2 ProviderPayout ledger + PR-D3 per-line detail.
+- **A27/A32/A34** — reserved-and-never-used ID placeholders; deleted.
+
+### Task-ID collisions recorded (for future traceability)
+
+A80 = deprecated AR/AP columns AND the shipped ProjectionFailureLog/operator queue (live column-removal ticket renamed **A80b**); A84 = receipts-form UX AND shipped posting-period defense (live UX ticket renamed **A84b**); A85 = opening-equity ticket AND JE-preview epic AND the F27 period_override reference (opening-equity re-filed as **A85b**); A86 = fee-mapping ticket AND the reconciliation bounded-context epic; A87 = bank-import locale/date work AND shipped pending-login/password-removal hardening (live import residue renamed **A87b**); A98 = shopify health check AND the deferred mypy cleanup; C3 = Phase-C UI AND the ADR-0002 payout read-switch.

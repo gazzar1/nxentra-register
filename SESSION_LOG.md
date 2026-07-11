@@ -1,3 +1,5 @@
+> **FROZEN — last entry 2026-05-23.** Session history after this date lives outside the repo. Kept for historical context; current state: [NEXT_TASKS.md](NEXT_TASKS.md) + [TASKS_DONE.md](TASKS_DONE.md).
+
 # Nxentra Session Log
 
 Cumulative record of work done across sessions. Updated after each session.
