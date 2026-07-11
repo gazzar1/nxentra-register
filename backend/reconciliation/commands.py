@@ -265,6 +265,52 @@ def _emit_match_confirmed(
     )
 
 
+def _emit_difference_resolved(
+    *,
+    company,
+    actor,
+    bank_line: BankStatementLine,
+    journal_line: JournalLine | None,
+    reason: str,
+    notes: str,
+    difference_amount,
+    adjustment_entry,
+    settlement_ebd_journal_line_public_id: str,
+    statement_date,
+):
+    """A180: emit a ReconciliationDifferenceResolved event for the A16
+    reason-picker flow. The projection is the sole writer of the bank
+    line's resolution fields and the settlement EBD reconciled flip —
+    the previous direct writes were reverted by match_confirmed replay,
+    which re-armed the double-submit guard and allowed duplicate
+    adjustment JEs after a rebuild."""
+    from reconciliation.event_types import ReconciliationDifferenceResolvedData
+
+    payload = ReconciliationDifferenceResolvedData(
+        bank_line_public_id=str(bank_line.public_id),
+        journal_line_public_id=str(journal_line.public_id) if journal_line else "",
+        difference_reason=reason,
+        difference_notes=(notes or "")[:255],
+        difference_amount=str(difference_amount),
+        resolved_by_user_id=actor.user.id if actor and actor.user else None,
+        resolved_by_email=actor.user.email if actor and actor.user else "",
+        resolved_at=timezone.now().isoformat(),
+        adjustment_entry_public_id=str(adjustment_entry.public_id),
+        settlement_ebd_journal_line_public_id=settlement_ebd_journal_line_public_id,
+        statement_date=statement_date.isoformat() if statement_date else "",
+    )
+    # aggregate_id is the BANK LINE public_id alone — see _emit_match_unmatched
+    # for why (varchar(64) vs two joined UUIDs; Postgres-only 500).
+    return emit_event_no_actor(
+        company=company,
+        event_type=EventTypes.RECONCILIATION_DIFFERENCE_RESOLVED,
+        aggregate_type="ReconciliationMatch",
+        aggregate_id=str(bank_line.public_id),
+        idempotency_key=f"reconciliation.difference_resolved:{_uuid.uuid4()}",
+        data=payload,
+    )
+
+
 def _validate_period_override(
     *,
     company,
@@ -1640,6 +1686,7 @@ def exclude_line(
 # =============================================================================
 
 
+@transaction.atomic
 def resolve_difference(
     actor: ActorContext,
     bank_line_id: int,
@@ -1674,12 +1721,18 @@ def resolve_difference(
         return CommandResult.fail(f"Reason must be one of: {sorted(valid_reasons)}. UNRESOLVED is the unset state.")
 
     try:
-        bank_line = BankStatementLine.objects.select_related(
-            "matched_journal_line",
-            "matched_journal_line__entry",
-            "statement",
-            "statement__account",
-        ).get(pk=bank_line_id, company=actor.company)
+        # A180: select_for_update serializes concurrent double-submits —
+        # the second caller blocks, then fails the already-resolved guard.
+        bank_line = (
+            BankStatementLine.objects.select_for_update()
+            .select_related(
+                "matched_journal_line",
+                "matched_journal_line__entry",
+                "statement",
+                "statement__account",
+            )
+            .get(pk=bank_line_id, company=actor.company)
+        )
     except BankStatementLine.DoesNotExist:
         return CommandResult.fail("Bank statement line not found.")
 
@@ -1798,59 +1851,63 @@ def resolve_difference(
             },
         ]
 
+    # A180: from here on we're inside one atomic scope with sub-commands
+    # that create real state. CommandResult.fail returns do NOT roll back
+    # the outer atomic, so every failure exit below must set_rollback —
+    # otherwise a partial JE (create succeeded, post failed) commits and
+    # strands an orphan adjustment (pattern: unmatch_and_delete_statement).
     create_result = create_journal_entry(
         actor=sys_actor,
         date=bank_line.line_date,
         memo=memo,
         lines=je_lines,
         kind=JournalEntry.Kind.NORMAL,
+        # A116/A180: provenance rides the CREATED/POSTED events (the old
+        # post-hoc ORM stamp was lost on an accounting-projection rebuild).
+        source_module="payment_settlement_difference",
+        source_document=clearance_je.source_document,
         # A177: one adjustment per bank line — a double-submit of
         # resolve_difference returns the original JE instead of duplicating.
         request_id=f"difference_adjustment:{bank_line.public_id}",
     )
     if not create_result.success:
+        transaction.set_rollback(True)
         return CommandResult.fail(f"Failed to create adjustment JE: {create_result.error}")
     entry = create_result.data
 
     save_result = save_journal_entry_complete(sys_actor, entry.id)
     if not save_result.success:
+        transaction.set_rollback(True)
         return CommandResult.fail(f"Failed to complete adjustment JE: {save_result.error}")
     entry = save_result.data
 
     post_result = post_journal_entry(sys_actor, entry.id)
     if not post_result.success:
+        transaction.set_rollback(True)
         return CommandResult.fail(f"Failed to post adjustment JE: {post_result.error}")
     entry = post_result.data
 
-    with command_writes_allowed():
-        # Stamp source for traceability + idempotency on rebuild.
-        JournalEntry.objects.filter(pk=entry.pk).update(
-            source_module="payment_settlement_difference",
-            source_document=clearance_je.source_document,
-        )
-
-        bank_line.difference_reason = reason
-        bank_line.difference_notes = notes[:255] if notes else ""
-        bank_line.difference_resolved_at = timezone.now()
-        bank_line.difference_adjustment_entry = entry
-        bank_line.save(
-            update_fields=[
-                "difference_reason",
-                "difference_notes",
-                "difference_resolved_at",
-                "difference_adjustment_entry",
-            ]
-        )
-
-        # Now drain the original settlement JE's EBD line — both the
-        # clearance (for actual bank amount) and the adjustment (for the
-        # difference) are posted, so the EBD line is fully reconciled.
-        ebd_line = settlement_je.lines.filter(account=ebd_account).first()
-        if ebd_line and not ebd_line.reconciled:
-            JournalLine.objects.filter(pk=ebd_line.pk).update(
-                reconciled=True,
-                reconciled_date=bank_line.statement.statement_date,
-            )
+    # A180: resolution state is event-carried; the ReconciliationProjection
+    # is the writer (the old direct writes here were reverted by
+    # match_confirmed replay, so a rebuild could never reproduce resolved
+    # state and re-armed the double-submit guard). The settlement JE's EBD
+    # line rides in the payload so the projection can drain it — both the
+    # clearance (actual bank amount) and the adjustment (difference) are
+    # now posted, so the EBD line is fully explained.
+    ebd_line = settlement_je.lines.filter(account=ebd_account).first()
+    _emit_difference_resolved(
+        company=actor.company,
+        actor=actor,
+        bank_line=bank_line,
+        journal_line=bank_line.matched_journal_line,
+        reason=reason,
+        notes=notes,
+        difference_amount=diff,
+        adjustment_entry=entry,
+        settlement_ebd_journal_line_public_id=(str(ebd_line.public_id) if ebd_line and not ebd_line.reconciled else ""),
+        statement_date=bank_line.statement.statement_date,
+    )
+    _run_reconciliation_projection_sync(actor.company)
 
     logger.info(
         "Difference resolved: bank_line=%s reason=%s diff=%s adjustment_je=%s",

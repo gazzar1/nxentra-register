@@ -245,15 +245,16 @@ RECONCILED_WRITE_ALLOWLIST: set[str] = {
 # allowlist entry) fails the build. Catches new violations AND signals
 # when A99b cleanup lands so the file can be removed entirely.
 RECONCILED_WRITE_EXPECTED_COUNTS: dict[str, int] = {
-    # Three sites tracked as A99b in NEXT_TASKS.md:
+    # Two sites tracked as A99b in NEXT_TASKS.md:
     #   - auto_match_statement platform-payout prepass (~line 518)
     #   - auto_match_statement generic-GL match (~line 1107)
-    #   - resolve_difference A16 EBD drain (~line 1771)
-    # When A99b-fast lands, sites 518+1107 ride the existing
+    # (The third site — resolve_difference's A16 EBD drain — was absorbed
+    # by A180 (2026-07-11): the flip now rides the
+    # ReconciliationDifferenceResolved event and the projection writes it.)
+    # When A99b-fast lands, the two remaining sites ride the existing
     # `additional_journal_lines_to_reconcile` field A99 added; drop count
-    # to 1. When A99b-deep lands (A86.3 exception read model), drop to 0
-    # and remove this entry entirely.
-    "reconciliation/commands.py": 3,
+    # to 0 and remove this entry entirely.
+    "reconciliation/commands.py": 2,
 }
 
 

@@ -25,6 +25,7 @@ from events.types import (
 )
 from reconciliation.event_types import (
     REGISTERED_EVENTS,
+    ReconciliationDifferenceResolvedData,
     ReconciliationExceptionRaisedData,
     ReconciliationExceptionResolvedData,
     ReconciliationMatchConfirmedData,
@@ -38,12 +39,14 @@ from reconciliation.event_types import (
 # =============================================================================
 
 
-def test_all_six_event_types_have_constants_on_EventTypes():
+def test_all_seven_event_types_have_constants_on_EventTypes():
     """The EventTypes registry exposes every reconciliation event."""
     assert EventTypes.RECONCILIATION_MATCH_PROPOSED == "reconciliation.match_proposed"
     assert EventTypes.RECONCILIATION_MATCH_CONFIRMED == "reconciliation.match_confirmed"
     assert EventTypes.RECONCILIATION_MATCH_REJECTED == "reconciliation.match_rejected"
     assert EventTypes.RECONCILIATION_MATCH_UNMATCHED == "reconciliation.match_unmatched"
+    # A180: resolution state is event-carried so rebuilds reproduce it.
+    assert EventTypes.RECONCILIATION_DIFFERENCE_RESOLVED == "reconciliation.difference_resolved"
     assert EventTypes.RECONCILIATION_EXCEPTION_RAISED == "reconciliation.exception_raised"
     assert EventTypes.RECONCILIATION_EXCEPTION_RESOLVED == "reconciliation.exception_resolved"
 
@@ -56,6 +59,7 @@ def test_REGISTERED_EVENTS_maps_each_type_to_its_dataclass():
         EventTypes.RECONCILIATION_MATCH_CONFIRMED: ReconciliationMatchConfirmedData,
         EventTypes.RECONCILIATION_MATCH_REJECTED: ReconciliationMatchRejectedData,
         EventTypes.RECONCILIATION_MATCH_UNMATCHED: ReconciliationMatchUnmatchedData,
+        EventTypes.RECONCILIATION_DIFFERENCE_RESOLVED: ReconciliationDifferenceResolvedData,
         EventTypes.RECONCILIATION_EXCEPTION_RAISED: ReconciliationExceptionRaisedData,
         EventTypes.RECONCILIATION_EXCEPTION_RESOLVED: ReconciliationExceptionResolvedData,
     } == REGISTERED_EVENTS

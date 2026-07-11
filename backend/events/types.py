@@ -2384,6 +2384,10 @@ class EventTypes:
     RECONCILIATION_MATCH_CONFIRMED = "reconciliation.match_confirmed"
     RECONCILIATION_MATCH_REJECTED = "reconciliation.match_rejected"
     RECONCILIATION_MATCH_UNMATCHED = "reconciliation.match_unmatched"
+    # A180: operator resolved a matched-with-difference bank line (A16 flow).
+    # Carries reason/notes/resolved_at/adjustment JE so the projection is the
+    # writer and a rebuild reproduces resolved state.
+    RECONCILIATION_DIFFERENCE_RESOLVED = "reconciliation.difference_resolved"
     # Exception lifecycle (surfaces in /finance/exceptions).
     RECONCILIATION_EXCEPTION_RAISED = "reconciliation.exception_raised"
     RECONCILIATION_EXCEPTION_RESOLVED = "reconciliation.exception_resolved"
