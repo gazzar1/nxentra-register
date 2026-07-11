@@ -126,7 +126,7 @@ class PaymentSettlementProjection(BaseProjection):
         return [EventTypes.PAYMENT_SETTLEMENT_RECEIVED]
 
     def handle(self, event: BusinessEvent) -> None:
-        from projections.exceptions import ProjectionStateError
+        from projections.exceptions import ProjectionStateError, ProjectionTerminalSkip
 
         data = event.get_data()
         company = event.company
@@ -136,13 +136,17 @@ class PaymentSettlementProjection(BaseProjection):
         payout_batch_id = data.get("payout_batch_id") or ""
 
         if not provider_code or not payout_batch_id:
-            logger.warning(
-                "PaymentSettlementReceived event %s missing required fields (provider=%r, batch=%r) — skipping",
-                event.id,
-                provider_code,
-                payout_batch_id,
+            # A157: the payload is immutable and the idempotency key freezes
+            # it, so retrying can never help — quarantine visibly (failure
+            # log + advance) instead of consuming the settlement silently.
+            raise ProjectionTerminalSkip(
+                f"PaymentSettlementReceived event {event.id} missing required fields "
+                f"(provider={provider_code!r}, batch={payout_batch_id!r}) — cannot post.",
+                fix_hint=(
+                    "The event payload is structurally invalid and immutable. Re-import the "
+                    "settlement under a corrected batch id (a new event), then mark this resolved."
+                ),
             )
-            return
 
         # Idempotency guard: if a JE already exists for this provider+batch,
         # skip. The event store also guarantees idempotency via
@@ -191,22 +195,41 @@ class PaymentSettlementProjection(BaseProjection):
         uncollected = Decimal(str(data.get("uncollected_amount", "0")))
 
         if gross <= 0:
-            logger.warning("PaymentSettlement: zero gross — skipping batch %s", payout_batch_id)
-            return
+            # A157: an all-zero batch is a legitimate no-op (nothing to
+            # post). Anything else — zero/negative gross with real money in
+            # net/fees/uncollected (this exact silent branch caused the
+            # A20/MAY01-A production loss) — must be an operator-visible
+            # quarantine. TerminalSkip, not StateError: the payload is
+            # immutable and re-import reuses the same idempotency key, so a
+            # retry-forever would head-of-line-stall the settlement stream.
+            if gross == 0 and net == 0 and fees == 0 and uncollected == 0:
+                logger.info("PaymentSettlement: empty batch %s — nothing to post", payout_batch_id)
+                return
+            raise ProjectionTerminalSkip(
+                f"Settlement {source_document} has gross={gross} but "
+                f"net={net}, fees={fees}, uncollected={uncollected} — refusing to post.",
+                fix_hint=(
+                    "Fix the CSV/parser and re-import under a corrected batch id (a new event) — "
+                    "re-importing the same batch id is deduplicated and will NOT retry this event. "
+                    "Negative payouts (refunds exceeding charges) have no posting path yet (S4)."
+                ),
+            )
 
         # Sanity: net + fees + uncollected should equal gross. If they
-        # don't, log the imbalance and refuse to post — better to surface
-        # a parser bug than to silently miswrite the books.
+        # don't, refuse to post — better to surface a parser bug than to
+        # silently miswrite the books. A157: raised (failure log + advance)
+        # instead of the old logger.error + return, which consumed the
+        # event and lost the settlement forever.
         computed = (net + fees + uncollected).quantize(Decimal("0.01"))
         if computed != gross.quantize(Decimal("0.01")):
-            logger.error(
-                "PaymentSettlement %s imbalance: gross=%s, net+fees+uncollected=%s. "
-                "Skipping JE — fix the CSV / parser first.",
-                source_document,
-                gross,
-                computed,
+            raise ProjectionTerminalSkip(
+                f"Settlement {source_document} imbalance: gross={gross}, "
+                f"net+fees+uncollected={computed} — refusing to post.",
+                fix_hint=(
+                    "Fix the CSV/parser and re-import under a corrected batch id (a new event) — "
+                    "re-importing the same batch id is deduplicated and will NOT retry this event."
+                ),
             )
-            return
 
         # A39: detect lines whose order already has a posted credit note from
         # the platform's own refund flow. Canonical case: BST-701 / order

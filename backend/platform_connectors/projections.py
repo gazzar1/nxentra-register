@@ -19,6 +19,7 @@ from accounting.mappings import ModuleAccountMapping, module_key_for_provider
 from events.models import BusinessEvent
 from events.types import EventTypes
 from projections.base import BaseProjection
+from projections.exceptions import ProjectionStateError
 
 from .je_builder import JELine, JERequest, build_journal_entry
 
@@ -42,6 +43,16 @@ def _parse_date(value):
     if isinstance(value, str) and value:
         return datetime.fromisoformat(value).date()
     return None
+
+
+def _role_fix_hint(missing_role: str, platform_slug: str) -> str:
+    """A157: fix_hint for a missing account-mapping role — tells the operator
+    exactly which role to wire; the event self-heals on the next pass."""
+    role_name = f"PLATFORM_CLEARING or {platform_slug.upper()}_CLEARING" if missing_role == "CLEARING" else missing_role
+    return (
+        f"Map an account to the {role_name} role for this platform's module "
+        f"(re-run the platform seed or fix it in account mappings); the event then self-heals."
+    )
 
 
 class PlatformAccountingProjection(BaseProjection):
@@ -93,15 +104,31 @@ class PlatformAccountingProjection(BaseProjection):
         platform_slug = data.get("platform_slug", "unknown")
         module_key = module_key_for_provider(platform_slug)
 
+        handler = {
+            EventTypes.PLATFORM_ORDER_PAID: self._handle_order_paid,
+            EventTypes.PLATFORM_REFUND_CREATED: self._handle_refund_created,
+            EventTypes.PLATFORM_PAYOUT_SETTLED: self._handle_payout_settled,
+            EventTypes.PLATFORM_DISPUTE_CREATED: self._handle_dispute_created,
+        }.get(event.event_type)
+        if not handler:
+            # e.g. PLATFORM_FULFILLMENT_CREATED — consumed but posts no JE.
+            return
+
         mapping = ModuleAccountMapping.get_mapping(company, module_key)
         if not mapping:
-            logger.warning(
-                "No ModuleAccountMapping for %s, company %s — skipping %s",
-                module_key,
-                company,
-                event.event_type,
+            # A157: raise (not silent skip) so a missing platform mapping is
+            # operator-visible in /finance/exceptions and the event self-heals
+            # on the next process_pending pass once the mapping is wired.
+            # This exact class bit production once (STRIPE_CLEARING role
+            # mismatch silently dropped every charge JE).
+            raise ProjectionStateError(
+                f"No ModuleAccountMapping for module {module_key!r} "
+                f"(platform {platform_slug!r}) — cannot post {event.event_type}.",
+                fix_hint=(
+                    f"Connect the platform / re-run its seed (e.g. setup_stripe_platform) to "
+                    f"create the {module_key!r} account mapping; the event then self-heals."
+                ),
             )
-            return
 
         # Resolve dimension context for JE line tagging
         from platform_connectors.dimensions import (
@@ -114,15 +141,7 @@ class PlatformAccountingProjection(BaseProjection):
         # /finance/reconciliation Stage 1 pivots on it.
         provider_value = resolve_settlement_provider_value(company, platform_slug)
 
-        handler = {
-            EventTypes.PLATFORM_ORDER_PAID: self._handle_order_paid,
-            EventTypes.PLATFORM_REFUND_CREATED: self._handle_refund_created,
-            EventTypes.PLATFORM_PAYOUT_SETTLED: self._handle_payout_settled,
-            EventTypes.PLATFORM_DISPUTE_CREATED: self._handle_dispute_created,
-        }.get(event.event_type)
-
-        if handler:
-            handler(event, data, mapping, platform_slug, dimension_context, provider_value)
+        handler(event, data, mapping, platform_slug, dimension_context, provider_value)
 
     @staticmethod
     def _clearing_account(mapping, platform_slug):
@@ -141,11 +160,14 @@ class PlatformAccountingProjection(BaseProjection):
         clearing = self._clearing_account(mapping, platform_slug)
         revenue = mapping.get(ROLE_SALES_REVENUE)
         if not clearing or not revenue:
-            logger.warning(
-                "Account mapping missing CLEARING or SALES_REVENUE for %s — skipping",
-                platform_slug,
+            # A157: raise so the missing role is operator-visible and the
+            # order self-heals once the mapping is wired.
+            missing = "CLEARING" if not clearing else "SALES_REVENUE"
+            raise ProjectionStateError(
+                f"Account mapping missing {missing} for platform {platform_slug!r} — "
+                f"cannot post order {data.get('order_name', data.get('order_number', ''))!r}.",
+                fix_hint=_role_fix_hint(missing, platform_slug),
             )
-            return
 
         total_price = Decimal(str(data.get("amount", "0")))
         subtotal = Decimal(str(data.get("subtotal", "0")))
@@ -222,7 +244,16 @@ class PlatformAccountingProjection(BaseProjection):
         clearing = self._clearing_account(mapping, platform_slug)
         revenue = mapping.get(ROLE_SALES_REVENUE)
         if not clearing or not revenue:
-            return
+            # A157: this was a bare `return` — a refund event vanished with
+            # zero trace, not even a log line. Raise so it's operator-visible
+            # and self-heals once the mapping is wired.
+            missing = "CLEARING" if not clearing else "SALES_REVENUE"
+            raise ProjectionStateError(
+                f"Account mapping missing {missing} for platform {platform_slug!r} — "
+                f"cannot post refund {data.get('platform_refund_id', '')!r} "
+                f"(order {data.get('order_number', '')!r}).",
+                fix_hint=_role_fix_hint(missing, platform_slug),
+            )
 
         amount = Decimal(str(data.get("amount", "0")))
         order_number = data.get("order_number", "")
@@ -272,11 +303,14 @@ class PlatformAccountingProjection(BaseProjection):
         clearing = self._clearing_account(mapping, platform_slug)
         bank = mapping.get(ROLE_CASH_BANK)
         if not clearing or not bank:
-            logger.warning(
-                "Account mapping missing CLEARING or CASH_BANK for %s — skipping payout",
-                platform_slug,
+            # A157: raise so the missing role is operator-visible and the
+            # payout self-heals once the mapping is wired.
+            missing = "CLEARING" if not clearing else "CASH_BANK"
+            raise ProjectionStateError(
+                f"Account mapping missing {missing} for platform {platform_slug!r} — "
+                f"cannot post payout {data.get('platform_payout_id', '')!r}.",
+                fix_hint=_role_fix_hint(missing, platform_slug),
             )
-            return
 
         fees_account = mapping.get(ROLE_PROCESSING_FEES)
 
@@ -352,11 +386,14 @@ class PlatformAccountingProjection(BaseProjection):
         clearing = self._clearing_account(mapping, platform_slug)
         chargeback = mapping.get(ROLE_CHARGEBACK_EXPENSE)
         if not clearing or not chargeback:
-            logger.warning(
-                "Account mapping missing CLEARING or CHARGEBACK_EXPENSE for %s",
-                platform_slug,
+            # A157: raise so the missing role is operator-visible and the
+            # dispute self-heals once the mapping is wired.
+            missing = "CLEARING" if not clearing else "CHARGEBACK_EXPENSE"
+            raise ProjectionStateError(
+                f"Account mapping missing {missing} for platform {platform_slug!r} — "
+                f"cannot post dispute {data.get('platform_dispute_id', '')!r}.",
+                fix_hint=_role_fix_hint(missing, platform_slug),
             )
-            return
 
         fees_account = mapping.get(ROLE_PROCESSING_FEES)
 

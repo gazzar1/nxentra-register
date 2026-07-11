@@ -9,7 +9,8 @@ Coverage:
 - Bad CSVs raise SettlementImportError with a useful message
 - import_settlement_csv emits one event per batch + is idempotent on re-import
 - PaymentSettlementProjection posts the expected JE shape with dimension tags
-- Projection rejects imbalanced events (gross != net + fees + uncollected)
+- Imbalanced events (gross != net + fees + uncollected) raise
+  ProjectionTerminalSkip — quarantined visibly, see test_a157_fail_loud_sweep.py
 - Projection idempotent against rebuild (same source_document → no duplicate JE)
 - End-to-end: CSV upload → projection → reconciliation summary reflects drain
 """
