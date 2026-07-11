@@ -38,6 +38,12 @@ SENSITIVE_PERMISSIONS: frozenset[str] = frozenset(
         # tests/test_a85_settlement_period_override.py,
         # tests/test_a85_auto_match_preview.py.
         "accounting.je.override_period",
+        # A160: restore OVERWRITES the entire company's books from an
+        # uploaded ZIP. Even an OWNER needs the explicit grant (it is in
+        # OWNER ROLE_DEFAULTS, so grant_role_defaults materializes the row
+        # for new memberships; existing ones need the deploy backfill).
+        # Tested at: tests/test_backups_authorization.py.
+        "backups.restore",
     }
 )
 

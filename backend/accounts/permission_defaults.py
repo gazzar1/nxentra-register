@@ -36,6 +36,13 @@ ROLE_DEFAULTS = {
         # Reports
         "reports.view",
         "reports.export",
+        # A160: backups. Restore is in SENSITIVE_PERMISSIONS — the explicit
+        # row materialized from this default is what lets an OWNER restore.
+        "backups.view",
+        "backups.export",
+        "backups.download",
+        "backups.delete",
+        "backups.restore",
         # Voice (admin can grant/revoke access and manage quotas)
         "voice.admin",
         "voice.view_usage",
@@ -73,6 +80,11 @@ ROLE_DEFAULTS = {
         "accounting.je.override_period",
         "reports.view",
         "reports.export",
+        # A160: ADMIN can create/inspect/download backups but NOT restore
+        # (overwrites the books) or delete backup history.
+        "backups.view",
+        "backups.export",
+        "backups.download",
         # Voice (admin can grant/revoke access and manage quotas)
         "voice.admin",
         "voice.view_usage",
