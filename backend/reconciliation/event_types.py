@@ -118,8 +118,10 @@ class ReconciliationMatchConfirmedData(BaseEventData):
     # MATCHED_WITH_DIFFERENCE support — A16 semantics carried through.
     # difference_amount == "0" for exact matches.
     difference_amount: str = "0"
-    # UNRESOLVED initially when match has a difference; transitions on
-    # ExceptionResolved (the A16 resolve_difference flow).
+    # UNRESOLVED initially when match has a difference; transitions when the
+    # A16 resolve_difference flow emits ReconciliationDifferenceResolved
+    # (A180 — before that event existed, resolution was a direct write that
+    # rebuilds silently reverted).
     difference_reason: str = "UNRESOLVED"
     # statement_date captured for the read-model's reconciled_date column.
     statement_date: str = ""
@@ -190,6 +192,35 @@ class ReconciliationMatchUnmatchedData(BaseEventData):
     additional_journal_lines_to_unreconcile: list = field(default_factory=list)
 
 
+@dataclass
+class ReconciliationDifferenceResolvedData(BaseEventData):
+    """A180: operator resolved a MATCHED_WITH_DIFFERENCE bank line (the A16
+    reason-picker flow). Carries the full resolution state so the
+    ReconciliationProjection is the writer — before this event existed,
+    resolve_difference direct-wrote the fields and a projection rebuild
+    actively reverted difference_reason to UNRESOLVED (re-arming the
+    double-submit guard → duplicate adjustment JEs)."""
+
+    bank_line_public_id: str = ""
+    # The matched clearance journal line (ReconciliationLink key derivation).
+    journal_line_public_id: str = ""
+    difference_reason: str = ""
+    difference_notes: str = ""
+    # Audit echo of the resolved residual (Decimal-as-string).
+    difference_amount: str = "0"
+    resolved_by_user_id: Optional[int] = None
+    resolved_by_email: str = ""
+    resolved_at: str = ""
+    # The adjustment JE posted by resolve_difference.
+    adjustment_entry_public_id: str = ""
+    # The original settlement JE's EBD line to flip reconciled (fully
+    # drained once clearance + adjustment are both posted). Empty when the
+    # settlement JE has no un-reconciled EBD line.
+    settlement_ebd_journal_line_public_id: str = ""
+    # For the EBD line's reconciled_date.
+    statement_date: str = ""
+
+
 # =============================================================================
 # Exception lifecycle (surfaces in /finance/exceptions)
 # =============================================================================
@@ -254,6 +285,7 @@ REGISTERED_EVENTS: dict[str, type[BaseEventData]] = {
     EventTypes.RECONCILIATION_MATCH_CONFIRMED: ReconciliationMatchConfirmedData,
     EventTypes.RECONCILIATION_MATCH_REJECTED: ReconciliationMatchRejectedData,
     EventTypes.RECONCILIATION_MATCH_UNMATCHED: ReconciliationMatchUnmatchedData,
+    EventTypes.RECONCILIATION_DIFFERENCE_RESOLVED: ReconciliationDifferenceResolvedData,
     EventTypes.RECONCILIATION_EXCEPTION_RAISED: ReconciliationExceptionRaisedData,
     EventTypes.RECONCILIATION_EXCEPTION_RESOLVED: ReconciliationExceptionResolvedData,
 }

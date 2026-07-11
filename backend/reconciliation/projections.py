@@ -44,7 +44,7 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 
-from accounting.models import BankStatementLine, JournalLine
+from accounting.models import BankStatementLine, JournalEntry, JournalLine
 from events.models import BusinessEvent
 from events.types import EventTypes
 from projections.base import BaseProjection
@@ -63,6 +63,7 @@ _CONSUMES = [
     EventTypes.RECONCILIATION_MATCH_CONFIRMED,
     EventTypes.RECONCILIATION_MATCH_REJECTED,
     EventTypes.RECONCILIATION_MATCH_UNMATCHED,
+    EventTypes.RECONCILIATION_DIFFERENCE_RESOLVED,
     EventTypes.RECONCILIATION_EXCEPTION_RAISED,
     EventTypes.RECONCILIATION_EXCEPTION_RESOLVED,
 ]
@@ -90,6 +91,8 @@ class ReconciliationProjection(BaseProjection):
             self._handle_match_confirmed(event)
         elif et == EventTypes.RECONCILIATION_MATCH_UNMATCHED:
             self._handle_match_unmatched(event)
+        elif et == EventTypes.RECONCILIATION_DIFFERENCE_RESOLVED:
+            self._handle_difference_resolved(event)
         elif et == EventTypes.RECONCILIATION_MATCH_PROPOSED:
             # ADVISORY: a suggestion is not a state change. The projection
             # records it (future chunks may build a suggestion-queue read
@@ -391,6 +394,92 @@ class ReconciliationProjection(BaseProjection):
             bank_line_public_id,
             target_status,
             len(jl_public_ids_to_unreconcile),
+            event.id,
+        )
+
+    # -------------------------------------------------------------------------
+    # A180: DifferenceResolved — the A16 resolution state, event-carried so a
+    # rebuild reproduces it (the old direct command write was reverted by
+    # match_confirmed replay, which re-armed the double-submit guard).
+    # -------------------------------------------------------------------------
+
+    def _handle_difference_resolved(self, event: BusinessEvent) -> None:
+        from django.utils.dateparse import parse_datetime
+
+        data = event.get_data()
+        bank_line_public_id = data.get("bank_line_public_id") or ""
+        adjustment_public_id = data.get("adjustment_entry_public_id") or ""
+
+        if not bank_line_public_id:
+            raise ProjectionInvalidDataError("ReconciliationDifferenceResolved event missing bank_line_public_id")
+
+        try:
+            bank_line = BankStatementLine.objects.get(
+                company=event.company,
+                public_id=bank_line_public_id,
+            )
+        except BankStatementLine.DoesNotExist as exc:
+            raise ProjectionInvalidDataError(
+                f"ReconciliationDifferenceResolved references unknown bank_line_public_id={bank_line_public_id!r}"
+            ) from exc
+
+        adjustment_je = None
+        if adjustment_public_id:
+            # Fail loud if missing: on a full from-scratch rebuild the
+            # accounting JournalEntryProjection must run before this one —
+            # same ordering dependency as _handle_match_confirmed's
+            # JournalLine lookup.
+            adjustment_je = JournalEntry.objects.filter(
+                company=event.company,
+                public_id=adjustment_public_id,
+            ).first()
+            if adjustment_je is None:
+                raise ProjectionInvalidDataError(
+                    f"ReconciliationDifferenceResolved references unknown "
+                    f"adjustment_entry_public_id={adjustment_public_id!r}"
+                )
+
+        resolved_at_raw = data.get("resolved_at") or ""
+        BankStatementLine.objects.filter(pk=bank_line.pk).update(
+            difference_reason=data.get("difference_reason") or BankStatementLine.DifferenceReason.UNRESOLVED,
+            difference_notes=(data.get("difference_notes") or "")[:255],
+            difference_resolved_at=parse_datetime(resolved_at_raw) if resolved_at_raw else None,
+            difference_adjustment_entry=adjustment_je,
+        )
+
+        # Drain the original settlement JE's EBD line — clearance (actual
+        # bank amount) + adjustment (difference) together fully explain the
+        # expected amount. True→True on re-apply: idempotent.
+        ebd_public_id = data.get("settlement_ebd_journal_line_public_id") or ""
+        if ebd_public_id:
+            statement_date_raw = data.get("statement_date") or ""
+            JournalLine.objects.filter(
+                company=event.company,
+                public_id=ebd_public_id,
+            ).update(
+                reconciled=True,
+                reconciled_date=statement_date_raw or None,
+            )
+
+        # Reflect the resolved reason on the durable link. Status is left
+        # untouched (NEEDS_REVIEW): the exception-queue UX owns that
+        # transition (A105), and flipping it here would hide resolved-
+        # difference lines from readers that surface them today.
+        journal_line_public_id = data.get("journal_line_public_id") or ""
+        if journal_line_public_id:
+            from reconciliation.models import ReconciliationLink, derive_link_id, derive_link_idempotency_key
+
+            key = derive_link_idempotency_key(bank_line_public_id, journal_line_public_id)
+            link_id = derive_link_id(event.company_id, key)
+            ReconciliationLink.objects.filter(company_id=event.company_id, id=link_id).update(
+                difference_reason=data.get("difference_reason") or "",
+            )
+
+        logger.info(
+            "Reconciliation: difference resolved — bank_line=%s reason=%s adjustment_je=%s event_id=%s",
+            bank_line_public_id,
+            data.get("difference_reason"),
+            adjustment_public_id,
             event.id,
         )
 
