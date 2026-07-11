@@ -1356,7 +1356,41 @@ def reverse_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
         CommandResult with {"original": entry, "reversal": reversal_entry} or error
     """
     require(actor, "journal.reverse")
+    return _reverse_posted_journal_entry(actor, entry_id)
 
+
+class VoidReversalError(Exception):
+    """A155: raised by the document voids inside a savepoint when the
+    reversal core fails, so everything the attempt wrote (entries, events,
+    sequence increments, projection writes) rolls back instead of leaving
+    an orphan DRAFT reversal committed. Caught by the void itself and
+    converted to a clean CommandResult.fail."""
+
+
+def _reverse_posted_journal_entry(
+    actor: ActorContext,
+    entry_id: int,
+    *,
+    memo_context: str = "",
+) -> CommandResult:
+    """
+    A155: the ONE canonical counterparty-preserving reversal core, shared
+    by the public reverse command and all four document voids (sales
+    invoice, sales credit note, purchase bill, purchase credit note).
+
+    Performs NO permission check — the public command requires
+    "journal.reverse"; each void's own *.void permission subsumes
+    reversing that document's journal entry.
+
+    Semantics:
+    - Reversal lines carry the original lines' customer/vendor
+      counterparty, so CustomerBalance/VendorBalance reverse alongside the
+      GL control account and subledger tie-out is preserved.
+    - The reversal posts at the ORIGINAL entry's date/period; reversing
+      into a closed period fails cleanly before anything is written.
+    - memo_context (e.g. "Void Invoice INV-001: damaged") is prefixed to
+      the reversal memo so void reasons survive on the JE.
+    """
     try:
         original = JournalEntry.objects.select_for_update().get(pk=entry_id, company=actor.company)
     except JournalEntry.DoesNotExist:
@@ -1397,9 +1431,6 @@ def reverse_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
     if not allowed:
         return CommandResult.fail(reason)
 
-    sequence_value = _next_company_sequence(original.company, "journal_entry_number")
-    reversal_entry_number = f"JE-{sequence_value:06d}"
-
     reversal_line_data = []
     for line in aggregate.lines:
         account_public_id = line.get("account_public_id")
@@ -1429,9 +1460,23 @@ def reverse_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
                     line.get("exchange_rate") or aggregate.exchange_rate or original.exchange_rate or "1.0"
                 ),
                 is_memo_line=account.is_memo_account,
+                # A155: preserve counterparty so the AR/AP subledger
+                # reverses alongside the GL control account. Omitting these
+                # broke tie-out and blocked year-end close.
+                customer_public_id=line.get("customer_public_id"),
+                vendor_public_id=line.get("vendor_public_id"),
                 analysis_tags=analysis_tags,
             ).to_dict()
         )
+
+    # A155: allocate the entry number only after every fallible check above,
+    # so a failed reversal cannot burn a sequence number.
+    sequence_value = _next_company_sequence(original.company, "journal_entry_number")
+    reversal_entry_number = f"JE-{sequence_value:06d}"
+
+    reversal_memo = f"Reversal of {original.entry_number or f'JE#{original.id}'}: {aggregate.memo}"
+    if memo_context:
+        reversal_memo = f"{memo_context} — {reversal_memo}"
 
     event_posted = emit_event(
         actor=actor,
@@ -1443,7 +1488,7 @@ def reverse_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
             entry_public_id=str(reversal_public_id),
             entry_number=reversal_entry_number,
             date=original_date.isoformat(),
-            memo=f"Reversal of {original.entry_number or f'JE#{original.id}'}: {aggregate.memo}",
+            memo=reversal_memo,
             memo_ar=(
                 f"عكس قيد {original.entry_number or f'JE#{original.id}'}: {aggregate.memo_ar}"
                 if aggregate.memo_ar

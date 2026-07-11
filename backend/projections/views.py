@@ -6203,6 +6203,38 @@ class SystemHealthView(APIView):
             }
         )
 
+        # 2b. A155: orphan DRAFT/INCOMPLETE reversals. Before the void-family
+        # fix, every document void attempt committed a stranded kind=REVERSAL
+        # DRAFT (the post step always rejected it). Any row here is either
+        # that historical debris or a new mid-flight failure — both block
+        # close and should be deleted (they never posted).
+        orphan_reversals = list(
+            JournalEntry.objects.filter(
+                company=company,
+                kind=JournalEntry.Kind.REVERSAL,
+                status__in=[JournalEntry.Status.INCOMPLETE, JournalEntry.Status.DRAFT],
+            ).values("public_id", "memo", "date")[:20]
+        )
+        checks.append(
+            {
+                "check": "orphan_reversal_drafts",
+                "title": "Stranded Reversal Drafts",
+                "status": "FAIL" if orphan_reversals else "PASS",
+                "message": f"{len(orphan_reversals)} stranded reversal draft(s) from failed void attempts"
+                if orphan_reversals
+                else "No stranded reversal drafts",
+                "action": "A document void failed mid-flight. Delete the stranded reversal draft (it never posted) and re-void the document."
+                if orphan_reversals
+                else None,
+                "detail": {
+                    "entries": [
+                        {"public_id": str(o["public_id"]), "memo": o["memo"], "date": o["date"].isoformat()}
+                        for o in orphan_reversals
+                    ]
+                },
+            }
+        )
+
         # 3. Trial balance
         agg = JournalLine.objects.filter(
             company=company,
