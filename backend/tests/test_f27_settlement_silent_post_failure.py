@@ -94,9 +94,10 @@ def _open_period(company, when, status=FiscalPeriod.Status.OPEN):
         )
 
 
-def _emit_usd_settlement(company, batch_id, payout_date):
-    """A USD Stripe payout on EGP books — post_journal_entry must find a
-    USD->EGP rate for `payout_date` or refuse."""
+def _emit_settlement(company, batch_id, payout_date, currency="USD"):
+    """A Stripe payout settlement event. ``currency="USD"`` on EGP books forces
+    post_journal_entry to find a USD->EGP rate or refuse; ``currency=""`` falls
+    back to the books (EGP) currency and posts at rate 1 (no rate needed)."""
     emit_event_no_actor(
         company=company,
         event_type=EventTypes.PAYMENT_SETTLEMENT_RECEIVED,
@@ -105,7 +106,7 @@ def _emit_usd_settlement(company, batch_id, payout_date):
         idempotency_key=f"payment.settlement.received:stripe:{batch_id}",
         data=PaymentSettlementReceivedData(
             amount="103.20",
-            currency="USD",
+            currency=currency,
             transaction_date=payout_date.isoformat(),
             document_ref=batch_id,
             provider_normalized_code="stripe",
@@ -144,7 +145,7 @@ def test_missing_rate_settlement_does_not_silently_draft_and_self_heals(db):
 
     batch = "po_f27_missing_rate"
     source_document = f"stripe:{batch}"
-    _emit_usd_settlement(company, batch, date.today())
+    _emit_settlement(company, batch, date.today())
 
     # --- First pass: post fails (USD line, no USD->EGP rate on file) ---
     PaymentSettlementProjection().process_pending(company)
@@ -246,3 +247,43 @@ def test_failure_helper_classifies_by_override_period_not_just_date(db):
             "post_journal_entry",
             "period closed",
         )
+
+
+@pytest.mark.django_db
+def test_missing_provider_config_surfaces_and_self_heals(db):
+    """F27 review follow-up: a missing settlement provider/mapping now raises
+    ProjectionStateError (MISSING_CONFIG) instead of silently dropping the
+    settlement — operator-visible in /finance/exceptions and self-healing once
+    the config is wired. (All six missing-config guards share this behavior; the
+    no-provider guard is the representative case.)"""
+    from stripe_connector.seed import setup_stripe_platform
+
+    company = _make_company()
+    _open_period(company, date.today())
+    # No setup_stripe_platform yet → no active SettlementProvider for "stripe".
+
+    batch = "po_f27_missing_provider"
+    source_document = f"stripe:{batch}"
+    # currency="" → books (EGP) at rate 1, isolating the missing-config cause.
+    _emit_settlement(company, batch, date.today(), currency="")
+
+    PaymentSettlementProjection().process_pending(company)
+
+    # No JE, and the failure is operator-visible as MISSING_CONFIG — not a silent
+    # skip that drops the settlement from the posted ledger.
+    assert not JournalEntry.objects.filter(
+        company=company, source_module="payment_settlement", source_document=source_document
+    ).exists()
+    event = BusinessEvent.objects.get(company=company, event_type=EventTypes.PAYMENT_SETTLEMENT_RECEIVED)
+    failure = ProjectionFailureLog.objects.get(company=company, projection_name="payment_settlement", event=event)
+    assert failure.category == ProjectionFailureLog.Category.MISSING_CONFIG
+    assert not ProjectionAppliedEvent.objects.filter(
+        company=company, projection_name="payment_settlement", event=event
+    ).exists()
+
+    # Operator wires the provider + mappings; the next sweep self-heals.
+    setup_stripe_platform(company)
+    PaymentSettlementProjection().process_pending(company)
+    je = JournalEntry.objects.get(company=company, source_module="payment_settlement", source_document=source_document)
+    assert je.status == JournalEntry.Status.POSTED
+    assert je.currency == "EGP"
