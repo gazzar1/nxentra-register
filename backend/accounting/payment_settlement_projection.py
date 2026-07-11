@@ -58,6 +58,62 @@ ROLE_FEES = "PAYMENT_PROCESSING_FEES"
 ROLE_SALES_RETURNS = "SALES_RETURNS"
 
 
+def _raise_settlement_command_failure(actor, entry_date, entry, source_document, command_name, error):
+    """A80: surface a settlement-JE command failure LOUDLY instead of the
+    pre-fix silent ``return``.
+
+    F27 (2026-07-10): the silent ``return`` on a ``create``/``save``/``post``
+    failure committed an orphan DRAFT entry AND burned a
+    ``journal_entry_number`` (a gap in the GL sequence) while the framework
+    marked the event applied — so a settlement whose foreign line had no FX
+    rate for its payout date (or landed in a closed period) silently vanished
+    from the posted ledger and NEVER self-healed, even after the operator
+    added the rate. Raising instead rolls back ``handle()``'s atomic block,
+    undoing both the orphan DRAFT and the burned sequence number.
+
+    Mirrors the Shopify order path (``shopify_connector/projections.py``):
+    - a CLOSED (or undefined) fiscal period is terminal (won't self-heal until
+      an operator reopens/creates it) -> ``ProjectionTerminalSkip`` so a
+      historical closed-period payout can't head-of-line-stall the whole
+      settlement stream (the framework records the failure AND advances past it).
+    - any other refusal -- notably a MISSING FX rate for the payout date -- is
+      transient -> ``ProjectionCommandFailedError`` (DOWNSTREAM_FAILED), which
+      surfaces in /finance/exceptions AND retries so it self-heals once the
+      operator adds the rate.
+
+    Classification uses the SAME gate ``post_journal_entry`` applies,
+    ``can_post_to_period(actor, date, period=entry.period)`` (commands.py:1127),
+    so an A85 ``period_override`` — where the posted period deliberately differs
+    from the date's calendar-month period — cannot make a date-only check
+    disagree with the period actually posted to (which would misroute: a
+    permanent head-of-line stall on a closed override period, or a wrong
+    quarantine of a retriable settlement). ``entry`` is ``None`` only on a
+    create failure, before any period was resolved.
+    """
+    from accounting.policies import can_post_to_period
+    from projections.exceptions import (
+        ProjectionCommandFailedError,
+        ProjectionTerminalSkip,
+    )
+
+    period = entry.period if entry is not None else None
+    period_ok, _reason = can_post_to_period(actor, entry_date, period=period)
+    if not period_ok:
+        raise ProjectionTerminalSkip(
+            f"Settlement {source_document} dated {entry_date} cannot post: {error}",
+            fix_hint=(
+                "Reopen the fiscal period to post this settlement's journal "
+                "entry, or exclude pre-close history from the settlement import."
+            ),
+        )
+
+    raise ProjectionCommandFailedError(
+        f"PaymentSettlement {source_document} {command_name} failed: {error}",
+        command_name=command_name,
+        original_error=error or "",
+    )
+
+
 class PaymentSettlementProjection(BaseProjection):
     """Posts the GL entry for an imported settlement statement."""
 
@@ -70,6 +126,8 @@ class PaymentSettlementProjection(BaseProjection):
         return [EventTypes.PAYMENT_SETTLEMENT_RECEIVED]
 
     def handle(self, event: BusinessEvent) -> None:
+        from projections.exceptions import ProjectionStateError
+
         data = event.get_data()
         company = event.company
 
@@ -115,13 +173,17 @@ class PaymentSettlementProjection(BaseProjection):
             .first()
         )
         if not provider:
-            logger.warning(
-                "PaymentSettlement: no SettlementProvider for company=%s external_system=%s code=%r — skipping",
-                company.id,
-                external_system,
-                provider_code,
+            # A80/F27: raise (not silent skip) so a missing provider is
+            # operator-visible in /finance/exceptions and self-heals once wired —
+            # otherwise the settlement silently drops from the posted ledger.
+            raise ProjectionStateError(
+                f"No active SettlementProvider for settlement {source_document} "
+                f"(external_system={external_system!r}, code={provider_code!r}).",
+                fix_hint=(
+                    "Run backfill_settlement_providers (or let the lazy-create path "
+                    "resolve it on the next order); the settlement then self-heals."
+                ),
             )
-            return
 
         gross = Decimal(str(data.get("gross_amount", "0")))
         fees = Decimal(str(data.get("fees", "0")))
@@ -200,13 +262,13 @@ class PaymentSettlementProjection(BaseProjection):
         returns_account = mapping.get(ROLE_SALES_RETURNS)
 
         if not expected_bank:
-            logger.error(
-                "PaymentSettlement: %s missing EXPECTED_BANK_DEPOSIT mapping — "
-                "run backfill_settlement_providers / _setup_shopify_accounts. Batch %s skipped.",
-                module,
-                payout_batch_id,
+            raise ProjectionStateError(
+                f"Settlement {source_document}: module {module} is missing the EXPECTED_BANK_DEPOSIT account mapping.",
+                fix_hint=(
+                    "Run backfill_settlement_providers / _setup_shopify_accounts to "
+                    "wire the mapping; the settlement then self-heals."
+                ),
             )
-            return
 
         # A22: when a payout batch consolidates rows from multiple
         # gateways (e.g. 'Paymob' umbrella + 'Paymob Accept' sub-method),
@@ -241,14 +303,14 @@ class PaymentSettlementProjection(BaseProjection):
                     .first()
                 )
                 if not sub_provider or not sub_provider.posting_profile:
-                    logger.error(
-                        "PaymentSettlement: provider_breakdown references unknown gateway %r "
-                        "for batch %s — skipping JE. Run backfill_settlement_providers or "
-                        "let the lazy-create path resolve it on next order.",
-                        sub_code,
-                        payout_batch_id,
+                    raise ProjectionStateError(
+                        f"Settlement {source_document}: provider_breakdown references "
+                        f"unknown/unwired gateway {sub_code!r}.",
+                        fix_hint=(
+                            "Run backfill_settlement_providers (or let the lazy-create "
+                            "path resolve it on the next order); the settlement self-heals."
+                        ),
                     )
-                    return
                 sub_clearing = sub_provider.posting_profile.control_account
                 line = {
                     "account_id": sub_clearing.id,
@@ -267,12 +329,14 @@ class PaymentSettlementProjection(BaseProjection):
         else:
             clearing_account = provider.posting_profile.control_account if provider.posting_profile else None
             if not clearing_account:
-                logger.error(
-                    "PaymentSettlement: provider %s has no posting_profile/clearing account — batch %s skipped.",
-                    provider.normalized_code,
-                    payout_batch_id,
+                raise ProjectionStateError(
+                    f"Settlement {source_document}: provider {provider.normalized_code} "
+                    "has no posting_profile / clearing (control) account.",
+                    fix_hint=(
+                        "Assign a posting profile with a clearing/control account to the "
+                        "provider; the settlement then self-heals."
+                    ),
                 )
-                return
             line = {
                 "account_id": clearing_account.id,
                 "description": f"{memo} — clearing",
@@ -299,12 +363,15 @@ class PaymentSettlementProjection(BaseProjection):
         ]
         if fees > 0:
             if not fees_account:
-                logger.error(
-                    "PaymentSettlement: missing PAYMENT_PROCESSING_FEES mapping but fees=%s — batch %s skipped.",
-                    fees,
-                    payout_batch_id,
+                raise ProjectionStateError(
+                    f"Settlement {source_document}: fees={fees} but the "
+                    "PAYMENT_PROCESSING_FEES account mapping is missing.",
+                    fix_hint=(
+                        "Wire the PAYMENT_PROCESSING_FEES mapping "
+                        "(backfill_settlement_providers / _setup_shopify_accounts); "
+                        "the settlement then self-heals."
+                    ),
                 )
-                return
             je_lines.append(
                 {
                     "account_id": fees_account.id,
@@ -315,12 +382,15 @@ class PaymentSettlementProjection(BaseProjection):
             )
         if uncollected > 0:
             if not returns_account:
-                logger.error(
-                    "PaymentSettlement: missing SALES_RETURNS mapping but uncollected=%s — batch %s skipped.",
-                    uncollected,
-                    payout_batch_id,
+                raise ProjectionStateError(
+                    f"Settlement {source_document}: uncollected={uncollected} but the "
+                    "SALES_RETURNS account mapping is missing.",
+                    fix_hint=(
+                        "Wire the SALES_RETURNS mapping "
+                        "(backfill_settlement_providers / _setup_shopify_accounts); "
+                        "the settlement then self-heals."
+                    ),
                 )
-                return
             je_lines.append(
                 {
                     "account_id": returns_account.id,
@@ -364,32 +434,38 @@ class PaymentSettlementProjection(BaseProjection):
                 source_document=source_document,
             )
             if not create_result.success:
-                logger.error(
-                    "PaymentSettlement %s create_journal_entry failed: %s",
+                _raise_settlement_command_failure(
+                    actor,
+                    entry_date,
+                    None,
                     source_document,
+                    "create_journal_entry",
                     create_result.error,
                 )
-                return
             entry = create_result.data
 
             save_result = save_journal_entry_complete(actor, entry.id)
             if not save_result.success:
-                logger.error(
-                    "PaymentSettlement %s save_journal_entry_complete failed: %s",
+                _raise_settlement_command_failure(
+                    actor,
+                    entry_date,
+                    entry,
                     source_document,
+                    "save_journal_entry_complete",
                     save_result.error,
                 )
-                return
             entry = save_result.data
 
             post_result = post_journal_entry(actor, entry.id)
             if not post_result.success:
-                logger.error(
-                    "PaymentSettlement %s post_journal_entry failed: %s",
+                _raise_settlement_command_failure(
+                    actor,
+                    entry_date,
+                    entry,
                     source_document,
+                    "post_journal_entry",
                     post_result.error,
                 )
-                return
             entry = post_result.data
 
         logger.info(
