@@ -94,6 +94,18 @@ class Command(BaseCommand):
 
         self.stdout.write(f"Projections to process: {[p.name for p in projections_to_run]}")
 
+        # A154: dedicated-tenant DB routing is structurally incomplete (the
+        # router covers a subset of apps — see NEXT_TASKS "Database-per-
+        # tenant"). Replaying into a non-default alias may write some read
+        # models to the wrong database. Warn loudly until that work lands.
+        if db_alias != "default":
+            self.stdout.write(
+                self.style.WARNING(
+                    f"WARNING: multi-DB routing is incomplete; projections for unrouted "
+                    f"apps will be written to 'default', not '{db_alias}'. Verify results."
+                )
+            )
+
         # Set up tenant context
         with tenant_context(company_id, db_alias, is_shared=False), rls_bypass():
             total_processed = 0
@@ -141,13 +153,17 @@ class Command(BaseCommand):
                     total_processed += count
                     continue
 
-                # Actually run the projection
+                # Actually run the projection.
+                # A154: rebuild()/process_pending() take no `using=` kwarg —
+                # passing it made this command TypeError on every invocation.
+                # Database routing is handled by the surrounding
+                # tenant_context() via the tenant DB router.
                 try:
                     if options["rebuild"]:
-                        processed = projection.rebuild(company, using=db_alias)
+                        processed = projection.rebuild(company)
                         self.stdout.write(self.style.SUCCESS(f"  Rebuilt: {processed} events"))
                     else:
-                        processed = projection.process_pending(company, using=db_alias)
+                        processed = projection.process_pending(company)
                         self.stdout.write(f"  Processed: {processed} events")
 
                     total_processed += processed

@@ -35,14 +35,12 @@ import logging
 import time
 
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
 
 from accounts.models import Company
 from accounts.rls import rls_bypass
 from events.models import BusinessEvent
 from projections.base import projection_registry
-from projections.models import ProjectionAppliedEvent, ProjectionStatus
-from projections.write_barrier import projection_writes_allowed
+from projections.models import ProjectionStatus
 
 logger = logging.getLogger(__name__)
 
@@ -382,69 +380,50 @@ class Command(BaseCommand):
         start_time = time.time()
 
         try:
+            # A154: route through the canonical drain-to-zero rebuild.
+            # The previous implementation deleted ProjectionAppliedEvent +
+            # the bookmark here and replayed with bare handle(), never
+            # re-stamping — the next normal process_pending pass then
+            # re-applied the whole stream and doubled accumulator balances.
+            self.stdout.write("    Rebuilding (clear + drain-to-zero replay)...")
+
+            def _progress(processed_so_far):
+                status.update_progress(processed_so_far)
+                if not quiet:
+                    percent = (processed_so_far / total_events) * 100
+                    self.stdout.write(f"      Progress: {processed_so_far:,}/{total_events:,} ({percent:.1f}%)")
+
+            processed = projection.rebuild(
+                company,
+                batch_size=batch_size,
+                progress_callback=_progress,
+            )
+
             with rls_bypass():
-                # Step 1: Clear existing projection data
-                self.stdout.write("    Clearing existing data...")
+                remaining = projection.get_lag(company)
+                bookmark = projection.get_bookmark(company)
 
-                # Clear applied events tracking
-                ProjectionAppliedEvent.objects.filter(
-                    company=company,
-                    projection_name=name,
-                ).delete()
-
-                # Clear the projection's own data
-                if hasattr(projection, "_clear_projected_data"):
-                    with projection_writes_allowed():
-                        projection._clear_projected_data(company)
-
-                # Reset bookmark
-                from events.models import EventBookmark
-
-                EventBookmark.objects.filter(
-                    consumer_name=name,
-                    company=company,
-                ).delete()
-
-                # Step 2: Replay events
-                self.stdout.write("    Replaying events...")
-
-                events = (
-                    BusinessEvent.objects.filter(
-                        company=company,
-                        event_type__in=event_types,
-                    ).order_by("company_sequence")
-                    if event_types
-                    else BusinessEvent.objects.filter(company=company).order_by("company_sequence")
+            if remaining > 0:
+                message = (
+                    f"Rebuild stalled with {remaining:,} unprocessed events "
+                    f"(an erroring or deferred event is blocking the stream — "
+                    f"see the projection bookmark / failure log)"
                 )
-
-                processed = 0
-                last_sequence = None
-
-                for event in events.iterator(chunk_size=batch_size):
-                    with transaction.atomic(), projection_writes_allowed():
-                        projection.handle(event)
-
-                    processed += 1
-                    last_sequence = event.company_sequence
-
-                    # Update progress
-                    if processed % batch_size == 0:
-                        status.update_progress(processed)
-                        if not quiet:
-                            percent = (processed / total_events) * 100
-                            self.stdout.write(f"      Progress: {processed:,}/{total_events:,} ({percent:.1f}%)")
-
-                # Mark as complete
-                status.mark_rebuild_completed(last_event_sequence=last_sequence)
-
-                elapsed = time.time() - start_time
-                rate = processed / elapsed if elapsed > 0 else 0
-
-                self.stdout.write(
-                    self.style.SUCCESS(f"    Complete: {processed:,} events in {elapsed:.2f}s ({rate:.0f} events/sec)")
-                )
-
+                status.mark_rebuild_error(message)
+                self.stdout.write(self.style.ERROR(f"    {message}"))
                 return processed
+
+            last_sequence = bookmark.last_event.company_sequence if bookmark and bookmark.last_event else None
+            status.mark_rebuild_completed(last_event_sequence=last_sequence)
+
+            elapsed = time.time() - start_time
+            rate = processed / elapsed if elapsed > 0 else 0
+
+            self.stdout.write(
+                self.style.SUCCESS(f"    Complete: {processed:,} events in {elapsed:.2f}s ({rate:.0f} events/sec)")
+            )
+
+            return processed
 
         except Exception as e:
             status.mark_rebuild_error(str(e))
