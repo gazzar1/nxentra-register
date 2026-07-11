@@ -394,6 +394,9 @@ def _create_settlement_clearance_je(
         # ORM update) so it survives a from-scratch projection rebuild.
         source_module="payment_settlement_clearance",
         source_document=settlement_entry.source_document or batch_id,
+        # A177: stable request identity — a crash between create and post
+        # returns the original clearance JE on retry instead of duplicating.
+        request_id=f"payment_settlement_clearance:{settlement_entry.source_document or batch_id}",
     )
     if not create_result.success:
         logger.error("Settlement clearance create failed: %s", create_result.error)
@@ -1801,6 +1804,9 @@ def resolve_difference(
         memo=memo,
         lines=je_lines,
         kind=JournalEntry.Kind.NORMAL,
+        # A177: one adjustment per bank line — a double-submit of
+        # resolve_difference returns the original JE instead of duplicating.
+        request_id=f"difference_adjustment:{bank_line.public_id}",
     )
     if not create_result.success:
         return CommandResult.fail(f"Failed to create adjustment JE: {create_result.error}")

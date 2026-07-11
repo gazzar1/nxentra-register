@@ -455,6 +455,10 @@ class PaymentSettlementProjection(BaseProjection):
                 # idempotency check (above) and Banked join survive rebuild.
                 source_module=PROJECTION_NAME,
                 source_document=source_document,
+                # A177: stable request identity — a replay after a crash
+                # between create and post returns the ORIGINAL entry (the
+                # POSTED-JE guard above only covers fully-posted batches).
+                request_id=f"payment_settlement:{source_document}",
             )
             if not create_result.success:
                 _raise_settlement_command_failure(
