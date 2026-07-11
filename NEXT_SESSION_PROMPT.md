@@ -1,130 +1,96 @@
-# Next session — paste this prompt
+# Next session — paste this prompt (written 2026-07-11; previous 2026-05-03 version preserved in git history)
 
-Continue Nxentra. Last session (2026-05-02 → 2026-05-03) ran the full Aljazeera7 end-to-end dry-run and surfaced a substantive Tier-1 fix list that **blocks the first-user invite**. The dry-run did exactly what the test pack was designed to do — caught real data-loss + accounting-correctness bugs at integration boundaries, not architectural ones. Five commits shipped this session:
-
-- **`7425bbc`** — Paymob/Bosta CSV importer header aliases (3 additions; `gateway_fee`, `collected_amount`, `net_due`)
-- **`b074164`** — A17 toast follow-up: surface skipped-duplicate count in bank import success message
-- **`96dd1e6`** — `seed_test_csv_pack` management command + `test_data/` fixtures (5 CSVs covering EGP / Paymob / Bosta / refunds / returns / short-payment / alias-normalization / settlement-without-order / bank fees scenarios)
-- **`5df4d1e`** — Fix Cash Flow report 500 error: wrong `JournalLine` model name + `entry__` FK alias (Sentry caught)
-- **`e9a0ddd`** — Fix bank-rec auto-match crash: 8 sites bypass `JournalLine` read-model save guard via `.update()`; 57 tests still pass (Sentry caught)
-
-Read [SESSION_LOG.md § Session: May 2-3, 2026](SESSION_LOG.md) and [NEXT_TASKS.md § Phase A continues — Tier-1 fix list](NEXT_TASKS.md) for the full play-by-play and ticket details.
+> **Expiry rule:** if any P0 task below is already marked done in NEXT_TASKS.md or TASKS_DONE.md, skip it. If more than ~3 weeks have passed, re-verify every claim in Step 0 before writing code. The previous version of this file went 2 months stale and became actively dangerous — do not let this one do the same.
 
 ---
 
-## Goal of this session
+## Mission
 
-**Ship the Tier-1 fix list (A18-A26), re-run the Aljazeera7 dry-run, send the first-user invite.**
+Implement the **Safe-supervised-pilot exit gate** — the P0 section of [NEXT_TASKS.md](NEXT_TASKS.md) — so Nxentra is safe to put real merchant money through under supervision. This is the "before the first three merchants" engineering batch from the 2026-07-11 dual audit ([NXENTRA_AUDIT_2026_07_11.md](NXENTRA_AUDIT_2026_07_11.md) + [NXENTRA_CODEX_INDEPENDENT_AUDIT_2026_07_11.md](NXENTRA_CODEX_INDEPENDENT_AUDIT_2026_07_11.md)). Both audits independently confirmed every defect below; the disputed ones were re-verified line-by-line in the session that wrote this prompt.
 
-The strategic line is unchanged from last session — **stop building, start selling** — but the validation step revealed real bugs that need fixing before any merchant sees this product. A failed first-user invite is much worse than a delayed one. Every Tier-1 ticket is unit-testable and bounded; aim for tests-first to lock the fix before any UI re-verification.
+**Scope discipline — do NOT:** touch P1/P3/deferred items (except where a P0 task explicitly absorbs one), implement billing (M1), refactor god-files, add features, archive clinic/properties, or start any integration. Every one of those is deliberately sequenced after this gate. If you find a new bug outside the gate, file it in NEXT_TASKS.md P1 and move on.
 
-**Conservative budget: 5-8 days of focused engineering, then half a day re-running the dry-run, then send the invite.**
-
----
-
-## Step 1 — Ship A18-A26 in priority order
-
-Each ticket has full scope + reasoning in [NEXT_TASKS.md](NEXT_TASKS.md). Suggested order (by leverage / dependency):
-
-1. **A19** — Bank-rec unmatch / exclude must reverse the clearance JE (~1d). Real merchants will hit this; orphan accounting is unrecoverable. Tests first: unmatch a previously-matched line, verify a contra clearance JE posts and bank account 11200 nets to zero.
-2. **A20** — A14 refund-during-settlement: importer rejects unbalanced batch with clear error (~0.5-1d). MAY01-A scenario. Either parse `refund_or_chargeback` into `uncollected_amount` so math reconciles (preferred — correct accounting), or reject at parse time with merchant-visible error.
-3. **A21** — A14 Bosta `returned_uncollected_amount` column reader (~0.5d). BST-701 scenario, 1,200 EGP currently silently dropped. Add field to `_BOSTA_HEADER_ALIASES`, route status=returned amounts to `uncollected_amount`. Test: BST-701 batch produces JE with separate Sales Returns line.
-4. **A23** — Refund handler projection race (~1-2d, architectural). Wait-with-retry in handler if original invoice not yet POSTED + idempotency on credit-note creation. Test: emit order_paid + refund_created in same batch, verify credit note posts after retry.
-5. **A22** — A14 settlement importer per-row provider routing (~1-2d). MAY01-B Paymob/Paymob Accept mixed batch. Group rows by per-order `gateway` normalization, post multi-line clearing drain.
-6. **A25** — Manual-match picker filter surfaces settlement EBD lines (~0.5d). Currently the picker shows only orphan clearance JEs; merchant can't trigger A16 from UI. Fix the candidate query to include un-reconciled JournalLines on EBD account from `source_module='payment_settlement'` JEs sorted by amount-proximity.
-7. **A24** — Bank statement frontend column-mapper UI (~1-2d). Backend already supports it; expose 2-step import flow with smart pre-fill + persist-mapping-per-(company, bank_account). Ship the unified `<CsvMappingDialog>` component the broader vision calls for.
-8. **A18** — Frontend deploy hygiene + atomic-deploy script (~0.5d). Wrapped fail-fast script + 1-page runbook. Without this, every future deploy risks the same partial-state failure that broke prod for hours this session.
-9. **A26** — Settlement-without-original-order rejection or warning (~0.5d). Validate referenced order_ids at import time; reject with merchant-visible error OR route to suspense account. Pair with A35 narrative banner (deferred to post-first-user, but its sister item).
-
-Each ticket should land as its own commit on `main`. After each, **run the relevant test suites** (`tests/test_settlement_imports.py`, `tests/test_a14b_settlement_prepass.py`, `tests/test_a16_difference_engine.py`, `tests/test_a17_bank_statement_dedup.py`, `tests/test_reconciliation_views.py`) to confirm nothing regressed.
+**Working rules:** finance work is event-first per [ENGINEERING_PROTOCOL.md](ENGINEERING_PROTOCOL.md) and [docs/finance_event_first_policy.md](docs/finance_event_first_policy.md) (the docs/ copy — the root copy is superseded). Every fix ships with a RED-proven regression test (write the failing test first, prove it fails for the audited reason, then fix). One branch + PR per task (or per small pair). After a squash-merge: `git pull --ff-only` — never `reset --hard` over uncommitted work. Frontend changes need `npm run build` on the droplet, not just a pm2 restart.
 
 ---
 
-## Step 2 — Re-run the Aljazeera7 dry-run
+## Step 0 — Pre-flight (~30 min, do not skip)
 
-After all of Step 1 is shipped + pushed + pulled on the droplet:
-
-```bash
-cd /var/www/nxentra_app
-git pull origin main
-pm2 restart nxentra-api nxentra-web
-
-cd backend
-# Optional: flush the previous test pack data and re-seed cleanly
-python manage.py seed_test_csv_pack --company-slug aljazeera7 --flush
-```
-
-Then in the browser, end-to-end through `/finance/reconciliation`:
-
-1. **Stage 1 verification.** Three providers (Paymob 8,050 / Paymob Accept 1,000 / Bosta 6,200), totals match expected after credit-note refunds. ✅ already worked last session.
-2. **Upload Paymob CSV.** All 4 batches must post JEs cleanly — including MAY01-A after A20 (test: re-upload `test_data/paymob_settlements_test.csv`, expect 4 settlement JEs in `/accounting/journal-entries`, no Sentry errors).
-3. **Upload Bosta CSV.** All 4 batches post + BST-701 includes a `DR Sales Returns 1,200` line in JE-34-XXX (test after A21).
-4. **Upload bank statement (use the Nxentra-format CSV from last session OR the original after A24 ships).** Auto-match runs cleanly, no JournalLine save-guard crash (already fixed).
-5. **Manually match BNK-003 (BST-701, 1,850).** Picker now shows BST-701's EBD line (2,050) as a candidate after A25. Pick it → MATCHED_WITH_DIFFERENCE → routes to A16 Needs Review queue.
-6. **Resolve the difference.** Pick "Bank charge" reason, add a note, click Resolve. Adjustment JE posts (DR Bank Charges 200 / CR Bosta Clearing 200). BNK-003 leaves Needs Review queue.
-7. **Try unmatching a line and re-matching.** After A19, the clearance JE reverses cleanly. Audit trail intact.
-
-If anything fails: fix at root cause, commit, push, redo Step 2 from where it broke. Do not invite until all 7 sub-steps are green.
-
-**Success criterion:** all 7 bank lines reach a final state (Matched / Matched with difference resolved / Excluded as known-non-match) AND Stage 1 / Stage 2 / Stage 3 numbers reconcile cleanly AND no Sentry errors fire during the run.
+1. `git status` — the tree may still carry uncommitted 2026-07-11 audit/roadmap files (`NEXT_TASKS.md`, `TASKS_DONE.md`, `SESSION_LOG.md`, `NEXT_SESSION_PROMPT.md`, `docs/archive/`, two audit reports). Review and **commit these first** on a `docs/audit-2026-07-11` branch so code work starts from a clean tree. Remember untracked files don't appear in `git diff` — use `git status`.
+2. Baseline: run the backend suite the way CI does (`pytest tests/ accounting/tests/ events/tests/ accounts/tests/ --ignore=tests/e2e/` on SQLite) and note the result. Don't start on a red baseline.
+3. Spot-verify 3 claims still hold before believing this prompt: (a) `postable_kinds` in `backend/accounting/commands.py` (~line 1110) still excludes REVERSAL; (b) `rebuild_projection.py:389-438` still deletes markers + bare-`handle()` replays; (c) `backend/backups/views.py` still has only `IsAuthenticated`. If any is already fixed, skip that task and tick its gate checkbox.
 
 ---
 
-## Step 3 — Send the first-user invite
+## Work order
 
-If Step 2 is green AND the user's pre-flight invite kit is ready (Calendly link with 4 open slots, WhatsApp Business number set up, sign-up flow tested in incognito), **send the invite to the Egyptian Shopify merchant acquired 2026-04-22**.
+Recommended sequence (dependencies + smallest-win-first). Full canonical task text lives in NEXT_TASKS.md P0 — read each entry there before starting it. Summary and traps below.
 
-The invite text (EN + AR) was prepared two sessions ago — pull from the conversation history if needed. The welcome doc is at [docs/onboarding/welcome.md](docs/onboarding/welcome.md).
+### 1. A164 — CI gaps (~0.5d) — FIRST, so every later regression test actually gates
+Add `backend/reconciliation/tests/` to a CI pytest job (`.github/workflows/ci.yml:40` omits it — 26 collected tests currently run nowhere). Run `tests/test_aggregate_sequencing.py`'s Postgres-only concurrency class in the `backend-invariants` job. Optionally drop `-x` from the two pytest jobs.
 
-**The user has been documented as having a tendency to defer the invite for "one more thing"** (per [EVALUATION_STATUS.md](EVALUATION_STATUS.md) Weakness #1). If they balk, name it explicitly. The Tier-1 list this session was real; the *next* deferral isn't. The single biggest predictor of whether Nxentra becomes a business in 2026 is whether the first invite goes out in May. After Step 2 is green, the answer to "should we ship one more thing" is **no, send the invite.**
+### 2. A156 — `is_postable=True` FieldError sweep (~0.5d)
+`is_postable` is a `@property` (`accounting/models.py:750-753`); `filter(is_postable=True)` raises FieldError at 7 sites: `accounting/commands.py:199`, `accounting/tasks.py:183,191`, `accounting/views.py:2650` (swallowed at :2577 — core mapping auto-init has never worked), `platform_connectors/je_builder.py:110`, `projections/views.py:5554,5563`. Replace with the correct pattern from `shopify_connector/projections.py:222-227` (`is_header=False, status=ACTIVE`). One test per fallback branch (FX-rounding-without-mapping, revaluation-without-FX-GAIN/LOSS, auto-init actually creating mappings).
+
+### 3. A154 — one convergent drain-to-zero rebuild (~1.5-2d, CRITICAL)
+Three failures: `rebuild_projection` cmd (`:389-438`) and `AdminProjectionRebuildView` (`projections/views.py:3036-3078`) delete `ProjectionAppliedEvent` + bookmark then bare-`handle()` replay → next `process_pending` doubles accumulators; `BaseProjection.rebuild()` runs a single `process_pending(limit=1000)` batch → silently partial >1,000 events; tenant replay passes unsupported `using=` (`tenant/management/commands/replay_projections.py:144-151`).
+**Fix:** make `BaseProjection.rebuild()` loop process_pending until drained; route the CLI command and admin view through it (admin view must dispatch to Celery or hard-cap synchronous size — it currently blocks the request for a full replay); fix or explicitly disable tenant replay. **Includes A115:** add `JournalEntryProjection._clear_projected_data` (JE/JournalLine delete under `projection_writes_allowed()`; known limitation — source-doc FKs are SET_NULL, do NOT expand into A110, just document it).
+**Tests:** >1,000-event rebuild converges; rebuild-then-`process_pending` changes **nothing** (assert balances byte-identical); the mgmt command and admin endpoint both go through the safe path; tenant command no longer TypeErrors.
+
+### 4. A155 — reversal + void family (~3-4d, CRITICAL — the biggest task)
+Three verified failure modes:
+1. `reverse_journal_entry` omits `customer_public_id`/`vendor_public_id` on reversal lines (`accounting/commands.py:1411-1431`) — subledger never reverses, tie-out breaks, year close blocks (`:2298-2300`).
+2. `void_sales_invoice` (`sales/commands.py:1634-1660`), `void_purchase_bill`, `void_purchase_credit_note` (`purchases/commands.py:665,1883` — **verify same pattern first**) create a `kind=REVERSAL` DRAFT then call `post_journal_entry`, whose `postable_kinds` (`accounting/commands.py:1110-1117`) excludes REVERSAL → the void **always fails** after creating the orphan DRAFT + events.
+3. `void_credit_note` does `reversal_je = reverse_result.data` then `.public_id` — but `reverse_journal_entry` returns a dict (`accounting/commands.py:1483-1489`) → AttributeError (`sales/commands.py:2062-2085`).
+**Fix:** one canonical counterparty-preserving reversal primitive (decide: allow posting REVERSAL kind through the command with an internal flag, or have voids use `reverse_journal_entry` — pick one, use it everywhere); standardize its return shape; failed voids must not strand DRAFT reversals (raise inside the atomic scope rather than return-fail, or clean up explicitly); add an orphan-DRAFT-reversal detector to System Health.
+**Acceptance tests (all currently absent):** AR reversal + AP reversal preserve GL/subledger tie-out; each of the four voids completes and nets its document to zero; injected mid-void failure leaves no orphan DRAFT and no status change; `check_close_readiness` passes after each operation; `void_credit_note` round-trip restores invoice `amount_paid`.
+
+### 5. A157 — fail-loud sweep (~1-2d)
+Silent `logger + return` branches that consume financial events forever: `payment_settlement_projection.py:193-209` (zero-gross + imbalance — caused the real A20/MAY01-A loss); `platform_connectors/projections.py:97-104,143-148,222-225,274-279,352-359` (Stripe/all-platform JE path — bit production once already). Convert to `ProjectionStateError`/`ProjectionTerminalSkip` per the F27 pattern in the same file (`:61-114`). Property/clinic projections same pattern, lower priority. Test each branch → ProjectionFailureLog row + event NOT marked applied (or terminal-skipped visibly).
+
+### 6. A158 — Stripe payout double-post guard (~1d)
+Canonical pull never stamps `StripePayout.journal_entry_id` (`stripe_connector/sync.py:240-259`); legacy /banking matcher then posts a second JE (`bank_connector/matching.py:337-383,468-594`). **Minimal fix now:** make the legacy matcher skip any payout that has a canonical settlement (or stamp `journal_entry_id` at pull time). Full /banking retirement is A166 — do not do it in this task unless the owner has decided. Add the cross-engine test (pull-synced payout + /banking auto-match → exactly one JE).
+
+### 7. A176 — balance sheet current-year earnings + "as of" semantics (~1-2d)
+`BalanceSheetView` (`projections/views.py:700-765,811-862`) never folds unclosed P&L into equity (CURRENT_YEAR_EARNINGS role exists at `accounting/models.py:307`, unused), and period mode filters from `period_from` instead of accumulating through `period_to` (`:599-662`). Tests: mid-year BS balances with open P&L activity; selected-period = cumulative; before/after year-end close consistency.
+
+### 8. A177 — JE command idempotency uses caller request identity (~1-2d)
+`create_journal_entry` (`accounting/commands.py:655,698-762`): fresh aggregate UUID + content hash omitting period/source/dimensions/counterparties → a true retry returns the old event then fails the fresh-UUID lookup (false failure); distinct legitimate entries can collide (silent suppression). Accept a caller request ID / stable aggregate ID; on true retry return the original aggregate; reject same-key/different-payload. Tests: exact retry succeeds returning the original; different dimensions/counterparties/source-docs never collide.
+
+### 9. A180 — atomic, event-reconstructible difference resolution (~1-1.5d)
+`resolve_difference()` (`reconciliation/commands.py:1639-1645,1798-1847`): no outer transaction — posts the adjustment JE via separately-atomic commands, then direct-writes provenance + resolution state after. Wrap in one atomic scope; carry `difference_reason/notes/resolved_at/adjustment_entry` in the event payload (A116 pattern) so the projection writes them and rebuild reproduces resolved state (`reconciliation/projections.py:505-513` currently leaves bank-line state untouched). Absorbs the A99b site at `:1771`. **Scope fence:** difference-resolution only — no exception-queue read model. Tests: failure-injection between post and stamp → full rollback; wipe-and-rebuild reproduces identical resolved state; double-submit is idempotent.
+
+### 10. A159 — refund backfill (~1-2d)
+Webhook view 200s on `process_refund` failure (`shopify_connector/views.py:530-550`) and the 4h poller has no refund path (`tasks.py:137-178`) → missed refunds permanently overstate revenue. Add refunds to the catch-up sync (GraphQL order query can carry refund fields, or a dedicated refunds query; handlers are already idempotent on `shopify_refund_id`), and/or 5xx on retryable handler failure. Test: refund arriving before its order + a dropped webhook both recover via the poller.
+
+### 11. A160 — backups authorization (~0.5d)
+`backups/views.py:31-219`: list/export/download/**restore**/delete gated only by `IsAuthenticated`. Add `require()` permission gates (OWNER/admin; restore behind a sensitive permission). Denial tests for VIEWER and ordinary members on every endpoint.
+
+### 12. A161 — fail-closed restore + backup verification (~2-4d code, + ops)
+Importer skips missing/malformed model files and can commit partial restores (`backups/importer.py:97-131`); registry omits newer tables (`backups/model_registry.py`); no checksum/count verification. Make restore fail closed (verify export_hash, manifest counts, company/version; post-restore assert trial balance + subledger tie-out + event max-ID); registry completeness test. **Operator half (flag, don't fake):** verify DO managed-Postgres backups are actually enabled on the live cluster; move app ZIPs off `MEDIA_ROOT` to off-host storage; one timed destructive restore drill.
+
+### 13. A162 — fail-safe production boot (~0.5d)
+`settings.py:14` defaults DEBUG=True. Default it **False**; require explicit `DEBUG=True` in dev; assert `PROJECTIONS_SYNC=True` at prod boot (JE creation hard-depends on it, `accounting/commands.py:766-783`); fix `.env.example` drift (`DJANGO_ALLOWED_HOSTS`→`ALLOWED_HOSTS`, drop unread `POSTGRES_*`, add `SENTRY_DSN`/`REDIS_URL`/`PROJECTIONS_SYNC`); make test settings explicit rather than argv-sniffed (the `settings.TESTING` "test-in-argv" trigger). **Deploy trap:** before deploying, confirm the droplet `.env` explicitly sets `DEBUG=False` and dev machines set `DEBUG=True`, or local runserver breaks.
+
+### 14. A163 — alerting that reaches a human (~1d + ops drill)
+Prometheus stack is inert (placeholder Slack URL; rules on never-emitted metrics; middleware not installed). Ship the minimum instead: external uptime ping on `/_health/ready`; a **web-process** (not Celery — the worker being dead is the failure) check alerting on projection lag / unresolved ProjectionFailureLog; confirmed Sentry notification rules. Mark or delete the aspirational ops/ configs. **Ops:** force one projection failure and prove a named human gets pinged.
+
+### 15. A124 — GDPR export + deletion jobs (~2-3d)
+Handlers only write PENDING `GdprRequest` rows (`shopify_connector/commands.py:1531-1590`); the app is PUBLISHED with 30/90-day SLAs. Build idempotent jobs: `customers/data_request` → export; `customers/redact` → anonymize Customer + derived docs + `ShopifyOrder.raw_payload`; `shop/redact` → tenant purge. Stamp COMPLETED with evidence + audit event. **Owner decision needed:** immutable-event PII policy — recommended default: scrub every mutable store now and document a lawful-basis exception for the append-only ledger; crypto-shredding is a later design if legal review demands it.
 
 ---
 
-## Step 4 (only if Step 3 done with bandwidth) — Tier-2 UX cleanup
+## Per-task workflow
 
-After the invite goes out, **don't start Phase B**. Instead, work through Tier-2 UX (A28-A36) and the deferred items (A37, A38) — informed by whatever the merchant complains about in the first 48-72 hours, not pre-emptively. Pull forward exactly the items the merchant signals; defer the rest.
+Branch → RED test proving the audited bug → fix → green → regression sweep of the touched area → PR (cite the task ID + audit finding) → merge → tick the gate checkbox in NEXT_TASKS.md → one-line closeout in TASKS_DONE.md (new format: `ID — date — shipped — outcome — commit/PR`).
 
-Specifically — **A37 (Subledger tieout cleanup)** is worth scheduling early because it likely also fixes the noisy A10 false-positive warning that has been firing on every Shopify clearing flow for weeks.
+## Definition of done for this batch
 
----
+All engineering checkboxes in NEXT_TASKS.md's "Safe-supervised-pilot exit gate" ticked; the three **[ops]** checkboxes (GDPR end-to-end evidence, restore drill, alert drill) either done or handed to the operator as a named checklist with exact commands. Then deploy (backend: pull, migrate if any, restart api/celery/beat; frontend if touched: `npm run build` + pm2 restart), and update the gate section.
 
-## Working notes for the agent
+## Owner decisions to surface early (don't guess)
 
-- Memory at `C:\Users\gezzo\.claude\projects\c--Users-gezzo-nxentra-app-nxentra-register\memory\` carries the user profile and project state. Read MEMORY.md early.
-- The user is on Windows with bash via Git for Windows. Use Unix shell syntax in Bash tool calls.
-- Production is on a DigitalOcean droplet (`/var/www/nxentra_app`). The user SSHs in to deploy. Frontend is Next.js + PM2 (`nxentra-web`); backend is gunicorn + Django + Celery + PM2 (`nxentra-api`, `nxentra-celery`, `nxentra-celery-beat`). After A18 ships, deploys should follow the runbook.
-- Aljazeera7 (slug `aljazeera7`, store `aljazeera7-store.myshopify.com`) is the dry-run merchant. Aljazeera5 is older test data. Don't confuse them.
-- Test command: `cd backend && python -m pytest tests/<file>.py --tb=short` (drop `-x` when surveying broadly; use it when iterating on a single failure).
-- Frontend typecheck: `cd frontend && npx tsc --noEmit; echo "EXIT=$?"`.
-- Pre-commit hooks (ruff + ruff-format) often reformat files; if commit fails on hook reformat, re-stage the modified files and retry.
-- Default to small commits per ticket with the `Co-Authored-By: Claude Opus 4.7 (1M context)` trailer (HEREDOC pattern in CLAUDE.md).
-- Push to `origin/main` only when the user confirms — they push after each commit individually.
-- For UI changes, the user runs the dev server in the browser and verifies; agent does not have UI access.
-- The projection write-barrier (`JournalLine` save-guard) has a TESTING-mode bypass — meaning unit tests pass even when production code violates the guard. **When fixing model-write code paths, manually test in production-mode (or remove the bypass for a focused test run).** This is how A19's auto-match crash slipped through.
-
----
-
-## What "done" looks like for this session
-
-Either:
-
-(a) **Tier-1 fix list shipped + dry-run re-run green + first invite sent.** Brief SESSION_LOG entry covering "A18-A26 shipped, dry-run re-run found N residual issues, all fixed, first user invited on YYYY-MM-DD" + commit hash list. **Strongly preferred outcome.**
-
-(b) **Some of the Tier-1 list shipped, dry-run partially re-run, one or two more sessions needed.** Acceptable if the priority items (A19, A20, A21, A23) are green and the remainder are clearly scoped. The invite slips by 1-2 days.
-
-(c) **A deeper architectural issue surfaces** (transaction-isolation rabbit hole on A23, projection-rebuild correctness, RLS interaction). File as a new ticket, fix at root cause, push the invite to the next session. Acceptable but requires explicit "OK to delay" from the user.
-
-(d) **Engineering succeeds but invite slips for non-engineering reasons.** *Not* acceptable — name it, don't ship around it. The codebase has been ahead of the customer for 6 months; closing that gap is the work.
-
----
-
-## After the first user is live — what changes
-
-(unchanged from prior session prompt)
-
-- The **first 90 days are paid in feedback, not money.** Bi-weekly 10-15 min calls, WhatsApp support during Cairo business hours. See [docs/onboarding/welcome.md](docs/onboarding/welcome.md) for the contract.
-- **Hard cap at 5 design-partner merchants** in the first month. Don't post in Shopify Egypt Facebook / LinkedIn until the first 3 are stable.
-- **Hire #1 trigger: customer #3 signs.** Mid-senior Django engineer. Codebase documented well enough for 1-2 week onboarding. ~$60-90K MENA, $120-150K remote-EE. Affordable from $5K MRR.
-- **Build billing when:** first user crosses 60-day mark and you can see usage patterns, OR a second prospect asks to pay, OR Shopify App Store submission requires it.
-
-The path from here is execution, not engineering. The agent should resist "let me also build X" temptations and keep redirecting to Tier-1 fixes + dry-run re-run + invite + customer conversations.
+1. A158: guard the legacy matcher vs retire /banking now (guard is the default in this batch).
+2. A155: raise-vs-cleanup semantics for failed voids (raise-inside-atomic recommended).
+3. A124: immutable-event PII policy (documented lawful-basis exception recommended as v1).
+4. M-track (not this session's code, but runs in parallel): the pilot price for M2 conversations.
