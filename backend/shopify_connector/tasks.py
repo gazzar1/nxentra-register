@@ -174,8 +174,132 @@ def _sync_store(store, lookback_hours: int) -> dict:
         logger.error("Product sync failed for %s: %s", store.shop_domain, e)
         result["products"] = {"status": "error", "error": str(e)}
 
+    # 4. A159: refund catch-up. The webhook view can drop refunds (it used
+    # to blanket-200 even on failure) and step 1's created_at window can
+    # never see a refund issued against an order created before the
+    # lookback — this pass searches by updated_at + financial_status and
+    # is the durable recovery path for both.
+    try:
+        result["refunds"] = _sync_refunds(store, min_date, max_date)
+    except Exception as e:
+        logger.error("Refund catch-up failed for %s: %s", store.shop_domain, e)
+        result["refunds"] = {"status": "error", "error": str(e)}
+
     result["status"] = "ok"
     return result
+
+
+def _sync_refunds(store, updated_at_min: str, updated_at_max: str) -> dict:
+    """A159: durable refund recovery. Finds orders whose refund state
+    changed in the window (updated_at search — catches refunds on orders
+    created long before the lookback), books the parent order first if it
+    was never seen (refund-before-order), then backfills its refunds via
+    the idempotent process_refund."""
+    from .commands import _admin_client, process_order_paid
+
+    client = _admin_client(store)
+    if not client:
+        return {"status": "error", "error": "Token expired or revoked — please reconnect the store."}
+
+    scanned = 0
+    refunds_created = 0
+    errors = 0
+    for order_payload in client.iter_refunded_orders(updated_at_min, updated_at_max):
+        scanned += 1
+        shopify_order_id = order_payload.get("id")
+        if not shopify_order_id:
+            continue
+        # Cancelled orders route through process_order_cancelled in step 1;
+        # booking revenue for them here would be wrong.
+        if order_payload.get("cancelled_at"):
+            continue
+
+        # Ensure the parent order is booked BEFORE the refund events emit —
+        # the projection's A41 defer window is 24h, so order-then-refund
+        # ordering within the same pass keeps stale refunds processable.
+        # process_order_paid is idempotent (skips already-booked orders).
+        try:
+            with transaction.atomic():
+                order_result = process_order_paid(store, order_payload)
+            if not order_result.success:
+                errors += 1
+                logger.warning(
+                    "[A159] Could not book parent order %s on %s before refund backfill: %s",
+                    shopify_order_id,
+                    store.shop_domain,
+                    order_result.error,
+                )
+                continue
+        except Exception as e:
+            errors += 1
+            logger.warning(
+                "[A159] Parent-order booking failed for %s on %s: %s",
+                shopify_order_id,
+                store.shop_domain,
+                e,
+            )
+            from django.db import connection
+
+            if connection.needs_rollback:
+                connection.rollback()
+            continue
+
+        refunds_created += _backfill_order_refunds(store, client, shopify_order_id)
+
+    return {"status": "ok", "scanned": scanned, "refunds_created": refunds_created, "errors": errors}
+
+
+def _backfill_order_refunds(store, client, shopify_order_id) -> int:
+    """A159: pull an order's refunds and book each via process_refund
+    (idempotent on shopify_refund_id — re-runs skip already-booked ones).
+
+    Best-effort by contract, mirroring _backfill_order_fulfillments: a
+    refund fetch/processing failure is logged and swallowed — it must
+    never roll back the order or abort the rest of the sync batch.
+    Returns the count of refunds newly booked.
+    """
+    from .commands import process_refund
+
+    try:
+        refunds = client.get_order_refunds(shopify_order_id)
+    except Exception as e:
+        logger.warning(
+            "[A159] Refund fetch failed for order %s on %s: %s",
+            shopify_order_id,
+            store.shop_domain,
+            e,
+        )
+        return 0
+
+    booked = 0
+    for refund in refunds:
+        try:
+            with transaction.atomic():
+                result = process_refund(store, refund)
+            if result.success and not (result.data and result.data.get("skipped")):
+                booked += 1
+            elif not result.success:
+                logger.warning(
+                    "[A159] Refund backfill failed for refund %s on order %s (%s): %s",
+                    refund.get("id"),
+                    shopify_order_id,
+                    store.shop_domain,
+                    result.error,
+                )
+        except Exception as e:
+            logger.warning(
+                "[A159] Refund backfill failed for refund %s on order %s (%s): %s",
+                refund.get("id"),
+                shopify_order_id,
+                store.shop_domain,
+                e,
+            )
+            from django.db import connection
+
+            if connection.needs_rollback:
+                connection.rollback()
+
+    return booked
 
 
 def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
@@ -207,6 +331,7 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
     skipped = 0
     errors = 0
     cogs_fulfillments = 0  # A125: COGS booked from backfilled fulfillments
+    refunds_backfilled = 0  # A159: refunds booked for first-seen-refunded orders
 
     # A52 (2026-05-15): diagnostic logging while we hunt down why re-sync(7d)
     # returns 0 orders despite orders existing in the store. Root cause found
@@ -322,6 +447,11 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
         # never roll back the already-booked order or break the batch.
         if booked_paid:
             cogs_fulfillments += _backfill_order_fulfillments(store, client, shopify_order_id)
+            # A159: an order first seen already-refunded needs its refunds
+            # backfilled too (its refunds/create webhooks were missed along
+            # with orders/paid). Same best-effort contract as fulfillments.
+            if (order_payload.get("financial_status") or "").lower() in ("refunded", "partially_refunded"):
+                refunds_backfilled += _backfill_order_refunds(store, client, shopify_order_id)
 
     # A52: warning when fetch returns nothing — likely indicates token/date/
     # API-version issue rather than a "genuinely zero orders" situation.
@@ -365,6 +495,7 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
         "skipped": skipped,
         "errors": errors,
         "cogs_fulfillments": cogs_fulfillments,
+        "refunds_backfilled": refunds_backfilled,
     }
 
 
@@ -417,13 +548,17 @@ def _pick_order_handler(order_payload, paid_handler, pending_handler, cancelled_
     """
     Decide which handler to call for a Shopify order based on its state.
 
-    Returns None for orders we deliberately skip (e.g. voided / refunded-only).
+    Returns None for orders we deliberately skip (e.g. voided).
     """
     if order_payload.get("cancelled_at"):
         return cancelled_handler
 
     financial_status = (order_payload.get("financial_status") or "").lower()
-    if financial_status in ("paid", "authorized", "partially_paid"):
+    # A159: an order first seen already-refunded must still book its revenue
+    # invoice (process_order_paid is idempotent) — the refund backfill then
+    # books the offsetting credit note. Previously these were skipped
+    # entirely: neither revenue nor refund ever hit the books.
+    if financial_status in ("paid", "authorized", "partially_paid", "refunded", "partially_refunded"):
         return paid_handler
     if financial_status == "pending":
         return pending_handler
