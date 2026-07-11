@@ -361,6 +361,53 @@ def _reconcile_payout_je(company, platform, payout_obj, bank_tx):
                 je_public_id,
             )
 
+    if not je and platform == "stripe":
+        # A158: the canonical Stripe pull emits PAYMENT_SETTLEMENT_RECEIVED
+        # and PaymentSettlementProjection posts the settlement JE — but
+        # nothing stamps StripePayout.journal_entry_id, so this matcher used
+        # to see it empty and post a SECOND JE (clearing credited 2× gross,
+        # fees double-expensed, bogus direct DR cash). Reuse the canonical
+        # settlement JE when it exists. If the settlement EVENT exists but
+        # its JE hasn't posted yet (celery lag / F27 quarantine), refuse to
+        # create the duplicate and report pending. Event-less payouts
+        # (webhook-era rows with no canonical settlement) fall through to
+        # the legacy create below.
+        from events.models import BusinessEvent
+        from events.types import EventTypes
+
+        batch_id = payout_obj.stripe_payout_id
+        settlement_je = JournalEntry.objects.filter(
+            company=company,
+            source_module="payment_settlement",
+            source_document=f"stripe:{batch_id}",
+            status=JournalEntry.Status.POSTED,
+        ).first()
+        if settlement_je:
+            je = settlement_je
+            # Stamp the read-model link so the payouts UI join shows the JE
+            # and the step-1 lookup short-circuits next time. Same
+            # established dual-write as the legacy stamp in
+            # _create_payout_je (pending the A3 reactor extraction).
+            payout_obj.journal_entry_id = settlement_je.public_id
+            payout_obj.save(update_fields=["journal_entry_id"])
+            logger.info(
+                "A158: reusing canonical settlement JE %s for stripe payout %s",
+                settlement_je.entry_number,
+                batch_id,
+            )
+        elif BusinessEvent.objects.filter(
+            company=company,
+            event_type=EventTypes.PAYMENT_SETTLEMENT_RECEIVED,
+            idempotency_key=f"payment.settlement.received:stripe:{batch_id}",
+        ).exists():
+            logger.warning(
+                "A158: stripe payout %s has a canonical settlement event but no "
+                "POSTED settlement JE yet (projection lag or quarantined in "
+                "/finance/exceptions) — refusing to post a duplicate legacy JE",
+                batch_id,
+            )
+            return {"je_status": "canonical_settlement_pending", "je_id": None, "reconciled": False}
+
     if not je:
         # A100 (2026-05-26): _create_payout_je calls platform_connectors.je_builder
         # which uses JournalEntry.objects.projection().create() — that path
@@ -394,11 +441,34 @@ def _reconcile_payout_je(company, platform, payout_obj, bank_tx):
         [(l.line_no, l.account.code, l.account.role, l.reconciled) for l in all_lines],
     )
 
+    is_settlement_je = je.source_module == "payment_settlement"
+
     cash_line = None
     for l in all_lines:
         if l.account.role == "LIQUIDITY" and not l.reconciled:
+            # A158: on a canonical settlement JE, BOTH the EBD debit and the
+            # clearing credit carry role LIQUIDITY. Only the debit (cash-in)
+            # side may be flagged by a bank match — without this, a payout
+            # whose EBD line the canonical engine already cleared would get
+            # its clearing CREDIT line falsely reconciled.
+            if is_settlement_je and not l.debit > 0:
+                continue
             cash_line = l
             break
+
+    if not cash_line and is_settlement_je:
+        # The canonical engine already reconciled the EBD line — nothing
+        # left for the legacy matcher to flag. Never fall through to the
+        # generic debit>0 fallback (it would grab the fees expense line).
+        logger.info(
+            "A158: settlement JE %s already reconciled by the canonical engine — no action",
+            je.entry_number,
+        )
+        return {
+            "je_status": "already_reconciled",
+            "je_id": str(je.public_id),
+            "reconciled": False,
+        }
 
     if not cash_line:
         # Fallback: find by debit > 0 (most payouts are positive)
