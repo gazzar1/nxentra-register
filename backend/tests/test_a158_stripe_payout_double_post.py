@@ -149,7 +149,7 @@ class TestCanonicalReuse:
     def test_auto_match_reuses_canonical_je_no_duplicate(self, company, canonical_payout, gl_bank_account):
         """THE regression: pull-synced payout + /banking Auto-Match must
         produce exactly ONE accounting result."""
-        bank_account, tx = _bank_tx(company, gl_bank_account, Decimal("94.10"))
+        bank_account, _tx = _bank_tx(company, gl_bank_account, Decimal("94.10"))
 
         with projection_writes_allowed():
             result = auto_match_transactions(company, bank_account.id)
@@ -176,7 +176,7 @@ class TestCanonicalReuse:
         assert ebd_line.reconciled is True
 
     def test_rerun_is_idempotent(self, company, canonical_payout, gl_bank_account):
-        bank_account, tx = _bank_tx(company, gl_bank_account, Decimal("94.10"))
+        bank_account, _tx = _bank_tx(company, gl_bank_account, Decimal("94.10"))
         with projection_writes_allowed():
             auto_match_transactions(company, bank_account.id)
             auto_match_transactions(company, bank_account.id)
@@ -195,7 +195,7 @@ class TestCanonicalReuse:
         with projection_writes_allowed():
             JournalLine.objects.filter(entry=settlement_je, account=ebd).update(reconciled=True)
 
-        bank_account, tx = _bank_tx(company, gl_bank_account, Decimal("94.10"))
+        _bank_account, tx = _bank_tx(company, gl_bank_account, Decimal("94.10"))
         with projection_writes_allowed():
             je_result = _reconcile_payout_je(company, "stripe", canonical_payout, tx)
 
