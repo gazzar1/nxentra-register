@@ -571,15 +571,62 @@ class BalanceSheetView(DimensionFilterMixin, APIView):
         """Get balance sheet from current projected balances."""
         from datetime import date
 
+        from accounting.models import Account
+
         balances = (
             AccountBalance.objects.filter(
                 company=actor.company,
+                # A176: match period mode — statistical/off-balance accounts
+                # are excluded from the balance sheet.
+                account__ledger_domain=Account.LedgerDomain.FINANCIAL,
             )
             .select_related("account")
             .order_by("account__code")
         )
 
-        return self._build_balance_sheet_response(actor, balances, date.today().isoformat())
+        # A176: fold unclosed P&L into equity as Current Year Earnings.
+        # AccountBalance.balance is normal-balance-signed (same convention
+        # as IncomeStatementView's current mode).
+        net_income = Decimal("0.00")
+        for bal in balances:
+            acct_type = bal.account.account_type
+            if acct_type == Account.AccountType.REVENUE:
+                net_income += bal.balance
+            elif acct_type == Account.AccountType.CONTRA_REVENUE or acct_type == Account.AccountType.EXPENSE:
+                net_income -= bal.balance
+            elif acct_type == Account.AccountType.CONTRA_EXPENSE:
+                net_income += bal.balance
+
+        return self._build_balance_sheet_response(actor, balances, date.today().isoformat(), net_income=net_income)
+
+    def _current_year_earnings_row(self, actor, net_income):
+        """A176: presentation-only equity row for unclosed P&L net income.
+
+        Sources code/name from the seeded CURRENT_YEAR_EARNINGS-role account
+        (33000 on seeded tenants). Pure read — no JE, no write to the
+        account, no event; the only real CYE transfer remains the year-end
+        close to retained earnings.
+        """
+        from accounting.models import Account
+
+        cye_account = (
+            Account.objects.filter(
+                company=actor.company,
+                role=Account.AccountRole.CURRENT_YEAR_EARNINGS,
+                is_header=False,
+            )
+            .order_by("code")
+            .first()
+        )
+        return {
+            "code": cye_account.code if cye_account else "3999",
+            "name": cye_account.name if cye_account else "Current Year Earnings",
+            "name_ar": (cye_account.name_ar or cye_account.name) if cye_account else "أرباح السنة الحالية",
+            "balance": str(net_income),
+            "is_header": False,
+            "level": 0,
+            "is_synthetic": True,
+        }
 
     def _get_period_balance_sheet(
         self, actor, fiscal_year: int, period_from: int, period_to: int, dimension_filters=None
@@ -657,8 +704,13 @@ class BalanceSheetView(DimensionFilterMixin, APIView):
 
             entry_date = datetime.fromisoformat(entry_date_str).date()
 
-            # Only include entries within the selected period range
-            if entry_date < period_start_date or entry_date > as_of_date:
+            # A176: a balance sheet is a cumulative "as of" statement —
+            # accumulate ALL activity from inception through the end of
+            # period_to. The old lower bound (entry_date < period_start_date)
+            # turned a period-3 balance sheet into period-3 MOVEMENT and
+            # dropped all prior history (opening cash/AR/AP/equity wrong).
+            # period_from remains in the response for API compatibility.
+            if entry_date > as_of_date:
                 continue
 
             lines = event.get_data().get("lines", [])
@@ -711,6 +763,17 @@ class BalanceSheetView(DimensionFilterMixin, APIView):
             Account.AccountType.EQUITY,
             Account.AccountType.CONTRA_EQUITY,
         }
+        # A176: unclosed P&L activity must appear in equity as Current Year
+        # Earnings — the old loop silently dropped these accounts, so an
+        # ordinary Dr Asset / Cr Revenue posting made the statement report
+        # itself out of balance until year-end close.
+        pnl_types = {
+            Account.AccountType.REVENUE,
+            Account.AccountType.CONTRA_REVENUE,
+            Account.AccountType.EXPENSE,
+            Account.AccountType.CONTRA_EXPENSE,
+        }
+        net_income = Decimal("0.00")
 
         for acc in account_data.values():
             # Calculate balance based on normal balance direction
@@ -718,6 +781,13 @@ class BalanceSheetView(DimensionFilterMixin, APIView):
                 balance = acc["debit_total"] - acc["credit_total"]
             else:
                 balance = acc["credit_total"] - acc["debit_total"]
+
+            # A176: raw credit-minus-debit keeps contra handling automatic.
+            # Closed years self-cancel: each CLOSING entry zeroes the P&L
+            # accounts as of its Dec 31 date.
+            if acc["account_type"] in pnl_types:
+                net_income += acc["credit_total"] - acc["debit_total"]
+                continue
 
             # Skip accounts with zero balance
             if balance == 0:
@@ -758,6 +828,12 @@ class BalanceSheetView(DimensionFilterMixin, APIView):
         liabilities.sort(key=lambda x: x["code"])
         equity.sort(key=lambda x: x["code"])
 
+        # A176: fold unclosed net income into equity (after the sort so the
+        # synthetic row stays last).
+        if net_income != 0:
+            equity.append(self._current_year_earnings_row(actor, net_income))
+            total_equity += net_income
+
         # Calculate combined totals
         total_liabilities_and_equity = total_liabilities + total_equity
 
@@ -770,6 +846,7 @@ class BalanceSheetView(DimensionFilterMixin, APIView):
                 "fiscal_year": fiscal_year,
                 "period_from": period_from,
                 "period_to": period_to,
+                "current_year_earnings": str(net_income),
                 "assets": {
                     "title": "Total Assets",
                     "title_ar": "إجمالي الأصول",
@@ -796,8 +873,13 @@ class BalanceSheetView(DimensionFilterMixin, APIView):
             }
         )
 
-    def _build_balance_sheet_response(self, actor, balances, as_of_date: str):
-        """Build balance sheet response from balance queryset."""
+    def _build_balance_sheet_response(self, actor, balances, as_of_date: str, net_income=None):
+        """Build balance sheet response from balance queryset.
+
+        A176: ``net_income`` (unclosed P&L activity, computed by the caller
+        from the same balances) is presented as a synthetic Current Year
+        Earnings equity row so the statement balances mid-year.
+        """
         from accounting.models import Account
 
         assets = []
@@ -855,6 +937,11 @@ class BalanceSheetView(DimensionFilterMixin, APIView):
                 else:
                     total_equity += bal.balance
 
+        # A176: fold unclosed net income into equity.
+        if net_income:
+            equity.append(self._current_year_earnings_row(actor, net_income))
+            total_equity += net_income
+
         # Calculate combined totals
         total_liabilities_and_equity = total_liabilities + total_equity
 
@@ -864,6 +951,7 @@ class BalanceSheetView(DimensionFilterMixin, APIView):
         return Response(
             {
                 "as_of_date": as_of_date,
+                "current_year_earnings": str(net_income if net_income is not None else Decimal("0.00")),
                 "assets": {
                     "title": "Total Assets",
                     "title_ar": "إجمالي الأصول",
