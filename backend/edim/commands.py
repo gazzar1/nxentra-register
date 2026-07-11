@@ -1440,6 +1440,9 @@ def commit_batch(
             lines=lines,
             currency=entry_currency,
             exchange_rate=str(entry_exchange_rate) if entry_exchange_rate else None,
+            # A177: stable request identity — re-processing the same staging
+            # record returns the original JE instead of duplicating.
+            request_id=f"edim:{batch.public_id}:{record.pk}",
         )
         if not result.success:
             raise ValueError(f"Failed to create journal entry: {result.error}")

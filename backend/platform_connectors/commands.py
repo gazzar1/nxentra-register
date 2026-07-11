@@ -333,6 +333,9 @@ def create_and_post_settlement(
         lines=je_lines,
         kind="NORMAL",
         currency=currency,
+        # A177: stable request identity — a crash after post but before the
+        # settlement stamp below no longer double-posts on retry.
+        request_id=f"platform_settlement:{platform}:{platform_document_id}",
     )
 
     if not result.success:

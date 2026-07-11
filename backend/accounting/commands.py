@@ -143,6 +143,48 @@ def _idempotency_hash(prefix: str, payload: dict) -> str:
     return f"{prefix}:{digest}"
 
 
+def _je_content_hash(company, event_data: dict) -> str:
+    """A177: full-identity content hash of a journal_entry.created payload.
+
+    Covers everything that distinguishes one legitimate entry from another —
+    period, source document/module, per-line counterparties, dimensions —
+    the fields the old 8-field hash omitted, causing distinct entries to
+    collide. Excludes volatile per-invocation fields (entry_public_id,
+    created_by_id) so a true retry of the same request hashes identically.
+    Stamped into event metadata so same-key/different-payload reuse stays
+    detectable across projection rebuilds.
+    """
+    payload = {k: v for k, v in event_data.items() if k not in ("entry_public_id", "created_by_id")}
+    payload["company_public_id"] = str(company.public_id)
+    return _idempotency_hash("journal_entry.content", payload)
+
+
+def _return_original_je_or_conflict(actor: ActorContext, existing_event, content_hash: str) -> CommandResult:
+    """A177: a request_id retry hit an already-emitted journal_entry.created
+    event. True retry (identical payload) -> return the ORIGINAL entry;
+    same key with a different payload -> refuse loudly (never overwrite,
+    never silently return someone else's entry)."""
+    stored_hash = (existing_event.metadata or {}).get("content_hash")
+    if stored_hash is None:
+        # Pre-A177 events carry no metadata hash — recompute from the payload.
+        stored_hash = _je_content_hash(actor.company, existing_event.get_data())
+    if stored_hash != content_hash:
+        return CommandResult.fail(
+            "Idempotency conflict: this request ID was already used to create a "
+            "journal entry with a different payload; refusing to create or overwrite."
+        )
+
+    original_public_id = existing_event.get_data().get("entry_public_id")
+    _process_projections(actor.company)
+    with rls_bypass():
+        entry = JournalEntry.objects.filter(company=actor.company, public_id=original_public_id).first()
+    if entry is None:
+        return CommandResult.fail(
+            "This request ID already created a journal entry, but it is not yet projected; retry shortly."
+        )
+    return CommandResult.ok(entry, event=existing_event)
+
+
 def _next_company_sequence(company, name: str) -> int:
     """
     Allocate the next sequence value for a company/name pair.
@@ -621,6 +663,7 @@ def create_journal_entry(
     period: int = None,
     source_module: str = "",
     source_document: str = "",
+    request_id: str | None = None,
 ) -> CommandResult:
     """
     Create a new journal entry.
@@ -632,6 +675,12 @@ def create_journal_entry(
         memo_ar: Arabic memo
         lines: List of line dicts with account_id, description, debit, credit
         kind: Entry kind (NORMAL, OPENING, ADJUSTMENT, etc.)
+        request_id: A177 — optional caller-stable request identity. When
+            provided, a true retry returns the ORIGINAL entry (no false
+            failure, no duplicate) and reusing the same request_id with a
+            different payload is rejected. Without it, every invocation is
+            a new aggregate — distinct legitimate entries (including
+            byte-identical ones) never collide.
 
     Returns:
         CommandResult with created JournalEntry or error
@@ -705,42 +754,50 @@ def create_journal_entry(
             )
             line_no += 1
 
-    normalized_lines = []
-    if lines:
-        for idx, line in enumerate(lines, start=1):
-            debit = line.get("debit", 0)
-            credit = line.get("credit", 0)
-            if debit == 0 and credit == 0:
-                continue
-            normalized_lines.append(
-                {
-                    "line_no": idx,
-                    "account_id": line.get("account_id"),
-                    "description": line.get("description", ""),
-                    "description_ar": line.get("description_ar", ""),
-                    "debit": str(debit),
-                    "credit": str(credit),
-                    "amount_currency": str(line.get("amount_currency"))
-                    if line.get("amount_currency") is not None
-                    else None,
-                    "currency": line.get("currency"),
-                    "exchange_rate": str(line.get("exchange_rate")) if line.get("exchange_rate") is not None else None,
-                }
-            )
+    event_data = JournalEntryCreatedData(
+        entry_public_id=str(entry_public_id),
+        date=date.isoformat() if hasattr(date, "isoformat") else str(date),
+        memo=memo,
+        memo_ar=memo_ar,
+        kind=kind,
+        status=JournalEntry.Status.INCOMPLETE,
+        period=period,
+        currency=entry_currency,
+        exchange_rate=str(entry_exchange_rate),
+        created_by_id=actor.user.id,
+        lines=line_data,
+        source_module=source_module,
+        source_document=source_document,
+    ).to_dict()
 
-    idempotency_key = _idempotency_hash(
-        "journal_entry.created",
-        {
-            "company_public_id": str(actor.company.public_id),
-            "date": date.isoformat() if hasattr(date, "isoformat") else str(date),
-            "memo": memo,
-            "memo_ar": memo_ar,
-            "kind": kind,
-            "currency": entry_currency,
-            "exchange_rate": str(entry_exchange_rate),
-            "lines": normalized_lines,
-        },
-    )
+    # A177: full-identity content hash (period, source doc/module, line
+    # counterparties + dimensions included — the old 8-field hash omitted
+    # them, so distinct legitimate entries collided and were suppressed).
+    content_hash = _je_content_hash(actor.company, event_data)
+
+    if request_id:
+        # Caller-supplied stable request identity: a true retry maps to the
+        # SAME key and returns the original entry below.
+        digest = hashlib.sha256(request_id.encode("utf-8")).hexdigest()[:32]
+        idempotency_key = f"journal_entry.created:req:{digest}"
+
+        from events.models import BusinessEvent
+
+        existing = BusinessEvent.objects.filter(
+            company=actor.company,
+            idempotency_key=idempotency_key,
+        ).first()
+        if existing is not None:
+            return _return_original_je_or_conflict(actor, existing, content_hash)
+    else:
+        # A177: aggregate-scoped key — every invocation mints a new
+        # aggregate, so distinct legitimate entries (byte-identical ones
+        # included) can never collide. Crash safety is unchanged:
+        # @transaction.atomic rolls the event back with the command. The
+        # previous content-subset hash both suppressed legitimate entries
+        # AND made true retries return the old event then false-fail on the
+        # fresh-UUID lookup.
+        idempotency_key = f"journal_entry.created:{entry_public_id}"
 
     # Emit event
     event = emit_event(
@@ -749,22 +806,14 @@ def create_journal_entry(
         aggregate_type="JournalEntry",
         aggregate_id=str(entry_public_id),
         idempotency_key=idempotency_key,
-        data=JournalEntryCreatedData(
-            entry_public_id=str(entry_public_id),
-            date=date.isoformat() if hasattr(date, "isoformat") else str(date),
-            memo=memo,
-            memo_ar=memo_ar,
-            kind=kind,
-            status=JournalEntry.Status.INCOMPLETE,
-            period=period,
-            currency=entry_currency,
-            exchange_rate=str(entry_exchange_rate),
-            created_by_id=actor.user.id,
-            lines=line_data,
-            source_module=source_module,
-            source_document=source_document,
-        ).to_dict(),
+        data=event_data,
+        metadata={"content_hash": content_hash},
     )
+
+    # A177: concurrent same-request_id race — both calls passed the
+    # pre-check, the emitter deduped to the earlier event.
+    if str(event.aggregate_id) != str(entry_public_id):
+        return _return_original_je_or_conflict(actor, event, content_hash)
 
     _process_projections(actor.company)
     try:
