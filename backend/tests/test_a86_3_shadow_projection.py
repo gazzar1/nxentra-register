@@ -556,10 +556,10 @@ def test_reconciliation_projection_is_registered():
     assert isinstance(proj, ReconciliationProjection)
 
 
-def test_reconciliation_projection_consumes_all_six_event_types():
-    """The consumes list covers every event type defined in A86.2 —
-    if A86 ever adds another event type, this test fails until the
-    projection is updated."""
+def test_reconciliation_projection_consumes_all_seven_event_types():
+    """The consumes list covers every registered reconciliation event —
+    if the bounded context ever adds another event type, this test fails
+    until the projection is updated. (A180 added difference_resolved.)"""
     proj = ReconciliationProjection()
     consumes = set(proj.consumes)
     expected = {
@@ -567,6 +567,7 @@ def test_reconciliation_projection_consumes_all_six_event_types():
         EventTypes.RECONCILIATION_MATCH_CONFIRMED,
         EventTypes.RECONCILIATION_MATCH_REJECTED,
         EventTypes.RECONCILIATION_MATCH_UNMATCHED,
+        EventTypes.RECONCILIATION_DIFFERENCE_RESOLVED,
         EventTypes.RECONCILIATION_EXCEPTION_RAISED,
         EventTypes.RECONCILIATION_EXCEPTION_RESOLVED,
     }
