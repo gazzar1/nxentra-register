@@ -1613,49 +1613,32 @@ def void_sales_invoice(
     if not invoice.posted_journal_entry:
         return CommandResult.fail("Invoice has no posted journal entry.")
 
-    # Create reversing journal entry
-    # (swap debits and credits from original)
-    original_je = invoice.posted_journal_entry
-    je_lines = []
+    # A155: route through the canonical counterparty-preserving reversal
+    # core. The previous hand-rolled DRAFT-REVERSAL-then-post path could
+    # never complete (post_journal_entry rejects kind=REVERSAL) and its
+    # return-based failure COMMITTED the orphan DRAFT + events. The core
+    # posts the reversal at the ORIGINAL entry's date/period and marks the
+    # original REVERSED with cross-links.
+    from accounting.commands import VoidReversalError, _reverse_posted_journal_entry
 
-    for original_line in original_je.lines.all():
-        je_lines.append(
-            {
-                "account_id": original_line.account_id,
-                "description": f"Reversal: {original_line.description}",
-                "debit": original_line.credit,  # Swap
-                "credit": original_line.debit,  # Swap
-                "customer_public_id": str(original_line.customer.public_id) if original_line.customer else None,
-                "vendor_public_id": str(original_line.vendor.public_id) if original_line.vendor else None,
-            }
-        )
-
-    # Create reversal entry
-    je_result = create_journal_entry(
-        actor=actor,
-        date=timezone.now().date(),
-        memo=f"Void Invoice {invoice.invoice_number}: {reason}" if reason else f"Void Invoice {invoice.invoice_number}",
-        lines=je_lines,
-        kind=JournalEntry.Kind.REVERSAL,
+    memo_context = (
+        f"Void Invoice {invoice.invoice_number}: {reason}" if reason else f"Void Invoice {invoice.invoice_number}"
     )
+    try:
+        with transaction.atomic():
+            reverse_result = _reverse_posted_journal_entry(
+                actor,
+                invoice.posted_journal_entry_id,
+                memo_context=memo_context,
+            )
+            if not reverse_result.success:
+                # Raise inside the savepoint so nothing a partial reversal
+                # wrote (entries, events, sequence increments) survives.
+                raise VoidReversalError(reverse_result.error)
+    except VoidReversalError as exc:
+        return CommandResult.fail(f"Failed to reverse journal entry: {exc}")
 
-    if not je_result.success:
-        return CommandResult.fail(f"Failed to create reversal entry: {je_result.error}")
-
-    reversal_je = je_result.data  # create_journal_entry returns entry directly
-
-    # Transition reversal entry from INCOMPLETE to DRAFT
-    save_result = save_journal_entry_complete(actor, reversal_je.id)
-    if not save_result.success:
-        return CommandResult.fail(f"Failed to complete reversal entry: {save_result.error}")
-
-    # Refresh the journal entry after save_complete
-    reversal_je = save_result.data
-
-    # Post the reversal
-    post_result = post_journal_entry(actor, reversal_je.id)
-    if not post_result.success:
-        return CommandResult.fail(f"Failed to post reversal entry: {post_result.error}")
+    reversal_je = reverse_result.data["reversal"]
 
     voided_at = timezone.now()
 
@@ -2052,14 +2035,29 @@ def void_credit_note(
     if not cn.posted_journal_entry:
         return CommandResult.fail("Credit note has no posted journal entry to reverse.")
 
-    # Create reversing entry
-    from accounting.commands import reverse_journal_entry
+    # A155: route through the canonical reversal core (the void's own
+    # permission subsumes reversing its document's JE), inside a savepoint
+    # so a failed attempt leaves nothing behind. The old code also read
+    # reverse_result.data.public_id, but the command returns a dict
+    # {"original": ..., "reversal": ...} — AttributeError on every void.
+    from accounting.commands import VoidReversalError, _reverse_posted_journal_entry
 
-    reverse_result = reverse_journal_entry(actor, cn.posted_journal_entry.id)
-    if not reverse_result.success:
-        return CommandResult.fail(f"Failed to reverse journal entry: {reverse_result.error}")
+    memo_context = (
+        f"Void Credit Note {cn.credit_note_number}: {reason}" if reason else f"Void Credit Note {cn.credit_note_number}"
+    )
+    try:
+        with transaction.atomic():
+            reverse_result = _reverse_posted_journal_entry(
+                actor,
+                cn.posted_journal_entry_id,
+                memo_context=memo_context,
+            )
+            if not reverse_result.success:
+                raise VoidReversalError(reverse_result.error)
+    except VoidReversalError as exc:
+        return CommandResult.fail(f"Failed to reverse journal entry: {exc}")
 
-    reversal_je = reverse_result.data
+    reversal_je = reverse_result.data["reversal"]
 
     voided_at = timezone.now()
 
