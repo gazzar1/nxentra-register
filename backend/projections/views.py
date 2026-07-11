@@ -2940,6 +2940,12 @@ class AdminProjectionDetailView(APIView):
         return Response(response_data)
 
 
+# A154: the synchronous admin rebuild blocks a web worker for the whole
+# replay. Streams larger than this must go through the management command
+# or the celery rebuild task. Tests monkeypatch this constant.
+ADMIN_SYNC_REBUILD_MAX_EVENTS = 5000
+
+
 class AdminProjectionRebuildView(APIView):
     """
     POST /api/admin/projections/<name>/rebuild/
@@ -2947,8 +2953,9 @@ class AdminProjectionRebuildView(APIView):
     Trigger a rebuild for a specific projection.
     Admin only.
 
-    This is a synchronous operation that blocks until complete.
-    For very large datasets, use the management command instead.
+    This is a synchronous operation that blocks until complete. Streams
+    larger than ADMIN_SYNC_REBUILD_MAX_EVENTS are refused (400) — use the
+    management command instead.
 
     Request body:
         - force: bool (optional) - Force rebuild even if already rebuilding
@@ -2960,13 +2967,10 @@ class AdminProjectionRebuildView(APIView):
         import logging
         import time
 
-        from django.db import transaction
-
         from accounts.rls import rls_bypass
-        from events.models import BusinessEvent, EventBookmark
+        from events.models import BusinessEvent
         from projections.base import projection_registry
-        from projections.models import ProjectionAppliedEvent, ProjectionStatus
-        from projections.write_barrier import projection_writes_allowed
+        from projections.models import ProjectionStatus
 
         logger = logging.getLogger(__name__)
 
@@ -3026,55 +3030,51 @@ class AdminProjectionRebuildView(APIView):
                     }
                 )
 
+            # A154: this view blocks a web worker for the whole replay —
+            # refuse large streams instead of stalling the process.
+            if total_events > ADMIN_SYNC_REBUILD_MAX_EVENTS:
+                return Response(
+                    {
+                        "detail": (
+                            f"{total_events:,} events exceeds the synchronous rebuild cap "
+                            f"({ADMIN_SYNC_REBUILD_MAX_EVENTS:,}). Run "
+                            f"`manage.py rebuild_projection --projection {name} --tenant {company.slug}` "
+                            f"(or the celery rebuild task) instead."
+                        ),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
             # Mark as rebuilding
             proj_status.mark_rebuild_started(total_events, requested_by=request.user)
 
             start_time = time.time()
 
             try:
-                # Step 1: Clear existing data
-                ProjectionAppliedEvent.objects.filter(
-                    company=company,
-                    projection_name=name,
-                ).delete()
-
-                # Clear the projection's own data
-                if hasattr(projection, "_clear_projected_data"):
-                    with projection_writes_allowed():
-                        projection._clear_projected_data(company)
-
-                # Reset bookmark
-                EventBookmark.objects.filter(
-                    consumer_name=name,
-                    company=company,
-                ).delete()
-
-                # Step 2: Replay events
-                events = (
-                    BusinessEvent.objects.filter(
-                        company=company,
-                        event_type__in=event_types,
-                    ).order_by("company_sequence")
-                    if event_types
-                    else BusinessEvent.objects.filter(company=company).order_by("company_sequence")
+                # A154: route through the canonical drain-to-zero rebuild.
+                # The previous implementation deleted ProjectionAppliedEvent
+                # + the bookmark and replayed with bare handle(), never
+                # re-stamping — the next normal process_pending pass then
+                # re-applied the whole stream and doubled accumulators.
+                processed = projection.rebuild(
+                    company,
+                    progress_callback=proj_status.update_progress,
                 )
 
-                processed = 0
-                last_sequence = None
-                batch_size = 100
+                remaining = projection.get_lag(company)
+                if remaining > 0:
+                    message = (
+                        f"Rebuild stalled with {remaining:,} unprocessed events "
+                        f"(an erroring or deferred event is blocking the stream)."
+                    )
+                    proj_status.mark_rebuild_error(message)
+                    return Response(
+                        {"detail": message},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    )
 
-                for event in events.iterator(chunk_size=batch_size):
-                    with transaction.atomic(), projection_writes_allowed():
-                        projection.handle(event)
-
-                    processed += 1
-                    last_sequence = event.company_sequence
-
-                    # Update progress periodically
-                    if processed % batch_size == 0:
-                        proj_status.update_progress(processed)
-
-                # Mark as complete
+                bookmark = projection.get_bookmark(company)
+                last_sequence = bookmark.last_event.company_sequence if bookmark and bookmark.last_event else None
                 proj_status.mark_rebuild_completed(last_event_sequence=last_sequence)
 
                 elapsed = time.time() - start_time

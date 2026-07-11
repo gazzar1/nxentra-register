@@ -12,6 +12,7 @@ Projections:
 
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from typing import cast
 
 from django.db import transaction
@@ -95,41 +96,91 @@ class BaseProjection(ABC):
         """
         pass
 
-    def rebuild(self, company: Company) -> int:
+    def rebuild(
+        self,
+        company: Company,
+        batch_size: int = 1000,
+        progress_callback: "Callable[[int], None] | None" = None,
+    ) -> int:
         """
         Rebuild this projection from scratch for a company.
 
-        Default implementation:
+        This is the ONE canonical rebuild path (A154): the CLI command, the
+        admin HTTP view, the celery task, and the tenant replay command must
+        all route through it. It replays via process_pending, which stamps
+        ProjectionAppliedEvent + the bookmark transactionally per event — so
+        the next normal process_pending pass after a rebuild is a no-op
+        (previous CLI/HTTP implementations replayed with bare handle() and
+        the next pass re-applied the whole stream, doubling accumulators).
+
         1. Reset bookmark to beginning
         2. Clear existing projected data
-        3. Process all relevant events
+        3. Drain ALL relevant events (loop until empty — a single batch left
+           >batch_size streams silently partial)
+
+        Args:
+            company: The company to rebuild for
+            batch_size: Events per process_pending pass
+            progress_callback: Optional callable receiving the cumulative
+                processed count after each pass (for status reporting)
 
         Returns:
             Number of events processed
         """
-        # Reset bookmark
-        bookmark, _ = EventBookmark.objects.get_or_create(
-            consumer_name=self.name,
-            company=company,
-        )
-        bookmark.last_event = None
-        bookmark.last_processed_at = None
-        bookmark.error_count = 0
-        bookmark.last_error = ""
-        bookmark.save()
+        from accounts.rls import rls_bypass as _rls_bypass
 
-        # Clear projected data (subclasses should override if needed)
-        with projection_writes_allowed():
-            self._clear_projected_data(company)
+        # The celery rebuild task and tenant replay call this directly, so
+        # the clear + bookmark reset need the same RLS bypass that
+        # process_pending establishes internally.
+        with _rls_bypass():
+            # Reset bookmark
+            bookmark, _ = EventBookmark.objects.get_or_create(
+                consumer_name=self.name,
+                company=company,
+            )
+            bookmark.last_event = None
+            bookmark.last_processed_at = None
+            bookmark.error_count = 0
+            bookmark.last_error = ""
+            bookmark.save()
 
-        # Clear applied-event markers for rebuild
-        ProjectionAppliedEvent.objects.filter(
-            company=company,
-            projection_name=self.name,
-        ).delete()
+            # Clear projected data (subclasses should override if needed)
+            with projection_writes_allowed():
+                self._clear_projected_data(company)
 
-        # Process all events
-        return self.process_pending(company)
+            # Clear applied-event markers for rebuild
+            ProjectionAppliedEvent.objects.filter(
+                company=company,
+                projection_name=self.name,
+            ).delete()
+
+            # Drain to zero
+            total = 0
+            prev_lag: int | None = None
+            while True:
+                processed = self.process_pending(company, limit=batch_size)
+                total += processed
+                if processed and progress_callback is not None:
+                    progress_callback(total)
+                if processed == 0:
+                    break
+                lag = self.get_lag(company)
+                if lag == 0:
+                    break
+                if prev_lag is not None and lag >= prev_lag:
+                    # An erroring or permanently deferred event is blocking
+                    # the stream (process_pending already recorded it via
+                    # bookmark.mark_error / ProjectionFailureLog). Stop
+                    # instead of spinning; the caller checks get_lag().
+                    logger.warning(
+                        "Projection %s rebuild stalled for %s with %d unprocessed events",
+                        self.name,
+                        company.name,
+                        lag,
+                    )
+                    break
+                prev_lag = lag
+            return total
 
     def _clear_projected_data(self, company: Company) -> None:
         """

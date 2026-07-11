@@ -333,6 +333,21 @@ class JournalEntryProjection(BaseProjection):
     def name(self) -> str:
         return "journal_entry_read_model"
 
+    def _clear_projected_data(self, company) -> None:
+        """A115/A154: clear the JE read model for rebuild. Without this
+        override the inherited no-op made `--rebuild journal_entry_read_model`
+        leave stale/orphan rows in place. JournalLine and JournalLineAnalysis
+        cascade from JournalEntry.
+
+        Known limitation (A110, deliberately out of scope): source-document
+        FKs to JournalEntry (SalesInvoice/PurchaseBill/PlatformSettlement
+        .posted_journal_entry, StockLedgerEntry.journal_entry, ...) are
+        SET_NULL. Replay recreates entries with the same public_id but new
+        pks, so those FKs stay NULL after a clearing rebuild — see
+        `relink_orphaned_je_fks` for the repair pass.
+        """
+        JournalEntry.objects.filter(company=company).delete()
+
     @property
     def consumes(self):
         return [
