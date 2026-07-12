@@ -24,6 +24,20 @@ Archive of completed items moved from NEXT_TASKS.md. See NEXT_TASKS.md for pendi
 
 New defects found during the batch, filed as P1 (A181-A185): auto-reversal helper payload mismatch; branch protection + ruff pin (two red-CI merges hotfixed same-session); pre-A180 resolution backfill; dormant-vertical fail-loud; /_health/full slug leak.
 
+## 2026-07-12 — Pilot-fortnight batch (pulled forward by owner, same session as the P0 gate)
+
+- A105 (+F21+F22, A106-partial) — 2026-07-12 — shipped — ProjectionFailureLog auto-resolves on self-heal (docstring promise implemented; terminal-skips stay open); /finance/exceptions in the Finance sidebar; OWNER/ADMIN can mark-resolved on both ends (resolved+resolved_at always set together) — PR #77
+- A165 — 2026-07-12 — shipped — manual EBD match posts the clearance JE like the prepass (guards: withdrawal, already-cleared batch, fail-loud rollback); mismatches land MATCHED_WITH_DIFFERENCE for the A16/A180 flow; unmatch reverses with zero changes — PR #78
+- A166 (+F4+F5) — 2026-07-12 — shipped — legacy /banking matcher retired (endpoints 410, raw unmatch/match killed, 800-line UI → redirect); EXCLUDED-restore survives; platform_payout_reconcile consumer kept for replay; recon_health flipped to BankStatementLine; read-only scan_stranded_platform_matches ops command; F4 deep-links repointed (Shopify Verify page deliberately kept) — PR #79
+- F16 — 2026-07-12 — shipped — AR tie-out excludes GATEWAY profiles + platform pseudo-customers on both sides (owner decision; rejected alternative recorded); run_reconciliation_check shares the validator's sums; A10 MANUAL semantics preserved with teeth; unblocks year close + backup restore — PR #80
+- F13 — 2026-07-12 — shipped — COD orders book COGS at collection (owner decision), dated paid_date with revenue promoted to the same date; refused parcels book nothing and reverse nothing; 4h sweep drains crash-stranded COGS_PENDING fulfillments; migration 0019 (choices-only) — PR #81
+- F18 — 2026-07-12 — shipped — receipts onto negative balances are value-continuous via shared inventory/costing.py (command + projection + verify use one formula; rebuilds converge); extinguishment variance books to P&L; FIFO layers net against the hole; adjust/opening paths fixed in lockstep — PR #82
+- A169 — 2026-07-12 — shipped — list_payouts cursor-paginates (full history, no silent 50-cap); list_payout_transactions fetches all pages (no silent 250-cap); verify_payout heals pre-fix frozen truncated caches; A120 unavailable contract pinned — PR #83
+- A83 — 2026-07-12 — shipped — aggregate Shopify customer carries the channel GATEWAY profile (fresh-create bind + migration-era heal in the short-circuit branch, never clobbering deliberate PG-* rebinding); A79 auto-fill guarded to MANUAL-listed profiles — PR #84
+- A48+A49+A56 — 2026-07-12 — shipped — uninstalled_at stamp (retry-safe, no duplicate DISCONNECTED events) + needs_reauth flag/banner (401/dead-refresh/non-expiring only; 403 stays quiet per A120) + OAuth savepoint/orphan-PENDING cleanup + hourly cleanup_stale_installs sweep; migration 0020 — PR #85
+
+New defects found during this batch, filed as P1 (A186-A188): unmatch→rematch clearance request_id staleness (both auto + manual paths); _fifo_consume zero-cost remainder on below-zero FIFO issues; bank_connector exception detectors keyed on retired legacy match state.
+
 ## From: Phase A — First-user unblock + foundation hardening
 
 ### A1. Phase 1 dry-run on fresh Shopify dev store — ✅ **DONE 2026-04-28**
