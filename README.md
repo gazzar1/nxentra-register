@@ -85,7 +85,7 @@ Run the deploy check: `python manage.py check --deploy` — must return **0 warn
 ### Services
 
 - **Backend**: Gunicorn/Uvicorn behind nginx with HTTPS
-- **Projection consumer**: `python manage.py run_projections --daemon --interval 5` (set `PROJECTIONS_SYNC=False`)
+- **Projections**: run synchronously in-process — `PROJECTIONS_SYNC=True` is REQUIRED in production and asserted at boot (A162). `run_projections --daemon` remains a catch-up supplement only.
 - **Celery worker**: `celery -A nxentra_backend worker -l info`
 - **Celery beat**: `celery -A nxentra_backend beat -l info`
 - **Frontend**: `npm run build && npm start` or deploy to Vercel

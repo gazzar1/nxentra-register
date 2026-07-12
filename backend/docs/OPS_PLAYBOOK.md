@@ -466,7 +466,10 @@ python manage.py replay_projections --company-slug acme-corp --rebuild
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DJANGO_DEBUG` | `False` | Debug mode |
+| `DEBUG` (or `DJANGO_DEBUG`) | `False` | Debug mode — production must set `False` explicitly; dev must set `True` (A162) |
+| `PROJECTIONS_SYNC` | — | REQUIRED `True` in production; asserted at boot (A162) |
+| `SENTRY_DSN` | — | REQUIRED in production (error reporting) |
+| `FIELD_ENCRYPTION_KEY` | — | REQUIRED in production (A47 credential encryption) |
 | `LOG_LEVEL` | `INFO` | Logging level |
 | `LOG_FORMAT` | `json` | `json` or `console` |
 | `TENANT_HEALTH_CHECK` | `error` | `error`, `warn`, `skip` |
