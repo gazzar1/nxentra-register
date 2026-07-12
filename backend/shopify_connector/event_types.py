@@ -150,6 +150,24 @@ class ShopifyDisputeWonData(FinancialEventData):
     chargeback_fee: str = "0"
 
 
+@dataclass
+class ShopifyGdprRequestCompletedData(BaseEventData):
+    """A124: audit record that a Shopify GDPR request completed for THIS
+    company. Emitted once per affected company; the cross-tenant evidence
+    lives on the GdprRequest row itself."""
+
+    gdpr_request_id: int = 0
+    topic: str = ""
+    shop_domain: str = ""
+    customer_id: str = ""
+    orders_matched: int = 0
+    records_scrubbed: int = 0
+    # Immutable-event lawful-basis exception (owner decision, 2026-07-11):
+    # events matching the shopper are counted, never rewritten.
+    events_exempted: int = 0
+    completed_at: str = ""
+
+
 # =============================================================================
 # REGISTERED_EVENTS — discovered by ProjectionsConfig.ready()
 # =============================================================================
@@ -163,4 +181,5 @@ REGISTERED_EVENTS: dict[str, type[BaseEventData]] = {
     EventTypes.SHOPIFY_ORDER_FULFILLED: ShopifyOrderFulfilledData,
     EventTypes.SHOPIFY_DISPUTE_CREATED: ShopifyDisputeCreatedData,
     EventTypes.SHOPIFY_DISPUTE_WON: ShopifyDisputeWonData,
+    EventTypes.SHOPIFY_GDPR_REQUEST_COMPLETED: ShopifyGdprRequestCompletedData,
 }

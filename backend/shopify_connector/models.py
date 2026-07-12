@@ -842,6 +842,9 @@ class GdprRequest(models.Model):
     received_at = models.DateTimeField(auto_now_add=True)
     processed_at = models.DateTimeField(null=True, blank=True)
     processing_notes = models.TextField(blank=True)
+    # A124: completion evidence — what was matched/scrubbed/exempted, per
+    # company. The compliance record the 30/90-day SLAs are answered with.
+    evidence = models.JSONField(default=dict, blank=True)
 
     class Meta:
         db_table = "shopify_gdpr_request"

@@ -2352,6 +2352,9 @@ class EventTypes:
     SHOPIFY_ORDER_FULFILLED = "shopify.order_fulfilled"
     SHOPIFY_DISPUTE_CREATED = "shopify.dispute_created"
     SHOPIFY_DISPUTE_WON = "shopify.dispute_won"
+    # A124: a GDPR request (data_request/redact/shop_redact) completed —
+    # the audit event backing the published-app 30/90-day SLAs.
+    SHOPIFY_GDPR_REQUEST_COMPLETED = "shopify.gdpr_request_completed"
 
     # Platform-agnostic commerce events (used by new platform connectors)
     PLATFORM_ORDER_PAID = "platform.order_paid"
