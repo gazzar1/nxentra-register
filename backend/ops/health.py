@@ -315,3 +315,86 @@ class FullHealthView(View):
 
         status_code = 200 if health["status"] == "healthy" else 503
         return JsonResponse(health, status=status_code)
+
+
+def compute_alert_state() -> dict:
+    """A163: the ONE alert condition an external uptime pinger watches.
+
+    Unhealthy when any financial/projection failure needs a human:
+    - unresolved ProjectionFailureLog rows (> ALERT_UNRESOLVED_FAILURES_MAX)
+    - relevance-aware projection lag (> ALERT_PROJECTION_LAG_THRESHOLD;
+      the pre-A135 coarse whole-stream count reported phantom lag and
+      would page on healthy systems)
+    - any paused or erroring projection bookmark
+
+    Runs in the WEB process — the Celery worker being dead is exactly the
+    failure class this must catch, so it cannot live in Celery. Pure
+    reads; aggregate-only output (the /_health/ prefix is auth-exempt).
+    """
+    from django.conf import settings
+
+    from accounts.rls import rls_bypass
+    from events.models import BusinessEvent, EventBookmark
+    from projections.base import projection_registry
+    from projections.models import ProjectionFailureLog
+
+    max_failures = int(getattr(settings, "ALERT_UNRESOLVED_FAILURES_MAX", 0))
+    lag_threshold = int(getattr(settings, "ALERT_PROJECTION_LAG_THRESHOLD", 50))
+
+    with rls_bypass():
+        unresolved = ProjectionFailureLog.objects.filter(resolved=False).count()
+
+        total_lag = 0
+        paused = 0
+        errored = 0
+        # company__isnull guard: EventBookmark.company is nullable and a
+        # global bookmark would AttributeError the naive metrics path.
+        bookmarks = EventBookmark.objects.filter(company__isnull=False).select_related("last_event")[:500]
+        for bookmark in bookmarks:
+            if bookmark.is_paused:
+                paused += 1
+            if bookmark.error_count > 0:
+                errored += 1
+            projection = projection_registry.get(bookmark.consumer_name)
+            if projection is None:
+                continue
+            relevant = BusinessEvent.objects.filter(
+                company_id=bookmark.company_id,
+                event_type__in=projection.consumes,
+            )
+            total = relevant.count()
+            if bookmark.last_event_id:
+                processed = relevant.filter(
+                    company_sequence__lte=bookmark.last_event.company_sequence,
+                ).count()
+            else:
+                processed = 0
+            total_lag += total - processed
+
+    healthy = unresolved <= max_failures and total_lag <= lag_threshold and paused == 0 and errored == 0
+    return {
+        "status": "healthy" if healthy else "unhealthy",
+        "unresolved_failures": unresolved,
+        "total_lag": total_lag,
+        "paused_consumers": paused,
+        "errored_consumers": errored,
+        "thresholds": {
+            "unresolved_failures_max": max_failures,
+            "projection_lag_threshold": lag_threshold,
+        },
+    }
+
+
+class AlertHealthView(View):
+    """A163: GET /_health/alerts — the endpoint an EXTERNAL uptime pinger
+    (UptimeRobot/BetterStack) polls so a projection failure or stalled
+    stream demonstrably reaches a human. 200 healthy / 503 unhealthy.
+
+    Deliberately separate from /_health/ready: readiness feeds load
+    balancers, and pulling a web process out of rotation because a
+    projection lags would make an accounting problem into an outage.
+    """
+
+    def get(self, request):
+        state = compute_alert_state()
+        return JsonResponse(state, status=200 if state["status"] == "healthy" else 503)

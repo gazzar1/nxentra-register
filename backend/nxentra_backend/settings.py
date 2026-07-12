@@ -527,3 +527,10 @@ VERSION = os.getenv("APP_VERSION", "dev")
 
 # Projection lag threshold for health checks
 PROJECTION_LAG_THRESHOLD = int(os.getenv("PROJECTION_LAG_THRESHOLD", "1000"))
+
+# A163: /_health/alerts thresholds — the endpoint the external uptime
+# pinger watches. Sized for relevance-aware lag (the old
+# PROJECTION_LAG_THRESHOLD=1000 was calibrated to the pre-A135 phantom-lag
+# counter and is useless as an alert level at pilot scale).
+ALERT_UNRESOLVED_FAILURES_MAX = int(os.getenv("ALERT_UNRESOLVED_FAILURES_MAX", "0"))
+ALERT_PROJECTION_LAG_THRESHOLD = int(os.getenv("ALERT_PROJECTION_LAG_THRESHOLD", "50"))

@@ -452,6 +452,26 @@ python manage.py replay_projections --company-slug acme-corp --rebuild
 
 ---
 
+## Minimal Alerting (A163)
+
+The Prometheus/Alertmanager configs under `ops/` are NOT wired (see
+`ops/README.md`). The real alert path:
+
+| Check | How | Cadence |
+|-------|-----|---------|
+| Process/DB up | External pinger on `GET /_health/ready` | 1-5 min |
+| Projection failure / lag / paused consumer | External pinger on `GET /_health/alerts` (503 = human needed; alert after 2 consecutive failures) | 5 min |
+| Unhandled exceptions | Sentry (`SENTRY_DSN` set in prod) + "any new issue -> email" alert rule | realtime |
+| Cron-able secondary | `python manage.py alert_check` (non-zero exit when unhealthy) | as scheduled |
+
+Thresholds: `ALERT_UNRESOLVED_FAILURES_MAX` (default 0),
+`ALERT_PROJECTION_LAG_THRESHOLD` (default 50, relevance-aware lag).
+
+**Forced-failure drill (record evidence in SESSION_LOG):**
+1. Stop gunicorn -> pinger fires on `/_health/ready` -> named human notified (record minutes-to-notification); restart.
+2. Force a projection failure (e.g. delete a required ModuleAccountMapping on a throwaway company and replay one event) -> `/_health/alerts` flips 503 -> pinger notifies; resolve via `/api/reports/projection-failures/<id>/resolve/` -> endpoint recovers to 200.
+3. Raise a test exception -> confirm the Sentry email arrives.
+
 ## Environment Variables
 
 ### Required
