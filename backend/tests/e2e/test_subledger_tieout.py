@@ -129,6 +129,11 @@ class TestSubledgerTieout:
                 profile_type=PostingProfile.ProfileType.CUSTOMER,
                 control_account=clearing,
                 is_active=True,
+                # F16: pinned explicitly — MANUAL profiles stay IN the AR
+                # sum; GATEWAY (platform) profiles are excluded. If the
+                # model default ever changes, this test must not silently
+                # start exercising the exclusion path instead.
+                usage=PostingProfile.Usage.MANUAL,
             )
 
         # Post a JE that DRs the clearing account (with customer tag)

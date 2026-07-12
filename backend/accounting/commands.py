@@ -2709,39 +2709,16 @@ def run_reconciliation_check(actor: ActorContext) -> CommandResult:
 
     tieout_valid, tieout_errors = validate_subledger_tieout(actor.company)
 
-    from decimal import Decimal
+    # F16: the report panel reuses the validator's own sums (A10 account
+    # expansion + GATEWAY/platform exclusions). It used to re-derive
+    # pre-A10 numbers and could disagree with `balanced` above.
+    from accounting.policies import compute_subledger_tieout_sums
 
-    from django.db.models import Sum
-
-    from projections.models import AccountBalance, CustomerBalance, VendorBalance
-
-    # Gather balances for the report
-    ar_controls = Account.objects.filter(
-        company=actor.company,
-        role=Account.AccountRole.RECEIVABLE_CONTROL,
-    )
-    ap_controls = Account.objects.filter(
-        company=actor.company,
-        role=Account.AccountRole.PAYABLE_CONTROL,
-    )
-
-    ar_gl_total = AccountBalance.objects.filter(
-        company=actor.company,
-        account__in=ar_controls,
-    ).aggregate(total=Sum("balance"))["total"] or Decimal("0")
-
-    ar_sub_total = CustomerBalance.objects.filter(
-        company=actor.company,
-    ).aggregate(total=Sum("balance"))["total"] or Decimal("0")
-
-    ap_gl_total = AccountBalance.objects.filter(
-        company=actor.company,
-        account__in=ap_controls,
-    ).aggregate(total=Sum("balance"))["total"] or Decimal("0")
-
-    ap_sub_total = VendorBalance.objects.filter(
-        company=actor.company,
-    ).aggregate(total=Sum("balance"))["total"] or Decimal("0")
+    sums = compute_subledger_tieout_sums(actor.company)
+    ar_gl_total = sums["ar_control_balance"]
+    ar_sub_total = sums["customer_total"]
+    ap_gl_total = sums["ap_control_balance"]
+    ap_sub_total = sums["vendor_total"]
 
     return CommandResult.ok(
         {
