@@ -35,6 +35,10 @@ const MATCH_BADGE: Record<string, { label: string; color: string }> = {
   UNMATCHED: { label: "Unmatched", color: "bg-red-100 text-red-700" },
   AUTO_MATCHED: { label: "Auto", color: "bg-green-100 text-green-700" },
   MANUAL_MATCHED: { label: "Manual", color: "bg-blue-100 text-blue-700" },
+  // A165: reachable from this page's own picker now that an EBD pick with
+  // an amount gap lands as matched-with-difference (resolve the reason on
+  // the Reconciliation workspace).
+  MATCHED_WITH_DIFFERENCE: { label: "Difference", color: "bg-amber-100 text-amber-700" },
   EXCLUDED: { label: "Excluded", color: "bg-gray-100 text-gray-500" },
 };
 

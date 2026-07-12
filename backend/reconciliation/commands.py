@@ -1205,25 +1205,161 @@ def auto_match_statement(
 # =============================================================================
 
 
+def _is_settlement_ebd_pick(company, journal_line: JournalLine) -> bool:
+    """A165: is this journal line the Expected-Bank-Deposit debit of a
+    POSTED payment-settlement JE? Mirrors the criteria of both surfaces
+    that offer EBD candidates — the manual picker
+    (accounting/bank_reconciliation.py get_match_candidates_for_bank_line)
+    and the prepass planner (reconciliation/matching.py) — so any line
+    offered as an EBD candidate is handled as one.
+    """
+    from accounting.mappings import ModuleAccountMapping
+
+    entry = journal_line.entry
+    if entry.source_module != "payment_settlement":
+        return False
+    if entry.status != JournalEntry.Status.POSTED:
+        return False
+    if journal_line.debit <= 0:
+        return False
+    ebd_accounts = ModuleAccountMapping.get_accounts_for_role(company, "EXPECTED_BANK_DEPOSIT")
+    return any(account.id == journal_line.account_id for account in ebd_accounts)
+
+
+def _manual_match_settlement_ebd(
+    actor: ActorContext,
+    bank_line: BankStatementLine,
+    journal_line: JournalLine,
+) -> CommandResult:
+    """A165: apply an operator's explicit EBD pick the way the settlement
+    prepass applies a planned one — post the clearance JE
+    (DR bank / CR EBD) and point the match at the clearance's DR-bank
+    line.
+
+    Before this, manual_match treated an EBD pick as a plain flag-flip:
+    the inflated EBD debit was marked reconciled (vanishing from every
+    candidate list, self-concealing) while the bank GL account never
+    received the deposit and the EBD balance stayed inflated forever.
+    resolve_difference then refused the line because it wasn't linked to
+    a clearance JE.
+
+    Runs inside manual_match's @transaction.atomic.
+    """
+    settlement_entry = journal_line.entry
+
+    if bank_line.amount <= 0:
+        return CommandResult.fail(
+            "Bank line is a withdrawal — a settlement deposit clearance needs a positive bank amount."
+        )
+
+    # Batch idempotency, mirroring the planner's cleared_source_docs guard
+    # (reconciliation/matching.py): a batch with a POSTED clearance is
+    # already deposited — never post a second clearance for it, even if
+    # the EBD reconciled flag was reset by a statement delete/reimport.
+    source_doc = settlement_entry.source_document or ""
+    if (
+        source_doc
+        and JournalEntry.objects.filter(
+            company=actor.company,
+            source_module="payment_settlement_clearance",
+            source_document=source_doc,
+            status=JournalEntry.Status.POSTED,
+        ).exists()
+    ):
+        return CommandResult.fail(
+            "This settlement batch already has a posted clearance JE — "
+            "unmatch the bank line that cleared it before matching again."
+        )
+
+    batch_id = source_doc.split(":", 1)[1] if ":" in source_doc else source_doc
+
+    clearance_je_line = _create_settlement_clearance_je(
+        company=actor.company,
+        settlement_entry=settlement_entry,
+        bank_account=bank_line.statement.account,
+        ebd_account=journal_line.account,
+        net_amount=bank_line.amount,
+        batch_id=batch_id,
+        statement_date=bank_line.statement.statement_date,
+        value_date=bank_line.line_date,
+    )
+    if not clearance_je_line:
+        # A180 pattern: the sub-commands may have landed a DRAFT JE plus
+        # events inside this atomic scope — a plain .fail would commit
+        # them. Fail loudly; the prepass's log-and-skip is not acceptable
+        # for an explicit operator action.
+        transaction.set_rollback(True)
+        return CommandResult.fail(
+            "Failed to post the settlement clearance JE — nothing was matched. "
+            "Check that the period is open and the bank line date is valid."
+        )
+
+    # Planner sign convention (matching.py): positive = bank short paid,
+    # so resolve_difference books DR reason / CR EBD. No tolerance cap —
+    # the operator explicitly picked this pair, so any gap becomes
+    # MATCHED_WITH_DIFFERENCE for the A16/A180 reason flow to drain.
+    difference = journal_line.debit - bank_line.amount
+
+    # On an exact match the settlement EBD line rides along and the
+    # projection reconciles it with the clearance line; on a difference it
+    # stays live so resolve_difference can drain it (A180).
+    _emit_match_confirmed(
+        company=actor.company,
+        bank_line=bank_line,
+        journal_line=clearance_je_line,
+        match_kind="settlement_clearance",
+        confidence=CONFIDENCE_EXACT,
+        difference_amount=difference,
+        statement_date=bank_line.statement.statement_date,
+        confirmation_kind="manual",
+        additional_journal_lines_to_reconcile=([journal_line.public_id] if difference == 0 else []),
+    )
+
+    _run_reconciliation_projection_sync(actor.company)
+
+    return CommandResult.ok(
+        data={
+            "bank_line": bank_line,
+            "journal_line": clearance_je_line,
+            "clearance_entry_public_id": str(clearance_je_line.entry.public_id),
+            "difference_amount": difference,
+        }
+    )
+
+
 @transaction.atomic
 def manual_match(
     actor: ActorContext,
     bank_line_id: int,
     journal_line_id: int,
 ) -> CommandResult:
-    """Manually match a bank statement line to a journal line."""
+    """Manually match a bank statement line to a journal line.
+
+    A165: picking the EBD line of a payment-settlement JE posts the
+    clearance JE exactly like the auto-match prepass (see
+    _manual_match_settlement_ebd). Any other pick is the classic
+    flag-flip match.
+    """
     require(actor, "accounting.reconciliation")
 
     try:
-        bank_line = BankStatementLine.objects.get(
-            id=bank_line_id,
-            company=actor.company,
+        # A165: select_for_update serializes concurrent double-submits
+        # (mirrors A180's resolve_difference) — now that this command can
+        # post a clearance JE, the second caller must block and then fail
+        # the already-matched guard rather than race a duplicate.
+        bank_line = (
+            BankStatementLine.objects.select_for_update()
+            .select_related("statement", "statement__account")
+            .get(
+                id=bank_line_id,
+                company=actor.company,
+            )
         )
     except BankStatementLine.DoesNotExist:
         return CommandResult.fail("Bank statement line not found.")
 
     try:
-        journal_line = JournalLine.objects.get(
+        journal_line = JournalLine.objects.select_related("entry", "account").get(
             id=journal_line_id,
             company=actor.company,
         )
@@ -1235,6 +1371,9 @@ def manual_match(
 
     if journal_line.reconciled:
         return CommandResult.fail("Journal line is already reconciled.")
+
+    if _is_settlement_ebd_pick(actor.company, journal_line):
+        return _manual_match_settlement_ebd(actor, bank_line, journal_line)
 
     # A99 (2026-05-26): the JL.reconciled flip used to be a direct mutation
     # here. Now the ReconciliationProjection owns it, driven by the

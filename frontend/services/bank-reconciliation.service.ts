@@ -42,7 +42,7 @@ export interface BankStatementLineData {
   reference: string;
   amount: string;
   transaction_type: string;
-  match_status: "UNMATCHED" | "AUTO_MATCHED" | "MANUAL_MATCHED" | "EXCLUDED";
+  match_status: "UNMATCHED" | "AUTO_MATCHED" | "MANUAL_MATCHED" | "MATCHED_WITH_DIFFERENCE" | "EXCLUDED";
   match_confidence: string | null;
   matched_journal_line: MatchedJournalLine | null;
 }
