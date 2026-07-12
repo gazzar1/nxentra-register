@@ -35,13 +35,25 @@ class RestoreError(Exception):
     pass
 
 
-def restore_company(company, zip_file):
+def restore_company(company, zip_file, *, allow_company_mismatch=False, skip_invariants=False):
     """
     Restore company data from a backup ZIP archive.
 
+    A161: FAIL-CLOSED. The archive is validated BEFORE anything is cleared
+    (company identity, export_hash, manifest counts), missing/malformed
+    model files inside the loop raise (rolling back the clear), and
+    post-restore financial invariants (per-label counts, event count,
+    sequence cursor, trial balance, subledger tie-out) run inside the same
+    transaction — any failure rolls back to the pre-restore books.
+
     Args:
-        company: Target Company instance (must be empty or will be cleared)
+        company: Target Company instance (existing data is replaced)
         zip_file: File-like object or bytes containing the ZIP archive
+        allow_company_mismatch: break-glass for the management command
+            ONLY (restoring one company's backup into another); the API
+            never passes it.
+        skip_invariants: break-glass for the management command ONLY
+            (e.g. a backup taken from books with a known tie-out drift).
 
     Returns:
         dict with restore statistics
@@ -74,9 +86,15 @@ def restore_company(company, zip_file):
         raise RestoreError(f"Unsupported backup version '{version}'. Supported: {', '.join(SUPPORTED_VERSIONS)}")
 
     registry = get_export_registry()
+
+    # A161: everything below is fail-closed and runs BEFORE any data is
+    # touched.
+    _validate_archive(company, zf, manifest, registry, allow_company_mismatch=allow_company_mismatch)
+
     # Build set of model classes in registry for FK target detection
     registry_models = set(registry.values())
     stats = {"imported": {}, "skipped": {}, "cleared": 0, "errors": []}
+    manifest_counts = manifest.get("model_counts") or {}
 
     with rls_bypass():
         from projections.write_barrier import bootstrap_writes_allowed, projection_writes_allowed
@@ -97,6 +115,11 @@ def restore_company(company, zip_file):
                 for label, model_cls in registry.items():
                     json_path = f"models/{label}.json"
                     if json_path not in zf.namelist():
+                        # A161: legal ONLY when the manifest says the model
+                        # was empty (or predates the registry entry). A file
+                        # the manifest counts as non-empty was already
+                        # rejected by _validate_archive; this branch is the
+                        # benign older-backup case.
                         stats["skipped"][label] = "not in backup"
                         continue
 
@@ -104,8 +127,10 @@ def restore_company(company, zip_file):
                         data_bytes = zf.read(json_path)
                         records = json.loads(data_bytes)
                     except (json.JSONDecodeError, KeyError) as e:
-                        stats["errors"].append(f"{label}: {e}")
-                        continue
+                        # A161: hard-fail (was: swallow into stats['errors']
+                        # and COMMIT a partial restore over the cleared
+                        # company). Raising rolls back the clear.
+                        raise RestoreError(f"Backup file models/{label}.json is unreadable: {e}")
 
                     if not records:
                         stats["imported"][label] = 0
@@ -130,16 +155,151 @@ def restore_company(company, zip_file):
                     _apply_deferred_fks(deferred_fks, pk_map)
                     logger.info("Applied %d deferred FK updates", len(deferred_fks))
 
+                # Phase 4 (A161): post-restore verification INSIDE the atomic
+                # block — a failed invariant rolls the whole restore back and
+                # the original books survive.
+                _verify_restore(company, manifest, manifest_counts, stats, skip_invariants=skip_invariants)
+
+                # Phase 5: company settings from the manifest — inside the
+                # transaction (previously ran after commit) and only after
+                # verification passed. Identity was already checked by
+                # _validate_archive.
+                _update_company_settings(company, manifest.get("company", {}))
+
     zf.close()
 
     elapsed = (timezone.now() - started_at).total_seconds()
     stats["duration_seconds"] = round(elapsed, 2)
     stats["company"] = company.slug
 
-    # Update company settings from manifest
-    _update_company_settings(company, manifest.get("company", {}))
-
     return stats
+
+
+def _validate_archive(company, zf, manifest, registry, *, allow_company_mismatch=False):
+    """A161: fail-closed archive validation, run BEFORE anything is cleared.
+
+    Checks: (a) company identity, (b) export_hash over the model files
+    (byte-exact mirror of exporter semantics: registry iteration order,
+    only members present), (c) manifest model_counts vs actual file
+    contents, (d) no ZIP members or manifest labels unknown to the
+    current registry (a backup from a NEWER schema must not restore).
+    """
+    # (a) Company identity — restoring Company A's backup into Company B
+    # would silently rename/re-currency B and graft A's books onto it.
+    manifest_company = manifest.get("company") or {}
+    backup_public_id = str(manifest_company.get("public_id") or "")
+    if backup_public_id and backup_public_id != str(company.public_id) and not allow_company_mismatch:
+        raise RestoreError(
+            f"This backup belongs to a different company "
+            f"(backup company: {manifest_company.get('slug') or backup_public_id}; "
+            f"target: {company.slug}). Use the management command with "
+            f"--allow-company-mismatch if this is intentional."
+        )
+
+    # (b) export_hash — recompute exactly as the exporter wrote it.
+    if "export_hash" not in manifest:
+        raise RestoreError("Backup manifest has no export_hash — refusing to restore an unverifiable archive.")
+    import hashlib
+
+    hasher = hashlib.sha256()
+    names = set(zf.namelist())
+    for label in registry:
+        member = f"models/{label}.json"
+        if member in names:
+            hasher.update(zf.read(member))
+    if hasher.hexdigest() != manifest["export_hash"]:
+        raise RestoreError(
+            "Backup integrity check failed: export_hash mismatch — the archive is corrupt or was modified after export."
+        )
+
+    # (c) Manifest counts vs file contents.
+    manifest_counts = manifest.get("model_counts") or {}
+    for label, expected in manifest_counts.items():
+        if label not in registry:
+            raise RestoreError(
+                f"Backup contains model {label!r} unknown to this version of the "
+                f"registry — it was likely exported from a newer schema. Refusing."
+            )
+        member = f"models/{label}.json"
+        if expected and member not in names:
+            raise RestoreError(
+                f"Backup is missing models/{label}.json but the manifest counts "
+                f"{expected} record(s) for it — the archive is truncated."
+            )
+        if member in names:
+            try:
+                records = json.loads(zf.read(member))
+            except json.JSONDecodeError as e:
+                raise RestoreError(f"Backup file models/{label}.json is unreadable: {e}")
+            if len(records) != expected:
+                raise RestoreError(
+                    f"Backup count mismatch for {label}: manifest says {expected}, file contains {len(records)}."
+                )
+
+    # (d) ZIP model members not named in the manifest.
+    for name in names:
+        if name.startswith("models/") and name.endswith(".json"):
+            label = name[len("models/") : -len(".json")]
+            if label not in manifest_counts:
+                raise RestoreError(f"Backup contains unexpected member {name!r} not listed in the manifest.")
+
+
+def _verify_restore(company, manifest, manifest_counts, stats, *, skip_invariants=False):
+    """A161: post-restore invariants, inside the restore transaction."""
+    from django.db.models import Sum
+
+    from accounting.models import JournalEntry, JournalLine
+    from events.models import BusinessEvent, CompanyEventCounter
+
+    # Per-label counts: everything the manifest promised must have landed.
+    for label, expected in manifest_counts.items():
+        if not expected:
+            continue
+        actual = stats["imported"].get(label, 0)
+        if actual != expected:
+            raise RestoreError(f"Restore verification failed: {label} imported {actual} of {expected} record(s).")
+
+    # Event stream: count + sequence cursor.
+    expected_events = manifest.get("event_count", 0)
+    actual_events = BusinessEvent.objects.filter(company=company).count()
+    if actual_events != expected_events:
+        raise RestoreError(f"Restore verification failed: event count {actual_events} != manifest {expected_events}.")
+    if actual_events:
+        max_seq = BusinessEvent.objects.filter(company=company).order_by("-company_sequence").first().company_sequence
+        counter = CompanyEventCounter.objects.filter(company=company).first()
+        if counter is None or max_seq > counter.last_sequence:
+            raise RestoreError(
+                "Restore verification failed: event sequence cursor is behind the "
+                "restored stream — future events would collide."
+            )
+
+    if skip_invariants:
+        logger.warning("Restore invariants SKIPPED for %s (--skip-invariants break-glass)", company.slug)
+        return
+
+    # Trial balance over POSTED entries.
+    agg = JournalLine.objects.filter(
+        company=company,
+        entry__status=JournalEntry.Status.POSTED,
+    ).aggregate(dr=Sum("debit"), cr=Sum("credit"))
+    total_dr = agg["dr"] or Decimal("0")
+    total_cr = agg["cr"] or Decimal("0")
+    if total_dr != total_cr:
+        raise RestoreError(
+            f"Restore verification failed: trial balance out of balance "
+            f"(DR {total_dr} != CR {total_cr}) — refusing to commit corrupt books."
+        )
+
+    # Subledger tie-out (AR/AP control vs Customer/VendorBalance).
+    from accounting.policies import validate_subledger_tieout
+
+    ok, errors = validate_subledger_tieout(company)
+    if not ok:
+        raise RestoreError(
+            "Restore verification failed: subledger tie-out is broken after "
+            f"restore: {'; '.join(errors)}. Use the management command with "
+            f"--skip-invariants only if the source books had a known drift."
+        )
 
 
 def _clear_company_data(company, registry):

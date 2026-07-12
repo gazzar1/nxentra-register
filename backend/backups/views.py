@@ -21,7 +21,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts.authz import resolve_actor
+from accounts.authz import require, resolve_actor
 
 from .models import BackupRecord
 
@@ -37,6 +37,10 @@ class BackupListView(APIView):
         actor = resolve_actor(request)
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
+        # A160: previously gated only by IsAuthenticated — any member
+        # (including VIEWER) could enumerate/export/restore/delete company
+        # backups. Every endpoint now requires an explicit permission.
+        require(actor, "backups.view")
 
         backups = BackupRecord.objects.filter(company=actor.company)
 
@@ -58,6 +62,7 @@ class BackupExportView(APIView):
         actor = resolve_actor(request)
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
+        require(actor, "backups.export")
 
         # Check for concurrent backup
         active = BackupRecord.objects.filter(
@@ -127,6 +132,7 @@ class BackupDetailView(APIView):
         actor = resolve_actor(request)
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
+        require(actor, "backups.view")
 
         try:
             record = BackupRecord.objects.get(public_id=public_id, company=actor.company)
@@ -139,6 +145,7 @@ class BackupDetailView(APIView):
         actor = resolve_actor(request)
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
+        require(actor, "backups.delete")
 
         try:
             record = BackupRecord.objects.get(public_id=public_id, company=actor.company)
@@ -162,6 +169,7 @@ class BackupDownloadView(APIView):
         actor = resolve_actor(request)
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
+        require(actor, "backups.download")
 
         try:
             record = BackupRecord.objects.get(public_id=public_id, company=actor.company)
@@ -191,6 +199,9 @@ class BackupRestoreView(APIView):
         actor = resolve_actor(request)
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
+        # A160: restore OVERWRITES the company's books — sensitive
+        # permission (explicit grant required even for OWNER).
+        require(actor, "backups.restore")
 
         upload = request.FILES.get("file")
         if not upload:

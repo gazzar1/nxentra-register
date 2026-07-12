@@ -32,6 +32,21 @@ class Command(BaseCommand):
             action="store_true",
             help="Skip confirmation prompt.",
         )
+        # A161 break-glass flags — management command ONLY; the API view
+        # never passes these.
+        parser.add_argument(
+            "--allow-company-mismatch",
+            action="store_true",
+            help="Allow restoring a backup exported from a DIFFERENT company (dangerous).",
+        )
+        parser.add_argument(
+            "--skip-invariants",
+            action="store_true",
+            help=(
+                "Skip post-restore trial-balance/subledger verification "
+                "(only for backups taken from books with a known, documented drift)."
+            ),
+        )
 
     def handle(self, *args, **options):
         from accounts.models import Company
@@ -66,7 +81,12 @@ class Command(BaseCommand):
         zip_bytes = Path(file_path).read_bytes()
 
         try:
-            result = restore_company(company, zip_bytes)
+            result = restore_company(
+                company,
+                zip_bytes,
+                allow_company_mismatch=options["allow_company_mismatch"],
+                skip_invariants=options["skip_invariants"],
+            )
         except RestoreError as e:
             raise CommandError(str(e))
 
