@@ -146,17 +146,24 @@ export default function NewSalesInvoicePage() {
   // Auto-populate currency + posting profile from customer when picked.
   // A79: posting profile inherits from Customer.default_posting_profile so the
   // user stops re-picking the same dropdown on every invoice.
+  // A83: only when the profile is actually in the MANUAL list this dropdown
+  // renders — the Shopify aggregate customer's default is a GATEWAY profile
+  // (reserved for the connector), and silently setting an invisible dropdown
+  // value just teed up the backend's loud rejection.
   useEffect(() => {
     if (watchCustomerId) {
       const customer = customers?.find((c) => c.id.toString() === watchCustomerId);
       if (customer?.currency) {
         setValue("currency", customer.currency);
       }
-      if (customer?.default_posting_profile) {
+      if (
+        customer?.default_posting_profile &&
+        postingProfiles?.some((p) => p.id === customer.default_posting_profile)
+      ) {
         setValue("posting_profile_id", customer.default_posting_profile.toString());
       }
     }
-  }, [watchCustomerId, customers, setValue]);
+  }, [watchCustomerId, customers, postingProfiles, setValue]);
 
   // A79: if the company has only one MANUAL profile, auto-fill and hide the
   // dropdown — the user has no choice to make.
