@@ -206,18 +206,21 @@ class InventoryBalanceProjection(BaseProjection):
             # in BaseProjection.process_pending(). No per-item guard here
             # because a single event can have multiple entries for the same item/warehouse.
 
-            # Apply weighted average calculation
-            old_value = balance.qty_on_hand * balance.avg_cost
-            new_value = qty_delta * unit_cost
-            new_qty = balance.qty_on_hand + qty_delta
+            # F18: same value-continuous receipt math as the command layer
+            # (inventory/costing.py) — a rebuild must converge with
+            # command-time state, so the formula lives in ONE place. The
+            # no-COGS-account fallback branch is mirrored too (same
+            # deterministic condition the command evaluated).
+            from inventory.costing import apply_receipt_to_balance, apply_receipt_value_continuous
 
-            if new_qty > 0:
-                balance.avg_cost = (old_value + new_value) / new_qty
+            if balance.qty_on_hand < 0 and not item.cogs_account_id:
+                result = apply_receipt_value_continuous(balance.qty_on_hand, balance.avg_cost, qty_delta, unit_cost)
             else:
-                balance.avg_cost = unit_cost
+                result = apply_receipt_to_balance(balance.qty_on_hand, balance.avg_cost, qty_delta, unit_cost)
 
-            balance.qty_on_hand = new_qty
-            balance.stock_value = new_qty * balance.avg_cost
+            balance.avg_cost = result.new_avg_cost
+            balance.qty_on_hand = result.new_qty
+            balance.stock_value = result.new_stock_value
             balance.entry_count += 1
             balance.last_event = event
             balance.save()
@@ -413,6 +416,15 @@ class InventoryBalanceProjection(BaseProjection):
         expected: dict[str, dict[str, Decimal]] = {}  # {item_id:warehouse_id: {qty, value}}
         events_processed = 0
 
+        # F18: which items take the value-continuous fallback on receipts
+        # into negative balances (no COGS account to book variance to).
+        cogsless_item_ids = set(
+            str(pid)
+            for pid in Item.objects.filter(company=company, cogs_account__isnull=True).values_list(
+                "public_id", flat=True
+            )
+        )
+
         events = BusinessEvent.objects.filter(
             company=company,
             event_type__in=self.consumes,
@@ -442,22 +454,30 @@ class InventoryBalanceProjection(BaseProjection):
 
                 # Apply receipt or issue
                 old_qty = expected[key]["qty"]
-                old_value = old_qty * expected[key]["avg_cost"]
 
                 if qty_delta > 0:
-                    # Receipt: recalculate weighted average
-                    new_value = qty_delta * unit_cost
-                    new_qty = old_qty + qty_delta
-                    if new_qty > 0:
-                        expected[key]["avg_cost"] = (old_value + new_value) / new_qty
+                    # F18: same shared receipt math (incl. the
+                    # no-COGS-account fallback) as command + projection —
+                    # otherwise verification would report false corruption.
+                    from inventory.costing import (
+                        apply_receipt_to_balance,
+                        apply_receipt_value_continuous,
+                    )
+
+                    if old_qty < 0 and item_id in cogsless_item_ids:
+                        result = apply_receipt_value_continuous(
+                            old_qty, expected[key]["avg_cost"], qty_delta, unit_cost
+                        )
                     else:
-                        expected[key]["avg_cost"] = unit_cost
-                    expected[key]["qty"] = new_qty
+                        result = apply_receipt_to_balance(old_qty, expected[key]["avg_cost"], qty_delta, unit_cost)
+                    expected[key]["avg_cost"] = result.new_avg_cost
+                    expected[key]["qty"] = result.new_qty
+                    expected[key]["value"] = result.new_stock_value
                 else:
                     # Issue: just reduce qty
                     expected[key]["qty"] = old_qty + qty_delta  # qty_delta is negative
+                    expected[key]["value"] = expected[key]["qty"] * expected[key]["avg_cost"]
 
-                expected[key]["value"] = expected[key]["qty"] * expected[key]["avg_cost"]
                 events_processed += 1
 
         # Compare against projected balances

@@ -13,6 +13,7 @@ Key commands:
 - record_opening_balance: Record opening inventory balances
 """
 
+import logging
 import uuid
 from decimal import Decimal
 
@@ -42,6 +43,8 @@ from projections.models import InventoryBalance, ProjectionAppliedEvent
 from projections.write_barrier import command_writes_allowed, projection_writes_allowed
 
 from .models import StockLedgerEntry, StockLedgerSequenceCounter, Warehouse
+
+logger = logging.getLogger(__name__)
 
 
 def _claim_inventory_balance_event(event) -> None:
@@ -340,9 +343,14 @@ def record_stock_receipt(
     if not lines:
         return CommandResult.fail("No lines provided for stock receipt.")
 
+    from .costing import apply_receipt_to_balance, apply_receipt_value_continuous
+
     posted_at = timezone.now()
     created_entries = []
     event_entries = []
+    # F18: P&L variance from extinguishing negative balances, accumulated
+    # per (cogs_account_id, inventory_account_id).
+    variance_by_accounts: dict[tuple, Decimal] = {}
 
     with command_writes_allowed():
         for line in lines:
@@ -373,11 +381,32 @@ def record_stock_receipt(
                 },
             )
 
-            # Calculate new weighted average
-            old_value = balance.qty_on_hand * balance.avg_cost
-            new_value = qty * unit_cost
-            new_qty = balance.qty_on_hand + qty
-            new_avg_cost = (old_value + new_value) / new_qty if new_qty > 0 else unit_cost
+            # F18: value-continuous receipt math (extinguish a negative
+            # hole at its carried cost; surface the replacement-cost
+            # variance) instead of the discard-on-zero-crossing blend.
+            if balance.qty_on_hand < 0 and not item.cogs_account_id:
+                # No account to book the variance against — never discard
+                # value; blend it into the balance and say so loudly.
+                result = apply_receipt_value_continuous(balance.qty_on_hand, balance.avg_cost, qty, unit_cost)
+                logger.warning(
+                    "F18: receipt onto negative balance for %s with no COGS account — "
+                    "variance blended into stock_value instead of booked to P&L "
+                    "(qty %s @ %s onto %s @ %s)",
+                    item.code,
+                    qty,
+                    unit_cost,
+                    balance.qty_on_hand,
+                    balance.avg_cost,
+                )
+            else:
+                result = apply_receipt_to_balance(balance.qty_on_hand, balance.avg_cost, qty, unit_cost)
+
+            if result.variance_value != 0:
+                key = (item.cogs_account_id, item.inventory_account_id)
+                variance_by_accounts[key] = variance_by_accounts.get(key, Decimal("0")) + result.variance_value
+
+            new_qty = result.new_qty
+            new_avg_cost = result.new_avg_cost
 
             # Get next sequence
             sequence = _get_next_sequence(actor.company)
@@ -396,7 +425,7 @@ def record_stock_receipt(
                 value_delta=value_delta,
                 costing_method_snapshot=item.costing_method,
                 qty_balance_after=new_qty,
-                value_balance_after=new_qty * new_avg_cost,
+                value_balance_after=result.new_stock_value,
                 avg_cost_after=new_avg_cost,
                 posted_at=posted_at,
                 posted_by=actor.user,
@@ -407,7 +436,7 @@ def record_stock_receipt(
             # Update balance
             balance.qty_on_hand = new_qty
             balance.avg_cost = new_avg_cost
-            balance.stock_value = new_qty * new_avg_cost
+            balance.stock_value = result.new_stock_value
             balance.entry_count += 1
             balance.last_entry_date = posted_at.date()
             balance.save()
@@ -417,20 +446,26 @@ def record_stock_receipt(
             item.last_cost = unit_cost
             item.save(update_fields=["average_cost", "last_cost"])
 
-            # Create FIFO layer if item uses FIFO costing
+            # Create FIFO layer if item uses FIFO costing.
+            # F18: only the portion ABOVE zero becomes a layer — the
+            # extinguished hole was already consumed (its COGS is booked);
+            # a full-qty layer would make sum(qty_remaining) permanently
+            # exceed qty_on_hand.
             if item.costing_method == "FIFO":
                 from .models import FifoLayer
 
-                FifoLayer.objects.create(
-                    company=actor.company,
-                    item=item,
-                    warehouse=warehouse,
-                    receipt_entry=entry,
-                    qty_original=qty,
-                    qty_remaining=qty,
-                    unit_cost=unit_cost,
-                    sequence=sequence,
-                )
+                layer_qty = qty - result.extinguished_qty
+                if layer_qty > 0:
+                    FifoLayer.objects.create(
+                        company=actor.company,
+                        item=item,
+                        warehouse=warehouse,
+                        receipt_entry=entry,
+                        qty_original=layer_qty,
+                        qty_remaining=layer_qty,
+                        unit_cost=unit_cost,
+                        sequence=sequence,
+                    )
 
             event_entries.append(
                 StockLedgerEntryData(
@@ -443,6 +478,38 @@ def record_stock_receipt(
                     source_line_id=source_line_id,
                 ).to_dict()
             )
+
+    # F18: book the extinguishment variance to P&L so GL inventory keeps
+    # tying to the subledger. The receipt JE (when present) debited
+    # inventory at the FULL receipt value; the hole only absorbed its
+    # carried cost — the difference is real COGS (replacement cost of
+    # stock sold while below zero).
+    variance_entry = None
+    total_variance = sum(variance_by_accounts.values(), Decimal("0"))
+    if total_variance != 0 and journal_entry is None:
+        # Journal-less receipt paths (transfers, goods receipts) have no
+        # GL anchor for a P&L line — the subledger stays value-continuous
+        # via the helper, but the variance can't be booked here. Loud log,
+        # documented decision.
+        logger.warning(
+            "F18: unbooked negative-stock variance %s on journal-less receipt %s:%s",
+            total_variance,
+            source_type,
+            source_id,
+        )
+    elif total_variance != 0:
+        variance_result = _post_negative_stock_variance_je(
+            actor=actor,
+            variance_by_accounts=variance_by_accounts,
+            anchor_journal_entry=journal_entry,
+            source_type=source_type,
+            source_id=source_id,
+        )
+        if not variance_result.success:
+            # Fail-loud (F27 policy): the whole receipt rolls back rather
+            # than committing a receipt whose GL silently diverges.
+            return CommandResult.fail(f"Failed to post negative-stock variance JE: {variance_result.error}")
+        variance_entry = variance_result.data
 
     event = emit_event(
         actor=actor,
@@ -463,7 +530,65 @@ def record_stock_receipt(
     )
     _claim_inventory_balance_event(event)
 
-    return CommandResult.ok(data={"entries": created_entries}, event=event)
+    return CommandResult.ok(data={"entries": created_entries, "variance_entry": variance_entry}, event=event)
+
+
+def _post_negative_stock_variance_je(
+    actor: ActorContext,
+    variance_by_accounts: dict,
+    anchor_journal_entry,
+    source_type: str,
+    source_id: str,
+) -> CommandResult:
+    """F18: one JE moving the negative-stock extinguishment variance to
+    P&L. variance > 0 (refilled costlier than the hole was booked) →
+    DR COGS / CR Inventory; variance < 0 → DR Inventory / CR COGS.
+    Dated like the anchoring receipt JE so both land in the same period.
+    """
+    from accounting.commands import create_journal_entry, post_journal_entry, save_journal_entry_complete
+
+    je_lines = []
+    for (cogs_account_id, inventory_account_id), variance in variance_by_accounts.items():
+        if variance == 0:
+            continue
+        if not cogs_account_id or not inventory_account_id:
+            # The value-continuous fallback already absorbed these lines.
+            continue
+        amount = str(abs(variance))
+        desc = "Negative-stock replacement cost variance (F18)"
+        if variance > 0:
+            je_lines.append({"account_id": cogs_account_id, "description": desc, "debit": amount, "credit": "0"})
+            je_lines.append({"account_id": inventory_account_id, "description": desc, "debit": "0", "credit": amount})
+        else:
+            je_lines.append({"account_id": inventory_account_id, "description": desc, "debit": amount, "credit": "0"})
+            je_lines.append({"account_id": cogs_account_id, "description": desc, "debit": "0", "credit": amount})
+
+    if not je_lines:
+        return CommandResult.ok(data=None)
+
+    je_date = anchor_journal_entry.date if anchor_journal_entry else timezone.now().date()
+    memo = f"Inventory variance: negative-stock refill ({source_type} {source_id})"
+
+    create_result = create_journal_entry(
+        actor=actor,
+        date=je_date,
+        memo=memo,
+        lines=je_lines,
+        kind=JournalEntry.Kind.NORMAL,
+    )
+    if not create_result.success:
+        return create_result
+    entry = create_result.data
+
+    save_result = save_journal_entry_complete(actor, entry.id)
+    if not save_result.success:
+        return save_result
+
+    post_result = post_journal_entry(actor, entry.id)
+    if not post_result.success:
+        return post_result
+
+    return CommandResult.ok(data=post_result.data)
 
 
 @transaction.atomic
@@ -730,6 +855,19 @@ def adjust_inventory(
                         f"Required: {required}, Available: {balance.qty_on_hand}"
                     )
 
+            # F18: an increase onto a negative balance extinguishes the
+            # hole at its carried cost; the replacement-cost variance rides
+            # in the SAME adjustment JE (accumulate the SUBLEDGER value
+            # move, not qty*unit_cost) so GL keeps tying to the subledger.
+            receipt_result = None
+            if qty_delta > 0:
+                from .costing import apply_receipt_to_balance
+
+                receipt_result = apply_receipt_to_balance(balance.qty_on_hand, balance.avg_cost, qty_delta, unit_cost)
+                je_value = receipt_result.new_stock_value - balance.stock_value
+            else:
+                je_value = value_delta
+
             processed_lines.append(
                 {
                     "item": item,
@@ -738,13 +876,14 @@ def adjust_inventory(
                     "unit_cost": unit_cost,
                     "value_delta": value_delta,
                     "balance": balance,
+                    "receipt_result": receipt_result,
                     "source_line_id": line.get("source_line_id"),
                 }
             )
 
             # Accumulate by inventory account
             inv_account_id = item.inventory_account_id
-            inventory_by_account[inv_account_id] = inventory_by_account.get(inv_account_id, Decimal("0")) + value_delta
+            inventory_by_account[inv_account_id] = inventory_by_account.get(inv_account_id, Decimal("0")) + je_value
 
     # Build journal entry lines
     for inv_account_id, total_value in inventory_by_account.items():
@@ -825,15 +964,18 @@ def adjust_inventory(
 
             # Calculate new balance
             if qty_delta > 0:
-                # Apply receipt
-                old_value = balance.qty_on_hand * balance.avg_cost
-                new_value = qty_delta * unit_cost
-                new_qty = balance.qty_on_hand + qty_delta
-                new_avg_cost = (old_value + new_value) / new_qty if new_qty > 0 else unit_cost
+                # F18: receipt math computed in the validation loop (same
+                # locked balance) so the adjustment JE already carries the
+                # subledger value move including any extinguishment.
+                receipt_result = pline["receipt_result"]
+                new_qty = receipt_result.new_qty
+                new_avg_cost = receipt_result.new_avg_cost
+                new_stock_value = receipt_result.new_stock_value
             else:
                 # Apply issue
                 new_qty = balance.qty_on_hand + qty_delta  # qty_delta is negative
                 new_avg_cost = balance.avg_cost
+                new_stock_value = new_qty * new_avg_cost
 
             # Get next sequence
             sequence = _get_next_sequence(actor.company)
@@ -851,7 +993,7 @@ def adjust_inventory(
                 value_delta=value_delta,
                 costing_method_snapshot=item.costing_method,
                 qty_balance_after=new_qty,
-                value_balance_after=new_qty * new_avg_cost,
+                value_balance_after=new_stock_value,
                 avg_cost_after=new_avg_cost,
                 posted_at=posted_at,
                 posted_by=actor.user,
@@ -862,7 +1004,7 @@ def adjust_inventory(
             # Update balance
             balance.qty_on_hand = new_qty
             balance.avg_cost = new_avg_cost
-            balance.stock_value = new_qty * new_avg_cost
+            balance.stock_value = new_stock_value
             balance.entry_count += 1
             balance.last_entry_date = posted_at.date()
             balance.save()
@@ -1042,6 +1184,7 @@ def record_opening_balance(
     # Now create stock ledger entries
     created_entries = []
     event_entries = []
+    opening_variance_by_accounts: dict[tuple, Decimal] = {}
 
     with command_writes_allowed():
         for pline in processed_lines:
@@ -1063,11 +1206,29 @@ def record_opening_balance(
                 },
             )
 
-            # Apply receipt
-            old_value = balance.qty_on_hand * balance.avg_cost
-            new_value = qty * unit_cost
-            new_qty = balance.qty_on_hand + qty
-            new_avg_cost = (old_value + new_value) / new_qty if new_qty > 0 else unit_cost
+            # F18: opening onto an already-negative balance (possible
+            # after Shopify sells before setup) extinguishes the hole at
+            # its carried cost; variance books to COGS via the shared
+            # variance JE below.
+            from .costing import apply_receipt_to_balance, apply_receipt_value_continuous
+
+            if balance.qty_on_hand < 0 and not item.cogs_account_id:
+                result = apply_receipt_value_continuous(balance.qty_on_hand, balance.avg_cost, qty, unit_cost)
+                logger.warning(
+                    "F18: opening balance onto negative stock for %s with no COGS account — variance blended.",
+                    item.code,
+                )
+            else:
+                result = apply_receipt_to_balance(balance.qty_on_hand, balance.avg_cost, qty, unit_cost)
+
+            if result.variance_value != 0:
+                key = (item.cogs_account_id, item.inventory_account_id)
+                opening_variance_by_accounts[key] = (
+                    opening_variance_by_accounts.get(key, Decimal("0")) + result.variance_value
+                )
+
+            new_qty = result.new_qty
+            new_avg_cost = result.new_avg_cost
 
             # Get next sequence
             sequence = _get_next_sequence(actor.company)
@@ -1084,7 +1245,7 @@ def record_opening_balance(
                 value_delta=value,
                 costing_method_snapshot=item.costing_method,
                 qty_balance_after=new_qty,
-                value_balance_after=new_qty * new_avg_cost,
+                value_balance_after=result.new_stock_value,
                 avg_cost_after=new_avg_cost,
                 posted_at=posted_at,
                 posted_by=actor.user,
@@ -1095,7 +1256,7 @@ def record_opening_balance(
             # Update balance
             balance.qty_on_hand = new_qty
             balance.avg_cost = new_avg_cost
-            balance.stock_value = new_qty * new_avg_cost
+            balance.stock_value = result.new_stock_value
             balance.entry_count += 1
             balance.last_entry_date = posted_at.date()
             balance.save()
@@ -1115,6 +1276,21 @@ def record_opening_balance(
                     costing_method_snapshot=item.costing_method,
                 ).to_dict()
             )
+
+    # F18: the opening JE debited inventory at full receipt value while
+    # the hole absorbed only its carried cost — move the difference to
+    # COGS so GL keeps tying to the subledger.
+    total_opening_variance = sum(opening_variance_by_accounts.values(), Decimal("0"))
+    if total_opening_variance != 0:
+        variance_result = _post_negative_stock_variance_je(
+            actor=actor,
+            variance_by_accounts=opening_variance_by_accounts,
+            anchor_journal_entry=journal_entry,
+            source_type="OPENING_BALANCE",
+            source_id=opening_public_id,
+        )
+        if not variance_result.success:
+            return CommandResult.fail(f"Failed to post negative-stock variance JE: {variance_result.error}")
 
     event = emit_event(
         actor=actor,
