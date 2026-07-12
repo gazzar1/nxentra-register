@@ -875,13 +875,137 @@ def assert_can_delete_dimension_value(actor, value) -> None:
 # =============================================================================
 
 
+def compute_subledger_tieout_sums(company) -> dict:
+    """The four totals behind the AR/AP tie-out, with the F16 platform
+    exclusions applied. Single source of truth for
+    validate_subledger_tieout AND run_reconciliation_check's report
+    panel (which previously re-derived pre-A10 sums and could disagree
+    with the verdict).
+    """
+    from decimal import Decimal
+
+    from django.db.models import Sum
+
+    from accounting.models import Account
+    from projections.models import AccountBalance, CustomerBalance, VendorBalance
+    from sales.models import PostingProfile
+
+    # A10: include both accounts with role=RECEIVABLE_CONTROL AND any
+    # account that's the control_account of a CUSTOMER-type
+    # PostingProfile with MANUAL usage, even if its role is something
+    # else (a merchant can point a manual customer profile at any
+    # account; its customer-tagged postings must stay in the AR sum).
+    #
+    # F16: GATEWAY (platform) profiles are EXCLUDED on both sides.
+    # Platform clearing is half-tagged by design: the order posts a
+    # customer-tagged DR on the clearing account (pseudo-customer
+    # 'Shopify: <store>'), but the settlement's CR-clearing line carries
+    # no customer tag (Stripe charges carry none on either side). So
+    # every settled payout left AR Control != Customer balances by
+    # exactly the settled gross — a false alarm that hard-blocked
+    # close_fiscal_year and backup restore. Platform clearing is
+    # controlled by Stage 1-3 reconciliation (ReconciliationLink +
+    # clearing-balance close check), not the AR subledger.
+    gateway_control_account_ids = set(
+        PostingProfile.objects.filter(
+            company=company,
+            usage=PostingProfile.Usage.GATEWAY,
+            control_account__isnull=False,
+        ).values_list("control_account_id", flat=True)
+    )
+
+    ar_control_account_ids = set(
+        Account.objects.filter(
+            company=company,
+            role=Account.AccountRole.RECEIVABLE_CONTROL,
+        ).values_list("id", flat=True)
+    )
+    ar_control_account_ids.update(
+        PostingProfile.objects.filter(
+            company=company,
+            profile_type=PostingProfile.ProfileType.CUSTOMER,
+            is_active=True,
+            control_account__isnull=False,
+        )
+        .exclude(usage=PostingProfile.Usage.GATEWAY)
+        .values_list("control_account_id", flat=True)
+    )
+    # A gateway clearing account must not re-enter via the role branch.
+    ar_control_account_ids -= gateway_control_account_ids
+
+    ar_control_balance = AccountBalance.objects.filter(
+        company=company,
+        account_id__in=ar_control_account_ids,
+    ).aggregate(total=Sum("balance"))["total"] or Decimal("0")
+
+    # F16: platform pseudo-customers (any customer invoiced through a
+    # GATEWAY profile) are excluded to mirror the account-side
+    # exclusion — their balances live on clearing accounts that are
+    # no longer summed.
+    from sales.models import SalesInvoice
+
+    platform_customer_ids = (
+        SalesInvoice.objects.filter(
+            company=company,
+            posting_profile__usage=PostingProfile.Usage.GATEWAY,
+        )
+        .values_list("customer_id", flat=True)
+        .distinct()
+    )
+
+    customer_total = CustomerBalance.objects.filter(
+        company=company,
+    ).exclude(customer_id__in=platform_customer_ids).aggregate(total=Sum("balance"))["total"] or Decimal("0")
+
+    # A10: same expansion for AP — include accounts that are
+    # control_account on any VENDOR-type PostingProfile.
+    # F16: same GATEWAY exclusion as the AR side (no VENDOR gateway
+    # profiles exist today; the mirror keeps the invariant symmetric).
+    ap_control_account_ids = set(
+        Account.objects.filter(
+            company=company,
+            role=Account.AccountRole.PAYABLE_CONTROL,
+        ).values_list("id", flat=True)
+    )
+    ap_control_account_ids.update(
+        PostingProfile.objects.filter(
+            company=company,
+            profile_type=PostingProfile.ProfileType.VENDOR,
+            is_active=True,
+            control_account__isnull=False,
+        )
+        .exclude(usage=PostingProfile.Usage.GATEWAY)
+        .values_list("control_account_id", flat=True)
+    )
+    ap_control_account_ids -= gateway_control_account_ids
+
+    ap_control_balance = AccountBalance.objects.filter(
+        company=company,
+        account_id__in=ap_control_account_ids,
+    ).aggregate(total=Sum("balance"))["total"] or Decimal("0")
+
+    vendor_total = VendorBalance.objects.filter(
+        company=company,
+    ).aggregate(total=Sum("balance"))["total"] or Decimal("0")
+
+    return {
+        "ar_checked": bool(ar_control_account_ids),
+        "ar_control_balance": ar_control_balance,
+        "customer_total": customer_total,
+        "ap_checked": bool(ap_control_account_ids),
+        "ap_control_balance": ap_control_balance,
+        "vendor_total": vendor_total,
+    }
+
+
 def validate_subledger_tieout(company) -> tuple[bool, list[str]]:
     """
     Validate AR/AP control accounts match subledger totals.
 
     This check ensures accounting integrity between the GL and subledgers.
-    The AR control account balance should equal the sum of all customer balances,
-    and the AP control account balance should equal the sum of all vendor balances.
+    The AR control account balance should equal the sum of all customer
+    balances (excluding platform pseudo-customers, F16), and the AP
+    control account balance should equal the sum of all vendor balances.
 
     This validation is typically run:
     1. After posting journal entries that affect AR/AP
@@ -899,89 +1023,21 @@ def validate_subledger_tieout(company) -> tuple[bool, list[str]]:
         - is_valid is True if all tie-outs balance
         - errors contains descriptive messages for any mismatches
     """
-    from decimal import Decimal
-
-    from django.db.models import Sum
-
-    from accounting.models import Account
-    from projections.models import AccountBalance, CustomerBalance, VendorBalance
-    from sales.models import PostingProfile
-
+    sums = compute_subledger_tieout_sums(company)
     errors = []
 
-    # A10: include both accounts with role=RECEIVABLE_CONTROL AND any
-    # account that's the control_account of a CUSTOMER-type
-    # PostingProfile, even if its role is something else (e.g.
-    # SHOPIFY_CLEARING which has role=LIQUIDITY but receives invoice
-    # debits because the Shopify posting profile points at it).
-    # Pre-A10 the validation only summed RECEIVABLE_CONTROL accounts,
-    # so every Shopify clearing flow surfaced a permanent false-positive
-    # 'AR Control != Customer balances' warning. The 2026-05-04 dry-run
-    # logged this on every settlement JE post.
-    ar_control_account_ids = set(
-        Account.objects.filter(
-            company=company,
-            role=Account.AccountRole.RECEIVABLE_CONTROL,
-        ).values_list("id", flat=True)
-    )
-    ar_control_account_ids.update(
-        PostingProfile.objects.filter(
-            company=company,
-            profile_type=PostingProfile.ProfileType.CUSTOMER,
-            is_active=True,
-            control_account__isnull=False,
-        ).values_list("control_account_id", flat=True)
-    )
+    if sums["ar_checked"] and sums["ar_control_balance"] != sums["customer_total"]:
+        diff = sums["ar_control_balance"] - sums["customer_total"]
+        errors.append(
+            f"AR tie-out mismatch: AR Control ({sums['ar_control_balance']}) != "
+            f"Customer balances ({sums['customer_total']}). Difference: {diff}"
+        )
 
-    if ar_control_account_ids:
-        ar_control_balance = AccountBalance.objects.filter(
-            company=company,
-            account_id__in=ar_control_account_ids,
-        ).aggregate(total=Sum("balance"))["total"] or Decimal("0")
-
-        customer_total = CustomerBalance.objects.filter(
-            company=company,
-        ).aggregate(total=Sum("balance"))["total"] or Decimal("0")
-
-        if ar_control_balance != customer_total:
-            diff = ar_control_balance - customer_total
-            errors.append(
-                f"AR tie-out mismatch: AR Control ({ar_control_balance}) != "
-                f"Customer balances ({customer_total}). Difference: {diff}"
-            )
-
-    # A10: same expansion for AP — include accounts that are
-    # control_account on any VENDOR-type PostingProfile.
-    ap_control_account_ids = set(
-        Account.objects.filter(
-            company=company,
-            role=Account.AccountRole.PAYABLE_CONTROL,
-        ).values_list("id", flat=True)
-    )
-    ap_control_account_ids.update(
-        PostingProfile.objects.filter(
-            company=company,
-            profile_type=PostingProfile.ProfileType.VENDOR,
-            is_active=True,
-            control_account__isnull=False,
-        ).values_list("control_account_id", flat=True)
-    )
-
-    if ap_control_account_ids:
-        ap_control_balance = AccountBalance.objects.filter(
-            company=company,
-            account_id__in=ap_control_account_ids,
-        ).aggregate(total=Sum("balance"))["total"] or Decimal("0")
-
-        vendor_total = VendorBalance.objects.filter(
-            company=company,
-        ).aggregate(total=Sum("balance"))["total"] or Decimal("0")
-
-        if ap_control_balance != vendor_total:
-            diff = ap_control_balance - vendor_total
-            errors.append(
-                f"AP tie-out mismatch: AP Control ({ap_control_balance}) != "
-                f"Vendor balances ({vendor_total}). Difference: {diff}"
-            )
+    if sums["ap_checked"] and sums["ap_control_balance"] != sums["vendor_total"]:
+        diff = sums["ap_control_balance"] - sums["vendor_total"]
+        errors.append(
+            f"AP tie-out mismatch: AP Control ({sums['ap_control_balance']}) != "
+            f"Vendor balances ({sums['vendor_total']}). Difference: {diff}"
+        )
 
     return (len(errors) == 0, errors)
