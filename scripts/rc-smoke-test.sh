@@ -96,6 +96,17 @@ test_health() {
     else
         fail "Full health: no response or parse error"
     fi
+
+    # A163: alert endpoint must exist and return valid JSON. A deploy must
+    # not depend on projections being clean (503 is a legal state), only on
+    # the endpoint answering.
+    BODY=$(http_get_body "$BASE_URL/_health/alerts")
+    ALERTS=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
+    if [ "$ALERTS" = "healthy" ] || [ "$ALERTS" = "unhealthy" ]; then
+        pass "Alert health endpoint: $ALERTS"
+    else
+        fail "Alert health endpoint: no response or parse error"
+    fi
 }
 
 # ---------------------------------------------------------------------------

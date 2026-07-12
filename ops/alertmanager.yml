@@ -1,3 +1,5 @@
+# NOT WIRED (A163, 2026-07-11): aspirational config — see ops/README.md.
+# The live alert path is /_health/alerts + an external uptime pinger + Sentry.
 # Alertmanager Configuration for Nxentra
 #
 # Routes Prometheus alerts to Slack (and optionally email).
