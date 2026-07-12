@@ -94,8 +94,12 @@ function timeAgo(iso: string | null): string {
 
 export default function ExceptionsPage() {
   const { toast } = useToast();
-  const { user } = useAuth();
-  const isAdmin = Boolean(user?.is_staff || user?.is_superuser);
+  const { user, membership } = useAuth();
+  // F22: company OWNER/ADMIN can resolve their own exceptions (matches the
+  // backend gate) — previously is_staff-only, so merchants saw "Admin only".
+  const isAdmin = Boolean(
+    user?.is_staff || user?.is_superuser || membership?.role === "OWNER" || membership?.role === "ADMIN"
+  );
 
   const [summary, setSummary] = useState<ProjectionFailureSummary | null>(null);
   const [items, setItems] = useState<ProjectionFailure[]>([]);

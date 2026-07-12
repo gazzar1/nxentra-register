@@ -162,21 +162,22 @@ class ProjectionFailureResolveView(APIView):
     for "I fixed the underlying problem and want to clear the operator
     queue."
 
-    Permission: staff/superuser. Restricting writes to admins prevents
-    accidental queue-clearing by junior users who don't know what the
-    failure was.
+    Permission (F22): company OWNER/ADMIN — or platform staff/superuser.
+    The old is_staff-only gate meant a merchant OWNER could see their own
+    stuck exceptions but never clear them, undercutting the truth-engine
+    positioning. Junior roles (USER/VIEWER) stay excluded so the queue
+    isn't cleared accidentally.
     """
 
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
-        if not (request.user.is_staff or request.user.is_superuser):
+        actor = resolve_actor(request)
+        if not (request.user.is_staff or request.user.is_superuser or actor.is_admin):
             return Response(
-                {"detail": "Admin access required to resolve projection failures."},
+                {"detail": "Owner/admin access required to resolve projection failures."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-
-        actor = resolve_actor(request)
 
         try:
             log = ProjectionFailureLog.objects.get(pk=pk, company=actor.company)
