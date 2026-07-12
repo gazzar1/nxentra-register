@@ -28,6 +28,8 @@ class ShopifyStoreSerializer(serializers.ModelSerializer):
             "scopes",
             "last_sync_at",
             "error_message",
+            "uninstalled_at",
+            "needs_reauth",
             "connected",
             "default_cod_settlement_provider_id",
             "default_cod_settlement_provider_code",

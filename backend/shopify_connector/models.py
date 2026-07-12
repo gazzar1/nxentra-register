@@ -158,6 +158,14 @@ class ShopifyStore(models.Model):
 
     last_sync_at = models.DateTimeField(null=True, blank=True)
     error_message = models.TextField(blank=True)
+    # A48: when the app/uninstalled webhook was first received. Preserved
+    # across webhook retries; cleared on reconnect.
+    uninstalled_at = models.DateTimeField(null=True, blank=True)
+    # A49: Shopify rejected our token (401 / revoked refresh token /
+    # deprecated non-expiring format). The store stays ACTIVE (webhooks
+    # may still flow, and the connected contract keys on ACTIVE) — this
+    # flag drives the reconnect banner. Cleared on successful OAuth.
+    needs_reauth = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

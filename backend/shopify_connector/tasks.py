@@ -406,9 +406,12 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
             # — Shopify denies read-orders for tokens missing the scope. We
             # want the UI to say "Shopify denied access" instead of a generic
             # failure toast.
-            from .commands import _shopify_access_denied
+            from .commands import _is_auth_revoked, _mark_needs_reauth, _shopify_access_denied
 
             denial = _shopify_access_denied(e)
+            # A49: 401 = token revoked -> reconnect banner (403 stays quiet).
+            if denial and _is_auth_revoked(e):
+                _mark_needs_reauth(store, "Shopify rejected the access token (401) — please reconnect the store.")
             if denial and fetched == 0:
                 logger.info(
                     "Skipping order re-sync for %s: %s (scope not granted on this store)",
@@ -677,3 +680,64 @@ def process_gdpr_requests(self) -> dict:
                     connection.rollback()
 
     return {"status": "ok", "processed": processed, "failed": failed, "pending_seen": len(pending_ids)}
+
+
+@shared_task(name="shopify.cleanup_stale_installs")
+def cleanup_stale_installs(max_pending_age_hours: int = 24) -> dict:
+    """A56: sweep abandoned install state. Register in Django admin →
+    Periodic Tasks (DatabaseScheduler), hourly — same ops step as
+    shopify.sync_all_stores.
+
+    Deletes:
+    - PENDING ShopifyStore rows older than ``max_pending_age_hours``: a
+      merchant who bounced off the Shopify authorize screen leaves one
+      forever (the B2 per-company sweep only fires when THAT merchant
+      clicks Connect again), holding the uniq_company_shop_domain slot.
+      get_install_url recreates the row on the next Connect click.
+    - Unconsumed PendingShopifyInstall rows >1h past their 30-min
+      expires_at: they hold encrypted access/refresh tokens indefinitely
+      and nothing else ever deletes them.
+    - Consumed PendingShopifyInstall rows older than 30 days: their
+      tokens were copied to the store at finalize time.
+    """
+    from datetime import timedelta
+
+    from projections.write_barrier import command_writes_allowed
+
+    from .models import PendingShopifyInstall, ShopifyStore
+
+    now = tz.now()
+    with rls_bypass(), command_writes_allowed():
+        stale_pending = ShopifyStore.objects.filter(
+            status=ShopifyStore.Status.PENDING,
+            updated_at__lt=now - timedelta(hours=max_pending_age_hours),
+        )
+        pending_domains = list(stale_pending.values_list("shop_domain", flat=True))
+        pending_deleted, _ = stale_pending.delete()
+
+        expired_installs = PendingShopifyInstall.objects.filter(
+            consumed_at__isnull=True,
+            expires_at__lt=now - timedelta(hours=1),
+        )
+        install_domains = list(expired_installs.values_list("shop_domain", flat=True))
+        installs_deleted, _ = expired_installs.delete()
+
+        consumed_deleted, _ = PendingShopifyInstall.objects.filter(
+            consumed_at__isnull=False,
+            consumed_at__lt=now - timedelta(days=30),
+        ).delete()
+
+    if pending_domains or install_domains or consumed_deleted:
+        logger.info(
+            "A56 sweep: deleted %d stale PENDING stores %s, %d expired installs %s, %d old consumed installs",
+            pending_deleted,
+            pending_domains,
+            installs_deleted,
+            install_domains,
+            consumed_deleted,
+        )
+    return {
+        "pending_stores_deleted": pending_deleted,
+        "expired_installs_deleted": installs_deleted,
+        "consumed_installs_deleted": consumed_deleted,
+    }

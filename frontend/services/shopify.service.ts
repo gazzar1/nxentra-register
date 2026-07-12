@@ -12,6 +12,9 @@ export interface ShopifyStore {
   scopes: string;
   last_sync_at: string | null;
   error_message: string;
+  // A48/A49: lifecycle flags — uninstall timestamp; token-revoked banner.
+  uninstalled_at: string | null;
+  needs_reauth: boolean;
   connected: boolean;
   default_cod_settlement_provider_id: number | null;
   default_cod_settlement_provider_code: string | null;
