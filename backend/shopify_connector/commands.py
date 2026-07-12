@@ -336,8 +336,16 @@ def complete_oauth(company, shop_domain: str, code: str, nonce: str) -> CommandR
         now + timedelta(seconds=int(refresh_token_expires_in)) if refresh_token_expires_in else None
     )
 
+    # A56: captured pre-mutation — the failed save below leaves the
+    # in-memory instance claiming ACTIVE while the DB row is still PENDING.
+    was_pending = store.status == ShopifyStore.Status.PENDING
+
     try:
-        with command_writes_allowed():
+        # A56: inner savepoint — this runs inside the view's/caller's
+        # atomic scope, and a bare IntegrityError catch would leave the
+        # outer transaction aborted (TransactionManagementError on the
+        # cleanup below).
+        with transaction.atomic(), command_writes_allowed():
             store.access_token = access_token
             store.refresh_token = refresh_token
             store.token_expires_at = token_expires_at
@@ -346,6 +354,9 @@ def complete_oauth(company, shop_domain: str, code: str, nonce: str) -> CommandR
             store.status = ShopifyStore.Status.ACTIVE
             store.oauth_nonce = ""
             store.error_message = ""
+            # A48/A49: a successful (re-)OAuth clears the lifecycle flags.
+            store.uninstalled_at = None
+            store.needs_reauth = False
             store.save()
     except IntegrityError:
         logger.warning(
@@ -353,6 +364,12 @@ def complete_oauth(company, shop_domain: str, code: str, nonce: str) -> CommandR
             getattr(company, "id", None),
             shop_domain,
         )
+        # A56: without cleanup the pre-existing PENDING row (created by
+        # get_install_url) survives forever with a stale nonce, holding
+        # the uniq_company_shop_domain slot.
+        if was_pending:
+            with command_writes_allowed():
+                store.delete()
         return CommandResult.fail(
             "This Shopify store is already connected to another Nxentra company. "
             "Disconnect it from the other company first."
@@ -564,7 +581,9 @@ def finalize_shopify_install(company, pending_public_id: str) -> CommandResult:
         store = None
 
     try:
-        with command_writes_allowed():
+        # A56: inner savepoint so the IntegrityError catch leaves the
+        # outer transaction usable.
+        with transaction.atomic(), command_writes_allowed():
             if store is None:
                 store = ShopifyStore.objects.create(
                     company=company,
@@ -585,6 +604,9 @@ def finalize_shopify_install(company, pending_public_id: str) -> CommandResult:
                 store.status = ShopifyStore.Status.ACTIVE
                 store.oauth_nonce = ""
                 store.error_message = ""
+                # A48/A49: a successful reinstall clears the lifecycle flags.
+                store.uninstalled_at = None
+                store.needs_reauth = False
                 store.save()
     except IntegrityError:
         logger.warning(
@@ -818,7 +840,9 @@ def complete_oauth_token_exchange(
     existing = ShopifyStore.objects.filter(company=company, shop_domain=shop_domain).first()
 
     try:
-        with command_writes_allowed():
+        # A56: inner savepoint so the IntegrityError catch leaves the
+        # outer transaction usable.
+        with transaction.atomic(), command_writes_allowed():
             if existing:
                 existing.access_token = access_token
                 existing.refresh_token = refresh_token
@@ -828,6 +852,9 @@ def complete_oauth_token_exchange(
                 existing.status = ShopifyStore.Status.ACTIVE
                 existing.oauth_nonce = ""
                 existing.error_message = ""
+                # A48/A49: a successful re-exchange clears the lifecycle flags.
+                existing.uninstalled_at = None
+                existing.needs_reauth = False
                 existing.save()
                 store = existing
             else:
@@ -888,22 +915,20 @@ def complete_oauth_token_exchange(
 # =============================================================================
 
 
-def _refresh_shopify_token(store: ShopifyStore) -> bool:
+def _refresh_shopify_token(store: ShopifyStore) -> str:
     """
     Refresh the store's access_token using its refresh_token.
 
-    Returns True on success. Returns False when:
-      - The store has no refresh_token (legacy permanent token from before
-        A122, or never completed OAuth)
-      - The refresh_token itself has expired (>90d since last issue), in
-        which case the merchant must re-authorize
-      - Shopify rejects the refresh request for any reason
-
-    Caller is responsible for surfacing a re-auth prompt to the merchant
-    when this returns False on an ACTIVE store.
+    Returns (A49 — the caller decides whether to nag the merchant):
+      - "ok"        success
+      - "revoked"   the merchant must re-authorize: no refresh_token on an
+                    expiring store, refresh_token expired (>90d), or
+                    Shopify answered 401/403 to the refresh request
+      - "transient" network failure / 5xx / malformed response — retry
+                    later, do NOT flag needs_reauth
     """
     if not store.refresh_token:
-        return False
+        return "revoked"
 
     from django.utils import timezone as tz
 
@@ -912,7 +937,7 @@ def _refresh_shopify_token(store: ShopifyStore) -> bool:
             "Shopify refresh_token expired for %s — merchant must re-OAuth",
             store.shop_domain,
         )
-        return False
+        return "revoked"
 
     token_url = f"https://{store.shop_domain}/admin/oauth/access_token"
     try:
@@ -934,7 +959,11 @@ def _refresh_shopify_token(store: ShopifyStore) -> bool:
             store.shop_domain,
             e,
         )
-        return False
+        response = getattr(e, "response", None)
+        if response is not None and response.status_code in (401, 403):
+            # Shopify explicitly refused the refresh token — revoked.
+            return "revoked"
+        return "transient"
 
     from datetime import timedelta
 
@@ -945,7 +974,7 @@ def _refresh_shopify_token(store: ShopifyStore) -> bool:
             "Shopify refresh response missing access_token for %s",
             store.shop_domain,
         )
-        return False
+        return "transient"
 
     new_refresh_token = data.get("refresh_token", store.refresh_token)
     expires_in = data.get("expires_in")
@@ -969,7 +998,35 @@ def _refresh_shopify_token(store: ShopifyStore) -> bool:
         )
 
     logger.info("Refreshed Shopify access_token for %s", store.shop_domain)
-    return True
+    return "ok"
+
+
+def _mark_needs_reauth(store: ShopifyStore, reason: str) -> None:
+    """A49: persist "Shopify rejected our token" on the store so the
+    settings page can show a reconnect banner instead of the merchant
+    only ever finding out by clicking a sync button.
+
+    The store deliberately stays ACTIVE: the webhook router only accepts
+    financial topics for ACTIVE stores (webhooks can keep flowing after a
+    token revocation), and the connected contract keys on ACTIVE.
+
+    Idempotent — the first reason wins until a successful OAuth clears it.
+    """
+    if store.needs_reauth:
+        return
+    with command_writes_allowed():
+        store.needs_reauth = True
+        store.error_message = reason
+        store.save(update_fields=["needs_reauth", "error_message", "updated_at"])
+    logger.warning("Shopify store %s flagged needs_reauth: %s", store.shop_domain, reason)
+
+
+def _is_auth_revoked(exc: "requests.RequestException") -> bool:
+    """A49: HTTP 401 specifically — the unambiguous 'token no longer
+    valid' signal. 403/404/GraphQL-denied stay benign per A120 (fresh dev
+    stores 403 on payouts/products without any token problem)."""
+    response = getattr(exc, "response", None)
+    return response is not None and response.status_code == 401
 
 
 def _get_valid_access_token(store: ShopifyStore) -> str | None:
@@ -985,6 +1042,11 @@ def _get_valid_access_token(store: ShopifyStore) -> str | None:
         (deadline 2027-01-01).
       - A122 stores (token_expires_at set): refresh if expired or expiring
         within the next 60 seconds (buffer to avoid mid-call expiry).
+
+    A49: a failed refresh on an ACTIVE store is the strongest
+    "token revoked" signal we have (Shopify invalidates the refresh token
+    on uninstall/revoke) — it used to vanish into a return-string nobody
+    persisted; now it flags needs_reauth so the merchant sees a banner.
     """
     if not store.access_token:
         return None
@@ -996,7 +1058,13 @@ def _get_valid_access_token(store: ShopifyStore) -> str | None:
 
         buffer = timedelta(seconds=60)
         if tz.now() + buffer >= store.token_expires_at:
-            if not _refresh_shopify_token(store):
+            outcome = _refresh_shopify_token(store)
+            if outcome != "ok":
+                if outcome == "revoked" and store.status == ShopifyStore.Status.ACTIVE:
+                    _mark_needs_reauth(
+                        store,
+                        "Shopify token expired or was revoked — please reconnect the store.",
+                    )
                 return None
 
     return store.access_token
@@ -1046,6 +1114,9 @@ def disconnect_store(actor: ActorContext, store_public_id: str = None) -> Comman
         store.refresh_token = ""
         store.token_expires_at = None
         store.refresh_token_expires_at = None
+        # A49: a user-initiated disconnect isn't an uninstall (don't stamp
+        # uninstalled_at) but any pending reauth nag is moot now.
+        store.needs_reauth = False
         store.save()
 
     emit_event(
@@ -1487,7 +1558,19 @@ def process_order_cancelled(store: ShopifyStore, payload: dict) -> CommandResult
 
 @transaction.atomic
 def process_app_uninstalled(store: ShopifyStore, payload: dict) -> CommandResult:
-    """Handle app/uninstalled webhook — mark store as disconnected."""
+    """Handle app/uninstalled webhook — mark store as disconnected.
+
+    A48: stamps uninstalled_at (first receipt wins — the webhook view's
+    fallback lookup can hand us an already-DISCONNECTED store on retry)
+    and short-circuits retries so they don't emit duplicate
+    SHOPIFY_STORE_DISCONNECTED events with fresh idempotency keys.
+    """
+    if store.status == ShopifyStore.Status.DISCONNECTED and store.uninstalled_at:
+        logger.info("app/uninstalled retry for %s — already stamped, skipping", store.shop_domain)
+        return CommandResult.ok(data={"store": store, "skipped": True})
+
+    from django.utils import timezone as tz
+
     with command_writes_allowed():
         store.status = ShopifyStore.Status.DISCONNECTED
         store.access_token = ""
@@ -1496,6 +1579,11 @@ def process_app_uninstalled(store: ShopifyStore, payload: dict) -> CommandResult
         store.token_expires_at = None
         store.refresh_token_expires_at = None
         store.error_message = "App uninstalled by merchant"
+        if not store.uninstalled_at:
+            store.uninstalled_at = tz.now()
+        # Uninstalled is terminal, not reauthable — a reconnect banner on
+        # a DISCONNECTED store would be noise.
+        store.needs_reauth = False
         store.save()
 
     from events.emitter import emit_event_no_actor
@@ -1681,6 +1769,11 @@ def sync_payouts(store: ShopifyStore) -> CommandResult:
         # error so the reviewer doesn't see a red toast on first connect.
         denial = _shopify_access_denied(e)
         if denial:
+            # A49: 401 is the token-revoked signal — flag the reconnect
+            # banner. 403/404 stay a quiet "unavailable" per A120 (fresh
+            # dev stores 403 here with a perfectly valid token).
+            if _is_auth_revoked(e):
+                _mark_needs_reauth(store, "Shopify rejected the access token (401) — please reconnect the store.")
             logger.info(
                 "Skipping payout sync for %s: %s (likely Shopify Payments not enabled or scope not granted)",
                 store.shop_domain,
@@ -3415,6 +3508,11 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
                     # token. New token-exchanges (B15) return expiring
                     # tokens, but pre-B15 connected stores still have the
                     # old format and need a re-OAuth to upgrade.
+                    # A49: this store genuinely needs re-OAuth — banner it.
+                    _mark_needs_reauth(
+                        store,
+                        "Your Shopify connection uses a deprecated token format — please reconnect the store.",
+                    )
                     msg = (
                         "Your Shopify connection uses a deprecated token "
                         "format that Shopify no longer accepts. Disconnect "

@@ -260,6 +260,19 @@ export default function ShopifySettingsPage() {
     init();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // A49: one-click re-OAuth for a store whose token Shopify revoked —
+  // same install flow, domain prefilled from the connected store.
+  const handleReconnect = async (domain: string) => {
+    setConnecting(true);
+    try {
+      const { data } = await shopifyService.install(domain, isShopifyEmbedded());
+      redirectTopLevel(data.url);
+    } catch {
+      toast({ title: "Failed to start reconnection.", variant: "destructive" });
+      setConnecting(false);
+    }
+  };
+
   const handleConnect = async () => {
     if (!shopDomain.trim()) {
       toast({ title: "Please enter your Shopify store domain.", variant: "destructive" });
@@ -457,6 +470,28 @@ export default function ShopifySettingsPage() {
         ) : (
           /* ============== Connected ============== */
           <>
+            {/* A49: token revoked — Shopify can't be read until re-OAuth */}
+            {store.needs_reauth && (
+              <div className="flex items-start justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30 p-3 text-sm text-amber-800 dark:text-amber-300">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+                  <span>
+                    Nxentra can no longer access your Shopify store — the access token was
+                    revoked or expired. Reconnect to resume syncing.
+                  </span>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => handleReconnect(store.shop_domain)}
+                  disabled={connecting}
+                >
+                  {connecting && <Loader2 className="me-2 h-3.5 w-3.5 animate-spin" />}
+                  Reconnect
+                </Button>
+              </div>
+            )}
+
             {/* Connection Status */}
             <Card>
               <CardHeader>
@@ -474,8 +509,10 @@ export default function ShopifySettingsPage() {
                   <div>
                     <p className="text-sm text-muted-foreground">Status</p>
                     <p className="font-medium flex items-center gap-1.5">
-                      <span className="h-2 w-2 rounded-full bg-green-500" />
-                      Active
+                      <span
+                        className={`h-2 w-2 rounded-full ${store.needs_reauth ? "bg-amber-500" : "bg-green-500"}`}
+                      />
+                      {store.needs_reauth ? "Needs re-authorization" : "Active"}
                     </p>
                   </div>
                   <div>
