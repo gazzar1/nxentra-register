@@ -1669,7 +1669,11 @@ def sync_payouts(store: ShopifyStore) -> CommandResult:
     )
 
     try:
-        payouts_data = client.list_payouts(status="paid", limit=50)
+        # A169: full cursor walk — the old limit=50 single page made
+        # everything older than the newest 50 payouts silently
+        # unsyncable. Idempotency (unique shopify_payout_id + event
+        # idempotency_key) makes the full walk safe to repeat.
+        payouts_data = client.list_payouts(status="paid")
     except requests.RequestException as e:
         # Shopify denies this resource when the store hasn't enabled Shopify
         # Payments — the default state of every fresh dev store the App Store
@@ -1836,7 +1840,9 @@ def fetch_payout_transactions(store: ShopifyStore, payout: ShopifyPayout) -> Com
         return CommandResult.ok(data={"skipped": True, "reason": "Transactions already fetched."})
 
     try:
-        transactions = client.list_payout_transactions(payout.shopify_payout_id, limit=250)
+        # A169: no cap — verification sums must cover the COMPLETE set
+        # or every large payout reports a false Net/Fee mismatch.
+        transactions = client.list_payout_transactions(payout.shopify_payout_id)
     except requests.RequestException as e:
         logger.error("Failed to fetch payout transactions: %s", e)
         return CommandResult.fail(f"Shopify API error: {e}")
@@ -1968,6 +1974,21 @@ def verify_payout(store: ShopifyStore, payout_id: int) -> CommandResult:
             discrepancies.append(f"Net mismatch: transactions={sum_net}, payout={payout.net_amount}")
         if sum_fee != payout.fees:
             discrepancies.append(f"Fee mismatch: transactions={sum_fee}, payout={payout.fees}")
+
+        # A169 remediation: payouts fetched under the old 250-cap were
+        # frozen incomplete forever by the fetch-once guard, re-serving a
+        # false discrepancy from cache on every verify. A discrepant
+        # cache at or above the old cap is the truncation signature —
+        # drop it and re-fetch the complete set.
+        if discrepancies and existing.count() >= 250:
+            logger.info(
+                "A169: payout %s cached with %d transactions and discrepancies — likely pre-fix truncation; re-fetching.",
+                payout.shopify_payout_id,
+                existing.count(),
+            )
+            with command_writes_allowed():
+                existing.delete()
+            return fetch_payout_transactions(store, payout)
 
         return CommandResult.ok(
             data={

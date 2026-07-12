@@ -682,73 +682,99 @@ class ShopifyAdminClient:
     # /shopify_payments/balance/transactions.json)
     # ------------------------------------------------------------------
 
-    def list_payouts(self, status: str = "paid", limit: int = 50) -> list[dict] | None:
+    def list_payouts(self, status: str = "paid", limit: int | None = None) -> list[dict] | None:
         """
-        Most-recent payouts, REST-shaped. Returns None when the store has
-        no Shopify Payments account exposed to us (Payments not enabled, or
-        scope withheld) — callers treat that like the old REST 403.
+        ALL payouts, REST-shaped, cursor-paginated (A169: the old
+        single-page `payouts(first: 50)` silently made anything older
+        than the newest 50 unreachable — no error, no log; combined with
+        the client-side status filter the effective window was even
+        smaller). Returns None when the store has no Shopify Payments
+        account exposed to us (Payments not enabled, or scope withheld) —
+        callers treat that like the old REST 403.
+
+        `limit` is an optional TOTAL cap for cheap health checks
+        (shopify_graphql_ping passes 5); None paginates to exhaustion.
         """
-        query = f"""
-        query Payouts {{
-          shopifyPaymentsAccount {{
-            payouts(first: {int(limit)}) {{
-              nodes {{
+        query = """
+        query Payouts($cursor: String) {
+          shopifyPaymentsAccount {
+            payouts(first: 50, after: $cursor) {
+              pageInfo { hasNextPage endCursor }
+              nodes {
                 legacyResourceId
                 issuedAt
                 status
-                net {{ amount currencyCode }}
-                summary {{
-                  adjustmentsFee {{ amount }}
-                  adjustmentsGross {{ amount }}
-                  chargesFee {{ amount }}
-                  chargesGross {{ amount }}
-                  refundsFee {{ amount }}
-                  refundsFeeGross {{ amount }}
-                  reservedFundsFee {{ amount }}
-                  reservedFundsGross {{ amount }}
-                }}
-              }}
-            }}
-          }}
-        }}
-        """
-        data = self.execute(query)
-        account = data.get("shopifyPaymentsAccount")
-        if account is None:
-            return None
-
-        payouts = []
-        for node in (account.get("payouts") or {}).get("nodes") or []:
-            node_status = (node.get("status") or "").lower()
-            if status and node_status != status.lower():
-                continue
-            net = node.get("net") or {}
-            summary = node.get("summary") or {}
-            payouts.append(
-                {
-                    "id": int(node["legacyResourceId"]),
-                    "date": node.get("issuedAt") or "",
-                    "status": node_status,
-                    "amount": str(net.get("amount", "0")),
-                    "currency": net.get("currencyCode", "USD"),
-                    "summary": {
-                        "adjustments_fee_amount": _money(summary.get("adjustmentsFee")),
-                        "adjustments_gross_amount": _money(summary.get("adjustmentsGross")),
-                        "charges_fee_amount": _money(summary.get("chargesFee")),
-                        "charges_gross_amount": _money(summary.get("chargesGross")),
-                        "refunds_fee_amount": _money(summary.get("refundsFee")),
-                        "refunds_gross_amount": _money(summary.get("refundsFeeGross")),
-                        "reserved_funds_fee_amount": _money(summary.get("reservedFundsFee")),
-                        "reserved_funds_gross_amount": _money(summary.get("reservedFundsGross")),
-                    },
+                net { amount currencyCode }
+                summary {
+                  adjustmentsFee { amount }
+                  adjustmentsGross { amount }
+                  chargesFee { amount }
+                  chargesGross { amount }
+                  refundsFee { amount }
+                  refundsFeeGross { amount }
+                  reservedFundsFee { amount }
+                  reservedFundsGross { amount }
                 }
-            )
-        return payouts
+              }
+            }
+          }
+        }
+        """
+        payouts: list[dict] = []
+        cursor = None
+        while True:
+            data = self.execute(query, {"cursor": cursor})
+            account = data.get("shopifyPaymentsAccount")
+            if account is None:
+                # First page in practice — preserve the "unavailable"
+                # contract (A120) rather than returning a partial list.
+                return None
 
-    def list_payout_transactions(self, payout_id, limit: int = 250) -> list[dict] | None:
+            conn = account.get("payouts") or {}
+            for node in conn.get("nodes") or []:
+                node_status = (node.get("status") or "").lower()
+                if status and node_status != status.lower():
+                    continue
+                net = node.get("net") or {}
+                summary = node.get("summary") or {}
+                payouts.append(
+                    {
+                        "id": int(node["legacyResourceId"]),
+                        "date": node.get("issuedAt") or "",
+                        "status": node_status,
+                        "amount": str(net.get("amount", "0")),
+                        "currency": net.get("currencyCode", "USD"),
+                        "summary": {
+                            "adjustments_fee_amount": _money(summary.get("adjustmentsFee")),
+                            "adjustments_gross_amount": _money(summary.get("adjustmentsGross")),
+                            "charges_fee_amount": _money(summary.get("chargesFee")),
+                            "charges_gross_amount": _money(summary.get("chargesGross")),
+                            "refunds_fee_amount": _money(summary.get("refundsFee")),
+                            "refunds_gross_amount": _money(summary.get("refundsFeeGross")),
+                            "reserved_funds_fee_amount": _money(summary.get("reservedFundsFee")),
+                            "reserved_funds_gross_amount": _money(summary.get("reservedFundsGross")),
+                        },
+                    }
+                )
+
+            if limit is not None and len(payouts) >= limit:
+                return payouts[:limit]
+            page = conn.get("pageInfo") or {}
+            if not page.get("hasNextPage"):
+                return payouts
+            cursor = page.get("endCursor")
+
+    def list_payout_transactions(self, payout_id, limit: int | None = None) -> list[dict] | None:
         """
         Balance transactions belonging to one payout, REST-shaped.
         Returns None when no Shopify Payments account is exposed.
+
+        A169: fetches ALL pages by default. The old `limit=250` stop
+        condition silently truncated large payouts (~300 transactions
+        max), so payout verification compared complete Shopify totals
+        against incomplete sums — a guaranteed, permanent false "Net
+        mismatch" on any big payout. A limit, if passed, is a hard cap
+        the CALLER opted into.
         """
         query = """
         query PayoutTransactions($cursor: String, $search: String) {
@@ -773,7 +799,7 @@ class ShopifyAdminClient:
         search = f"payout_id:{payout_id}"
         transactions: list[dict] = []
         cursor = None
-        while len(transactions) < limit:
+        while limit is None or len(transactions) < limit:
             data = self.execute(query, {"cursor": cursor, "search": search})
             account = data.get("shopifyPaymentsAccount")
             if account is None:
