@@ -4,6 +4,26 @@ Archive of completed items moved from NEXT_TASKS.md. See NEXT_TASKS.md for pendi
 
 > **Format note (2026-07-11).** Existing entries below keep their full historical closeout text — they are the archive and the diligence evidence; do not compress them retroactively. **New closeouts from here on use one line each**: `ID — date — classification (shipped / superseded / refuted) — one-sentence outcome — commit/PR — link to detail if any`. Detail beyond one line goes in the PR description or an archive doc, not here.
 
+## 2026-07-12 — Safe-supervised-pilot exit gate (P0 batch, dual audit 2026-07-11)
+
+- A164 — 2026-07-11 — shipped — reconciliation/tests/ + Postgres concurrency class now run in CI; -x dropped; test_db.sqlite3 untracked — PR #60
+- A156 — 2026-07-11 — shipped — is_postable FieldError fixed at 7 sites (+ revaluation ActorContext TypeError the FieldError masked); core-mapping auto-init works for the first time — PR #61
+- A154 (+A115) — 2026-07-11 — shipped — one canonical drain-to-zero rebuild across CLI/HTTP/tenant paths; rebuild-then-process is byte-identical; JE read model clears on rebuild — PR #62
+- A155 — 2026-07-11 — shipped — canonical counterparty-preserving reversal core; all four voids complete atomically (raise-inside-atomic, owner decision); orphan-DRAFT detector in System Health — PR #63
+- A157 — 2026-07-11 — shipped — settlement imbalance/zero-gross + all platform mapping gaps now raise (TerminalSkip/StateError per F27); refunds branch had been a bare return — PR #64
+- A158 — 2026-07-11 — shipped — legacy /banking matcher reuses the canonical Stripe settlement JE (guard-now owner decision); pending-window + event-less paths pinned — PR #65 (+#67 lint hotfix)
+- A176 — 2026-07-11 — shipped — balance sheet folds current-year earnings into equity (both modes); period mode is true as-of cumulative — PR #66
+- A177 — 2026-07-11 — shipped — JE idempotency via caller request_id (aggregate-scoped keys otherwise); 4 collision classes + false-failure eliminated; 5 dedupe-reliant callers migrated — PR #68
+- A180 — 2026-07-11 — shipped — resolve_difference atomic + event-carried (ReconciliationDifferenceResolved); rebuild reproduces resolved state; A99b site absorbed (3→2) — PR #69 (+#71 pin hotfix)
+- A159 — 2026-07-11 — shipped — refund backfill (per-order GraphQL query + updated_at catch-up + first-seen-refunded booking); webhook 503s on retryable failures — PR #70
+- A160+A161 — 2026-07-12 — shipped — backups.* permissions (restore SENSITIVE even for OWNER) + fail-closed verified restore (hash/counts/identity pre-flight, in-transaction invariants) + 30 missing models registered — PR #72
+- A162 — 2026-07-12 — shipped — DEBUG defaults False; TESTING explicit (argv backdoor removed); PROJECTIONS_SYNC asserted at boot; .env.example rewritten (contract-pinned) — PR #73
+- A163 — 2026-07-12 — shipped — /_health/alerts (503 on failures/lag/pauses, web-process) + alert_check command; ops/ configs marked NOT WIRED; drill runbook in OPS_PLAYBOOK — PR #74
+- A124 — 2026-07-12 — shipped — GDPR export/redact/shop-redact jobs with evidence + completion events; immutable-event lawful-basis exception (owner decision) pinned by test — PR #75
+- Docs — 2026-07-11 — shipped — dual-audit reports + rebuilt NEXT_TASKS/NEXT_SESSION_PROMPT committed — PR #59
+
+New defects found during the batch, filed as P1 (A181-A185): auto-reversal helper payload mismatch; branch protection + ruff pin (two red-CI merges hotfixed same-session); pre-A180 resolution backfill; dormant-vertical fail-loud; /_health/full slug leak.
+
 ## From: Phase A — First-user unblock + foundation hardening
 
 ### A1. Phase 1 dry-run on fresh Shopify dev store — ✅ **DONE 2026-04-28**
