@@ -17,13 +17,24 @@ urlpatterns = [
     path("transactions/<int:pk>/", views.BankTransactionUpdateView.as_view(), name="bank-transaction-detail"),
     # Summary
     path("summary/", views.BankSummaryView.as_view(), name="bank-summary"),
-    # Reconciliation
-    path("reconciliation/overview/", views.ReconciliationOverviewView.as_view(), name="recon-overview"),
-    path("reconciliation/auto-match/", views.AutoMatchView.as_view(), name="recon-auto-match"),
-    path("reconciliation/suggestions/<int:pk>/", views.MatchSuggestionsView.as_view(), name="recon-suggestions"),
-    path("reconciliation/match/", views.ManualMatchView.as_view(), name="recon-manual-match"),
-    path("reconciliation/explain/<str:platform>/<int:pk>/", views.PayoutExplainerView.as_view(), name="recon-explain"),
-    path("reconciliation/unmatched-payouts/", views.UnmatchedPayoutsView.as_view(), name="recon-unmatched-payouts"),
+    # Reconciliation matcher — retired (A166). All routes return 410 Gone
+    # so stale tabs/bookmarks fail loudly and self-explain, instead of a
+    # typo-indistinguishable 404. Canonical engine: /api/accounting/
+    # bank-statements/* + /finance/reconciliation.
+    path("reconciliation/overview/", views.ReconciliationRetiredView.as_view(), name="recon-overview"),
+    path("reconciliation/auto-match/", views.ReconciliationRetiredView.as_view(), name="recon-auto-match"),
+    path("reconciliation/suggestions/<int:pk>/", views.ReconciliationRetiredView.as_view(), name="recon-suggestions"),
+    path("reconciliation/match/", views.ReconciliationRetiredView.as_view(), name="recon-manual-match"),
+    path(
+        "reconciliation/explain/<str:platform>/<int:pk>/",
+        views.ReconciliationRetiredView.as_view(),
+        name="recon-explain",
+    ),
+    path(
+        "reconciliation/unmatched-payouts/",
+        views.ReconciliationRetiredView.as_view(),
+        name="recon-unmatched-payouts",
+    ),
     # Exception queue
     path("exceptions/", views.ExceptionListView.as_view(), name="exceptions-list"),
     path("exceptions/scan/", views.ExceptionScanView.as_view(), name="exceptions-scan"),

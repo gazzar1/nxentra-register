@@ -20,14 +20,6 @@ from rest_framework.views import APIView
 from accounts.authz import resolve_actor
 
 from .exceptions import scan_all
-from .matching import (
-    auto_match_transactions,
-    explain_payout,
-    get_match_suggestions,
-    get_reconciliation_overview,
-    get_unmatched_payouts,
-    manual_match,
-)
 from .models import BankAccount, BankStatement, BankTransaction, ReconciliationException
 from .parsers import apply_column_mapping, parse_csv_file, preview_csv
 
@@ -450,7 +442,19 @@ class BankTransactionListView(APIView):
 
 
 class BankTransactionUpdateView(APIView):
-    """Update a transaction (e.g., exclude it or manually match it)."""
+    """Feed-hygiene transitions on a bank-feed transaction.
+
+    A166: the 'match'/'unmatch' accounting actions are retired. The raw
+    unmatch flag-flip left the matched journal line reconciled and the
+    ReconciliationLink CONFIRMED with no event trail (stranded state),
+    and the raw match implied accounting state with none behind it. The
+    canonical match/unmatch engine — with A19 side-effect reversal —
+    lives at /api/accounting/bank-statements/.
+
+    What survives is feed hygiene with no accounting side effects:
+    - exclude: hide a row from the feed
+    - unmatch on an EXCLUDED row: restore it to UNMATCHED
+    """
 
     permission_classes = [IsAuthenticated]
 
@@ -472,29 +476,21 @@ class BankTransactionUpdateView(APIView):
             return Response({"status": "excluded"})
 
         if action == "unmatch":
-            tx.status = "UNMATCHED"
-            tx.matched_content_type = ""
-            tx.matched_object_id = None
-            tx.matched_at = None
-            tx.matched_by = ""
-            tx.save()
-            return Response({"status": "unmatched"})
-
-        if action == "match":
-            content_type = request.data.get("matched_content_type", "")
-            object_id = request.data.get("matched_object_id")
-            if not content_type or not object_id:
+            if tx.status != "EXCLUDED":
                 return Response(
-                    {"detail": "matched_content_type and matched_object_id required."},
-                    status=400,
+                    {
+                        "detail": (
+                            "The banking matcher is retired (A166). Matched state can "
+                            "only be undone through Accounting → Bank Reconciliation, "
+                            "which reverses the accounting the match created."
+                        )
+                    },
+                    status=409,
                 )
-            tx.status = "MATCHED"
-            tx.matched_content_type = content_type
-            tx.matched_object_id = int(object_id)
-            tx.matched_at = timezone.now()
-            tx.matched_by = "manual"
-            tx.save()
-            return Response({"status": "matched"})
+            # Restore an excluded feed row — never touched accounting.
+            tx.status = "UNMATCHED"
+            tx.save(update_fields=["status"])
+            return Response({"status": "unmatched"})
 
         return Response({"detail": "Unknown action."}, status=400)
 
@@ -533,121 +529,33 @@ class BankSummaryView(APIView):
         )
 
 
-# ─── Reconciliation ─────────────────────────────────────────────
+# ─── Reconciliation (retired, A166) ─────────────────────────────
 
 
-class ReconciliationOverviewView(APIView):
-    """Unified reconciliation overview — bank + payout stats."""
+class ReconciliationRetiredView(APIView):
+    """HTTP 410 for every retired /api/bank/reconciliation/* endpoint.
 
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        actor = resolve_actor(request)
-        if not actor.company:
-            return Response({"detail": "No active company."}, status=400)
-
-        overview = get_reconciliation_overview(actor.company)
-        return Response(overview)
-
-
-class AutoMatchView(APIView):
-    """Run auto-matching engine on unmatched bank deposits."""
+    A166: the legacy matcher double-posted against the canonical
+    settlement path (A158) and its unmatch stranded reconciled journal
+    lines with no event trail. A distinguishable 410 (vs a typo 404)
+    keeps the failure loud for stale tabs and old bookmarks.
+    """
 
     permission_classes = [IsAuthenticated]
 
-    def post(self, request):
-        actor = resolve_actor(request)
-        if not actor.company:
-            return Response({"detail": "No active company."}, status=400)
+    RETIRED = {
+        "detail": (
+            "This banking matcher endpoint is retired (A166). Use the "
+            "reconciliation workspace at /finance/reconciliation, or "
+            "Accounting → Bank Reconciliation for statement matching."
+        )
+    }
 
-        from django.db import transaction
+    def get(self, request, *args, **kwargs):
+        return Response(self.RETIRED, status=410)
 
-        # A100 (2026-05-26): projection_writes_allowed() was previously entered
-        # here; the protocol forbids views from granting projection-write
-        # privileges. Moved into bank_connector/matching.py around the actual
-        # _create_payout_je call, where the projection-chain write happens.
-        bank_account_id = request.data.get("bank_account_id")
-        with transaction.atomic():
-            result = auto_match_transactions(actor.company, bank_account_id)
-        return Response(result)
-
-
-class MatchSuggestionsView(APIView):
-    """Get match suggestions for a specific bank transaction."""
-
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request, pk):
-        actor = resolve_actor(request)
-        if not actor.company:
-            return Response({"detail": "No active company."}, status=400)
-
-        suggestions = get_match_suggestions(actor.company, pk)
-        return Response({"suggestions": suggestions})
-
-
-class ManualMatchView(APIView):
-    """Manually match a bank transaction to a payout."""
-
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        actor = resolve_actor(request)
-        if not actor.company:
-            return Response({"detail": "No active company."}, status=400)
-
-        bank_transaction_id = request.data.get("bank_transaction_id")
-        platform = request.data.get("platform")
-        payout_id = request.data.get("payout_id")
-
-        if not all([bank_transaction_id, platform, payout_id]):
-            return Response(
-                {"detail": "bank_transaction_id, platform, and payout_id are required."},
-                status=400,
-            )
-
-        from django.db import transaction
-
-        # A100 (2026-05-26): see AutoMatchView. The projection-context entry
-        # moved into bank_connector/matching.py where the actual write happens.
-        with transaction.atomic():
-            result = manual_match(actor.company, int(bank_transaction_id), platform, int(payout_id))
-        if "error" in result:
-            return Response({"detail": result["error"]}, status=400)
-        return Response(result)
-
-
-class PayoutExplainerView(APIView):
-    """Break down a payout into its component transactions."""
-
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request, platform, pk):
-        actor = resolve_actor(request)
-        if not actor.company:
-            return Response({"detail": "No active company."}, status=400)
-
-        if platform not in ("stripe", "shopify"):
-            return Response({"detail": "Invalid platform."}, status=400)
-
-        result = explain_payout(actor.company, platform, pk)
-        if "error" in result:
-            return Response({"detail": result["error"]}, status=404)
-        return Response(result)
-
-
-class UnmatchedPayoutsView(APIView):
-    """List all platform payouts not yet matched to bank transactions."""
-
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        actor = resolve_actor(request)
-        if not actor.company:
-            return Response({"detail": "No active company."}, status=400)
-
-        payouts = get_unmatched_payouts(actor.company)
-        return Response({"payouts": payouts})
+    def post(self, request, *args, **kwargs):
+        return Response(self.RETIRED, status=410)
 
 
 # ─── Exception Queue ───────────────────────────────────────────

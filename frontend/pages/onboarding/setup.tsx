@@ -327,7 +327,10 @@ export default function OnboardingSetupPage() {
   };
 
   const handleGoToReconciliation = () => {
-    window.location.href = "/shopify/reconciliation";
+    // F4/A166: land on the canonical reconciliation workspace. The
+    // Shopify payout Verify flow still lives at /shopify/reconciliation,
+    // linked from the workspace when needed.
+    window.location.href = "/finance/reconciliation";
   };
 
   const handleSkip = () => {
@@ -1358,7 +1361,7 @@ function StepReady({
     {
       done: false,
       label: "Check your first reconciliation",
-      action: () => router.push("/shopify/reconciliation"),
+      action: () => router.push("/finance/reconciliation"),
     },
   ];
 

@@ -158,6 +158,12 @@ class ReconciliationProjection(BaseProjection):
         # of that flip: bank_connector/matching.py no longer mutates
         # JL.reconciled directly (closes the Codex-flagged protocol
         # violation).
+        #
+        # A166 (2026-07-12): the EMITTER is retired — the /banking
+        # matcher no longer exists and nothing emits this kind anymore.
+        # This consumer branch MUST stay: production event logs contain
+        # historical platform_payout_reconcile events, and a projection
+        # rebuild replays them. Deleting it would silently break rebuilds.
         if confirmation_kind == "platform_payout_reconcile":
             if journal_line_public_id:
                 # Look up + flip the JL. Idempotent (True→True is a no-op).

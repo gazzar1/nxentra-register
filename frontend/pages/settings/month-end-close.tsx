@@ -222,7 +222,7 @@ export default function MonthEndClosePage() {
                 </li>
                 <li className="flex gap-3">
                   <span className="font-mono text-xs bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded-full h-5 w-5 flex items-center justify-center shrink-0 mt-0.5">3</span>
-                  <div><span className="font-medium text-foreground">Review reconciliation.</span> Go to Shopify &gt; Reconciliation. Verify each payout. If any are unmatched, click Verify to pull transaction details.</div>
+                  <div><span className="font-medium text-foreground">Review reconciliation.</span> Go to Finance &gt; Reconciliation and clear the exception queue. For Shopify payout-level Verify, the Shopify Reconciliation page pulls transaction details per payout.</div>
                 </li>
                 <li className="flex gap-3">
                   <span className="font-mono text-xs bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded-full h-5 w-5 flex items-center justify-center shrink-0 mt-0.5">4</span>
