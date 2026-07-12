@@ -527,7 +527,19 @@ class BankManualMatchView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response({"status": "matched"})
+        # A165: an EBD settlement pick now posts a clearance JE and can
+        # land as MATCHED_WITH_DIFFERENCE — surface what actually happened
+        # so the UI can route the operator to the difference-reason flow.
+        bank_line = result.data["bank_line"]
+        bank_line.refresh_from_db()
+        return Response(
+            {
+                "status": "matched",
+                "match_status": bank_line.match_status,
+                "difference_amount": str(bank_line.difference_amount or "0"),
+                "clearance_entry_public_id": result.data.get("clearance_entry_public_id"),
+            }
+        )
 
 
 class BankUnmatchView(APIView):
