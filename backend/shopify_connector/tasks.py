@@ -185,8 +185,57 @@ def _sync_store(store, lookback_hours: int) -> dict:
         logger.error("Refund catch-up failed for %s: %s", store.shop_domain, e)
         result["refunds"] = {"status": "error", "error": str(e)}
 
+    # 5. F13: deferred-COD-COGS safety net. process_order_paid books
+    # deferred COGS inline, but its failure path is log-only and a crash
+    # between the paid event and the booking would strand the fulfillment
+    # forever (the paid webhook's idempotency skip never re-enters). Any
+    # COGS_PENDING fulfillment whose order is already paid gets booked
+    # here.
+    try:
+        result["deferred_cogs"] = {"booked": _sweep_deferred_cogs(store)}
+    except Exception as e:
+        logger.error("Deferred-COGS sweep failed for %s: %s", store.shop_domain, e)
+        result["deferred_cogs"] = {"status": "error", "error": str(e)}
+
     result["status"] = "ok"
     return result
+
+
+def _sweep_deferred_cogs(store) -> int:
+    """F13: book COGS for COGS_PENDING fulfillments whose order is already
+    paid (event_id set). Dated order.order_date — for a promoted COD order
+    that IS the collection date. Idempotent: a successful booking flips
+    the fulfillment to PROCESSED, removing it from this queryset."""
+    from .commands import _book_deferred_cogs
+    from .models import ShopifyFulfillment, ShopifyOrder
+
+    order_ids = (
+        ShopifyFulfillment.objects.filter(
+            company=store.company,
+            status=ShopifyFulfillment.Status.COGS_PENDING,
+            order__event_id__isnull=False,
+        )
+        .values_list("order_id", flat=True)
+        .distinct()
+    )
+
+    booked = 0
+    for order in ShopifyOrder.objects.filter(id__in=list(order_ids)):
+        try:
+            with transaction.atomic():
+                booked += _book_deferred_cogs(store, order, order.order_date or tz.now().date())
+        except Exception as e:
+            logger.warning(
+                "F13 sweep: deferred COGS failed for order %s on %s: %s",
+                order.shopify_order_id,
+                store.shop_domain,
+                e,
+            )
+            from django.db import connection
+
+            if connection.needs_rollback:
+                connection.rollback()
+    return booked
 
 
 def _sync_refunds(store, updated_at_min: str, updated_at_max: str) -> dict:

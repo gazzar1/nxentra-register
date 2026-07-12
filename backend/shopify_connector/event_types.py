@@ -112,6 +112,10 @@ class ShopifyOrderFulfilledData(FinancialEventData):
     cogs_lines: list = field(default_factory=list)
     # Unmatched SKUs (no corresponding Item found)
     unmatched_skus: list = field(default_factory=list)
+    # F13: True when the order was unpaid (COD) at fulfillment time, so
+    # COGS booking is deferred to collection. Defaulted so historical
+    # events replay unchanged.
+    cogs_deferred: bool = False
 
 
 @dataclass

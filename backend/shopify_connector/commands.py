@@ -1126,6 +1126,26 @@ def _process_order_paid_inner(store: ShopifyStore, payload: dict) -> CommandResu
     except (ValueError, AttributeError):
         order_date = datetime.now().date()
 
+    # F13: the collection moment. orders/paid payloads carry updated_at ≈
+    # the mark-as-paid time; the GraphQL poller's REST shape has none, so
+    # fall back to today (≤4h skew from the beat cadence — and always an
+    # OPEN period).
+    paid_date_str = payload.get("updated_at", "")
+    try:
+        paid_date = datetime.fromisoformat(paid_date_str.replace("Z", "+00:00")).date()
+    except (ValueError, AttributeError):
+        paid_date = datetime.now().date()
+
+    # F13 recognition policy (owner decision 2026-07-12): a COD order
+    # promoted from PENDING_CAPTURE books revenue at COLLECTION date, not
+    # order-created date — so revenue and (deferred) COGS land in the
+    # same period, and a closed order-month can't quarantine the invoice.
+    # Direct-paid card orders and historical imports have no
+    # PENDING_CAPTURE stub and keep created_at dating.
+    was_pending_capture = bool(existing_order and existing_order.status == ShopifyOrder.Status.PENDING_CAPTURE)
+    if was_pending_capture:
+        order_date = paid_date
+
     total_price = Decimal(str(payload.get("total_price", "0")))
     subtotal_price = Decimal(str(payload.get("subtotal_price", "0")))
     total_tax = Decimal(str(payload.get("total_tax", "0")))
@@ -1252,7 +1272,12 @@ def _process_order_paid_inner(store: ShopifyStore, payload: dict) -> CommandResu
         order.event_id = event.id if event else None
         order.save(update_fields=["event_id"])
 
-    return CommandResult.ok(data={"order": order, "event": event})
+    # F13: drain any COGS_PENDING fulfillments now that the COD order is
+    # collected — dated paid_date so cost sits with the revenue. Log-only
+    # failures leave the fulfillment COGS_PENDING for the 4h sweep.
+    deferred_cogs_booked = _book_deferred_cogs(store, order, paid_date)
+
+    return CommandResult.ok(data={"order": order, "event": event, "deferred_cogs_booked": deferred_cogs_booked})
 
 
 @transaction.atomic
@@ -1410,7 +1435,10 @@ def process_order_cancelled(store: ShopifyStore, payload: dict) -> CommandResult
     Process an orders/cancelled webhook.
 
     For pending orders never posted to accounting, mark the local record
-    CANCELLED (no JE impact — nothing was booked).
+    CANCELLED. F13: revenue was never posted AND (since the COD deferral)
+    COGS was never posted either — any COGS_PENDING fulfillments flip to
+    CANCELLED so the sweep skips them; a refused parcel books nothing and
+    reverses nothing.
 
     For already-posted orders, Shopify will also fire refunds/create if the
     cancellation included a refund; we let the existing refund handler do
@@ -1431,7 +1459,20 @@ def process_order_cancelled(store: ShopifyStore, payload: dict) -> CommandResult
         if order.status == ShopifyOrder.Status.PENDING_CAPTURE:
             order.status = ShopifyOrder.Status.CANCELLED
             order.save(update_fields=["status"])
-            return CommandResult.ok(data={"order": order, "cancelled_pending": True})
+            # F13: refused parcel — flip deferred fulfillments so the
+            # sweep never books COGS for an order that was never paid.
+            cancelled_fulfillments = ShopifyFulfillment.objects.filter(
+                company=store.company,
+                order=order,
+                status=ShopifyFulfillment.Status.COGS_PENDING,
+            ).update(status=ShopifyFulfillment.Status.CANCELLED)
+            return CommandResult.ok(
+                data={
+                    "order": order,
+                    "cancelled_pending": True,
+                    "cancelled_fulfillments": cancelled_fulfillments,
+                }
+            )
 
         # Order was already posted — just note the cancellation on the raw payload.
         # The refund webhook (if any) handles the accounting reversal.
@@ -1991,7 +2032,128 @@ def process_fulfillment(store: ShopifyStore, payload: dict) -> CommandResult:
     except (ValueError, AttributeError):
         fulfillment_date = datetime.now().date()
 
-    # Match SKUs to inventory Items and look up costs
+    cogs_lines, unmatched_skus, total_cogs = _build_cogs_lines(store, payload)
+    line_items = payload.get("line_items", [])
+
+    # F13: COD — the order was captured but not collected. Booking COGS
+    # now would put cost in a period whose revenue may never come (refused
+    # parcel) or comes months later. Defer the whole booking (JE + stock
+    # issue) to collection; process_order_paid drains it.
+    defer_cogs = order.status == ShopifyOrder.Status.PENDING_CAPTURE
+
+    # Determine status
+    total_items = len(line_items)
+    matched_items = len(cogs_lines)
+    if matched_items == 0 and total_items > 0:
+        fulfillment_status = ShopifyFulfillment.Status.ERROR
+        error_msg = f"No SKUs matched inventory items ({len(unmatched_skus)} unmatched)"
+    elif matched_items < total_items:
+        fulfillment_status = ShopifyFulfillment.Status.PARTIAL
+        error_msg = f"{len(unmatched_skus)} of {total_items} SKUs unmatched"
+    else:
+        fulfillment_status = ShopifyFulfillment.Status.RECEIVED
+        error_msg = ""
+
+    if defer_cogs and cogs_lines and total_cogs > 0:
+        # Partial matches still defer — the deferred booking recomputes
+        # lines from raw_payload at collection time anyway. The unmatched
+        # detail survives in error_message.
+        fulfillment_status = ShopifyFulfillment.Status.COGS_PENDING
+
+    with command_writes_allowed():
+        fulfillment = ShopifyFulfillment.objects.create(
+            company=store.company,
+            order=order,
+            shopify_fulfillment_id=shopify_fulfillment_id,
+            shopify_order_id=shopify_order_id,
+            tracking_number=payload.get("tracking_number", "") or "",
+            tracking_company=payload.get("tracking_company", "") or "",
+            shopify_status=payload.get("status", ""),
+            shopify_created_at=created_at_str or datetime.now().isoformat(),
+            total_cogs=total_cogs,
+            currency=order.currency,
+            matched_items=matched_items,
+            total_items=total_items,
+            status=fulfillment_status,
+            error_message=error_msg,
+            raw_payload=payload,
+        )
+
+    # Only emit event if we have matched items (something to post COGS for)
+    if cogs_lines:
+        from events.emitter import emit_event_no_actor
+
+        event = emit_event_no_actor(
+            company=store.company,
+            event_type=EventTypes.SHOPIFY_ORDER_FULFILLED,
+            aggregate_type="ShopifyFulfillment",
+            aggregate_id=str(fulfillment.public_id),
+            idempotency_key=f"shopify.fulfillment:{shopify_fulfillment_id}",
+            metadata={"source": "shopify_webhook", "shop_domain": store.shop_domain},
+            data=ShopifyOrderFulfilledData(
+                amount=str(total_cogs),
+                currency=order.currency,
+                transaction_date=str(fulfillment_date),
+                document_ref=order.shopify_order_name,
+                store_public_id=str(store.public_id),
+                shopify_fulfillment_id=str(shopify_fulfillment_id),
+                shopify_order_id=str(shopify_order_id),
+                order_name=order.shopify_order_name,
+                fulfillment_date=str(fulfillment_date),
+                total_cogs=str(total_cogs),
+                cogs_lines=cogs_lines,
+                unmatched_skus=unmatched_skus,
+                cogs_deferred=defer_cogs,
+            ),
+        )
+
+        with command_writes_allowed():
+            fulfillment.event_id = event.id if event else None
+            fulfillment.save(update_fields=["event_id"])
+
+    # Create COGS journal entry + stock ledger entries via commands
+    # (moved from projection to command layer — events come from commands).
+    # F13: deferred for unpaid COD orders — booked by process_order_paid.
+    if cogs_lines and total_cogs > 0 and not defer_cogs:
+        _create_cogs_for_fulfillment(
+            company=store.company,
+            cogs_lines=cogs_lines,
+            total_cogs=total_cogs,
+            fulfillment=fulfillment,
+            order=order,
+            fulfillment_date=fulfillment_date,
+        )
+
+    if unmatched_skus:
+        logger.warning(
+            "Fulfillment %s: %d/%d SKUs unmatched: %s",
+            shopify_fulfillment_id,
+            len(unmatched_skus),
+            total_items,
+            [s.get("sku", s.get("title", "?")) for s in unmatched_skus],
+        )
+
+    return CommandResult.ok(
+        data={
+            "fulfillment": fulfillment,
+            "matched": matched_items,
+            "unmatched": len(unmatched_skus),
+            "total_cogs": total_cogs,
+        }
+    )
+
+
+def _build_cogs_lines(store: ShopifyStore, payload: dict) -> tuple[list, list, Decimal]:
+    """Match a fulfillment payload's SKUs to inventory Items and price
+    them at the CURRENT weighted-average cost.
+
+    Extracted from process_fulfillment (F13) so deferred COD bookings can
+    recompute lines from ShopifyFulfillment.raw_payload at collection
+    time — the issue cost should be avg_cost at the moment the stock
+    issue actually posts, not a stale fulfillment-time snapshot.
+
+    Returns (cogs_lines, unmatched_skus, total_cogs).
+    """
     from inventory.models import Warehouse
     from projections.models import InventoryBalance
     from sales.models import Item
@@ -2093,98 +2255,56 @@ def process_fulfillment(store: ShopifyStore, payload: dict) -> CommandResult:
             }
         )
 
-    # Determine status
-    total_items = len(line_items)
-    matched_items = len(cogs_lines)
-    if matched_items == 0 and total_items > 0:
-        fulfillment_status = ShopifyFulfillment.Status.ERROR
-        error_msg = f"No SKUs matched inventory items ({len(unmatched_skus)} unmatched)"
-    elif matched_items < total_items:
-        fulfillment_status = ShopifyFulfillment.Status.PARTIAL
-        error_msg = f"{len(unmatched_skus)} of {total_items} SKUs unmatched"
-    else:
-        fulfillment_status = ShopifyFulfillment.Status.RECEIVED
-        error_msg = ""
+    return cogs_lines, unmatched_skus, total_cogs
 
-    with command_writes_allowed():
-        fulfillment = ShopifyFulfillment.objects.create(
-            company=store.company,
-            order=order,
-            shopify_fulfillment_id=shopify_fulfillment_id,
-            shopify_order_id=shopify_order_id,
-            tracking_number=payload.get("tracking_number", "") or "",
-            tracking_company=payload.get("tracking_company", "") or "",
-            shopify_status=payload.get("status", ""),
-            shopify_created_at=created_at_str or datetime.now().isoformat(),
-            total_cogs=total_cogs,
-            currency=order.currency,
-            matched_items=matched_items,
-            total_items=total_items,
-            status=fulfillment_status,
-            error_message=error_msg,
-            raw_payload=payload,
-        )
 
-    # Only emit event if we have matched items (something to post COGS for)
-    if cogs_lines:
-        from events.emitter import emit_event_no_actor
+def _book_deferred_cogs(store: ShopifyStore, order: ShopifyOrder, paid_date) -> int:
+    """F13: book COGS for the order's COGS_PENDING fulfillments now that
+    the COD order is collected.
 
-        event = emit_event_no_actor(
-            company=store.company,
-            event_type=EventTypes.SHOPIFY_ORDER_FULFILLED,
-            aggregate_type="ShopifyFulfillment",
-            aggregate_id=str(fulfillment.public_id),
-            idempotency_key=f"shopify.fulfillment:{shopify_fulfillment_id}",
-            metadata={"source": "shopify_webhook", "shop_domain": store.shop_domain},
-            data=ShopifyOrderFulfilledData(
-                amount=str(total_cogs),
-                currency=order.currency,
-                transaction_date=str(fulfillment_date),
-                document_ref=order.shopify_order_name,
-                store_public_id=str(store.public_id),
-                shopify_fulfillment_id=str(shopify_fulfillment_id),
-                shopify_order_id=str(shopify_order_id),
-                order_name=order.shopify_order_name,
-                fulfillment_date=str(fulfillment_date),
-                total_cogs=str(total_cogs),
-                cogs_lines=cogs_lines,
-                unmatched_skus=unmatched_skus,
-            ),
-        )
+    Dated `paid_date` (the collection moment) so cost lands in the same
+    period as the revenue. Lines are recomputed from raw_payload at
+    today's weighted-average cost; fulfillment.total_cogs is updated to
+    match what actually books.
 
-        with command_writes_allowed():
-            fulfillment.event_id = event.id if event else None
-            fulfillment.save(update_fields=["event_id"])
+    A failure inside _create_cogs_for_fulfillment is log-only by design —
+    the fulfillment then STAYS COGS_PENDING and the 4h sweep
+    (shopify_connector/tasks.py) retries it.
 
-    # Create COGS journal entry + stock ledger entries via commands
-    # (moved from projection to command layer — events come from commands)
-    if cogs_lines and total_cogs > 0:
+    Returns the number of fulfillments booked.
+    """
+    pending = ShopifyFulfillment.objects.filter(
+        company=store.company,
+        order=order,
+        status=ShopifyFulfillment.Status.COGS_PENDING,
+    )
+    booked = 0
+    for fulfillment in pending:
+        cogs_lines, _unmatched, total_cogs = _build_cogs_lines(store, fulfillment.raw_payload or {})
+        if not cogs_lines or total_cogs <= 0:
+            logger.warning(
+                "F13: deferred COGS for fulfillment %s produced no bookable lines — leaving COGS_PENDING",
+                fulfillment.shopify_fulfillment_id,
+            )
+            continue
+
+        if total_cogs != fulfillment.total_cogs:
+            with command_writes_allowed():
+                fulfillment.total_cogs = total_cogs
+                fulfillment.save(update_fields=["total_cogs"])
+
         _create_cogs_for_fulfillment(
             company=store.company,
             cogs_lines=cogs_lines,
             total_cogs=total_cogs,
             fulfillment=fulfillment,
             order=order,
-            fulfillment_date=fulfillment_date,
+            fulfillment_date=paid_date,
         )
-
-    if unmatched_skus:
-        logger.warning(
-            "Fulfillment %s: %d/%d SKUs unmatched: %s",
-            shopify_fulfillment_id,
-            len(unmatched_skus),
-            total_items,
-            [s.get("sku", s.get("title", "?")) for s in unmatched_skus],
-        )
-
-    return CommandResult.ok(
-        data={
-            "fulfillment": fulfillment,
-            "matched": matched_items,
-            "unmatched": len(unmatched_skus),
-            "total_cogs": total_cogs,
-        }
-    )
+        fulfillment.refresh_from_db()
+        if fulfillment.status == ShopifyFulfillment.Status.PROCESSED:
+            booked += 1
+    return booked
 
 
 def _create_cogs_for_fulfillment(company, cogs_lines, total_cogs, fulfillment, order, fulfillment_date):

@@ -463,6 +463,12 @@ class ShopifyFulfillment(models.Model):
         RECEIVED = "RECEIVED", "Received"
         PROCESSED = "PROCESSED", "Processed"
         PARTIAL = "PARTIAL", "Partially Matched"
+        # F13: fulfillment of a not-yet-collected COD order — COGS is
+        # deferred until the order is marked paid (or cancelled).
+        COGS_PENDING = "COGS_PENDING", "COGS Pending Collection"
+        # F13: the unpaid order was cancelled (refused parcel) — nothing
+        # was ever booked, nothing to reverse.
+        CANCELLED = "CANCELLED", "Cancelled"
         ERROR = "ERROR", "Error"
 
     company = models.ForeignKey(
