@@ -85,7 +85,9 @@ class AccountsConfig(AppConfig):
             nav_items=[
                 {"label": "Month-End Close", "href": "/settings/month-end-close", "icon": "ClipboardCheck"},
                 {"label": "System Health", "href": "/settings/system-health", "icon": "Activity"},
-                {"label": "Reconciliation Status", "href": "/banking/reconciliation", "icon": "Scale"},
+                # A166: "Reconciliation Status" → /banking/reconciliation removed —
+                # the legacy matcher is retired; /finance/reconciliation (WORK tab)
+                # is the one reconciliation surface.
                 {"label": "Audit Trail", "href": "/settings/audit", "icon": "ShieldCheck"},
                 {"label": "FX Revaluation", "href": "/accounting/currency-revaluation", "icon": "ArrowLeftRight"},
                 {"label": "Period Close", "href": "/settings/periods", "icon": "Calendar"},

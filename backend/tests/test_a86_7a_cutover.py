@@ -17,8 +17,10 @@ Scenarios:
 - Each command path (auto-match, manual-match, unmatch, exclude)
   produces canonical state via the projection that runs sync inside
   the command.
-- platform_payout_reconcile (bank_connector) flips JL.reconciled via
-  the projection.
+- (A166: the platform_payout_reconcile EMITTER test moved to
+  test_a166_banking_matcher_retired.py as a replay-survival test —
+  the legacy matcher is retired but its historical events must
+  still fold on rebuild.)
 - LOAD-BEARING: full lifecycle (auto-match → unmatch → manual-match)
   followed by a fresh-DB rebuild reproduces the same final state.
 - Cross-tenant isolation: company A's events don't touch company B's
@@ -39,7 +41,6 @@ from accounting.models import (
 )
 from accounting.settlement_imports import import_settlement_csv
 from accounts.authz import ActorContext
-from bank_connector.models import BankAccount, BankStatement, BankTransaction
 from events.types import EventTypes
 from projections.write_barrier import projection_writes_allowed
 from reconciliation.commands import (
@@ -276,133 +277,6 @@ def test_exclude_writes_canonical_EXCLUDED_via_projection(shopify_setup, company
 
     bank_line.refresh_from_db()
     assert bank_line.match_status == BankStatementLine.MatchStatus.EXCLUDED
-
-
-# =============================================================================
-# platform_payout_reconcile (bank_connector path)
-# =============================================================================
-
-
-@pytest.fixture
-def gl_bank_account(db, company):
-    with projection_writes_allowed():
-        return Account.objects.projection().create(
-            company=company,
-            code="10200",
-            name="A86.7a GL Bank (LIQUIDITY)",
-            account_type=Account.AccountType.ASSET,
-            status=Account.Status.ACTIVE,
-            role="LIQUIDITY",
-        )
-
-
-@pytest.fixture
-def platform_payout_setup(db, company, shopify_setup, gl_bank_account, revenue_account):
-    """Pre-staged Shopify payout + JE + bank-feed BankTransaction
-    aligned for the platform_payout_reconcile path."""
-    from shopify_connector.models import ShopifyPayout
-
-    payout_date = date(2026, 4, 26)
-    payout_net = Decimal("4242.00")
-
-    payout = ShopifyPayout.objects.create(
-        company=company,
-        store=shopify_setup,
-        shopify_payout_id=77777,
-        payout_date=payout_date,
-        gross_amount=payout_net,
-        net_amount=payout_net,
-        fees=Decimal("0"),
-        currency="USD",
-        shopify_status="paid",
-    )
-
-    with projection_writes_allowed():
-        entry = JournalEntry.objects.create(
-            company=company,
-            date=payout_date,
-            period=4,
-            memo=f"Shopify payout: {payout.shopify_payout_id}",
-            kind=JournalEntry.Kind.NORMAL,
-            status=JournalEntry.Status.POSTED,
-            entry_number="JE-A86-7A-PO",
-        )
-        bank_jl = JournalLine.objects.create(
-            company=company,
-            entry=entry,
-            line_no=1,
-            account=gl_bank_account,
-            debit=payout_net,
-            credit=Decimal("0"),
-        )
-        JournalLine.objects.create(
-            company=company,
-            entry=entry,
-            line_no=2,
-            account=revenue_account,
-            debit=Decimal("0"),
-            credit=payout_net,
-        )
-    payout.journal_entry_id = entry.public_id
-    payout.save(update_fields=["journal_entry_id"])
-
-    bank_account = BankAccount.objects.create(
-        company=company,
-        bank_name="Test Bank",
-        account_name="A86.7a Test BankAccount",
-        currency="USD",
-        gl_account=gl_bank_account,
-    )
-    statement = BankStatement.objects.create(
-        company=company,
-        bank_account=bank_account,
-        filename="a86-7a-cutover.csv",
-        period_start=date(2026, 4, 1),
-        period_end=date(2026, 4, 30),
-        transaction_count=1,
-        status=BankStatement.Status.PROCESSED,
-    )
-    bank_tx = BankTransaction.objects.create(
-        company=company,
-        statement=statement,
-        bank_account=bank_account,
-        transaction_date=payout_date,
-        description="Shopify Payments deposit",
-        amount=payout_net,
-        transaction_type=BankTransaction.TransactionType.CREDIT,
-        status=BankTransaction.Status.UNMATCHED,
-    )
-    return {
-        "payout": payout,
-        "entry": entry,
-        "bank_jl": bank_jl,
-        "bank_tx": bank_tx,
-        "bank_account": bank_account,
-    }
-
-
-@pytest.mark.django_db
-def test_platform_payout_projection_flips_jl_reconciled(company, platform_payout_setup):
-    """A86.7b: the projection (run sync inside `_reconcile_payout_je`)
-    is the sole writer of JL.reconciled for this path."""
-    from bank_connector.matching import auto_match_transactions
-
-    bank_jl = platform_payout_setup["bank_jl"]
-
-    # Pre-state: JL.reconciled is False.
-    bank_jl.refresh_from_db()
-    assert bank_jl.reconciled is False
-
-    with projection_writes_allowed():
-        result = auto_match_transactions(company, platform_payout_setup["bank_account"].id)
-    assert result["matched"] == 1
-
-    # auto_match_transactions runs the projection synchronously inside
-    # `_reconcile_payout_je`, so JL.reconciled is True by the time it
-    # returns.
-    bank_jl.refresh_from_db()
-    assert bank_jl.reconciled is True
-    assert bank_jl.reconciled_date == platform_payout_setup["bank_tx"].transaction_date
 
 
 # =============================================================================

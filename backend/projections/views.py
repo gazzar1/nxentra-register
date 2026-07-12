@@ -3661,23 +3661,28 @@ class DashboardWidgetsView(APIView):
             # 4. Reconciliation Health — exception + match summary
             # ═══════════════════════════════════════════════════════════════
             try:
+                from accounting.models import BankStatementLine
                 from bank_connector.models import BankTransaction as BankTx
                 from bank_connector.models import ReconciliationException
 
-                bank_qs = BankTx.objects.filter(company=actor.company)
-                total_bank = bank_qs.count()
-                matched_bank = bank_qs.filter(status="MATCHED").count()
+                # A166: BankStatementLine (the canonical engine) is the
+                # PRIMARY source. It used to be the fallback behind
+                # BankTransaction — but with the legacy matcher retired
+                # nothing ever sets BankTransaction to MATCHED again, so a
+                # company with any feed rows would show a permanent ~0%
+                # match rate. Legacy feed state only counts when no
+                # statement lines exist at all.
 
-                # Fallback: if no bank_connector transactions, use
-                # accounting.BankStatementLine (the standard reconciliation path)
+                bsl_qs = BankStatementLine.objects.filter(company=actor.company)
+                total_bank = bsl_qs.count()
+                matched_bank = bsl_qs.filter(
+                    match_status__in=["AUTO_MATCHED", "MANUAL_MATCHED", "MATCHED_WITH_DIFFERENCE"],
+                ).count()
+
                 if total_bank == 0:
-                    from accounting.models import BankStatementLine
-
-                    bsl_qs = BankStatementLine.objects.filter(company=actor.company)
-                    total_bank = bsl_qs.count()
-                    matched_bank = bsl_qs.filter(
-                        match_status__in=["AUTO_MATCHED", "MANUAL_MATCHED"],
-                    ).count()
+                    bank_qs = BankTx.objects.filter(company=actor.company)
+                    total_bank = bank_qs.count()
+                    matched_bank = bank_qs.filter(status="MATCHED").count()
 
                 open_statuses = [
                     ReconciliationException.Status.OPEN,

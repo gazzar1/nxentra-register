@@ -94,7 +94,9 @@ export default function ShopifyPayoutsPage() {
           subtitle="Payout history from Shopify Payments"
           actions={
             <div className="flex gap-2">
-              <Link href="/shopify/reconciliation">
+              {/* F4/A166: canonical workspace; Shopify Verify keeps its
+                  own page at /shopify/reconciliation. */}
+              <Link href="/finance/reconciliation">
                 <Button variant="outline" size="sm">
                   Reconciliation
                   <ArrowRight className="ms-2 h-4 w-4" />

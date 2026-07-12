@@ -9,7 +9,6 @@ import {
   ArrowDownLeft,
   ArrowUpRight,
   Ban,
-  Unlink,
   CheckCircle2,
   XCircle,
   Filter,
@@ -307,16 +306,11 @@ export default function BankTransactionsPage() {
                                   <Ban className="h-3.5 w-3.5" />
                                 </Button>
                               )}
-                              {tx.status === "MATCHED" && (
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => handleAction(tx.id, "unmatch")}
-                                  title="Unmatch"
-                                >
-                                  <Unlink className="h-3.5 w-3.5" />
-                                </Button>
-                              )}
+                              {/* A166: MATCHED rows have no Unmatch here —
+                                  the raw flag-flip stranded accounting state.
+                                  Undo a match in Accounting → Bank
+                                  Reconciliation, which reverses what the
+                                  match created. */}
                               {tx.status === "EXCLUDED" && (
                                 <Button
                                   variant="ghost"
