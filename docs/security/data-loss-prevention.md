@@ -101,12 +101,25 @@ The three Shopify-mandated GDPR compliance webhooks are declared in
 All three webhook receipts are HMAC-verified and persisted to an
 audit table for compliance evidence.
 
-Programmatic data deletion in response to `customers/redact` and
-`shop/redact` is on the engineering roadmap (tracked as NEXT_TASKS
-A124) and prioritized ahead of merchant onboarding at scale. Until
-A124 ships, deletion in response to a verified redaction request is
-performed manually within the 30-day Shopify SLA, by support staff
-with database write access.
+Programmatic data deletion ships as of A124 (2026-07-11): the three
+Shopify GDPR webhooks enqueue idempotent jobs (`shopify_connector/gdpr.py`)
+that assemble the customer export (`customers/data_request`, with merchant
+notification for the 30-day SLA), scrub shopper PII from every mutable
+store (`customers/redact`: ShopifyOrder/Fulfillment/Refund raw payloads,
+matching merchant-entered customer records, and prior GDPR payloads), and
+redact the shop (`shop/redact`: PII + credentials for every store row on
+the domain, pending installs deleted). Each request is stamped
+COMPLETED/FAILED with evidence and emits a
+`shopify.gdpr_request_completed` audit event per affected company.
+
+**Lawful-basis exception for the append-only ledger (owner decision,
+2026-07-11):** `BusinessEvent` records are immutable with SHA-256 payload
+hashes — rewriting them would break integrity verification and replay
+determinism. Events matching a redacted customer are therefore retained
+under a documented lawful basis (bookkeeping/audit obligations of the
+merchant as controller) and are counted into the request's evidence
+(`events_exempted`), never rewritten. Crypto-shredding of event payload
+fields is a later design item if legal review demands it.
 
 ## 8. Incident response
 

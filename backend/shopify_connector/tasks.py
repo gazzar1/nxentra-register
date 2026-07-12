@@ -563,3 +563,68 @@ def _pick_order_handler(order_payload, paid_handler, pending_handler, cancelled_
     if financial_status == "pending":
         return pending_handler
     return None
+
+
+@shared_task(name="shopify.process_gdpr_request")
+def process_gdpr_request_task(gdpr_request_id: int) -> dict:
+    """A124 fast path: enqueued by the webhook view right after the 200
+    ack so requests process within minutes. The beat catch-up below is the
+    durable safety net for dropped enqueues."""
+    from .gdpr import process_gdpr_request
+    from .models import GdprRequest
+
+    with rls_bypass():
+        req = GdprRequest.objects.filter(pk=gdpr_request_id, status=GdprRequest.Status.PENDING).first()
+        if req is None:
+            return {"status": "skipped", "reason": "not found or not PENDING"}
+        ok = process_gdpr_request(req)
+    return {"status": "ok" if ok else "failed", "request_id": gdpr_request_id}
+
+
+@shared_task(
+    name="shopify.process_gdpr_requests",
+    bind=True,
+    max_retries=2,
+    default_retry_delay=300,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+)
+def process_gdpr_requests(self) -> dict:
+    """A124 beat catch-up: process every PENDING GdprRequest. Register in
+    Django admin -> Periodic Tasks (DatabaseScheduler), every 15-30 min —
+    same ops step as shopify.sync_all_stores. Idempotent; a row the fast
+    path already completed is skipped by the PENDING filter; concurrent
+    workers are serialized per-row via select_for_update(skip_locked).
+    """
+    from django.db import transaction
+
+    from .gdpr import process_gdpr_request
+    from .models import GdprRequest
+
+    processed = 0
+    failed = 0
+    with rls_bypass():
+        pending_ids = list(GdprRequest.objects.filter(status=GdprRequest.Status.PENDING).values_list("pk", flat=True))
+        for pk in pending_ids:
+            try:
+                with transaction.atomic():
+                    req = (
+                        GdprRequest.objects.select_for_update(skip_locked=True)
+                        .filter(pk=pk, status=GdprRequest.Status.PENDING)
+                        .first()
+                    )
+                    if req is None:
+                        continue
+                    if process_gdpr_request(req):
+                        processed += 1
+                    else:
+                        failed += 1
+            except Exception:
+                logger.exception("GDPR beat pass failed on request %s", pk)
+                failed += 1
+                from django.db import connection
+
+                if connection.needs_rollback:
+                    connection.rollback()
+
+    return {"status": "ok", "processed": processed, "failed": failed, "pending_seen": len(pending_ids)}

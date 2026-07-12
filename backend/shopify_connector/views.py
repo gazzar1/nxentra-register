@@ -477,7 +477,19 @@ class ShopifyWebhookView(APIView):
         if gdpr_handler:
             payload_signature = hashlib.sha256(body).hexdigest()
             try:
-                gdpr_handler(shop_domain, payload, payload_signature)
+                result = gdpr_handler(shop_domain, payload, payload_signature)
+                # A124: enqueue the export/redaction job right away (fast
+                # path); the shopify.process_gdpr_requests beat task is the
+                # durable catch-up for dropped enqueues. Enqueue failure
+                # must not break the mandated 200 ack.
+                request_id = (result.data or {}).get("gdpr_request_id") if result and result.success else None
+                if request_id:
+                    try:
+                        from .tasks import process_gdpr_request_task
+
+                        process_gdpr_request_task.delay(request_id)
+                    except Exception:
+                        logger.exception("Could not enqueue GDPR job for request %s", request_id)
             except Exception:
                 logger.exception(
                     "Error processing Shopify GDPR webhook %s for %s",
