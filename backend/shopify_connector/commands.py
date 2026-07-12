@@ -2808,13 +2808,32 @@ def _ensure_shopify_sales_setup(store):
     if store.default_customer_id and store.default_posting_profile_id:
         mapping = ModuleAccountMapping.get_mapping(company, "shopify_connector")
         clearing_account = mapping.get("SHOPIFY_CLEARING") if mapping else None
-        if clearing_account:
-            with command_writes_allowed(), projection_writes_allowed():
+        with command_writes_allowed(), projection_writes_allowed():
+            if clearing_account:
                 _bootstrap_shopify_settlement_providers(
                     company,
                     clearing_account,
                     store.default_posting_profile,
                 )
+            # A83 heal: the aggregate customer's own default profile.
+            # Migration-era rows (sales/0013's rebind sweep) point at the
+            # company's MANUAL AR-DEFAULT profile, post-migration rows at
+            # NULL — either way the A79 manual-invoice auto-fill would
+            # route a correction to AR instead of Shopify Clearing.
+            # Rebind ONLY when NULL or MANUAL: a deliberate rebinding to
+            # another GATEWAY profile (e.g. a per-provider PG-* profile)
+            # is merchant intent and stays untouched.
+            customer = store.default_customer
+            current = customer.default_posting_profile
+            if current is None or current.usage == PostingProfile.Usage.MANUAL:
+                if customer.default_posting_profile_id != store.default_posting_profile_id:
+                    customer.default_posting_profile = store.default_posting_profile
+                    customer.save(update_fields=["default_posting_profile", "updated_at"])
+                    logger.info(
+                        "A83: rebound aggregate customer %s to channel profile %s",
+                        customer.code,
+                        store.default_posting_profile.code,
+                    )
         return
 
     store_label = store.shop_domain.replace(".myshopify.com", "")
@@ -2878,6 +2897,16 @@ def _ensure_shopify_sales_setup(store):
             # Pre-A78 row from before usage existed; promote it.
             profile.usage = PostingProfile.Usage.GATEWAY
             profile.save(update_fields=["usage", "updated_at"])
+
+        # A83: bind the channel profile on the customer itself — this is
+        # what the customers UI displays and what the A79 manual-invoice
+        # auto-fill reads. It could not go into the get_or_create defaults
+        # because the profile is created after the customer.
+        # default_ar_account stays NULL deliberately (its contract requires
+        # role=RECEIVABLE_CONTROL, which the clearing account is not).
+        if customer.default_posting_profile_id != profile.id:
+            customer.default_posting_profile = profile
+            customer.save(update_fields=["default_posting_profile", "updated_at"])
 
         # 4. Link to store
         store.default_customer = customer

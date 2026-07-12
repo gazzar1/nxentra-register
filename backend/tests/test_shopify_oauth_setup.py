@@ -460,3 +460,145 @@ def test_a9_auto_create_falls_back_to_variant_id_when_sku_empty(db, company, mon
 # Webhook registration no longer happens in _finalize_shopify_stores — webhooks
 # are subscribed declaratively in shopify.app.toml. There is no programmatic
 # webhook call to simulate failing.
+
+
+# =============================================================================
+# A83 — the aggregate customer carries the CHANNEL posting profile
+# =============================================================================
+
+
+def _seed_clearing(company):
+    from accounting.mappings import ModuleAccountMapping
+    from accounting.models import Account
+    from projections.write_barrier import projection_writes_allowed
+
+    with projection_writes_allowed():
+        clearing = Account.objects.projection().create(
+            company=company,
+            code="11500",
+            name="Shopify Clearing",
+            account_type=Account.AccountType.ASSET,
+            status=Account.Status.ACTIVE,
+        )
+    ModuleAccountMapping.objects.create(
+        company=company,
+        module="shopify_connector",
+        role="SHOPIFY_CLEARING",
+        account=clearing,
+    )
+    return clearing
+
+
+def _active_store(company, domain="a83-test.myshopify.com"):
+    from projections.write_barrier import command_writes_allowed
+
+    with command_writes_allowed():
+        return ShopifyStore.objects.create(
+            company=company,
+            shop_domain=domain,
+            access_token="test-token",
+            status=ShopifyStore.Status.ACTIVE,
+        )
+
+
+def test_a83_fresh_install_binds_channel_profile_on_customer(db, company, owner_membership):
+    """A83: _ensure_shopify_sales_setup bound the GATEWAY profile only to
+    the STORE; the aggregate customer's own default stayed NULL (or, on
+    migration-era rows, AR-DEFAULT), so the customers UI showed 'Company
+    default' and the A79 manual-invoice auto-fill routed corrections to
+    AR instead of Shopify Clearing."""
+    from sales.models import PostingProfile
+    from shopify_connector.commands import _ensure_shopify_sales_setup
+
+    clearing = _seed_clearing(company)
+    store = _active_store(company)
+
+    _ensure_shopify_sales_setup(store)
+    store.refresh_from_db()
+
+    customer = store.default_customer
+    assert customer.default_posting_profile_id == store.default_posting_profile_id
+    profile = customer.default_posting_profile
+    assert profile.usage == PostingProfile.Usage.GATEWAY
+    assert profile.control_account_id == clearing.id
+    assert profile.code.startswith("SHOPIFY-")
+    assert profile.code != "AR-DEFAULT"
+
+
+def test_a83_heals_migration_era_manual_binding(db, company, owner_membership):
+    """Migration sales/0013 swept the aggregate customer onto the MANUAL
+    AR-DEFAULT profile. The short-circuit branch (already-configured
+    store) must rebind it to the channel profile on any re-run."""
+    from accounting.models import Account
+    from projections.write_barrier import projection_writes_allowed
+    from sales.models import PostingProfile
+    from shopify_connector.commands import _ensure_shopify_sales_setup
+
+    _seed_clearing(company)
+    store = _active_store(company)
+    _ensure_shopify_sales_setup(store)
+    store.refresh_from_db()
+
+    # Simulate the 0013 sweep: bind the customer to a MANUAL AR profile.
+    with projection_writes_allowed():
+        ar_control = Account.objects.projection().create(
+            company=company,
+            code="11400",
+            name="AR Control",
+            account_type=Account.AccountType.ASSET,
+            role=Account.AccountRole.RECEIVABLE_CONTROL,
+            status=Account.Status.ACTIVE,
+        )
+        ar_default = PostingProfile.objects.create(
+            company=company,
+            code="AR-DEFAULT",
+            name="Accounts Receivable (default)",
+            profile_type=PostingProfile.ProfileType.CUSTOMER,
+            usage=PostingProfile.Usage.MANUAL,
+            control_account=ar_control,
+            is_default=True,
+            is_active=True,
+        )
+        customer = store.default_customer
+        customer.default_posting_profile = ar_default
+        customer.save(update_fields=["default_posting_profile"])
+
+    # Re-run hits the already-configured short-circuit branch.
+    _ensure_shopify_sales_setup(store)
+
+    customer.refresh_from_db()
+    assert customer.default_posting_profile_id == store.default_posting_profile_id
+
+
+def test_a83_never_clobbers_deliberate_gateway_rebinding(db, company, owner_membership):
+    """A merchant who deliberately pointed the aggregate customer at a
+    per-provider GATEWAY profile (e.g. PG-SHOPIFY_PAYMENTS) keeps it —
+    the heal only touches NULL or MANUAL bindings."""
+    from projections.write_barrier import projection_writes_allowed
+    from sales.models import PostingProfile
+    from shopify_connector.commands import _ensure_shopify_sales_setup
+
+    _seed_clearing(company)
+    store = _active_store(company)
+    _ensure_shopify_sales_setup(store)
+    store.refresh_from_db()
+
+    provider_profile = (
+        PostingProfile.objects.filter(
+            company=company,
+            usage=PostingProfile.Usage.GATEWAY,
+        )
+        .exclude(pk=store.default_posting_profile_id)
+        .first()
+    )
+    assert provider_profile is not None, "provider bootstrap should have created PG-* profiles"
+
+    with projection_writes_allowed():
+        customer = store.default_customer
+        customer.default_posting_profile = provider_profile
+        customer.save(update_fields=["default_posting_profile"])
+
+    _ensure_shopify_sales_setup(store)
+
+    customer.refresh_from_db()
+    assert customer.default_posting_profile_id == provider_profile.id
