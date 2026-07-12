@@ -261,6 +261,26 @@ class BaseProjection(ABC):
                         bookmark.mark_processed(event)
                         processed += 1
 
+                        # A105: self-heal. The failure-log model docstring
+                        # has always promised that a successful retry
+                        # auto-resolves the entry — but nothing did it, so
+                        # /finance/exceptions (and now /_health/alerts,
+                        # A163) showed already-healed failures forever.
+                        # Cheap conditional UPDATE: (company,
+                        # projection_name, event) is the table's unique key.
+                        from projections.models import ProjectionFailureLog
+
+                        ProjectionFailureLog.objects.filter(
+                            company=company,
+                            projection_name=self.name,
+                            event=event,
+                            resolved=False,
+                        ).update(
+                            resolved=True,
+                            resolved_at=timezone.now(),
+                            resolution_note="Self-healed: event processed successfully on retry.",
+                        )
+
                 except DeferEvent as defer:
                     # A41: precondition not met yet (e.g. refund handler
                     # waiting on order_paid). Transaction rolled back, so

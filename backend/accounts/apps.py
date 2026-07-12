@@ -50,6 +50,9 @@ class AccountsConfig(AppConfig):
             order=10,
             nav_items=[
                 {"label": "Reconciliation", "href": "/finance/reconciliation", "icon": "Scale"},
+                # F21: the exception queue was reachable only by URL — a
+                # merchant couldn't find their own stuck exceptions.
+                {"label": "Exceptions", "href": "/finance/exceptions", "icon": "AlertTriangle"},
                 {"label": "Import Settlements", "href": "/finance/settlements/import", "icon": "Upload"},
                 {"label": "Journal Entries", "href": "/accounting/journal-entries", "icon": "FileText"},
                 {"label": "Bank Reconciliation", "href": "/accounting/bank-reconciliation", "icon": "Building2"},
