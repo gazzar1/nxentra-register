@@ -190,6 +190,11 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    # A162: DEBUG now defaults False; mypy/django-stubs imports settings
+    # (pyproject [tool.django-stubs]) and would hit the production guards
+    # without this.
+    env:
+      DEBUG: "True"
 
     steps:
       - uses: actions/checkout@v4
@@ -273,12 +278,17 @@ jobs:
           # A47: prod settings hard-fail without an encryption key (DEBUG=False,
           # not TESTING). Inject a throwaway CI Fernet key, same as SECRET_KEY.
           FIELD_ENCRYPTION_KEY: "q2jxAVYf7CLIEoWl4kirqfmtKwYHX-ne4zcmToWNVRM="
+          # A162: prod boot asserts PROJECTIONS_SYNC=True.
+          PROJECTIONS_SYNC: "True"
         run: python manage.py check --deploy --fail-level WARNING
 
       - name: Django migration check (no uncommitted model changes)
         run: python manage.py makemigrations --check --dry-run
         env:
           DATABASE_URL: "sqlite:///ci_check.sqlite3"
+          # A162: DEBUG defaults False — without this the settings import
+          # hits the production SECRET_KEY guard.
+          DEBUG: "True"
 
       - name: npm audit (production dependencies)
         # Threshold is "critical" rather than "high" because clearing the

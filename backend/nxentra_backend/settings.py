@@ -11,14 +11,41 @@ load_dotenv(BASE_DIR / ".env", override=False)  # Real env vars take precedence
 
 
 SECRET_KEY = os.environ.get("SECRET_KEY", os.environ.get("DJANGO_SECRET_KEY", "changeme"))
-DEBUG = os.getenv("DEBUG", os.getenv("DJANGO_DEBUG", "True")).strip().lower() in ("true", "1", "yes")
+# A162: DEBUG defaults FALSE. A partially rebuilt production .env (DEBUG
+# omitted) previously booted with the entire security posture silently
+# off — HSTS, secure cookies, CSP, the SECRET_KEY/FIELD_ENCRYPTION_KEY
+# hard-fails, and the CORS/CSRF localhost guard all live behind
+# `if not DEBUG`. Dev machines must now set DEBUG=True explicitly in
+# backend/.env (see .env.example).
+DEBUG = os.getenv("DEBUG", os.getenv("DJANGO_DEBUG", "False")).strip().lower() in ("true", "1", "yes")
 ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
+
+# Test-mode flags used by read-model guards and event payload validation.
+# A162: explicit — the TESTING env var (set by test_settings.py and all
+# three CI pytest jobs) is the trigger. The old argv sniffing
+# ("pytest"/"test" element checks) evaluated False at settings-import
+# time under `python -m pytest` and only appeared to work because DEBUG
+# defaulted True; any exact `test` argv element also silently disabled
+# the write barrier + event validation. PYTEST_CURRENT_TEST is kept for
+# in-test settings reloads; `manage.py test` keeps a narrow argv check.
+# Defined BEFORE the security block below so pytest can import settings
+# without production env vars.
+TESTING = (
+    os.getenv("TESTING", "").strip().lower() in ("true", "1", "yes")
+    or "PYTEST_CURRENT_TEST" in os.environ
+    or sys.argv[1:2] == ["test"]
+)
+DISABLE_EVENT_VALIDATION = TESTING
+RLS_BYPASS = os.getenv("RLS_BYPASS", "False") == "True" or TESTING
+ALLOW_ADMIN_EMERGENCY_WRITES = os.getenv("ALLOW_ADMIN_EMERGENCY_WRITES", "False") == "True"
 
 # =============================================================================
 # Production Security Hardening
 # =============================================================================
 # These settings are enforced when DEBUG is False (production/staging).
-if not DEBUG:
+# TESTING is exempt: test_settings imports with neither prod secrets nor
+# HTTPS and disables the transport hardening post-import anyway.
+if not DEBUG and not TESTING:
     # Enforce HTTPS
     SECURE_SSL_REDIRECT = True
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
@@ -66,13 +93,24 @@ if not DEBUG:
             "SECRET_KEY is set to the default 'changeme'. Set a strong SECRET_KEY environment variable for production."
         )
 
-# Test-mode flags used by read-model guards and event payload validation.
-# Include Django's manage.py test invocation.
-TESTING = "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.argv or "test" in sys.argv
-DISABLE_EVENT_VALIDATION = TESTING
-RLS_BYPASS = os.getenv("RLS_BYPASS", "False") == "True" or TESTING
-PROJECTIONS_SYNC = os.getenv("PROJECTIONS_SYNC", "") == "True" or DEBUG or TESTING
-ALLOW_ADMIN_EMERGENCY_WRITES = os.getenv("ALLOW_ADMIN_EMERGENCY_WRITES", "False") == "True"
+# A162: tolerant parsing (an operator writing PROJECTIONS_SYNC=true must
+# not fail the boot assertion below on casing).
+PROJECTIONS_SYNC = os.getenv("PROJECTIONS_SYNC", "").strip().lower() in ("true", "1", "yes") or DEBUG or TESTING
+if not DEBUG and not TESTING and not PROJECTIONS_SYNC:
+    # A162: journal-entry creation reads its projected row synchronously
+    # right after emitting (accounting/commands.py create_journal_entry et
+    # al. — ~35 read-after-emit sites) and returns a false failure when the
+    # projection hasn't run. Async mode is therefore not a supported
+    # production configuration; refuse to boot instead of ghost-failing
+    # every money command. Applies to gunicorn, celery worker/beat, and
+    # manage.py alike (settings-level raise).
+    from django.core.exceptions import ImproperlyConfigured as _IC
+
+    raise _IC(
+        "PROJECTIONS_SYNC must be set to 'True' in production: accounting "
+        "commands read projected rows synchronously after emitting events. "
+        "Set PROJECTIONS_SYNC=True in the environment."
+    )
 
 # =============================================================================
 # Field encryption at rest (A47)
