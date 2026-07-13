@@ -152,7 +152,7 @@ def restore_company(company, zip_file, *, allow_company_mismatch=False, skip_inv
 
                 # Phase 3: Fix up deferred nullable FKs (self-references, etc.)
                 if deferred_fks:
-                    _apply_deferred_fks(deferred_fks, pk_map)
+                    _apply_deferred_fks(deferred_fks, pk_map, registry)
                     logger.info("Applied %d deferred FK updates", len(deferred_fks))
 
                 # Phase 4 (A161): post-restore verification INSIDE the atomic
@@ -428,11 +428,20 @@ def _import_model_records(model_cls, company, records, pk_map, label, excluded_f
                     elif field.null:
                         # FK target not found yet — set to NULL now, fix later
                         field_values[field.attname] = None
-                        record_deferred.append((field.attname, value, label))
+                        record_deferred.append((field.attname, value, label, field.related_model))
                         continue
                     else:
-                        # Non-nullable FK — pass raw value through
+                        # Non-nullable in-registry FK whose target imports
+                        # LATER in registry order (found live in the A161
+                        # restore drill: projections.InventoryBalance.warehouse
+                        # -> inventory.Warehouse). Insert the raw old id to
+                        # satisfy NOT NULL — Postgres FK constraints are
+                        # deferred to commit inside the atomic — and fix it
+                        # up after every model has imported. Passing the raw
+                        # value through UNFIXED left a deleted warehouse id
+                        # behind and blew up the whole restore at commit.
                         field_values[field.attname] = value
+                        record_deferred.append((field.attname, value, label, field.related_model))
                         continue
 
                 field_values[field.attname] = value
@@ -471,6 +480,11 @@ def _import_model_records(model_cls, company, records, pk_map, label, excluded_f
             models.Model.save(obj)
             old_to_new[old_pk] = obj.pk
             imported += 1
+            # A161 drill follow-through: this branch used to `continue`
+            # WITHOUT transferring record_deferred, silently nulling
+            # deferred FK links (caused_by_event) on every restore.
+            for attname, old_fk_value, fk_label, related_model in record_deferred:
+                deferred_fks.append((model_cls, obj.pk, attname, old_fk_value, fk_label, related_model))
             continue
 
         if model_cls is CompanyEventCounter:
@@ -495,39 +509,76 @@ def _import_model_records(model_cls, company, records, pk_map, label, excluded_f
         imported += 1
 
         # Track deferred FKs with the NEW pk
-        for attname, old_fk_value, fk_label in record_deferred:
-            deferred_fks.append((model_cls, obj.pk, attname, old_fk_value, fk_label))
+        for attname, old_fk_value, fk_label, related_model in record_deferred:
+            deferred_fks.append((model_cls, obj.pk, attname, old_fk_value, fk_label, related_model))
 
     pk_map[label] = old_to_new
     return imported, deferred_fks
 
 
-def _apply_deferred_fks(deferred_fks, pk_map):
+def _apply_deferred_fks(deferred_fks, pk_map, registry=None):
     """
-    Fix up nullable FK fields that were set to NULL during import
-    because the target record hadn't been imported yet.
+    Fix up FK fields whose target record hadn't been imported yet at
+    insert time — nullable ones were set to NULL, non-nullable ones
+    carry the raw OLD id (constraints are deferred to commit).
+
+    Resolution uses the related model's EXACT pk_map entry (the old
+    scan across every model's mapping could mis-map whenever two models
+    shared an old integer PK). An unresolvable NON-nullable FK raises
+    RestoreError — fail closed with a named field instead of a cryptic
+    commit-time FK violation.
 
     Uses raw SQL UPDATE to bypass custom save() overrides.
     """
     from django.db import connection
 
+    label_by_model = {model: lbl for lbl, model in (registry or {}).items()}
+
     with connection.cursor() as cursor:
-        for model_cls, obj_pk, attname, old_fk_value, _fk_label in deferred_fks:
-            # Find the new PK for the old FK value
+        for entry in deferred_fks:
+            if len(entry) == 6:
+                model_cls, obj_pk, attname, old_fk_value, _fk_label, related_model = entry
+            else:  # legacy 5-tuple shape
+                model_cls, obj_pk, attname, old_fk_value, _fk_label = entry
+                related_model = None
+
+            # Find the new PK for the old FK value — exact label first.
             new_fk = None
-            for _map_label, mapping in pk_map.items():
-                if old_fk_value in mapping:
-                    new_fk = mapping[old_fk_value]
-                    break
+            related_label = label_by_model.get(related_model)
+            if related_label and related_label in pk_map:
+                new_fk = pk_map[related_label].get(old_fk_value)
+            if new_fk is None and related_model is None:
+                # Legacy fallback: ambiguous whole-map scan.
+                for _map_label, mapping in pk_map.items():
+                    if old_fk_value in mapping:
+                        new_fk = mapping[old_fk_value]
+                        break
+
+            field = next(
+                (f for f in model_cls._meta.concrete_fields if f.attname == attname),
+                None,
+            )
 
             if new_fk is None:
+                if field is not None and not field.null:
+                    raise RestoreError(
+                        f"Restore cannot resolve required FK "
+                        f"{model_cls._meta.label}.{attname} (old id {old_fk_value}) - "
+                        f"the target row is missing from the backup."
+                    )
                 continue
 
             table = model_cls._meta.db_table
-            pk_col = model_cls._meta.pk.column
+            pk_field = model_cls._meta.pk
+            pk_col = pk_field.column
+            # Prep values through the field layer — UUID PKs (BusinessEvent)
+            # need backend-specific encoding; binding a raw uu.UUID breaks
+            # on SQLite and str() breaks the char32 storage format.
+            prepped_fk = field.get_db_prep_value(new_fk, connection) if field is not None else new_fk
+            prepped_pk = pk_field.get_db_prep_value(obj_pk, connection)
             cursor.execute(
                 f'UPDATE "{table}" SET "{attname}" = %s WHERE "{pk_col}" = %s',
-                [new_fk, obj_pk],
+                [prepped_fk, prepped_pk],
             )
 
 
