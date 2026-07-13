@@ -38,6 +38,12 @@ New defects found during the batch, filed as P1 (A181-A185): auto-reversal helpe
 
 New defects found during this batch, filed as P1 (A186-A188): unmatch→rematch clearance request_id staleness (both auto + manual paths); _fifo_consume zero-cost remainder on below-zero FIFO issues; bank_connector exception detectors keyed on retired legacy match state.
 
+## 2026-07-13 — A161 restore drill (both batches deployed same day; drill run on a prod clone)
+
+- Drill-fix #1 — 2026-07-13 — shipped — export_company crashed on Item.image (FieldFile not JSON-serializable): File/Image fields now serialize as storage paths in both serializer layers; real-merchant backups were structurally broken — PR #89
+- Drill-fix #2 — 2026-07-13 — shipped — restore detonated at commit for any company with inventory balances (non-nullable in-registry FK remap gap); fixed as a class: deferred fixups for non-nullable FKs, BusinessEvent caused_by_event fixups no longer dropped, exact-label pk_map resolution, RestoreError on unresolvable required FKs, UUID-safe fixup binding — PR #90
+- A161 drill — 2026-07-13 — PASSED — export 0.65s / destructive restore on prod clone 0.76s with in-transaction invariants verified; explicit post-check tie-out OK; evidence in the gate checkbox — plus MEDIA_ROOT backup exposure closed at nginx (residue filed A192)
+
 ## From: Phase A — First-user unblock + foundation hardening
 
 ### A1. Phase 1 dry-run on fresh Shopify dev store — ✅ **DONE 2026-04-28**
