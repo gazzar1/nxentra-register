@@ -22,6 +22,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from django.db import models
+from django.db.models.fields.files import FieldFile
 from django.utils import timezone
 
 from accounts.rls import rls_bypass
@@ -32,7 +33,10 @@ FORMAT_VERSION = "1.0"
 
 
 class BackupEncoder(json.JSONEncoder):
-    """JSON encoder for backup data — handles Decimal, datetime, date, UUID."""
+    """JSON encoder for backup data — handles Decimal, datetime, date,
+    UUID, and File/Image fields (found live in the 2026-07-13 A161
+    restore drill: Item.image made export_company crash for any company
+    with synced product images)."""
 
     def default(self, obj):
         if isinstance(obj, Decimal):
@@ -43,6 +47,12 @@ class BackupEncoder(json.JSONEncoder):
             return obj.isoformat()
         if isinstance(obj, UUID):
             return str(obj)
+        if isinstance(obj, FieldFile):
+            # Serialize as the storage path — the DB value. Media
+            # binaries are deliberately NOT bundled in the backup; a
+            # restore re-points the path (books first, blobs are
+            # re-syncable from the platform).
+            return obj.name or None
         return super().default(obj)
 
 
@@ -66,6 +76,9 @@ def _serialize_instance(instance, excluded_fields=None):
             value = str(value)
         elif isinstance(value, bytes):
             value = value.hex()
+        elif isinstance(value, FieldFile):
+            # File/Image fields → their storage path (see BackupEncoder).
+            value = value.name or None
 
         data[field.name] = value
 
