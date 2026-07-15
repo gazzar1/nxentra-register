@@ -2,7 +2,7 @@ import Link from "next/link";
 import { useRouter } from "next/router";
 import { FormEvent, useState } from "react";
 import { AuthLayout } from "@/components/AuthLayout";
-import { InputField, SelectField } from "@/components/FormField";
+import { InputField, PasswordField, SelectField } from "@/components/FormField";
 import {
   currencyOptions,
   languageOptions,
@@ -14,6 +14,7 @@ const initialState = {
   name: "",
   phone: "",
   password: "",
+  confirm_password: "",
   company_name: "",
   currency: "USD",
   language: "en",
@@ -42,6 +43,17 @@ export default function RegisterPage() {
 
   const handleChange = (field: keyof typeof form) => (value: string) => {
     setForm((previous) => ({ ...previous, [field]: value }));
+    // Clear the edited field's submit-time error so live feedback (e.g. the
+    // password rule hint) isn't stuck behind a stale message. Editing the
+    // password also invalidates a stale "Passwords do not match".
+    setErrors((previous) => {
+      if (!previous[field] && !(field === "password" && previous.confirm_password)) {
+        return previous;
+      }
+      const next = { ...previous, [field]: undefined };
+      if (field === "password") next.confirm_password = undefined;
+      return next;
+    });
   };
 
   const validate = () => {
@@ -51,6 +63,10 @@ export default function RegisterPage() {
     if (!form.name) validationErrors.name = "Name is required";
     if (!form.password || form.password.length < 8)
       validationErrors.password = "Password must be at least 8 characters";
+    if (!form.confirm_password)
+      validationErrors.confirm_password = "Please confirm your password";
+    else if (form.confirm_password !== form.password)
+      validationErrors.confirm_password = "Passwords do not match";
     if (!form.company_name)
       validationErrors.company_name = "Company database name is required";
     if (form.company_name && form.company_name.includes(" "))
@@ -122,13 +138,30 @@ export default function RegisterPage() {
             placeholder="+20 xxx xxx xxxx"
             error={errors.phone}
           />
-          <InputField
+          <PasswordField
             id="password"
             label="Password"
-            type="password"
             value={form.password}
             onChange={handleChange("password")}
             error={errors.password}
+            autoComplete="new-password"
+            hint={
+              <span className={form.password.length >= 8 ? "text-success" : undefined}>
+                {form.password.length >= 8 ? "✓ At least 8 characters" : "At least 8 characters"}
+              </span>
+            }
+          />
+          {/* Explicit md placement keeps Confirm directly under Password in the
+              two-column grid while the single-column (mobile) flow follows
+              source order. Company slots under Phone in the freed cell. */}
+          <PasswordField
+            id="confirm_password"
+            label="Confirm password"
+            value={form.confirm_password}
+            onChange={handleChange("confirm_password")}
+            error={errors.confirm_password}
+            autoComplete="new-password"
+            className="md:col-start-2 md:row-start-4"
           />
           <InputField
             id="company_name"
@@ -137,6 +170,7 @@ export default function RegisterPage() {
             onChange={handleChange("company_name")}
             placeholder="e.g. nxentra"
             error={errors.company_name}
+            className="md:col-start-1 md:row-start-4"
           />
 
           <SelectField id="currency" label="Functional currency" value={form.currency} onChange={handleChange("currency")}>
@@ -154,10 +188,6 @@ export default function RegisterPage() {
               </option>
             ))}
           </SelectField>
-
-          <div className="hidden">
-            {/* Language fills the row; this balances the grid */}
-          </div>
 
           <div className="md:col-span-2">
             <label className="flex items-start gap-3 cursor-pointer">
