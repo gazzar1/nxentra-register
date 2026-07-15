@@ -55,6 +55,7 @@ interface PasswordProps extends BaseProps {
   onChange: (value: string) => void;
   placeholder?: string;
   hint?: ReactNode;
+  autoComplete?: string;
 }
 
 export function PasswordField({
@@ -65,6 +66,7 @@ export function PasswordField({
   placeholder,
   error,
   hint,
+  autoComplete,
   className
 }: PasswordProps) {
   const [visible, setVisible] = useState(false);
@@ -80,6 +82,7 @@ export function PasswordField({
           type={visible ? "text" : "password"}
           value={value}
           placeholder={placeholder}
+          autoComplete={autoComplete}
           onChange={(event) => onChange(event.target.value)}
           className={clsx(
             "w-full rounded-xl border border-input bg-background px-4 py-3 pr-12 text-foreground transition",

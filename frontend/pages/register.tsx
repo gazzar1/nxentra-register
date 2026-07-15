@@ -133,6 +133,7 @@ export default function RegisterPage() {
             value={form.password}
             onChange={handleChange("password")}
             error={errors.password}
+            autoComplete="new-password"
             hint={
               <span className={form.password.length >= 8 ? "text-emerald-500" : undefined}>
                 {form.password.length >= 8 ? "✓ At least 8 characters" : "At least 8 characters"}
@@ -148,6 +149,7 @@ export default function RegisterPage() {
             value={form.confirm_password}
             onChange={handleChange("confirm_password")}
             error={errors.confirm_password}
+            autoComplete="new-password"
             className="md:col-start-2 md:row-start-4"
           />
           <InputField
