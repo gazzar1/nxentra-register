@@ -701,6 +701,10 @@ def create_user_with_membership(
 
     require(actor, "company.manage_users")
 
+    password_errors = password_rule_errors(password)
+    if password_errors:
+        return CommandResult.fail(" ".join(password_errors))
+
     # Validate email uniqueness
     if User.objects.filter(email=email).exists():
         return CommandResult.fail(f"User with email '{email}' already exists.")
@@ -930,10 +934,6 @@ def set_user_password(
     Returns:
         CommandResult
     """
-    password_errors = password_rule_errors(new_password)
-    if password_errors:
-        return CommandResult.fail(" ".join(password_errors))
-
     try:
         target_user = User.objects.get(pk=user_id)
     except User.DoesNotExist:
@@ -949,6 +949,10 @@ def set_user_password(
         # Verify target user is in actor's company
         if not CompanyMembership.objects.filter(user=target_user, company=actor.company, is_active=True).exists():
             return CommandResult.fail("User is not a member of your company.")
+
+    password_errors = password_rule_errors(new_password)
+    if password_errors:
+        return CommandResult.fail(" ".join(password_errors))
 
     with auth_writes_allowed():
         target_user.set_password(new_password)

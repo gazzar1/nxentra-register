@@ -25,7 +25,7 @@ set -euo pipefail
 BASE_URL="${BASE_URL:-http://localhost:8000}"
 FRONTEND_URL="${FRONTEND_URL:-http://localhost:3000}"
 TEST_EMAIL="${TEST_EMAIL:-owner@test.com}"
-TEST_PASSWORD="${TEST_PASSWORD:-testpass123}"
+TEST_PASSWORD="${TEST_PASSWORD:-Testpass123!}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'

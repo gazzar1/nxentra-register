@@ -9,7 +9,12 @@ when a password is set), so no existing account is locked out.
 import pytest
 
 from accounts.authz import ActorContext
-from accounts.commands import admin_reset_password, register_signup, set_user_password
+from accounts.commands import (
+    admin_reset_password,
+    create_user_with_membership,
+    register_signup,
+    set_user_password,
+)
 from accounts.models import CompanyMembership, User
 from accounts.passwords import password_rule_errors
 
@@ -43,6 +48,21 @@ class TestPasswordRuleErrors:
     def test_all_rules_reported_together(self):
         # "abc" is short, has no uppercase, no number, no special
         assert len(password_rule_errors("abc")) == 4
+
+    def test_non_ascii_letter_counts_as_special(self):
+        """Frontend parity: 'special' = anything that is not an ASCII letter
+        or digit, so an all-green client checklist is never rejected here.
+        An Arabic or accented letter satisfies the special rule on BOTH sides."""
+        assert password_rule_errors("Password1م") == []
+        assert password_rule_errors("Password1Ñ") == []
+
+    def test_non_ascii_digit_counts_as_special(self):
+        # Arabic-Indic digit: not an ASCII alnum, so it satisfies "special";
+        # the ASCII digit satisfies "number".
+        assert password_rule_errors("Password1٣") == []
+
+    def test_space_counts_as_special(self):
+        assert password_rule_errors("Password 1") == []
 
 
 @pytest.mark.django_db
@@ -125,6 +145,30 @@ class TestPasswordChangePaths:
         actor = self._make_actor()
         admin = User.objects.create_superuser(email="admin2@test.example", password="Adminpass123!")
         result = admin_reset_password(admin, actor.user.id, "ResetSecure789#")
+        assert result.success
+
+    def test_create_user_with_membership_rejects_weak(self):
+        """POST /api/users/ path — previously only serializer min_length=8."""
+        actor = self._make_actor()
+        result = create_user_with_membership(
+            actor=actor,
+            email="member@test.example",
+            name="Member",
+            password="aaaaaaaa",
+            role="USER",
+        )
+        assert not result.success
+        assert "uppercase" in result.error
+
+    def test_create_user_with_membership_accepts_strong(self):
+        actor = self._make_actor()
+        result = create_user_with_membership(
+            actor=actor,
+            email="member2@test.example",
+            name="Member Two",
+            password="Memberpass123!",
+            role="USER",
+        )
         assert result.success
 
 

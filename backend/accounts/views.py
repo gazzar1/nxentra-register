@@ -2476,7 +2476,8 @@ class AdminResetPasswordView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        password = request.data.get("password", "").strip()
+        # No strip(): a leading/trailing space is a legitimate special character.
+        password = request.data.get("password", "")
         if not password:
             return Response(
                 {"detail": "Password is required."},

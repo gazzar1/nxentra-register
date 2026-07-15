@@ -12,6 +12,7 @@ import { PageHeader } from "@/components/common";
 import { useAuth } from "@/contexts/AuthContext";
 import { useMutation } from "@tanstack/react-query";
 import apiClient, { getErrorMessage } from "@/lib/api-client";
+import { passwordMeetsAllRules, passwordRulesMessage, passwordRulesPlaceholder } from "@/lib/password-rules";
 
 export default function AccountSettingsPage() {
   const { t } = useTranslation(["common", "settings"]);
@@ -64,8 +65,8 @@ export default function AccountSettingsPage() {
       return;
     }
 
-    if (newPassword.length < 8) {
-      setError("Password must be at least 8 characters");
+    if (!passwordMeetsAllRules(newPassword)) {
+      setError(passwordRulesMessage);
       return;
     }
 
@@ -136,7 +137,7 @@ export default function AccountSettingsPage() {
                     type={showNewPassword ? "text" : "password"}
                     value={newPassword}
                     onChange={(e) => setNewPassword(e.target.value)}
-                    placeholder="Enter new password (min 8 characters)"
+                    placeholder={passwordRulesPlaceholder}
                     className="pr-10"
                     autoComplete="new-password"
                   />

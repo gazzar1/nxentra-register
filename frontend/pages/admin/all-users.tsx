@@ -28,6 +28,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { adminService, AdminUser } from "@/services/admin.service";
 import { getErrorMessage } from "@/lib/api-client";
+import { passwordMeetsAllRules, passwordRulesMessage, passwordRulesPlaceholder } from "@/lib/password-rules";
 
 export default function AdminAllUsersPage() {
   const { t } = useTranslation(["common"]);
@@ -77,8 +78,8 @@ export default function AdminAllUsersPage() {
     setResetError("");
     setResetSuccess("");
 
-    if (newPassword.length < 8) {
-      setResetError("Password must be at least 8 characters");
+    if (!passwordMeetsAllRules(newPassword)) {
+      setResetError(passwordRulesMessage);
       return;
     }
 
@@ -343,7 +344,7 @@ export default function AdminAllUsersPage() {
                       type={showPassword ? "text" : "password"}
                       value={newPassword}
                       onChange={(e) => setNewPassword(e.target.value)}
-                      placeholder="Enter new password (min 8 characters)"
+                      placeholder={passwordRulesPlaceholder}
                       autoFocus
                       className="pr-10"
                       autoComplete="new-password"
