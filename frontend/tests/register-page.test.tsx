@@ -25,6 +25,14 @@ vi.mock('@/components/FormField', () => ({
       {error && <span data-testid={`${id}-error`}>{error}</span>}
     </div>
   ),
+  PasswordField: ({ id, label, value, onChange, error, hint }: any) => (
+    <div>
+      <label htmlFor={id}>{label}</label>
+      <input id={id} type="password" value={value} onChange={(e: any) => onChange(e.target.value)} data-testid={id} />
+      {error && <span data-testid={`${id}-error`}>{error}</span>}
+      {!error && hint && <span data-testid={`${id}-hint`}>{hint}</span>}
+    </div>
+  ),
   SelectField: ({ id, label, value, onChange, children }: any) => (
     <div>
       <label htmlFor={id}>{label}</label>
@@ -74,6 +82,7 @@ describe('RegisterPage', () => {
       expect(screen.getByTestId('email-error')).toHaveTextContent('Email is required');
       expect(screen.getByTestId('name-error')).toHaveTextContent('Name is required');
       expect(screen.getByTestId('password-error')).toHaveTextContent('Password must be at least 8 characters');
+      expect(screen.getByTestId('confirm_password-error')).toHaveTextContent('Please confirm your password');
       expect(screen.getByTestId('company_name-error')).toHaveTextContent('Company database name is required');
     });
 
@@ -91,6 +100,45 @@ describe('RegisterPage', () => {
     await waitFor(() => {
       expect(screen.getByTestId('password-error')).toHaveTextContent('Password must be at least 8 characters');
     });
+  });
+
+  it('requires password confirmation', async () => {
+    render(<RegisterPage />);
+    fireEvent.change(screen.getByTestId('email'), { target: { value: 'test@test.com' } });
+    fireEvent.change(screen.getByTestId('name'), { target: { value: 'Test User' } });
+    fireEvent.change(screen.getByTestId('password'), { target: { value: 'password123' } });
+    fireEvent.change(screen.getByTestId('company_name'), { target: { value: 'acme' } });
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', { name: /launch workspace/i }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('confirm_password-error')).toHaveTextContent('Please confirm your password');
+    });
+    expect(mockRegister).not.toHaveBeenCalled();
+  });
+
+  it('rejects mismatched password confirmation', async () => {
+    render(<RegisterPage />);
+    fireEvent.change(screen.getByTestId('email'), { target: { value: 'test@test.com' } });
+    fireEvent.change(screen.getByTestId('name'), { target: { value: 'Test User' } });
+    fireEvent.change(screen.getByTestId('password'), { target: { value: 'password123' } });
+    fireEvent.change(screen.getByTestId('confirm_password'), { target: { value: 'password124' } });
+    fireEvent.change(screen.getByTestId('company_name'), { target: { value: 'acme' } });
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', { name: /launch workspace/i }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('confirm_password-error')).toHaveTextContent('Passwords do not match');
+    });
+    expect(mockRegister).not.toHaveBeenCalled();
+  });
+
+  it('shows the password rule hint and marks it satisfied at 8 characters', () => {
+    render(<RegisterPage />);
+    expect(screen.getByTestId('password-hint')).toHaveTextContent('At least 8 characters');
+
+    fireEvent.change(screen.getByTestId('password'), { target: { value: 'password123' } });
+    expect(screen.getByTestId('password-hint')).toHaveTextContent('✓ At least 8 characters');
   });
 
   it('validates company name has no spaces', async () => {
@@ -126,11 +174,13 @@ describe('RegisterPage', () => {
     fireEvent.change(screen.getByTestId('email'), { target: { value: 'user@test.com' } });
     fireEvent.change(screen.getByTestId('name'), { target: { value: 'Test User' } });
     fireEvent.change(screen.getByTestId('password'), { target: { value: 'password123' } });
+    fireEvent.change(screen.getByTestId('confirm_password'), { target: { value: 'password123' } });
     fireEvent.change(screen.getByTestId('company_name'), { target: { value: 'acme' } });
     fireEvent.click(screen.getByRole('checkbox'));
     fireEvent.click(screen.getByRole('button', { name: /launch workspace/i }));
 
     await waitFor(() => {
+      // Exact-match payload: also proves confirm_password is never sent to the API
       expect(mockRegister).toHaveBeenCalledWith({
         email: 'user@test.com',
         name: 'Test User',
@@ -154,6 +204,7 @@ describe('RegisterPage', () => {
     fireEvent.change(screen.getByTestId('email'), { target: { value: 'existing@test.com' } });
     fireEvent.change(screen.getByTestId('name'), { target: { value: 'User' } });
     fireEvent.change(screen.getByTestId('password'), { target: { value: 'password123' } });
+    fireEvent.change(screen.getByTestId('confirm_password'), { target: { value: 'password123' } });
     fireEvent.change(screen.getByTestId('company_name'), { target: { value: 'acme' } });
     fireEvent.click(screen.getByRole('checkbox'));
     fireEvent.click(screen.getByRole('button', { name: /launch workspace/i }));
@@ -170,6 +221,7 @@ describe('RegisterPage', () => {
     fireEvent.change(screen.getByTestId('email'), { target: { value: 'user@test.com' } });
     fireEvent.change(screen.getByTestId('name'), { target: { value: 'User' } });
     fireEvent.change(screen.getByTestId('password'), { target: { value: 'password123' } });
+    fireEvent.change(screen.getByTestId('confirm_password'), { target: { value: 'password123' } });
     fireEvent.change(screen.getByTestId('company_name'), { target: { value: 'acme' } });
     fireEvent.click(screen.getByRole('checkbox'));
     fireEvent.click(screen.getByRole('button', { name: /launch workspace/i }));
