@@ -38,7 +38,7 @@ class CanonicalCoreLoopTest(TestCase):
         """Create a test company with owner."""
         result = register_signup(
             email="owner@canonical.test",
-            password="testpass123",
+            password="Testpass123!",
             company_name="Canonical Test Corp",
             name="Test Owner",
         )
@@ -115,7 +115,7 @@ class CanonicalReversalTest(TestCase):
     def setUp(self):
         result = register_signup(
             email="reversal@canonical.test",
-            password="testpass123",
+            password="Testpass123!",
             company_name="Reversal Test Corp",
         )
         self.user = result.data["user"]
@@ -187,7 +187,7 @@ class CanonicalRebuildTest(TestCase):
     def setUp(self):
         result = register_signup(
             email="rebuild@canonical.test",
-            password="testpass123",
+            password="Testpass123!",
             company_name="Rebuild Test Corp",
         )
         self.user = result.data["user"]
@@ -255,7 +255,7 @@ class CanonicalImmutabilityTest(TestCase):
     def setUp(self):
         result = register_signup(
             email="immutable@canonical.test",
-            password="testpass123",
+            password="Testpass123!",
             company_name="Immutable Test Corp",
         )
         self.company = result.data["company"]
@@ -288,7 +288,7 @@ class CanonicalDoubleEntryTest(TestCase):
     def setUp(self):
         result = register_signup(
             email="doubleentry@canonical.test",
-            password="testpass123",
+            password="Testpass123!",
             company_name="Double Entry Test Corp",
         )
         self.user = result.data["user"]
@@ -338,7 +338,7 @@ class CanonicalIdempotencyTest(TestCase):
     def setUp(self):
         result = register_signup(
             email="idempotent@canonical.test",
-            password="testpass123",
+            password="Testpass123!",
             company_name="Idempotent Test Corp",
         )
         self.user = result.data["user"]

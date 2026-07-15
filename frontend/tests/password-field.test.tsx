@@ -52,10 +52,14 @@ describe('PasswordField', () => {
     expect(screen.getByText('At least 8 characters')).toBeInTheDocument();
   });
 
-  it('shows the error instead of the hint', () => {
+  it('shows the error and keeps the hint visible (the checklist explains the error)', () => {
     render(<ControlledPasswordField hint="At least 8 characters" error="Passwords do not match" />);
     expect(screen.getByText('Passwords do not match')).toBeInTheDocument();
-    expect(screen.queryByText('At least 8 characters')).not.toBeInTheDocument();
+    expect(screen.getByText('At least 8 characters')).toBeInTheDocument();
+    expect(screen.getByLabelText('Password')).toHaveAttribute(
+      'aria-describedby',
+      'password-error password-hint'
+    );
   });
 
   it('propagates typed input', () => {

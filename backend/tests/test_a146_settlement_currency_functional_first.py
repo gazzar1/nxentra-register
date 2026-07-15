@@ -60,7 +60,7 @@ def egp_books_company(db):
     user = User.objects.create_user(
         public_id=uuid4(),
         email=f"owner-a146-{uid}@test.com",
-        password="testpass123",
+        password="Testpass123!",
         name="A146 Owner",
     )
     user.active_company = company

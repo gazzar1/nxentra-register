@@ -2483,12 +2483,7 @@ class AdminResetPasswordView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if len(password) < 8:
-            return Response(
-                {"detail": "Password must be at least 8 characters."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
+        # Rule validation (8+/uppercase/number/special) lives in the command.
         result = admin_reset_password(request.user, pk, password)
 
         if not result.success:

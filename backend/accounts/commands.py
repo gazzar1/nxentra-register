@@ -26,6 +26,7 @@ from django.utils import timezone
 
 from accounts.authz import ActorContext, require
 from accounts.models import Company, CompanyMembership, NxPermission
+from accounts.passwords import password_rule_errors
 from accounts.rls import rls_bypass
 from events.emitter import emit_event, emit_event_no_actor
 from events.types import (
@@ -161,8 +162,9 @@ def register_signup(
         if not company_name or not company_name.strip():
             return CommandResult.fail("Company name is required.")
 
-        if not password or len(password) < 8:
-            return CommandResult.fail("Password must be at least 8 characters.")
+        password_errors = password_rule_errors(password)
+        if password_errors:
+            return CommandResult.fail(" ".join(password_errors))
 
         # Generate unique slug with retry on collision
         base_slug = slugify(company_name.strip())
@@ -928,6 +930,10 @@ def set_user_password(
     Returns:
         CommandResult
     """
+    password_errors = password_rule_errors(new_password)
+    if password_errors:
+        return CommandResult.fail(" ".join(password_errors))
+
     try:
         target_user = User.objects.get(pk=user_id)
     except User.DoesNotExist:
@@ -993,6 +999,10 @@ def admin_reset_password(
     """
     if not admin_user.is_superuser:
         return CommandResult.fail("Superuser access required.")
+
+    password_errors = password_rule_errors(new_password)
+    if password_errors:
+        return CommandResult.fail(" ".join(password_errors))
 
     try:
         target_user = User.objects.get(pk=target_user_id)
@@ -2660,8 +2670,9 @@ def accept_invitation(
     from accounts.models import Invitation
 
     # Validate password
-    if not password or len(password) < 8:
-        return CommandResult.fail("Password must be at least 8 characters.")
+    password_errors = password_rule_errors(password)
+    if password_errors:
+        return CommandResult.fail(" ".join(password_errors))
 
     # Hash token and look up invitation
     token_hash = hashlib.sha256(token.encode()).hexdigest()

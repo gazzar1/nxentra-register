@@ -8,6 +8,7 @@ import {
   languageOptions,
 } from "@/lib/constants";
 import { register } from "@/lib/api";
+import { passwordMeetsAllRules, passwordRules } from "@/lib/password-rules";
 
 const initialState = {
   email: "",
@@ -61,8 +62,10 @@ export default function RegisterPage() {
 
     if (!form.email) validationErrors.email = "Email is required";
     if (!form.name) validationErrors.name = "Name is required";
-    if (!form.password || form.password.length < 8)
-      validationErrors.password = "Password must be at least 8 characters";
+    if (!form.password)
+      validationErrors.password = "Password is required";
+    else if (!passwordMeetsAllRules(form.password))
+      validationErrors.password = "Password does not meet all the requirements below";
     if (!form.confirm_password)
       validationErrors.confirm_password = "Please confirm your password";
     else if (form.confirm_password !== form.password)
@@ -108,10 +111,19 @@ export default function RegisterPage() {
       router.push(`/verify-email?${verifyParams.toString()}`);
     } catch (error: unknown) {
       console.error(error);
-      const axiosError = error as { response?: { data?: { detail?: string; email?: string[] } } };
+      const axiosError = error as {
+        response?: { data?: { detail?: string; email?: string[]; password?: string[] } };
+      };
       const detail = axiosError.response?.data?.detail;
       const emailError = axiosError.response?.data?.email?.[0];
-      setErrors({ email: emailError || detail || "Registration failed. Please try again." });
+      const passwordError = axiosError.response?.data?.password?.[0];
+      // Backend password-rule rejections belong under the password field,
+      // not the email field.
+      if (passwordError || (detail && detail.startsWith("Password"))) {
+        setErrors({ password: passwordError || detail });
+      } else {
+        setErrors({ email: emailError || detail || "Registration failed. Please try again." });
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -146,8 +158,15 @@ export default function RegisterPage() {
             error={errors.password}
             autoComplete="new-password"
             hint={
-              <span className={form.password.length >= 8 ? "text-success" : undefined}>
-                {form.password.length >= 8 ? "✓ At least 8 characters" : "At least 8 characters"}
+              <span className="grid gap-0.5">
+                {passwordRules.map((rule) => {
+                  const met = rule.test(form.password);
+                  return (
+                    <span key={rule.id} className={met ? "text-success" : undefined}>
+                      {met ? "✓" : "•"} {rule.label}
+                    </span>
+                  );
+                })}
               </span>
             }
           />
