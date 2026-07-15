@@ -26,6 +26,7 @@ from django.utils import timezone
 
 from accounts.authz import ActorContext, require
 from accounts.models import Company, CompanyMembership, NxPermission
+from accounts.passwords import password_rule_errors
 from accounts.rls import rls_bypass
 from events.emitter import emit_event, emit_event_no_actor
 from events.types import (
@@ -161,8 +162,9 @@ def register_signup(
         if not company_name or not company_name.strip():
             return CommandResult.fail("Company name is required.")
 
-        if not password or len(password) < 8:
-            return CommandResult.fail("Password must be at least 8 characters.")
+        password_errors = password_rule_errors(password)
+        if password_errors:
+            return CommandResult.fail(" ".join(password_errors))
 
         # Generate unique slug with retry on collision
         base_slug = slugify(company_name.strip())
@@ -699,6 +701,10 @@ def create_user_with_membership(
 
     require(actor, "company.manage_users")
 
+    password_errors = password_rule_errors(password)
+    if password_errors:
+        return CommandResult.fail(" ".join(password_errors))
+
     # Validate email uniqueness
     if User.objects.filter(email=email).exists():
         return CommandResult.fail(f"User with email '{email}' already exists.")
@@ -944,6 +950,10 @@ def set_user_password(
         if not CompanyMembership.objects.filter(user=target_user, company=actor.company, is_active=True).exists():
             return CommandResult.fail("User is not a member of your company.")
 
+    password_errors = password_rule_errors(new_password)
+    if password_errors:
+        return CommandResult.fail(" ".join(password_errors))
+
     with auth_writes_allowed():
         target_user.set_password(new_password)
         target_user.save(update_fields=["password"])
@@ -993,6 +1003,10 @@ def admin_reset_password(
     """
     if not admin_user.is_superuser:
         return CommandResult.fail("Superuser access required.")
+
+    password_errors = password_rule_errors(new_password)
+    if password_errors:
+        return CommandResult.fail(" ".join(password_errors))
 
     try:
         target_user = User.objects.get(pk=target_user_id)
@@ -2660,8 +2674,9 @@ def accept_invitation(
     from accounts.models import Invitation
 
     # Validate password
-    if not password or len(password) < 8:
-        return CommandResult.fail("Password must be at least 8 characters.")
+    password_errors = password_rule_errors(password)
+    if password_errors:
+        return CommandResult.fail(" ".join(password_errors))
 
     # Hash token and look up invitation
     token_hash = hashlib.sha256(token.encode()).hexdigest()

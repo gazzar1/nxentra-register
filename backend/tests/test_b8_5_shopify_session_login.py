@@ -207,7 +207,7 @@ def test_session_login_prefers_active_over_disconnected_history(
     other_user = user.__class__.objects.create_user(
         public_id=uuid4(),
         email="other-owner@test.com",
-        password="testpass123",
+        password="Testpass123!",
         name="Other Owner",
     )
     other_user.active_company = second_company

@@ -317,7 +317,7 @@ def shopify_company(db):
     user = User.objects.create_user(
         public_id=uuid4(),
         email=f"owner-shopify-{uid}@test.com",
-        password="testpass123",
+        password="Testpass123!",
         name="Shopify Owner",
     )
     user.active_company = company

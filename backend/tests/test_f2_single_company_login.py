@@ -12,7 +12,7 @@ from rest_framework.test import APIClient
 from accounts.models import CompanyMembership
 
 LOGIN_URL = "/api/auth/login/"
-PASSWORD = "testpass123"
+PASSWORD = "Testpass123!"
 
 
 def _loginable(user):

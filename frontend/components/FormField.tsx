@@ -85,7 +85,9 @@ export function PasswordField({
           autoComplete={autoComplete}
           onChange={(event) => onChange(event.target.value)}
           aria-invalid={error ? true : undefined}
-          aria-describedby={error ? `${id}-error` : hint ? `${id}-hint` : undefined}
+          aria-describedby={
+            [error && `${id}-error`, hint && `${id}-hint`].filter(Boolean).join(" ") || undefined
+          }
           className={clsx(
             "w-full rounded-xl border border-input bg-background py-3 ps-4 pe-12 text-foreground transition",
             "placeholder:text-muted-foreground focus:border-accent focus:outline-none focus:ring focus:ring-accent/20",
@@ -101,11 +103,10 @@ export function PasswordField({
           {visible ? <EyeOff size={20} aria-hidden="true" /> : <Eye size={20} aria-hidden="true" />}
         </button>
       </div>
-      {error ? (
-        <p id={`${id}-error`} className="text-sm text-destructive">{error}</p>
-      ) : hint ? (
-        <p id={`${id}-hint`} className="text-sm text-muted-foreground">{hint}</p>
-      ) : null}
+      {/* Error and hint render together: when the hint is a rules checklist,
+          it IS the explanation of the error and must stay visible. */}
+      {error && <p id={`${id}-error`} className="text-sm text-destructive">{error}</p>}
+      {hint && <p id={`${id}-hint`} className="text-sm text-muted-foreground">{hint}</p>}
     </div>
   );
 }

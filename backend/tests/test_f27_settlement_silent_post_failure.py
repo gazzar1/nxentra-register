@@ -63,7 +63,7 @@ def _make_company():
     user = User.objects.create_user(
         public_id=uuid4(),
         email=f"owner-f27-{uid}@test.com",
-        password="testpass123",
+        password="Testpass123!",
         name="F27 Owner",
     )
     user.active_company = company

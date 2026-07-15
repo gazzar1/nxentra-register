@@ -25,6 +25,7 @@ import { PageHeader } from "@/components/common";
 import { useAuth } from "@/contexts/AuthContext";
 import { useMutation } from "@tanstack/react-query";
 import apiClient, { getErrorMessage } from "@/lib/api-client";
+import { passwordMeetsAllRules, passwordRulesMessage, passwordRulesPlaceholder } from "@/lib/password-rules";
 
 export default function ProfilePage() {
   const { t } = useTranslation(["common"]);
@@ -118,8 +119,8 @@ export default function ProfilePage() {
       return;
     }
 
-    if (newPassword.length < 8) {
-      setPasswordError("Password must be at least 8 characters");
+    if (!passwordMeetsAllRules(newPassword)) {
+      setPasswordError(passwordRulesMessage);
       return;
     }
 
@@ -276,7 +277,7 @@ export default function ProfilePage() {
                       type={showNewPassword ? "text" : "password"}
                       value={newPassword}
                       onChange={(e) => setNewPassword(e.target.value)}
-                      placeholder="Enter new password (min 8 characters)"
+                      placeholder={passwordRulesPlaceholder}
                       className="pr-10"
                       autoComplete="new-password"
                     />

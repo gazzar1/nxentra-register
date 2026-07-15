@@ -41,7 +41,7 @@ def module_user(db, module_company):
     user = User.objects.create_user(
         public_id=uuid4(),
         email=f"moduser-{uuid4().hex[:6]}@test.com",
-        password="testpass123",
+        password="Testpass123!",
         name="Module User",
     )
     user.active_company = module_company

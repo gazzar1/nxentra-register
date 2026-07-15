@@ -78,7 +78,7 @@
     "deleted": "Deleted successfully",
     "required": "This field is required",
     "invalidEmail": "Invalid email address",
-    "invalidPassword": "Password must be at least 8 characters",
+    "invalidPassword": "Password must have at least 8 characters, including an uppercase letter, a number, and a special character",
     "loadError": "Failed to load data"
   },
   "table": {

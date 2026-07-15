@@ -12,6 +12,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useInvitationInfo, useAcceptInvitation } from "@/queries/useInvitations";
 import { storeTokens } from "@/lib/auth-storage";
+import { passwordMeetsAllRules, passwordRulesMessage, passwordRulesPlaceholder } from "@/lib/password-rules";
 
 export default function AcceptInvitationPage() {
   const { t } = useTranslation(["common"]);
@@ -46,8 +47,8 @@ export default function AcceptInvitationPage() {
       setError("Password is required");
       return;
     }
-    if (password.length < 8) {
-      setError("Password must be at least 8 characters");
+    if (!passwordMeetsAllRules(password)) {
+      setError(passwordRulesMessage);
       return;
     }
     if (password !== confirmPassword) {
@@ -176,7 +177,7 @@ export default function AcceptInvitationPage() {
                   type={showPassword ? "text" : "password"}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="At least 8 characters"
+                  placeholder={passwordRulesPlaceholder}
                   className="pe-10"
                 />
                 <button

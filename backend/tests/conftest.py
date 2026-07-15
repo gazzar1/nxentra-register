@@ -101,7 +101,7 @@ def user(db, company):
     user = User.objects.create_user(
         public_id=uuid4(),
         email=f"owner-{uid}@test.com",
-        password="testpass123",
+        password="Testpass123!",
         name="Test Owner",
     )
     user.active_company = company
@@ -116,7 +116,7 @@ def admin_user(db, company):
     user = User.objects.create_user(
         public_id=uuid4(),
         email=f"admin-{uid}@test.com",
-        password="testpass123",
+        password="Testpass123!",
         name="Test Admin",
     )
     user.active_company = company
@@ -131,7 +131,7 @@ def regular_user(db, company):
     user = User.objects.create_user(
         public_id=uuid4(),
         email=f"user-{uid}@test.com",
-        password="testpass123",
+        password="Testpass123!",
         name="Test User",
     )
     user.active_company = company
@@ -182,7 +182,7 @@ def deactivated_membership(db, company):
     user = User.objects.create_user(
         public_id=uuid4(),
         email=f"inactive-{uid}@test.com",
-        password="testpass123",
+        password="Testpass123!",
         name="Inactive User",
     )
     return CompanyMembership.objects.create(

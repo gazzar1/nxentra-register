@@ -30,7 +30,7 @@ vi.mock('@/components/FormField', () => ({
       <label htmlFor={id}>{label}</label>
       <input id={id} type="password" value={value} onChange={(e: any) => onChange(e.target.value)} data-testid={id} />
       {error && <span data-testid={`${id}-error`}>{error}</span>}
-      {!error && hint && <span data-testid={`${id}-hint`}>{hint}</span>}
+      {hint && <span data-testid={`${id}-hint`}>{hint}</span>}
     </div>
   ),
   SelectField: ({ id, label, value, onChange, children }: any) => (
@@ -81,7 +81,7 @@ describe('RegisterPage', () => {
     await waitFor(() => {
       expect(screen.getByTestId('email-error')).toHaveTextContent('Email is required');
       expect(screen.getByTestId('name-error')).toHaveTextContent('Name is required');
-      expect(screen.getByTestId('password-error')).toHaveTextContent('Password must be at least 8 characters');
+      expect(screen.getByTestId('password-error')).toHaveTextContent('Password is required');
       expect(screen.getByTestId('confirm_password-error')).toHaveTextContent('Please confirm your password');
       expect(screen.getByTestId('company_name-error')).toHaveTextContent('Company database name is required');
     });
@@ -89,24 +89,34 @@ describe('RegisterPage', () => {
     expect(mockRegister).not.toHaveBeenCalled();
   });
 
-  it('validates password minimum length', async () => {
+  it.each([
+    ['too short', 'Ab1!'],
+    ['no uppercase letter', 'password123!'],
+    ['no number', 'Password!!!'],
+    ['no special character', 'Password123'],
+  ])('rejects a password with %s', async (_case, badPassword) => {
     render(<RegisterPage />);
     fireEvent.change(screen.getByTestId('email'), { target: { value: 'test@test.com' } });
     fireEvent.change(screen.getByTestId('name'), { target: { value: 'Test User' } });
-    fireEvent.change(screen.getByTestId('password'), { target: { value: 'short' } });
+    fireEvent.change(screen.getByTestId('password'), { target: { value: badPassword } });
+    fireEvent.change(screen.getByTestId('confirm_password'), { target: { value: badPassword } });
     fireEvent.change(screen.getByTestId('company_name'), { target: { value: 'acme' } });
+    fireEvent.click(screen.getByRole('checkbox'));
     fireEvent.click(screen.getByRole('button', { name: /launch workspace/i }));
 
     await waitFor(() => {
-      expect(screen.getByTestId('password-error')).toHaveTextContent('Password must be at least 8 characters');
+      expect(screen.getByTestId('password-error')).toHaveTextContent(
+        'Password does not meet all the requirements below'
+      );
     });
+    expect(mockRegister).not.toHaveBeenCalled();
   });
 
   it('requires password confirmation', async () => {
     render(<RegisterPage />);
     fireEvent.change(screen.getByTestId('email'), { target: { value: 'test@test.com' } });
     fireEvent.change(screen.getByTestId('name'), { target: { value: 'Test User' } });
-    fireEvent.change(screen.getByTestId('password'), { target: { value: 'password123' } });
+    fireEvent.change(screen.getByTestId('password'), { target: { value: 'Password123!' } });
     fireEvent.change(screen.getByTestId('company_name'), { target: { value: 'acme' } });
     fireEvent.click(screen.getByRole('checkbox'));
     fireEvent.click(screen.getByRole('button', { name: /launch workspace/i }));
@@ -121,8 +131,8 @@ describe('RegisterPage', () => {
     render(<RegisterPage />);
     fireEvent.change(screen.getByTestId('email'), { target: { value: 'test@test.com' } });
     fireEvent.change(screen.getByTestId('name'), { target: { value: 'Test User' } });
-    fireEvent.change(screen.getByTestId('password'), { target: { value: 'password123' } });
-    fireEvent.change(screen.getByTestId('confirm_password'), { target: { value: 'password124' } });
+    fireEvent.change(screen.getByTestId('password'), { target: { value: 'Password123!' } });
+    fireEvent.change(screen.getByTestId('confirm_password'), { target: { value: 'Password124!' } });
     fireEvent.change(screen.getByTestId('company_name'), { target: { value: 'acme' } });
     fireEvent.click(screen.getByRole('checkbox'));
     fireEvent.click(screen.getByRole('button', { name: /launch workspace/i }));
@@ -133,13 +143,46 @@ describe('RegisterPage', () => {
     expect(mockRegister).not.toHaveBeenCalled();
   });
 
-  it('shows the password rule hint and marks it satisfied at 8 characters', () => {
+  it('shows the four-rule checklist and ticks each rule live', () => {
     render(<RegisterPage />);
-    expect(screen.getByTestId('password-hint')).toHaveTextContent('At least 8 characters');
-    expect(screen.getByTestId('password-hint')).not.toHaveTextContent('✓');
+    const hint = () => screen.getByTestId('password-hint');
+    expect(hint()).toHaveTextContent('At least 8 characters');
+    expect(hint()).toHaveTextContent('One uppercase letter (A–Z)');
+    expect(hint()).toHaveTextContent('One number (0–9)');
+    expect(hint()).toHaveTextContent('One special character (e.g. !@#$%)');
+    expect(hint()).not.toHaveTextContent('✓');
 
+    // Partial: length + number met, uppercase + special not
     fireEvent.change(screen.getByTestId('password'), { target: { value: 'password123' } });
-    expect(screen.getByTestId('password-hint')).toHaveTextContent('✓ At least 8 characters');
+    expect(hint()).toHaveTextContent('✓ At least 8 characters');
+    expect(hint()).toHaveTextContent('✓ One number (0–9)');
+    expect(hint()).toHaveTextContent('• One uppercase letter (A–Z)');
+    expect(hint()).toHaveTextContent('• One special character (e.g. !@#$%)');
+
+    // All four met
+    fireEvent.change(screen.getByTestId('password'), { target: { value: 'Password123!' } });
+    expect(hint()).not.toHaveTextContent('•');
+  });
+
+  it('routes a backend password rejection to the password field, not email', async () => {
+    mockRegister.mockRejectedValue({
+      response: { data: { detail: 'Password must include at least one uppercase letter.' } },
+    });
+    render(<RegisterPage />);
+    fireEvent.change(screen.getByTestId('email'), { target: { value: 'user@test.com' } });
+    fireEvent.change(screen.getByTestId('name'), { target: { value: 'User' } });
+    fireEvent.change(screen.getByTestId('password'), { target: { value: 'Password123!' } });
+    fireEvent.change(screen.getByTestId('confirm_password'), { target: { value: 'Password123!' } });
+    fireEvent.change(screen.getByTestId('company_name'), { target: { value: 'acme' } });
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', { name: /launch workspace/i }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('password-error')).toHaveTextContent(
+        'Password must include at least one uppercase letter.'
+      );
+    });
+    expect(screen.queryByTestId('email-error')).not.toBeInTheDocument();
   });
 
   it('clears a stale password error (and mismatch error) once the user edits again', async () => {
@@ -149,13 +192,15 @@ describe('RegisterPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /launch workspace/i }));
 
     await waitFor(() => {
-      expect(screen.getByTestId('password-error')).toHaveTextContent('Password must be at least 8 characters');
+      expect(screen.getByTestId('password-error')).toHaveTextContent(
+        'Password does not meet all the requirements below'
+      );
       expect(screen.getByTestId('confirm_password-error')).toHaveTextContent('Passwords do not match');
     });
 
-    // Editing the password clears its own error (live hint returns) AND the
-    // stale mismatch error, since the match depends on both fields.
-    fireEvent.change(screen.getByTestId('password'), { target: { value: 'password123' } });
+    // Editing the password clears its own error AND the stale mismatch
+    // error, since the match depends on both fields.
+    fireEvent.change(screen.getByTestId('password'), { target: { value: 'Password123!' } });
     expect(screen.queryByTestId('password-error')).not.toBeInTheDocument();
     expect(screen.getByTestId('password-hint')).toHaveTextContent('✓ At least 8 characters');
     expect(screen.queryByTestId('confirm_password-error')).not.toBeInTheDocument();
@@ -165,7 +210,7 @@ describe('RegisterPage', () => {
     render(<RegisterPage />);
     fireEvent.change(screen.getByTestId('email'), { target: { value: 'test@test.com' } });
     fireEvent.change(screen.getByTestId('name'), { target: { value: 'Test User' } });
-    fireEvent.change(screen.getByTestId('password'), { target: { value: 'password123' } });
+    fireEvent.change(screen.getByTestId('password'), { target: { value: 'Password123!' } });
     fireEvent.change(screen.getByTestId('company_name'), { target: { value: 'my company' } });
     fireEvent.click(screen.getByRole('button', { name: /launch workspace/i }));
 
@@ -178,7 +223,7 @@ describe('RegisterPage', () => {
     render(<RegisterPage />);
     fireEvent.change(screen.getByTestId('email'), { target: { value: 'test@test.com' } });
     fireEvent.change(screen.getByTestId('name'), { target: { value: 'Test User' } });
-    fireEvent.change(screen.getByTestId('password'), { target: { value: 'password123' } });
+    fireEvent.change(screen.getByTestId('password'), { target: { value: 'Password123!' } });
     fireEvent.change(screen.getByTestId('company_name'), { target: { value: 'verylongname' } });
     fireEvent.click(screen.getByRole('button', { name: /launch workspace/i }));
 
@@ -193,8 +238,8 @@ describe('RegisterPage', () => {
 
     fireEvent.change(screen.getByTestId('email'), { target: { value: 'user@test.com' } });
     fireEvent.change(screen.getByTestId('name'), { target: { value: 'Test User' } });
-    fireEvent.change(screen.getByTestId('password'), { target: { value: 'password123' } });
-    fireEvent.change(screen.getByTestId('confirm_password'), { target: { value: 'password123' } });
+    fireEvent.change(screen.getByTestId('password'), { target: { value: 'Password123!' } });
+    fireEvent.change(screen.getByTestId('confirm_password'), { target: { value: 'Password123!' } });
     fireEvent.change(screen.getByTestId('company_name'), { target: { value: 'acme' } });
     fireEvent.click(screen.getByRole('checkbox'));
     fireEvent.click(screen.getByRole('button', { name: /launch workspace/i }));
@@ -205,7 +250,7 @@ describe('RegisterPage', () => {
         email: 'user@test.com',
         name: 'Test User',
         phone: '',
-        password: 'password123',
+        password: 'Password123!',
         company_name: 'acme',
         currency: 'USD',
         language: 'en',
@@ -223,8 +268,8 @@ describe('RegisterPage', () => {
 
     fireEvent.change(screen.getByTestId('email'), { target: { value: 'existing@test.com' } });
     fireEvent.change(screen.getByTestId('name'), { target: { value: 'User' } });
-    fireEvent.change(screen.getByTestId('password'), { target: { value: 'password123' } });
-    fireEvent.change(screen.getByTestId('confirm_password'), { target: { value: 'password123' } });
+    fireEvent.change(screen.getByTestId('password'), { target: { value: 'Password123!' } });
+    fireEvent.change(screen.getByTestId('confirm_password'), { target: { value: 'Password123!' } });
     fireEvent.change(screen.getByTestId('company_name'), { target: { value: 'acme' } });
     fireEvent.click(screen.getByRole('checkbox'));
     fireEvent.click(screen.getByRole('button', { name: /launch workspace/i }));
@@ -240,8 +285,8 @@ describe('RegisterPage', () => {
 
     fireEvent.change(screen.getByTestId('email'), { target: { value: 'user@test.com' } });
     fireEvent.change(screen.getByTestId('name'), { target: { value: 'User' } });
-    fireEvent.change(screen.getByTestId('password'), { target: { value: 'password123' } });
-    fireEvent.change(screen.getByTestId('confirm_password'), { target: { value: 'password123' } });
+    fireEvent.change(screen.getByTestId('password'), { target: { value: 'Password123!' } });
+    fireEvent.change(screen.getByTestId('confirm_password'), { target: { value: 'Password123!' } });
     fireEvent.change(screen.getByTestId('company_name'), { target: { value: 'acme' } });
     fireEvent.click(screen.getByRole('checkbox'));
     fireEvent.click(screen.getByRole('button', { name: /launch workspace/i }));

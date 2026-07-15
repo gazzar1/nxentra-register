@@ -136,7 +136,7 @@ class TestGetActiveMembership:
         user = User.objects.create_user(
             public_id=uuid4(),
             email="deactivated@test.com",
-            password="testpass123",
+            password="Testpass123!",
         )
 
         membership = CompanyMembership.objects.create(
@@ -214,7 +214,7 @@ class TestRegisterSignup:
         """Registration should create company, user, and membership."""
         result = register_signup(
             email="newuser@example.com",
-            password="securepass123",
+            password="Securepass123!",
             name="New User",
             company_name="New Company",
         )
@@ -245,7 +245,7 @@ class TestRegisterSignup:
 
         result = register_signup(
             email="eventtest@example.com",
-            password="securepass123",
+            password="Securepass123!",
             name="Event Test",
             company_name="Event Company",
         )
@@ -271,7 +271,7 @@ class TestRegisterSignup:
         """Registration should fail for duplicate email."""
         result = register_signup(
             email=user.email,  # Already exists
-            password="securepass123",
+            password="Securepass123!",
             name="Duplicate",
             company_name="Dup Company",
         )
@@ -284,7 +284,7 @@ class TestRegisterSignup:
 
         result = register_signup(
             email="pending@example.com",
-            password="securepass123",
+            password="Securepass123!",
             name="Pending User",
             company_name="Pending Company",
         )
@@ -303,7 +303,7 @@ class TestRegisterSignup:
         # EGP merchant silently got a USD ledger.
         result = register_signup(
             email="egpmerchant@example.com",
-            password="securepass123",
+            password="Securepass123!",
             name="EGP Merchant",
             company_name="EGP Merchant Co",
             default_currency="EGP",
@@ -322,7 +322,7 @@ class TestRegisterSignup:
             "/api/auth/register/",
             data={
                 "email": "viewcurrency@example.com",
-                "password": "securepass123",
+                "password": "Securepass123!",
                 "name": "View Currency",
                 "company_name": "View Currency Co",
                 "currency": "EGP",

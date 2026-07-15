@@ -2476,19 +2476,15 @@ class AdminResetPasswordView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        password = request.data.get("password", "").strip()
+        # No strip(): a leading/trailing space is a legitimate special character.
+        password = request.data.get("password", "")
         if not password:
             return Response(
                 {"detail": "Password is required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if len(password) < 8:
-            return Response(
-                {"detail": "Password must be at least 8 characters."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
+        # Rule validation (8+/uppercase/number/special) lives in the command.
         result = admin_reset_password(request.user, pk, password)
 
         if not result.success:

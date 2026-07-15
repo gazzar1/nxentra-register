@@ -50,7 +50,7 @@ def usd_default_egp_functional_company(db):
     user = User.objects.create_user(
         public_id=uuid4(),
         email=f"owner-fx-{uid}@test.com",
-        password="testpass123",
+        password="Testpass123!",
         name="FX Owner",
     )
     user.active_company = company
