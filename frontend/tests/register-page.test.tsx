@@ -136,9 +136,29 @@ describe('RegisterPage', () => {
   it('shows the password rule hint and marks it satisfied at 8 characters', () => {
     render(<RegisterPage />);
     expect(screen.getByTestId('password-hint')).toHaveTextContent('At least 8 characters');
+    expect(screen.getByTestId('password-hint')).not.toHaveTextContent('✓');
 
     fireEvent.change(screen.getByTestId('password'), { target: { value: 'password123' } });
     expect(screen.getByTestId('password-hint')).toHaveTextContent('✓ At least 8 characters');
+  });
+
+  it('clears a stale password error (and mismatch error) once the user edits again', async () => {
+    render(<RegisterPage />);
+    fireEvent.change(screen.getByTestId('password'), { target: { value: 'short' } });
+    fireEvent.change(screen.getByTestId('confirm_password'), { target: { value: 'different' } });
+    fireEvent.click(screen.getByRole('button', { name: /launch workspace/i }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('password-error')).toHaveTextContent('Password must be at least 8 characters');
+      expect(screen.getByTestId('confirm_password-error')).toHaveTextContent('Passwords do not match');
+    });
+
+    // Editing the password clears its own error (live hint returns) AND the
+    // stale mismatch error, since the match depends on both fields.
+    fireEvent.change(screen.getByTestId('password'), { target: { value: 'password123' } });
+    expect(screen.queryByTestId('password-error')).not.toBeInTheDocument();
+    expect(screen.getByTestId('password-hint')).toHaveTextContent('✓ At least 8 characters');
+    expect(screen.queryByTestId('confirm_password-error')).not.toBeInTheDocument();
   });
 
   it('validates company name has no spaces', async () => {

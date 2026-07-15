@@ -43,6 +43,17 @@ export default function RegisterPage() {
 
   const handleChange = (field: keyof typeof form) => (value: string) => {
     setForm((previous) => ({ ...previous, [field]: value }));
+    // Clear the edited field's submit-time error so live feedback (e.g. the
+    // password rule hint) isn't stuck behind a stale message. Editing the
+    // password also invalidates a stale "Passwords do not match".
+    setErrors((previous) => {
+      if (!previous[field] && !(field === "password" && previous.confirm_password)) {
+        return previous;
+      }
+      const next = { ...previous, [field]: undefined };
+      if (field === "password") next.confirm_password = undefined;
+      return next;
+    });
   };
 
   const validate = () => {
@@ -135,7 +146,7 @@ export default function RegisterPage() {
             error={errors.password}
             autoComplete="new-password"
             hint={
-              <span className={form.password.length >= 8 ? "text-emerald-500" : undefined}>
+              <span className={form.password.length >= 8 ? "text-success" : undefined}>
                 {form.password.length >= 8 ? "✓ At least 8 characters" : "At least 8 characters"}
               </span>
             }
