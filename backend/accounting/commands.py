@@ -285,6 +285,31 @@ def _fix_fx_rounding_dicts(je_lines, company, currency=None):
     )
 
 
+def _resolve_realized_fx_account(company, core_mapping, is_gain):
+    """Realized-FX account for a direction (A194): the explicit core mapping
+    first, then the FINANCIAL_INCOME / FINANCIAL_EXPENSE role account (the same
+    fallback the revaluation path uses), else None. Keeps a merchant with the
+    standard seeded FX role accounts unblocked without an explicit mapping."""
+    from accounting.models import Account
+
+    role_key = "REALIZED_FX_GAIN" if is_gain else "REALIZED_FX_LOSS"
+    account = core_mapping.get(role_key)
+    if account is not None:
+        return account
+
+    fallback_role = Account.AccountRole.FINANCIAL_INCOME if is_gain else Account.AccountRole.FINANCIAL_EXPENSE
+    return (
+        Account.objects.filter(
+            company=company,
+            role=fallback_role,
+            is_header=False,
+            status=Account.Status.ACTIVE,
+        )
+        .order_by("code")
+        .first()
+    )
+
+
 def _emit_automatic_reversal(actor, entry, posting_event, reason: str):
     """
     Emit a reversal event to undo a posting when tie-out validation fails.
@@ -3806,17 +3831,15 @@ def record_customer_receipt(
     # When allocating against foreign-currency invoices, calculate
     # the FX difference between invoice rate and receipt date rate.
     realized_fx_total = Decimal("0")
-    if validated_allocations:
+    if validated_allocations and is_foreign:
         from accounting.mappings import ModuleAccountMapping
         from accounting.models import ExchangeRate
 
         core_mapping = ModuleAccountMapping.get_mapping(actor.company, "core")
-        realized_gain_account = core_mapping.get("REALIZED_FX_GAIN")
-        realized_loss_account = core_mapping.get("REALIZED_FX_LOSS")
 
         for alloc in validated_allocations:
             invoice = alloc["invoice"]
-            alloc_amount = alloc["amount"]
+            alloc_amount = alloc["amount"]  # foreign (receipt/invoice currency)
 
             # Get the invoice's posted JE to find its currency and rate
             if not invoice.posted_journal_entry:
@@ -3825,8 +3848,8 @@ def record_customer_receipt(
             invoice_currency = invoice_je.currency
             invoice_rate = invoice_je.exchange_rate or Decimal("1.0")
 
-            # Skip if invoice was in functional currency
-            if invoice_currency == functional_currency:
+            # Skip if invoice was in functional currency (no FX to realize)
+            if invoice_currency == functional_currency or invoice_rate == Decimal("0"):
                 continue
 
             # Get the receipt-date rate for the invoice currency
@@ -3834,55 +3857,53 @@ def record_customer_receipt(
             if not receipt_rate:
                 continue  # No rate available, skip FX calculation
 
-            # Calculate realized FX gain/loss on this allocation
-            # alloc_amount is in functional currency (what we're crediting AR)
-            # The invoice was booked at invoice_rate, now settled at receipt_rate
-            # Foreign amount of this allocation = alloc_amount / invoice_rate
-            if invoice_rate == Decimal("0"):
-                continue
-            foreign_alloc = (alloc_amount / invoice_rate).quantize(Decimal("0.01"))
-            # What that foreign amount is worth at today's rate
-            settled_value = (foreign_alloc * receipt_rate).quantize(Decimal("0.01"))
-            # FX difference: positive = gain (received more functional for same foreign)
-            fx_diff = settled_value - alloc_amount
+            # A194: alloc_amount is the FOREIGN amount applied (validated against
+            # invoice.amount_due and receipt_amount, both foreign). AR booked it
+            # at invoice_rate; we receive it at receipt_rate. Positive = gain.
+            fx_diff = (alloc_amount * (receipt_rate - invoice_rate)).quantize(Decimal("0.01"))
 
             if fx_diff != Decimal("0"):
                 realized_fx_total += fx_diff
                 alloc["realized_fx"] = fx_diff
                 alloc["invoice_currency"] = invoice_currency
 
-        # Add realized FX lines to the journal entry
-        if realized_fx_total != Decimal("0") and (realized_gain_account or realized_loss_account):
-            line_no = 3
-            # Adjust bank account for the FX difference
+        # A194: relieve AR at its originally-booked functional value and keep the
+        # bank line at the actual cash received (functional_amount); the FX
+        # difference is the plug. Fail loud if the FX account for the realized
+        # direction is unmapped rather than dropping the offset line and
+        # unbalancing the entry (operator-safety Rule 2).
+        if realized_fx_total != Decimal("0"):
+            needed_account = _resolve_realized_fx_account(actor.company, core_mapping, realized_fx_total > 0)
+            if needed_account is None:
+                role = "Realized FX Gain" if realized_fx_total > 0 else "Realized FX Loss"
+                return CommandResult.fail(
+                    f"Cannot record this foreign-currency receipt: map a '{role}' account "
+                    "(Settings → Account Mappings) so the exchange-rate difference can be posted."
+                )
+
+            lines[1]["credit"] = str(functional_amount - realized_fx_total)
             if realized_fx_total > 0:
-                # FX gain: we receive more than booked → Dr Bank, Cr Realized FX Gain
-                lines[0]["debit"] = str(receipt_amount + realized_fx_total)  # Increase bank debit
-                if realized_gain_account:
-                    lines.append(
-                        {
-                            "account_public_id": str(realized_gain_account.public_id),
-                            "account_code": realized_gain_account.code,
-                            "debit": "0",
-                            "credit": str(realized_fx_total),
-                            "line_no": line_no,
-                            "memo": "Realized FX gain on receipt",
-                        }
-                    )
+                lines.append(
+                    {
+                        "account_public_id": str(needed_account.public_id),
+                        "account_code": needed_account.code,
+                        "debit": "0",
+                        "credit": str(realized_fx_total),
+                        "line_no": 3,
+                        "memo": "Realized FX gain on receipt",
+                    }
+                )
             else:
-                # FX loss: we receive less than booked → Dr Realized FX Loss, Cr Bank
-                lines[0]["debit"] = str(receipt_amount + realized_fx_total)  # Decrease bank debit
-                if realized_loss_account:
-                    lines.append(
-                        {
-                            "account_public_id": str(realized_loss_account.public_id),
-                            "account_code": realized_loss_account.code,
-                            "debit": str(abs(realized_fx_total)),
-                            "credit": "0",
-                            "line_no": line_no,
-                            "memo": "Realized FX loss on receipt",
-                        }
-                    )
+                lines.append(
+                    {
+                        "account_public_id": str(needed_account.public_id),
+                        "account_code": needed_account.code,
+                        "debit": str(abs(realized_fx_total)),
+                        "credit": "0",
+                        "line_no": 3,
+                        "memo": "Realized FX loss on receipt",
+                    }
+                )
 
     # Fix any FX rounding imbalance before creating JE
     if is_foreign:
@@ -3897,6 +3918,16 @@ def record_customer_receipt(
     # Recalculate totals (may have changed due to FX/rounding lines)
     total_debit = sum(Decimal(l["debit"]) for l in lines)
     total_credit = sum(Decimal(l["credit"]) for l in lines)
+
+    # A194: never emit an unbalanced JOURNAL_ENTRY_POSTED. The projection applies
+    # posted events without a balance check, so a lopsided entry here would
+    # silently corrupt the trial balance — refuse loudly instead (Rule 2).
+    if abs(total_debit - total_credit) > Decimal("0.05"):
+        return CommandResult.fail(
+            f"Receipt aborted: the journal entry does not balance "
+            f"(debit {total_debit} vs credit {total_credit}). "
+            "Check the exchange rate and FX account mappings, then retry."
+        )
 
     line_data_list = []
     for line in lines:
@@ -4295,15 +4326,13 @@ def record_vendor_payment(
         from accounting.models import ExchangeRate
 
         core_mapping = ModuleAccountMapping.get_mapping(actor.company, "core")
-        realized_gain_account = core_mapping.get("REALIZED_FX_GAIN")
-        realized_loss_account = core_mapping.get("REALIZED_FX_LOSS")
 
         # Get the payment-date rate
         payment_rate = ExchangeRate.get_rate(actor.company, vendor_currency, functional_currency, parsed_date)
 
         if payment_rate:
             for alloc in validated_allocations:
-                alloc_amount = alloc["amount"]
+                alloc_amount = alloc["amount"]  # foreign (payment/bill currency)
                 bill_date = alloc.get("bill_date")
 
                 if not bill_date:
@@ -4314,49 +4343,51 @@ def record_vendor_payment(
                 if not bill_rate or bill_rate == Decimal("0"):
                     continue
 
-                # Calculate FX difference
-                foreign_alloc = (alloc_amount / bill_rate).quantize(Decimal("0.01"))
-                settled_value = (foreign_alloc * payment_rate).quantize(Decimal("0.01"))
-                # For AP: positive diff = loss (paying more functional for same foreign)
-                fx_diff = alloc_amount - settled_value
+                # A194: alloc_amount is the FOREIGN amount applied. AP was booked
+                # at bill_rate; we pay it at payment_rate. Positive = gain (we pay
+                # less functional than the liability was booked at).
+                fx_diff = (alloc_amount * (bill_rate - payment_rate)).quantize(Decimal("0.01"))
 
                 if fx_diff != Decimal("0"):
                     realized_fx_total += fx_diff
                     alloc["realized_fx"] = fx_diff
 
-        # Add realized FX lines
-        if realized_fx_total != Decimal("0") and (realized_gain_account or realized_loss_account):
-            line_no = 3
+        # A194: relieve AP at its originally-booked functional value and keep the
+        # bank line at the actual cash paid (functional_amount); the FX difference
+        # is the plug. Fail loud on an unmapped FX account rather than dropping
+        # the offset line and unbalancing the entry (operator-safety Rule 2).
+        if realized_fx_total != Decimal("0"):
+            needed_account = _resolve_realized_fx_account(actor.company, core_mapping, realized_fx_total > 0)
+            if needed_account is None:
+                role = "Realized FX Gain" if realized_fx_total > 0 else "Realized FX Loss"
+                return CommandResult.fail(
+                    f"Cannot record this foreign-currency payment: map a '{role}' account "
+                    "(Settings → Account Mappings) so the exchange-rate difference can be posted."
+                )
+
+            lines[0]["debit"] = str(functional_amount + realized_fx_total)
             if realized_fx_total > 0:
-                # FX gain: paying less than booked → Dr AP stays, Cr Bank less, Cr Realized FX Gain
-                lines[1]["credit"] = str(payment_amount - realized_fx_total)  # Decrease bank credit
-                if realized_gain_account:
-                    lines.append(
-                        {
-                            "account_public_id": str(realized_gain_account.public_id),
-                            "account_code": realized_gain_account.code,
-                            "debit": "0",
-                            "credit": str(realized_fx_total),
-                            "line_no": line_no,
-                            "memo": "Realized FX gain on payment",
-                        }
-                    )
+                lines.append(
+                    {
+                        "account_public_id": str(needed_account.public_id),
+                        "account_code": needed_account.code,
+                        "debit": "0",
+                        "credit": str(realized_fx_total),
+                        "line_no": 3,
+                        "memo": "Realized FX gain on payment",
+                    }
+                )
             else:
-                # FX loss: paying more than booked → Dr AP stays, Cr Bank more, Dr Realized FX Loss
-                lines[1]["credit"] = str(
-                    payment_amount - realized_fx_total
-                )  # Increase bank credit (fx_total is negative)
-                if realized_loss_account:
-                    lines.append(
-                        {
-                            "account_public_id": str(realized_loss_account.public_id),
-                            "account_code": realized_loss_account.code,
-                            "debit": str(abs(realized_fx_total)),
-                            "credit": "0",
-                            "line_no": line_no,
-                            "memo": "Realized FX loss on payment",
-                        }
-                    )
+                lines.append(
+                    {
+                        "account_public_id": str(needed_account.public_id),
+                        "account_code": needed_account.code,
+                        "debit": str(abs(realized_fx_total)),
+                        "credit": "0",
+                        "line_no": 3,
+                        "memo": "Realized FX loss on payment",
+                    }
+                )
 
     # Fix any FX rounding imbalance before creating JE
     if is_foreign:
@@ -4370,6 +4401,15 @@ def record_vendor_payment(
     # Recalculate totals (may have changed due to FX/rounding lines)
     total_debit = sum(Decimal(l["debit"]) for l in lines)
     total_credit = sum(Decimal(l["credit"]) for l in lines)
+
+    # A194: never emit an unbalanced JOURNAL_ENTRY_POSTED (the projection applies
+    # posted events without a balance check) — refuse loudly instead (Rule 2).
+    if abs(total_debit - total_credit) > Decimal("0.05"):
+        return CommandResult.fail(
+            f"Payment aborted: the journal entry does not balance "
+            f"(debit {total_debit} vs credit {total_credit}). "
+            "Check the exchange rate and FX account mappings, then retry."
+        )
 
     line_data_list = []
     for line in lines:
