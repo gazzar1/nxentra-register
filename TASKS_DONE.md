@@ -4,6 +4,10 @@ Archive of completed items moved from NEXT_TASKS.md. See NEXT_TASKS.md for pendi
 
 > **Format note (2026-07-11).** Existing entries below keep their full historical closeout text — they are the archive and the diligence evidence; do not compress them retroactively. **New closeouts from here on use one line each**: `ID — date — classification (shipped / superseded / refuted) — one-sentence outcome — commit/PR — link to detail if any`. Detail beyond one line goes in the PR description or an archive doc, not here.
 
+## 2026-07-17 — Operator-safety retro-audit fixes
+
+- A194 — 2026-07-17 — shipped — foreign receipts/payments no longer post unbalanced JEs: bank line keeps actual cash, AR/AP relieved at booked rate by the correctly-computed (foreign-based) realized FX, FX account resolves via core-mapping→role-fallback→refuse, unconditional pre-emit balance guard (Rule 2); 9 tests — PR (this session), audit doc docs/audit/operator-safety-retro-audit-2026-07-17.md
+
 ## 2026-07-12 — Safe-supervised-pilot exit gate (P0 batch, dual audit 2026-07-11)
 
 - A164 — 2026-07-11 — shipped — reconciliation/tests/ + Postgres concurrency class now run in CI; -x dropped; test_db.sqlite3 untracked — PR #60
