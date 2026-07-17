@@ -87,6 +87,13 @@ The Prometheus/Alertmanager stack is inert as committed (placeholder Slack URL; 
 ### A164. CI gaps — gate tests must actually run — **~0.5d** *(promoted to P0 2026-07-11: the gate's regression tests are meaningless if CI never executes them)*
 Add `reconciliation/tests/` to a CI job (26 collected cases currently run in no CI command); run `test_aggregate_sequencing.py` concurrency class on the Postgres job; consider dropping `-x` fail-fast on the two pytest jobs.
 
+### A194. Foreign-currency receipts/payments post UNBALANCED journal entries — **~0.5-1d, CRITICAL** *(new 2026-07-17, operator-safety retro-audit; hand-verified)*
+`record_customer_receipt` / `record_vendor_payment` overwrite the functional-currency bank line with a foreign amount in the realized-FX branch: `lines[0]["debit"] = str(receipt_amount + realized_fx_total)` (`accounting/commands.py:3860`/`:3874`, payment mirror `:4332`/`:4346`) puts the *foreign* receipt amount where the *functional* bank debit belongs, while the AR/AP line stays functional. The entry no longer balances (a USD 100 @48 receipt against an EGP-functional company posts DR ~202 / CR ~4900); `_fix_fx_rounding_dicts` bails on any diff > 0.05 (`:233`), these paths emit `JOURNAL_ENTRY_POSTED` directly with no debit==credit check (bypassing `post_journal_entry`'s balance refusal), and the projection materializes it with no balance check — so the trial balance is silently corrupted with no exception row. Second trigger: the guard at `:3855`/`:4328` fires on `(gain_account OR loss_account)` mapped, then the inner branch drops the offsetting line when the *specific* account is unmapped. **Fix: compute the bank line as `functional_amount (± realized_fx_total)` in functional units, assert debit==credit before emit (fail loud per A157/Rule 2), require both FX accounts mapped or refuse.** Rule-2 violation of the operator-safety principle; the receipts page is a core pilot path.
+
+---
+
+> **📋 Operator-safety retro-audit (2026-07-17):** A194 above is the one P0. The full sweep found **42 confirmed** financial-write-path violations (A194–A235) — see [docs/audit/operator-safety-retro-audit-2026-07-17.md](docs/audit/operator-safety-retro-audit-2026-07-17.md). The other 41 (19 P1, 22 P2) are a triaged backlog on the same pull rules as P1; recurring themes: silent-1:1 FX in cash application, reversals that don't undo stock/allocations, `bank_connector` has zero `require()` gates, and ~10 silent-drop projection branches (same class as A157). Do not batch-fix; verify each against code first.
+
 ---
 
 ## Parallel commercial gate — founder time, mostly not code (starts day 1, not after P0)
