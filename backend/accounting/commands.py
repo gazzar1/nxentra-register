@@ -3784,20 +3784,32 @@ def record_customer_receipt(
 
     # Resolve receipt currency: explicit > customer default > functional
     receipt_currency = currency or getattr(customer, "currency", "") or functional_currency
-    if exchange_rate:
-        receipt_exchange_rate = Decimal(str(exchange_rate))
-    elif receipt_currency != functional_currency:
-        from accounting.models import ExchangeRate
-
-        looked_up = ExchangeRate.get_rate(actor.company, receipt_currency, functional_currency, receipt_date)
-        receipt_exchange_rate = looked_up if looked_up else Decimal("1")
-    else:
-        receipt_exchange_rate = Decimal("1")
     if receipt_currency == functional_currency:
         receipt_exchange_rate = Decimal("1")
+    elif exchange_rate:
+        try:
+            receipt_exchange_rate = Decimal(str(exchange_rate))
+            if not receipt_exchange_rate.is_finite() or receipt_exchange_rate <= 0:
+                return CommandResult.fail("Exchange rate must be a positive number.")
+        except (ValueError, TypeError, ArithmeticError):
+            return CommandResult.fail("Invalid exchange rate format.")
+    else:
+        from accounting.models import ExchangeRate
 
-    # Convert to functional currency if needed
-    if receipt_currency != functional_currency and receipt_exchange_rate != Decimal("1"):
+        looked_up = ExchangeRate.get_rate(actor.company, receipt_currency, functional_currency, parsed_date)
+        if not looked_up:
+            # A203: never book a foreign amount at a guessed 1:1 — refuse
+            # loudly, same class as post_journal_entry's missing-rate refusal
+            # (PR #33) and operator-safety Rule 2.
+            return CommandResult.fail(
+                f"Missing {receipt_currency}→{functional_currency} exchange rate for {receipt_date}. "
+                f"Add the rate (Settings → Exchange Rates) — or, if this receipt is really in "
+                f"{functional_currency}, correct the customer's currency — then record the receipt."
+            )
+        receipt_exchange_rate = looked_up
+
+    # Convert to functional currency
+    if receipt_currency != functional_currency:
         functional_amount = (receipt_amount * receipt_exchange_rate).quantize(Decimal("0.01"))
     else:
         functional_amount = receipt_amount
@@ -4272,20 +4284,31 @@ def record_vendor_payment(
 
     # Resolve payment currency: explicit > vendor default > functional
     payment_currency = currency or getattr(vendor, "currency", "") or functional_currency
-    if exchange_rate:
-        payment_exchange_rate = Decimal(str(exchange_rate))
-    elif payment_currency != functional_currency:
-        from accounting.models import ExchangeRate
-
-        looked_up = ExchangeRate.get_rate(actor.company, payment_currency, functional_currency, payment_date)
-        payment_exchange_rate = looked_up if looked_up else Decimal("1")
-    else:
-        payment_exchange_rate = Decimal("1")
     if payment_currency == functional_currency:
         payment_exchange_rate = Decimal("1")
+    elif exchange_rate:
+        try:
+            payment_exchange_rate = Decimal(str(exchange_rate))
+            if not payment_exchange_rate.is_finite() or payment_exchange_rate <= 0:
+                return CommandResult.fail("Exchange rate must be a positive number.")
+        except (ValueError, TypeError, ArithmeticError):
+            return CommandResult.fail("Invalid exchange rate format.")
+    else:
+        from accounting.models import ExchangeRate
 
-    # Convert to functional currency if needed
-    if payment_currency != functional_currency and payment_exchange_rate != Decimal("1"):
+        looked_up = ExchangeRate.get_rate(actor.company, payment_currency, functional_currency, parsed_date)
+        if not looked_up:
+            # A203: never book a foreign amount at a guessed 1:1 — refuse
+            # loudly (post_journal_entry's missing-rate class, Rule 2).
+            return CommandResult.fail(
+                f"Missing {payment_currency}→{functional_currency} exchange rate for {payment_date}. "
+                f"Add the rate (Settings → Exchange Rates) — or, if this payment is really in "
+                f"{functional_currency}, correct the vendor's currency — then record the payment."
+            )
+        payment_exchange_rate = looked_up
+
+    # Convert to functional currency
+    if payment_currency != functional_currency:
         functional_amount = (payment_amount * payment_exchange_rate).quantize(Decimal("0.01"))
     else:
         functional_amount = payment_amount

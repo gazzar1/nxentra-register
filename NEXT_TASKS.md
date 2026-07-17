@@ -92,7 +92,7 @@ Add `reconciliation/tests/` to a CI job (26 collected cases currently run in no 
 
 ---
 
-> **📋 Operator-safety retro-audit (2026-07-17):** the P0 (A194) is **FIXED** (above). The full sweep found **42 confirmed** financial-write-path violations (A194–A235) — see [docs/audit/operator-safety-retro-audit-2026-07-17.md](docs/audit/operator-safety-retro-audit-2026-07-17.md). The remaining 41 (19 P1, 22 P2) are a triaged backlog on the same pull rules as P1; recurring themes: silent-1:1 FX in cash application (A198), reversals that don't undo stock/allocations, `bank_connector` has zero `require()` gates, and ~10 silent-drop projection branches (same class as A157). Do not batch-fix; verify each against code first.
+> **📋 Operator-safety retro-audit (2026-07-17):** the P0 (A194) is **FIXED** (above). The full sweep found **42 confirmed** financial-write-path violations (A194–A235) — see [docs/audit/operator-safety-retro-audit-2026-07-17.md](docs/audit/operator-safety-retro-audit-2026-07-17.md). The remaining 41 (19 P1, 22 P2) are a triaged backlog on the same pull rules as P1; recurring themes: silent-1:1 FX in cash application (A203 — ✅ FIXED 2026-07-17), reversals that don't undo stock/allocations, `bank_connector` has zero `require()` gates, and ~10 silent-drop projection branches (same class as A157). Do not batch-fix; verify each against code first.
 
 ---
 

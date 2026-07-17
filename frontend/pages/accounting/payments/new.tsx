@@ -118,7 +118,7 @@ export default function NewVendorPaymentPage() {
 
   const [vendorBills, setVendorBills] = useState<PurchaseBillListItem[]>([]);
   const [paymentCurrency, setPaymentCurrency] = useState<string>("");
-  const [exchangeRate, setExchangeRate] = useState<string>("1");
+  const [exchangeRate, setExchangeRate] = useState<string>("");
   const [availableCurrencies, setAvailableCurrencies] = useState<string[]>([]);
   const { data: companySettings } = useCompanySettings();
   const { company } = useAuth();
@@ -175,6 +175,7 @@ export default function NewVendorPaymentPage() {
       return;
     }
     const dateStr = watchPaymentDate || new Date().toISOString().split("T")[0];
+    setExchangeRate("");
     exchangeRatesService
       .lookup({ from_currency: paymentCurrency, to_currency: functionalCurrency, date: dateStr })
       .then((res) => {
@@ -390,7 +391,12 @@ export default function NewVendorPaymentPage() {
               />
               {paymentCurrency && paymentCurrency !== functionalCurrency && (
                 <p className="text-xs text-muted-foreground">
-                  1 {paymentCurrency} = {exchangeRate} {functionalCurrency}
+                  {exchangeRate
+                    ? `1 ${paymentCurrency} = ${exchangeRate} ${functionalCurrency}`
+                    : t(
+                        "accounting:missingRate",
+                        "No rate on file for this date — add one (Settings → Exchange Rates) or type it here."
+                      )}
                 </p>
               )}
             </div>
