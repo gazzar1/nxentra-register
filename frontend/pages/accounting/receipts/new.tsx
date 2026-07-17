@@ -77,7 +77,7 @@ export default function NewCustomerReceiptPage() {
   const [allocations, setAllocations] = useState<InvoiceAllocationState>({});
   const [totalOutstanding, setTotalOutstanding] = useState("0.00");
   const [receiptCurrency, setReceiptCurrency] = useState<string>("");
-  const [exchangeRate, setExchangeRate] = useState<string>("1");
+  const [exchangeRate, setExchangeRate] = useState<string>("");
   const [availableCurrencies, setAvailableCurrencies] = useState<string[]>([]);
   const { data: companySettings } = useCompanySettings();
   const { company } = useAuth();
@@ -152,6 +152,7 @@ export default function NewCustomerReceiptPage() {
       return;
     }
     const dateStr = watchReceiptDate || new Date().toISOString().split("T")[0];
+    setExchangeRate("");
     exchangeRatesService
       .lookup({ from_currency: receiptCurrency, to_currency: functionalCurrency, date: dateStr })
       .then((res) => {
@@ -445,7 +446,12 @@ export default function NewCustomerReceiptPage() {
               />
               {receiptCurrency && receiptCurrency !== functionalCurrency && (
                 <p className="text-xs text-muted-foreground">
-                  1 {receiptCurrency} = {exchangeRate} {functionalCurrency}
+                  {exchangeRate
+                    ? `1 ${receiptCurrency} = ${exchangeRate} ${functionalCurrency}`
+                    : t(
+                        "accounting:missingRate",
+                        "No rate on file for this date — add one (Settings → Exchange Rates) or type it here."
+                      )}
                 </p>
               )}
             </div>
