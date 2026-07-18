@@ -22,14 +22,13 @@ import {
 import { shopifyService } from "@/services/shopify.service";
 import { isShopifyEmbedded, redirectTopLevel } from "@/lib/shopify-embed";
 import {
-  Building2,
-  Calendar,
   BookOpen,
   Puzzle,
   Rocket,
   Check,
   ArrowRight,
   ArrowLeft,
+  ChevronDown,
   Warehouse,
   ShoppingCart,
   Truck,
@@ -44,25 +43,30 @@ import {
 
 /* =========================================================================
    STEP DEFINITIONS — vary by business type
+
+   Kept deliberately short: one decision per step. Fiscal year, periods, and
+   number/date formatting are defaulted (calendar year, 12 monthly periods,
+   1,234,567.89, YYYY-MM-DD) and live behind "Advanced options" on the first
+   step — all of them remain editable later in Settings → Company / Periods.
    ========================================================================= */
 
 const STEPS_SHOPIFY = [
-  { key: "business", icon: Store, label: "Business Type" },
-  { key: "company", icon: Building2, label: "Company Profile" },
-  { key: "fiscal", icon: Calendar, label: "Fiscal Year" },
-  { key: "shopify", icon: Link, label: "Shopify Setup" },
+  { key: "start", icon: Store, label: "Your Business" },
+  { key: "shopify", icon: Link, label: "Connect Store" },
   { key: "import", icon: Download, label: "Import Orders" },
   { key: "ready", icon: Rocket, label: "Ready" },
 ];
 
 const STEPS_GENERAL = [
-  { key: "business", icon: Store, label: "Business Type" },
-  { key: "company", icon: Building2, label: "Company Profile" },
-  { key: "fiscal", icon: Calendar, label: "Fiscal Year" },
+  { key: "start", icon: Store, label: "Your Business" },
   { key: "accounts", icon: BookOpen, label: "Chart of Accounts" },
   { key: "modules", icon: Puzzle, label: "Modules" },
   { key: "ready", icon: Rocket, label: "Ready" },
 ];
+
+// General-path modules pre-checked on the Modules step (the common trio;
+// clinic/properties are niche verticals the merchant opts into).
+const RECOMMENDED_GENERAL_MODULES = ["sales", "purchases", "inventory"];
 
 const MODULE_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   inventory: Warehouse,
@@ -88,6 +92,29 @@ const DATE_FORMATS = [
   "DD.MM.YYYY",
 ];
 
+// The wizard no longer asks for fiscal year / current period — both are
+// derived from today. The submitted `fiscalYear` LABEL must match backend
+// _fiscal_start_date (accounts/commands.py): years starting Jul–Dec are
+// labeled by their END year, Jan–Jun by their start year. Anything shown
+// to the user should use `startCalendarYear` (the calendar year P1 begins
+// in), never the label. The wizard only ever offers January starts; a
+// non-January startMonth can still arrive prefilled on the company row.
+function deriveFiscal(startMonth: number): {
+  fiscalYear: number;
+  startCalendarYear: number;
+  currentPeriod: number;
+} {
+  const now = new Date();
+  const month = now.getMonth() + 1;
+  const startCalendarYear =
+    month >= startMonth ? now.getFullYear() : now.getFullYear() - 1;
+  return {
+    fiscalYear: startMonth <= 6 ? startCalendarYear : startCalendarYear + 1,
+    startCalendarYear,
+    currentPeriod: month - startMonth + (month >= startMonth ? 1 : 13),
+  };
+}
+
 export default function OnboardingSetupPage() {
   const { t } = useTranslation("common");
   const router = useRouter();
@@ -102,7 +129,7 @@ export default function OnboardingSetupPage() {
   // Business type
   const [businessType, setBusinessType] = useState<"shopify" | "general">("shopify");
 
-  // Step: Company profile
+  // Step: Your Business — company name + defaults behind "Advanced options"
   const [companyName, setCompanyName] = useState("");
   const [companyNameAr, setCompanyNameAr] = useState("");
   const [fiscalStartMonth, setFiscalStartMonth] = useState(1);
@@ -113,17 +140,15 @@ export default function OnboardingSetupPage() {
   // A138: English-only (false) vs Arabic/bilingual (true). Drives whether the
   // optional Arabic data-entry fields are shown across the app. English-first default.
   const [enableArabicFields, setEnableArabicFields] = useState(false);
-
-  // Step: Fiscal year
-  const [fiscalYear, setFiscalYear] = useState(new Date().getFullYear());
-  const [numPeriods, setNumPeriods] = useState(12);
-  const [currentPeriod, setCurrentPeriod] = useState(new Date().getMonth() + 1);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   // Step: CoA template (general path only)
   const [coaTemplate, setCoaTemplate] = useState("minimal");
 
-  // Step: Modules (general path only)
+  // Step: Modules (general path only) — pre-checked with the recommended
+  // trio once the module list arrives, unless a draft restored a selection.
   const [selectedModules, setSelectedModules] = useState<Set<string>>(new Set());
+  const [modulesInitialized, setModulesInitialized] = useState(false);
 
   // Step: Shopify connection
   const [shopifyDomain, setShopifyDomain] = useState("");
@@ -142,9 +167,10 @@ export default function OnboardingSetupPage() {
   useEffect(() => {
     // A7: when returning from Shopify OAuth, the synchronous setStep below
     // races against the async draft restore inside getStatus().then() — the
-    // async path wins and the user lands on the previous step (Fiscal Year)
-    // instead of Shopify Setup. We skip restoring `step` from the draft on
-    // OAuth return so the synchronous assignment lower in this effect wins.
+    // async path wins and the user lands on the draft's earlier step ("Your
+    // Business") instead of Connect Store. We skip restoring `step` from the
+    // draft on OAuth return so the synchronous assignment lower in this
+    // effect wins.
     const isShopifyReturn = router.query.shopify_connected === "true";
 
     onboardingService
@@ -167,17 +193,21 @@ export default function OnboardingSetupPage() {
           setEnableArabicFields(!!data.company.enable_arabic_fields);
         if (data.business_type === "shopify" || data.business_type === "general")
           setBusinessType(data.business_type);
-        // Restore local draft (step, fiscal fields)
+        // Restore local draft. Key is versioned: v1 drafts stored indices
+        // for the old 6-step flow, which would land on the wrong step now.
         try {
-          const raw = sessionStorage.getItem("onboarding_draft");
+          sessionStorage.removeItem("onboarding_draft");
+          const raw = sessionStorage.getItem("onboarding_draft_v2");
           if (raw) {
             const draft = JSON.parse(raw);
             // A7: don't override the OAuth-return step assignment.
             if (!isShopifyReturn && draft.step != null) setStep(draft.step);
-            if (draft.fiscalYear) setFiscalYear(draft.fiscalYear);
-            if (draft.numPeriods) setNumPeriods(draft.numPeriods);
-            if (draft.currentPeriod) setCurrentPeriod(draft.currentPeriod);
             if (draft.coaTemplate) setCoaTemplate(draft.coaTemplate);
+            if (Array.isArray(draft.selectedModules)) {
+              setSelectedModules(new Set<string>(draft.selectedModules));
+              setModulesInitialized(true);
+            }
+            if (draft.showAdvanced) setShowAdvanced(true);
             if (draft.shopifyConnected) setShopifyConnected(true);
             if (draft.shopifyStoreName) setShopifyStoreName(draft.shopifyStoreName);
             if (draft.importMode) setImportMode(draft.importMode);
@@ -214,6 +244,19 @@ export default function OnboardingSetupPage() {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Pre-check the recommended modules once the list arrives — but only after
+  // the status load settled (so a draft-restored selection isn't clobbered).
+  useEffect(() => {
+    if (loading || modulesInitialized || !moduleList) return;
+    const optionalKeys = new Set(
+      moduleList.filter((m) => !m.is_core).map((m) => m.key),
+    );
+    setSelectedModules(
+      new Set(RECOMMENDED_GENERAL_MODULES.filter((k) => optionalKeys.has(k))),
+    );
+    setModulesInitialized(true);
+  }, [loading, modulesInitialized, moduleList]);
+
   const toggleModule = (key: string) => {
     setSelectedModules((prev) => {
       const next = new Set(prev);
@@ -230,6 +273,10 @@ export default function OnboardingSetupPage() {
       const effectiveImportMode: "all" | "from_date" | "skip" =
         businessType === "shopify" && shopifyConnected ? importMode : "skip";
 
+      // Fiscal year & current period are derived, never asked (12 monthly
+      // periods; a 13th adjustment period is Settings → Periods territory).
+      const fiscal = deriveFiscal(fiscalStartMonth);
+
       const payload: OnboardingSetupPayload = {
         business_type: businessType,
         company_name: companyName,
@@ -240,9 +287,9 @@ export default function OnboardingSetupPage() {
         decimal_places: decimalPlaces,
         date_format: dateFormat,
         enable_arabic_fields: enableArabicFields,
-        fiscal_year: fiscalYear,
-        num_periods: numPeriods,
-        current_period: currentPeriod,
+        fiscal_year: fiscal.fiscalYear,
+        num_periods: 12,
+        current_period: fiscal.currentPeriod,
         coa_template: businessType === "shopify" ? "retail" : coaTemplate,
         modules:
           businessType === "shopify"
@@ -288,14 +335,19 @@ export default function OnboardingSetupPage() {
     if (Object.keys(draft).length > 0) {
       onboardingService.saveDraft(draft).catch(() => {});
     }
-    // Save step + fiscal fields locally (not on Company model)
+    // Save step + wizard-local fields (not on Company model)
     try {
-      sessionStorage.setItem("onboarding_draft", JSON.stringify({
+      sessionStorage.setItem("onboarding_draft_v2", JSON.stringify({
         step,
-        fiscalYear,
-        numPeriods,
-        currentPeriod,
         coaTemplate,
+        // Only persist the selection once the precheck (or a prior restore)
+        // has initialized it — an empty pre-init snapshot is otherwise
+        // indistinguishable from a deliberate deselect-everything and would
+        // suppress the recommended-modules precheck forever.
+        ...(modulesInitialized
+          ? { selectedModules: Array.from(selectedModules) }
+          : {}),
+        showAdvanced,
         shopifyConnected,
         shopifyStoreName,
         importMode,
@@ -363,6 +415,7 @@ export default function OnboardingSetupPage() {
   ];
 
   const currentStepKey = steps[step]?.key;
+  const derivedFiscal = deriveFiscal(fiscalStartMonth);
 
   return (
     <AppLayout>
@@ -376,6 +429,8 @@ export default function OnboardingSetupPage() {
             return (
               <div key={s.key} className="flex items-center">
                 <button
+                  aria-label={s.label}
+                  aria-current={isActive ? "step" : undefined}
                   onClick={() => i < step && setStep(i)}
                   disabled={i > step}
                   className={cn(
@@ -408,23 +463,20 @@ export default function OnboardingSetupPage() {
         {/* Step content */}
         <Card>
           <CardContent className="p-6">
-            {currentStepKey === "business" && (
-              <StepBusinessType
-                selected={businessType}
-                onSelect={(v) => {
+            {currentStepKey === "start" && (
+              <StepStart
+                businessType={businessType}
+                onSelectBusinessType={(v) => {
                   setBusinessType(v);
                   if (v === "shopify") setCoaTemplate("retail");
                 }}
-              />
-            )}
-            {currentStepKey === "company" && (
-              <StepCompanyProfile
                 companyName={companyName}
                 setCompanyName={setCompanyName}
                 companyNameAr={companyNameAr}
                 setCompanyNameAr={setCompanyNameAr}
+                enableArabicFields={enableArabicFields}
+                setEnableArabicFields={setEnableArabicFields}
                 fiscalStartMonth={fiscalStartMonth}
-                setFiscalStartMonth={setFiscalStartMonth}
                 thousandSep={thousandSep}
                 setThousandSep={setThousandSep}
                 decimalSep={decimalSep}
@@ -433,22 +485,10 @@ export default function OnboardingSetupPage() {
                 setDecimalPlaces={setDecimalPlaces}
                 dateFormat={dateFormat}
                 setDateFormat={setDateFormat}
-                enableArabicFields={enableArabicFields}
-                setEnableArabicFields={setEnableArabicFields}
+                showAdvanced={showAdvanced}
+                setShowAdvanced={setShowAdvanced}
                 months={MONTHS}
                 dateFormats={DATE_FORMATS}
-              />
-            )}
-            {currentStepKey === "fiscal" && (
-              <StepFiscalYear
-                fiscalYear={fiscalYear}
-                setFiscalYear={setFiscalYear}
-                numPeriods={numPeriods}
-                setNumPeriods={setNumPeriods}
-                currentPeriod={currentPeriod}
-                setCurrentPeriod={setCurrentPeriod}
-                fiscalStartMonth={fiscalStartMonth}
-                months={MONTHS}
               />
             )}
             {currentStepKey === "accounts" && (
@@ -472,7 +512,7 @@ export default function OnboardingSetupPage() {
                 setMode={setImportMode}
                 fromDate={importFromDate}
                 setFromDate={setImportFromDate}
-                fiscalYear={fiscalYear}
+                fiscalYear={derivedFiscal.startCalendarYear}
                 fiscalStartMonth={fiscalStartMonth}
                 shopifyConnected={shopifyConnected}
               />
@@ -495,7 +535,7 @@ export default function OnboardingSetupPage() {
                       shopifyDomain.trim(),
                       isShopifyEmbedded(),
                     );
-                    // A7: persist the current step (Shopify Setup) before
+                    // A7: persist the current step (Connect Store) before
                     // leaving for OAuth. Without this, the draft still has
                     // the previous step (saved by handleNext when user
                     // advanced INTO this step) and the post-OAuth restore
@@ -520,6 +560,14 @@ export default function OnboardingSetupPage() {
                 shopifyConnected={shopifyConnected}
                 onGoToDashboard={handleGoToDashboard}
                 onGoToReconciliation={handleGoToReconciliation}
+                fiscalYear={derivedFiscal.startCalendarYear}
+                fiscalStartMonth={fiscalStartMonth}
+                thousandSep={thousandSep}
+                decimalSep={decimalSep}
+                decimalPlaces={decimalPlaces}
+                dateFormat={dateFormat}
+                enableArabicFields={enableArabicFields}
+                months={MONTHS}
               />
             )}
           </CardContent>
@@ -559,12 +607,50 @@ export default function OnboardingSetupPage() {
    STEP COMPONENTS
    ========================================================================= */
 
-function StepBusinessType({
-  selected,
-  onSelect,
+function StepStart({
+  businessType,
+  onSelectBusinessType,
+  companyName,
+  setCompanyName,
+  companyNameAr,
+  setCompanyNameAr,
+  enableArabicFields,
+  setEnableArabicFields,
+  fiscalStartMonth,
+  thousandSep,
+  setThousandSep,
+  decimalSep,
+  setDecimalSep,
+  decimalPlaces,
+  setDecimalPlaces,
+  dateFormat,
+  setDateFormat,
+  showAdvanced,
+  setShowAdvanced,
+  months,
+  dateFormats,
 }: {
-  selected: "shopify" | "general";
-  onSelect: (v: "shopify" | "general") => void;
+  businessType: "shopify" | "general";
+  onSelectBusinessType: (v: "shopify" | "general") => void;
+  companyName: string;
+  setCompanyName: (v: string) => void;
+  companyNameAr: string;
+  setCompanyNameAr: (v: string) => void;
+  enableArabicFields: boolean;
+  setEnableArabicFields: (v: boolean) => void;
+  fiscalStartMonth: number;
+  thousandSep: string;
+  setThousandSep: (v: string) => void;
+  decimalSep: string;
+  setDecimalSep: (v: string) => void;
+  decimalPlaces: number;
+  setDecimalPlaces: (v: number) => void;
+  dateFormat: string;
+  setDateFormat: (v: string) => void;
+  showAdvanced: boolean;
+  setShowAdvanced: (v: boolean) => void;
+  months: string[];
+  dateFormats: string[];
 }) {
   const options = [
     {
@@ -589,19 +675,19 @@ function StepBusinessType({
     <div>
       <h2 className="text-xl font-semibold mb-1">How do you use Nxentra?</h2>
       <p className="text-sm text-muted-foreground mb-6">
-        Choose your primary use case. This configures your accounts, modules, and
-        dashboard for the best experience. You can always change this later.
+        Choose your primary use case — everything else is set up with sensible
+        defaults you can change anytime in Settings.
       </p>
 
       <div className="grid gap-4">
         {options.map((opt) => {
           const Icon = opt.icon;
-          const isSelected = selected === opt.key;
+          const isSelected = businessType === opt.key;
           return (
             <button
               key={opt.key}
               type="button"
-              onClick={() => onSelect(opt.key)}
+              onClick={() => onSelectBusinessType(opt.key)}
               className={cn(
                 "flex items-start gap-4 rounded-xl border-2 p-5 text-start transition-all",
                 isSelected
@@ -645,6 +731,153 @@ function StepBusinessType({
             </button>
           );
         })}
+      </div>
+
+      <div className={cn("mt-6", enableArabicFields && "grid grid-cols-1 sm:grid-cols-2 gap-4")}>
+        <div>
+          <Label htmlFor="companyName">Company Name</Label>
+          <Input
+            id="companyName"
+            value={companyName}
+            onChange={(e) => setCompanyName(e.target.value)}
+          />
+        </div>
+        {enableArabicFields && (
+          <div>
+            <Label htmlFor="companyNameAr">Company Name (Arabic)</Label>
+            <Input
+              id="companyNameAr"
+              value={companyNameAr}
+              onChange={(e) => setCompanyNameAr(e.target.value)}
+              dir="rtl"
+              placeholder="Optional"
+            />
+          </div>
+        )}
+      </div>
+
+      {/* Everything below used to be two wizard steps (Company Profile
+          formatting + Fiscal Year). All of it defaults sensibly and stays
+          editable in Settings → Company, so it hides behind one disclosure. */}
+      <div className="mt-6 border-t pt-4">
+        <button
+          type="button"
+          onClick={() => setShowAdvanced(!showAdvanced)}
+          aria-expanded={showAdvanced}
+          className="flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <ChevronDown
+            className={cn("h-4 w-4 transition-transform", showAdvanced && "rotate-180")}
+          />
+          Advanced options — fiscal year &amp; formatting
+        </button>
+        {!showAdvanced && (
+          <p className="mt-1.5 text-xs text-muted-foreground">
+            Fiscal year starts {months[fiscalStartMonth - 1]}, 12 monthly
+            periods &middot; numbers like{" "}
+            {formatPreview(thousandSep, decimalSep, decimalPlaces)} &middot;
+            dates as {dateFormat} &middot;{" "}
+            {enableArabicFields ? "bilingual data entry" : "English data entry"}
+          </p>
+        )}
+        {showAdvanced && (
+          <div className="mt-4 grid gap-4">
+            {/* A138: data-entry language choice. English-only hides the optional
+                Arabic fields across the app; bilingual shows them. */}
+            <div>
+              <Label htmlFor="dataLanguage">Data entry fields</Label>
+              <select
+                id="dataLanguage"
+                value={enableArabicFields ? "bilingual" : "english"}
+                onChange={(e) => setEnableArabicFields(e.target.value === "bilingual")}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              >
+                <option value="english">English only</option>
+                <option value="bilingual">Bilingual (English &amp; Arabic)</option>
+              </select>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Bilingual adds optional Arabic name, description, and address
+                fields on forms.
+              </p>
+            </div>
+
+            {/* Fiscal start month is deliberately NOT selectable here: the
+                backend's period seeding only supports the calendar-aligned
+                default end-to-end (see NEXT_TASKS A236 — labeling-convention
+                unification). Disclose it instead of offering it. */}
+            <div className="rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground">
+              Your fiscal year starts {months[fiscalStartMonth - 1]} with 12
+              monthly periods, created automatically. Manage periods later in
+              Settings &rarr; Periods.
+            </div>
+
+            <div>
+              <h3 className="text-sm font-medium mb-3">Number &amp; Date Formatting</h3>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <div>
+                  <Label htmlFor="thousandSep">Thousands</Label>
+                  <select
+                    id="thousandSep"
+                    value={thousandSep}
+                    onChange={(e) => setThousandSep(e.target.value)}
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  >
+                    {/* "None" (empty string) is not offered: every
+                        persistence layer treats "" as not-provided and would
+                        silently keep the comma while the summary claims
+                        otherwise. */}
+                    <option value=",">, (comma)</option>
+                    <option value=".">. (dot)</option>
+                    <option value=" ">(space)</option>
+                  </select>
+                </div>
+                <div>
+                  <Label htmlFor="decimalSep">Decimal</Label>
+                  <select
+                    id="decimalSep"
+                    value={decimalSep}
+                    onChange={(e) => setDecimalSep(e.target.value)}
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  >
+                    <option value=".">. (dot)</option>
+                    <option value=",">, (comma)</option>
+                  </select>
+                </div>
+                <div>
+                  <Label htmlFor="decPlaces">Decimal Places</Label>
+                  <select
+                    id="decPlaces"
+                    value={decimalPlaces}
+                    onChange={(e) => setDecimalPlaces(Number(e.target.value))}
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  >
+                    <option value={0}>0</option>
+                    <option value={2}>2</option>
+                    <option value={3}>3</option>
+                  </select>
+                </div>
+                <div>
+                  <Label htmlFor="dateFormat">Date Format</Label>
+                  <select
+                    id="dateFormat"
+                    value={dateFormat}
+                    onChange={(e) => setDateFormat(e.target.value)}
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  >
+                    {dateFormats.map((f) => (
+                      <option key={f} value={f}>
+                        {f}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground mt-2">
+                Preview: {formatPreview(thousandSep, decimalSep, decimalPlaces)}
+              </p>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -900,178 +1133,6 @@ function StepHistoricalImport({
   );
 }
 
-function StepCompanyProfile({
-  companyName,
-  setCompanyName,
-  companyNameAr,
-  setCompanyNameAr,
-  fiscalStartMonth,
-  setFiscalStartMonth,
-  thousandSep,
-  setThousandSep,
-  decimalSep,
-  setDecimalSep,
-  decimalPlaces,
-  setDecimalPlaces,
-  dateFormat,
-  setDateFormat,
-  enableArabicFields,
-  setEnableArabicFields,
-  months,
-  dateFormats,
-}: {
-  companyName: string;
-  setCompanyName: (v: string) => void;
-  companyNameAr: string;
-  setCompanyNameAr: (v: string) => void;
-  fiscalStartMonth: number;
-  setFiscalStartMonth: (v: number) => void;
-  thousandSep: string;
-  setThousandSep: (v: string) => void;
-  decimalSep: string;
-  setDecimalSep: (v: string) => void;
-  decimalPlaces: number;
-  setDecimalPlaces: (v: number) => void;
-  dateFormat: string;
-  setDateFormat: (v: string) => void;
-  enableArabicFields: boolean;
-  setEnableArabicFields: (v: boolean) => void;
-  months: string[];
-  dateFormats: string[];
-}) {
-  return (
-    <div>
-      <h2 className="text-xl font-semibold mb-1">Company Profile</h2>
-      <p className="text-sm text-muted-foreground mb-6">
-        Confirm your company details and formatting preferences.
-      </p>
-
-      <div className="grid gap-4">
-        {/* A138: data-entry language choice. English-only hides the optional
-            Arabic fields across the app; bilingual shows them. */}
-        <div>
-          <Label htmlFor="dataLanguage">Data entry fields</Label>
-          <select
-            id="dataLanguage"
-            value={enableArabicFields ? "bilingual" : "english"}
-            onChange={(e) => setEnableArabicFields(e.target.value === "bilingual")}
-            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-          >
-            <option value="english">English only</option>
-            <option value="bilingual">Bilingual (English &amp; Arabic)</option>
-          </select>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Bilingual adds optional Arabic name, description, and address fields on
-            forms. You can change this later in Company Settings.
-          </p>
-        </div>
-
-        <div className={enableArabicFields ? "grid grid-cols-1 sm:grid-cols-2 gap-4" : "grid grid-cols-1 gap-4"}>
-          <div>
-            <Label htmlFor="companyName">Company Name</Label>
-            <Input
-              id="companyName"
-              value={companyName}
-              onChange={(e) => setCompanyName(e.target.value)}
-            />
-          </div>
-          {enableArabicFields && (
-            <div>
-              <Label htmlFor="companyNameAr">Company Name (Arabic)</Label>
-              <Input
-                id="companyNameAr"
-                value={companyNameAr}
-                onChange={(e) => setCompanyNameAr(e.target.value)}
-                dir="rtl"
-                placeholder="Optional"
-              />
-            </div>
-          )}
-        </div>
-
-        <div>
-          <Label htmlFor="fiscalStart">Fiscal Year Start Month</Label>
-          <select
-            id="fiscalStart"
-            value={fiscalStartMonth}
-            onChange={(e) => setFiscalStartMonth(Number(e.target.value))}
-            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-          >
-            {months.map((m, i) => (
-              <option key={i} value={i + 1}>
-                {m}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="border-t pt-4 mt-2">
-          <h3 className="text-sm font-medium mb-3">Number & Date Formatting</h3>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            <div>
-              <Label htmlFor="thousandSep">Thousands</Label>
-              <select
-                id="thousandSep"
-                value={thousandSep}
-                onChange={(e) => setThousandSep(e.target.value)}
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-              >
-                <option value=",">, (comma)</option>
-                <option value=".">. (dot)</option>
-                <option value=" ">(space)</option>
-                <option value="">None</option>
-              </select>
-            </div>
-            <div>
-              <Label htmlFor="decimalSep">Decimal</Label>
-              <select
-                id="decimalSep"
-                value={decimalSep}
-                onChange={(e) => setDecimalSep(e.target.value)}
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-              >
-                <option value=".">. (dot)</option>
-                <option value=",">, (comma)</option>
-              </select>
-            </div>
-            <div>
-              <Label htmlFor="decPlaces">Decimal Places</Label>
-              <select
-                id="decPlaces"
-                value={decimalPlaces}
-                onChange={(e) => setDecimalPlaces(Number(e.target.value))}
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-              >
-                <option value={0}>0</option>
-                <option value={2}>2</option>
-                <option value={3}>3</option>
-              </select>
-            </div>
-            <div>
-              <Label htmlFor="dateFormat">Date Format</Label>
-              <select
-                id="dateFormat"
-                value={dateFormat}
-                onChange={(e) => setDateFormat(e.target.value)}
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-              >
-                {dateFormats.map((f) => (
-                  <option key={f} value={f}>
-                    {f}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-          <p className="text-xs text-muted-foreground mt-2">
-            Preview: {formatPreview(thousandSep, decimalSep, decimalPlaces)}
-          </p>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function formatPreview(
   thousandSep: string,
   decimalSep: string,
@@ -1081,112 +1142,6 @@ function formatPreview(
   if (decimalPlaces === 0) return whole;
   const dec = decimalSep + "8".repeat(decimalPlaces);
   return whole + dec;
-}
-
-function StepFiscalYear({
-  fiscalYear,
-  setFiscalYear,
-  numPeriods,
-  setNumPeriods,
-  currentPeriod,
-  setCurrentPeriod,
-  fiscalStartMonth,
-  months,
-}: {
-  fiscalYear: number;
-  setFiscalYear: (v: number) => void;
-  numPeriods: number;
-  setNumPeriods: (v: number) => void;
-  currentPeriod: number;
-  setCurrentPeriod: (v: number) => void;
-  fiscalStartMonth: number;
-  months: string[];
-}) {
-  const periodLabels = [];
-  for (let i = 0; i < Math.min(numPeriods, 12); i++) {
-    const monthIdx = (fiscalStartMonth - 1 + i) % 12;
-    periodLabels.push(months[monthIdx]);
-  }
-  if (numPeriods === 13) {
-    periodLabels.push("Adj");
-  }
-
-  return (
-    <div>
-      <h2 className="text-xl font-semibold mb-1">Fiscal Year & Periods</h2>
-      <p className="text-sm text-muted-foreground mb-6">
-        Set up your first fiscal year. Periods will be created automatically.
-      </p>
-
-      <div className="grid gap-4">
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <div>
-            <Label htmlFor="fiscalYear">Fiscal Year</Label>
-            <Input
-              id="fiscalYear"
-              type="number"
-              min={2020}
-              max={2030}
-              value={fiscalYear}
-              onChange={(e) => setFiscalYear(Number(e.target.value))}
-            />
-          </div>
-          <div>
-            <Label htmlFor="numPeriods">Number of Periods</Label>
-            <select
-              id="numPeriods"
-              value={numPeriods}
-              onChange={(e) => setNumPeriods(Number(e.target.value))}
-              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-            >
-              <option value={12}>12 (Monthly)</option>
-              <option value={13}>13 (Monthly + Adjustment)</option>
-            </select>
-          </div>
-          <div>
-            <Label htmlFor="currentPeriod">Current Period</Label>
-            <select
-              id="currentPeriod"
-              value={currentPeriod}
-              onChange={(e) => setCurrentPeriod(Number(e.target.value))}
-              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-            >
-              {periodLabels.map((label, i) => (
-                <option key={i} value={i + 1}>
-                  P{i + 1} - {label}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        {/* Visual period timeline */}
-        <div className="border rounded-lg p-4 mt-2">
-          <h3 className="text-sm font-medium mb-3">Period Timeline</h3>
-          <div className="flex flex-wrap gap-1.5">
-            {periodLabels.map((label, i) => (
-              <div
-                key={i}
-                className={cn(
-                  "px-2.5 py-1 rounded text-xs font-medium border",
-                  i + 1 === currentPeriod
-                    ? "bg-accent text-accent-foreground border-accent"
-                    : i + 1 < currentPeriod
-                      ? "bg-muted text-muted-foreground border-transparent"
-                      : "border-border text-foreground"
-                )}
-              >
-                {label}
-              </div>
-            ))}
-          </div>
-          <p className="text-xs text-muted-foreground mt-2">
-            Starts {months[fiscalStartMonth - 1]} {fiscalYear}
-          </p>
-        </div>
-      </div>
-    </div>
-  );
 }
 
 function StepChartOfAccounts({
@@ -1338,11 +1293,27 @@ function StepReady({
   shopifyConnected,
   onGoToDashboard,
   onGoToReconciliation,
+  fiscalYear,
+  fiscalStartMonth,
+  thousandSep,
+  decimalSep,
+  decimalPlaces,
+  dateFormat,
+  enableArabicFields,
+  months,
 }: {
   businessType: string;
   shopifyConnected: boolean;
   onGoToDashboard: () => void;
   onGoToReconciliation: () => void;
+  fiscalYear: number;
+  fiscalStartMonth: number;
+  thousandSep: string;
+  decimalSep: string;
+  decimalPlaces: number;
+  dateFormat: string;
+  enableArabicFields: boolean;
+  months: string[];
 }) {
   const isShopify = businessType === "shopify";
   const router = useRouter();
@@ -1399,11 +1370,30 @@ function StepReady({
           </div>
         </div>
         <h2 className="text-xl font-semibold mb-2">You&apos;re All Set!</h2>
-        <p className="text-muted-foreground mb-8 max-w-md mx-auto">
+        <p className="text-muted-foreground mb-6 max-w-md mx-auto">
           {isShopify
             ? "Your Shopify accounting is configured. Here\u2019s what to do next:"
             : "Your company is configured and ready. Here\u2019s what to do next:"}
         </p>
+      </div>
+
+      {/* Honest-disclosure line: the wizard chose these defaults without
+          asking, so say what they are and where to change them. */}
+      <div className="max-w-md mx-auto mb-8 rounded-lg bg-muted/50 p-4 text-xs text-muted-foreground text-center">
+        <span className="font-medium text-foreground">Set up for you: </span>
+        fiscal year starting {months[fiscalStartMonth - 1]} {fiscalYear} with
+        12 monthly periods &middot; numbers like{" "}
+        {formatPreview(thousandSep, decimalSep, decimalPlaces)} &middot; dates
+        as {dateFormat} &middot;{" "}
+        {enableArabicFields ? "bilingual data entry" : "English data entry"}
+        {" \u2014 "}
+        <button
+          type="button"
+          onClick={() => router.push("/settings/company")}
+          className="underline hover:text-foreground"
+        >
+          change in Settings
+        </button>
       </div>
 
       <div className="max-w-md mx-auto mb-8">
