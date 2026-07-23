@@ -21,20 +21,16 @@ DEBUG = os.getenv("DEBUG", os.getenv("DJANGO_DEBUG", "False")).strip().lower() i
 ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
 
 # Test-mode flags used by read-model guards and event payload validation.
-# A162: explicit — the TESTING env var (set by test_settings.py and all
-# three CI pytest jobs) is the trigger. The old argv sniffing
-# ("pytest"/"test" element checks) evaluated False at settings-import
-# time under `python -m pytest` and only appeared to work because DEBUG
-# defaulted True; any exact `test` argv element also silently disabled
-# the write barrier + event validation. PYTEST_CURRENT_TEST is kept for
-# in-test settings reloads; `manage.py test` keeps a narrow argv check.
-# Defined BEFORE the security block below so pytest can import settings
-# without production env vars.
-TESTING = (
-    os.getenv("TESTING", "").strip().lower() in ("true", "1", "yes")
-    or "PYTEST_CURRENT_TEST" in os.environ
-    or sys.argv[1:2] == ["test"]
-)
+# A2 (2026-07-23): test mode is derived ONLY from the explicit test-settings
+# module or the narrow `manage.py test` invocation — never from a loose
+# environment variable (TESTING / PYTEST_CURRENT_TEST / DJANGO_TEST_MODE), which
+# an operator could leak into a production `.env`. Those env flags cannot create
+# test mode here and are additionally REFUSED at boot below. test_settings also
+# force-sets TESTING=True after importing this module. Defined before the
+# security block so pytest can import settings without production env vars.
+_UNDER_TEST_SETTINGS = os.environ.get("DJANGO_SETTINGS_MODULE", "") == "nxentra_backend.test_settings"
+_MANAGE_PY_TEST = sys.argv[1:2] == ["test"]
+TESTING = _UNDER_TEST_SETTINGS or _MANAGE_PY_TEST
 DISABLE_EVENT_VALIDATION = TESTING
 RLS_BYPASS = os.getenv("RLS_BYPASS", "False") == "True" or TESTING
 ALLOW_ADMIN_EMERGENCY_WRITES = os.getenv("ALLOW_ADMIN_EMERGENCY_WRITES", "False") == "True"
@@ -43,25 +39,26 @@ ALLOW_ADMIN_EMERGENCY_WRITES = os.getenv("ALLOW_ADMIN_EMERGENCY_WRITES", "False"
 # A2: Fail-closed boot on unsafe bypass flags
 # =============================================================================
 # A production context (DEBUG=False) that is NOT the sanctioned test-settings
-# module must refuse to boot when ANY test/bypass flag is enabled via the
-# environment — including `DJANGO_TEST_MODE` itself. A stray flag in a
-# partially-restored production `.env` otherwise silently disables event
+# module must refuse to boot when ANY test/bypass flag is present via the
+# environment — the boolean flags TESTING / RLS_BYPASS / DISABLE_EVENT_VALIDATION
+# / DJANGO_TEST_MODE, or the pytest sentinel PYTEST_CURRENT_TEST. A stray flag in
+# a partially-restored production `.env` otherwise silently disables event
 # validation, RLS, and — via the `not TESTING` guards throughout this module —
 # the entire security-hardening block (HSTS, secure cookies, CSP, the SECRET_KEY
 # / FIELD_ENCRYPTION_KEY / PROJECTIONS_SYNC hard-fails).
 #
 # The exemption is the *settings module identity*, not an environment flag:
 # only `DJANGO_SETTINGS_MODULE == "nxentra_backend.test_settings"` is trusted.
-# `DJANGO_TEST_MODE` (or `TESTING`, `RLS_BYPASS`, ...) can no longer be used as
-# an environment-controlled master bypass — running with test_settings loads the
-# whole test configuration (SQLite, fixed key), so it cannot masquerade as
+# No env flag can be used as a master bypass — running with test_settings loads
+# the whole test configuration (SQLite, fixed key), so it cannot masquerade as
 # prod-with-guards-off. Every pytest run and CI test job selects test_settings
 # (pytest.ini / tests/conftest.py); gunicorn, celery and `manage.py` boot
-# `nxentra_backend.settings` directly. `manage.py test` (argv-derived TESTING,
-# no env var) is unaffected because only environment flags are inspected.
-_UNDER_TEST_SETTINGS = os.environ.get("DJANGO_SETTINGS_MODULE", "") == "nxentra_backend.test_settings"
+# `nxentra_backend.settings` directly.
 if not DEBUG and not _UNDER_TEST_SETTINGS:
-    _A2_UNSAFE_BYPASS = [
+    _A2_UNSAFE_BYPASS = []
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        _A2_UNSAFE_BYPASS.append("PYTEST_CURRENT_TEST")
+    _A2_UNSAFE_BYPASS += [
         _name
         for _name in ("DJANGO_TEST_MODE", "TESTING", "RLS_BYPASS", "DISABLE_EVENT_VALIDATION")
         if os.getenv(_name, "").strip().lower() in ("true", "1", "yes")
@@ -70,9 +67,9 @@ if not DEBUG and not _UNDER_TEST_SETTINGS:
         from django.core.exceptions import ImproperlyConfigured as _IC
 
         raise _IC(
-            "Refusing to boot: unsafe bypass flag(s) "
+            "Refusing to boot: unsafe test/bypass env flag(s) "
             + ", ".join(_A2_UNSAFE_BYPASS)
-            + " are enabled outside the test-settings module. These disable "
+            + " are present outside the test-settings module. These disable "
             "RLS, event validation and the security-hardening block. Unset "
             "them for production; run the test suite via "
             "DJANGO_SETTINGS_MODULE=nxentra_backend.test_settings."
