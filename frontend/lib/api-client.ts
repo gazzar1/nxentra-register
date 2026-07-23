@@ -63,19 +63,20 @@ apiClient.interceptors.request.use(
       }
     }
 
-    // A1: inside the Shopify admin iframe we authenticate via a Bearer token
-    // (no third-party-cookie dependence). Prefer a FRESH App Bridge session
-    // token — the backend now verifies it per-request and maps the shop to its
-    // company owner (accounts.authentication + shopify_connector.session_auth).
-    // Fall back to the exchanged Nxentra JWT (still a valid Bearer) when a
-    // session token isn't available yet, e.g. during install before the store
-    // is connected or while App Bridge is still loading. Never attach for the
-    // auth-bootstrap calls themselves.
+    // A1: inside the Shopify admin iframe we authenticate via a FRESH App Bridge
+    // session token — the backend verifies it per-request against the explicit
+    // (store, sub) binding. A fresh token reflects *current* Shopify
+    // authorization: a revoked merchant cannot mint one, so authorization loss
+    // is not concealed. Ordinary requests do NOT fall back to the stored,
+    // exchanged Nxentra JWT (which would keep a revoked merchant working until
+    // it expired); the exchanged token is a recovery-only path, gated by the G1
+    // switch below. Never attach for the auth-bootstrap calls themselves.
     if (isShopifyEmbedded()) {
       const url = config.url || '';
       const isAuthBootstrap =
         url.includes('/auth/shopify-session-login') ||
-        url.includes('/shopify/token-exchange');
+        url.includes('/shopify/token-exchange') ||
+        url.includes('/shopify/redeem-linking-nonce');
       if (!isAuthBootstrap) {
         let bearer: string | null = null;
         try {
@@ -83,7 +84,9 @@ apiClient.interceptors.request.use(
         } catch {
           bearer = null;
         }
-        if (!bearer) {
+        // Recovery only, and only while the exchanged-token fallback is enabled
+        // (App Bridge not yet loaded on a cold iframe reload).
+        if (!bearer && !exchangedFallbackDisabled()) {
           bearer = getEmbeddedAccessToken();
         }
         if (bearer) {
@@ -96,6 +99,32 @@ apiClient.interceptors.request.use(
   },
   (error) => Promise.reject(error)
 );
+
+/**
+ * G1 switch: when NEXT_PUBLIC_DISABLE_EXCHANGED_TOKEN_FALLBACK === 'true', the
+ * exchanged Nxentra-JWT fallback is disabled entirely, so embedded requests
+ * must authenticate through fresh Shopify session tokens. Used to prove the
+ * session-token path in the real iframe with third-party cookies disabled, and
+ * to guarantee that loss of Shopify authorization is not concealed by a stored
+ * Nxentra JWT.
+ */
+function exchangedFallbackDisabled(): boolean {
+  return process.env.NEXT_PUBLIC_DISABLE_EXCHANGED_TOKEN_FALLBACK === 'true';
+}
+
+/**
+ * Poll App Bridge for a fresh Shopify session token (up to 5s — the CDN may not
+ * have finished loading on a hard iframe reload). Returns null if none.
+ */
+async function pollForSessionToken(): Promise<string | null> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const token = await getShopifySessionToken();
+    if (token) return token;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  return null;
+}
 
 /**
  * B8.5: re-mint a Nxentra JWT inside the iframe by calling App Bridge for
@@ -164,15 +193,25 @@ apiClient.interceptors.response.use(
     if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {
       originalRequest._retry = true;
 
-      // B8.5: in the Shopify admin iframe, cookies don't ride along, so
-      // /auth/refresh/ would always fail. Mint a fresh access token via
-      // App Bridge -> session-login instead.
+      // A1: in the Shopify admin iframe, retry with a FRESH session token first
+      // (primary path — reflects current Shopify authorization). Only if that
+      // fails AND the exchanged-token fallback is enabled do we fall back to a
+      // session-login exchange (recovery). With the G1 switch on, a revoked
+      // merchant's request fails here instead of being concealed by a stored JWT.
       if (isShopifyEmbedded()) {
-        const fresh = await refreshEmbeddedSession();
-        if (fresh) {
+        const freshSession = await pollForSessionToken();
+        if (freshSession) {
           originalRequest.headers = originalRequest.headers || {};
-          originalRequest.headers['Authorization'] = `Bearer ${fresh}`;
+          originalRequest.headers['Authorization'] = `Bearer ${freshSession}`;
           return apiClient(originalRequest);
+        }
+        if (!exchangedFallbackDisabled()) {
+          const fresh = await refreshEmbeddedSession();
+          if (fresh) {
+            originalRequest.headers = originalRequest.headers || {};
+            originalRequest.headers['Authorization'] = `Bearer ${fresh}`;
+            return apiClient(originalRequest);
+          }
         }
         clearEmbeddedAccessToken();
         setAuthenticated(false);
