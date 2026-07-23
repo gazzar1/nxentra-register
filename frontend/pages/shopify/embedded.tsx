@@ -52,10 +52,13 @@ export default function ShopifyEmbeddedPage() {
   const router = useRouter();
   const { refreshProfile } = useAuth();
   const [status, setStatus] = useState<
-    "idle" | "waiting" | "session_login" | "exchanging" | "success" | "error" | "no_connection"
+    "idle" | "waiting" | "session_login" | "exchanging" | "success" | "error" | "no_connection" | "not_bound"
   >("idle");
   const [error, setError] = useState<string | null>(null);
   const [shopDomain, setShopDomain] = useState<string>("");
+  const [linkCode, setLinkCode] = useState<string>("");
+  const [linking, setLinking] = useState<boolean>(false);
+  const [linkError, setLinkError] = useState<string | null>(null);
   const calledRef = useRef(false);
 
   useEffect(() => {
@@ -131,6 +134,13 @@ export default function ShopifyEmbeddedPage() {
         const ax = e as { response?: { status?: number; data?: { detail?: string; message?: string } } };
         if (ax.response?.status === 404 && ax.response?.data?.detail === "no_connection") {
           setStatus("no_connection");
+          return;
+        }
+        // A1: this Shopify user is not linked to a Nxentra member for this
+        // store. Show the owner-link ceremony: the founder generates a link
+        // code from standalone Nxentra settings and enters it here.
+        if (ax.response?.status === 403 && ax.response?.data?.detail === "not_bound") {
+          setStatus("not_bound");
           return;
         }
         setStatus("error");
@@ -221,6 +231,45 @@ export default function ShopifyEmbeddedPage() {
     window.location.href = target;
   };
 
+  /**
+   * A1: redeem an owner-link code with a FRESH Shopify session token. The
+   * founder generates the code in standalone Nxentra settings; redeeming it
+   * binds this Shopify user (the token's `sub`) to their Nxentra membership.
+   * On success we reload, which re-runs session-login — now authorized. Expired,
+   * reused, wrong-shop and wrong-sub attempts surface a visible error.
+   */
+  const handleRedeemCode = async () => {
+    setLinkError(null);
+    const code = linkCode.trim();
+    if (!code) {
+      setLinkError("Enter the link code from your Nxentra settings.");
+      return;
+    }
+    setLinking(true);
+    try {
+      const sessionToken = await getShopifySessionToken();
+      if (!sessionToken) {
+        setLinkError("Couldn't reach Shopify App Bridge. Reload and try again.");
+        setLinking(false);
+        return;
+      }
+      await axios.post(
+        `${baseURL}/shopify/redeem-linking-nonce/`,
+        { nonce: code, session_token: sessionToken },
+        { withCredentials: true, headers: { "Content-Type": "application/json" } },
+      );
+      // Binding created — re-run the whole embedded auth flow.
+      router.reload();
+    } catch (e: unknown) {
+      const ax = e as { response?: { data?: { error?: string } } };
+      setLinkError(
+        ax.response?.data?.error ||
+          "That link code didn't work. It may be expired, already used, or for a different store or user.",
+      );
+      setLinking(false);
+    }
+  };
+
   // Bare layout — no AppLayout chrome since we're embedded inside
   // Shopify admin which provides its own.
   return (
@@ -293,6 +342,37 @@ export default function ShopifyEmbeddedPage() {
               onClick={openNxentraTop}
             >
               Open Nxentra
+            </button>
+          </>
+        )}
+
+        {status === "not_bound" && (
+          <>
+            <div className="mb-4 flex items-start gap-3 text-amber-500">
+              <AlertCircle className="mt-0.5 h-5 w-5" />
+              <div>
+                <p className="font-medium">Link this Shopify user to your Nxentra account.</p>
+                <p className="text-sm text-muted-foreground">
+                  In Nxentra (standalone), open Settings and generate a Shopify link
+                  code, then paste it here to finish connecting {shopDomain || "your store"}.
+                </p>
+              </div>
+            </div>
+            <input
+              type="text"
+              value={linkCode}
+              onChange={(e) => setLinkCode(e.target.value)}
+              placeholder="Paste link code"
+              className="mb-3 w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
+              disabled={linking}
+            />
+            {linkError ? <p className="mb-3 text-sm text-destructive">{linkError}</p> : null}
+            <button
+              className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+              onClick={handleRedeemCode}
+              disabled={linking}
+            >
+              {linking ? "Linking…" : "Link account"}
             </button>
           </>
         )}
