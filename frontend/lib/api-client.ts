@@ -35,9 +35,27 @@ function getCsrfToken(): string | null {
   return match ? match[1] : null;
 }
 
-// Request interceptor — CSRF for non-GET, Bearer auth when embedded.
+/**
+ * A1 (2026-07-23): seed the Django `csrftoken` cookie for the standalone
+ * browser double-submit CSRF flow. Login already seeds it server-side; this
+ * covers an already-logged-in session or a cold SPA load. Embedded mode
+ * authenticates via a Bearer header (CSRF-exempt) and needs no CSRF cookie.
+ */
+export async function ensureCsrfToken(): Promise<void> {
+  if (typeof document === 'undefined') return;
+  if (isShopifyEmbedded()) return;
+  if (getCsrfToken()) return;
+  try {
+    await apiClient.get('/auth/csrf/');
+  } catch {
+    // Best-effort — login also seeds the cookie; a missing token only causes
+    // the first mutation to 403, after which the SPA can retry.
+  }
+}
+
+// Request interceptor — CSRF for non-GET (standalone), Bearer auth when embedded.
 apiClient.interceptors.request.use(
-  (config: InternalAxiosRequestConfig) => {
+  async (config: InternalAxiosRequestConfig) => {
     if (config.method && config.method !== 'get') {
       const csrfToken = getCsrfToken();
       if (csrfToken) {
@@ -45,18 +63,32 @@ apiClient.interceptors.request.use(
       }
     }
 
-    // B8.5: inside the Shopify admin iframe, cookies are blocked. Attach
-    // the Nxentra JWT obtained from `/auth/shopify-session-login/` as a
-    // Bearer header. Do not attach for the session-login or token-exchange
-    // calls themselves — those bootstrap the auth state.
+    // A1: inside the Shopify admin iframe we authenticate via a Bearer token
+    // (no third-party-cookie dependence). Prefer a FRESH App Bridge session
+    // token — the backend now verifies it per-request and maps the shop to its
+    // company owner (accounts.authentication + shopify_connector.session_auth).
+    // Fall back to the exchanged Nxentra JWT (still a valid Bearer) when a
+    // session token isn't available yet, e.g. during install before the store
+    // is connected or while App Bridge is still loading. Never attach for the
+    // auth-bootstrap calls themselves.
     if (isShopifyEmbedded()) {
-      const tok = getEmbeddedAccessToken();
       const url = config.url || '';
       const isAuthBootstrap =
         url.includes('/auth/shopify-session-login') ||
         url.includes('/shopify/token-exchange');
-      if (tok && !isAuthBootstrap) {
-        config.headers['Authorization'] = `Bearer ${tok}`;
+      if (!isAuthBootstrap) {
+        let bearer: string | null = null;
+        try {
+          bearer = await getShopifySessionToken();
+        } catch {
+          bearer = null;
+        }
+        if (!bearer) {
+          bearer = getEmbeddedAccessToken();
+        }
+        if (bearer) {
+          config.headers['Authorization'] = `Bearer ${bearer}`;
+        }
       }
     }
 

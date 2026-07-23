@@ -3,7 +3,8 @@ import type { AppProps } from "next/app";
 import Head from "next/head";
 import { appWithTranslation } from "next-i18next";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { ensureCsrfToken } from "@/lib/api-client";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { ThemeProvider } from "@/contexts/ThemeContext";
 import { ToastContextProvider } from "@/components/ui/toaster";
@@ -22,6 +23,12 @@ function App({ Component, pageProps }: AppProps) {
         },
       })
   );
+
+  // A1: seed the csrftoken cookie once on load so standalone-browser mutations
+  // carry a valid X-CSRFToken (double-submit CSRF). No-op when embedded.
+  useEffect(() => {
+    void ensureCsrfToken();
+  }, []);
 
   return (
     <>
