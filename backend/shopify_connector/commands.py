@@ -704,7 +704,10 @@ def verify_shopify_session_token(session_token: str) -> dict | None:
             SHOPIFY_API_SECRET,
             algorithms=["HS256"],
             audience=SHOPIFY_API_KEY,
-            options={"require": ["exp", "iat", "iss", "dest", "aud"]},
+            # A1: require the full Shopify claim set. `sub` (the Shopify user id)
+            # is mandatory — it is the identity we bind for authorization; `nbf`
+            # is enforced by pyjwt so a not-yet-valid token is rejected.
+            options={"require": ["exp", "iat", "nbf", "iss", "dest", "aud", "sub"]},
         )
     except pyjwt.ExpiredSignatureError:
         logger.warning("shopify.session_token_verify_failed reason=expired")
@@ -732,6 +735,42 @@ def _extract_shop_domain_from_claims(claims: dict) -> str | None:
         if netloc.endswith(".myshopify.com"):
             return netloc
     return None
+
+
+def _normalize_shop_from_claim(value: str) -> str | None:
+    """Return the exact `<shop>.myshopify.com` host from an iss/dest URL, or None.
+
+    A1: strict — rejects suffix-match tricks (``evil-myshopify.com``,
+    ``x.myshopify.com.evil.com``) by requiring the host to be exactly one shop
+    label followed by ``.myshopify.com`` and a valid Shopify handle.
+    """
+    import re
+    from urllib.parse import urlparse
+
+    if not value or not isinstance(value, str):
+        return None
+    parsed = urlparse(value if "//" in value else f"https://{value}")
+    host = (parsed.netloc or "").lower().split(":")[0]  # drop any port
+    if not host.endswith(".myshopify.com"):
+        return None
+    label = host[: -len(".myshopify.com")]
+    # Exactly one label (no dots) and a valid Shopify shop handle.
+    if not label or "." in label or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", label):
+        return None
+    return host
+
+
+def validated_shop_from_claims(claims: dict) -> str | None:
+    """A1: return the shop only when `iss` and `dest` normalize to the SAME exact
+    `<shop>.myshopify.com`. Any mismatch or malformed claim returns None so the
+    caller fails closed. This is the security-sensitive replacement for
+    ``_extract_shop_domain_from_claims`` on the authentication/binding paths.
+    """
+    iss_shop = _normalize_shop_from_claim(claims.get("iss", ""))
+    dest_shop = _normalize_shop_from_claim(claims.get("dest", ""))
+    if not iss_shop or not dest_shop or iss_shop != dest_shop:
+        return None
+    return iss_shop
 
 
 @transaction.atomic
@@ -907,7 +946,9 @@ def complete_oauth_token_exchange(
         ),
     )
 
-    return CommandResult.ok(data={"store": store})
+    # A1: expose the session token's `sub` so the authenticated token-exchange
+    # view can bind this Shopify user to the acting membership.
+    return CommandResult.ok(data={"store": store, "shopify_sub": claims.get("sub")})
 
 
 # =============================================================================

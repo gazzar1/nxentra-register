@@ -379,13 +379,116 @@ class ShopifyTokenExchangeView(APIView):
             )
 
         store = result.data["store"]
+
+        # A1: bind the Shopify user (session token `sub`) to the acting
+        # membership — the ceremony where the backend holds BOTH an
+        # authenticated Nxentra membership and a valid session token. Subsequent
+        # embedded per-request auth resolves through this binding. Non-fatal to
+        # the connection itself: a conflict (a different Shopify user already
+        # bound) is surfaced but does not undo the store connection.
+        bound = False
+        bind_error = None
+        shopify_sub = result.data.get("shopify_sub")
+        if shopify_sub:
+            from .user_binding import BindingError, bind_shopify_user
+
+            try:
+                bind_shopify_user(
+                    store=store,
+                    shopify_sub=shopify_sub,
+                    membership=actor.membership,
+                    actor_user=actor.user,
+                )
+                bound = True
+            except BindingError as exc:
+                bind_error = str(exc)
+                logger.warning(
+                    "shopify.token_exchange_bind_failed shop=%s error=%s",
+                    store.shop_domain,
+                    exc,
+                )
+
         return Response(
             {
                 "status": "connected",
                 "shop_domain": store.shop_domain,
                 "store_public_id": str(store.public_id),
+                "shopify_user_bound": bound,
+                "bind_error": bind_error,
             }
         )
+
+
+class ShopifyLinkingNonceView(APIView):
+    """
+    POST /api/shopify/linking-nonce/
+
+    A1: a standalone (cookie-authenticated) OWNER/ADMIN mints a single-use,
+    short-lived nonce to link a Shopify user to their membership. The embedded
+    app then redeems it (with a session token) at /redeem-linking-nonce/. This
+    is the split-context ceremony that establishes the FIRST binding without
+    depending on third-party cookies inside the iframe.
+
+    Body (optional): {"store_public_id": "<uuid>"} — defaults to the company's
+    single ACTIVE store.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        actor = resolve_actor(request)
+        require(actor, "settings.edit")
+
+        from .user_binding import BindingError, create_linking_nonce
+
+        store_public_id = (request.data.get("store_public_id") or "").strip()
+        store_qs = ShopifyStore.objects.filter(company=actor.company, status=ShopifyStore.Status.ACTIVE)
+        if store_public_id:
+            store_qs = store_qs.filter(public_id=store_public_id)
+        store = store_qs.order_by("-updated_at").first()
+        if store is None:
+            return Response(
+                {"error": "No active Shopify store found for this company."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            nonce = create_linking_nonce(store=store, membership=actor.membership, actor_user=actor.user)
+        except BindingError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({"nonce": nonce, "shop_domain": store.shop_domain, "expires_in_seconds": 600})
+
+
+class ShopifyRedeemLinkingNonceView(APIView):
+    """
+    POST /api/shopify/redeem-linking-nonce/
+
+    A1: the embedded app redeems a linking nonce with a valid Shopify session
+    token. No prior Nxentra authentication is required (the nonce + the signed
+    session token are the credentials). Binds the token's `sub` to the nonce
+    creator's membership after verifying the token, shop, nonce validity and
+    single-use. Public: authorization is proven by the nonce + session token.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        from .user_binding import BindingError, redeem_linking_nonce
+
+        nonce = (request.data.get("nonce") or "").strip()
+        session_token = (request.data.get("session_token") or "").strip()
+        if not nonce or not session_token:
+            return Response(
+                {"error": "nonce and session_token are required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            redeem_linking_nonce(nonce_value=nonce, session_token=session_token)
+        except BindingError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"status": "linked"})
 
 
 class ShopifyFinalizeInstallView(APIView):

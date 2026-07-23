@@ -699,22 +699,24 @@ class ShopifySessionLoginView(APIView):
     the embedded SPA can attach them as Authorization headers (cookies are
     set too as a no-op fallback for non-iframe re-auth).
 
-    Authorization model: trusting the session_token's signature is exactly
-    what Shopify's Token Exchange spec defines as proof-of-merchant. The
-    only person who can mint a valid signed token for shop X is somebody
-    Shopify has already authenticated as having admin access to shop X.
-    Mapping shop_domain -> ShopifyStore -> company.OWNER is therefore a
-    safe automatic login.
+    Authorization model (A1, 2026-07-23): a valid signed session token proves
+    the caller is a Shopify user with admin access to shop X — but that is NOT
+    proof of Nxentra authorization. We authenticate as the Nxentra member
+    EXPLICITLY BOUND to (store, token.sub) via a ShopifyUserBinding; shop access
+    alone grants nothing and we never select "the first OWNER". An unbound
+    Shopify user is denied and must first complete the owner-link ceremony
+    (linking nonce or authenticated token-exchange). Both this endpoint and the
+    per-request Shopify authenticator resolve through the same binding.
 
     Failure modes:
       - 400 missing_session_token: request body had no session_token.
-      - 401 invalid_session_token: JWT signature/expiry/audience failed.
-      - 400 bad_shop_claim: token claims have no recognizable shop domain.
+      - 401 invalid_session_token: JWT signature/expiry/audience/nbf/sub failed.
+      - 400 bad_shop_claim: iss/dest do not normalize to the same shop, or no sub.
       - 404 no_connection: no ACTIVE ShopifyStore for that shop. The
         frontend should top-window redirect to standalone Nxentra so the
         merchant can register/login + connect manually first.
-      - 500 no_owner: store exists but has no OWNER membership (data
-        inconsistency; should never happen in practice).
+      - 403 not_bound: the token's Shopify user is not linked to a Nxentra
+        member for this store — complete the owner-link ceremony first.
     """
 
     permission_classes = [AllowAny]
@@ -723,10 +725,11 @@ class ShopifySessionLoginView(APIView):
         from django.utils import timezone
 
         from shopify_connector.commands import (
-            _extract_shop_domain_from_claims,
+            validated_shop_from_claims,
             verify_shopify_session_token,
         )
         from shopify_connector.models import ShopifyStore
+        from shopify_connector.user_binding import resolve_bound_membership
 
         session_token = request.data.get("session_token", "").strip()
         if not session_token:
@@ -742,10 +745,13 @@ class ShopifySessionLoginView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
-        shop_domain = _extract_shop_domain_from_claims(claims)
-        if not shop_domain:
+        # A1: strict — iss and dest must normalize to the SAME exact shop, and
+        # `sub` (the Shopify user identity we authorize) must be present.
+        shopify_sub = claims.get("sub")
+        shop_domain = validated_shop_from_claims(claims)
+        if not shop_domain or not shopify_sub:
             return Response(
-                {"detail": "bad_shop_claim", "message": "Session token has no recognizable shop domain."},
+                {"detail": "bad_shop_claim", "message": "Session token has inconsistent shop claims or no sub."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -774,23 +780,24 @@ class ShopifySessionLoginView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        owner_membership = (
-            CompanyMembership.objects.filter(
-                company_id=store.company_id,
-                role=CompanyMembership.Role.OWNER,
-                is_active=True,
-            )
-            .select_related("user")
-            .order_by("id")
-            .first()
-        )
-        if owner_membership is None or owner_membership.user is None:
+        # A1: resolve the actor through the explicit (store, sub) binding — never
+        # "the first OWNER". An unbound Shopify user is denied; they must first
+        # complete the owner-link ceremony (linking nonce / token-exchange).
+        membership = resolve_bound_membership(store=store, shopify_sub=shopify_sub)
+        if membership is None or membership.user is None:
             return Response(
-                {"detail": "no_owner", "message": "Store has no active owner."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                {
+                    "detail": "not_bound",
+                    "message": (
+                        "This Shopify user is not linked to a Nxentra account for this store. "
+                        "Complete the owner-link step first."
+                    ),
+                    "shop_domain": shop_domain,
+                },
+                status=status.HTTP_403_FORBIDDEN,
             )
 
-        user = owner_membership.user
+        user = membership.user
         company_id = store.company_id
 
         # Align active_company so token claims line up with the standard
