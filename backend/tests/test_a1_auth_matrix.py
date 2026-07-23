@@ -380,13 +380,141 @@ def test_login_sets_csrftoken_cookie(company, user, owner_membership):
 
 
 # =============================================================================
+# Strict claims: scheme / credentials / port (point 5)
+# =============================================================================
+
+
+def test_normalize_shop_rejects_non_https():
+    assert sc_commands._normalize_shop_from_claim("http://acme.myshopify.com") is None
+    # bare host (no scheme) is rejected too
+    assert sc_commands._normalize_shop_from_claim("acme.myshopify.com") is None
+
+
+def test_normalize_shop_rejects_credentials_and_port():
+    assert sc_commands._normalize_shop_from_claim("https://user:pass@acme.myshopify.com") is None
+    assert sc_commands._normalize_shop_from_claim("https://acme.myshopify.com:8443") is None
+
+
+@pytest.mark.django_db
+def test_token_exchange_rejects_inconsistent_shop_claims(company, user, owner_membership):
+    """complete_oauth_token_exchange uses the strict validator and fails BEFORE
+    the Shopify HTTP call when iss/dest disagree."""
+    s1, s2 = _patched_secret()
+    with s1, s2:
+        token = _make_session_token(dest_shop="evil.myshopify.com")
+        result = sc_commands.complete_oauth_token_exchange(company, token)
+    assert not result.success
+    assert "shop claims" in (result.error or "").lower()
+
+
+# =============================================================================
+# Source-sensitive CSRF (point 3)
+# =============================================================================
+
+
+def _refresh_for(user, company_id):
+    r = RefreshToken.for_user(user)
+    r["company_id"] = str(company_id)
+    return str(r)
+
+
+def _csrf(client):
+    client.get(reverse("accounts:csrf-token"))
+    return client.cookies["csrftoken"].value
+
+
+def _verified(user):
+    user.email_verified = True
+    user.save(update_fields=["email_verified"])
+    return user
+
+
+@pytest.mark.django_db
+def test_login_requires_csrf(company, user, owner_membership):
+    _verified(user)
+    client = APIClient(enforce_csrf_checks=True)
+    body = {"email": user.email, "password": "Testpass123!", "company_id": company.id}
+    # Without the bootstrap CSRF token -> 403.
+    assert client.post(reverse("accounts:login"), body, format="json").status_code == 403
+    # With it -> succeeds.
+    csrf = _csrf(client)
+    ok = client.post(reverse("accounts:login"), body, format="json", HTTP_X_CSRFTOKEN=csrf)
+    assert ok.status_code == 200, ok.data
+
+
+@pytest.mark.django_db
+def test_login_rejects_foreign_origin(company, user, owner_membership):
+    _verified(user)
+    client = APIClient(enforce_csrf_checks=True)
+    csrf = _csrf(client)
+    resp = client.post(
+        reverse("accounts:login"),
+        {"email": user.email, "password": "Testpass123!", "company_id": company.id},
+        format="json",
+        HTTP_X_CSRFTOKEN=csrf,
+        HTTP_ORIGIN="https://evil.example.com",
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.django_db
+def test_cookie_refresh_requires_csrf(company, user, owner_membership):
+    client = APIClient(enforce_csrf_checks=True)
+    client.cookies["nxentra_refresh"] = _refresh_for(user, company.id)
+    # cookie-sourced, no CSRF -> 403
+    assert client.post(reverse("accounts:token-refresh"), {}, format="json").status_code == 403
+    # with CSRF -> 200
+    csrf = _csrf(client)
+    client.cookies["nxentra_refresh"] = _refresh_for(user, company.id)
+    ok = client.post(reverse("accounts:token-refresh"), {}, format="json", HTTP_X_CSRFTOKEN=csrf)
+    assert ok.status_code == 200, ok.data
+
+
+@pytest.mark.django_db
+def test_body_token_refresh_is_csrf_exempt(company, user, owner_membership):
+    client = APIClient(enforce_csrf_checks=True)
+    resp = client.post(reverse("accounts:token-refresh"), {"refresh": _refresh_for(user, company.id)}, format="json")
+    assert resp.status_code == 200, resp.data
+
+
+@pytest.mark.django_db
+def test_cookie_logout_requires_csrf(company, user, owner_membership):
+    client = APIClient(enforce_csrf_checks=True)
+    client.cookies["nxentra_refresh"] = _refresh_for(user, company.id)
+    # cookie-sourced logout, no CSRF -> 403 (even though logout carries no access cookie)
+    assert client.post(reverse("accounts:logout"), {}, format="json").status_code == 403
+    csrf = _csrf(client)
+    client.cookies["nxentra_refresh"] = _refresh_for(user, company.id)
+    ok = client.post(reverse("accounts:logout"), {}, format="json", HTTP_X_CSRFTOKEN=csrf)
+    assert ok.status_code == 204
+
+
+@pytest.mark.django_db
+def test_body_token_logout_is_csrf_exempt(company, user, owner_membership):
+    client = APIClient(enforce_csrf_checks=True)
+    resp = client.post(reverse("accounts:logout"), {"refresh": _refresh_for(user, company.id)}, format="json")
+    assert resp.status_code == 204
+
+
+# =============================================================================
 # Owner-link ceremony: nonce create + redeem
 # =============================================================================
 
 
 @pytest.mark.django_db
-def test_nonce_ceremony_binds_and_enables_session_login(company, user, owner_membership):
+def test_not_bound_then_link_then_login(company, user, owner_membership):
+    """Complete flow: an existing ACTIVE store with ZERO bindings denies
+    session-login (not_bound); the owner-link ceremony binds; login then works."""
     store = _active_store(company)
+    s1, s2 = _patched_secret()
+
+    # 0) Existing active store, zero bindings -> session-login is denied.
+    with s1, s2:
+        denied = APIClient().post(
+            reverse("accounts:shopify-session-login"), {"session_token": _make_session_token()}, format="json"
+        )
+    assert denied.status_code == 403 and denied.data["detail"] == "not_bound"
+
     # 1) Standalone owner creates a nonce (cookie-authenticated).
     _grant_settings_edit(company, owner_membership)
     client = APIClient(enforce_csrf_checks=True)

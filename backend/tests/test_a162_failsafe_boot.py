@@ -234,6 +234,33 @@ def test_wsgi_entrypoint_asserts_settings_module():
     assert "Refusing to start WSGI" in result.stderr
 
 
+def test_prod_boot_refuses_pytest_current_test():
+    """PYTEST_CURRENT_TEST must not create TESTING/RLS_BYPASS/hardening bypass
+    under production settings — boot refuses when it (or it plus another flag)
+    is present outside the test-settings module."""
+    r1 = _run(
+        "import nxentra_backend.settings as s; print(s.TESTING, s.RLS_BYPASS)",
+        _prod_env(PYTEST_CURRENT_TEST="tests/x.py::y (call)"),
+    )
+    assert r1.returncode != 0 and "PYTEST_CURRENT_TEST" in r1.stderr and "Refusing to boot" in r1.stderr
+    r2 = _run(
+        "import nxentra_backend.settings",
+        _prod_env(PYTEST_CURRENT_TEST="tests/x.py::y (call)", RLS_BYPASS="True"),
+    )
+    assert r2.returncode != 0 and "Refusing to boot" in r2.stderr
+
+
+def test_celery_entrypoint_asserts_settings_module():
+    """A Celery worker/beat process must refuse a non-production settings module
+    (guarded on the celery CLI so ordinary/test imports are unaffected)."""
+    result = _run(
+        "import sys; sys.argv=['celery','-A','nxentra_backend','worker']\nimport nxentra_backend.celery",
+        {"DJANGO_SETTINGS_MODULE": "nxentra_backend.test_settings"},
+    )
+    assert result.returncode != 0
+    assert "Refusing to start Celery" in result.stderr
+
+
 def test_debug_dev_allows_bypass():
     """Dev (DEBUG=True) is allowed to run with RLS_BYPASS — the guard only
     fires in a production context."""
