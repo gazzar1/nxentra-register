@@ -23,6 +23,19 @@ urlpatterns = [
         views.ShopifyTokenExchangeView.as_view(),
         name="shopify-token-exchange",
     ),
+    # A1 (2026-07-23): embedded owner-link ceremony. A standalone-authenticated
+    # OWNER/ADMIN mints a single-use nonce; the embedded app redeems it with a
+    # session token to bind that Shopify user (sub) to the membership.
+    path(
+        "linking-nonce/",
+        views.ShopifyLinkingNonceView.as_view(),
+        name="shopify-linking-nonce",
+    ),
+    path(
+        "redeem-linking-nonce/",
+        views.ShopifyRedeemLinkingNonceView.as_view(),
+        name="shopify-redeem-linking-nonce",
+    ),
     # A122 (2026-06-02): Shopify app launch handshake. Shopify sends merchants
     # to https://app.nxentra.com/?hmac=...&host=...&shop=...&session=... when
     # they click "Open app" from their Shopify admin. The frontend root page

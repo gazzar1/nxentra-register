@@ -8,9 +8,10 @@ ShopifyOrder/ShopifyRefund: local copies of Shopify data for reconciliation.
 
 import uuid
 
+from django.conf import settings
 from django.db import models
 
-from accounts.models import Company
+from accounts.models import Company, CompanyMembership
 from nxentra_backend.crypto import EncryptedTextField
 
 
@@ -187,6 +188,94 @@ class ShopifyStore(models.Model):
 
     def __str__(self):
         return f"{self.shop_domain} ({self.status})"
+
+
+class ShopifyUserBinding(models.Model):
+    """A1 (2026-07-23): explicit authorization binding for embedded Shopify auth.
+
+    Maps a specific Shopify user — the session token's ``sub`` claim — on a
+    specific store to an active Nxentra ``CompanyMembership``. Both the
+    per-request Shopify session-token authenticator and the
+    ``/auth/shopify-session-login/`` flow resolve through this binding, so
+    Shopify shop access alone never grants Nxentra access and the resolved
+    actor is the *bound* member — never "the first OWNER/ADMIN". For the
+    constrained pilot there is at most one ACTIVE binding per store (no general
+    Shopify-staff provisioning yet). Link/unlink are auditable via
+    created_by/revoked_by.
+    """
+
+    store = models.ForeignKey(ShopifyStore, on_delete=models.CASCADE, related_name="user_bindings")
+    shopify_sub = models.CharField(
+        max_length=255,
+        help_text="Shopify user id from the session token 'sub' claim.",
+    )
+    membership = models.ForeignKey(
+        CompanyMembership,
+        on_delete=models.CASCADE,
+        related_name="shopify_bindings",
+    )
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+
+    class Meta:
+        db_table = "shopify_user_binding"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["store", "shopify_sub"],
+                name="uniq_store_shopify_sub",
+            ),
+            # Constrained pilot: at most one ACTIVE bound Shopify user per store.
+            models.UniqueConstraint(
+                fields=["store"],
+                condition=models.Q(is_active=True),
+                name="uniq_active_binding_per_store",
+            ),
+        ]
+
+    def __str__(self):
+        state = "active" if self.is_active else "revoked"
+        return f"binding<{self.store_id}/{self.shopify_sub}> -> membership {self.membership_id} ({state})"
+
+
+class ShopifyLinkingNonce(models.Model):
+    """A1 (2026-07-23): single-use nonce for the embedded owner-link ceremony.
+
+    A standalone (cookie-authenticated) OWNER/ADMIN creates a nonce for a
+    specific store; the embedded app redeems it together with a valid Shopify
+    session token, which binds the token's ``sub`` to the nonce creator's
+    membership. This establishes the FIRST binding without depending on
+    third-party cookies inside the iframe (the two credentials arise in
+    different browser contexts). Short-lived and single-use.
+    """
+
+    nonce = models.CharField(max_length=64, unique=True, db_index=True)
+    store = models.ForeignKey(ShopifyStore, on_delete=models.CASCADE, related_name="linking_nonces")
+    membership = models.ForeignKey(CompanyMembership, on_delete=models.CASCADE, related_name="+")
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    redeemed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "shopify_linking_nonce"
+
+    def __str__(self):
+        return f"linking_nonce<{self.store_id}> exp={self.expires_at.isoformat()}"
 
 
 class PendingShopifyInstall(models.Model):

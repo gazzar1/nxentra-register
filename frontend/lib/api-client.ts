@@ -2,7 +2,6 @@ import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
 import { setAuthenticated } from './auth-storage';
 import {
   clearEmbeddedAccessToken,
-  getEmbeddedAccessToken,
   setEmbeddedAccessToken,
 } from './embedded-auth';
 import { getShopifySessionToken, isShopifyEmbedded } from './shopify-embed';
@@ -35,9 +34,27 @@ function getCsrfToken(): string | null {
   return match ? match[1] : null;
 }
 
-// Request interceptor — CSRF for non-GET, Bearer auth when embedded.
+/**
+ * A1 (2026-07-23): seed the Django `csrftoken` cookie for the standalone
+ * browser double-submit CSRF flow. Login already seeds it server-side; this
+ * covers an already-logged-in session or a cold SPA load. Embedded mode
+ * authenticates via a Bearer header (CSRF-exempt) and needs no CSRF cookie.
+ */
+export async function ensureCsrfToken(): Promise<void> {
+  if (typeof document === 'undefined') return;
+  if (isShopifyEmbedded()) return;
+  if (getCsrfToken()) return;
+  try {
+    await apiClient.get('/auth/csrf/');
+  } catch {
+    // Best-effort — login also seeds the cookie; a missing token only causes
+    // the first mutation to 403, after which the SPA can retry.
+  }
+}
+
+// Request interceptor — CSRF for non-GET (standalone), Bearer auth when embedded.
 apiClient.interceptors.request.use(
-  (config: InternalAxiosRequestConfig) => {
+  async (config: InternalAxiosRequestConfig) => {
     if (config.method && config.method !== 'get') {
       const csrfToken = getCsrfToken();
       if (csrfToken) {
@@ -45,18 +62,29 @@ apiClient.interceptors.request.use(
       }
     }
 
-    // B8.5: inside the Shopify admin iframe, cookies are blocked. Attach
-    // the Nxentra JWT obtained from `/auth/shopify-session-login/` as a
-    // Bearer header. Do not attach for the session-login or token-exchange
-    // calls themselves — those bootstrap the auth state.
+    // A1: inside the Shopify admin iframe, ordinary requests authenticate ONLY
+    // with a FRESH App Bridge session token — never the stored exchanged Nxentra
+    // JWT. A fresh token reflects *current* Shopify authorization (a revoked
+    // merchant cannot mint one, so authorization loss is not concealed). The
+    // exchanged-token recovery lives only in the 401 handler and is opt-in /
+    // default-off (see exchangedFallbackEnabled). Never attach for the
+    // auth-bootstrap calls themselves.
     if (isShopifyEmbedded()) {
-      const tok = getEmbeddedAccessToken();
       const url = config.url || '';
       const isAuthBootstrap =
         url.includes('/auth/shopify-session-login') ||
-        url.includes('/shopify/token-exchange');
-      if (tok && !isAuthBootstrap) {
-        config.headers['Authorization'] = `Bearer ${tok}`;
+        url.includes('/shopify/token-exchange') ||
+        url.includes('/shopify/redeem-linking-nonce');
+      if (!isAuthBootstrap) {
+        let bearer: string | null = null;
+        try {
+          bearer = await getShopifySessionToken();
+        } catch {
+          bearer = null;
+        }
+        if (bearer) {
+          config.headers['Authorization'] = `Bearer ${bearer}`;
+        }
       }
     }
 
@@ -64,6 +92,31 @@ apiClient.interceptors.request.use(
   },
   (error) => Promise.reject(error)
 );
+
+/**
+ * Exchanged-Nxentra-JWT fallback is DEFAULT-OFF. Ordinary embedded requests are
+ * session-token-only. Setting NEXT_PUBLIC_ENABLE_EXCHANGED_TOKEN_FALLBACK='true'
+ * opts in to a recovery-only exchange in the 401 handler (a clearly identified
+ * install/recovery state) — never the request interceptor. Leaving it off is the
+ * secure default and is what the live G1 iframe smoke test exercises.
+ */
+function exchangedFallbackEnabled(): boolean {
+  return process.env.NEXT_PUBLIC_ENABLE_EXCHANGED_TOKEN_FALLBACK === 'true';
+}
+
+/**
+ * Poll App Bridge for a fresh Shopify session token (up to 5s — the CDN may not
+ * have finished loading on a hard iframe reload). Returns null if none.
+ */
+async function pollForSessionToken(): Promise<string | null> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const token = await getShopifySessionToken();
+    if (token) return token;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  return null;
+}
 
 /**
  * B8.5: re-mint a Nxentra JWT inside the iframe by calling App Bridge for
@@ -132,15 +185,25 @@ apiClient.interceptors.response.use(
     if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {
       originalRequest._retry = true;
 
-      // B8.5: in the Shopify admin iframe, cookies don't ride along, so
-      // /auth/refresh/ would always fail. Mint a fresh access token via
-      // App Bridge -> session-login instead.
+      // A1: in the Shopify admin iframe, retry with a FRESH session token first
+      // (primary path — reflects current Shopify authorization). Only if that
+      // fails AND the exchanged-token fallback is enabled do we fall back to a
+      // session-login exchange (recovery). With the G1 switch on, a revoked
+      // merchant's request fails here instead of being concealed by a stored JWT.
       if (isShopifyEmbedded()) {
-        const fresh = await refreshEmbeddedSession();
-        if (fresh) {
+        const freshSession = await pollForSessionToken();
+        if (freshSession) {
           originalRequest.headers = originalRequest.headers || {};
-          originalRequest.headers['Authorization'] = `Bearer ${fresh}`;
+          originalRequest.headers['Authorization'] = `Bearer ${freshSession}`;
           return apiClient(originalRequest);
+        }
+        if (exchangedFallbackEnabled()) {
+          const fresh = await refreshEmbeddedSession();
+          if (fresh) {
+            originalRequest.headers = originalRequest.headers || {};
+            originalRequest.headers['Authorization'] = `Bearer ${fresh}`;
+            return apiClient(originalRequest);
+          }
         }
         clearEmbeddedAccessToken();
         setAuthenticated(false);
@@ -149,9 +212,15 @@ apiClient.interceptors.response.use(
         return Promise.reject(error);
       }
 
-      // Standalone (non-embedded) flow: cookie-based refresh.
+      // Standalone (non-embedded) flow: cookie-based refresh. A1: a
+      // cookie-sourced refresh is CSRF-protected — send the double-submit token.
       try {
-        await axios.post(`${baseURL}/auth/refresh/`, {}, { withCredentials: true });
+        const csrf = getCsrfToken();
+        await axios.post(
+          `${baseURL}/auth/refresh/`,
+          {},
+          { withCredentials: true, headers: csrf ? { 'X-CSRFToken': csrf } : {} }
+        );
         return apiClient(originalRequest);
       } catch (refreshError) {
         setAuthenticated(false);

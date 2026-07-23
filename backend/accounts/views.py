@@ -12,6 +12,9 @@ Serializers are PURE PARSING + VALIDATION - they never call .save()
 
 from django.contrib.auth import get_user_model
 from django.db import models
+from django.middleware.csrf import get_token
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import ensure_csrf_cookie
 from rest_framework import status
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -19,6 +22,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
+from accounts.authentication import enforce_csrf
 from accounts.authz import require, resolve_actor
 from accounts.commands import (
     accept_invitation,
@@ -98,6 +102,27 @@ def clear_auth_cookies(response):
 
     response.delete_cookie(s.AUTH_COOKIE_ACCESS_NAME, path="/")
     response.delete_cookie(s.AUTH_COOKIE_REFRESH_NAME, path=s.AUTH_COOKIE_REFRESH_PATH)
+
+
+@method_decorator(ensure_csrf_cookie, name="dispatch")
+class CsrfTokenView(APIView):
+    """A1: seed the ``csrftoken`` cookie for the standalone-browser double-submit
+    CSRF flow.
+
+    The SPA calls this on load; the response sets a non-HttpOnly ``csrftoken``
+    cookie (SameSite=None + Secure in production, so it is readable by the
+    app's JS and rides the Shopify-admin iframe, but cannot be read by a
+    cross-site attacker) that the api-client echoes back in the ``X-CSRFToken``
+    header on every mutation. Embedded Shopify (session-token bearer) and
+    explicit API bearer clients do not need it. Public and unauthenticated: a
+    fresh browser must be able to obtain a token before logging in.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        return Response({"detail": "CSRF cookie set."})
 
 
 # =============================================================================
@@ -293,6 +318,15 @@ class LoginView(TokenObtainPairView):
 
         from accounts.throttles import LoginThrottle
 
+        # A1: browser login requires the bootstrap CSRF token (double-submit).
+        # The SPA seeds the csrftoken cookie on load (ensureCsrfToken) and sends
+        # X-CSRFToken; this prevents login-CSRF (an attacker silently logging a
+        # victim's browser into an attacker-controlled account). A body-token API
+        # client that carries no csrftoken cookie is not the target of that
+        # attack, and DRF's default test client (enforce_csrf_checks=False) is
+        # exempt, so existing programmatic logins are unaffected.
+        enforce_csrf(request)
+
         # Check rate limit
         throttle = LoginThrottle()
         if not throttle.allow_request(request, self):
@@ -465,6 +499,11 @@ class LoginView(TokenObtainPairView):
                 response.data["access"],
                 response.data.get("refresh"),
             )
+            # A1: seed the csrftoken cookie so the SPA can send X-CSRFToken on
+            # its first mutation after login (double-submit CSRF on the cookie
+            # path). CsrfViewMiddleware writes the cookie on the response when
+            # get_token has marked it; operate on the underlying Django request.
+            get_token(getattr(request, "_request", request))
 
         return response
 
@@ -602,6 +641,11 @@ class NxentraTokenRefreshView(TokenRefreshView):
         if "refresh" not in request.data:
             from django.conf import settings as s
 
+            # A1: a cookie-sourced refresh is CSRF-protected (the refresh cookie
+            # rides cross-site). An explicit body-token refresh (API client) is
+            # exempt — it carries no ambient cookie an attacker could abuse.
+            enforce_csrf(request)
+
             refresh_cookie = request.COOKIES.get(s.AUTH_COOKIE_REFRESH_NAME)
             if refresh_cookie:
                 request._full_data = {**request.data, "refresh": refresh_cookie}
@@ -637,6 +681,12 @@ class LogoutView(APIView):
         from django.conf import settings as s
         from rest_framework_simplejwt.tokens import RefreshToken as JWTRefreshToken
 
+        # A1: a cookie-sourced logout is CSRF-protected — even without an access
+        # cookie — so an attacker cannot force-logout a victim cross-site. An
+        # explicit body-token logout (API client) is exempt.
+        if not request.data.get("refresh"):
+            enforce_csrf(request)
+
         refresh = request.data.get("refresh") or request.COOKIES.get(s.AUTH_COOKIE_REFRESH_NAME)
 
         if refresh:
@@ -670,22 +720,24 @@ class ShopifySessionLoginView(APIView):
     the embedded SPA can attach them as Authorization headers (cookies are
     set too as a no-op fallback for non-iframe re-auth).
 
-    Authorization model: trusting the session_token's signature is exactly
-    what Shopify's Token Exchange spec defines as proof-of-merchant. The
-    only person who can mint a valid signed token for shop X is somebody
-    Shopify has already authenticated as having admin access to shop X.
-    Mapping shop_domain -> ShopifyStore -> company.OWNER is therefore a
-    safe automatic login.
+    Authorization model (A1, 2026-07-23): a valid signed session token proves
+    the caller is a Shopify user with admin access to shop X — but that is NOT
+    proof of Nxentra authorization. We authenticate as the Nxentra member
+    EXPLICITLY BOUND to (store, token.sub) via a ShopifyUserBinding; shop access
+    alone grants nothing and we never select "the first OWNER". An unbound
+    Shopify user is denied and must first complete the owner-link ceremony
+    (linking nonce or authenticated token-exchange). Both this endpoint and the
+    per-request Shopify authenticator resolve through the same binding.
 
     Failure modes:
       - 400 missing_session_token: request body had no session_token.
-      - 401 invalid_session_token: JWT signature/expiry/audience failed.
-      - 400 bad_shop_claim: token claims have no recognizable shop domain.
+      - 401 invalid_session_token: JWT signature/expiry/audience/nbf/sub failed.
+      - 400 bad_shop_claim: iss/dest do not normalize to the same shop, or no sub.
       - 404 no_connection: no ACTIVE ShopifyStore for that shop. The
         frontend should top-window redirect to standalone Nxentra so the
         merchant can register/login + connect manually first.
-      - 500 no_owner: store exists but has no OWNER membership (data
-        inconsistency; should never happen in practice).
+      - 403 not_bound: the token's Shopify user is not linked to a Nxentra
+        member for this store — complete the owner-link ceremony first.
     """
 
     permission_classes = [AllowAny]
@@ -694,10 +746,11 @@ class ShopifySessionLoginView(APIView):
         from django.utils import timezone
 
         from shopify_connector.commands import (
-            _extract_shop_domain_from_claims,
+            validated_shop_from_claims,
             verify_shopify_session_token,
         )
         from shopify_connector.models import ShopifyStore
+        from shopify_connector.user_binding import resolve_bound_membership
 
         session_token = request.data.get("session_token", "").strip()
         if not session_token:
@@ -713,10 +766,13 @@ class ShopifySessionLoginView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
-        shop_domain = _extract_shop_domain_from_claims(claims)
-        if not shop_domain:
+        # A1: strict — iss and dest must normalize to the SAME exact shop, and
+        # `sub` (the Shopify user identity we authorize) must be present.
+        shopify_sub = claims.get("sub")
+        shop_domain = validated_shop_from_claims(claims)
+        if not shop_domain or not shopify_sub:
             return Response(
-                {"detail": "bad_shop_claim", "message": "Session token has no recognizable shop domain."},
+                {"detail": "bad_shop_claim", "message": "Session token has inconsistent shop claims or no sub."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -745,23 +801,24 @@ class ShopifySessionLoginView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        owner_membership = (
-            CompanyMembership.objects.filter(
-                company_id=store.company_id,
-                role=CompanyMembership.Role.OWNER,
-                is_active=True,
-            )
-            .select_related("user")
-            .order_by("id")
-            .first()
-        )
-        if owner_membership is None or owner_membership.user is None:
+        # A1: resolve the actor through the explicit (store, sub) binding — never
+        # "the first OWNER". An unbound Shopify user is denied; they must first
+        # complete the owner-link ceremony (linking nonce / token-exchange).
+        membership = resolve_bound_membership(store=store, shopify_sub=shopify_sub)
+        if membership is None or membership.user is None:
             return Response(
-                {"detail": "no_owner", "message": "Store has no active owner."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                {
+                    "detail": "not_bound",
+                    "message": (
+                        "This Shopify user is not linked to a Nxentra account for this store. "
+                        "Complete the owner-link step first."
+                    ),
+                    "shop_domain": shop_domain,
+                },
+                status=status.HTTP_403_FORBIDDEN,
             )
 
-        user = owner_membership.user
+        user = membership.user
         company_id = store.company_id
 
         # Align active_company so token claims line up with the standard

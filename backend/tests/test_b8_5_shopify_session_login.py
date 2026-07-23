@@ -30,9 +30,16 @@ from django.urls import reverse
 from accounts.models import CompanyMembership
 from shopify_connector import commands as sc_commands
 from shopify_connector.models import ShopifyStore
+from shopify_connector.user_binding import bind_shopify_user
 
 TEST_SECRET = "shpss_b85_test_secret"
 TEST_API_KEY = "test_client_id_b85"
+SUB = "98765"  # matches the `sub` claim minted by _make_session_token
+
+
+def _bind(store, membership):
+    """A1: session-login now authenticates the explicitly bound Shopify user."""
+    return bind_shopify_user(store=store, shopify_sub=SUB, membership=membership, actor_user=membership.user)
 
 
 def _make_session_token(
@@ -68,12 +75,13 @@ def _url():
 
 @pytest.mark.django_db
 def test_session_login_mints_tokens_for_owner(api_client, company, user, owner_membership):
-    ShopifyStore.objects.create(
+    store = ShopifyStore.objects.create(
         company=company,
         shop_domain="merchant.myshopify.com",
         access_token="shpat_active",
         status=ShopifyStore.Status.ACTIVE,
     )
+    _bind(store, owner_membership)
 
     with (
         patch.object(sc_commands, "SHOPIFY_API_SECRET", TEST_SECRET),
@@ -212,7 +220,7 @@ def test_session_login_prefers_active_over_disconnected_history(
     )
     other_user.active_company = second_company
     other_user.save()
-    CompanyMembership.objects.create(
+    other_membership = CompanyMembership.objects.create(
         public_id=uuid4(),
         company=second_company,
         user=other_user,
@@ -228,12 +236,13 @@ def test_session_login_prefers_active_over_disconnected_history(
         status=ShopifyStore.Status.DISCONNECTED,
     )
     # Current ACTIVE row on second_company
-    ShopifyStore.objects.create(
+    active_store = ShopifyStore.objects.create(
         company=second_company,
         shop_domain="moved.myshopify.com",
         access_token="shpat_new",
         status=ShopifyStore.Status.ACTIVE,
     )
+    _bind(active_store, other_membership)
 
     with (
         patch.object(sc_commands, "SHOPIFY_API_SECRET", TEST_SECRET),
@@ -253,13 +262,12 @@ def test_session_login_prefers_active_over_disconnected_history(
 
 
 @pytest.mark.django_db
-def test_session_login_returns_500_when_store_has_no_owner(api_client, company):
-    """Data inconsistency guard: shouldn't happen in practice (register_signup
-    always creates an OWNER membership), but we should surface it cleanly
-    rather than 500'ing with an AttributeError."""
+def test_session_login_denies_unbound_user(api_client, company, owner_membership):
+    """A1: a connected store with NO ShopifyUserBinding for the token's sub is
+    denied (403 not_bound) — never logged in as "the first owner"."""
     ShopifyStore.objects.create(
         company=company,
-        shop_domain="ownerless.myshopify.com",
+        shop_domain="unbound.myshopify.com",
         access_token="shpat_x",
         status=ShopifyStore.Status.ACTIVE,
     )
@@ -268,30 +276,33 @@ def test_session_login_returns_500_when_store_has_no_owner(api_client, company):
         patch.object(sc_commands, "SHOPIFY_API_SECRET", TEST_SECRET),
         patch.object(sc_commands, "SHOPIFY_API_KEY", TEST_API_KEY),
     ):
-        token = _make_session_token(shop="ownerless.myshopify.com")
+        token = _make_session_token(shop="unbound.myshopify.com")
         response = api_client.post(_url(), {"session_token": token}, format="json")
 
-    assert response.status_code == 500
-    assert response.data["detail"] == "no_owner"
+    assert response.status_code == 403
+    assert response.data["detail"] == "not_bound"
 
 
 @pytest.mark.django_db
-def test_session_login_ignores_inactive_owner_membership(api_client, company, user):
-    """An OWNER membership flipped is_active=False should not log the user
-    in. Falls through to no_owner."""
-    CompanyMembership.objects.create(
+def test_session_login_denies_binding_to_inactive_membership(api_client, company, user):
+    """A binding to a membership later flipped is_active=False resolves to None
+    -> denied (not_bound), not logged in."""
+    membership = CompanyMembership.objects.create(
         public_id=uuid4(),
         company=company,
         user=user,
         role=CompanyMembership.Role.OWNER,
-        is_active=False,  # deactivated
+        is_active=True,
     )
-    ShopifyStore.objects.create(
+    store = ShopifyStore.objects.create(
         company=company,
         shop_domain="merchant.myshopify.com",
         access_token="shpat_active",
         status=ShopifyStore.Status.ACTIVE,
     )
+    _bind(store, membership)
+    membership.is_active = False
+    membership.save(update_fields=["is_active"])
 
     with (
         patch.object(sc_commands, "SHOPIFY_API_SECRET", TEST_SECRET),
@@ -300,5 +311,5 @@ def test_session_login_ignores_inactive_owner_membership(api_client, company, us
         token = _make_session_token(shop="merchant.myshopify.com")
         response = api_client.post(_url(), {"session_token": token}, format="json")
 
-    assert response.status_code == 500
-    assert response.data["detail"] == "no_owner"
+    assert response.status_code == 403
+    assert response.data["detail"] == "not_bound"

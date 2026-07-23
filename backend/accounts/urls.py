@@ -31,6 +31,7 @@ from .views import (
     CompanyLogoUploadView,
     CompanyModulesView,
     CompanySettingsView,
+    CsrfTokenView,
     DeleteUnverifiedUserView,
     InvitationDetailView,
     InvitationInfoView,
@@ -86,6 +87,7 @@ urlpatterns = [
     # Authentication
     # ==========================================================================
     path("auth/register/", RegisterView.as_view(), name="register"),
+    path("auth/csrf/", CsrfTokenView.as_view(), name="csrf-token"),
     path("auth/login/", LoginView.as_view(), name="login"),
     path("auth/logout/", LogoutView.as_view(), name="logout"),
     path("auth/refresh/", NxentraTokenRefreshView.as_view(), name="token-refresh"),
