@@ -28,10 +28,15 @@ BACKEND_ROOT = Path(__file__).resolve().parent.parent
 FERNET_TEST_KEY = "q2jxAVYf7CLIEoWl4kirqfmtKwYHX-ne4zcmToWNVRM="
 
 # Env keys that must never leak from the test runner into the subprocess.
+# DJANGO_TEST_MODE is set by test_settings in the PARENT pytest process; it
+# must be popped so a subprocess simulates a real production boot (the A2
+# guard is exempt whenever DJANGO_TEST_MODE=1 is present).
 _POPPED = [
     "DEBUG",
     "DJANGO_DEBUG",
     "TESTING",
+    "DISABLE_EVENT_VALIDATION",
+    "DJANGO_TEST_MODE",
     "PYTEST_CURRENT_TEST",
     "DJANGO_SETTINGS_MODULE",
     "SECRET_KEY",
@@ -112,11 +117,14 @@ def test_prod_boot_accepts_lowercase_true():
 
 
 def test_testing_env_var_is_recognized():
-    """TESTING=True (as set by test_settings and all CI pytest jobs) must
-    make settings importable with no production env at all."""
+    """The test path (test_settings, which sets DJANGO_TEST_MODE=1 and
+    TESTING=True before importing settings — as every CI pytest job does)
+    must make settings importable with no production env at all. Post-A2,
+    the DJANGO_TEST_MODE=1 sentinel is what distinguishes this sanctioned
+    path from a stray TESTING=True in a production .env."""
     result = _run(
         "import nxentra_backend.settings as s; print(s.TESTING, s.DISABLE_EVENT_VALIDATION, s.PROJECTIONS_SYNC)",
-        {"TESTING": "True"},
+        {"TESTING": "True", "DJANGO_TEST_MODE": "1"},
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.split() == ["True", "True", "True"]
@@ -142,6 +150,76 @@ def test_argv_element_no_longer_toggles_testing():
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "False", "a non-leading 'test' argv element must not enable TESTING"
+
+
+# ---------------------------------------------------------------------------
+# A2 (2026-07-23) — fail-closed boot on unsafe bypass flags.
+# A stray TESTING/RLS_BYPASS/DISABLE_EVENT_VALIDATION in a production .env
+# silently disables RLS, event validation and the security-hardening block.
+# The sanctioned test path (test_settings) sets DJANGO_TEST_MODE=1 before
+# importing settings and is exempt; production (manage.py/gunicorn/celery)
+# imports the settings module directly with no such sentinel.
+# ---------------------------------------------------------------------------
+
+
+def test_prod_boot_refuses_rls_bypass():
+    result = _run("import nxentra_backend.settings", _prod_env(RLS_BYPASS="True"))
+    assert result.returncode != 0, "prod boot must refuse RLS_BYPASS=True"
+    assert "RLS_BYPASS" in result.stderr and "Refusing to boot" in result.stderr
+
+
+def test_prod_boot_refuses_testing_flag():
+    result = _run("import nxentra_backend.settings", _prod_env(TESTING="True"))
+    assert result.returncode != 0, "prod boot must refuse TESTING=True"
+    assert "TESTING" in result.stderr and "Refusing to boot" in result.stderr
+
+
+def test_prod_boot_refuses_disable_event_validation():
+    result = _run("import nxentra_backend.settings", _prod_env(DISABLE_EVENT_VALIDATION="True"))
+    assert result.returncode != 0, "prod boot must refuse DISABLE_EVENT_VALIDATION=True"
+    assert "DISABLE_EVENT_VALIDATION" in result.stderr and "Refusing to boot" in result.stderr
+
+
+def test_prod_boot_refuses_lowercase_and_numeric_bypass():
+    """Tolerant parsing must not become a bypass: rls_bypass=1 / testing=yes
+    are still caught."""
+    r1 = _run("import nxentra_backend.settings", _prod_env(RLS_BYPASS="1"))
+    r2 = _run("import nxentra_backend.settings", _prod_env(TESTING="yes"))
+    assert r1.returncode != 0 and "RLS_BYPASS" in r1.stderr
+    assert r2.returncode != 0 and "TESTING" in r2.stderr
+
+
+def test_test_mode_sentinel_exempts_bypass():
+    """The sanctioned test path (DJANGO_TEST_MODE=1, as test_settings sets
+    before importing) must still import cleanly with bypass flags on."""
+    result = _run(
+        "import nxentra_backend.settings as s; print(s.RLS_BYPASS, s.TESTING)",
+        {"DJANGO_TEST_MODE": "1", "RLS_BYPASS": "True", "TESTING": "True"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["True", "True"]
+
+
+def test_debug_dev_allows_bypass():
+    """Dev (DEBUG=True) is allowed to run with RLS_BYPASS — the guard only
+    fires in a production context."""
+    result = _run(
+        "import nxentra_backend.settings as s; print(s.DEBUG, s.RLS_BYPASS)",
+        {"DEBUG": "True", "RLS_BYPASS": "True"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["True", "True"]
+
+
+def test_clean_prod_boot_unaffected_by_a2():
+    """A2 must not false-positive: a clean production env (no bypass flag)
+    boots normally."""
+    result = _run(
+        "import nxentra_backend.settings as s; print(s.DEBUG, s.RLS_BYPASS, s.TESTING)",
+        _prod_env(),
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["False", "False", "False"]
 
 
 def test_env_example_contract():

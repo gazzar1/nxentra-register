@@ -40,6 +40,40 @@ RLS_BYPASS = os.getenv("RLS_BYPASS", "False") == "True" or TESTING
 ALLOW_ADMIN_EMERGENCY_WRITES = os.getenv("ALLOW_ADMIN_EMERGENCY_WRITES", "False") == "True"
 
 # =============================================================================
+# A2: Fail-closed boot on unsafe bypass flags
+# =============================================================================
+# A production context (DEBUG=False) that is NOT the sanctioned test path must
+# refuse to boot when any test/bypass flag is enabled via the environment. A
+# stray `TESTING=True` or `RLS_BYPASS=True` in a partially-restored production
+# `.env` otherwise silently disables event validation, RLS, and — via the
+# `not TESTING` guards throughout this module — the entire security-hardening
+# block (HSTS, secure cookies, CSP, the SECRET_KEY / FIELD_ENCRYPTION_KEY /
+# PROJECTIONS_SYNC hard-fails). The sanctioned test path
+# (nxentra_backend.test_settings) sets DJANGO_TEST_MODE=1 *before* importing
+# this module (test_settings.py) and is exempt; every pytest run and CI test
+# job routes through it (pytest.ini / tests/conftest.py), while gunicorn,
+# celery and `manage.py` boot the production settings module directly with no
+# such flag. `manage.py test` (argv-derived TESTING, no env var) does not trip
+# this because only *environment* flags are inspected.
+if not DEBUG and os.environ.get("DJANGO_TEST_MODE") != "1":
+    _A2_UNSAFE_BYPASS = [
+        _name
+        for _name in ("TESTING", "RLS_BYPASS", "DISABLE_EVENT_VALIDATION")
+        if os.getenv(_name, "").strip().lower() in ("true", "1", "yes")
+    ]
+    if _A2_UNSAFE_BYPASS:
+        from django.core.exceptions import ImproperlyConfigured as _IC
+
+        raise _IC(
+            "Refusing to boot: unsafe bypass flag(s) "
+            + ", ".join(_A2_UNSAFE_BYPASS)
+            + " are enabled in a non-test production context. These disable "
+            "RLS, event validation and the security-hardening block. Unset "
+            "them for production; run the test suite via "
+            "DJANGO_SETTINGS_MODULE=nxentra_backend.test_settings."
+        )
+
+# =============================================================================
 # Production Security Hardening
 # =============================================================================
 # These settings are enforced when DEBUG is False (production/staging).
