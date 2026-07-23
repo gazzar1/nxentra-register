@@ -12,6 +12,9 @@ Serializers are PURE PARSING + VALIDATION - they never call .save()
 
 from django.contrib.auth import get_user_model
 from django.db import models
+from django.middleware.csrf import get_token
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import ensure_csrf_cookie
 from rest_framework import status
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -98,6 +101,27 @@ def clear_auth_cookies(response):
 
     response.delete_cookie(s.AUTH_COOKIE_ACCESS_NAME, path="/")
     response.delete_cookie(s.AUTH_COOKIE_REFRESH_NAME, path=s.AUTH_COOKIE_REFRESH_PATH)
+
+
+@method_decorator(ensure_csrf_cookie, name="dispatch")
+class CsrfTokenView(APIView):
+    """A1: seed the ``csrftoken`` cookie for the standalone-browser double-submit
+    CSRF flow.
+
+    The SPA calls this on load; the response sets a non-HttpOnly ``csrftoken``
+    cookie (SameSite=None + Secure in production, so it is readable by the
+    app's JS and rides the Shopify-admin iframe, but cannot be read by a
+    cross-site attacker) that the api-client echoes back in the ``X-CSRFToken``
+    header on every mutation. Embedded Shopify (session-token bearer) and
+    explicit API bearer clients do not need it. Public and unauthenticated: a
+    fresh browser must be able to obtain a token before logging in.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        return Response({"detail": "CSRF cookie set."})
 
 
 # =============================================================================
@@ -465,6 +489,11 @@ class LoginView(TokenObtainPairView):
                 response.data["access"],
                 response.data.get("refresh"),
             )
+            # A1: seed the csrftoken cookie so the SPA can send X-CSRFToken on
+            # its first mutation after login (double-submit CSRF on the cookie
+            # path). CsrfViewMiddleware writes the cookie on the response when
+            # get_token has marked it; operate on the underlying Django request.
+            get_token(getattr(request, "_request", request))
 
         return response
 
