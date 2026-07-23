@@ -9,6 +9,14 @@ Handles both local (SQLite) and CI (Postgres) environments:
 """
 import os
 
+# A2: test settings disable RLS, event validation and security hardening — they
+# must never be loaded in a production environment. Fail closed if someone tries.
+if os.environ.get("NXENTRA_ENV", "").strip().lower() == "production":
+    raise RuntimeError(
+        "Refusing to load nxentra_backend.test_settings with NXENTRA_ENV=production. "
+        "Test settings disable RLS, event validation and the security-hardening block."
+    )
+
 os.environ.setdefault('TENANT_HEALTH_CHECK', 'skip')
 os.environ['DJANGO_TEST_MODE'] = '1'
 os.environ['TESTING'] = 'True'
