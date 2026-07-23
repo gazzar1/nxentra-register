@@ -117,14 +117,13 @@ def test_prod_boot_accepts_lowercase_true():
 
 
 def test_testing_env_var_is_recognized():
-    """The test path (test_settings, which sets DJANGO_TEST_MODE=1 and
-    TESTING=True before importing settings — as every CI pytest job does)
-    must make settings importable with no production env at all. Post-A2,
-    the DJANGO_TEST_MODE=1 sentinel is what distinguishes this sanctioned
-    path from a stray TESTING=True in a production .env."""
+    """The test path (DJANGO_SETTINGS_MODULE=nxentra_backend.test_settings, as
+    every CI pytest job sets) must make settings importable with TESTING on and
+    no production env. Post-A2 the exemption is the settings-MODULE identity, not
+    an env flag."""
     result = _run(
         "import nxentra_backend.settings as s; print(s.TESTING, s.DISABLE_EVENT_VALIDATION, s.PROJECTIONS_SYNC)",
-        {"TESTING": "True", "DJANGO_TEST_MODE": "1"},
+        {"TESTING": "True", "DJANGO_SETTINGS_MODULE": "nxentra_backend.test_settings"},
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.split() == ["True", "True", "True"]
@@ -189,15 +188,50 @@ def test_prod_boot_refuses_lowercase_and_numeric_bypass():
     assert r2.returncode != 0 and "TESTING" in r2.stderr
 
 
-def test_test_mode_sentinel_exempts_bypass():
-    """The sanctioned test path (DJANGO_TEST_MODE=1, as test_settings sets
-    before importing) must still import cleanly with bypass flags on."""
+def test_prod_boot_refuses_django_test_mode():
+    """DJANGO_TEST_MODE must NOT be an env-controlled master bypass: under
+    production settings (DEBUG=False, not the test-settings module) a truthy
+    DJANGO_TEST_MODE — alone or with other unsafe flags — must refuse boot."""
+    r1 = _run("import nxentra_backend.settings", _prod_env(DJANGO_TEST_MODE="1"))
+    assert r1.returncode != 0 and "DJANGO_TEST_MODE" in r1.stderr and "Refusing to boot" in r1.stderr
+    r2 = _run("import nxentra_backend.settings", _prod_env(DJANGO_TEST_MODE="1", RLS_BYPASS="True"))
+    assert r2.returncode != 0 and "Refusing to boot" in r2.stderr
+
+
+def test_test_settings_module_exempts_bypass():
+    """The exemption is the settings-MODULE identity: importing settings under
+    DJANGO_SETTINGS_MODULE=nxentra_backend.test_settings is exempt even with
+    bypass flags on."""
     result = _run(
         "import nxentra_backend.settings as s; print(s.RLS_BYPASS, s.TESTING)",
-        {"DJANGO_TEST_MODE": "1", "RLS_BYPASS": "True", "TESTING": "True"},
+        {
+            "DJANGO_SETTINGS_MODULE": "nxentra_backend.test_settings",
+            "RLS_BYPASS": "True",
+            "TESTING": "True",
+            "DJANGO_TEST_MODE": "1",
+        },
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.split() == ["True", "True"]
+
+
+def test_test_settings_refuses_nxentra_env_production():
+    """test_settings disables RLS/validation/hardening — it must refuse to load
+    when NXENTRA_ENV=production."""
+    result = _run("import nxentra_backend.test_settings", {"NXENTRA_ENV": "production"})
+    assert result.returncode != 0
+    assert "Refusing to load" in result.stderr and "test_settings" in result.stderr
+
+
+def test_wsgi_entrypoint_asserts_settings_module():
+    """The production WSGI entrypoint must refuse a non-production settings
+    module (e.g. an operator pointing gunicorn at test_settings)."""
+    result = _run(
+        "import nxentra_backend.wsgi",
+        {"DJANGO_SETTINGS_MODULE": "nxentra_backend.test_settings"},
+    )
+    assert result.returncode != 0
+    assert "Refusing to start WSGI" in result.stderr
 
 
 def test_debug_dev_allows_bypass():
