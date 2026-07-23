@@ -69,6 +69,22 @@ class _CSRFCheck(CsrfViewMiddleware):
         return reason
 
 
+def enforce_csrf(request):
+    """Run Django's CSRF check (double-submit token + Origin/Referer).
+
+    Raises ``rest_framework.exceptions.PermissionDenied`` (403) if the token is
+    missing/mismatched or the Origin/Referer check fails. Safe methods
+    (GET/HEAD/OPTIONS/TRACE) pass automatically. Used by the cookie
+    authentication path and by the source-sensitive auth endpoints (login,
+    cookie-sourced refresh/logout).
+    """
+    check = _CSRFCheck(lambda req: None)
+    check.process_request(request)
+    reason = check.process_view(request, None, (), {})
+    if reason:
+        raise PermissionDenied(f"CSRF Failed: {reason}")
+
+
 class CookieJWTAuthentication(JWTAuthentication):
     def authenticate(self, request):
         header = self.get_header(request)
@@ -127,17 +143,8 @@ class CookieJWTAuthentication(JWTAuthentication):
         return (user, validated_token)
 
     def enforce_csrf(self, request):
-        """Run Django's CSRF check for a cookie-authenticated request.
-
-        Raises ``PermissionDenied`` (403) if the double-submit token is missing
-        or does not match, or the Origin/Referer check fails. Safe methods
-        (GET/HEAD/OPTIONS/TRACE) pass automatically.
-        """
-        check = _CSRFCheck(lambda req: None)
-        check.process_request(request)
-        reason = check.process_view(request, None, (), {})
-        if reason:
-            raise PermissionDenied(f"CSRF Failed: {reason}")
+        """Run Django's CSRF check for a cookie-authenticated request."""
+        enforce_csrf(request)
 
     @staticmethod
     def _log_auth_mode(mode: str, company_id):

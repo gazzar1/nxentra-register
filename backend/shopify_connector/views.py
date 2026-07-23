@@ -381,11 +381,9 @@ class ShopifyTokenExchangeView(APIView):
         store = result.data["store"]
 
         # A1: bind the Shopify user (session token `sub`) to the acting
-        # membership — the ceremony where the backend holds BOTH an
-        # authenticated Nxentra membership and a valid session token. Subsequent
-        # embedded per-request auth resolves through this binding. Non-fatal to
-        # the connection itself: a conflict (a different Shopify user already
-        # bound) is surfaced but does not undo the store connection.
+        # membership — the ceremony where the backend holds BOTH an authenticated
+        # Nxentra membership and a valid session token. Subsequent embedded
+        # per-request auth resolves through this binding.
         bound = False
         bind_error = None
         shopify_sub = result.data.get("shopify_sub")
@@ -408,13 +406,32 @@ class ShopifyTokenExchangeView(APIView):
                     exc,
                 )
 
+        # A1: do NOT report "connected" when the Shopify user could not be
+        # linked — return a blocking non-2xx with a status the UI cannot treat as
+        # success. The store token was still persisted, but embedded per-request
+        # auth will not work for this user until the owner-link ceremony runs.
+        if not bound:
+            return Response(
+                {
+                    "status": "connected_unlinked",
+                    "shop_domain": store.shop_domain,
+                    "store_public_id": str(store.public_id),
+                    "shopify_user_bound": False,
+                    "bind_error": bind_error or "Shopify user could not be linked to a Nxentra member.",
+                    "detail": (
+                        "The store connected, but this Shopify user is not linked. "
+                        "Complete the owner-link step (Nxentra settings -> generate link code)."
+                    ),
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
         return Response(
             {
                 "status": "connected",
                 "shop_domain": store.shop_domain,
                 "store_public_id": str(store.public_id),
-                "shopify_user_bound": bound,
-                "bind_error": bind_error,
+                "shopify_user_bound": True,
             }
         )
 

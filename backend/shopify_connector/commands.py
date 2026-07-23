@@ -740,17 +740,34 @@ def _extract_shop_domain_from_claims(claims: dict) -> str | None:
 def _normalize_shop_from_claim(value: str) -> str | None:
     """Return the exact `<shop>.myshopify.com` host from an iss/dest URL, or None.
 
-    A1: strict — rejects suffix-match tricks (``evil-myshopify.com``,
-    ``x.myshopify.com.evil.com``) by requiring the host to be exactly one shop
-    label followed by ``.myshopify.com`` and a valid Shopify handle.
+    A1: strict. Rejects (a) suffix-match tricks (``evil-myshopify.com``,
+    ``x.myshopify.com.evil.com``); (b) any scheme other than ``https``; (c)
+    embedded credentials (``user:pass@host``); (d) an explicit port. The host
+    must be exactly one valid Shopify shop label followed by ``.myshopify.com``.
     """
     import re
     from urllib.parse import urlparse
 
     if not value or not isinstance(value, str):
         return None
-    parsed = urlparse(value if "//" in value else f"https://{value}")
-    host = (parsed.netloc or "").lower().split(":")[0]  # drop any port
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return None
+    # Shopify iss/dest are always https URLs. Require it; reject bare hosts and
+    # any other scheme.
+    if parsed.scheme != "https":
+        return None
+    # Reject embedded credentials and an explicit port — a valid Shopify claim
+    # has neither.
+    if parsed.username or parsed.password:
+        return None
+    try:
+        if parsed.port is not None:
+            return None
+    except ValueError:
+        return None
+    host = (parsed.hostname or "").lower()
     if not host.endswith(".myshopify.com"):
         return None
     label = host[: -len(".myshopify.com")]
@@ -812,9 +829,11 @@ def complete_oauth_token_exchange(
     if not claims:
         return CommandResult.fail("Invalid or expired session token.")
 
-    claim_shop_domain = _extract_shop_domain_from_claims(claims)
+    # A1: strict — iss and dest must normalize to the SAME exact
+    # <shop>.myshopify.com (https, no creds/port); rejects suffix tricks.
+    claim_shop_domain = validated_shop_from_claims(claims)
     if not claim_shop_domain:
-        return CommandResult.fail("Session token has no recognizable shop domain.")
+        return CommandResult.fail("Session token has inconsistent or invalid shop claims.")
 
     if expected_shop_domain and expected_shop_domain != claim_shop_domain:
         logger.warning(

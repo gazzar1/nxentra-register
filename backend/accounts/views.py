@@ -22,6 +22,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
+from accounts.authentication import enforce_csrf
 from accounts.authz import require, resolve_actor
 from accounts.commands import (
     accept_invitation,
@@ -316,6 +317,15 @@ class LoginView(TokenObtainPairView):
         from django.conf import settings as django_settings
 
         from accounts.throttles import LoginThrottle
+
+        # A1: browser login requires the bootstrap CSRF token (double-submit).
+        # The SPA seeds the csrftoken cookie on load (ensureCsrfToken) and sends
+        # X-CSRFToken; this prevents login-CSRF (an attacker silently logging a
+        # victim's browser into an attacker-controlled account). A body-token API
+        # client that carries no csrftoken cookie is not the target of that
+        # attack, and DRF's default test client (enforce_csrf_checks=False) is
+        # exempt, so existing programmatic logins are unaffected.
+        enforce_csrf(request)
 
         # Check rate limit
         throttle = LoginThrottle()
@@ -631,6 +641,11 @@ class NxentraTokenRefreshView(TokenRefreshView):
         if "refresh" not in request.data:
             from django.conf import settings as s
 
+            # A1: a cookie-sourced refresh is CSRF-protected (the refresh cookie
+            # rides cross-site). An explicit body-token refresh (API client) is
+            # exempt — it carries no ambient cookie an attacker could abuse.
+            enforce_csrf(request)
+
             refresh_cookie = request.COOKIES.get(s.AUTH_COOKIE_REFRESH_NAME)
             if refresh_cookie:
                 request._full_data = {**request.data, "refresh": refresh_cookie}
@@ -665,6 +680,12 @@ class LogoutView(APIView):
         # Read refresh from body or cookie
         from django.conf import settings as s
         from rest_framework_simplejwt.tokens import RefreshToken as JWTRefreshToken
+
+        # A1: a cookie-sourced logout is CSRF-protected — even without an access
+        # cookie — so an attacker cannot force-logout a victim cross-site. An
+        # explicit body-token logout (API client) is exempt.
+        if not request.data.get("refresh"):
+            enforce_csrf(request)
 
         refresh = request.data.get("refresh") or request.COOKIES.get(s.AUTH_COOKIE_REFRESH_NAME)
 
