@@ -130,6 +130,13 @@ def require_supported(company, capability) -> None:
         raise PilotScopeBlocked(_cap_value(capability), profile_of(company))
 
 
+def inventory_forced_non_stock(company) -> bool:
+    """Option B: True when the company's profile forbids inventory, so every item
+    must be created NON_STOCK with no inventory/COGS accounts. Item creation paths
+    call this rather than raising — the pilot keeps working, just without stock."""
+    return not is_supported(company, Capability.INVENTORY)
+
+
 def skip_if_unsupported(company, capability, *, task: str = "") -> dict | None:
     """Scheduled-task gate.
 

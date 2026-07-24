@@ -3458,6 +3458,12 @@ def _auto_create_item_from_line(store, sku: str, line_item: dict):
         if rate and rate > 0:
             price = (price * rate).quantize(Decimal("0.01"))
 
+    # A4 / Option B: a constrained-pilot company gets NON_STOCK items with no
+    # inventory/COGS accounts — no FIFO layer, no stock ledger, no COGS.
+    from accounts.pilot_policy import inventory_forced_non_stock
+
+    _non_stock = inventory_forced_non_stock(store.company)
+
     try:
         with transaction.atomic():
             with command_writes_allowed():
@@ -3465,14 +3471,14 @@ def _auto_create_item_from_line(store, sku: str, line_item: dict):
                     company=store.company,
                     code=code,
                     name=title,
-                    item_type="INVENTORY",
+                    item_type=(Item.ItemType.NON_STOCK if _non_stock else "INVENTORY"),
                     default_unit_price=price,
                     default_cost=cost,
                     is_active=True,
                     sales_account=defaults.get("sales"),
                     purchase_account=defaults.get("purchase"),
-                    inventory_account=defaults.get("inventory"),
-                    cogs_account=defaults.get("cogs"),
+                    inventory_account=(None if _non_stock else defaults.get("inventory")),
+                    cogs_account=(None if _non_stock else defaults.get("cogs")),
                     costing_method="WEIGHTED_AVERAGE",
                 )
 
@@ -3903,7 +3909,14 @@ def _create_item_from_variant(
     image_url="",
 ):
     """Create a Nxentra Item from a Shopify variant with full account defaults."""
+    from accounts.pilot_policy import inventory_forced_non_stock
     from sales.models import Item
+
+    # A4 / Option B: constrained-pilot companies never create INVENTORY items —
+    # force NON_STOCK with no inventory/COGS accounts.
+    if inventory_forced_non_stock(company):
+        inv_account = None
+        cogs_account = None
 
     name = f"{product_title} - {variant_title}" if variant_title else product_title
     item_type = Item.ItemType.INVENTORY if (inv_account and cogs_account) else Item.ItemType.NON_STOCK
