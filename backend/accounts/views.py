@@ -857,7 +857,13 @@ class ShopifySessionLoginView(APIView):
         except Exception:
             pass
 
-        response = Response(
+        # A1: return the tokens in the JSON body ONLY — do NOT set auth cookies.
+        # The embedded app is session-token-only; an ambient Nxentra cookie set
+        # here could otherwise silently rescue a request whose Shopify session
+        # token is missing (concealing loss of Shopify authorization). The
+        # returned access token is used solely for the explicitly opt-in
+        # exchanged-token recovery path (default-off on the frontend).
+        return Response(
             {
                 "access": tokens["access"],
                 "refresh": tokens["refresh"],
@@ -868,8 +874,6 @@ class ShopifySessionLoginView(APIView):
             },
             status=status.HTTP_200_OK,
         )
-        set_auth_cookies(response, tokens["access"], tokens["refresh"])
-        return response
 
 
 class MeView(APIView):

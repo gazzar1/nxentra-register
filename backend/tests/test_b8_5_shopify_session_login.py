@@ -97,12 +97,18 @@ def test_session_login_mints_tokens_for_owner(api_client, company, user, owner_m
     assert response.data["company_id"] == company.id
     assert response.data["user_public_id"] == str(user.public_id)
 
-    # Cookies set
-    assert "nxentra_access" in response.cookies or any("access" in name for name in response.cookies.keys())
+    # A1: session-login returns tokens in the JSON body ONLY — it must NOT set
+    # ambient auth cookies (embedded is session-token-only; a cookie here could
+    # silently rescue a request whose Shopify session token is missing).
+    assert "nxentra_access" not in response.cookies
+    assert "nxentra_refresh" not in response.cookies
 
-    # active_company aligned with the store's company
+    # active_company is persisted, and the minted recovery token's company claim
+    # refers to the SAME company (resolve_actor authorizes from active_company).
     user.refresh_from_db()
     assert user.active_company_id == company.id
+    claims = pyjwt.decode(response.data["access"], options={"verify_signature": False})
+    assert str(claims["company_id"]) == str(user.active_company_id) == str(company.id)
 
 
 # =============================================================================
