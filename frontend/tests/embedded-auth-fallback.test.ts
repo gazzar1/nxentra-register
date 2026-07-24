@@ -38,19 +38,30 @@ describe('embedded auth: session-token-only by default', () => {
     expect(cfg.headers.Authorization).toBe('Bearer fresh-session-token');
   });
 
-  it('does NOT fall back to the stored exchanged JWT when no session token (default)', async () => {
+  it('blocks an ordinary embedded request (fail closed) when no fresh session token', async () => {
     getShopifySessionToken.mockResolvedValue(null);
-    const cfg = await runRequestInterceptor({ method: 'get', url: '/shopify/orders', headers: {} });
-    expect(cfg.headers.Authorization).toBeUndefined();
+    await expect(
+      runRequestInterceptor({ method: 'get', url: '/shopify/orders', headers: {} }),
+    ).rejects.toBeTruthy();
   });
 
-  it('never attaches auth for the auth-bootstrap endpoints', async () => {
+  it('an ambient Nxentra cookie cannot rescue a missing session token', async () => {
+    document.cookie = 'nxentra_access=ambient-jwt';
+    getShopifySessionToken.mockResolvedValue(null);
+    await expect(
+      runRequestInterceptor({ method: 'get', url: '/shopify/orders', headers: {} }),
+    ).rejects.toBeTruthy();
+  });
+
+  it('token-exchange receives a fresh Shopify bearer (no longer a bootstrap call)', async () => {
     getShopifySessionToken.mockResolvedValue('fresh-session-token');
-    for (const url of [
-      '/auth/shopify-session-login/',
-      '/shopify/token-exchange/',
-      '/shopify/redeem-linking-nonce/',
-    ]) {
+    const cfg = await runRequestInterceptor({ method: 'post', url: '/shopify/token-exchange/', headers: {} });
+    expect(cfg.headers.Authorization).toBe('Bearer fresh-session-token');
+  });
+
+  it('never attaches auth for the remaining unauthenticated bootstrap endpoints', async () => {
+    getShopifySessionToken.mockResolvedValue('fresh-session-token');
+    for (const url of ['/auth/shopify-session-login/', '/shopify/redeem-linking-nonce/']) {
       const cfg = await runRequestInterceptor({ method: 'post', url, headers: {} });
       expect(cfg.headers.Authorization).toBeUndefined();
     }

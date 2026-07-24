@@ -52,6 +52,32 @@ export async function ensureCsrfToken(): Promise<void> {
   }
 }
 
+/**
+ * A1: coalesced, bounded poll for a fresh App Bridge session token. On a cold
+ * iframe reload App Bridge may be milliseconds from ready, so poll briefly
+ * (bounded) rather than fail on the very first request; concurrent initial
+ * requests share one in-flight poll (App Bridge session tokens are short-lived
+ * bearers valid for all of them). Returns null if none within the deadline.
+ */
+let inFlightEmbeddedToken: Promise<string | null> | null = null;
+async function getEmbeddedBearerCoalesced(): Promise<string | null> {
+  if (inFlightEmbeddedToken) return inFlightEmbeddedToken;
+  inFlightEmbeddedToken = (async () => {
+    try {
+      const deadline = Date.now() + 3000;
+      let token = await getShopifySessionToken().catch(() => null);
+      while (!token && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        token = await getShopifySessionToken().catch(() => null);
+      }
+      return token;
+    } finally {
+      inFlightEmbeddedToken = null;
+    }
+  })();
+  return inFlightEmbeddedToken;
+}
+
 // Request interceptor — CSRF for non-GET (standalone), Bearer auth when embedded.
 apiClient.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
@@ -64,27 +90,24 @@ apiClient.interceptors.request.use(
 
     // A1: inside the Shopify admin iframe, ordinary requests authenticate ONLY
     // with a FRESH App Bridge session token — never the stored exchanged Nxentra
-    // JWT. A fresh token reflects *current* Shopify authorization (a revoked
-    // merchant cannot mint one, so authorization loss is not concealed). The
-    // exchanged-token recovery lives only in the 401 handler and is opt-in /
-    // default-off (see exchangedFallbackEnabled). Never attach for the
-    // auth-bootstrap calls themselves.
+    // JWT, and never ambient cookies. A fresh token reflects *current* Shopify
+    // authorization (a revoked merchant cannot mint one), so authorization loss
+    // is not concealed. token-exchange is IsAuthenticated and rides the session
+    // bearer too; only the unauthenticated bootstrap calls skip injection. If no
+    // fresh token can be obtained, the request is BLOCKED client-side (fail
+    // closed) rather than sent to authenticate via cookies. The exchanged-token
+    // recovery lives only in the 401 handler and is opt-in / default-off.
     if (isShopifyEmbedded()) {
       const url = config.url || '';
       const isAuthBootstrap =
         url.includes('/auth/shopify-session-login') ||
-        url.includes('/shopify/token-exchange') ||
         url.includes('/shopify/redeem-linking-nonce');
       if (!isAuthBootstrap) {
-        let bearer: string | null = null;
-        try {
-          bearer = await getShopifySessionToken();
-        } catch {
-          bearer = null;
+        const bearer = await getEmbeddedBearerCoalesced();
+        if (!bearer) {
+          throw new axios.Cancel('Embedded request blocked: no fresh Shopify session token.');
         }
-        if (bearer) {
-          config.headers['Authorization'] = `Bearer ${bearer}`;
-        }
+        config.headers['Authorization'] = `Bearer ${bearer}`;
       }
     }
 
