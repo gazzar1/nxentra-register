@@ -28,6 +28,8 @@ from __future__ import annotations
 import logging
 from enum import StrEnum
 
+from rest_framework.exceptions import APIException
+
 logger = logging.getLogger(__name__)
 
 SKIPPED_PILOT_SCOPE = "skipped_pilot_scope"
@@ -51,17 +53,24 @@ _BLOCKED_BY_PROFILE: dict[str, frozenset[str]] = {
 }
 
 
-class PilotScopeBlocked(Exception):
+class PilotScopeBlocked(APIException):
     """Raised when an interactive request attempts a capability the company's
-    constrained-pilot profile forbids. Carries a stable machine code so views
-    can map it to a consistent 4xx pilot-scope error."""
+    constrained-pilot profile forbids. A DRF ``APIException`` so any gated
+    command renders a stable HTTP 403 pilot-scope error without per-view
+    handling; also carries the machine ``code`` and ``capability`` for callers
+    that inspect it directly (e.g. management commands, tests)."""
 
+    status_code = 403
+    default_code = "pilot_scope_blocked"
     code = "pilot_scope_blocked"
 
     def __init__(self, capability: str, profile: str, detail: str = ""):
         self.capability = capability
         self.profile = profile
-        super().__init__(detail or f"Capability '{capability}' is not available under pilot profile '{profile}'.")
+        super().__init__(
+            detail or f"Capability '{capability}' is not available under pilot profile '{profile}'.",
+            code="pilot_scope_blocked",
+        )
 
 
 def _cap_value(capability) -> str:
@@ -79,6 +88,17 @@ def is_pilot(company) -> bool:
     from accounts.models import Company
 
     return profile_of(company) != Company.PilotProfile.NONE
+
+
+def deployment_has_active_pilot() -> bool:
+    """True when any active company in this deployment is on a constrained-pilot
+    profile. Used to enforce one-merchant-per-deployment: creating a second
+    company is blocked once a pilot is active."""
+    from accounts.models import Company
+    from accounts.rls import rls_bypass
+
+    with rls_bypass():
+        return Company.objects.filter(is_active=True).exclude(pilot_profile=Company.PilotProfile.NONE).exists()
 
 
 def is_supported(company, capability) -> bool:

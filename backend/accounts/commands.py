@@ -153,6 +153,13 @@ def register_signup(
     """
     from django.utils.text import slugify
 
+    from accounts.pilot_policy import deployment_has_active_pilot
+
+    # A4: one merchant per constrained-pilot deployment — block registering a
+    # second merchant company once a pilot is active.
+    if deployment_has_active_pilot():
+        return CommandResult.fail("Registration is disabled in a constrained-pilot deployment.")
+
     with rls_bypass():
         # Validate email uniqueness
         email = email.lower().strip()
@@ -463,6 +470,14 @@ def create_company(user, company_name: str, default_currency: str = "USD") -> Co
         default_currency: Company currency code (default: USD)
     """
     from django.utils.text import slugify
+
+    from accounts.pilot_policy import deployment_has_active_pilot
+
+    # A4: one merchant per constrained-pilot deployment — block a second company.
+    if deployment_has_active_pilot():
+        return CommandResult.fail(
+            "Company creation is disabled in a constrained-pilot deployment (one merchant per deployment)."
+        )
 
     with rls_bypass():
         if not company_name or not company_name.strip():
@@ -1076,6 +1091,11 @@ def add_user_to_company(
     from accounts.authz import require
 
     require(actor, "company.manage_users")
+
+    # A4: single-user pilot — block adding another active membership.
+    from accounts.pilot_policy import Capability, require_supported
+
+    require_supported(actor.company, Capability.ADD_MEMBER)
 
     try:
         user = User.objects.get(pk=user_id)
@@ -2520,6 +2540,12 @@ def create_invitation(
     from accounts.models import Invitation
 
     require(actor, "company.manage_users")
+
+    # A4: the constrained pilot is single-user (one active OWNER). Block adding
+    # members / invitations.
+    from accounts.pilot_policy import Capability, require_supported
+
+    require_supported(actor.company, Capability.ADD_MEMBER)
 
     # Normalize email
     email = email.lower().strip()

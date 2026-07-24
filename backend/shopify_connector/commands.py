@@ -1796,6 +1796,16 @@ def sync_payouts(store: ShopifyStore) -> CommandResult:
     Fetches payouts with status=paid that haven't been recorded yet.
     Each payout becomes a SHOPIFY_PAYOUT_SETTLED event for the projection.
     """
+    from accounts.pilot_policy import Capability, skip_if_unsupported
+
+    # A4: Shopify Payments payout ACCOUNTING is out of scope for the constrained
+    # pilot. This is the sole emitter of SHOPIFY_PAYOUT_SETTLED, so skipping here
+    # means no payout settlement event, no payout JE, and the abs() negative-payout
+    # branch is unreachable — while Shopify order/refund accounting is untouched.
+    skipped = skip_if_unsupported(store.company, Capability.SHOPIFY_PAYOUT_ACCOUNTING, task="shopify.sync_payouts")
+    if skipped is not None:
+        return CommandResult.ok(data={**skipped, "created": 0, "skipped": 0})
+
     if store.status != ShopifyStore.Status.ACTIVE:
         return CommandResult.fail("Store is not active.")
 

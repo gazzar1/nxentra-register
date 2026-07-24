@@ -89,6 +89,15 @@ class PlatformWebhookView(APIView):
             logger.warning("Could not resolve company from %s webhook", platform_slug)
             return HttpResponse(status=200)  # Acknowledge but skip
 
+        # A4: platform (Stripe) webhooks are out of scope for the constrained
+        # pilot. Acknowledge (so the provider does not retry-storm) but record a
+        # structured blocked outcome and emit NO canonical event — never silently
+        # process the financial payload. Not A5's full terminal-state model.
+        from accounts.pilot_policy import Capability, skip_if_unsupported
+
+        if skip_if_unsupported(company, Capability.STRIPE, task=f"platform_webhook:{platform_slug}") is not None:
+            return HttpResponse(status=200)
+
         # Step 3: Parse topic
         topic = connector.parse_webhook_topic(request)
         if not topic:

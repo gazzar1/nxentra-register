@@ -82,6 +82,16 @@ def sync_payouts(account: StripeAccount, *, lookback_hours: int = 168) -> dict:
     """Pull recent paid payouts for one account, emit canonical settlement
     events, and refresh the read-models. Idempotent (event idempotency_key +
     read-model upsert), so re-runs are safe."""
+    from accounts.pilot_policy import Capability, skip_if_unsupported
+
+    # A4: shared boundary for every Stripe sync path (periodic, initial,
+    # webhook-triggered). A pilot company should have no Stripe account at all
+    # (connect is gated), but skip fail-closed here too — structured skip, no
+    # event emission, no mutation, no retry.
+    skipped = skip_if_unsupported(account.company, Capability.STRIPE, task="stripe.sync_payouts")
+    if skipped is not None:
+        return skipped
+
     if account.status != StripeAccount.Status.ACTIVE:
         return {"status": "skipped", "reason": "account not active", "created": 0, "skipped": 0}
 
