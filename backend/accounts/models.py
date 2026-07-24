@@ -105,6 +105,22 @@ class Company(ProjectionWriteGuard):
     # Status
     is_active = models.BooleanField(default=True)
 
+    # A4: constrained-pilot profile. Governs which product capabilities may
+    # execute for this company. NONE = normal, unrestricted behavior.
+    # ISOLATED_SHADOW_LEDGER_V1 = the fail-closed founder-operated shadow-ledger
+    # contract (see accounts.pilot_policy). An unrecognized stored value is
+    # treated as fully restricted (fail closed). Set only via the authorized
+    # activation command, never an ordinary settings edit.
+    class PilotProfile(models.TextChoices):
+        NONE = "NONE", "Normal (no pilot restrictions)"
+        ISOLATED_SHADOW_LEDGER_V1 = "ISOLATED_SHADOW_LEDGER_V1", "Isolated shadow-ledger pilot v1"
+
+    pilot_profile = models.CharField(
+        max_length=32,
+        default=PilotProfile.NONE,
+        help_text="Constrained-pilot capability profile. Set only via activate_pilot_profile.",
+    )
+
     # Voice Feature Settings (Add-On)
     voice_enabled = models.BooleanField(
         default=False,
