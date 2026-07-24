@@ -59,6 +59,7 @@ class TenantRlsMiddleware:
     # -------------------------------------------------------------------------
     PUBLIC_PATHS = (
         "/api/auth/register/",
+        "/api/auth/csrf/",  # A1: seed csrftoken cookie (no auth; double-submit CSRF bootstrap)
         "/api/auth/login/",
         "/api/auth/refresh/",
         "/api/auth/verify-email/",

@@ -67,8 +67,11 @@ The generic `ModuleAccountMapping` model (`accounting/mappings.py`) replaces per
 ```python
 class PropertiesConfig(AppConfig):
     account_roles = [
-        "RENTAL_INCOME", "ACCOUNTS_RECEIVABLE", "CASH_BANK",
-        "SECURITY_DEPOSIT", "PROPERTY_EXPENSE",
+        "RENTAL_INCOME",
+        "ACCOUNTS_RECEIVABLE",
+        "CASH_BANK",
+        "SECURITY_DEPOSIT",
+        "PROPERTY_EXPENSE",
     ]
 ```
 
@@ -84,9 +87,7 @@ ar = mapping.get("ACCOUNTS_RECEIVABLE")
 account = ModuleAccountMapping.get_account(company, "properties", "CASH_BANK")
 
 # Check all required roles are mapped:
-missing = ModuleAccountMapping.check_required_roles(
-    company, "properties", ["RENTAL_INCOME", "ACCOUNTS_RECEIVABLE"]
-)
+missing = ModuleAccountMapping.check_required_roles(company, "properties", ["RENTAL_INCOME", "ACCOUNTS_RECEIVABLE"])
 ```
 
 The model enforces `unique_together = ("company", "module", "role")` and uses the same write-barrier pattern as other configuration models.
@@ -123,6 +124,7 @@ For Pattern B modules, event data classes should extend `FinancialEventData`:
 ```python
 from events.types import FinancialEventData
 
+
 @dataclass
 class RentDuePostedData(FinancialEventData):
     schedule_line_public_id: str = ""
@@ -143,10 +145,12 @@ Checklist for adding a new vertical (e.g., "clinic"):
    from dataclasses import dataclass
    from events.types import FinancialEventData, BaseEventData, EventTypes
 
+
    @dataclass
    class ConsultationFeeData(FinancialEventData):
        patient_public_id: str = ""
        doctor_public_id: str = ""
+
 
    REGISTERED_EVENTS: dict[str, type[BaseEventData]] = {
        EventTypes.CLINIC_CONSULTATION_FEE: ConsultationFeeData,
@@ -159,12 +163,15 @@ Checklist for adding a new vertical (e.g., "clinic"):
    ```python
    from projections.base import BaseProjection
 
+
    class ClinicAccountingProjection(BaseProjection):
        @property
-       def name(self): return "clinic_accounting"
+       def name(self):
+           return "clinic_accounting"
 
        @property
-       def consumes(self): return [EventTypes.CLINIC_CONSULTATION_FEE]
+       def consumes(self):
+           return [EventTypes.CLINIC_CONSULTATION_FEE]
 
        def handle(self, event): ...
    ```

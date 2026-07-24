@@ -9,6 +9,20 @@ const axiosClient = axios.create({
   withCredentials: true
 });
 
+// A1: attach the double-submit CSRF token on unsafe methods so the
+// CSRF-protected browser login (and register) succeed. The SPA seeds the
+// csrftoken cookie on load (ensureCsrfToken in lib/api-client.ts).
+axiosClient.interceptors.request.use((config) => {
+  if (config.method && config.method.toLowerCase() !== "get" && typeof document !== "undefined") {
+    const match = document.cookie.match(/csrftoken=([^;]+)/);
+    if (match) {
+      config.headers = config.headers || {};
+      config.headers["X-CSRFToken"] = match[1];
+    }
+  }
+  return config;
+});
+
 export default axiosClient;
 
 // ==========================

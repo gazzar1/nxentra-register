@@ -38,6 +38,7 @@ import { postingProfilesService } from "@/services/sales.service";
 import type { PostingProfile } from "@/types/sales";
 import { useAccounts } from "@/queries/useAccounts";
 import { isShopifyEmbedded, redirectTopLevel } from "@/lib/shopify-embed";
+import apiClient from "@/lib/api-client";
 
 export default function ShopifySettingsPage() {
   const { t } = useTranslation(["common"]);
@@ -317,6 +318,25 @@ export default function ShopifySettingsPage() {
     }
   };
 
+  // A1: generate a short-lived owner-link code. The founder pastes it into the
+  // embedded Shopify page to bind their Shopify user to this Nxentra account.
+  const [linkCode, setLinkCode] = useState<string | null>(null);
+  const [generatingLinkCode, setGeneratingLinkCode] = useState(false);
+  const handleGenerateLinkCode = async () => {
+    setGeneratingLinkCode(true);
+    setLinkCode(null);
+    try {
+      const { data } = await apiClient.post<{ nonce: string }>("/shopify/linking-nonce/", {
+        store_public_id: store?.public_id,
+      });
+      setLinkCode(data.nonce);
+    } catch {
+      toast({ title: "Couldn't generate a link code.", variant: "destructive" });
+    } finally {
+      setGeneratingLinkCode(false);
+    }
+  };
+
   const handleSyncProducts = async () => {
     setSyncingProducts(true);
     try {
@@ -524,6 +544,32 @@ export default function ShopifySettingsPage() {
                     </p>
                   </div>
                 </div>
+              </CardContent>
+            </Card>
+
+            {/* A1: Shopify user link code — founder-operated owner-link ceremony */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Link a Shopify user</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <p className="text-sm text-muted-foreground">
+                  Generate a short-lived code, then paste it into the embedded Nxentra
+                  page inside your Shopify admin to link your Shopify login to this
+                  account. The code expires in 10 minutes and can be used once.
+                </p>
+                <Button onClick={handleGenerateLinkCode} disabled={generatingLinkCode}>
+                  {generatingLinkCode ? (
+                    <Loader2 className="me-2 h-4 w-4 animate-spin" />
+                  ) : null}
+                  Generate link code
+                </Button>
+                {linkCode ? (
+                  <div className="rounded-md border border-border bg-muted p-3">
+                    <p className="text-xs text-muted-foreground">Link code (expires in 10 minutes)</p>
+                    <p className="break-all font-mono text-sm">{linkCode}</p>
+                  </div>
+                ) : null}
               </CardContent>
             </Card>
 
