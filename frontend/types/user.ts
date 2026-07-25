@@ -30,6 +30,10 @@ export interface Company {
   // Optional so older cached company objects (pre-feature) degrade to "hidden"
   // (English-first) via shouldShowArabicFields(). Data is never deleted when off.
   enable_arabic_fields?: boolean;
+  // A4: constrained-pilot capability profile. "NONE" = normal; other values
+  // (e.g. ISOLATED_SHADOW_LEDGER_V1) restrict the product to the supported
+  // shadow-ledger workflow. Optional so older cached objects degrade to normal.
+  pilot_profile?: string;
 }
 
 export interface CompanySettings {

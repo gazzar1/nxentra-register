@@ -988,6 +988,7 @@ class MeView(APIView):
                     "decimal_places": active_company.decimal_places if active_company else 2,
                     "date_format": active_company.date_format if active_company else "YYYY-MM-DD",
                     "enable_arabic_fields": active_company.enable_arabic_fields if active_company else False,
+                    "pilot_profile": active_company.pilot_profile if active_company else "NONE",
                     "created_at": active_company.created_at.isoformat() if active_company else None,
                     "updated_at": active_company.updated_at.isoformat() if active_company else None,
                 }

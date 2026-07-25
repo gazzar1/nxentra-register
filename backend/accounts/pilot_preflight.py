@@ -78,7 +78,7 @@ def run_preflight(company, *, phase: str = "go-live", for_activation: bool = Fal
             )
 
         # --- no pending invitations ---------------------------------------
-        pending_invites = Invitation.objects.filter(company=company, status=Invitation.Status.PENDING).count()
+        pending_invites = Invitation.objects.filter(primary_company=company, status=Invitation.Status.PENDING).count()
         if pending_invites:
             v.append(Violation("pending_invitations", f"{pending_invites} pending invitation(s) must be cancelled."))
 
@@ -104,7 +104,11 @@ def run_preflight(company, *, phase: str = "go-live", for_activation: bool = Fal
         v += _shopify_store_violations(company, phase)
 
         # --- capability gates must be ON (config proof) -------------------
-        v += _capability_gate_violations(company)
+        # Only meaningful once the profile is enabled; at activation time the
+        # profile is still NONE (about to be set), so capabilities are not yet
+        # blocked — that is expected, not a violation.
+        if not for_activation:
+            v += _capability_gate_violations(company)
 
         # --- forbidden data state -----------------------------------------
         v += _stripe_state_violations(company)
@@ -119,12 +123,14 @@ def _period_violations(company) -> list[Violation]:
     cfg = FiscalPeriodConfig.objects.filter(company=company).order_by("-fiscal_year").first()
     if cfg is None:
         return [Violation("no_period_config", "No fiscal-period configuration exists.")]
-    if cfg.period_count != 13:
+    # The supported structure is 12 monthly periods, with or without the extra
+    # adjustment period (13). Anything else is a non-standard setup.
+    if cfg.period_count not in (12, 13):
         return [
             Violation(
                 "period_structure",
                 f"Unsupported period structure (period_count={cfg.period_count}; "
-                "expected 13 = 12 normal + 1 adjustment).",
+                "expected 12 monthly periods, or 13 with the adjustment period).",
             )
         ]
     return []
@@ -205,7 +211,7 @@ def _inventory_state_violations(company) -> list[Violation]:
         out.append(Violation("stock_ledger", "Stock-ledger entries exist; Option B forbids stock movements."))
 
     cogs_pending = ShopifyFulfillment.objects.filter(
-        store__company=company, status=ShopifyFulfillment.Status.COGS_PENDING
+        company=company, status=ShopifyFulfillment.Status.COGS_PENDING
     ).count()
     if cogs_pending:
         out.append(
