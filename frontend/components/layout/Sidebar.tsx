@@ -16,6 +16,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useSidebar } from "@/contexts/SidebarContext";
 import { useSidebarNav, type SidebarSection, type SidebarTab } from "@/queries/useModules";
 import { cn } from "@/lib/cn";
+import { isConstrainedPilot, isPilotHiddenHref } from "@/lib/constrained-pilot";
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 
 let _savedScrollTop = 0;
@@ -78,9 +79,10 @@ function getIcon(name: string, className: string) {
 export function Sidebar() {
   const { t } = useTranslation("common");
   const router = useRouter();
-  const { user, logout } = useAuth();
+  const { user, company, logout } = useAuth();
   const { isOpen, close } = useSidebar();
   const { data: sidebarData } = useSidebarNav();
+  const pilot = isConstrainedPilot(company?.pilot_profile);
   const [activeTab, setActiveTab] = useState<SidebarTab>(_savedTab);
   const [expanded, setExpanded] = useState<Record<string, boolean>>(_savedExpanded);
   const navRef = useRef<HTMLElement>(null);
@@ -89,11 +91,20 @@ export function Sidebar() {
   useEffect(() => { _savedExpanded = expanded; }, [expanded]);
   useEffect(() => { _savedTab = activeTab; }, [activeTab]);
 
-  // Get sections for active tab
+  // Get sections for active tab. Under the constrained pilot, drop nav items
+  // that lead to unsupported capabilities (a click would 403 / structurally
+  // skip); a section left with no items is dropped entirely.
   const sections = useMemo(() => {
     if (!sidebarData) return [];
-    return sidebarData[activeTab] || [];
-  }, [sidebarData, activeTab]);
+    const raw = sidebarData[activeTab] || [];
+    if (!pilot) return raw;
+    return raw
+      .map((section) => ({
+        ...section,
+        nav_items: section.nav_items.filter((item) => !isPilotHiddenHref(item.href)),
+      }))
+      .filter((section) => section.nav_items.length > 0);
+  }, [sidebarData, activeTab, pilot]);
 
   // Auto-expand section containing current route + auto-switch tab
   useEffect(() => {

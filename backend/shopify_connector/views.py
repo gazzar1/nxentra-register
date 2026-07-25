@@ -880,6 +880,12 @@ class ShopifySyncPayoutsView(APIView):
     def post(self, request):
         actor = resolve_actor(request)
         require(actor, "settings.edit")
+        # A4: interactive payout sync is blocked outright (HTTP 403) for a pilot,
+        # even though the scheduled `sync_payouts` path skips structurally — an
+        # explicit user action deserves an explicit refusal, not a silent no-op.
+        from accounts.pilot_policy import Capability, require_supported
+
+        require_supported(actor.company, Capability.SHOPIFY_PAYOUT_ACCOUNTING)
 
         store = _get_active_store_for_actor(actor)
         if store is None:
@@ -1101,6 +1107,10 @@ class ShopifyPayoutVerifyView(APIView):
     def post(self, request, payout_id):
         actor = resolve_actor(request)
         require(actor, "reports.view")
+        # A4: payout verification is part of payout accounting — out of scope.
+        from accounts.pilot_policy import Capability, require_supported
+
+        require_supported(actor.company, Capability.SHOPIFY_PAYOUT_ACCOUNTING)
 
         store = _get_active_store_for_actor(actor)
         if store is None:

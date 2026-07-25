@@ -240,6 +240,12 @@ def import_bank_statement(
     if not lines_data:
         return CommandResult.fail("No transaction lines provided.")
 
+    # A4: the constrained pilot ingests EGP only — reject a foreign-currency bank
+    # statement before any BankStatement / line row is written.
+    from accounts.pilot_policy import require_pilot_currency
+
+    require_pilot_currency(actor.company, currency, context="Bank statement")
+
     # A17: load every dedup_hash already imported for this account so we
     # can skip duplicates when an overlapping period gets re-uploaded
     # (e.g. April 1-30 after April 1-15 was already imported). Scoped to

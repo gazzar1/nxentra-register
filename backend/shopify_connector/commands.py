@@ -1239,6 +1239,16 @@ def _process_order_paid_inner(store: ShopifyStore, payload: dict) -> CommandResu
     if not shopify_order_id:
         return CommandResult.fail("Missing order ID in payload.")
 
+    # A4: the constrained pilot ingests EGP only. Skip a non-EGP order before any
+    # record/event is written (webhook context: acknowledge, no mutation, no
+    # retry). A correctly-scoped EGP store never triggers this — it guards against
+    # a mis-scoped store slipping a foreign-currency order into the shadow ledger.
+    from accounts.pilot_policy import skip_pilot_currency
+
+    _skip = skip_pilot_currency(store.company, payload.get("currency"), task="shopify.process_order_paid")
+    if _skip is not None:
+        return CommandResult.ok(_skip)
+
     # Idempotency: skip if a record already exists AND has been posted to
     # accounting (event emitted). A PENDING_CAPTURE metadata stub from
     # orders/create is upgraded below rather than blocking processing.
@@ -1438,6 +1448,14 @@ def process_refund(store: ShopifyStore, payload: dict) -> CommandResult:
         # refund catch-up is the durable recovery either way.
         return CommandResult.fail(f"Order {order_id} not found locally.", data={"retryable": True})
 
+    # A4: pilot ingests EGP only — skip a refund against a non-EGP order before
+    # any record/event is written (webhook context: no mutation, no retry).
+    from accounts.pilot_policy import skip_pilot_currency
+
+    _skip = skip_pilot_currency(store.company, order.currency, task="shopify.process_refund")
+    if _skip is not None:
+        return CommandResult.ok(_skip)
+
     # Calculate refund amount from transactions
     refund_amount = Decimal("0")
     for txn in payload.get("transactions", []):
@@ -1513,6 +1531,14 @@ def process_order_pending(store: ShopifyStore, payload: dict) -> CommandResult:
     shopify_order_id = payload.get("id")
     if not shopify_order_id:
         return CommandResult.fail("Missing order ID in payload.")
+
+    # A4: pilot ingests EGP only — skip a non-EGP order before any record is
+    # written (webhook context: no mutation, no retry).
+    from accounts.pilot_policy import skip_pilot_currency
+
+    _skip = skip_pilot_currency(store.company, payload.get("currency"), task="shopify.process_order_pending")
+    if _skip is not None:
+        return CommandResult.ok(_skip)
 
     financial_status = (payload.get("financial_status") or "").lower()
     if financial_status in ("paid", "authorized", "partially_paid"):
@@ -2678,6 +2704,16 @@ def process_dispute(store: ShopifyStore, payload: dict) -> CommandResult:
     Creates a ShopifyDispute record and emits SHOPIFY_DISPUTE_CREATED event
     for the projection to create a chargeback reversal journal entry.
     """
+    # A4: dispute / chargeback accounting is out of scope for the constrained
+    # pilot. This is the deepest shared boundary for both disputes/create and
+    # disputes/update (webhook-driven): skip with a structured result — no
+    # ShopifyDispute row, no event, no retry — so the webhook simply acks.
+    from accounts.pilot_policy import Capability, skip_if_unsupported
+
+    skipped = skip_if_unsupported(store.company, Capability.SHOPIFY_DISPUTES, task="shopify.process_dispute")
+    if skipped is not None:
+        return CommandResult.ok(skipped)
+
     shopify_dispute_id = payload.get("id")
     if not shopify_dispute_id:
         return CommandResult.fail("Missing dispute ID in payload.")
@@ -3260,6 +3296,13 @@ def _convert_costs_to_functional(store, client, cost_map: dict) -> dict:
         return cost_map
 
     company = store.company
+    # Option B: a pilot company never books inventory cost, so there is nothing to
+    # convert — return before any store-currency lookup or FX rate fetch.
+    from accounts.pilot_policy import Capability, is_supported
+
+    if not is_supported(company, Capability.INVENTORY):
+        return cost_map
+
     functional = getattr(company, "functional_currency", "") or company.default_currency
     if not functional:
         return cost_map
@@ -3302,6 +3345,13 @@ def _fetch_variant_cost(store, variant_id, convert_to_currency: str = "") -> Dec
         Cost in target currency (or store currency if no conversion needed).
     """
     if not variant_id:
+        return Decimal("0")
+
+    # Option B: no inventory cost is recorded for a pilot company, so skip the
+    # Shopify cost API call and any FX conversion entirely.
+    from accounts.pilot_policy import Capability, is_supported
+
+    if not is_supported(store.company, Capability.INVENTORY):
         return Decimal("0")
 
     client = _admin_client(store)
@@ -3389,6 +3439,29 @@ def _get_shopify_store_currency(store, client=None) -> str:
     except Exception as exc:
         logger.warning("Failed to fetch store currency for %s: %s", store.shop_domain, exc)
         return ""
+
+
+def resolve_store_currency(store, *, allow_remote: bool = False, persist: bool = False) -> str:
+    """Return the store's Shopify operating currency (ISO code), or "" if unknown.
+
+    Prefers the durable ``shop_currency`` snapshot. When it is empty and
+    ``allow_remote`` is set, falls back to a read-only lookup (recent order → shop
+    API). ``persist=True`` writes a freshly-resolved value back to the store so
+    later reads are cheap — callers in a normal command context (sync) pass
+    ``persist=True``; the read-only pilot preflight passes ``persist=False`` so it
+    never mutates.
+    """
+    existing = (store.shop_currency or "").strip().upper()
+    if existing:
+        return existing
+    if not allow_remote:
+        return ""
+    cur = (_get_shopify_store_currency(store) or "").strip().upper()
+    if cur and persist:
+        with command_writes_allowed():
+            store.shop_currency = cur
+            store.save(update_fields=["shop_currency"])
+    return cur
 
 
 def _auto_create_item_from_line(store, sku: str, line_item: dict):
@@ -3543,6 +3616,10 @@ def sync_products(store: ShopifyStore, inventory_account_id=None, cogs_account_i
     client = _admin_client(store)
     if not client:
         return CommandResult.fail("Token expired or revoked — please reconnect the store.")
+
+    # A4: capture the store's Shopify currency durably during a normal sync so
+    # the constrained-pilot go-live preflight can verify EGP without a live probe.
+    resolve_store_currency(store, allow_remote=True, persist=True)
 
     # Ensure Shopify warehouse exists
     _ensure_shopify_warehouse(store)
@@ -3961,6 +4038,15 @@ def _update_item_defaults(
     ever HEALS items that were created before a value was captured — it never
     overwrites something the merchant set by hand.
     """
+    from accounts.pilot_policy import inventory_forced_non_stock
+
+    # Option B: never heal a pilot company's item toward inventory/COGS accounts.
+    # (The item is already NON_STOCK; attaching these accounts is the exact state
+    # the invariant forbids.)
+    if inventory_forced_non_stock(item.company):
+        inv_account = None
+        cogs_account = None
+
     updates = []
     if cost > 0 and not item.default_cost:
         item.default_cost = cost

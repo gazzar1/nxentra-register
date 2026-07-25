@@ -38,6 +38,7 @@ SKIPPED_PILOT_SCOPE = "skipped_pilot_scope"
 class Capability(StrEnum):
     STRIPE = "stripe"
     SHOPIFY_PAYOUT_ACCOUNTING = "shopify_payout_accounting"
+    SHOPIFY_DISPUTES = "shopify_disputes"
     LEGACY_BANKING = "legacy_banking"
     PROJECTION_REBUILD = "projection_rebuild"
     ADD_MEMBER = "add_member"
@@ -45,6 +46,13 @@ class Capability(StrEnum):
     INVENTORY = "inventory"
     CURRENCY_FISCAL_CHANGE = "currency_fiscal_change"
     UNSAFE_BANK_MATCH = "unsafe_bank_match"
+
+
+# The constrained pilot ingests only the merchant's home currency, so no foreign
+# leg — and therefore no FX conversion — is ever booked. Foreign financial inputs
+# are rejected at the ingestion boundary, before any event or mutation.
+PILOT_CURRENCY = "EGP"
+NON_EGP_INGESTION = "non_egp_ingestion"
 
 
 # Capabilities blocked under each known constrained profile.
@@ -90,15 +98,16 @@ def is_pilot(company) -> bool:
     return profile_of(company) != Company.PilotProfile.NONE
 
 
-def deployment_has_active_pilot() -> bool:
-    """True when any active company in this deployment is on a constrained-pilot
-    profile. Used to enforce one-merchant-per-deployment: creating a second
-    company is blocked once a pilot is active."""
+def deployment_has_pilot() -> bool:
+    """True when ANY company in this deployment (active OR inactive) is on a
+    constrained-pilot profile. Enforces one-merchant-per-deployment: a second
+    company is blocked once a pilot exists, and a deactivated pilot row still
+    blocks it (deactivation cannot bypass the isolated-deployment contract)."""
     from accounts.models import Company
     from accounts.rls import rls_bypass
 
     with rls_bypass():
-        return Company.objects.filter(is_active=True).exclude(pilot_profile=Company.PilotProfile.NONE).exists()
+        return Company.objects.exclude(pilot_profile=Company.PilotProfile.NONE).exists()
 
 
 def is_supported(company, capability) -> bool:
@@ -155,3 +164,50 @@ def skip_if_unsupported(company, capability, *, task: str = "") -> dict | None:
         cap,
     )
     return {"status": SKIPPED_PILOT_SCOPE, "capability": cap, "company_id": getattr(company, "id", None)}
+
+
+def _norm_currency(currency) -> str:
+    return (currency or "").strip().upper()
+
+
+def require_pilot_currency(company, currency, *, context: str = "") -> None:
+    """Interactive ingestion gate. Reject a foreign-currency financial input for a
+    pilot company BEFORE any event/mutation so no FX conversion is ever needed.
+
+    An empty/absent currency means "book at the company's home currency" and is
+    accepted (the home currency IS ``EGP`` under the pilot). ``NONE`` profile
+    companies are never restricted.
+    """
+    if not is_pilot(company):
+        return
+    cur = _norm_currency(currency)
+    if cur and cur != PILOT_CURRENCY:
+        raise PilotScopeBlocked(
+            NON_EGP_INGESTION,
+            profile_of(company),
+            f"{context or 'Financial input'} currency {cur} is not supported; the "
+            f"constrained pilot ingests {PILOT_CURRENCY} only.",
+        )
+
+
+def skip_pilot_currency(company, currency, *, task: str = "") -> dict | None:
+    """Scheduled/background variant of :func:`require_pilot_currency`: returns the
+    structured ``SKIPPED_PILOT_SCOPE`` dict (no mutation, no retry) instead of
+    raising, or ``None`` when the input is in-scope."""
+    if not is_pilot(company):
+        return None
+    cur = _norm_currency(currency)
+    if not cur or cur == PILOT_CURRENCY:
+        return None
+    logger.info(
+        "pilot_currency_skipped task=%s company=%s currency=%s",
+        task,
+        getattr(company, "id", None),
+        cur,
+    )
+    return {
+        "status": SKIPPED_PILOT_SCOPE,
+        "capability": NON_EGP_INGESTION,
+        "company_id": getattr(company, "id", None),
+        "currency": cur,
+    }

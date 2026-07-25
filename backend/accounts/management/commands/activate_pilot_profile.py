@@ -51,6 +51,21 @@ class Command(BaseCommand):
             if not opts["yes"]:
                 raise CommandError("Validation passed. Re-run with --yes to activate.")
 
-            company.pilot_profile = Company.PilotProfile.ISOLATED_SHADOW_LEDGER_V1
-            company.save(update_fields=["pilot_profile"])
+            from accounts.models import PilotProfileActivation
+            from projections.write_barrier import command_writes_allowed
+
+            # Company is a ProjectionWriteGuard read-model; the authoritative
+            # profile write MUST run inside an allowed command write context (it
+            # would raise in production otherwise). The durable audit row is
+            # written in the SAME transaction — it records the activation, it is
+            # not the activation itself.
+            with command_writes_allowed():
+                company.pilot_profile = Company.PilotProfile.ISOLATED_SHADOW_LEDGER_V1
+                company.save(update_fields=["pilot_profile"])
+            PilotProfileActivation.objects.create(
+                company=company,
+                profile=Company.PilotProfile.ISOLATED_SHADOW_LEDGER_V1,
+                source="cli",
+                note="activate_pilot_profile management command",
+            )
             self.stdout.write(self.style.SUCCESS(f"Activated ISOLATED_SHADOW_LEDGER_V1 on company {company.id}."))

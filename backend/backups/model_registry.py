@@ -45,6 +45,7 @@ def get_export_registry():
     from accounting.models import (
         BankStatement as AcctBankStatement,
     )
+    from accounts.models import PilotProfileActivation
     from bank_connector.models import (
         BankAccount,
         BankTransaction,
@@ -296,6 +297,12 @@ def get_export_registry():
     registry["clinic.Visit"] = Visit
     registry["clinic.Invoice"] = ClinicInvoice
     registry["clinic.Payment"] = ClinicPayment
+
+    # A4: constrained-pilot activation audit. Depends only on Company (the backup
+    # target) and a nullable User FK, so it can be restored last. Registered (not
+    # exempt) so the activation trail survives a company restore, matching the
+    # PeriodOverrideAudit precedent.
+    registry["accounts.PilotProfileActivation"] = PilotProfileActivation
 
     return registry
 

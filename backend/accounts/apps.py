@@ -15,7 +15,10 @@ class AccountsConfig(AppConfig):
 
     def ready(self):
         """Initialize app when Django starts."""
+        from django.db.models.signals import pre_save
+
         from accounts import rls
+        from accounts.models import Company
         from accounts.module_registry import ModuleCategory, SidebarTab, module_registry
 
         def _on_connection_created(sender, connection, **kwargs):
@@ -26,6 +29,30 @@ class AccountsConfig(AppConfig):
             _on_connection_created,
             dispatch_uid="accounts.rls_init",
         )
+
+        def _freeze_pilot_is_active(sender, instance, **kwargs):
+            """A4: a constrained-pilot company's active state is frozen. There is
+            no command/event that flips ``Company.is_active`` — only Django admin —
+            so this central pre_save guard blocks deactivation (and any later
+            reactivation) while a pilot profile is set. Isolation is enforced from
+            the stored (old) row, so a same-save profile edit cannot slip past it."""
+            if not instance.pk:
+                return  # creation
+            with rls.rls_bypass():
+                old = sender.objects.filter(pk=instance.pk).values("is_active", "pilot_profile").first()
+            if not old or old["is_active"] == instance.is_active:
+                return
+            if old["pilot_profile"] and old["pilot_profile"] != Company.PilotProfile.NONE:
+                from accounts.pilot_policy import PilotScopeBlocked
+
+                raise PilotScopeBlocked(
+                    "company_is_active_change",
+                    str(old["pilot_profile"]),
+                    "A constrained-pilot company's active state is frozen; "
+                    "deactivation/reactivation is blocked while the pilot profile is set.",
+                )
+
+        pre_save.connect(_freeze_pilot_is_active, sender=Company, dispatch_uid="accounts.freeze_pilot_is_active")
 
         # =====================================================================
         # Module registrations (for enablement tracking — keep existing)

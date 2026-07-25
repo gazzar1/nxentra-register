@@ -49,7 +49,7 @@ def run_preflight(company, *, phase: str = "go-live", for_activation: bool = Fal
                     )
                 )
 
-        # --- isolation: exactly one active merchant company ---------------
+        # --- isolation: exactly one merchant company ----------------------
         active_companies = Company.objects.filter(is_active=True).count()
         if active_companies != 1:
             v.append(
@@ -57,6 +57,18 @@ def run_preflight(company, *, phase: str = "go-live", for_activation: bool = Fal
                     "not_isolated",
                     f"Deployment has {active_companies} active companies; the isolated "
                     "shadow-ledger contract permits exactly one.",
+                )
+            )
+        # Activation demands true single-tenancy: no OTHER company ROW may exist
+        # in the database, active or not — a deactivated row could otherwise be
+        # reactivated to bypass the one-merchant-per-deployment contract.
+        other_rows = Company.objects.exclude(id=company.id).count()
+        if other_rows:
+            v.append(
+                Violation(
+                    "not_isolated_rows",
+                    f"Deployment contains {other_rows} other company row(s); the isolated "
+                    "database must hold exactly one merchant company (active or not).",
                 )
             )
 
@@ -103,6 +115,16 @@ def run_preflight(company, *, phase: str = "go-live", for_activation: bool = Fal
         # --- Shopify store count (phase-dependent) ------------------------
         v += _shopify_store_violations(company, phase)
 
+        # --- go-live readiness: the FULL agreed workflow must be configured.
+        # ISOLATED_SHADOW_LEDGER_V1 is the Shopify → Paymob/Bosta → canonical
+        # bank → ledger pilot; a Shopify-only or Shopify+bank-only variant is a
+        # DIFFERENT (future) contract and must not appear implicitly here.
+        if phase == "go-live":
+            v += _binding_violations(company)
+            v += _supported_mapping_violations(company)
+            v += _provider_violations(company)
+            v += _bank_account_violations(company)
+
         # --- capability gates must be ON (config proof) -------------------
         # Only meaningful once the profile is enabled; at activation time the
         # profile is still NONE (about to be set), so capabilities are not yet
@@ -113,6 +135,8 @@ def run_preflight(company, *, phase: str = "go-live", for_activation: bool = Fal
         # --- forbidden data state -----------------------------------------
         v += _stripe_state_violations(company)
         v += _inventory_state_violations(company)
+        v += _out_of_scope_data_violations(company)
+        v += _legacy_bank_violations(company)
 
     return v
 
@@ -139,13 +163,186 @@ def _period_violations(company) -> list[Violation]:
 def _shopify_store_violations(company, phase: str) -> list[Violation]:
     from shopify_connector.models import ShopifyStore
 
-    active = ShopifyStore.objects.filter(company=company, status=ShopifyStore.Status.ACTIVE).count()
+    stores = list(ShopifyStore.objects.filter(company=company, status=ShopifyStore.Status.ACTIVE))
     if phase == "go-live":
-        if active != 1:
-            return [Violation("store_count", f"go-live requires exactly one active Shopify store (found {active}).")]
-    else:  # setup
-        if active > 1:
-            return [Violation("store_count", f"At most one active Shopify store is permitted (found {active}).")]
+        if len(stores) != 1:
+            return [
+                Violation("store_count", f"go-live requires exactly one active Shopify store (found {len(stores)}).")
+            ]
+        return _store_currency_violations(stores[0])
+    # setup
+    if len(stores) > 1:
+        return [Violation("store_count", f"At most one active Shopify store is permitted (found {len(stores)}).")]
+    return []
+
+
+def _store_currency_violations(store) -> list[Violation]:
+    """Go-live: PROVE the store itself operates in EGP — runtime order rejection
+    and an absence of historical non-EGP orders do not establish it. Uses the
+    durable ``shop_currency`` snapshot; when empty, a read-only live probe
+    (recent order → shop API), never persisted from this read-only preflight.
+    Unknown or unreachable currency fails go-live."""
+    from shopify_connector.commands import resolve_store_currency
+
+    currency = resolve_store_currency(store, allow_remote=True, persist=False)
+    if not currency:
+        return [
+            Violation(
+                "store_currency_unknown",
+                f"Could not determine the Shopify currency for {store.shop_domain} "
+                "(no durable snapshot; live probe failed). Run a product sync or fix "
+                "API access, then re-run the preflight.",
+            )
+        ]
+    if currency != EGP:
+        return [
+            Violation(
+                "store_currency_not_egp",
+                f"Shopify store {store.shop_domain} operates in {currency}; the pilot requires {EGP}.",
+            )
+        ]
+    return []
+
+
+def _binding_violations(company) -> list[Violation]:
+    """Go-live: an ACTIVE binding must join the EXACT sole active store, the EXACT
+    sole active OWNER membership, and an active user (A1). A binding on a
+    disconnected/other store, an inactive membership, or a deactivated user does
+    not satisfy the check."""
+    from accounts.models import CompanyMembership
+    from shopify_connector.models import ShopifyStore, ShopifyUserBinding
+
+    stores = list(ShopifyStore.objects.filter(company=company, status=ShopifyStore.Status.ACTIVE))
+    owners = list(CompanyMembership.objects.filter(company=company, is_active=True, role=CompanyMembership.Role.OWNER))
+    if len(stores) != 1 or len(owners) != 1:
+        # store_count / membership_* violations describe the root cause; this
+        # records that the exact-binding requirement cannot be verified either.
+        return [
+            Violation(
+                "binding_missing",
+                "Binding cannot be verified: go-live requires exactly one active store "
+                f"(found {len(stores)}) and one active OWNER membership (found {len(owners)}).",
+            )
+        ]
+    ok = ShopifyUserBinding.objects.filter(
+        store=stores[0],
+        membership=owners[0],
+        is_active=True,
+        membership__is_active=True,
+        membership__user__is_active=True,
+    ).exists()
+    if not ok:
+        return [
+            Violation(
+                "binding_missing",
+                f"No active ShopifyUserBinding joins store {stores[0].shop_domain} to the sole "
+                "active OWNER membership (with an active user). Complete the A1 link ceremony.",
+            )
+        ]
+    return []
+
+
+def _supported_mapping_violations(company) -> list[Violation]:
+    """Go-live: the supported Shopify order/refund + settlement + bank workflows
+    post through the Shopify clearing and Expected-Bank-Deposit accounts. Each
+    required mapping must exist on the exact module, point at a non-null account
+    of the SAME company, and that account must be postable (ACTIVE, non-header)."""
+    from accounting.mappings import ModuleAccountMapping
+    from accounting.models import Account
+
+    required = ("SHOPIFY_CLEARING", "EXPECTED_BANK_DEPOSIT")
+    rows = {
+        m.role: m
+        for m in ModuleAccountMapping.objects.filter(
+            company=company, module="shopify_connector", role__in=required
+        ).select_related("account")
+    }
+    problems: list[str] = []
+    for role in required:
+        m = rows.get(role)
+        if m is None or m.account_id is None:
+            problems.append(f"{role}: mapping missing")
+            continue
+        acct = m.account
+        if acct.company_id != company.id:
+            problems.append(f"{role}: account belongs to another company")
+        elif acct.is_header or acct.status != Account.Status.ACTIVE:
+            problems.append(f"{role}: account {acct.code} is not postable (header or not ACTIVE)")
+    if problems:
+        return [Violation("missing_supported_mapping", "; ".join(problems) + ".")]
+    return []
+
+
+def _provider_violations(company) -> list[Violation]:
+    """Go-live: the agreed pilot workflow settles through Paymob and/or Bosta. At
+    least one ACTIVE supported settlement provider must exist, and every active
+    supported provider must route to an ACTIVE posting profile of the same
+    company whose control account is postable."""
+    from accounting.settlement_imports import supported_settlement_providers
+    from accounting.settlement_provider import SettlementProvider
+
+    supported = set(supported_settlement_providers())  # {"paymob", "bosta"}
+    providers = list(
+        SettlementProvider.objects.filter(
+            company=company, is_active=True, normalized_code__in=supported
+        ).select_related("posting_profile", "posting_profile__control_account")
+    )
+    if not providers:
+        return [
+            Violation(
+                "provider_missing",
+                "No active Paymob/Bosta settlement provider is configured; the pilot's "
+                "Shopify → Paymob/Bosta → bank workflow requires at least one.",
+            )
+        ]
+    problems: list[str] = []
+    for p in providers:
+        pp = p.posting_profile
+        if pp is None or not pp.is_active or pp.company_id != company.id:
+            problems.append(f"{p.normalized_code}: posting profile missing/inactive")
+            continue
+        ctrl = pp.control_account
+        if ctrl is None or ctrl.is_header or str(ctrl.status) != "ACTIVE":
+            problems.append(f"{p.normalized_code}: control account not postable")
+    if problems:
+        return [Violation("provider_posting_profile", "; ".join(problems) + ".")]
+    return []
+
+
+def _bank_account_violations(company) -> list[Violation]:
+    """Go-live: the canonical bank-import workflow needs a postable Cash/Bank GL
+    account. (The GL account model carries no currency; EGP-ness of bank DATA is
+    enforced at import by ``require_pilot_currency`` and drift-checked by
+    ``non_egp_bank_data``.)"""
+    from accounting.models import Account
+
+    ok = Account.objects.filter(
+        company=company, role=Account.AccountRole.LIQUIDITY, status=Account.Status.ACTIVE, is_header=False
+    ).exists()
+    if not ok:
+        return [
+            Violation(
+                "bank_account_missing",
+                "No active postable Cash/Bank (LIQUIDITY) GL account exists for the canonical bank import.",
+            )
+        ]
+    return []
+
+
+def _legacy_bank_violations(company) -> list[Violation]:
+    """The legacy ``bank_connector`` module is out of scope (the canonical
+    ``accounting`` bank import is the supported path). A clean isolated deployment
+    holds no legacy bank rows; any present are drift the founder must clear."""
+    from bank_connector.models import BankAccount, BankStatement
+
+    n = BankAccount.objects.filter(company=company).count() + BankStatement.objects.filter(company=company).count()
+    if n:
+        return [
+            Violation(
+                "legacy_bank_data",
+                f"{n} legacy bank_connector record(s) exist; the legacy banking module is out of scope.",
+            )
+        ]
     return []
 
 
@@ -196,6 +393,23 @@ def _inventory_state_violations(company) -> list[Violation]:
     if mapped:
         out.append(Violation("item_inv_cogs_mapping", f"{mapped} item(s) carry inventory/COGS accounts."))
 
+    # Option B never wires the shopify_connector INVENTORY / COGS module roles
+    # (the fulfillment COGS builder consults these). A fresh isolated deployment
+    # activated at setup (0 stores) has none; a store onboarded before activation
+    # would — the founder must remove them before go-live.
+    from accounting.mappings import ModuleAccountMapping
+
+    module_maps = ModuleAccountMapping.objects.filter(
+        company=company, module="shopify_connector", role__in=("INVENTORY", "COGS")
+    ).count()
+    if module_maps:
+        out.append(
+            Violation(
+                "module_inv_cogs_mapping",
+                f"{module_maps} shopify_connector INVENTORY/COGS module mapping(s) exist; Option B forbids them.",
+            )
+        )
+
     store_mappings = (
         ShopifyStore.objects.filter(company=company)
         .filter(Q(default_inventory_account__isnull=False) | Q(default_cogs_account__isnull=False))
@@ -210,6 +424,13 @@ def _inventory_state_violations(company) -> list[Violation]:
     if StockLedgerEntry.objects.filter(company=company).exists():
         out.append(Violation("stock_ledger", "Stock-ledger entries exist; Option B forbids stock movements."))
 
+    from projections.models import InventoryBalance
+
+    if InventoryBalance.objects.filter(company=company).exists():
+        out.append(
+            Violation("inventory_balances", "Inventory-balance rows exist; Option B permits no residual balance state.")
+        )
+
     cogs_pending = ShopifyFulfillment.objects.filter(
         company=company, status=ShopifyFulfillment.Status.COGS_PENDING
     ).count()
@@ -217,5 +438,68 @@ def _inventory_state_violations(company) -> list[Violation]:
         out.append(
             Violation("cogs_pending", f"{cogs_pending} COGS_PENDING fulfillment(s) exist (deferred-COGS residue).")
         )
+
+    return out
+
+
+def _out_of_scope_data_violations(company) -> list[Violation]:
+    """Detect data from capabilities the pilot forbids: Shopify Payments payout
+    accounting, disputes/chargebacks, and any non-EGP order/refund the pilot's
+    ingestion gates should never have admitted (drift detection)."""
+    from shopify_connector.models import ShopifyDispute, ShopifyOrder, ShopifyPayout, ShopifyRefund
+
+    out: list[Violation] = []
+
+    payouts = ShopifyPayout.objects.filter(company=company).count()
+    if payouts:
+        out.append(
+            Violation("payout_data", f"{payouts} Shopify payout record(s) exist; payout accounting is out of scope.")
+        )
+
+    disputes = ShopifyDispute.objects.filter(company=company).count()
+    if disputes:
+        out.append(Violation("dispute_data", f"{disputes} Shopify dispute record(s) exist; disputes are out of scope."))
+
+    non_egp_orders = ShopifyOrder.objects.filter(company=company).exclude(currency=EGP).exclude(currency="").count()
+    non_egp_refunds = ShopifyRefund.objects.filter(company=company).exclude(currency=EGP).exclude(currency="").count()
+    if non_egp_orders or non_egp_refunds:
+        out.append(
+            Violation(
+                "non_egp_shopify_data",
+                f"{non_egp_orders} non-EGP Shopify order(s) and {non_egp_refunds} non-EGP refund(s) "
+                "exist; the pilot ingests EGP only.",
+            )
+        )
+
+    out += _non_egp_financial_state_violations(company)
+    return out
+
+
+def _non_egp_financial_state_violations(company) -> list[Violation]:
+    """EGP-only drift detection across the rest of the in-scope financial state:
+    journal entries, provider settlement records, and canonical bank statements.
+    Runtime gates reject new foreign ingestion; these catch anything that predates
+    activation or slipped through an ungated path."""
+    from accounting.models import BankStatement as CanonicalBankStatement
+    from accounting.models import JournalEntry
+    from platform_connectors.models import PlatformSettlement
+
+    out: list[Violation] = []
+
+    je = JournalEntry.objects.filter(company=company).exclude(currency=EGP).exclude(currency="").count()
+    if je:
+        out.append(
+            Violation("non_egp_journal_data", f"{je} non-EGP journal entr(ies) exist; the pilot books EGP only.")
+        )
+
+    st = PlatformSettlement.objects.filter(company=company).exclude(currency=EGP).exclude(currency="").count()
+    if st:
+        out.append(
+            Violation("non_egp_settlement_data", f"{st} non-EGP provider settlement record(s) exist (EGP only).")
+        )
+
+    bank = CanonicalBankStatement.objects.filter(company=company).exclude(currency=EGP).exclude(currency="").count()
+    if bank:
+        out.append(Violation("non_egp_bank_data", f"{bank} non-EGP canonical bank statement(s) exist (EGP only)."))
 
     return out

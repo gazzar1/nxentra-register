@@ -768,6 +768,18 @@ def import_settlement_csv(
     if not batches:
         return []
 
+    # A4: the constrained pilot ingests its home currency (EGP) only. Reject any
+    # foreign-currency batch up-front — before a single PAYMENT_SETTLEMENT_RECEIVED
+    # event is emitted — so no FX conversion is ever booked and no partial import
+    # is left behind.
+    from accounts.pilot_policy import require_pilot_currency
+
+    for _batch in batches:
+        _cur = (
+            str(_batch.get("currency") or "").strip().upper() or company.functional_currency or company.default_currency
+        )
+        require_pilot_currency(company, _cur, context=f"Settlement batch {_batch.get('payout_batch_id')}")
+
     # A85 chunk 3b: validate override params before emitting anything.
     # If validation fails, raise SettlementImportError (caller surfaces to user).
     override_active = bool(period_override and fiscal_year_override)

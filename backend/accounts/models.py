@@ -941,3 +941,36 @@ class Notification(models.Model):
             for m in memberships
         ]
         return cls.objects.bulk_create(notifications)
+
+
+class PilotProfileActivation(models.Model):
+    """A4: durable audit of a constrained-pilot profile activation.
+
+    The authoritative state is Company.pilot_profile; this row records WHO/WHEN
+    activated it, written in the SAME transaction as the profile save (see
+    accounts/management/commands/activate_pilot_profile). A plain audit table
+    (not a projection read-model), so it carries no write-barrier context.
+    """
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="pilot_profile_activations",
+    )
+    profile = models.CharField(max_length=32)
+    activated_at = models.DateTimeField(auto_now_add=True)
+    activated_by = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    source = models.CharField(max_length=32, default="cli", help_text="How activation was performed, e.g. 'cli'.")
+    note = models.TextField(blank=True, default="")
+
+    class Meta:
+        indexes = [models.Index(fields=["company", "activated_at"])]
+
+    def __str__(self) -> str:
+        return f"{self.company_id} -> {self.profile} @ {self.activated_at:%Y-%m-%d}"
