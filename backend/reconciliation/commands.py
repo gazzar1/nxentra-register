@@ -1036,6 +1036,13 @@ def auto_match_statement(
 
     require(actor, "accounting.reconciliation")
 
+    # A4: automatic matching is an unsafe bank action for the constrained pilot —
+    # only the founder-reviewed manual workflow (manual_match, import,
+    # resolve_difference) is supported.
+    from accounts.pilot_policy import Capability, require_supported
+
+    require_supported(actor.company, Capability.UNSAFE_BANK_MATCH)
+
     try:
         statement = BankStatement.objects.get(
             id=statement_id,
@@ -1671,6 +1678,11 @@ def unmatch_line(
     """
     require(actor, "accounting.reconciliation")
 
+    # A4: unmatch/rematch is an unsafe bank action for the constrained pilot.
+    from accounts.pilot_policy import Capability, require_supported
+
+    require_supported(actor.company, Capability.UNSAFE_BANK_MATCH)
+
     try:
         bank_line = BankStatementLine.objects.get(
             id=bank_line_id,
@@ -1726,6 +1738,11 @@ def unmatch_and_delete_statement(
     reverses it) and leave the EBD line stranded as reconciled.
     """
     require(actor, "accounting.reconciliation")
+
+    # A4: bulk unmatch + statement delete is an unsafe bank action for the pilot.
+    from accounts.pilot_policy import Capability, require_supported
+
+    require_supported(actor.company, Capability.UNSAFE_BANK_MATCH)
 
     try:
         statement = BankStatement.objects.get(id=statement_id, company=actor.company)

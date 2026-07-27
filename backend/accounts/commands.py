@@ -153,6 +153,13 @@ def register_signup(
     """
     from django.utils.text import slugify
 
+    from accounts.pilot_policy import deployment_has_pilot
+
+    # A4: one merchant per constrained-pilot deployment — block registering a
+    # second merchant company once a pilot is active.
+    if deployment_has_pilot():
+        return CommandResult.fail("Registration is disabled in a constrained-pilot deployment.")
+
     with rls_bypass():
         # Validate email uniqueness
         email = email.lower().strip()
@@ -464,6 +471,14 @@ def create_company(user, company_name: str, default_currency: str = "USD") -> Co
     """
     from django.utils.text import slugify
 
+    from accounts.pilot_policy import deployment_has_pilot
+
+    # A4: one merchant per constrained-pilot deployment — block a second company.
+    if deployment_has_pilot():
+        return CommandResult.fail(
+            "Company creation is disabled in a constrained-pilot deployment (one merchant per deployment)."
+        )
+
     with rls_bypass():
         if not company_name or not company_name.strip():
             return CommandResult.fail("Company name is required.")
@@ -698,8 +713,12 @@ def create_user_with_membership(
         CommandResult with user and membership
     """
     from accounts.authz import require
+    from accounts.pilot_policy import Capability, require_supported
 
     require(actor, "company.manage_users")
+    # Single-user contract: the constrained pilot admits exactly one OWNER; no
+    # additional member may be provisioned by any path.
+    require_supported(actor.company, Capability.ADD_MEMBER)
 
     password_errors = password_rule_errors(password)
     if password_errors:
@@ -1076,6 +1095,11 @@ def add_user_to_company(
     from accounts.authz import require
 
     require(actor, "company.manage_users")
+
+    # A4: single-user pilot — block adding another active membership.
+    from accounts.pilot_policy import Capability, require_supported
+
+    require_supported(actor.company, Capability.ADD_MEMBER)
 
     try:
         user = User.objects.get(pk=user_id)
@@ -1621,6 +1645,13 @@ def update_company_settings(
 
     if not changes:
         return CommandResult.ok({"company": company, "message": "No changes"})
+
+    # Constrained pilot freezes the currency + fiscal configuration (EGP / January).
+    # Non-currency/fiscal edits (name, separators, Arabic fields) remain allowed.
+    if changes.keys() & {"default_currency", "fiscal_year_start_month"}:
+        from accounts.pilot_policy import Capability, require_supported
+
+        require_supported(company, Capability.CURRENCY_FISCAL_CHANGE)
 
     # 3. Validate settings
     if "default_currency" in changes:
@@ -2521,6 +2552,12 @@ def create_invitation(
 
     require(actor, "company.manage_users")
 
+    # A4: the constrained pilot is single-user (one active OWNER). Block adding
+    # members / invitations.
+    from accounts.pilot_policy import Capability, require_supported
+
+    require_supported(actor.company, Capability.ADD_MEMBER)
+
     # Normalize email
     email = email.lower().strip()
 
@@ -2706,6 +2743,16 @@ def accept_invitation(
     # Check if user with this email already exists
     if User.objects.filter(email=invitation.email).exists():
         return CommandResult.fail("An account with this email already exists. Please log in instead.")
+
+    # Single-user contract: no membership may be materialized into a constrained
+    # pilot company, even from an invitation issued before the profile was set.
+    from accounts.pilot_policy import Capability, require_supported
+
+    with rls_bypass():
+        for company_id in invitation.company_ids:
+            target = Company.objects.filter(pk=company_id).first()
+            if target is not None:
+                require_supported(target, Capability.ADD_MEMBER)
 
     # Use invitation name if no name provided
     user_name = name.strip() if name else invitation.name
@@ -3667,7 +3714,15 @@ def _setup_shopify_accounts(company):
     """Create Shopify GL accounts and module account mappings during onboarding."""
     from accounting.mappings import ModuleAccountMapping
     from accounting.models import Account
+    from accounts.pilot_policy import Capability, is_supported
     from projections.write_barrier import projection_writes_allowed
+
+    # Option B: a constrained-pilot company never wires INVENTORY / COGS module
+    # mappings. All items are forced NON_STOCK, so no fulfillment COGS line is
+    # ever built and the mapping would be inert — omitting it removes the path
+    # entirely. The GL accounts may still exist from the chart template; only the
+    # module ROLE mapping the COGS builder consults is withheld.
+    skip_inventory_cogs = not is_supported(company, Capability.INVENTORY)
 
     SHOPIFY_ACCOUNTS = [
         ("SALES_REVENUE", "41000", "Sales Revenue", "REVENUE", "SALES"),
@@ -3718,6 +3773,8 @@ def _setup_shopify_accounts(company):
                     "normal_balance": "DEBIT" if acct_type in ("ASSET", "EXPENSE") else "CREDIT",
                 },
             )
+            if skip_inventory_cogs and role in ("INVENTORY", "COGS"):
+                continue
             ModuleAccountMapping.objects.update_or_create(
                 company=company,
                 module="shopify_connector",

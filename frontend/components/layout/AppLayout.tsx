@@ -1,6 +1,7 @@
 import { PropsWithChildren, useEffect } from "react";
 import { useRouter } from "next/router";
 import { useAuth } from "@/contexts/AuthContext";
+import { ConstrainedPilotNotice } from "./ConstrainedPilotNotice";
 import { SidebarProvider } from "@/contexts/SidebarContext";
 import { Sidebar } from "./Sidebar";
 import { Header } from "./Header";
@@ -66,6 +67,7 @@ export function AppLayout({ children }: PropsWithChildren) {
             <Header />
           </div>
           <main className="flex-1 overflow-y-auto p-4 md:p-6 print:p-0 print:overflow-visible">
+            <ConstrainedPilotNotice />
             <ModuleGuard>{children}</ModuleGuard>
           </main>
         </div>

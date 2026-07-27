@@ -355,6 +355,111 @@ def test_no_direct_bank_statement_line_difference_writes_outside_projection():
 
 
 # =============================================================================
+# Rule 5 (A4): Company.is_active must have NO signal-bypassing mutation path
+# =============================================================================
+#
+# The constrained-pilot freeze of Company.is_active is enforced by a pre_save
+# signal (accounts/apps.py). QuerySet.update(), bulk_update() and raw SQL do
+# NOT fire pre_save — the guard is only sound while no such path exists in app
+# code. This rule fails CI the moment one is added, forcing an explicit,
+# reviewed decision instead of a silent bypass.
+
+COMPANY_IS_ACTIVE_MUTATION_ALLOWLIST: set[str] = set()
+"""Empty by design. An entry here means someone consciously accepted a
+signal-bypassing Company.is_active mutation — it needs a written justification
+and its own guard."""
+
+
+def _attribute_chain_root(node) -> str | None:
+    """Walk `Company.objects.filter(...).update` back to its root Name."""
+    while isinstance(node, ast.Attribute):
+        node = node.value
+    while isinstance(node, ast.Call):
+        node = node.func
+        while isinstance(node, ast.Attribute):
+            node = node.value
+    return node.id if isinstance(node, ast.Name) else None
+
+
+def _company_is_active_mutations(path: Path) -> list[str]:
+    try:
+        source = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return []
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+
+    hits: list[str] = []
+
+    for node in ast.walk(tree):
+        # Pattern A: Company.objects...update(is_active=...) — QuerySet.update
+        # rooted at the Company manager.
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            root = _attribute_chain_root(node.func.value)
+            if node.func.attr == "update" and root == "Company":
+                if any(kw.arg == "is_active" for kw in node.keywords):
+                    hits.append(f"{node.lineno}: Company QuerySet.update(is_active=...)")
+            # Pattern B: Company.objects.bulk_update(objs, [... 'is_active' ...])
+            if node.func.attr == "bulk_update" and root == "Company":
+                for arg in list(node.args[1:]) + [kw.value for kw in node.keywords if kw.arg == "fields"]:
+                    if isinstance(arg, ast.List | ast.Tuple | ast.Set) and any(
+                        isinstance(el, ast.Constant) and el.value == "is_active" for el in arg.elts
+                    ):
+                        hits.append(f"{node.lineno}: Company bulk_update([... 'is_active' ...])")
+
+        # Pattern C: `<company-named var>.is_active = ...` direct assignment.
+        # Heuristic on the variable name; every legitimate is_active assignment
+        # in app code today is on user/membership/binding/source_system vars.
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Attribute)
+                    and target.attr == "is_active"
+                    and isinstance(target.value, ast.Name)
+                    and "company" in target.value.id.lower()
+                    and "membership" not in target.value.id.lower()
+                ):
+                    hits.append(f"{node.lineno}: direct assignment to {target.value.id}.is_active")
+
+    # Pattern D: raw SQL touching the company table's is_active column.
+    for lineno, line in enumerate(source.splitlines(), 1):
+        upper = line.upper()
+        if "ACCOUNTS_COMPANY" in upper and "IS_ACTIVE" in upper and "UPDATE" in upper:
+            hits.append(f"{lineno}: raw SQL UPDATE on accounts_company.is_active")
+
+    return hits
+
+
+def test_no_signal_bypassing_company_is_active_mutation():
+    """A4: the pilot freeze of Company.is_active relies on pre_save firing.
+    App code must never mutate it via QuerySet.update / bulk_update / raw SQL
+    (which bypass signals) or ad-hoc attribute assignment outside the guarded
+    save path. Audited clean 2026-07-25; this rule holds the line.
+    """
+    files = _python_files_under(
+        BACKEND_ROOT,
+        exclude=("migrations/", "tests/", "venv", ".venv", "__pycache__"),
+    )
+
+    violations: list[str] = []
+    for path in files:
+        rel = path.relative_to(BACKEND_ROOT).as_posix()
+        if rel in COMPANY_IS_ACTIVE_MUTATION_ALLOWLIST:
+            continue
+        for hit in _company_is_active_mutations(path):
+            violations.append(f"{rel}:{hit}")
+
+    assert not violations, (
+        "Company.is_active mutations that bypass the pre_save pilot guard are "
+        "forbidden (QuerySet.update / bulk_update / raw SQL / direct assignment). "
+        "Route the change through Model.save() so the A4 freeze applies, or add "
+        "a justified allowlist entry. Violations:\n  " + "\n  ".join(violations)
+    )
+
+
+# =============================================================================
 # Meta: keep allowlists small + intentional
 # =============================================================================
 
@@ -369,3 +474,8 @@ def test_allowlists_are_documented_in_this_file():
     assert len(PROJECTION_EMIT_EVENT_ALLOWLIST) <= max_per_list
     assert len(RECONCILED_WRITE_ALLOWLIST) <= max_per_list
     assert len(DIFFERENCE_WRITE_ALLOWLIST) <= max_per_list
+    assert len(COMPANY_IS_ACTIVE_MUTATION_ALLOWLIST) == 0, (
+        "COMPANY_IS_ACTIVE_MUTATION_ALLOWLIST must stay empty — a signal-"
+        "bypassing Company.is_active mutation needs its own guard, not an "
+        "allowlist entry."
+    )

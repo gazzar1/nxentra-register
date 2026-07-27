@@ -255,6 +255,13 @@ def connect_stripe_account(company, credential: str, display_name: str = ""):
       * seed the platform_stripe accounts + SettlementProvider and kick an
         initial backfill.
     """
+    from accounts.pilot_policy import Capability, require_supported
+
+    # A4: Stripe is out of scope for the constrained pilot. Gate at the single
+    # place a credential first enters the system, so no Stripe account, sync,
+    # webhook or accounting can ever begin for a pilot company.
+    require_supported(company, Capability.STRIPE)
+
     from django.conf import settings as dj_settings
 
     from accounting.commands import CommandResult

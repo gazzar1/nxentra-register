@@ -40,6 +40,16 @@ class ShopifyStore(models.Model):
         max_length=255,
         help_text="e.g. my-store.myshopify.com",
     )
+    # A4: durable snapshot of the store's Shopify operating currency, captured
+    # from the shop API on connect/sync (and from the first order). Empty until
+    # first captured. The constrained-pilot go-live preflight requires this to be
+    # EGP (or a live probe to confirm EGP) before ingestion is trusted.
+    shop_currency = models.CharField(
+        max_length=3,
+        blank=True,
+        default="",
+        help_text="Store's Shopify presentment/shop currency (ISO code), refreshed from Shopify.",
+    )
     access_token = EncryptedTextField(
         blank=True,
         help_text="Shopify Admin API access token. Encrypted at rest (A47).",

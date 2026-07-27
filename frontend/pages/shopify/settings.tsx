@@ -38,6 +38,8 @@ import { postingProfilesService } from "@/services/sales.service";
 import type { PostingProfile } from "@/types/sales";
 import { useAccounts } from "@/queries/useAccounts";
 import { isShopifyEmbedded, redirectTopLevel } from "@/lib/shopify-embed";
+import { useAuth } from "@/contexts/AuthContext";
+import { isConstrainedPilot } from "@/lib/constrained-pilot";
 import apiClient from "@/lib/api-client";
 
 export default function ShopifySettingsPage() {
@@ -45,6 +47,10 @@ export default function ShopifySettingsPage() {
   const router = useRouter();
   const { toast } = useToast();
   const { formatDate } = useCompanyFormat();
+  const { company } = useAuth();
+  // A4: payout accounting is out of scope for the constrained pilot; hide the
+  // action (the endpoint 403s regardless — this just prevents a dead-end click).
+  const pilot = isConstrainedPilot(company?.pilot_profile);
 
   const [store, setStore] = useState<ShopifyStore | null>(null);
   const [loading, setLoading] = useState(true);
@@ -587,14 +593,16 @@ export default function ShopifySettingsPage() {
                   )}
                   Sync Products
                 </Button>
-                <Button onClick={handleSyncPayouts} disabled={syncingPayouts}>
-                  {syncingPayouts ? (
-                    <Loader2 className="me-2 h-4 w-4 animate-spin" />
-                  ) : (
-                    <RefreshCw className="me-2 h-4 w-4" />
-                  )}
-                  Sync Payouts
-                </Button>
+                {!pilot && (
+                  <Button onClick={handleSyncPayouts} disabled={syncingPayouts}>
+                    {syncingPayouts ? (
+                      <Loader2 className="me-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <RefreshCw className="me-2 h-4 w-4" />
+                    )}
+                    Sync Payouts
+                  </Button>
+                )}
                 <Button onClick={handleResyncOrders} disabled={resyncingOrders} variant="outline">
                   {resyncingOrders ? (
                     <Loader2 className="me-2 h-4 w-4 animate-spin" />

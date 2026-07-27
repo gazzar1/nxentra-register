@@ -24,6 +24,21 @@ class CompanyMembershipPermissionInline(admin.TabularInline):
     readonly_fields = ["granted_at", "granted_by"]
 
 
+def _is_pilot_company(company) -> bool:
+    """A4: lazily resolve whether ``company`` is on a constrained-pilot profile."""
+    if company is None:
+        return False
+    from accounts.pilot_policy import is_pilot
+
+    return is_pilot(company)
+
+
+def _deployment_has_pilot() -> bool:
+    from accounts.pilot_policy import deployment_has_pilot
+
+    return deployment_has_pilot()
+
+
 class CompanyMembershipInline(admin.TabularInline):
     """Inline display of memberships within user/company."""
 
@@ -31,6 +46,21 @@ class CompanyMembershipInline(admin.TabularInline):
     extra = 0
     autocomplete_fields = ["user", "company"]
     # Removed filter_horizontal - can't use with through model
+
+    def has_add_permission(self, request, obj=None):
+        # A4: single-user contract — the admin inline must not add a membership
+        # to (or under a user of) a constrained-pilot deployment.
+        if _deployment_has_pilot():
+            return False
+        return super().has_add_permission(request, obj)
+
+    def get_readonly_fields(self, request, obj=None):
+        ro = list(super().get_readonly_fields(request, obj))
+        # A4: freeze reactivation/re-homing of existing membership rows in a
+        # pilot deployment (is_active False→True = re-adding a member).
+        if _deployment_has_pilot():
+            ro += ["is_active", "company", "user", "role"]
+        return ro
 
 
 @admin.register(Company)
@@ -42,6 +72,26 @@ class CompanyAdmin(admin.ModelAdmin):
     search_fields = ["name", "name_ar", "slug"]
     prepopulated_fields = {"slug": ("name",)}
     ordering = ["name"]
+
+    def get_readonly_fields(self, request, obj=None):
+        ro = list(super().get_readonly_fields(request, obj))
+        # A4: a constrained-pilot company's currency, fiscal configuration and
+        # active state are frozen — the admin change form must not offer them.
+        # (The pre_save guard blocks is_active regardless; this removes the
+        # currency/fiscal admin bypass and the misleading editable widgets.)
+        if _is_pilot_company(obj):
+            ro += ["default_currency", "fiscal_year_start_month", "is_active"]
+        return ro
+
+    def has_delete_permission(self, request, obj=None):
+        # A4: a pilot company must not be deletable — not via the change form
+        # (obj is the company) and not via the bulk delete action (obj=None;
+        # in the isolated pilot deployment the only row IS the pilot).
+        if obj is not None and _is_pilot_company(obj):
+            return False
+        if obj is None and _deployment_has_pilot():
+            return False
+        return super().has_delete_permission(request, obj)
 
     fieldsets = (
         (
@@ -259,6 +309,23 @@ class CompanyMembershipAdmin(admin.ModelAdmin):
     readonly_fields = ["joined_at", "updated_at"]
     autocomplete_fields = ["user", "company"]
     inlines = [CompanyMembershipPermissionInline]
+
+    def has_add_permission(self, request):
+        # A4: single-user contract — no new membership may be created through the
+        # admin while a constrained-pilot deployment is active (the add form can
+        # target any company, including the pilot's).
+        if _deployment_has_pilot():
+            return False
+        return super().has_add_permission(request)
+
+    def get_readonly_fields(self, request, obj=None):
+        ro = list(super().get_readonly_fields(request, obj))
+        # A4: freeze reactivation (is_active False→True re-adds a member) and
+        # re-homing (company/user/role edits) of membership rows in a pilot
+        # deployment.
+        if _deployment_has_pilot():
+            ro += ["is_active", "company", "user", "role"]
+        return ro
 
 
 @admin.register(NxPermission)

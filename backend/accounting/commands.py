@@ -1914,6 +1914,12 @@ def configure_periods(
         period_count: Ignored — always 13 (12 normal + 1 adjustment)
     """
     require(actor, "periods.configure")
+    # Constrained pilot freezes the fiscal configuration. Lazy posting-time
+    # provisioning (`ensure_fiscal_periods_for_date`) and close/open of individual
+    # periods remain available; only interactive re-configuration is blocked.
+    from accounts.pilot_policy import Capability, require_supported
+
+    require_supported(actor.company, Capability.CURRENCY_FISCAL_CHANGE)
 
     # Standard ERP: always 13 periods (12 monthly + 1 adjustment)
     period_count = 13

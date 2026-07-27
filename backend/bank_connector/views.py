@@ -17,11 +17,26 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts.authz import resolve_actor
+from accounts.authz import resolve_actor as _resolve_actor_raw
 
 from .exceptions import scan_all
 from .models import BankAccount, BankStatement, BankTransaction, ReconciliationException
 from .parsers import apply_column_mapping, parse_csv_file, preview_csv
+
+
+def resolve_actor(request):
+    """A4: the legacy /banking (bank_connector) module is out of scope for the
+    constrained pilot — only the canonical bank CSV workflow is supported. Gate
+    every bank_connector entry point through this one shared boundary; a pilot
+    company gets a stable HTTP 403 pilot-scope error. Non-pilot companies are
+    unaffected."""
+    from accounts.pilot_policy import Capability, require_supported
+
+    actor = _resolve_actor_raw(request)
+    if actor.company is not None:
+        require_supported(actor.company, Capability.LEGACY_BANKING)
+    return actor
+
 
 # ─── Bank Accounts ──────────────────────────────────────────────
 

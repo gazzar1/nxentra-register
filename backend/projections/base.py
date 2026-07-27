@@ -127,6 +127,14 @@ class BaseProjection(ABC):
         Returns:
             Number of events processed
         """
+        from accounts.pilot_policy import Capability, require_supported
+
+        # A4: rebuild/replay is disabled for constrained-pilot companies at THIS
+        # shared method — one choke point covering the CLI, HTTP admin, Celery
+        # task and tenant-replay entry points. The raise is the first statement,
+        # so a blocked rebuild never clears or mutates projection state.
+        require_supported(company, Capability.PROJECTION_REBUILD)
+
         from accounts.rls import rls_bypass as _rls_bypass
 
         # The celery rebuild task and tenant replay call this directly, so

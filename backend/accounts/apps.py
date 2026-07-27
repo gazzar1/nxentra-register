@@ -6,6 +6,39 @@ from django.conf import settings
 from django.db.backends.signals import connection_created
 
 
+def _freeze_pilot_is_active(sender, instance, **kwargs):
+    """A4: a constrained-pilot company's active state is frozen. There is
+    no command/event that flips ``Company.is_active`` — only Django admin —
+    so this central pre_save guard blocks deactivation (and any later
+    reactivation) while a pilot profile is set. Isolation is enforced from
+    the stored (old) row, so a same-save profile edit cannot slip past it.
+
+    MODULE-LEVEL on purpose: Signal.connect defaults to a weak reference, and a
+    receiver defined inside ``ready()`` can be garbage-collected after ``ready``
+    returns — the guard then silently never fires (exactly what CI run
+    30162602399 exposed). A module-level function plus ``weak=False`` makes
+    delivery unconditional. Models are imported lazily (apps may not be loaded
+    when this module is imported)."""
+    if not instance.pk:
+        return  # creation
+    from accounts import rls
+    from accounts.models import Company
+
+    with rls.rls_bypass():
+        old = sender.objects.filter(pk=instance.pk).values("is_active", "pilot_profile").first()
+    if not old or old["is_active"] == instance.is_active:
+        return
+    if old["pilot_profile"] and old["pilot_profile"] != Company.PilotProfile.NONE:
+        from accounts.pilot_policy import PilotScopeBlocked
+
+        raise PilotScopeBlocked(
+            "company_is_active_change",
+            str(old["pilot_profile"]),
+            "A constrained-pilot company's active state is frozen; "
+            "deactivation/reactivation is blocked while the pilot profile is set.",
+        )
+
+
 class AccountsConfig(AppConfig):
     """Configuration for the accounts app."""
 
@@ -15,7 +48,10 @@ class AccountsConfig(AppConfig):
 
     def ready(self):
         """Initialize app when Django starts."""
+        from django.db.models.signals import pre_save
+
         from accounts import rls
+        from accounts.models import Company
         from accounts.module_registry import ModuleCategory, SidebarTab, module_registry
 
         def _on_connection_created(sender, connection, **kwargs):
@@ -25,6 +61,17 @@ class AccountsConfig(AppConfig):
         connection_created.connect(
             _on_connection_created,
             dispatch_uid="accounts.rls_init",
+            # Local closure: without a strong reference it can be GC'd and the
+            # RLS bypass would silently stop being applied to new connections.
+            weak=False,
+        )
+
+        pre_save.connect(
+            _freeze_pilot_is_active,
+            sender=Company,
+            dispatch_uid="accounts.freeze_pilot_is_active",
+            # Safety guard: delivery must not depend on GC timing.
+            weak=False,
         )
 
         # =====================================================================

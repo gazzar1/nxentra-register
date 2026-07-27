@@ -127,6 +127,13 @@ def create_item(
         except Account.DoesNotExist:
             return CommandResult.fail("COGS account not found.")
 
+    # A4 / Option B: a constrained-pilot company may not create INVENTORY items
+    # or items carrying inventory/COGS accounts.
+    from accounts.pilot_policy import Capability, require_supported
+
+    if item_type == Item.ItemType.INVENTORY or inventory_account or cogs_account:
+        require_supported(actor.company, Capability.INVENTORY)
+
     # For INVENTORY items, inventory_account and cogs_account should be set
     if item_type == Item.ItemType.INVENTORY:
         if not inventory_account:
@@ -190,6 +197,20 @@ def update_item(actor: ActorContext, item_id: int, **updates) -> CommandResult:
         item = Item.objects.select_for_update().get(company=actor.company, pk=item_id)
     except Item.DoesNotExist:
         return CommandResult.fail("Item not found.")
+
+    # A4 / Option B: block re-arming inventory on a constrained-pilot company via
+    # an item update (changing type to INVENTORY or attaching inventory/COGS
+    # accounts).
+    from accounts.pilot_policy import Capability, require_supported
+
+    if (
+        updates.get("item_type") == Item.ItemType.INVENTORY
+        or updates.get("inventory_account_id")
+        or updates.get("cogs_account_id")
+        or updates.get("inventory_account")
+        or updates.get("cogs_account")
+    ):
+        require_supported(actor.company, Capability.INVENTORY)
 
     changes = {}
 

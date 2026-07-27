@@ -60,6 +60,32 @@ TOPIC_HANDLERS = {
 }
 
 
+def _required_capability(platform_slug: str, canonical_topic: str | None):
+    """A4: the capability required to PROCESS a webhook for ``platform_slug`` /
+    ``canonical_topic``, or ``None`` when the delivery is in scope.
+
+    Per-platform, per-topic — not a blanket block:
+
+      - Stripe is entirely out of scope, for every topic (call with
+        ``canonical_topic=None`` to block it early, before ``on_unhandled_topic``
+        would enqueue its payout pull);
+      - Shopify payout settlement → ``SHOPIFY_PAYOUT_ACCOUNTING``; Shopify
+        disputes → ``SHOPIFY_DISPUTES``; Shopify order/refund/fulfillment
+        accounting remains available (returns ``None``);
+      - any other platform is in scope by default.
+    """
+    from accounts.pilot_policy import Capability
+
+    if platform_slug == "stripe":
+        return Capability.STRIPE
+    if platform_slug == "shopify":
+        return {
+            "payout_settled": Capability.SHOPIFY_PAYOUT_ACCOUNTING,
+            "dispute_created": Capability.SHOPIFY_DISPUTES,
+        }.get(canonical_topic or "")
+    return None
+
+
 class PlatformWebhookView(APIView):
     """
     POST /api/platforms/<slug>/webhooks/
@@ -89,6 +115,25 @@ class PlatformWebhookView(APIView):
             logger.warning("Could not resolve company from %s webhook", platform_slug)
             return HttpResponse(status=200)  # Acknowledge but skip
 
+        # A4: constrained-pilot scope. Acknowledge the delivery (so the provider
+        # does not retry-storm) but emit NO canonical event and take NO side
+        # effect for an out-of-scope platform/topic — never silently process the
+        # financial payload. Not A5's full terminal-state model.
+        #
+        # A fully out-of-scope platform (Stripe) is blocked HERE, before
+        # `on_unhandled_topic` runs — Stripe enqueues its payout pull there, which
+        # must not fire for a pilot company. Per-topic Shopify blocks (payout,
+        # dispute) are applied below, once the canonical topic is known, so
+        # Shopify order/refund/fulfillment accounting stays in scope.
+        from accounts.pilot_policy import skip_if_unsupported
+
+        platform_cap = _required_capability(platform_slug, None)
+        if (
+            platform_cap is not None
+            and skip_if_unsupported(company, platform_cap, task=f"platform_webhook:{platform_slug}") is not None
+        ):
+            return HttpResponse(status=200)
+
         # Step 3: Parse topic
         topic = connector.parse_webhook_topic(request)
         if not topic:
@@ -106,6 +151,16 @@ class PlatformWebhookView(APIView):
         canonical_topic = (
             connector.map_topic_to_canonical(topic) if hasattr(connector, "map_topic_to_canonical") else None
         )
+
+        # A4: per-topic pilot scope (e.g. Shopify payout / dispute). Acknowledge
+        # but process nothing — no event, no `on_unhandled_topic` side effect.
+        topic_cap = _required_capability(platform_slug, canonical_topic)
+        if (
+            topic_cap is not None
+            and skip_if_unsupported(company, topic_cap, task=f"platform_webhook:{platform_slug}:{canonical_topic}")
+            is not None
+        ):
+            return HttpResponse(status=200)
 
         if not canonical_topic or canonical_topic not in TOPIC_HANDLERS:
             # Not a JE-posting topic. Give the connector a chance to react
