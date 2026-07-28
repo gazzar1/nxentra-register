@@ -115,33 +115,51 @@ None granted. This ADR grants no rule exceptions; it defines how exceptions
 are granted (accepted ADR + named symbols + tests + owner + removal trigger;
 allowlists ratchet down only).
 
-**Temporary bootstrap limitation — RESOLVED in design, pending operational
-proof (not a permanent architecture exception): trusted-checker execution.**
-History and current state:
+**Temporary bootstrap limitation — RESOLVED (was never a permanent
+architecture exception): trusted-checker execution.** History, all stages now
+complete:
 
 - PR #109 introduced the checker in **advisory** mode; its original
   `pull_request` workflow executed `scripts/check_pr_architecture_contract.py`
   from the PR checkout — a PR could therefore modify the checker to pass its
   own body (the accepted P2 finding);
-- the follow-up governance-hardening PR (`chore/trusted-pr-architecture-check`)
-  replaces that design: the workflow now runs on `pull_request_target` (its
-  definition loads from the protected base branch), checks out **only** the
-  exact protected base commit (`github.event.pull_request.base.sha`) into
-  `trusted-base/`, executes the checker from that trusted checkout, keeps
-  read-only permissions and no secrets, and passes the PR body strictly as
-  data via the `PR_BODY` environment variable — static contract tests in
+- PR #110 introduced the trusted-base design that replaced it: the workflow
+  runs on `pull_request_target` (its definition loads from the protected base
+  branch), checks out **only** the exact protected base commit
+  (`github.event.pull_request.base.sha`) into `trusted-base/`, executes the
+  checker from that trusted checkout, keeps read-only permissions and no
+  secrets, and passes the PR body strictly as data via the `PR_BODY`
+  environment variable — static contract tests in
   `backend/tests/test_pr_architecture_workflow_contract.py` pin these
   properties;
 - because a `pull_request_target` workflow is loaded from the base branch,
-  the new definition **cannot prove itself on the PR that introduces it** —
-  it has not yet operated from `main`. The check therefore still must not
-  become a required status check until the merged workflow is observed
-  working on a subsequent real pull request;
-- branch protection remains intentionally deferred.
+  the new definition **could not prove itself on PR #110** — at that point it
+  had not yet operated from `main`, so the check was kept ineligible for
+  required status until observed on a real pull request;
+- PR #111 then **operationally proved it** — see the authoritative proof
+  record below.
 
-*Removal trigger:* Remove this limitation before `PR Architecture Contract`
-becomes required in any GitHub ruleset or branch-protection rule — i.e. only
-after the trusted workflow has been proven on a real PR post-merge.
+*Removal trigger — SATISFIED:* the trigger required proving the trusted
+workflow on a real PR post-merge before `PR Architecture Contract` may become
+required in any GitHub ruleset or branch-protection rule. That condition has
+now been met (proof record below); the limitation is closed, and making the
+check required is now a permitted, separate branch-protection decision.
+
+**Operational proof — PROVEN (authoritative record).** The trusted-base
+workflow design was merged in PR #110 (`main` commit `c660321`) and
+operationally proven on PR #111 (`docs/prove-trusted-pr-architecture-check`)
+by two successful GitHub Actions runs: **30380374955** on head `24946a6` and
+**30381057214** on head `9feb515`. Both executed with event
+`pull_request_target`, GITHUB_TOKEN limited to `Contents: read / Metadata:
+read / PullRequests: read`, a single checkout of exactly the base SHA
+`c6603216aef665eed275b7447570c433ca9bf416` into `trusted-base/`, the checker
+executed as `python trusted-base/scripts/check_pr_architecture_contract.py`
+with the PR body supplied only via `PR_BODY`, and concluded **success**
+("PR Architecture Contract: OK"). No PR code was checked out or executed and
+no secrets were available. The trusted-base design is operationally proven;
+`PR Architecture Contract` is now eligible to become a required status check
+through a separate, deliberate branch-protection change (not configured by
+this PR).
 
 **Known governance debt recorded here:** the ADR directory contains a
 numbering collision — two `0002-*` files
