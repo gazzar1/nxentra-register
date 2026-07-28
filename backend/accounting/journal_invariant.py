@@ -24,12 +24,16 @@ with an EXPLICIT ``ROUND_HALF_EVEN`` — never the ambient context. NaN,
 nothing is ever coerced to zero. There is NO tolerance — not ±0.05, not
 anything (founder decision D3).
 
-Canonical memo-line definition: a line whose payload field ``is_memo_line``
-is truthy (the field the P1 emitter uses to exclude lines from emitted
-totals, accounting/commands.py). Compatibility fallback: historical payloads
-that lack the key default to ``False`` (financial) — identical to
-``JournalLineData``'s dataclass default, so pre-2026 events evaluate exactly
-as they were emitted.
+Canonical memo-line definition: a line is memo iff its RESOLVED ACCOUNT is a
+memo account (``Account.is_memo`` — ``account_type == MEMO``), the same
+semantics the ``JournalEntry.total_debit/total_credit`` properties use. The
+payload ``is_memo_line`` flag is tolerated as historical metadata but is NOT
+authoritative: a financial-account line flagged memo stays financial (so a
+smuggled amount surfaces as UNBALANCED/HEADER_TOTAL_MISMATCH), a memo-account
+line is memo even when the flag is absent, and unknown/malformed/
+cross-company accounts are never guessed to be memo. Only when
+``account_facts is None`` (payload-only evaluation, no resolution possible)
+does the flag serve as the sole signal.
 
 Unknown EXTRA line keys are tolerated (several emitters historically shipped
 ``line_public_id``, which is not part of the schema).
@@ -132,6 +136,7 @@ class AccountFacts:
     company_id: int
     is_active: bool
     is_postable: bool  # active AND not a header/grouping account
+    is_memo: bool = False  # account_type == MEMO (Account.is_memo semantics)
 
 
 # --------------------------------------------------------------------------- #
@@ -139,14 +144,14 @@ class AccountFacts:
 # --------------------------------------------------------------------------- #
 
 
-def _normalize_money(value: object) -> Decimal | None:
-    """Parse AND quantize a monetary value to the canonical ledger quantum
-    (0.01, explicit ROUND_HALF_EVEN). Returns the quantized value, or None
-    when the value is invalid: booleans, NaN, ±Infinity, unparseable strings,
-    unsupported types, quantization failures, and amounts outside the
-    representable range of the JournalLine columns (|v| > MAX_ABS_AMOUNT).
-    Never coerces to zero; callers must not run any further monetary logic on
-    a value that failed normalization."""
+def _normalize_decimal(value: object) -> Decimal | None:
+    """Shared normalization core: parse and quantize to the canonical ledger
+    quantum (0.01, explicit ROUND_HALF_EVEN). Returns the quantized value, or
+    None when invalid: booleans, NaN, ±Infinity, unparseable strings,
+    unsupported types, and quantization failures (e.g. Decimal("1e100") —
+    finite but unquantizable within the decimal context). Never coerces to
+    zero; callers must not run any further monetary logic on a value that
+    failed normalization."""
     if isinstance(value, bool):  # bool is an int subclass — reject explicitly
         return None
     if not isinstance(value, str | int | Decimal):
@@ -158,14 +163,26 @@ def _normalize_money(value: object) -> Decimal | None:
     if not parsed.is_finite():
         return None
     try:
-        quantized = parsed.quantize(TWO_PLACES, rounding=MONEY_ROUNDING)
+        return parsed.quantize(TWO_PLACES, rounding=MONEY_ROUNDING)
     except (InvalidOperation, OverflowError):
-        # e.g. Decimal("1e100"): finite, but unquantizable at 0.01 within the
-        # decimal context — unrepresentable, therefore invalid.
         return None
-    if quantized.copy_abs() > MAX_ABS_AMOUNT:
+
+
+def _normalize_money(value: object) -> Decimal | None:
+    """LINE-amount normalization: the shared core PLUS the representability
+    bound of the JournalLine storage columns (|v| <= MAX_ABS_AMOUNT)."""
+    quantized = _normalize_decimal(value)
+    if quantized is None or quantized.copy_abs() > MAX_ABS_AMOUNT:
         return None
     return quantized
+
+
+def _normalize_header_total(value: object) -> Decimal | None:
+    """HEADER-total normalization: the shared core WITHOUT the per-line
+    storage bound — JournalEntry.total_debit/total_credit are computed
+    aggregates, not (18,2) columns, and a many-line entry may legitimately
+    sum beyond one line's maximum. Unquantizable magnitudes still fail."""
+    return _normalize_decimal(value)
 
 
 def canonical_account_id(value: object) -> str | None:
@@ -208,7 +225,24 @@ def check_posted_journal(
         raise ValueError(f"mode must be 'emit' or 'apply', got {mode!r}")
 
     violations: list[JournalViolation] = []
-    lines = data.get("lines") or []
+
+    # The line CONTAINER must be a list before anything iterates it. A
+    # JSON-valid payload like {"lines": 1} is a structural defect the same
+    # family as a malformed line value — deterministic JE_AMOUNT_INVALID,
+    # never a TypeError, and no line/account/balance/header logic runs on it.
+    raw_lines = data.get("lines")
+    if raw_lines is None:
+        lines: list = []
+    elif isinstance(raw_lines, list):
+        lines = raw_lines
+    else:
+        violations.append(
+            JournalViolation(
+                JE_AMOUNT_INVALID,
+                f"'lines' must be a list of line dicts, got {type(raw_lines).__name__}.",
+            )
+        )
+        return violations
 
     # ---- line-level pass (in payload order) -------------------------------
     financial: list[tuple[object, Decimal, Decimal]] = []  # (line_no, debit, credit)
@@ -230,8 +264,77 @@ def check_posted_journal(
             if seen_line_nos[line_no] == 2:  # report each duplicated value once
                 duplicate_line_nos.append(line_no)
 
-        if line.get("is_memo_line"):
-            continue  # memo lines carry no financial weight and are not posted
+        # ---- account resolution + referential checks (both modes) ---------
+        # Resolved FIRST because memo classification is derived from the
+        # referenced account (Account.is_memo == account_type MEMO — the same
+        # semantics the JournalEntry total properties use). The payload
+        # is_memo_line flag is tolerated as historical metadata but is NOT
+        # authoritative: a financial-account line flagged memo stays financial
+        # (its amounts count, so a smuggled line surfaces as UNBALANCED/
+        # HEADER_TOTAL_MISMATCH), and a memo-account line is memo even when
+        # the flag is absent. Unknown/malformed/cross-company accounts are
+        # never guessed to be memo. With account_facts=None (payload-only
+        # evaluation) the flag is the only signal available and is used as-is.
+        is_memo = bool(line.get("is_memo_line"))
+        if account_facts is not None:
+            account_public_id = line.get("account_public_id")
+            canonical_id = canonical_account_id(account_public_id)
+            facts = account_facts.get(canonical_id) if canonical_id is not None else None
+            if facts is not None:
+                is_memo = facts.is_memo
+            else:
+                is_memo = False  # unresolvable is never memo
+            if facts is None:
+                # Missing, malformed ("not-a-uuid"), or simply not found —
+                # all mean the reference does not resolve.
+                violations.append(
+                    JournalViolation(
+                        JE_ACCOUNT_UNKNOWN,
+                        f"Account {account_public_id!r} does not resolve.",
+                        line_no,
+                    )
+                )
+            elif facts.company_id != company_id:
+                violations.append(
+                    JournalViolation(
+                        JE_ACCOUNT_CROSS_COMPANY,
+                        f"Account {account_public_id} belongs to another company.",
+                        line_no,
+                    )
+                )
+            elif mode == "emit":
+                # Posting-time policy — emit boundary only (see docstring).
+                if not facts.is_active:
+                    violations.append(
+                        JournalViolation(
+                            JE_ACCOUNT_INACTIVE,
+                            f"Account {account_public_id} is not active.",
+                            line_no,
+                        )
+                    )
+                elif not facts.is_postable:
+                    violations.append(
+                        JournalViolation(
+                            JE_ACCOUNT_NOT_POSTABLE,
+                            f"Account {account_public_id} is a header/non-postable account.",
+                            line_no,
+                        )
+                    )
+
+        if is_memo:
+            # Memo lines carry no financial weight (mirrors the JournalEntry
+            # total properties, which exclude MEMO-type accounts) — but their
+            # amounts must still be parseable ledger decimals.
+            if _normalize_money(line.get("debit", "0")) is None or _normalize_money(line.get("credit", "0")) is None:
+                amounts_clean = False
+                violations.append(
+                    JournalViolation(
+                        JE_AMOUNT_INVALID,
+                        "Memo line debit/credit is not a finite, representable ledger decimal.",
+                        line_no,
+                    )
+                )
+            continue
         financial_count += 1
 
         # Normalize (parse + quantize to 0.01 half-even + representability
@@ -259,49 +362,6 @@ def check_posted_journal(
             violations.append(JournalViolation(JE_LINE_ZERO, "Financial line has zero debit and zero credit.", line_no))
 
         financial.append((line_no, debit, credit))
-
-        # ---- account referential checks (both modes) ----------------------
-        if account_facts is not None:
-            account_public_id = line.get("account_public_id")
-            canonical_id = canonical_account_id(account_public_id)
-            if canonical_id is None or canonical_id not in account_facts:
-                # Missing, malformed ("not-a-uuid"), or simply not found —
-                # all mean the reference does not resolve.
-                violations.append(
-                    JournalViolation(
-                        JE_ACCOUNT_UNKNOWN,
-                        f"Account {account_public_id!r} does not resolve.",
-                        line_no,
-                    )
-                )
-            else:
-                facts = account_facts[canonical_id]
-                if facts.company_id != company_id:
-                    violations.append(
-                        JournalViolation(
-                            JE_ACCOUNT_CROSS_COMPANY,
-                            f"Account {account_public_id} belongs to another company.",
-                            line_no,
-                        )
-                    )
-                elif mode == "emit":
-                    # Posting-time policy — emit boundary only (see docstring).
-                    if not facts.is_active:
-                        violations.append(
-                            JournalViolation(
-                                JE_ACCOUNT_INACTIVE,
-                                f"Account {account_public_id} is not active.",
-                                line_no,
-                            )
-                        )
-                    elif not facts.is_postable:
-                        violations.append(
-                            JournalViolation(
-                                JE_ACCOUNT_NOT_POSTABLE,
-                                f"Account {account_public_id} is a header/non-postable account.",
-                                line_no,
-                            )
-                        )
 
     # ---- entry-level pass (fixed sequence) ---------------------------------
     for dup in duplicate_line_nos:
@@ -339,8 +399,8 @@ def check_posted_journal(
                 )
             )
 
-        header_debit = _normalize_money(data.get("total_debit"))
-        header_credit = _normalize_money(data.get("total_credit"))
+        header_debit = _normalize_header_total(data.get("total_debit"))
+        header_credit = _normalize_header_total(data.get("total_credit"))
         if header_debit is None or header_credit is None:
             violations.append(
                 JournalViolation(
@@ -384,9 +444,9 @@ def load_account_facts(company, account_public_ids) -> dict[str, AccountFacts]:
         return {}
     facts: dict[str, AccountFacts] = {}
     rows = Account.objects.filter(public_id__in=sorted(ids)).values_list(
-        "public_id", "company_id", "status", "is_header"
+        "public_id", "company_id", "status", "is_header", "account_type"
     )
-    for public_id, company_id, status, is_header in rows:
+    for public_id, company_id, status, is_header, account_type in rows:
         is_active = status == "ACTIVE"
         key = canonical_account_id(public_id) or str(public_id)
         facts[key] = AccountFacts(
@@ -394,5 +454,6 @@ def load_account_facts(company, account_public_ids) -> dict[str, AccountFacts]:
             company_id=company_id,
             is_active=is_active,
             is_postable=is_active and not is_header,
+            is_memo=account_type == "MEMO",
         )
     return facts

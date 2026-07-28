@@ -37,9 +37,12 @@ COMPANY_ID = 7
 ACC_A = "11111111-1111-1111-1111-111111111111"
 ACC_B = "22222222-2222-2222-2222-222222222222"
 
+ACC_M = "33333333-3333-3333-3333-333333333333"  # memo account (account_type == MEMO)
+
 FACTS = {
     ACC_A: AccountFacts(public_id=ACC_A, company_id=COMPANY_ID, is_active=True, is_postable=True),
     ACC_B: AccountFacts(public_id=ACC_B, company_id=COMPANY_ID, is_active=True, is_postable=True),
+    ACC_M: AccountFacts(public_id=ACC_M, company_id=COMPANY_ID, is_active=True, is_postable=True, is_memo=True),
 }
 
 
@@ -105,19 +108,20 @@ def test_valid_multi_line_entry_passes():
 
 
 def test_memo_lines_excluded_from_totals_and_count():
-    # Two financial lines + one memo line; header totals exclude the memo line.
+    # Two financial lines + one MEMO-ACCOUNT line; totals exclude the memo line
+    # (classification from account facts, matching JournalEntry total props).
     data = _payload(
         [
             _line(1, ACC_A, debit="100.00"),
             _line(2, ACC_B, credit="100.00"),
-            _line(3, ACC_A, debit="0", credit="0", is_memo_line=True),
+            _line(3, ACC_M, debit="0", credit="0", is_memo_line=True),
         ]
     )
     assert _check(data) == []
 
 
 def test_memo_only_entry_is_too_few_lines():
-    data = _payload([_line(1, ACC_A, is_memo_line=True), _line(2, ACC_B, is_memo_line=True)])
+    data = _payload([_line(1, ACC_M, is_memo_line=True), _line(2, ACC_M, is_memo_line=True)])
     codes = _codes(_check(data))
     assert JE_TOO_FEW_LINES in codes
 
@@ -423,6 +427,197 @@ def test_quantization_failure_never_escapes():
 
 
 # --------------------------------------------------------------------------- #
+# memo classification — derived from the RESOLVED ACCOUNT, never the flag
+# --------------------------------------------------------------------------- #
+def _memo_line(line_no, account, flag, **amounts):
+    extra = {"is_memo_line": flag} if flag is not None else {}
+    return _line(line_no, account, **amounts, **extra)
+
+
+def test_memo_account_with_flag_true_is_memo():
+    data = _payload(
+        [
+            _line(1, ACC_A, debit="100.00"),
+            _line(2, ACC_B, credit="100.00"),
+            _memo_line(3, ACC_M, True),
+        ]
+    )
+    assert _check(data) == []
+
+
+def test_memo_account_with_flag_false_or_missing_is_still_memo():
+    for flag in (False, None):
+        data = _payload(
+            [
+                _line(1, ACC_A, debit="100.00"),
+                _line(2, ACC_B, credit="100.00"),
+                _memo_line(3, ACC_M, flag),
+            ]
+        )
+        assert _check(data) == [], f"flag={flag}"
+
+
+def test_financial_account_with_flag_true_stays_financial():
+    """The smuggling case: a real financial line mislabeled memo must count —
+    its amount unbalances the entry and mismatches the header."""
+    data = _payload(
+        [
+            _line(1, ACC_A, debit="100.00"),
+            _line(2, ACC_B, credit="100.00"),
+            _memo_line(3, ACC_A, True, debit="50.00"),
+        ]
+    )
+    codes = _codes(_check(data))
+    assert JE_UNBALANCED in codes
+    assert JE_HEADER_TOTAL_MISMATCH in codes
+
+
+def test_financial_account_with_flag_false_is_financial():
+    data = _payload(
+        [
+            _memo_line(1, ACC_A, False, debit="100.00"),
+            _memo_line(2, ACC_B, False, credit="100.00"),
+        ]
+    )
+    assert _check(data) == []
+
+
+def test_unknown_account_with_flag_true_is_not_guessed_memo():
+    facts = {ACC_B: FACTS[ACC_B]}
+    data = _payload(
+        [
+            _memo_line(1, ACC_A, True, debit="100.00"),  # unresolvable — stays financial
+            _line(2, ACC_B, credit="100.00"),
+        ]
+    )
+    codes = _codes(_check(data, facts=facts))
+    assert JE_ACCOUNT_UNKNOWN in codes
+    # Its amount still counts: header claims 100/100 and lines are 100/100 —
+    # balanced — but the line was NOT silently dropped as memo.
+    assert JE_TOO_FEW_LINES not in codes
+
+
+def test_cross_company_memo_account_flags_cross_company():
+    facts = dict(FACTS)
+    facts[ACC_M] = AccountFacts(public_id=ACC_M, company_id=999, is_active=True, is_postable=True, is_memo=True)
+    data = _payload(
+        [
+            _line(1, ACC_A, debit="100.00"),
+            _line(2, ACC_B, credit="100.00"),
+            _memo_line(3, ACC_M, True),
+        ]
+    )
+    assert JE_ACCOUNT_CROSS_COMPANY in _codes(_check(data, facts=facts))
+
+
+def test_mixed_financial_and_memo_lines():
+    data = _payload(
+        [
+            _line(1, ACC_A, debit="60.00"),
+            _memo_line(2, ACC_M, None),
+            _line(3, ACC_A, debit="40.00"),
+            _memo_line(4, ACC_M, True),
+            _line(5, ACC_B, credit="100.00"),
+        ]
+    )
+    assert _check(data) == []
+
+
+def test_memo_classification_identical_in_emit_and_apply():
+    data = _payload(
+        [
+            _line(1, ACC_A, debit="100.00"),
+            _line(2, ACC_B, credit="100.00"),
+            _memo_line(3, ACC_M, False),
+        ]
+    )
+    assert _check(data, mode="emit") == _check(data, mode="apply") == []
+
+
+def test_memo_line_amounts_must_still_parse():
+    data = _payload(
+        [
+            _line(1, ACC_A, debit="100.00"),
+            _line(2, ACC_B, credit="100.00"),
+            _memo_line(3, ACC_M, True, debit="NaN"),
+        ]
+    )
+    assert JE_AMOUNT_INVALID in _codes(_check(data))
+
+
+# --------------------------------------------------------------------------- #
+# malformed line containers
+# --------------------------------------------------------------------------- #
+def test_non_list_lines_container_is_structural_amount_invalid():
+    for bad in (1, "two lines", {"line_no": 1}, ("a", "b")):
+        data = _payload([], "1.00", "1.00")
+        data["lines"] = bad
+        violations = _check(data)
+        codes = _codes(violations)
+        assert codes == [JE_AMOUNT_INVALID], repr(bad)
+        # No line/account/balance/header logic ran on the invalid container.
+        assert len(violations) == 1, repr(bad)
+
+
+def test_missing_or_null_lines_follow_required_field_contract():
+    # Missing/None lines evaluate as an empty list (the schema layer owns
+    # required-field presence): structurally sound, financially too few.
+    data = _payload([], "0.00", "0.00")
+    del data["lines"]
+    assert JE_TOO_FEW_LINES in _codes(_check(data))
+    data = _payload([], "0.00", "0.00")
+    data["lines"] = None
+    assert JE_TOO_FEW_LINES in _codes(_check(data))
+
+
+def test_empty_list_lines_is_too_few_not_invalid():
+    data = _payload([], "0.00", "0.00")
+    codes = _codes(_check(data))
+    assert JE_TOO_FEW_LINES in codes
+    assert JE_AMOUNT_INVALID not in codes
+
+
+# --------------------------------------------------------------------------- #
+# aggregate headers vs per-line storage bounds
+# --------------------------------------------------------------------------- #
+def test_large_aggregate_of_valid_lines_is_accepted():
+    from accounting.journal_invariant import MAX_ABS_AMOUNT
+
+    big = str(MAX_ABS_AMOUNT)  # each line individually representable
+    aggregate = str(MAX_ABS_AMOUNT * 3)  # header far beyond one line's max
+    data = _payload(
+        [
+            _line(1, ACC_A, debit=big),
+            _line(2, ACC_A, debit=big),
+            _line(3, ACC_A, debit=big),
+            _line(4, ACC_B, credit=big),
+            _line(5, ACC_B, credit=big),
+            _line(6, ACC_B, credit=big),
+        ],
+        total_debit=aggregate,
+        total_credit=aggregate,
+    )
+    assert _check(data) == []
+
+
+def test_header_mismatch_against_large_valid_aggregate():
+    from accounting.journal_invariant import MAX_ABS_AMOUNT
+
+    big = str(MAX_ABS_AMOUNT)
+    data = _payload(
+        [
+            _line(1, ACC_A, debit=big),
+            _line(2, ACC_A, debit=big),
+            _line(3, ACC_B, credit=big),
+            _line(4, ACC_B, credit=big),
+        ],
+        total_debit=str(MAX_ABS_AMOUNT * 2),
+        total_credit="100.00",  # wrong
+    )
+    assert JE_HEADER_TOTAL_MISMATCH in _codes(_check(data))
+
+
+# --------------------------------------------------------------------------- #
 # account-id canonicalization
 # --------------------------------------------------------------------------- #
 def test_uppercase_uuid_string_resolves_to_same_facts():
@@ -465,7 +660,7 @@ def test_multiple_violations_deterministic_order():
     data = _payload(
         [
             _line(1, ACC_A, debit="-5.00"),  # negative (financial)
-            _line(1, ACC_B, is_memo_line=True),  # memo + duplicate line_no
+            _line(1, ACC_M, is_memo_line=True),  # memo ACCOUNT + duplicate line_no
         ],
         total_debit="banana",
         total_credit="0.00",

@@ -313,6 +313,51 @@ def test_load_account_facts_sanitizes_malformed_ids(company):
 
 
 @pytest.mark.django_db
+def test_non_list_lines_event_reported_and_scan_continues(company):
+    """{"lines": 1} is a readable dict payload with a structural defect: it
+    must classify as JE_AMOUNT_INVALID (not SCANNER_UNREADABLE_PAYLOAD, not a
+    TypeError aborting the scan), and later events must still be evaluated."""
+    a1, a2 = _mk_account(company, "1000"), _mk_account(company, "4000")
+    from uuid import uuid4
+
+    from events.models import BusinessEvent
+    from events.types import EventTypes
+
+    BusinessEvent.objects.create(
+        company=company,
+        event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+        aggregate_type="JournalEntry",
+        aggregate_id="nonlist-1",
+        idempotency_key=f"a3scan:{uuid4()}",
+        data={
+            "entry_public_id": str(uuid4()),
+            "entry_number": "JE-NONLIST",
+            "date": "2026-01-15",
+            "memo": "container",
+            "kind": "NORMAL",
+            "posted_at": "2026-01-15T10:00:00",
+            "posted_by_id": 1,
+            "posted_by_email": "owner@test.com",
+            "total_debit": "1.00",
+            "total_credit": "1.00",
+            "lines": 1,
+        },
+    )
+    _valid_event(company, a1, a2)  # later valid event — must still be scanned
+    data = _run_json("--company", str(company.id))
+    entry = data["companies"][0]
+    assert entry["events_scanned"] == 2
+    assert entry["violation_counts"].get("JE_AMOUNT_INVALID") == 1
+    assert "SCANNER_UNREADABLE_PAYLOAD" not in entry["violation_counts"]
+    # Default mode reports and exits 0; --strict exits non-zero.
+    out = _run("--company", str(company.id))
+    assert "JE_AMOUNT_INVALID" in out
+    with pytest.raises(SystemExit) as exc:
+        _run("--strict", "--company", str(company.id))
+    assert exc.value.code == 1
+
+
+@pytest.mark.django_db
 def test_bounded_queries(company, django_assert_max_num_queries):
     """Facts are cached per company and payloads use select_related — five
     same-account events must not produce per-line/per-account query storms.

@@ -138,12 +138,16 @@ class Command(BaseCommand):
         # the scan continues to later events.
         from accounting.journal_invariant import canonical_account_id
 
+        # The container may be malformed ({"lines": 1}) — the invariant
+        # classifies that as JE_AMOUNT_INVALID; the prefetch must not crash
+        # on it. ALL dict lines' accounts are prefetched (memo classification
+        # is account-derived, so memo-account facts are needed too).
+        raw_lines = data.get("lines")
+        line_iter = raw_lines if isinstance(raw_lines, list) else []
         referenced = {
             cid
             for cid in (
-                canonical_account_id(line.get("account_public_id"))
-                for line in (data.get("lines") or [])
-                if isinstance(line, dict) and not line.get("is_memo_line")
+                canonical_account_id(line.get("account_public_id")) for line in line_iter if isinstance(line, dict)
             )
             if cid is not None
         }
