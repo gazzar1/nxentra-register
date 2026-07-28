@@ -115,22 +115,33 @@ None granted. This ADR grants no rule exceptions; it defines how exceptions
 are granted (accepted ADR + named symbols + tests + owner + removal trigger;
 allowlists ratchet down only).
 
-**Accepted temporary bootstrap limitation (not a permanent architecture
-exception): trusted-checker execution.** The `PR Architecture Contract`
-workflow is advisory in this initial bootstrap PR, and its `pull_request` job
-currently executes `scripts/check_pr_architecture_contract.py` **from the PR
-checkout** — a PR could therefore modify the checker to pass its own body.
-Consequences and plan:
+**Temporary bootstrap limitation — RESOLVED in design, pending operational
+proof (not a permanent architecture exception): trusted-checker execution.**
+History and current state:
 
-- the check **must not** be made a required status check yet;
-- an immediate follow-up governance-hardening PR must execute the validation
-  logic from a trusted base/`main` revision (PR #109 is the bootstrap PR —
-  `main` has no trusted checker to source from until it merges);
-- branch protection must not mark `PR Architecture Contract` required until
-  that follow-up is merged and proven.
+- PR #109 introduced the checker in **advisory** mode; its original
+  `pull_request` workflow executed `scripts/check_pr_architecture_contract.py`
+  from the PR checkout — a PR could therefore modify the checker to pass its
+  own body (the accepted P2 finding);
+- the follow-up governance-hardening PR (`chore/trusted-pr-architecture-check`)
+  replaces that design: the workflow now runs on `pull_request_target` (its
+  definition loads from the protected base branch), checks out **only** the
+  exact protected base commit (`github.event.pull_request.base.sha`) into
+  `trusted-base/`, executes the checker from that trusted checkout, keeps
+  read-only permissions and no secrets, and passes the PR body strictly as
+  data via the `PR_BODY` environment variable — static contract tests in
+  `backend/tests/test_pr_architecture_workflow_contract.py` pin these
+  properties;
+- because a `pull_request_target` workflow is loaded from the base branch,
+  the new definition **cannot prove itself on the PR that introduces it** —
+  it has not yet operated from `main`. The check therefore still must not
+  become a required status check until the merged workflow is observed
+  working on a subsequent real pull request;
+- branch protection remains intentionally deferred.
 
 *Removal trigger:* Remove this limitation before `PR Architecture Contract`
-becomes required in any GitHub ruleset or branch-protection rule.
+becomes required in any GitHub ruleset or branch-protection rule — i.e. only
+after the trusted workflow has been proven on a real PR post-merge.
 
 **Known governance debt recorded here:** the ADR directory contains a
 numbering collision — two `0002-*` files

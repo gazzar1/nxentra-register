@@ -3,15 +3,27 @@ name: PR Architecture Contract
 # Deterministic check that the PR body follows the architecture contract in
 # .github/pull_request_template.md (governance: docs/adr/0003).
 #
-# Deliberately `pull_request` (NOT pull_request_target): the checker runs the
-# PR's own code against the PR's own body, needs no secrets and gets none, and
-# has read-only permissions. `edited` re-runs the check when the body is fixed.
+# TRUST BOUNDARY (why pull_request_target is safe here):
+#   - the workflow DEFINITION is loaded from the protected base branch, so a
+#     PR cannot rewrite this file to change what runs against itself;
+#   - the CHECKER SCRIPT is checked out from the exact protected base commit
+#     (github.event.pull_request.base.sha) into ./trusted-base — no PR code
+#     (merge ref, head.sha, contributor branch, or any PR file) is ever
+#     checked out or executed;
+#   - the PULL REQUEST BODY is the only PR-controlled input, and it is passed
+#     as untrusted DATA through the PR_BODY environment variable — never
+#     interpolated into a shell command, script, path, or argument;
+#   - permissions are explicitly read-only and no secrets are used, so even a
+#     hypothetical escape has nothing to write with and nothing to steal.
 #
-# Initially ADVISORY: this check does not block merges until a later
-# ruleset/branch-protection step marks it as required.
+# `edited` re-runs the check when the body is fixed.
+#
+# ADVISORY until a later ruleset/branch-protection step marks it required —
+# and per ADR-0003, only after this trusted design is proven on a real PR
+# following its merge to main.
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, edited, synchronize, reopened, ready_for_review]
 
 permissions:
@@ -23,15 +35,21 @@ jobs:
     name: PR Architecture Contract
     runs-on: ubuntu-latest
     steps:
+      # Trusted checkout: exactly the protected base commit, never PR code.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted-base
 
       - uses: actions/setup-python@v5
         with:
+          # Nxentra CI standard (ci.yml PYTHON_VERSION).
           python-version: "3.11"
 
       - name: Check PR body against the architecture contract
         env:
-          # Passed via env (never shell-interpolated) so arbitrary body content
-          # cannot inject into the shell.
+          # Untrusted data only — passed via env (never shell-interpolated) so
+          # arbitrary body content cannot inject into the shell.
           PR_BODY: ${{ github.event.pull_request.body }}
-        run: python scripts/check_pr_architecture_contract.py
+        # Trusted code path: the checker from the base SHA checkout.
+        run: python trusted-base/scripts/check_pr_architecture_contract.py
