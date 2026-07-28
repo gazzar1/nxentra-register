@@ -95,7 +95,9 @@ PLACEHOLDER_ANSWERS = frozenset({"n/a", "na", "none", "tbd", "todo", "...", "-",
 # An ADR reference: "ADR-0003", "ADR 0003", "adr/0003-..." or a docs/adr path.
 ADR_REF_RE = re.compile(r"(?i)(?:\badr[-_ /]?\d{3,4}\b|docs/adr/\d{3,4}-)")
 
-HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+# NOTE: there is deliberately NO whole-body HTML-comment regex here. Comment
+# handling lives in visible_lines(), which is fence-aware — a bare '<!--'
+# inside a code block must not swallow text up to an unrelated '-->'.
 CHECKBOX_RE = re.compile(r"^\s*-\s*\[(?P<mark>[ xX])\]\s*(?P<label>.+?)\s*$")
 
 # Substantive-answer threshold: rejects empty/token answers without forcing
@@ -112,8 +114,82 @@ NONE_WITH_REASON_RE = re.compile(r"(?is)^none\s*[—–-]\s*(?P<reason>.+)$")
 # --------------------------------------------------------------------------- #
 
 
-def strip_comments(body: str) -> str:
-    return HTML_COMMENT_RE.sub("", body)
+COMMENT_OPEN = "<!--"
+COMMENT_CLOSE = "-->"
+
+
+def visible_lines(body: str) -> list[str]:
+    """Return the body's VISIBLE lines — what GitHub renders.
+
+    HTML-comment content is removed so hidden text can never satisfy the
+    contract, EXCEPT inside visible code blocks, where comment-looking text is
+    ordinary code content. Deterministic per-line priority:
+
+      1. inside an HTML comment → hidden until '-->' (hidden headings,
+         checkboxes and fence markers have no effect); the remainder of the
+         closing line is processed as visible text;
+      2. inside a visible fenced block → verbatim code content; '<!--'/'-->'
+         are content and never open/close a comment; only the matching
+         closing fence (same marker char, at least the opening length) exits;
+      3. an indented code line (four spaces / tab) → verbatim content;
+      4. otherwise: complete inline '<!-- ... -->' comments are removed; an
+         unterminated '<!--' hides the rest of the line and opens comment
+         state; the remaining visible text may then open a fence.
+
+    A whole-body regex would corrupt case 2 (a bare '<!--' inside a code
+    block would swallow text up to an unrelated '-->'), hence this
+    state-tracking pass.
+    """
+    out: list[str] = []
+    in_comment = False
+    in_fence = False
+    fence_char = ""
+    fence_len = 0
+    for raw in body.split("\n"):
+        line = raw
+        # 1. Inside an HTML comment (comments never start inside a fence).
+        if in_comment:
+            close = line.find(COMMENT_CLOSE)
+            if close == -1:
+                out.append("")
+                continue
+            in_comment = False
+            line = line[close + len(COMMENT_CLOSE) :]
+            # Fall through: the remainder is visible text.
+        # 2. Inside a visible fenced code block: verbatim content.
+        if in_fence:
+            out.append(line)
+            if re.match(rf"^ {{0,3}}{re.escape(fence_char)}{{{fence_len},}}\s*$", line):
+                in_fence = False
+            continue
+        # 3. Indented code line: verbatim content.
+        if line.startswith("\t") or line.startswith("    "):
+            out.append(line)
+            continue
+        # 4. Normal text: drop complete inline comments; an unterminated
+        # opener hides the rest of the line and opens comment state.
+        while True:
+            start = line.find(COMMENT_OPEN)
+            if start == -1:
+                break
+            end = line.find(COMMENT_CLOSE, start + len(COMMENT_OPEN))
+            if end == -1:
+                line = line[:start]
+                in_comment = True
+                break
+            line = line[:start] + line[end + len(COMMENT_CLOSE) :]
+        fence_open = FENCE_OPEN_RE.match(line)
+        if fence_open:
+            marker = fence_open.group("marker")
+            in_fence = True
+            fence_char = marker[0]
+            fence_len = len(marker)
+        out.append(line)
+    return out
+
+
+def visible_text(body: str) -> str:
+    return "\n".join(visible_lines(body.replace("\r\n", "\n")))
 
 
 def _heading_level(heading: str) -> int:
@@ -172,9 +248,12 @@ def extract_sections(body: str) -> dict[str, str]:
 
 
 def normalize_answer(section_text: str) -> str:
-    """Comment-free, checkbox-free, whitespace-collapsed answer text."""
-    text = strip_comments(section_text)
-    kept = [line for line in text.split("\n") if not CHECKBOX_RE.match(line)]
+    """Checkbox-free, whitespace-collapsed answer text.
+
+    Section text comes from the visible representation (``visible_text``), so
+    HTML comments outside code blocks are already gone; comment-looking text
+    inside a visible code block is deliberately kept as ordinary content."""
+    kept = [line for line in section_text.split("\n") if not CHECKBOX_RE.match(line)]
     return " ".join(" ".join(kept).split()).strip()
 
 
@@ -195,14 +274,18 @@ def is_substantive(answer: str) -> bool:
 
 
 def check_body(body: str) -> list[str]:
-    """Return the full list of defects (empty list == compliant)."""
+    """Return the full list of defects (empty list == compliant).
+
+    Every structural check runs against the VISIBLE representation
+    (``visible_text``) — what GitHub renders. Headings, answers, checkboxes
+    and ADR references hidden inside HTML comments cannot satisfy the gate."""
     defects: list[str] = []
 
-    if not body or not strip_comments(body).strip():
+    visible = visible_text(body or "")
+    if not visible.strip():
         return ["PR body is empty — fill in .github/pull_request_template.md."]
 
-    normalized = body.replace("\r\n", "\n")
-    sections = extract_sections(normalized)
+    sections = extract_sections(visible)
 
     # 1. Required headings.
     for heading in REQUIRED_HEADINGS:
@@ -232,7 +315,7 @@ def check_body(body: str) -> list[str]:
     attestation_section = sections.get(ATTESTATION_SECTION, "")
     marks_by_label: dict[str, list[str]] = {}
     unknown_labels: list[str] = []
-    for line in strip_comments(attestation_section).split("\n"):
+    for line in attestation_section.split("\n"):
         m = CHECKBOX_RE.match(line)
         if not m or not m.group("label").startswith("ARCH:"):
             continue
@@ -263,7 +346,7 @@ def check_body(body: str) -> list[str]:
     # 4. Supported-product-contract selection: exactly one.
     contract_section = sections.get("## Supported product contract", "")
     selected: list[str] = []
-    for line in strip_comments(contract_section).split("\n"):
+    for line in contract_section.split("\n"):
         m = CHECKBOX_RE.match(line)
         if not m:
             continue

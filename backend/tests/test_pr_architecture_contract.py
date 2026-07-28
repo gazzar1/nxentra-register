@@ -435,6 +435,137 @@ def test_unclosed_fence_swallows_rest_without_recovery():
 
 
 # --------------------------------------------------------------------------- #
+# hidden (HTML-comment) content cannot satisfy the gate
+# --------------------------------------------------------------------------- #
+def test_hidden_template_with_visible_filler_fails():
+    """A complete template wrapped in one comment + visible filler must fail."""
+    body = "This PR is great and very important.\n\n<!--\n" + _valid_body() + "\n-->\n"
+    defects = checker.check_body(body)
+    assert any("Missing required heading: '## Summary'" in d for d in defects)
+    assert any("Missing required heading: '## Architecture attestations'" in d for d in defects)
+
+
+def test_hidden_headings_and_attestations_cannot_complete_visible_body():
+    body = (
+        _valid_body()
+        .replace(
+            "### Central invariant\n\nNone — no invariant implementation is added or changed by this PR.",
+            "<!--\n### Central invariant\n\nNone — hidden text must not count.\n-->",
+        )
+        .replace(
+            "- [x] ARCH: I provided real evidence for any material refactor",
+            "<!-- - [x] ARCH: I provided real evidence for any material refactor -->",
+        )
+    )
+    defects = checker.check_body(body)
+    assert any("Missing required heading: '### Central invariant'" in d for d in defects)
+    assert any("Missing required architecture attestation" in d and "real evidence" in d for d in defects)
+
+
+def test_hidden_contract_checkbox_does_not_count():
+    body = _valid_body(contract_line="- [ ] No supported-contract change").replace(
+        "- [ ] New or changed product contract — ADR linked below",
+        "- [ ] New or changed product contract — ADR linked below\n<!-- - [x] No supported-contract change -->",
+    )
+    defects = checker.check_body(body)
+    assert any("none selected" in d for d in defects)
+
+
+def test_hidden_adr_cannot_satisfy_contract_change():
+    body = _valid_body(
+        contract_line="- [x] New or changed product contract — see below",
+        allowlist_answer=(
+            "The allowlist situation is described thoroughly in the linked documents.\n"
+            "<!-- ADR-0004 (docs/adr/0004-broader-pilot-contract.md) -->"
+        ),
+    )
+    defects = checker.check_body(body)
+    assert any("does not contain a substantive ADR" in d for d in defects)
+
+
+def test_visible_none_with_hidden_adr_fails_contract_change():
+    body = _valid_body(
+        contract_line="- [x] New or changed product contract — see below",
+        allowlist_answer="None — covered elsewhere, honestly.\n<!-- docs/adr/0004-broader-pilot-contract.md -->",
+    )
+    defects = checker.check_body(body)
+    assert any("does not contain a substantive ADR" in d for d in defects)
+
+
+def test_partially_commented_answer_fails():
+    """Visible part blank, substantive text hidden in a comment → blank."""
+    body = _valid_body().replace(
+        "None — no invariant implementation is added or changed by this PR.",
+        "<!-- None — this perfectly substantive answer is entirely hidden. -->",
+    )
+    defects = checker.check_body(body)
+    assert any("'### Central invariant' is blank" in d for d in defects)
+
+
+def test_template_instructional_comments_still_pass():
+    """Ordinary template guidance comments alongside real answers are fine."""
+    body = (
+        _valid_body()
+        .replace(
+            "## Summary\n",
+            "## Summary\n\n<!-- What this PR changes, in 2-5 sentences. -->\n",
+        )
+        .replace(
+            "### Central invariant\n",
+            "### Central invariant\n\n<!-- Which canonical invariant this calls. -->\n",
+        )
+    )
+    assert checker.check_body(body) == []
+
+
+def test_visible_code_block_with_comment_looking_text_parses():
+    body = _valid_body().replace(
+        "Ran the checker's own test suite and ruff on the changed files.",
+        "Ran everything:\n\n```bash\n<!-- not a comment here — code content -->\n"
+        "# heading-ish comment\n## Risk and rollback\n```\n\nAll green.",
+    )
+    sections = checker.extract_sections(checker.visible_text(body))
+    assert "<!-- not a comment here — code content -->" in sections["## Verification"]
+    assert "revert the commit" in sections["## Risk and rollback"]
+    assert checker.check_body(body) == []
+
+
+def test_hidden_fence_markers_do_not_alter_parsing():
+    body = (
+        _valid_body()
+        .replace(
+            "## Summary\n",
+            "## Summary\n\n<!-- ``` a hidden fence opener must have no effect -->\n",
+        )
+        .replace(
+            "## Verification\n",
+            "## Verification\n\n<!--\n```bash\nhidden multi-line fence opener\n-->\n",
+        )
+    )
+    assert checker.check_body(body) == []
+
+
+def test_bare_comment_opener_inside_code_block_does_not_swallow_sections():
+    """The exact corruption a whole-body regex would cause: a bare '<!--' in a
+    code block must not swallow text up to an unrelated '-->' later on."""
+    body = (
+        _valid_body()
+        .replace(
+            "Ran the checker's own test suite and ruff on the changed files.",
+            'Ran everything:\n\n```bash\necho "<!--"\n```\n\nAll green.',
+        )
+        .replace(
+            "## Risk and rollback\n",
+            "## Risk and rollback\n\n<!-- guidance comment providing an unrelated closer -->\n",
+        )
+    )
+    sections = checker.extract_sections(checker.visible_text(body))
+    assert "## Risk and rollback" in sections
+    assert "revert the commit" in sections["## Risk and rollback"]
+    assert checker.check_body(body) == []
+
+
+# --------------------------------------------------------------------------- #
 # reporting contract
 # --------------------------------------------------------------------------- #
 def test_all_defects_reported_at_once():
