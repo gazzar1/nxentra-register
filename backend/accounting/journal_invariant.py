@@ -25,8 +25,12 @@ nothing is ever coerced to zero. There is NO tolerance — not ±0.05, not
 anything (founder decision D3).
 
 Canonical memo-line definition: a line is memo iff its RESOLVED ACCOUNT is a
-memo account (``Account.is_memo`` — ``account_type == MEMO``), the same
-semantics the ``JournalEntry.total_debit/total_credit`` properties use. The
+memo/non-financial account per ``Account.is_memo_account`` — the legacy
+``account_type == MEMO`` OR a ``ledger_domain`` of STATISTICAL/OFF_BALANCE
+(models.py:608-613). Memo classification exempts a line ONLY from the
+financial aggregates (count, sides, balance, header totals); every line —
+memo included — must still satisfy the JournalLine storage-shape contract
+(normalized amounts, one-sided, non-negative, non-zero). The
 payload ``is_memo_line`` flag is tolerated as historical metadata but is NOT
 authoritative: a financial-account line flagged memo stays financial (so a
 smuggled amount surfaces as UNBALANCED/HEADER_TOTAL_MISMATCH), a memo-account
@@ -136,7 +140,7 @@ class AccountFacts:
     company_id: int
     is_active: bool
     is_postable: bool  # active AND not a header/grouping account
-    is_memo: bool = False  # account_type == MEMO (Account.is_memo semantics)
+    is_memo: bool = False  # Account.is_memo_account semantics: MEMO type OR STATISTICAL/OFF_BALANCE domain
 
 
 # --------------------------------------------------------------------------- #
@@ -321,30 +325,19 @@ def check_posted_journal(
                         )
                     )
 
-        if is_memo:
-            # Memo lines carry no financial weight (mirrors the JournalEntry
-            # total properties, which exclude MEMO-type accounts) — but their
-            # amounts must still be parseable ledger decimals.
-            if _normalize_money(line.get("debit", "0")) is None or _normalize_money(line.get("credit", "0")) is None:
-                amounts_clean = False
-                violations.append(
-                    JournalViolation(
-                        JE_AMOUNT_INVALID,
-                        "Memo line debit/credit is not a finite, representable ledger decimal.",
-                        line_no,
-                    )
-                )
-            continue
-        financial_count += 1
-
-        # Normalize (parse + quantize to 0.01 half-even + representability
-        # check) BEFORE any side/zero/balance logic: every downstream check
-        # operates on exactly what the JournalLine columns would store. A line
-        # that fails normalization contributes to NOTHING further.
+        # EVERY line — memo or financial — must satisfy the JournalLine
+        # storage-shape contract: normalization (parse + quantize 0.01
+        # half-even + representability) and one-sided/non-negative/non-zero
+        # shape. Memo classification exempts a line ONLY from the financial
+        # aggregates (count, sides, balance, header totals). A line that
+        # fails normalization contributes to NOTHING further; only FINANCIAL
+        # normalization failures suppress the derived balance checks (a bad
+        # memo amount cannot corrupt financial totals it never enters).
         debit = _normalize_money(line.get("debit", "0"))
         credit = _normalize_money(line.get("credit", "0"))
         if debit is None or credit is None:
-            amounts_clean = False
+            if not is_memo:
+                amounts_clean = False
             violations.append(
                 JournalViolation(
                     JE_AMOUNT_INVALID,
@@ -359,8 +352,11 @@ def check_posted_journal(
         elif debit > 0 and credit > 0:
             violations.append(JournalViolation(JE_LINE_TWO_SIDED, "Line has both debit and credit populated.", line_no))
         elif debit == 0 and credit == 0:
-            violations.append(JournalViolation(JE_LINE_ZERO, "Financial line has zero debit and zero credit.", line_no))
+            violations.append(JournalViolation(JE_LINE_ZERO, "Line has zero debit and zero credit.", line_no))
 
+        if is_memo:
+            continue  # shape-valid memo line: excluded from financial aggregates
+        financial_count += 1
         financial.append((line_no, debit, credit))
 
     # ---- entry-level pass (fixed sequence) ---------------------------------
@@ -444,16 +440,21 @@ def load_account_facts(company, account_public_ids) -> dict[str, AccountFacts]:
         return {}
     facts: dict[str, AccountFacts] = {}
     rows = Account.objects.filter(public_id__in=sorted(ids)).values_list(
-        "public_id", "company_id", "status", "is_header", "account_type"
+        "public_id", "company_id", "status", "is_header", "account_type", "ledger_domain"
     )
-    for public_id, company_id, status, is_header, account_type in rows:
-        is_active = status == "ACTIVE"
+    memo_domains = {Account.LedgerDomain.STATISTICAL, Account.LedgerDomain.OFF_BALANCE}
+    for public_id, company_id, status, is_header, account_type, ledger_domain in rows:
+        is_active = status == Account.Status.ACTIVE
         key = canonical_account_id(public_id) or str(public_id)
         facts[key] = AccountFacts(
             public_id=key,
             company_id=company_id,
             is_active=is_active,
             is_postable=is_active and not is_header,
-            is_memo=account_type == "MEMO",
+            # Mirrors Account.is_memo_account exactly (models.py:608-613): the
+            # legacy MEMO type OR a non-financial ledger domain (STATISTICAL /
+            # OFF_BALANCE) — computed from the fetched fields so the pure
+            # invariant never touches the model.
+            is_memo=(account_type == Account.AccountType.MEMO or ledger_domain in memo_domains),
         )
     return facts

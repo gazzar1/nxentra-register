@@ -114,7 +114,7 @@ def test_memo_lines_excluded_from_totals_and_count():
         [
             _line(1, ACC_A, debit="100.00"),
             _line(2, ACC_B, credit="100.00"),
-            _line(3, ACC_M, debit="0", credit="0", is_memo_line=True),
+            _line(3, ACC_M, debit="5.00", is_memo_line=True),  # statistical qty, one-sided
         ]
     )
     assert _check(data) == []
@@ -439,7 +439,7 @@ def test_memo_account_with_flag_true_is_memo():
         [
             _line(1, ACC_A, debit="100.00"),
             _line(2, ACC_B, credit="100.00"),
-            _memo_line(3, ACC_M, True),
+            _memo_line(3, ACC_M, True, debit="5.00"),
         ]
     )
     assert _check(data) == []
@@ -451,7 +451,7 @@ def test_memo_account_with_flag_false_or_missing_is_still_memo():
             [
                 _line(1, ACC_A, debit="100.00"),
                 _line(2, ACC_B, credit="100.00"),
-                _memo_line(3, ACC_M, flag),
+                _memo_line(3, ACC_M, flag, debit="5.00"),
             ]
         )
         assert _check(data) == [], f"flag={flag}"
@@ -514,9 +514,9 @@ def test_mixed_financial_and_memo_lines():
     data = _payload(
         [
             _line(1, ACC_A, debit="60.00"),
-            _memo_line(2, ACC_M, None),
+            _memo_line(2, ACC_M, None, debit="7.00"),
             _line(3, ACC_A, debit="40.00"),
-            _memo_line(4, ACC_M, True),
+            _memo_line(4, ACC_M, True, credit="3.00"),
             _line(5, ACC_B, credit="100.00"),
         ]
     )
@@ -528,7 +528,7 @@ def test_memo_classification_identical_in_emit_and_apply():
         [
             _line(1, ACC_A, debit="100.00"),
             _line(2, ACC_B, credit="100.00"),
-            _memo_line(3, ACC_M, False),
+            _memo_line(3, ACC_M, False, debit="2.50"),
         ]
     )
     assert _check(data, mode="emit") == _check(data, mode="apply") == []
@@ -543,6 +543,97 @@ def test_memo_line_amounts_must_still_parse():
         ]
     )
     assert JE_AMOUNT_INVALID in _codes(_check(data))
+
+
+# --------------------------------------------------------------------------- #
+# memo-line SHAPE validation (storage contract applies to every line)
+# --------------------------------------------------------------------------- #
+def _with_memo(memo_kwargs):
+    """A balanced financial pair plus one memo-account line built from kwargs."""
+    return _payload(
+        [
+            _line(1, ACC_A, debit="100.00"),
+            _line(2, ACC_B, credit="100.00"),
+            _line(3, ACC_M, is_memo_line=True, **memo_kwargs),
+        ]
+    )
+
+
+def test_memo_positive_debit_only_is_valid_and_excluded():
+    assert _check(_with_memo({"debit": "5.00"})) == []
+
+
+def test_memo_positive_credit_only_is_valid_and_excluded():
+    assert _check(_with_memo({"credit": "5.00"})) == []
+
+
+def test_memo_negative_debit_is_negative():
+    violations = _check(_with_memo({"debit": "-5.00"}))
+    assert any(v.code == JE_LINE_NEGATIVE and v.line_no == 3 for v in violations)
+
+
+def test_memo_negative_credit_is_negative():
+    violations = _check(_with_memo({"credit": "-5.00"}))
+    assert any(v.code == JE_LINE_NEGATIVE and v.line_no == 3 for v in violations)
+
+
+def test_memo_two_sided_is_two_sided():
+    violations = _check(_with_memo({"debit": "5.00", "credit": "5.00"}))
+    assert any(v.code == JE_LINE_TWO_SIDED and v.line_no == 3 for v in violations)
+
+
+def test_memo_zero_zero_is_line_zero():
+    violations = _check(_with_memo({}))  # defaults 0/0
+    assert any(v.code == JE_LINE_ZERO and v.line_no == 3 for v in violations)
+
+
+def test_memo_sub_cent_quantizing_to_zero_is_line_zero():
+    violations = _check(_with_memo({"debit": "0.004"}))
+    assert any(v.code == JE_LINE_ZERO and v.line_no == 3 for v in violations)
+
+
+def test_memo_oversized_amount_is_invalid():
+    from accounting.journal_invariant import MAX_ABS_AMOUNT, TWO_PLACES
+
+    violations = _check(_with_memo({"debit": str(MAX_ABS_AMOUNT + TWO_PLACES)}))
+    assert any(v.code == JE_AMOUNT_INVALID and v.line_no == 3 for v in violations)
+
+
+def test_memo_nan_infinity_is_invalid_but_financials_still_checked():
+    for bad in ("NaN", "Infinity"):
+        violations = _check(_with_memo({"debit": bad}))
+        codes = _codes(violations)
+        assert JE_AMOUNT_INVALID in codes, bad
+        # A bad MEMO amount must not suppress the financial balance checks —
+        # the clean financial pair still balances, so no derived codes appear.
+        assert JE_UNBALANCED not in codes
+        assert JE_HEADER_TOTAL_MISMATCH not in codes
+
+
+def test_valid_memo_plus_balanced_financials_overall_valid():
+    data = _payload(
+        [
+            _line(1, ACC_A, debit="100.00"),
+            _line(2, ACC_B, credit="100.00"),
+            _line(3, ACC_M, debit="42.00", is_memo_line=True),
+            _line(4, ACC_M, credit="17.00"),  # memo by ACCOUNT, flag absent
+        ]
+    )
+    assert _check(data) == []
+
+
+def test_memo_only_lines_do_not_satisfy_financial_requirements():
+    data = _payload(
+        [_line(1, ACC_M, debit="5.00"), _line(2, ACC_M, credit="5.00")],
+        total_debit="0.00",
+        total_credit="0.00",
+    )
+    codes = _codes(_check(data))
+    assert JE_TOO_FEW_LINES in codes
+    # No financial lines at all → the side requirements are not evaluated
+    # against memo quantities (the `financial` list is empty).
+    assert JE_NO_DEBIT_SIDE not in codes
+    assert JE_NO_CREDIT_SIDE not in codes
 
 
 # --------------------------------------------------------------------------- #

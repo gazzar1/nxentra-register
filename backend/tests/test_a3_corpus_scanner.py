@@ -358,6 +358,143 @@ def test_non_list_lines_event_reported_and_scan_continues(company):
 
 
 @pytest.mark.django_db
+def test_load_account_facts_memo_matches_is_memo_account(company):
+    """AccountFacts.is_memo must agree with Account.is_memo_account for every
+    supported (account_type, ledger_domain) combination."""
+    from accounting.journal_invariant import load_account_facts
+    from accounting.models import Account
+
+    combos = [
+        ("MEMO", Account.LedgerDomain.FINANCIAL),  # legacy memo type
+        ("ASSET", Account.LedgerDomain.STATISTICAL),  # five-type, statistical domain
+        ("EXPENSE", Account.LedgerDomain.OFF_BALANCE),  # five-type, off-balance domain
+        ("ASSET", Account.LedgerDomain.FINANCIAL),  # ordinary financial account
+        ("REVENUE", Account.LedgerDomain.FINANCIAL),
+    ]
+    accounts = []
+    for i, (acct_type, domain) in enumerate(combos):
+        needs_uom = acct_type == "MEMO" or domain != Account.LedgerDomain.FINANCIAL
+        accounts.append(
+            Account.objects.create(
+                company=company,
+                code=f"96{i:02d}",
+                name=f"combo-{i}",
+                account_type=acct_type,
+                ledger_domain=domain,
+                status="ACTIVE",
+                unit_of_measure="EA" if needs_uom else "",
+            )
+        )
+    facts = load_account_facts(company, [a.public_id for a in accounts])
+    for account in accounts:
+        assert facts[str(account.public_id)].is_memo == account.is_memo_account, (
+            account.account_type,
+            account.ledger_domain,
+        )
+    # Explicit expectations, not just agreement:
+    assert facts[str(accounts[0].public_id)].is_memo is True  # MEMO type
+    assert facts[str(accounts[1].public_id)].is_memo is True  # STATISTICAL domain
+    assert facts[str(accounts[2].public_id)].is_memo is True  # OFF_BALANCE domain
+    assert facts[str(accounts[3].public_id)].is_memo is False  # ordinary FINANCIAL
+    assert facts[str(accounts[4].public_id)].is_memo is False
+
+
+@pytest.mark.django_db
+def test_statistical_line_excluded_from_financial_totals_in_scan(company):
+    """A five-type STATISTICAL-domain line (payload flag absent) must be
+    classified memo by the scanner path — the entry stays clean."""
+    from accounting.models import Account
+
+    a1, a2 = _mk_account(company, "1000"), _mk_account(company, "4000")
+    stat = Account.objects.create(
+        company=company,
+        code="9700",
+        name="Stat Qty",
+        account_type="ASSET",
+        ledger_domain=Account.LedgerDomain.STATISTICAL,
+        status="ACTIVE",
+        unit_of_measure="EA",
+    )
+    lines = [
+        _line(1, a1, debit="100.00"),
+        _line(2, a2, credit="100.00"),
+        _line(3, stat, debit="12.00"),  # no is_memo_line flag at all
+    ]
+    _mk_posted_event(company, lines, "100.00", "100.00")
+    data = _run_json("--company", str(company.id))
+    assert data["total_violating_events"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# scanner date sanitation
+# --------------------------------------------------------------------------- #
+def _event_with_date(company, account_pair, date_value, memo="date-test"):
+    a1, a2 = account_pair
+    lines = [_line(1, a1, debit="100.00"), _line(2, a2, credit="99.00")]  # violating → appears in findings
+    event = _mk_posted_event(company, lines, "100.00", "99.00", memo=memo)
+    # Rewrite the stored payload date directly (events are immutable via
+    # save(); use queryset update as the established test drift pattern).
+    from events.models import BusinessEvent
+
+    data = dict(event.data)
+    if date_value is _MISSING:
+        data.pop("date", None)
+    else:
+        data["date"] = date_value
+    BusinessEvent.objects.filter(pk=event.pk).update(data=data)
+    return event
+
+
+_MISSING = object()
+
+
+@pytest.mark.django_db
+def test_scanner_date_valid_iso_accepted(company):
+    pair = _mk_account(company, "1000"), _mk_account(company, "4000")
+    _event_with_date(company, pair, "2026-03-05")
+    data = _run_json("--company", str(company.id))
+    assert data["companies"][0]["findings"][0]["date"] == "2026-03-05"
+
+
+@pytest.mark.django_db
+def test_scanner_date_invalid_values_fall_back_to_occurred_at(company):
+    pair = _mk_account(company, "1000"), _mk_account(company, "4000")
+    bad_values = [
+        "2026-02-30",  # impossible calendar date
+        "leak-me-PII-string@example.com",  # arbitrary text
+        {"nested": "object"},  # mapping
+        ["2026-01-01"],  # list
+        20260101,  # integer
+        True,  # boolean
+        "2026-01-15T10:00:00",  # datetime string — outside the date-only contract
+        _MISSING,  # missing key
+        None,  # null
+    ]
+    events = [_event_with_date(company, pair, bad) for bad in bad_values]
+    data = _run_json("--company", str(company.id))
+    findings = data["companies"][0]["findings"]
+    assert len(findings) == len(bad_values)
+    expected = {str(e.pk): e.occurred_at.date().isoformat() for e in events}
+    for finding in findings:
+        assert finding["date"] == expected[finding["event_id"]]
+        # Canonical shape only.
+        import re
+
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", finding["date"])
+
+
+@pytest.mark.django_db
+def test_scanner_date_rejected_raw_values_never_echoed(company):
+    pair = _mk_account(company, "1000"), _mk_account(company, "4000")
+    _event_with_date(company, pair, "leak-me-PII-string@example.com")
+    human = _run("--company", str(company.id))
+    machine = _run("--json", "--company", str(company.id))
+    for output in (human, machine):
+        assert "leak-me-PII" not in output
+        assert "example.com" not in output
+
+
+@pytest.mark.django_db
 def test_bounded_queries(company, django_assert_max_num_queries):
     """Facts are cached per company and payloads use select_related — five
     same-account events must not produce per-line/per-account query storms.

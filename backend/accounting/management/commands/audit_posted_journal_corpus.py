@@ -165,12 +165,26 @@ class Command(BaseCommand):
 
     @staticmethod
     def _event_date(event) -> str:
+        """Canonical YYYY-MM-DD for the report. The payload date is accepted
+        ONLY as a datetime.date or a strict ISO calendar-date string — the
+        event contract is date-only, so datetime strings, arbitrary text,
+        numbers, booleans, and nested objects all fall back to
+        occurred_at.date(). The rejected raw value is never echoed anywhere
+        (output, error text, or logs)."""
+        import datetime as _dt
+
         try:
             data = event.get_data()
-            if isinstance(data, dict) and data.get("date"):
-                return str(data["date"])
         except Exception:
-            pass
+            data = None
+        raw = data.get("date") if isinstance(data, dict) else None
+        if isinstance(raw, _dt.date) and not isinstance(raw, _dt.datetime):
+            return raw.isoformat()
+        if isinstance(raw, str):
+            try:
+                return _dt.date.fromisoformat(raw).isoformat()
+            except ValueError:
+                pass  # invalid / datetime-shaped / arbitrary string: fall back silently
         return event.occurred_at.date().isoformat()
 
     def _print_human(self, report, total_events, total_violating) -> None:
