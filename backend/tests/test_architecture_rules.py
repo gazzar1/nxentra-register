@@ -460,6 +460,106 @@ def test_no_signal_bypassing_company_is_active_mutation():
 
 
 # =============================================================================
+# Rule 6 (A3-PR1): the canonical posted-journal invariant stays canonical
+# =============================================================================
+#
+# PR1 introduces accounting/journal_invariant.py as THE posted-JE invariant.
+# These rules are deliberately narrow: emit/apply call-site enforcement
+# belongs to A3-PR2/PR3, not here.
+
+_A3_FORBIDDEN_IMPORT_PREFIXES = (
+    "shopify_connector",
+    "stripe_connector",
+    "platform_connectors",
+    "bank_connector",
+    "sales",
+    "purchases",
+    "inventory",
+    "clinic",
+    "properties",
+)
+
+_A3_EXPECTED_CODES = frozenset(
+    {
+        "JE_TOO_FEW_LINES",
+        "JE_NO_DEBIT_SIDE",
+        "JE_NO_CREDIT_SIDE",
+        "JE_UNBALANCED",
+        "JE_HEADER_TOTAL_MISMATCH",
+        "JE_LINE_ZERO",
+        "JE_LINE_TWO_SIDED",
+        "JE_LINE_NEGATIVE",
+        "JE_AMOUNT_INVALID",
+        "JE_DUPLICATE_LINE_NO",
+        "JE_ACCOUNT_UNKNOWN",
+        "JE_ACCOUNT_CROSS_COMPANY",
+        "JE_ACCOUNT_INACTIVE",
+        "JE_ACCOUNT_NOT_POSTABLE",
+    }
+)
+
+
+def test_journal_invariant_module_is_provider_neutral():
+    """The canonical invariant must never import provider/vertical modules —
+    Rule 2: the financial core may not depend on adapters."""
+    path = BACKEND_ROOT / "accounting" / "journal_invariant.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        modules: list[str] = []
+        if isinstance(node, ast.Import):
+            modules = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            modules = [node.module]
+        for module in modules:
+            root = module.split(".")[0]
+            if root in _A3_FORBIDDEN_IMPORT_PREFIXES:
+                violations.append(f"line {node.lineno}: import of '{module}'")
+    assert not violations, "accounting/journal_invariant.py must stay provider-neutral. Violations:\n  " + "\n  ".join(
+        violations
+    )
+
+
+def test_journal_violation_code_set_cannot_silently_drift():
+    """The canonical 14 stable codes are frozen here — adding, removing, or
+    renaming one requires editing this test consciously (and an ADR per the
+    exception policy). The scanner-level SCANNER_UNREADABLE_PAYLOAD outcome is
+    deliberately NOT a canonical code."""
+    from accounting.journal_invariant import JE_VIOLATION_CODES
+
+    assert JE_VIOLATION_CODES == _A3_EXPECTED_CODES
+    assert "SCANNER_UNREADABLE_PAYLOAD" not in JE_VIOLATION_CODES
+
+
+def test_single_posted_journal_invariant_module():
+    """Rule 3: exactly ONE module defines the posted-journal invariant. A
+    second `check_posted_journal` definition (or a second *journal_invariant*
+    module) anywhere in app code is a violation."""
+    files = _python_files_under(
+        BACKEND_ROOT,
+        exclude=("migrations/", "tests/", "venv", ".venv", "__pycache__"),
+    )
+    canonical = (BACKEND_ROOT / "accounting" / "journal_invariant.py").resolve()
+    offenders: list[str] = []
+    for path in files:
+        if path.resolve() == canonical:
+            continue
+        if "journal_invariant" in path.name:
+            offenders.append(f"{path.relative_to(BACKEND_ROOT).as_posix()} (module name)")
+            continue
+        try:
+            source = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        if "def check_posted_journal" in source:
+            offenders.append(f"{path.relative_to(BACKEND_ROOT).as_posix()} (function definition)")
+    assert not offenders, (
+        "Only accounting/journal_invariant.py may define the posted-journal "
+        "invariant. Violations:\n  " + "\n  ".join(offenders)
+    )
+
+
+# =============================================================================
 # Meta: keep allowlists small + intentional
 # =============================================================================
 

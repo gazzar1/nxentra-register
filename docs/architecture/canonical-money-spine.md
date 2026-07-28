@@ -104,7 +104,7 @@ and verified by [`backend/accounts/pilot_preflight.py`](../../backend/accounts/p
 | Derived readers | Account/period/dimension balances ([backend/projections/](../../backend/projections/)), all reports, drill-downs. |
 | Legacy / competing | None at the model level; the **validity checks are duplicated across layers** (emitter payload validation, model-level postability checks, period gates in `accounting/policies.py` / `accounting/validation.py`) rather than one canonical implementation. |
 | Contract status | In scope (shadow-ledger reports are the pilot's output). Rebuild/replay is **blocked** for pilot companies (`Capability.PROJECTION_REBUILD` gate in [backend/projections/base.py](../../backend/projections/base.py)). |
-| Known gap | **A3 (open): one central posted-JE invariant at emit + apply.** Until then, Rule 3 for JE validity is documented intent, not machine enforcement. |
+| Known gap | **A3 (open): one central posted-JE invariant at emit + apply.** A3-PR1 introduced the canonical invariant core ([backend/accounting/journal_invariant.py](../../backend/accounting/journal_invariant.py), 14 stable violation codes) and the read-only corpus scanner (`audit_posted_journal_corpus`) — but **emit and apply enforcement remain pending** (A3-PR2/PR3), so Rule 3 for JE validity is still not runtime-enforced. |
 
 ---
 
