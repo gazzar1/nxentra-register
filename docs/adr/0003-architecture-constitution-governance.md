@@ -143,6 +143,16 @@ History and current state:
 becomes required in any GitHub ruleset or branch-protection rule — i.e. only
 after the trusted workflow has been proven on a real PR post-merge.
 
+**Operational proof.** The trusted-base workflow design was merged in PR #110
+(`main` commit `c660321`). Operational proof is pending on this pull request
+(`docs/prove-trusted-pr-architecture-check`) until its GitHub Actions run
+completes: the proof criterion is that `PR Architecture Contract` runs from
+the base revision — `pull_request_target` definition loaded from `main`,
+checker executed from the `trusted-base/` checkout of
+`github.event.pull_request.base.sha` — and successfully validates this pull
+request's body. The check remains advisory until this proof passes and branch
+protection is separately configured.
+
 **Known governance debt recorded here:** the ADR directory contains a
 numbering collision — two `0002-*` files
 ([0002-canonical-payments-stripe-adapter.md](0002-canonical-payments-stripe-adapter.md)
