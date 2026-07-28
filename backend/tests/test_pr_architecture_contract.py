@@ -172,7 +172,70 @@ def test_unchecked_arch_item_fails():
 def test_missing_arch_items_fail():
     body = _valid_body().replace("- [x] ARCH: I classified projections and orchestration correctly\n", "")
     defects = checker.check_body(body)
-    assert any("attestation checkboxes" in d for d in defects)
+    assert any("Missing required architecture attestation" in d and "classified projections" in d for d in defects)
+
+
+def test_template_and_checker_attestations_identical():
+    """The checker's label list must never drift from the template's."""
+    template_path = Path(__file__).resolve().parents[2] / ".github" / "pull_request_template.md"
+    template = template_path.read_text(encoding="utf-8")
+    section = template.split("## Architecture attestations", 1)[1].split("\n## ", 1)[0]
+    labels = tuple(m.group("label") for line in section.split("\n") if (m := checker.CHECKBOX_RE.match(line)))
+    assert labels == checker.ARCH_ATTESTATIONS
+
+
+def test_nine_copies_of_one_label_fail():
+    """Count-only validation would pass this; exact-label validation must not."""
+    one_label = "- [x] ARCH: I classified projections and orchestration correctly"
+    body = _valid_body()
+    section_start = body.index("- [x] ARCH: I identified the canonical financial fact")
+    section_end = body.index("## Risk and rollback")
+    body = body[:section_start] + "\n".join([one_label] * 9) + "\n\n" + body[section_end:]
+    defects = checker.check_body(body)
+    assert any("Duplicated architecture attestation" in d for d in defects)
+    assert sum(1 for d in defects if "Missing required architecture attestation" in d) == 8
+
+
+def test_missing_plus_duplicated_label_fails():
+    body = _valid_body().replace(
+        "- [x] ARCH: I provided real evidence for any material refactor",
+        "- [x] ARCH: I classified projections and orchestration correctly",
+    )
+    defects = checker.check_body(body)
+    assert any("Missing required architecture attestation" in d and "real evidence" in d for d in defects)
+    assert any("Duplicated architecture attestation" in d and "classified projections" in d for d in defects)
+
+
+def test_unknown_arch_label_fails():
+    body = _valid_body().replace(
+        "## Risk and rollback",
+        "- [x] ARCH: I promise everything is fine\n\n## Risk and rollback",
+    )
+    defects = checker.check_body(body)
+    assert any("Unknown architecture attestation" in d and "everything is fine" in d for d in defects)
+
+
+def test_attestations_outside_section_do_not_count():
+    """Moving the checked labels into another section must read as missing."""
+    body = _valid_body()
+    block_start = body.index("- [x] ARCH: I identified the canonical financial fact")
+    block_end = body.index("## Risk and rollback")
+    block = body[block_start:block_end]
+    body = body[:block_start] + "\n" + body[block_end:]  # empty attestation section
+    body += "\n" + block  # same checked labels, but under '## Out of scope'
+    defects = checker.check_body(body)
+    assert sum(1 for d in defects if "Missing required architecture attestation" in d) == 9
+
+
+def test_duplicate_fails_even_with_all_nine_present():
+    body = _valid_body().replace(
+        "- [x] ARCH: I preserved the trace from source to financial outcome to evidence",
+        "- [x] ARCH: I preserved the trace from source to financial outcome to evidence\n"
+        "- [x] ARCH: I preserved the trace from source to financial outcome to evidence",
+    )
+    defects = checker.check_body(body)
+    assert any("Duplicated architecture attestation" in d and "preserved the trace" in d for d in defects)
+    assert not any("Missing required architecture attestation" in d for d in defects)
 
 
 # --------------------------------------------------------------------------- #
@@ -196,7 +259,55 @@ def test_changed_contract_without_adr_fails():
         "A broader pilot contract is being introduced for the next merchant.",
     )
     defects = checker.check_body(body)
-    assert any("no ADR reference" in d for d in defects)
+    assert any("does not contain a substantive ADR" in d for d in defects)
+
+
+def test_changed_contract_adr_in_why_now_with_none_in_designated_fails():
+    """An ADR elsewhere + 'None — reason' in the designated section must fail."""
+    body = _valid_body(
+        contract_line="- [x] New or changed product contract — see below",
+        allowlist_answer="None — the contract change is described in the ADR mentioned above.",
+    ).replace(
+        "review cycles showed intent without enforcement decays.",
+        "review cycles showed intent decays; contract change covered by ADR-0004.",
+    )
+    defects = checker.check_body(body)
+    assert any("does not contain a substantive ADR" in d for d in defects)
+
+
+def test_changed_contract_adr_only_elsewhere_fails():
+    """A substantive non-ADR designated answer + an ADR in Evidence must fail."""
+    body = _valid_body(
+        contract_line="- [x] New or changed product contract — see below",
+        allowlist_answer="The allowlist situation is described thoroughly in the linked documents.",
+    ).replace(
+        "The 2026-07-18 current-state audit documents the recurring bypass findings.",
+        "The broader contract is specified in ADR-0004 as accepted last week.",
+    )
+    defects = checker.check_body(body)
+    assert any("does not contain a substantive ADR" in d for d in defects)
+
+
+def test_changed_contract_blank_designated_section_fails():
+    for placeholder in ("", "N/A", "TBD"):
+        body = _valid_body(
+            contract_line="- [x] New or changed product contract — see below",
+            allowlist_answer=placeholder,
+        )
+        defects = checker.check_body(body)
+        assert any("does not contain a substantive ADR" in d for d in defects), repr(placeholder)
+
+
+def test_unrelated_adr_outside_designated_section_cannot_rescue():
+    body = _valid_body(
+        contract_line="- [x] New or changed product contract — see below",
+        allowlist_answer="None — nothing to link here beyond the documents already merged.",
+    ).replace(
+        "Adds the governance baseline documents and the deterministic PR-body checker.",
+        "Adds the governance baseline documents; see also unrelated ADR-0007 history.",
+    )
+    defects = checker.check_body(body)
+    assert any("does not contain a substantive ADR" in d for d in defects)
 
 
 def test_changed_contract_with_adr_passes():

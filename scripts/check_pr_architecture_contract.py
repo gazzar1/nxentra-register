@@ -69,7 +69,24 @@ CONTRACT_OPTIONS: tuple[str, ...] = (
     "New or changed product contract",
 )
 
-ARCH_ATTESTATION_COUNT = 9
+ATTESTATION_SECTION = "## Architecture attestations"
+
+# The exact nine attestation labels — the single source of truth for the
+# checker. A test (backend/tests/test_pr_architecture_contract.py) asserts
+# these are identical to the labels in .github/pull_request_template.md so the
+# two cannot drift silently. Validation is exact-label, per label, inside the
+# attestation section only — never a bare count.
+ARCH_ATTESTATIONS: tuple[str, ...] = (
+    "ARCH: I identified the canonical financial fact or explained why none is affected",
+    "ARCH: I did not create an undocumented second writer or source of truth",
+    "ARCH: I preserved provider-to-core dependency direction or linked an ADR",
+    "ARCH: I used the canonical invariant rather than duplicating it",
+    "ARCH: I classified projections and orchestration correctly",
+    "ARCH: I identified the supported product profile and runtime gate",
+    "ARCH: I provided real evidence for any material refactor",
+    "ARCH: I linked an ADR for every allowlist expansion or rule exception",
+    "ARCH: I preserved the trace from source to financial outcome to evidence",
+)
 
 # Bare placeholders that never count as an answer (checked case-insensitively
 # against the entire normalized answer).
@@ -176,23 +193,41 @@ def check_body(body: str) -> list[str]:
                 "'None — documentation-only change; no runtime or financial path is affected.'"
             )
 
-    # 3. ARCH attestations: every ARCH checkbox checked, and all present.
-    arch_checked = 0
-    for line in strip_comments(normalized).split("\n"):
+    # 3. ARCH attestations: exact-label validation, inside the designated
+    # section only. Each required label must appear exactly once and be
+    # checked; unknown ARCH labels are rejected; ARCH checkboxes elsewhere in
+    # the body do not count. Never a bare count — nine copies of one label is
+    # nine defects, not a pass.
+    attestation_section = sections.get(ATTESTATION_SECTION, "")
+    marks_by_label: dict[str, list[str]] = {}
+    unknown_labels: list[str] = []
+    for line in strip_comments(attestation_section).split("\n"):
         m = CHECKBOX_RE.match(line)
         if not m or not m.group("label").startswith("ARCH:"):
             continue
-        if m.group("mark").lower() == "x":
-            arch_checked += 1
+        label = m.group("label")
+        if label in ARCH_ATTESTATIONS:
+            marks_by_label.setdefault(label, []).append(m.group("mark").lower())
         else:
-            defects.append(f"Unchecked architecture attestation: '{m.group('label')}'.")
-    if (
-        arch_checked + sum(1 for d in defects if d.startswith("Unchecked architecture"))
-        < ARCH_ATTESTATION_COUNT
-    ):
-        defects.append(
-            f"Expected {ARCH_ATTESTATION_COUNT} 'ARCH:' attestation checkboxes; keep the full list from the template."
-        )
+            unknown_labels.append(label)
+    if ATTESTATION_SECTION in sections:
+        for label in ARCH_ATTESTATIONS:
+            marks = marks_by_label.get(label, [])
+            if not marks:
+                defects.append(
+                    f"Missing required architecture attestation (must appear, checked, inside "
+                    f"'{ATTESTATION_SECTION}'): '{label}'."
+                )
+            elif len(marks) > 1:
+                defects.append(
+                    f"Duplicated architecture attestation ({len(marks)} occurrences): '{label}'."
+                )
+            elif marks[0] != "x":
+                defects.append(f"Unchecked architecture attestation: '{label}'.")
+        for label in unknown_labels:
+            defects.append(
+                f"Unknown architecture attestation (not one of the template's nine): '{label}'."
+            )
 
     # 4. Supported-product-contract selection: exactly one.
     contract_section = sections.get("## Supported product contract", "")
@@ -215,22 +250,33 @@ def check_body(body: str) -> list[str]:
                 f"Select exactly one supported-product-contract option ({len(selected)} selected: {', '.join(selected)})."
             )
 
-    # 5. Contract change requires an ADR reference somewhere in the body.
-    if "New or changed product contract" in selected and not ADR_REF_RE.search(
-        strip_comments(normalized)
-    ):
-        defects.append(
-            "'New or changed product contract' is selected but no ADR reference "
-            "(e.g. ADR-0004 or docs/adr/0004-...) appears in the body."
+    # 5. A product-contract change requires the covering ADR reference INSIDE
+    # the designated '### Allowlist or ADR' answer. An ADR mentioned anywhere
+    # else (Summary, Why now?, Evidence, Risk, ...) does not satisfy this, and
+    # neither does a 'None — <reason>' answer — the contract change must be
+    # covered by an ADR in the designated section.
+    allowlist_heading = "### Allowlist or ADR"
+    allowlist_answer = normalize_answer(sections.get(allowlist_heading, ""))
+    if "New or changed product contract" in selected:
+        contract_adr_ok = (
+            is_substantive(allowlist_answer)
+            and not NONE_WITH_REASON_RE.match(allowlist_answer)
+            and ADR_REF_RE.search(allowlist_answer)
         )
+        if not contract_adr_ok:
+            defects.append(
+                "'New or changed product contract' is selected but the "
+                f"'{allowlist_heading}' section does not contain a substantive ADR "
+                "reference (e.g. ADR-0004 or docs/adr/0004-...). A 'None — ...' "
+                "answer, a placeholder, or an ADR mentioned in another section "
+                "does not satisfy this requirement."
+            )
 
     # 6. 'Allowlist or ADR' must be 'None — <explanation>' or contain an ADR ref.
-    allowlist_heading = "### Allowlist or ADR"
     if allowlist_heading in sections:
-        answer = normalize_answer(sections[allowlist_heading])
-        if is_substantive(answer):
-            is_none_with_reason = bool(NONE_WITH_REASON_RE.match(answer))
-            if not is_none_with_reason and not ADR_REF_RE.search(answer):
+        if is_substantive(allowlist_answer):
+            is_none_with_reason = bool(NONE_WITH_REASON_RE.match(allowlist_answer))
+            if not is_none_with_reason and not ADR_REF_RE.search(allowlist_answer):
                 defects.append(
                     "Section '### Allowlist or ADR' must be either "
                     "'None — <specific explanation>' or a substantive answer "
