@@ -1,0 +1,37 @@
+name: PR Architecture Contract
+
+# Deterministic check that the PR body follows the architecture contract in
+# .github/pull_request_template.md (governance: docs/adr/0003).
+#
+# Deliberately `pull_request` (NOT pull_request_target): the checker runs the
+# PR's own code against the PR's own body, needs no secrets and gets none, and
+# has read-only permissions. `edited` re-runs the check when the body is fixed.
+#
+# Initially ADVISORY: this check does not block merges until a later
+# ruleset/branch-protection step marks it as required.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  architecture-contract:
+    name: PR Architecture Contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check PR body against the architecture contract
+        env:
+          # Passed via env (never shell-interpolated) so arbitrary body content
+          # cannot inject into the shell.
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: python scripts/check_pr_architecture_contract.py

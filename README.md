@@ -7,6 +7,14 @@ Multi-tenant accounting and ERP platform built with Django REST Framework (backe
 - **backend/** — Django 4.2 + DRF + PostgreSQL with Row-Level Security (RLS) for tenant isolation. Event-sourced accounting core with CQRS projections.
 - **frontend/** — Next.js 14 + TailwindCSS + shadcn/ui. JWT-authenticated SPA with Arabic/English support.
 
+### Architecture governance
+
+- [Architecture constitution](docs/architecture/architecture-constitution.md) — six binding rules + exception/ratchet policy
+- [Canonical money spine](docs/architecture/canonical-money-spine.md) — writers, readers, and legacy paths for every financial fact
+- [Supported product contracts](docs/architecture/supported-product-contracts.md) — `ISOLATED_SHADOW_LEDGER_V1` as implemented
+- [Architecture Decision Records](docs/adr/) — ADRs + [template](docs/adr/template.md); governance baseline in [ADR-0003](docs/adr/0003-architecture-constitution-governance.md)
+- [Constrained-pilot status tracker](docs/status/constrained_pilot_status.md) — authoritative A1–A5/G1–G2 status
+
 ## Key Modules
 
 | Module | Description |
