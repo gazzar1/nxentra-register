@@ -1,6 +1,9 @@
 # ADR-0003: Enforce the Nxentra architecture constitution through documentation, CI fitness functions, PR contracts and runtime policies
 
-- **Status:** Proposed (governance PR)
+- **Status:** Accepted — acceptance becomes effective when PR #109 is merged
+  into `main`. From that merge, the constitution and its exception/ratchet
+  rules are binding on `main`; before the merge, these files are proposed
+  changes on the `chore/architecture-governance` feature branch.
 - **Date:** 2026-07-28
 - **Decision owner:** founder/eng
 - **Related issue/PR:** governance PR `chore/architecture-governance`; evidence base: [2026-07-18 current-state audit](../audits/2026-07-18-nxentra-current-state-audit.md) (pinned to `bfb09fa` — historical evidence, not current-HEAD status), A4 review cycles on PR #107
@@ -112,6 +115,23 @@ None granted. This ADR grants no rule exceptions; it defines how exceptions
 are granted (accepted ADR + named symbols + tests + owner + removal trigger;
 allowlists ratchet down only).
 
+**Accepted temporary bootstrap limitation (not a permanent architecture
+exception): trusted-checker execution.** The `PR Architecture Contract`
+workflow is advisory in this initial bootstrap PR, and its `pull_request` job
+currently executes `scripts/check_pr_architecture_contract.py` **from the PR
+checkout** — a PR could therefore modify the checker to pass its own body.
+Consequences and plan:
+
+- the check **must not** be made a required status check yet;
+- an immediate follow-up governance-hardening PR must execute the validation
+  logic from a trusted base/`main` revision (PR #109 is the bootstrap PR —
+  `main` has no trusted checker to source from until it merges);
+- branch protection must not mark `PR Architecture Contract` required until
+  that follow-up is merged and proven.
+
+*Removal trigger:* Remove this limitation before `PR Architecture Contract`
+becomes required in any GitHub ruleset or branch-protection rule.
+
 **Known governance debt recorded here:** the ADR directory contains a
 numbering collision — two `0002-*` files
 ([0002-canonical-payments-stripe-adapter.md](0002-canonical-payments-stripe-adapter.md)
@@ -130,5 +150,7 @@ behavior depends on any file in this ADR.
 Not applicable to the baseline itself. Individual transitional statements
 inside it carry their own triggers: the "advisory" status of the PR check ends
 when a branch-protection/ruleset step (explicitly deferred from this PR) marks
-`PR Architecture Contract` as required; the Rule 3/Rule 4 partial-enforcement
-notes end when A3/A5 land and their fitness functions replace the prose.
+`PR Architecture Contract` as required — which, per the bootstrap limitation
+in *Exception scope*, is only permitted after the trusted-checker follow-up PR
+is merged and proven; the Rule 3/Rule 4 partial-enforcement notes end when
+A3/A5 land and their fitness functions replace the prose.

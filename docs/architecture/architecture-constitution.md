@@ -3,7 +3,7 @@
 Binding rules for changes to this repository. Short by design: six rules, an
 exception policy, and an honest statement of what is and is not enforced today.
 
-- **Status:** Adopted via [ADR-0003](../adr/0003-architecture-constitution-governance.md)
+- **Status:** Adopted via [ADR-0003](../adr/0003-architecture-constitution-governance.md) (Accepted; binding on `main` from the merge of PR #109)
 - **Scope:** all code that creates, transforms, or reports financial facts
 - **Companion documents:** [Canonical money spine](canonical-money-spine.md) ·
   [Supported product contracts](supported-product-contracts.md) ·
