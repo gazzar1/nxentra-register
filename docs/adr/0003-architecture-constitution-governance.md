@@ -143,15 +143,19 @@ History and current state:
 becomes required in any GitHub ruleset or branch-protection rule — i.e. only
 after the trusted workflow has been proven on a real PR post-merge.
 
-**Operational proof.** The trusted-base workflow design was merged in PR #110
-(`main` commit `c660321`). Operational proof is pending on this pull request
-(`docs/prove-trusted-pr-architecture-check`) until its GitHub Actions run
-completes: the proof criterion is that `PR Architecture Contract` runs from
-the base revision — `pull_request_target` definition loaded from `main`,
-checker executed from the `trusted-base/` checkout of
-`github.event.pull_request.base.sha` — and successfully validates this pull
-request's body. The check remains advisory until this proof passes and branch
-protection is separately configured.
+**Operational proof — PROVEN.** The trusted-base workflow design was merged
+in PR #110 (`main` commit `c660321`) and operationally proven on PR #111
+(`docs/prove-trusted-pr-architecture-check`): GitHub Actions run
+**30380374955** on head `24946a6` executed with event `pull_request_target`,
+GITHUB_TOKEN limited to `Contents: read / Metadata: read / PullRequests:
+read`, a single checkout of exactly the base SHA
+`c6603216aef665eed275b7447570c433ca9bf416` into `trusted-base/`, the checker
+executed as `python trusted-base/scripts/check_pr_architecture_contract.py`
+with the PR body supplied only via `PR_BODY`, and concluded **success**
+("PR Architecture Contract: OK"). No PR code was checked out or executed and
+no secrets were available. The trusted-base design is now operationally
+proven; branch protection may now make `PR Architecture Contract` a required
+status check (a separate, deliberate step — still not configured by this PR).
 
 **Known governance debt recorded here:** the ADR directory contains a
 numbering collision — two `0002-*` files
