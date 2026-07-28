@@ -320,8 +320,26 @@ def test_half_even_quantization_boundaries():
     assert JE_UNBALANCED in _codes(_check(data))
 
 
-def test_sub_cent_imbalance_that_quantizes_away_is_balanced():
-    # Quantization happens on the TOTALS: 50.002 + 49.998 = 100.000 → 100.00.
+def test_per_line_quantization_matches_ledger_materialization():
+    """Ledger-materialization semantics: each line quantizes FIRST (the
+    JournalLine columns store 2dp per line), and the entry is judged on what
+    would actually be stored — NOT on aggregate-then-quantize."""
+    # 0.006 + 0.006 debits vs 0.012 credit: stored lines are 0.01 + 0.01 vs
+    # 0.01 → materially unbalanced, even though raw sums (0.012 == 0.012) and
+    # aggregate-quantized sums (0.01 == 0.01) would both look balanced.
+    data = _payload(
+        [
+            _line(1, ACC_A, debit="0.006"),
+            _line(2, ACC_A, debit="0.006"),
+            _line(3, ACC_B, credit="0.012"),
+        ],
+        total_debit="0.02",
+        total_credit="0.01",
+    )
+    assert JE_UNBALANCED in _codes(_check(data))
+
+    # Per-line quantization that lands exactly is fine: 50.002 → 50.00 and
+    # 49.998 → 50.00 stored, vs 100.00 credit → balanced as stored.
     data = _payload(
         [
             _line(1, ACC_A, debit="50.002"),
@@ -330,6 +348,114 @@ def test_sub_cent_imbalance_that_quantizes_away_is_balanced():
         ]
     )
     assert _check(data) == []
+
+
+def test_lines_that_quantize_to_zero_are_zero_lines():
+    # 0.004 debit vs 0.004 credit: both store as 0.00 → zero-value financial
+    # lines that cannot form a valid JE.
+    data = _payload(
+        [_line(1, ACC_A, debit="0.004"), _line(2, ACC_B, credit="0.004")],
+        total_debit="0.00",
+        total_credit="0.00",
+    )
+    codes = _codes(_check(data))
+    assert codes.count(JE_LINE_ZERO) == 2
+
+
+# --------------------------------------------------------------------------- #
+# representability (JournalLine max_digits=18, decimal_places=2)
+# --------------------------------------------------------------------------- #
+def test_oversized_amount_1e100_is_invalid_not_a_crash():
+    data = _payload([_line(1, ACC_A, debit="1e100"), _line(2, ACC_B, credit="1.00")])
+    codes = _codes(_check(data))  # must return, never raise
+    assert JE_AMOUNT_INVALID in codes
+
+
+def test_max_representable_amount_is_valid():
+    from accounting.journal_invariant import MAX_ABS_AMOUNT
+
+    big = str(MAX_ABS_AMOUNT)  # 9999999999999999.99
+    data = _payload(
+        [_line(1, ACC_A, debit=big), _line(2, ACC_B, credit=big)],
+        total_debit=big,
+        total_credit=big,
+    )
+    assert _check(data) == []
+
+
+def test_just_beyond_max_representable_is_invalid():
+    from accounting.journal_invariant import MAX_ABS_AMOUNT, TWO_PLACES
+
+    too_big = str(MAX_ABS_AMOUNT + TWO_PLACES)  # 10000000000000000.00
+    data = _payload([_line(1, ACC_A, debit=too_big), _line(2, ACC_B, credit="1.00")])
+    assert JE_AMOUNT_INVALID in _codes(_check(data))
+
+
+def test_negative_oversized_amount_is_invalid_not_negative():
+    """An unrepresentable negative must be JE_AMOUNT_INVALID — JE_LINE_NEGATIVE
+    must not be derived from a value that failed normalization."""
+    data = _payload([_line(1, ACC_A, debit="-1e100"), _line(2, ACC_B, credit="1.00")])
+    codes = _codes(_check(data))
+    assert JE_AMOUNT_INVALID in codes
+    assert JE_LINE_NEGATIVE not in codes
+
+
+def test_oversized_header_total_is_invalid():
+    data = _payload(
+        [_line(1, ACC_A, debit="1.00"), _line(2, ACC_B, credit="1.00")],
+        total_debit="1e100",
+        total_credit="1.00",
+    )
+    assert JE_AMOUNT_INVALID in _codes(_check(data))
+
+
+def test_quantization_failure_never_escapes():
+    # A grab-bag of hostile values in every monetary slot: the function must
+    # return a violations list, never raise.
+    for bad in ("1e100", "-1e100", "9" * 40, "NaN", "Infinity", "-Infinity", True, [], {}):
+        data = _payload(
+            [_line(1, ACC_A, debit=bad), _line(2, ACC_B, credit=bad)],
+            total_debit=bad if not isinstance(bad, list | dict) else "1.00",
+            total_credit="1.00",
+        )
+        codes = _codes(_check(data))
+        assert JE_AMOUNT_INVALID in codes, repr(bad)
+
+
+# --------------------------------------------------------------------------- #
+# account-id canonicalization
+# --------------------------------------------------------------------------- #
+def test_uppercase_uuid_string_resolves_to_same_facts():
+    data = _valid()
+    data["lines"][0]["account_public_id"] = ACC_A.upper()
+    assert _check(data) == []
+
+
+def test_uuid_object_resolves_to_same_facts():
+    from uuid import UUID as _UUID
+
+    data = _valid()
+    data["lines"][0]["account_public_id"] = _UUID(ACC_A)
+    assert _check(data) == []
+
+
+def test_malformed_account_id_is_unknown_not_a_crash():
+    data = _valid()
+    data["lines"][0]["account_public_id"] = "not-a-uuid"
+    violations = _check(data)
+    assert JE_ACCOUNT_UNKNOWN in _codes(violations)
+
+
+def test_canonical_account_id_helper():
+    from accounting.journal_invariant import canonical_account_id
+
+    assert canonical_account_id(ACC_A) == ACC_A
+    assert canonical_account_id(ACC_A.upper()) == ACC_A
+    from uuid import UUID as _UUID
+
+    assert canonical_account_id(_UUID(ACC_A)) == ACC_A
+    for bad in ("not-a-uuid", "", None, True, 12, [], {}):
+        assert canonical_account_id(bad) is None, repr(bad)
 
 
 # --------------------------------------------------------------------------- #

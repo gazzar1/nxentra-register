@@ -131,10 +131,21 @@ class Command(BaseCommand):
             return [SCANNER_UNREADABLE_PAYLOAD]
 
         # Batched facts loading: only ids this company's scan has not seen yet.
+        # Canonicalized first (lowercase hyphenated UUID) so UUID objects and
+        # equivalent strings share one cache key; malformed ids ("not-a-uuid")
+        # never reach the ORM UUID lookup — they stay unresolved and the
+        # invariant reports JE_ACCOUNT_UNKNOWN for the affected line, while
+        # the scan continues to later events.
+        from accounting.journal_invariant import canonical_account_id
+
         referenced = {
-            str(line.get("account_public_id"))
-            for line in (data.get("lines") or [])
-            if isinstance(line, dict) and line.get("account_public_id") and not line.get("is_memo_line")
+            cid
+            for cid in (
+                canonical_account_id(line.get("account_public_id"))
+                for line in (data.get("lines") or [])
+                if isinstance(line, dict) and not line.get("is_memo_line")
+            )
+            if cid is not None
         }
         unseen = referenced - facts_cache.keys()
         if unseen:

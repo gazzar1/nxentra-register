@@ -54,6 +54,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from typing import Literal, Mapping
+from uuid import UUID
 
 # --------------------------------------------------------------------------- #
 # Stable violation codes (the canonical 14 — frozen by an architecture test).
@@ -101,6 +102,15 @@ EMIT_ONLY_CODES: frozenset[str] = frozenset({JE_ACCOUNT_INACTIVE, JE_ACCOUNT_NOT
 TWO_PLACES = Decimal("0.01")
 MONEY_ROUNDING = ROUND_HALF_EVEN
 
+# Representability contract, derived from the JournalLine storage fields
+# (accounting/models.py: DecimalField(max_digits=18, decimal_places=2)).
+# An amount the ledger columns cannot store is JE_AMOUNT_INVALID — the
+# invariant reflects exactly what materialization can hold, never the ambient
+# Decimal context.
+LEDGER_MAX_DIGITS = 18
+LEDGER_DECIMAL_PLACES = 2
+MAX_ABS_AMOUNT = Decimal(10) ** (LEDGER_MAX_DIGITS - LEDGER_DECIMAL_PLACES) - TWO_PLACES
+
 Mode = Literal["emit", "apply"]
 
 
@@ -129,10 +139,14 @@ class AccountFacts:
 # --------------------------------------------------------------------------- #
 
 
-def _parse_money(value: object) -> Decimal | None:
-    """Parse a monetary value strictly. Returns None when invalid: booleans,
-    NaN, ±Infinity, unparseable strings, and unsupported types are all invalid.
-    Never coerces to zero."""
+def _normalize_money(value: object) -> Decimal | None:
+    """Parse AND quantize a monetary value to the canonical ledger quantum
+    (0.01, explicit ROUND_HALF_EVEN). Returns the quantized value, or None
+    when the value is invalid: booleans, NaN, ±Infinity, unparseable strings,
+    unsupported types, quantization failures, and amounts outside the
+    representable range of the JournalLine columns (|v| > MAX_ABS_AMOUNT).
+    Never coerces to zero; callers must not run any further monetary logic on
+    a value that failed normalization."""
     if isinstance(value, bool):  # bool is an int subclass — reject explicitly
         return None
     if not isinstance(value, str | int | Decimal):
@@ -143,12 +157,29 @@ def _parse_money(value: object) -> Decimal | None:
         return None
     if not parsed.is_finite():
         return None
-    return parsed
+    try:
+        quantized = parsed.quantize(TWO_PLACES, rounding=MONEY_ROUNDING)
+    except (InvalidOperation, OverflowError):
+        # e.g. Decimal("1e100"): finite, but unquantizable at 0.01 within the
+        # decimal context — unrepresentable, therefore invalid.
+        return None
+    if quantized.copy_abs() > MAX_ABS_AMOUNT:
+        return None
+    return quantized
 
 
-def _q(value: Decimal) -> Decimal:
-    """Canonical monetary quantization: 0.01, explicit ROUND_HALF_EVEN."""
-    return value.quantize(TWO_PLACES, rounding=MONEY_ROUNDING)
+def canonical_account_id(value: object) -> str | None:
+    """Normalize an account_public_id to ONE canonical string form (lowercase
+    hyphenated UUID) so UUID objects and equivalent strings resolve to the
+    same AccountFacts entry. Returns None for malformed identifiers — input
+    sanitation only, not a financial-policy decision: a malformed reference
+    simply does not resolve (JE_ACCOUNT_UNKNOWN)."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return str(UUID(str(value)))
+    except (ValueError, AttributeError, TypeError):
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -203,14 +234,18 @@ def check_posted_journal(
             continue  # memo lines carry no financial weight and are not posted
         financial_count += 1
 
-        debit = _parse_money(line.get("debit", "0"))
-        credit = _parse_money(line.get("credit", "0"))
+        # Normalize (parse + quantize to 0.01 half-even + representability
+        # check) BEFORE any side/zero/balance logic: every downstream check
+        # operates on exactly what the JournalLine columns would store. A line
+        # that fails normalization contributes to NOTHING further.
+        debit = _normalize_money(line.get("debit", "0"))
+        credit = _normalize_money(line.get("credit", "0"))
         if debit is None or credit is None:
             amounts_clean = False
             violations.append(
                 JournalViolation(
                     JE_AMOUNT_INVALID,
-                    "Line debit/credit is not a finite, parseable decimal.",
+                    "Line debit/credit is not a finite, representable ledger decimal.",
                     line_no,
                 )
             )
@@ -228,7 +263,10 @@ def check_posted_journal(
         # ---- account referential checks (both modes) ----------------------
         if account_facts is not None:
             account_public_id = line.get("account_public_id")
-            if not account_public_id or str(account_public_id) not in account_facts:
+            canonical_id = canonical_account_id(account_public_id)
+            if canonical_id is None or canonical_id not in account_facts:
+                # Missing, malformed ("not-a-uuid"), or simply not found —
+                # all mean the reference does not resolve.
                 violations.append(
                     JournalViolation(
                         JE_ACCOUNT_UNKNOWN,
@@ -237,7 +275,7 @@ def check_posted_journal(
                     )
                 )
             else:
-                facts = account_facts[str(account_public_id)]
+                facts = account_facts[canonical_id]
                 if facts.company_id != company_id:
                     violations.append(
                         JournalViolation(
@@ -281,8 +319,11 @@ def check_posted_journal(
     # amount parsed cleanly — otherwise JE_AMOUNT_INVALID already tells the
     # truth and derived checks would be noise.
     if amounts_clean and financial:
-        total_debit = _q(sum((d for _n, d, _c in financial), Decimal("0")))
-        total_credit = _q(sum((c for _n, _d, c in financial), Decimal("0")))
+        # Sums of per-line-quantized values are exact at 2dp — no further
+        # rounding is applied, so the totals equal what the stored lines
+        # would sum to after materialization.
+        total_debit = sum((d for _n, d, _c in financial), Decimal("0"))
+        total_credit = sum((c for _n, _d, c in financial), Decimal("0"))
 
         if not any(d > 0 for _n, d, _c in financial):
             violations.append(JournalViolation(JE_NO_DEBIT_SIDE, "No line carries a debit."))
@@ -293,24 +334,25 @@ def check_posted_journal(
             violations.append(
                 JournalViolation(
                     JE_UNBALANCED,
-                    f"Debits {total_debit} != credits {total_credit} (quantized 0.01, half-even).",
+                    f"Debits {total_debit} != credits {total_credit} "
+                    "(each line quantized to 0.01 half-even before summing).",
                 )
             )
 
-        header_debit = _parse_money(data.get("total_debit"))
-        header_credit = _parse_money(data.get("total_credit"))
+        header_debit = _normalize_money(data.get("total_debit"))
+        header_credit = _normalize_money(data.get("total_credit"))
         if header_debit is None or header_credit is None:
             violations.append(
                 JournalViolation(
                     JE_AMOUNT_INVALID,
-                    "Header total_debit/total_credit is not a finite, parseable decimal.",
+                    "Header total_debit/total_credit is not a finite, representable ledger decimal.",
                 )
             )
-        elif _q(header_debit) != total_debit or _q(header_credit) != total_credit:
+        elif header_debit != total_debit or header_credit != total_credit:
             violations.append(
                 JournalViolation(
                     JE_HEADER_TOTAL_MISMATCH,
-                    f"Header totals ({_q(header_debit)}/{_q(header_credit)}) do not equal "
+                    f"Header totals ({header_debit}/{header_credit}) do not equal "
                     f"calculated non-memo line totals ({total_debit}/{total_credit}).",
                 )
             )
@@ -324,24 +366,31 @@ def check_posted_journal(
 
 
 def load_account_facts(company, account_public_ids) -> dict[str, AccountFacts]:
-    """Load :class:`AccountFacts` for the given ``account_public_id`` values.
+    """Load :class:`AccountFacts` for the given ``account_public_id`` values,
+    keyed by the canonical string form (see :func:`canonical_account_id`).
 
-    One company-agnostic query by public_id (cross-company detection requires
-    seeing accounts from OTHER companies, so the query is deliberately not
-    company-scoped — the pure function does the company comparison). Contains
-    no policy: it only reports what exists.
+    Malformed identifiers (anything that is not a UUID) are sanitized OUT
+    before the ``UUIDField __in`` lookup — they can never resolve, so they
+    simply stay absent from the result and the invariant reports
+    ``JE_ACCOUNT_UNKNOWN``. One company-agnostic query by public_id
+    (cross-company detection requires seeing accounts from OTHER companies,
+    so the query is deliberately not company-scoped — the pure function does
+    the company comparison). Contains no policy: it only reports what exists.
     """
     from accounting.models import Account  # lazy: keeps module import Django-free
 
-    ids = [str(a) for a in account_public_ids if a]
+    ids = {cid for cid in (canonical_account_id(a) for a in account_public_ids) if cid is not None}
     if not ids:
         return {}
     facts: dict[str, AccountFacts] = {}
-    rows = Account.objects.filter(public_id__in=ids).values_list("public_id", "company_id", "status", "is_header")
+    rows = Account.objects.filter(public_id__in=sorted(ids)).values_list(
+        "public_id", "company_id", "status", "is_header"
+    )
     for public_id, company_id, status, is_header in rows:
         is_active = status == "ACTIVE"
-        facts[str(public_id)] = AccountFacts(
-            public_id=str(public_id),
+        key = canonical_account_id(public_id) or str(public_id)
+        facts[key] = AccountFacts(
+            public_id=key,
             company_id=company_id,
             is_active=is_active,
             is_postable=is_active and not is_header,

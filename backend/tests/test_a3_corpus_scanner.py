@@ -243,6 +243,76 @@ def test_apply_mode_ignores_later_account_deactivation(company):
 
 
 @pytest.mark.django_db
+def test_malformed_account_id_is_unknown_and_scan_continues(company):
+    """A readable payload with a malformed account_public_id must classify as
+    JE_ACCOUNT_UNKNOWN (never SCANNER_UNREADABLE_PAYLOAD, never a crash), and
+    later events in the corpus must still be evaluated."""
+    a1, a2 = _mk_account(company, "1000"), _mk_account(company, "4000")
+    bad_lines = [
+        {
+            "line_no": 1,
+            "account_public_id": "not-a-uuid",
+            "account_code": "9999",
+            "description": "line",
+            "debit": "100.00",
+            "credit": "0",
+        },
+        _line(2, a2, credit="100.00"),
+    ]
+    _mk_posted_event(company, bad_lines, "100.00", "100.00")
+    _unbalanced_event(company, a1, a2)  # later event — must still be scanned
+    data = _run_json("--company", str(company.id))
+    entry = data["companies"][0]
+    assert entry["events_scanned"] == 2
+    assert entry["violation_counts"].get("JE_ACCOUNT_UNKNOWN") == 1
+    assert entry["violation_counts"].get("JE_UNBALANCED") == 1
+    assert "SCANNER_UNREADABLE_PAYLOAD" not in entry["violation_counts"]
+
+
+@pytest.mark.django_db
+def test_mixed_valid_and_malformed_ids_in_one_event(company):
+    a2 = _mk_account(company, "4000")
+    lines = [
+        {
+            "line_no": 1,
+            "account_public_id": "also-not-a-uuid",
+            "account_code": "9998",
+            "description": "line",
+            "debit": "50.00",
+            "credit": "0",
+        },
+        _line(2, a2, debit="50.00"),
+        {
+            "line_no": 3,
+            "account_public_id": str(a2.public_id).upper(),  # equivalent UUID string
+            "account_code": a2.code,
+            "description": "line",
+            "debit": "0",
+            "credit": "100.00",
+        },
+    ]
+    _mk_posted_event(company, lines, "100.00", "100.00")
+    data = _run_json("--company", str(company.id))
+    entry = data["companies"][0]
+    # Only the malformed id is unknown; the valid + uppercase-equivalent ids resolve.
+    assert entry["violation_counts"] == {"JE_ACCOUNT_UNKNOWN": 1}
+
+
+@pytest.mark.django_db
+def test_load_account_facts_sanitizes_malformed_ids(company):
+    """No invalid UUID value may reach the ORM filter: malformed input returns
+    an empty/partial mapping instead of raising, and UUID objects work."""
+    from accounting.journal_invariant import load_account_facts
+
+    a1 = _mk_account(company, "1000")
+    # Pure-malformed input: no crash, empty result.
+    assert load_account_facts(company, ["not-a-uuid", "", None]) == {}
+    # Mixed input: valid id resolves (as UUID object AND string), malformed skipped.
+    facts = load_account_facts(company, [a1.public_id, "not-a-uuid", str(a1.public_id).upper()])
+    assert list(facts.keys()) == [str(a1.public_id)]
+
+
+@pytest.mark.django_db
 def test_bounded_queries(company, django_assert_max_num_queries):
     """Facts are cached per company and payloads use select_related — five
     same-account events must not produce per-line/per-account query storms.
