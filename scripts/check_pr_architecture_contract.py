@@ -120,12 +120,43 @@ def _heading_level(heading: str) -> int:
     return len(heading) - len(heading.lstrip("#"))
 
 
+# A fenced-code opening: up to three leading spaces, then three or more
+# backticks or tildes (optionally followed by an info string).
+FENCE_OPEN_RE = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})")
+
+
 def extract_sections(body: str) -> dict[str, str]:
-    """Map each heading line to the text between it and the next heading of
-    the same or higher level. Deterministic, line-based."""
+    """Map each genuine Markdown heading to the text between it and the next
+    heading of the same or higher level. Deterministic, line-based.
+
+    Code-block-aware: heading-looking lines are NOT section boundaries when
+    they appear inside a fenced code block (``` or ~~~, opening fence with up
+    to three leading spaces; closed only by the same marker character with at
+    least the opening length) or inside an indented code block (a line
+    starting with four spaces or a tab, outside any fence). Code-block content
+    stays part of the enclosing section's answer text. A malformed body with
+    an unclosed fence keeps the remainder inside the fence — no recovery
+    guessing; such a body may simply fail the contract.
+    """
     lines = body.replace("\r\n", "\n").split("\n")
     headings: list[tuple[int, str, int]] = []  # (line_index, heading_text, level)
+    in_fence = False
+    fence_char = ""
+    fence_len = 0
     for i, line in enumerate(lines):
+        if in_fence:
+            if re.match(rf"^ {{0,3}}{re.escape(fence_char)}{{{fence_len},}}\s*$", line):
+                in_fence = False
+            continue
+        fence_open = FENCE_OPEN_RE.match(line)
+        if fence_open:
+            marker = fence_open.group("marker")
+            in_fence = True
+            fence_char = marker[0]
+            fence_len = len(marker)
+            continue
+        if line.startswith("\t") or line.startswith("    "):
+            continue  # indented code line — never a heading
         stripped = line.strip()
         if stripped.startswith("#"):
             headings.append((i, stripped, _heading_level(stripped)))

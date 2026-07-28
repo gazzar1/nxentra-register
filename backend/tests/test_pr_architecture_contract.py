@@ -338,6 +338,103 @@ def test_allowlist_with_adr_reference_accepted():
 
 
 # --------------------------------------------------------------------------- #
+# code-block-aware heading extraction
+# --------------------------------------------------------------------------- #
+_VERIFICATION_WITH_BASH_BLOCK = """Ran the focused suites:
+
+```bash
+# Run the focused tests
+python -m pytest tests/test_pr_architecture_contract.py -q
+## not a heading either
+```
+
+All commands exited 0."""
+
+
+def test_fenced_bash_block_in_verification_does_not_truncate():
+    body = _valid_body().replace(
+        "Ran the checker's own test suite and ruff on the changed files.",
+        _VERIFICATION_WITH_BASH_BLOCK,
+    )
+    sections = checker.extract_sections(body)
+    # The whole block (fence + comment lines) stays inside the answer...
+    assert "# Run the focused tests" in sections["## Verification"]
+    assert "All commands exited 0." in sections["## Verification"]
+    # ...and the body passes end to end.
+    assert checker.check_body(body) == []
+
+
+def test_fenced_fake_required_heading_does_not_create_or_replace_section():
+    body = _valid_body().replace(
+        "Ran the checker's own test suite and ruff on the changed files.",
+        "Ran everything:\n\n```\n## Risk and rollback\n```\n\nAll green.",
+    )
+    sections = checker.extract_sections(body)
+    # The real section survives with its real content, not the fenced fake.
+    assert "revert the commit" in sections["## Risk and rollback"]
+    assert checker.check_body(body) == []
+
+
+def test_tilde_fenced_block_headings_ignored():
+    body = _valid_body().replace(
+        "Ran the checker's own test suite and ruff on the changed files.",
+        "Ran everything:\n\n~~~text\n# comment\n### Central invariant\n~~~\n\nAll green.",
+    )
+    assert checker.check_body(body) == []
+
+
+def test_indented_code_block_headings_ignored():
+    body = _valid_body().replace(
+        "Ran the checker's own test suite and ruff on the changed files.",
+        "Ran everything:\n\n    # indented code, not a heading\n    ## also code\n\nAll green.",
+    )
+    sections = checker.extract_sections(body)
+    assert "# indented code, not a heading" in sections["## Verification"]
+    assert checker.check_body(body) == []
+
+
+def test_required_heading_immediately_after_closed_fence_is_found():
+    body = _valid_body().replace(
+        "Ran the checker's own test suite and ruff on the changed files.\n",
+        "```bash\n# setup\n```\n",
+    )
+    sections = checker.extract_sections(body)
+    assert "## Architecture attestations" in sections
+    # The attestation section still validates from its real location.
+    defects = checker.check_body(body)
+    assert not any("architecture attestation" in d for d in defects)
+
+
+def test_missing_heading_not_satisfied_by_fenced_copy():
+    body = _valid_body().replace(
+        "### Central invariant\n\nNone — no invariant implementation is added or changed by this PR.",
+        "```\n### Central invariant\n\nNone — no invariant implementation is added or changed by this PR.\n```",
+    )
+    defects = checker.check_body(body)
+    assert any("Missing required heading: '### Central invariant'" in d for d in defects)
+
+
+def test_missing_heading_not_satisfied_by_indented_copy():
+    body = _valid_body().replace(
+        "### Central invariant\n\nNone — no invariant implementation is added or changed by this PR.",
+        "    ### Central invariant\n\n    None — indented code cannot declare a section.",
+    )
+    defects = checker.check_body(body)
+    assert any("Missing required heading: '### Central invariant'" in d for d in defects)
+
+
+def test_unclosed_fence_swallows_rest_without_recovery():
+    """Malformed body: an unclosed fence keeps the remainder inside the fence —
+    the contract simply fails on the now-missing headings (no guessing)."""
+    body = _valid_body().replace(
+        "Ran the checker's own test suite and ruff on the changed files.",
+        "```bash\n# fence never closed",
+    )
+    defects = checker.check_body(body)
+    assert any("Missing required heading" in d for d in defects)
+
+
+# --------------------------------------------------------------------------- #
 # reporting contract
 # --------------------------------------------------------------------------- #
 def test_all_defects_reported_at_once():
