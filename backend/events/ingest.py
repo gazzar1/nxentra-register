@@ -169,6 +169,27 @@ class EventIngestView(APIView):
                 status=status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
 
+        # ── A3-PR2: canonical posted-journal emit boundary ────────────
+        # External ingest is the third door into _emit_event_core; a key
+        # scoped to journal_entry.posted must not bypass the invariant the
+        # internal emitters enforce. Validated on the exact dict that will
+        # be emitted, before any event identity exists. Lazy import keeps
+        # the events app free of an accounting dependency at import time.
+        if event_type == "journal_entry.posted":
+            from accounting.journal_invariant import PostedJournalInvalid, require_valid_posted_journal
+
+            try:
+                require_valid_posted_journal(api_key.company, payload["data"])
+            except PostedJournalInvalid as exc:
+                return Response(
+                    {
+                        "detail": "Posted-journal payload failed the canonical invariant.",
+                        "codes": exc.codes,
+                        "violations": exc.as_dicts(),
+                    },
+                    status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                )
+
         # ── Emit ──────────────────────────────────────────────────────
         try:
             event = emit_external_event(
