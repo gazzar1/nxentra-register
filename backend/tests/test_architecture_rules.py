@@ -560,6 +560,219 @@ def test_single_posted_journal_invariant_module():
 
 
 # =============================================================================
+# Rule 7 (A3-PR2): every JOURNAL_ENTRY_POSTED emission goes through the
+# canonical emit boundary — and nothing substitutes or bypasses it
+# =============================================================================
+#
+# PR2 wires require_valid_posted_journal() in front of every emitter. These
+# rules freeze that state: a NEW emitter (or a boundary call removed from an
+# existing one) fails the build; the removed ±0.05 acceptance tolerance can
+# never quietly return; and no emitter consults TESTING /
+# DISABLE_EVENT_VALIDATION around the boundary.
+
+# The frozen production emitter set: (file, function-name) pairs. Growing this
+# set is a deliberate act — the new emitter must call the canonical boundary
+# on its exact final payload, and the addition is reviewed here.
+A3_EXPECTED_POSTED_EMITTERS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("accounting/commands.py", "post_journal_entry"),
+        ("accounting/commands.py", "_reverse_posted_journal_entry"),
+        ("accounting/commands.py", "close_fiscal_year"),
+        ("accounting/commands.py", "reopen_fiscal_year"),
+        ("accounting/commands.py", "record_customer_receipt"),
+        ("accounting/commands.py", "record_vendor_payment"),
+        ("platform_connectors/je_builder.py", "build_journal_entry"),
+        ("projections/property.py", "_create_posted_entry"),
+        ("clinic/projections.py", "_create_posted_entry"),
+        ("shopify_connector/projections.py", "_handle_refund_restock"),
+    }
+)
+
+A3_UNINTEGRATED_EMITTER_ALLOWLIST: set[tuple[str, str]] = set()
+"""Empty by design (A3-PR2 integrated every discovered emitter). An entry here
+means a legacy path could not safely call the canonical boundary yet — it
+needs the exact file, exact symbol, a written reason, and a linked follow-up
+decision, per the A3-PR2 contract."""
+
+
+def _functions_emitting_posted(path: Path) -> dict[str, tuple[bool, str]]:
+    """Map function name -> (calls_canonical_boundary, source_segment) for
+    every function in `path` that emits JOURNAL_ENTRY_POSTED via
+    emit_event/emit_event_no_actor (event_type given as the EventTypes
+    attribute or the literal string)."""
+    try:
+        source = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return {}
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return {}
+
+    def _is_posted_event_type(value) -> bool:
+        if isinstance(value, ast.Attribute) and value.attr == "JOURNAL_ENTRY_POSTED":
+            return True
+        return isinstance(value, ast.Constant) and value.value == "journal_entry.posted"
+
+    results: dict[str, tuple[bool, str]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        emits = False
+        guards = False
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Call):
+                continue
+            func = inner.func
+            name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
+            if name in {"emit_event", "emit_event_no_actor"}:
+                for kw in inner.keywords:
+                    if kw.arg == "event_type" and _is_posted_event_type(kw.value):
+                        emits = True
+                # positional event_type (emit_event(actor, EventTypes.X, ...))
+                for arg in inner.args:
+                    if _is_posted_event_type(arg):
+                        emits = True
+            if name == "require_valid_posted_journal":
+                guards = True
+        if emits:
+            results[node.name] = (guards, ast.get_source_segment(source, node) or "")
+    return results
+
+
+def _collect_posted_emitters() -> dict[tuple[str, str], tuple[bool, str]]:
+    files = _python_files_under(
+        BACKEND_ROOT,
+        exclude=("migrations/", "tests/", "venv", ".venv", "__pycache__", "test_"),
+    )
+    emitters: dict[tuple[str, str], tuple[bool, str]] = {}
+    for path in files:
+        rel = path.relative_to(BACKEND_ROOT).as_posix()
+        for func_name, info in _functions_emitting_posted(path).items():
+            emitters[(rel, func_name)] = info
+    return emitters
+
+
+def test_every_posted_journal_emission_goes_through_canonical_boundary():
+    """A3-PR2: the set of functions emitting JOURNAL_ENTRY_POSTED is frozen,
+    and every one of them calls require_valid_posted_journal() in the same
+    function body (on the exact payload it emits — the tests in
+    test_a3_emit_boundary.py prove the runtime behavior; this rule proves
+    no emitter exists outside the guarded set)."""
+    emitters = _collect_posted_emitters()
+    found = set(emitters)
+
+    unexpected = found - A3_EXPECTED_POSTED_EMITTERS - A3_UNINTEGRATED_EMITTER_ALLOWLIST
+    missing = A3_EXPECTED_POSTED_EMITTERS - found
+    unguarded = [key for key in found & A3_EXPECTED_POSTED_EMITTERS if not emitters[key][0]]
+
+    assert not unexpected, (
+        "New JOURNAL_ENTRY_POSTED emitter(s) outside the frozen set — every "
+        "emitter must call require_valid_posted_journal() on its exact final "
+        "payload and be added to A3_EXPECTED_POSTED_EMITTERS deliberately:\n  "
+        + "\n  ".join(f"{f}:{fn}" for f, fn in sorted(unexpected))
+    )
+    assert not missing, (
+        "Expected emitter(s) vanished — if the path was removed, drop it from "
+        "A3_EXPECTED_POSTED_EMITTERS consciously:\n  " + "\n  ".join(f"{f}:{fn}" for f, fn in sorted(missing))
+    )
+    assert not unguarded, (
+        "Emitter(s) no longer call require_valid_posted_journal() in the "
+        "emitting function:\n  " + "\n  ".join(f"{f}:{fn}" for f, fn in sorted(unguarded))
+    )
+
+
+def test_external_ingest_guards_posted_journal_payloads():
+    """The third door into _emit_event_core: events/ingest.py accepts
+    caller-supplied payloads for any key-authorized event type, so it must
+    call the canonical boundary for journal_entry.posted — and must not
+    consult the test-mode flags around it."""
+    path = BACKEND_ROOT / "events" / "ingest.py"
+    source = path.read_text(encoding="utf-8")
+    assert "require_valid_posted_journal" in source, (
+        "events/ingest.py must validate journal_entry.posted payloads with the canonical boundary"
+    )
+    assert "DISABLE_EVENT_VALIDATION" not in source
+    assert "settings.TESTING" not in source
+
+
+def test_posted_emitters_do_not_consult_test_mode_flags():
+    """No emitter may wrap (or condition) the canonical boundary in
+    TESTING / DISABLE_EVENT_VALIDATION — the invariant holds in every
+    environment, including the test suite that disables the generic
+    schema validator."""
+    emitters = _collect_posted_emitters()
+    violations: list[str] = []
+    for (rel, func_name), (_guarded, segment) in sorted(emitters.items()):
+        if "DISABLE_EVENT_VALIDATION" in segment or "TESTING" in segment:
+            violations.append(f"{rel}:{func_name}")
+    # The canonical module itself must have NO settings access at all — its
+    # docstrings may NAME the flags (to forbid them), so the check is on the
+    # import/usage surface, not on the words.
+    canonical_source = (BACKEND_ROOT / "accounting" / "journal_invariant.py").read_text(encoding="utf-8")
+    canonical_tree = ast.parse(canonical_source)
+    settings_imports = [
+        node.lineno
+        for node in ast.walk(canonical_tree)
+        if (isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("django.conf"))
+        or (isinstance(node, ast.Import) and any(alias.name.startswith("django.conf") for alias in node.names))
+    ]
+    assert not settings_imports, (
+        f"accounting/journal_invariant.py must never import django settings (lines {settings_imports})"
+    )
+    assert not violations, (
+        "Emitters must not consult test-mode flags around the canonical "
+        "boundary. Violations:\n  " + "\n  ".join(violations)
+    )
+
+
+def test_no_posted_journal_acceptance_tolerance_remains():
+    """A3-PR2 removed the ±0.05 ACCEPTANCE gates (receipt/payment). The only
+    legitimate Decimal("0.05") uses left in app code are the two pre-payload
+    ROUNDING-CORRECTION helpers (which append a visible FX-rounding line and
+    are followed by the zero-tolerance canonical boundary). Exact expected
+    counts: a new 0.05 literal anywhere — or a third copy of the fixer —
+    fails the build. (The dead shopify_connector copy was deleted in PR2.)"""
+    expected_counts = {
+        "accounting/commands.py": 1,  # _fix_fx_rounding_dicts band check
+        "platform_connectors/je_builder.py": 1,  # _fix_fx_rounding band check
+    }
+    files = _python_files_under(
+        BACKEND_ROOT,
+        exclude=("migrations/", "tests/", "venv", ".venv", "__pycache__"),
+    )
+    found: dict[str, int] = {}
+    for path in files:
+        rel = path.relative_to(BACKEND_ROOT).as_posix()
+        try:
+            source = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            continue
+        count = 0
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "Decimal"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == "0.05"
+            ):
+                count += 1
+        if count:
+            found[rel] = count
+    assert found == expected_counts, (
+        f"Decimal('0.05') literal drift — expected exactly {expected_counts}, found {found}. "
+        "A new 0.05 tolerance (or a moved fixer) must be reviewed against the "
+        "zero-tolerance canonical invariant (founder decision D3)."
+    )
+
+
+# =============================================================================
 # Meta: keep allowlists small + intentional
 # =============================================================================
 
@@ -578,4 +791,9 @@ def test_allowlists_are_documented_in_this_file():
         "COMPANY_IS_ACTIVE_MUTATION_ALLOWLIST must stay empty — a signal-"
         "bypassing Company.is_active mutation needs its own guard, not an "
         "allowlist entry."
+    )
+    assert len(A3_UNINTEGRATED_EMITTER_ALLOWLIST) == 0, (
+        "A3_UNINTEGRATED_EMITTER_ALLOWLIST must stay empty — A3-PR2 integrated "
+        "every emitter; a new unintegrated path needs a written reason and a "
+        "linked follow-up decision, not a quiet entry."
     )
