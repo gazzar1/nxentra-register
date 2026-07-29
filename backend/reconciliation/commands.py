@@ -417,59 +417,68 @@ def _create_settlement_clearance_je(
     actor = system_actor_for_company(company)
     memo = f"Bank deposit clearance: settlement batch {batch_id}"
 
-    create_result = create_journal_entry(
-        actor=actor,
-        date=value_date,
-        memo=memo,
-        lines=[
-            {
-                "account_id": bank_account.id,
-                "description": f"{memo} — bank deposit",
-                "debit": str(net_amount),
-                "credit": "0",
-            },
-            {
-                "account_id": ebd_account.id,
-                "description": f"{memo} — clear EBD",
-                "debit": "0",
-                "credit": str(net_amount),
-            },
-        ],
-        kind=JournalEntry.Kind.NORMAL,
-        period=period,
-        # A116: source provenance travels in the event payload (not a post-hoc
-        # ORM update) so it survives a from-scratch projection rebuild.
-        source_module="payment_settlement_clearance",
-        source_document=settlement_entry.source_document or batch_id,
-        # A177: stable request identity — a crash between create and post
-        # returns the original clearance JE on retry instead of duplicating.
-        request_id=f"payment_settlement_clearance:{settlement_entry.source_document or batch_id}",
-    )
-    if not create_result.success:
-        logger.error("Settlement clearance create failed: %s", create_result.error)
-        return None
-    entry = create_result.data
-
-    save_result = save_journal_entry_complete(actor, entry.id)
-    if not save_result.success:
-        logger.error("Settlement clearance save_complete failed: %s", save_result.error)
-        return None
-    entry = save_result.data
-
-    # A3-PR2 correction (best-effort caller contract): the auto/manual match
-    # loops treat a failed clearance as skip-and-continue. The per-item
-    # atomic below guarantees an invariant-invalid item commits ZERO partial
-    # state (no draft, no events, no sequence) while other items proceed.
+    # A3-PR2 correction (fresh-review P2): the per-item savepoint owns the
+    # ENTIRE clearance attempt — create, save-complete, AND post — beginning
+    # before any clearance-specific mutation, event emission, or sequence
+    # allocation. A failed item therefore commits ZERO partial state (no
+    # DRAFT/POSTED rows, no CREATED/SAVED/POSTED events, no sequence, no
+    # source link, no balance change) while the auto/manual match loops keep
+    # their best-effort skip-and-continue contract: the helper still returns
+    # None and the outer transaction is untouched. Only PostedJournalInvalid
+    # is CAUGHT (the canonical invariant raise-through); ordinary failures
+    # keep their fail-return shape and mark just this savepoint for rollback.
     try:
         with transaction.atomic():
+            create_result = create_journal_entry(
+                actor=actor,
+                date=value_date,
+                memo=memo,
+                lines=[
+                    {
+                        "account_id": bank_account.id,
+                        "description": f"{memo} — bank deposit",
+                        "debit": str(net_amount),
+                        "credit": "0",
+                    },
+                    {
+                        "account_id": ebd_account.id,
+                        "description": f"{memo} — clear EBD",
+                        "debit": "0",
+                        "credit": str(net_amount),
+                    },
+                ],
+                kind=JournalEntry.Kind.NORMAL,
+                period=period,
+                # A116: source provenance travels in the event payload (not a post-hoc
+                # ORM update) so it survives a from-scratch projection rebuild.
+                source_module="payment_settlement_clearance",
+                source_document=settlement_entry.source_document or batch_id,
+                # A177: stable request identity — a crash between create and post
+                # returns the original clearance JE on retry instead of duplicating.
+                request_id=f"payment_settlement_clearance:{settlement_entry.source_document or batch_id}",
+            )
+            if not create_result.success:
+                logger.error("Settlement clearance create failed: %s", create_result.error)
+                transaction.set_rollback(True)
+                return None
+            entry = create_result.data
+
+            save_result = save_journal_entry_complete(actor, entry.id)
+            if not save_result.success:
+                logger.error("Settlement clearance save_complete failed: %s", save_result.error)
+                transaction.set_rollback(True)
+                return None
+            entry = save_result.data
+
             post_result = post_journal_entry_or_raise(actor, entry.id)
+            if not post_result.success:
+                logger.error("Settlement clearance post failed: %s", post_result.error)
+                transaction.set_rollback(True)
+                return None
+            entry = post_result.data
     except PostedJournalInvalid as exc:
-        logger.error("Settlement clearance post rejected by canonical invariant: %s", exc)
+        logger.error("Settlement clearance rejected by canonical invariant: %s", exc)
         return None
-    if not post_result.success:
-        logger.error("Settlement clearance post failed: %s", post_result.error)
-        return None
-    entry = post_result.data
 
     return entry.lines.filter(account=bank_account).first()
 

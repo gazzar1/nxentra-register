@@ -1557,3 +1557,182 @@ class TestExternalIngestIdempotentRetry:
         assert response.status_code == 422, response.data
         assert set(response.data["codes"]) <= {"JE_ACCOUNT_UNKNOWN", "JE_ACCOUNT_CROSS_COMPANY"}
         assert BusinessEvent.objects.filter(company=second_company).count() == 0
+
+
+# --------------------------------------------------------------------------- #
+# Final bounded pass (fresh-review P2): the clearance per-item savepoint owns
+# the ENTIRE create -> save -> post attempt in the best-effort match loops.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.django_db
+class TestClearanceItemRollback:
+    """`_create_settlement_clearance_je` is the per-item unit of the
+    best-effort auto/manual match loops. A failed item must leave ZERO
+    residue (no DRAFT/POSTED rows, no journal events, no sequence, no
+    balance change) while the loop — and anything an outer transaction
+    already committed for earlier items — proceeds untouched."""
+
+    def _clearance_fixtures(self, actor, company, cash_account, revenue_account):
+        """A posted settlement-ish JE (source doc) plus bank/EBD accounts."""
+        posted = _post_simple_entry(actor, cash_account, revenue_account, memo="settlement source")
+        assert posted.success, posted.error
+        bank = Account.objects.create(
+            public_id=uuid4(),
+            company=company,
+            code="1020",
+            name="Merchant Bank",
+            account_type=Account.AccountType.ASSET,
+            normal_balance=Account.NormalBalance.DEBIT,
+            status=Account.Status.ACTIVE,
+        )
+        ebd = Account.objects.create(
+            public_id=uuid4(),
+            company=company,
+            code="1150",
+            name="Expected Bank Deposit",
+            account_type=Account.AccountType.ASSET,
+            normal_balance=Account.NormalBalance.DEBIT,
+            status=Account.Status.ACTIVE,
+        )
+        return posted.data, bank, ebd
+
+    def _run_clearance(self, company, settlement_entry, bank, ebd, batch_id):
+        from reconciliation.commands import _create_settlement_clearance_je
+
+        return _create_settlement_clearance_je(
+            company=company,
+            settlement_entry=settlement_entry,
+            bank_account=bank,
+            ebd_account=ebd,
+            net_amount=Decimal("40.00"),
+            batch_id=batch_id,
+            statement_date=date.today(),
+            value_date=date.today(),
+        )
+
+    def _assert_zero_item_residue(self, company, batch_id, baseline):
+        memo = f"Bank deposit clearance: settlement batch {batch_id}"
+        assert not JournalEntry.objects.filter(company=company, memo=memo).exists()
+        assert not JournalLine.objects.filter(company=company, description__startswith=memo).exists()
+        assert (
+            BusinessEvent.objects.filter(company=company, event_type__startswith="journal_entry.").count()
+            == baseline["je_events"]
+        )
+        assert _seq_next_value(company) == baseline["seq"]
+        assert _seq_next_value(company, "journal_entry") == baseline["seq_alt"]
+
+    def _baseline(self, company):
+        return {
+            "je_events": BusinessEvent.objects.filter(company=company, event_type__startswith="journal_entry.").count(),
+            "seq": _seq_next_value(company),
+            "seq_alt": _seq_next_value(company, "journal_entry"),
+        }
+
+    def test_inactive_bank_account_item_leaves_zero_residue(
+        self, actor_context, company, owner_membership, cash_account, revenue_account
+    ):
+        """Required case 1: inactive bank account. The rejection fires at the
+        post gate (ordinary fail-return) — the widened savepoint still rolls
+        back the item's create/save writes completely."""
+        settlement, bank, ebd = self._clearance_fixtures(actor_context, company, cash_account, revenue_account)
+        _lock(bank)
+        baseline = self._baseline(company)
+
+        result = self._run_clearance(company, settlement, bank, ebd, "batch-bank-locked")
+
+        assert result is None  # skip-and-continue contract preserved
+        self._assert_zero_item_residue(company, "batch-bank-locked", baseline)
+
+    def test_inactive_ebd_account_item_leaves_zero_residue(
+        self, actor_context, company, owner_membership, cash_account, revenue_account
+    ):
+        """Required case 2a: inactive (non-postable) EBD account."""
+        settlement, bank, ebd = self._clearance_fixtures(actor_context, company, cash_account, revenue_account)
+        _lock(ebd)
+        baseline = self._baseline(company)
+
+        result = self._run_clearance(company, settlement, bank, ebd, "batch-ebd-locked")
+
+        assert result is None
+        self._assert_zero_item_residue(company, "batch-ebd-locked", baseline)
+
+    def test_statistical_ebd_account_invariant_rejection_leaves_zero_residue(
+        self, actor_context, company, owner_membership, cash_account, revenue_account
+    ):
+        """Required case 2b: an ACTIVE, postable, STATISTICAL-domain EBD
+        account passes every command gate and is rejected by the canonical
+        invariant (PostedJournalInvalid raise-through) — the savepoint rolls
+        the whole item back and the exception does NOT escape the helper."""
+        settlement, bank, _ebd = self._clearance_fixtures(actor_context, company, cash_account, revenue_account)
+        statistical_ebd = _statistical_account(company, code="1152")
+        baseline = self._baseline(company)
+
+        result = self._run_clearance(company, settlement, bank, statistical_ebd, "batch-ebd-stat")
+
+        assert result is None
+        self._assert_zero_item_residue(company, "batch-ebd-stat", baseline)
+
+    def test_valid_clearance_posts_exactly_once(
+        self, actor_context, company, owner_membership, cash_account, revenue_account
+    ):
+        """Required case 3."""
+        settlement, bank, ebd = self._clearance_fixtures(actor_context, company, cash_account, revenue_account)
+
+        line = self._run_clearance(company, settlement, bank, ebd, "batch-valid")
+
+        assert line is not None and line.account_id == bank.id
+        memo = "Bank deposit clearance: settlement batch batch-valid"
+        assert JournalEntry.objects.filter(company=company, memo=memo, status=JournalEntry.Status.POSTED).count() == 1
+        assert _posted_events(company).filter(data__memo=memo).count() == 1
+
+    def test_multi_item_run_keeps_best_effort_contract(
+        self, actor_context, company, owner_membership, cash_account, revenue_account
+    ):
+        """Required case 4: inside ONE outer transaction (exactly how
+        auto_match_statement drives the loop), a valid item commits, the
+        invalid middle item leaves zero residue, a later valid item still
+        posts, and the batch as a whole is NOT rolled back."""
+        settlement, bank, ebd = self._clearance_fixtures(actor_context, company, cash_account, revenue_account)
+        statistical_ebd = _statistical_account(company, code="1153")
+
+        with transaction.atomic():  # the auto-match batch transaction
+            first = self._run_clearance(company, settlement, bank, ebd, "batch-multi-1")
+            baseline_mid = self._baseline(company)
+            second = self._run_clearance(company, settlement, bank, statistical_ebd, "batch-multi-2")
+            third = self._run_clearance(company, settlement, bank, ebd, "batch-multi-3")
+
+        assert first is not None
+        assert second is None
+        assert third is not None
+        memo1 = "Bank deposit clearance: settlement batch batch-multi-1"
+        memo3 = "Bank deposit clearance: settlement batch batch-multi-3"
+        assert JournalEntry.objects.filter(company=company, memo=memo1, status=JournalEntry.Status.POSTED).count() == 1
+        assert JournalEntry.objects.filter(company=company, memo=memo3, status=JournalEntry.Status.POSTED).count() == 1
+        assert not JournalEntry.objects.filter(
+            company=company, memo="Bank deposit clearance: settlement batch batch-multi-2"
+        ).exists()
+        # The invalid middle item consumed nothing: the third item's writes
+        # account for exactly the delta after the baseline taken mid-run.
+        assert (
+            BusinessEvent.objects.filter(company=company, event_type="journal_entry.posted", data__memo=memo3).count()
+            == 1
+        )
+        assert baseline_mid["seq"] is not None
+
+    def test_corrected_retry_of_invalid_item_succeeds_exactly_once(
+        self, actor_context, company, owner_membership, cash_account, revenue_account
+    ):
+        """Required case 5: after the statistical-EBD rejection, pointing the
+        item at a proper EBD account posts exactly once (the rolled-back
+        attempt left no A177 request-id residue to collide with)."""
+        settlement, bank, ebd = self._clearance_fixtures(actor_context, company, cash_account, revenue_account)
+        statistical_ebd = _statistical_account(company, code="1154")
+
+        assert self._run_clearance(company, settlement, bank, statistical_ebd, "batch-retry") is None
+        line = self._run_clearance(company, settlement, bank, ebd, "batch-retry")
+
+        assert line is not None
+        memo = "Bank deposit clearance: settlement batch batch-retry"
+        assert JournalEntry.objects.filter(company=company, memo=memo, status=JournalEntry.Status.POSTED).count() == 1
+        assert _posted_events(company).filter(data__memo=memo).count() == 1
