@@ -299,7 +299,10 @@ class TestCustomerReceiptFxBalance:
             currency="USD",
         )
         assert not result.success
-        assert "does not balance" in result.error
+        # A3-PR2: the refusal now comes from the canonical emit boundary —
+        # assert on the stable violation code, never the English message.
+        assert "JE_UNBALANCED" in result.error
+        assert "JE_UNBALANCED" in (result.data or {}).get("codes", [])
         assert not JournalLine.objects.filter(company=egp_company).exists()
 
     def test_unmapped_fx_account_fails_loud(self, actor_context, egp_company, user, fx_accounts):

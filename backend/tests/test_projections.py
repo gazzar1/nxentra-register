@@ -222,8 +222,12 @@ class TestAccountBalanceProjection:
         rev_balance = AccountBalance.objects.get(company=company, account=revenue_account)
         assert rev_balance.credit_total == Decimal("100.00")
 
-    def test_memo_lines_excluded_from_balance(self, company, user, cash_account, memo_account):
-        """Memo/statistical lines should not affect financial balance."""
+    def test_memo_lines_excluded_from_balance(self, company, user, cash_account, revenue_account, memo_account):
+        """Memo/statistical lines should not affect financial balance.
+
+        A3-PR2 fixture correction: the payload is now a genuinely valid
+        posted journal (two balanced financial lines + a one-sided memo
+        line), matching what the canonical emit boundary would accept."""
         entry_public_id = str(uuid4())
 
         emit_event(
@@ -253,6 +257,14 @@ class TestAccountBalanceProjection:
                     },
                     {
                         "line_no": 2,
+                        "account_public_id": str(revenue_account.public_id),
+                        "account_code": revenue_account.code,
+                        "debit": "0.00",
+                        "credit": "100.00",
+                        "is_memo_line": False,
+                    },
+                    {
+                        "line_no": 3,
                         "account_public_id": str(memo_account.public_id),
                         "account_code": memo_account.code,
                         "debit": "5.00",  # 5 employees
@@ -438,7 +450,7 @@ class TestAccountBalanceRaceCondition:
     This tests the select_for_update() fix.
     """
 
-    def test_concurrent_updates_are_serialized(self, company, user, cash_account):
+    def test_concurrent_updates_are_serialized(self, company, user, cash_account, revenue_account):
         """
         Multiple workers updating same balance should not lose updates.
 
@@ -472,6 +484,14 @@ class TestAccountBalanceRaceCondition:
                             "description": "Cash",
                             "debit": "100.00",
                             "credit": "0.00",
+                        },
+                        {
+                            "line_no": 2,
+                            "account_public_id": str(revenue_account.public_id),
+                            "account_code": revenue_account.code,
+                            "description": "Revenue",
+                            "debit": "0.00",
+                            "credit": "100.00",
                         },
                     ],
                 },
@@ -743,7 +763,7 @@ class TestAccountsProjections:
 class TestProjectionAppliedEventTracking:
     """Test that processed events are tracked for idempotency."""
 
-    def test_applied_events_recorded(self, company, user, cash_account):
+    def test_applied_events_recorded(self, company, user, cash_account, revenue_account):
         """Processing an event should record it in ProjectionAppliedEvent."""
         entry_public_id = str(uuid4())
 
@@ -770,6 +790,13 @@ class TestProjectionAppliedEventTracking:
                         "account_code": cash_account.code,
                         "debit": "100.00",
                         "credit": "0.00",
+                    },
+                    {
+                        "line_no": 2,
+                        "account_public_id": str(revenue_account.public_id),
+                        "account_code": revenue_account.code,
+                        "debit": "0.00",
+                        "credit": "100.00",
                     },
                 ],
             },
