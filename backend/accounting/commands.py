@@ -15,6 +15,7 @@ Pattern:
 ALL state changes MUST go through commands to ensure events are emitted.
 """
 
+import functools
 import hashlib
 import json
 import logging
@@ -133,18 +134,46 @@ class CommandResult:
         return cls(success=False, error=error, data=data)
 
 
+def _posted_journal_invalid_fail(exc: PostedJournalInvalid) -> CommandResult:
+    """The one CommandResult shape for a canonical-invariant rejection:
+    message carries the stable codes; ``result.data`` carries the structured
+    violations. Callers act on the codes — never the message."""
+    return CommandResult.fail(str(exc), data={"violations": exc.as_dicts(), "codes": exc.codes})
+
+
 def _posted_journal_invalid_result(exc: PostedJournalInvalid) -> CommandResult:
-    """A3-PR2 failure contract for command-layer emitters: a rejected posting
-    must leave NOTHING — no event, no consumed sequence, no rows. The
-    violation is detected inside the command's atomic block after sequence
-    allocation, so a plain ``CommandResult.fail`` return would COMMIT that
-    increment; marking the block for rollback voids everything the attempt
-    staged (a savepoint when nested inside a caller's transaction) while
-    preserving the CommandResult error shape every caller already handles.
-    Callers act on the stable codes in ``result.data`` — never the message.
+    """A3-PR2 failure contract for SELF-CONTAINED top-level emitters
+    (customer receipt, vendor payment, fiscal close/reopen — commands with no
+    composed production callers): a rejected posting must leave NOTHING — no
+    event, no consumed sequence, no rows. The violation is detected inside
+    the command's atomic block after sequence allocation, so a plain
+    ``CommandResult.fail`` return would COMMIT that increment; marking the
+    block for rollback voids everything the attempt staged while preserving
+    the CommandResult shape. Composed workflows use the raise-through pattern
+    (:func:`translate_posted_journal_invalid`) instead.
     """
     transaction.set_rollback(True)
-    return CommandResult.fail(str(exc), data={"violations": exc.as_dicts(), "codes": exc.codes})
+    return _posted_journal_invalid_fail(exc)
+
+
+def translate_posted_journal_invalid(fn):
+    """A3-PR2 correction (Codex P2 finding 1): public-boundary translation for
+    the raise-through pattern. Applied ABOVE ``@transaction.atomic`` so a
+    :class:`PostedJournalInvalid` raised anywhere inside the decorated command
+    escapes the ENTIRE owning transaction first — rolling back the complete
+    business operation (documents, drafts, events, sequences) — and only then
+    is converted to the standard ``CommandResult`` failure with the stable
+    violation codes. Ordinary (non-invariant) failures are untouched: they
+    keep their existing return-based semantics."""
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except PostedJournalInvalid as exc:
+            return _posted_journal_invalid_fail(exc)
+
+    return wrapper
 
 
 def _changes_hash(changes: dict) -> str:
@@ -1174,9 +1203,17 @@ def save_journal_entry_complete(
 
 
 @transaction.atomic
-def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
+def post_journal_entry_or_raise(actor: ActorContext, entry_id: int) -> CommandResult:
     """
     Post a journal entry, making it affect account balances.
+
+    RAISE-THROUGH CORE (A3-PR2 correction): a canonical-invariant rejection
+    RAISES :class:`PostedJournalInvalid` out of this function's atomic block
+    so a COMPOSED caller's whole business operation rolls back (documents,
+    drafts, events, sequences). Composed workflows (sales/purchase posting,
+    settlements, reconciliation) call this directly and translate at their
+    own public boundary; everyone else uses :func:`post_journal_entry`.
+    Ordinary failures still return ``CommandResult.fail`` unchanged.
 
     Args:
         actor: The actor context
@@ -1387,11 +1424,9 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
     ).to_dict()
     # A3-PR2: the canonical invariant gates the EXACT payload being emitted —
     # in particular the post-FX-conversion amounts, which the pre-conversion
-    # balance check at the top of this command cannot see.
-    try:
-        require_valid_posted_journal(actor.company, posted_payload)
-    except PostedJournalInvalid as exc:
-        return _posted_journal_invalid_result(exc)
+    # balance check at the top of this command cannot see. A violation RAISES
+    # through this atomic block (see the function docstring).
+    require_valid_posted_journal(actor.company, posted_payload)
 
     event = emit_event(
         actor=actor,
@@ -1433,8 +1468,18 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
     return CommandResult.ok(posted_entry, event=event)
 
 
+@translate_posted_journal_invalid
+def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
+    """Public boundary over :func:`post_journal_entry_or_raise`: when this
+    command IS the outermost operation (views, tasks, management commands,
+    best-effort loops), an invariant rejection has already rolled back the
+    entire posting attempt by the time it is translated here into the
+    standard ``CommandResult`` failure with stable codes."""
+    return post_journal_entry_or_raise(actor, entry_id)
+
+
 @transaction.atomic
-def reverse_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
+def reverse_journal_entry_or_raise(actor: ActorContext, entry_id: int) -> CommandResult:
     """
     Reverse a posted journal entry.
 
@@ -1445,6 +1490,11 @@ def reverse_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
     1. JOURNAL_ENTRY_POSTED for the reversal entry (so projections update balances)
     2. JOURNAL_ENTRY_REVERSED for audit trail
 
+    RAISE-THROUGH CORE (A3-PR2 correction): an invariant rejection RAISES
+    :class:`PostedJournalInvalid` out of this atomic so composed callers
+    (reconciliation unmatch/exclude) roll back their whole operation.
+    Everyone else uses :func:`reverse_journal_entry`.
+
     Args:
         actor: The actor context
         entry_id: ID of entry to reverse
@@ -1454,6 +1504,14 @@ def reverse_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
     """
     require(actor, "journal.reverse")
     return _reverse_posted_journal_entry(actor, entry_id)
+
+
+@translate_posted_journal_invalid
+def reverse_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
+    """Public boundary over :func:`reverse_journal_entry_or_raise` — the
+    invariant rejection has already rolled back the entire reversal attempt
+    when it is translated here into the standard ``CommandResult`` failure."""
+    return reverse_journal_entry_or_raise(actor, entry_id)
 
 
 class VoidReversalError(Exception):
@@ -1598,11 +1656,11 @@ def _reverse_posted_journal_entry(
     # no historical tolerance carries forward). An original entry whose
     # swapped lines cannot satisfy the invariant (e.g. a pre-A3 imbalanced
     # receipt) is therefore no longer reversible until history policy (PR3)
-    # decides otherwise; the rejection rolls back the entire attempt.
-    try:
-        require_valid_posted_journal(actor.company, reversal_payload)
-    except PostedJournalInvalid as exc:
-        return _posted_journal_invalid_result(exc)
+    # decides otherwise. A violation RAISES PostedJournalInvalid through the
+    # caller's transaction so the ENTIRE owning operation (public reversal,
+    # document void, recon unmatch/exclude) rolls back; public boundaries
+    # translate it after rollback (translate_posted_journal_invalid).
+    require_valid_posted_journal(actor.company, reversal_payload)
 
     event_posted = emit_event(
         actor=actor,

@@ -24,7 +24,7 @@ from decimal import Decimal
 from django.utils import timezone
 
 from accounting.commands import _next_company_sequence
-from accounting.journal_invariant import JE_VIOLATION_CODES, require_valid_posted_journal
+from accounting.journal_invariant import require_valid_posted_journal
 from accounting.mappings import ModuleAccountMapping
 from accounting.models import ExchangeRate, JournalEntry, JournalLine
 from events.emitter import emit_event_no_actor
@@ -190,25 +190,6 @@ def _resolve_exchange_rate(company, currency, entry_date):
 def _convert_amount(amount, exchange_rate):
     """Convert a foreign amount to functional currency."""
     return (amount * exchange_rate).quantize(Decimal("0.01"))
-
-
-def _raise_if_posted_journal_invalid(result, *, context: str) -> None:
-    """A3-PR2 §7: an invalid NEW posted-journal payload must fail loudly
-    through the projection failure mechanism — never ``logger.error`` +
-    normal return (which consumes the event with no failure record). Only
-    canonical-invariant rejections are promoted; every other settlement
-    failure keeps its existing disposition until the A5 durable-outcome
-    work revisits it."""
-    from projections.exceptions import ProjectionCommandFailedError
-
-    data = result.data if isinstance(result.data, dict) else {}
-    codes = data.get("codes") or []
-    if any(code in JE_VIOLATION_CODES for code in codes):
-        raise ProjectionCommandFailedError(
-            f"Posted-journal invariant rejection for {context}: {result.error}",
-            command_name="create_and_post_settlement",
-            original_error=str(result.error),
-        )
 
 
 def _ensure_dimension_and_value(company, dim_code, dim_name, dim_name_ar, val_code, val_name, applies_to=None):
@@ -1629,7 +1610,6 @@ class ShopifyAccountingHandler(BaseProjection):
         )
 
         if not result.success:
-            _raise_if_posted_journal_invalid(result, context=f"payout {payout_id}")
             logger.error("Failed to create settlement for payout %s: %s", payout_id, result.error)
             return
 
@@ -1693,7 +1673,6 @@ class ShopifyAccountingHandler(BaseProjection):
         )
 
         if not result.success:
-            _raise_if_posted_journal_invalid(result, context=f"dispute {dispute_id}")
             logger.error("Failed to create settlement for dispute %s: %s", dispute_id, result.error)
             return
 
@@ -1742,7 +1721,6 @@ class ShopifyAccountingHandler(BaseProjection):
         )
 
         if not result.success:
-            _raise_if_posted_journal_invalid(result, context=f"dispute-won {dispute_id}")
             logger.error("Failed to create dispute-won settlement for %s: %s", dispute_id, result.error)
             return
 

@@ -1021,47 +1021,49 @@ class TestChunkedJournalPathDisposition:
 # --------------------------------------------------------------------------- #
 
 
+def _ingest_key(company):
+    from events.api_keys import ExternalAPIKey
+
+    key_obj, raw_key = ExternalAPIKey.create_key(
+        company=company,
+        name="A3 Boundary",
+        source_system="a3_test",
+        allowed_event_types=[EventTypes.JOURNAL_ENTRY_POSTED],
+    )
+    return key_obj, raw_key
+
+
+def _ingest_payload(company, lines, total_debit, total_credit):
+    return {
+        "event_type": EventTypes.JOURNAL_ENTRY_POSTED,
+        "aggregate_type": "JournalEntry",
+        "aggregate_id": str(uuid4()),
+        "idempotency_key": f"a3.ingest:{uuid4()}",
+        "data": {
+            "entry_public_id": str(uuid4()),
+            "entry_number": "EXT-1",
+            "date": date.today().isoformat(),
+            "memo": "external journal",
+            "kind": "NORMAL",
+            "currency": "USD",
+            "exchange_rate": "1.0",
+            "posted_at": timezone.now().isoformat(),
+            "posted_by_id": 0,
+            "posted_by_email": "ext@example.com",
+            "total_debit": total_debit,
+            "total_credit": total_credit,
+            "lines": lines,
+        },
+    }
+
+
 @pytest.mark.django_db
 class TestExternalIngestEmitBoundary:
-    def _key(self, company):
-        from events.api_keys import ExternalAPIKey
-
-        key_obj, raw_key = ExternalAPIKey.create_key(
-            company=company,
-            name="A3 Boundary",
-            source_system="a3_test",
-            allowed_event_types=[EventTypes.JOURNAL_ENTRY_POSTED],
-        )
-        return key_obj, raw_key
-
-    def _payload(self, company, lines, total_debit, total_credit):
-        return {
-            "event_type": EventTypes.JOURNAL_ENTRY_POSTED,
-            "aggregate_type": "JournalEntry",
-            "aggregate_id": str(uuid4()),
-            "idempotency_key": f"a3.ingest:{uuid4()}",
-            "data": {
-                "entry_public_id": str(uuid4()),
-                "entry_number": "EXT-1",
-                "date": date.today().isoformat(),
-                "memo": "external journal",
-                "kind": "NORMAL",
-                "currency": "USD",
-                "exchange_rate": "1.0",
-                "posted_at": timezone.now().isoformat(),
-                "posted_by_id": 0,
-                "posted_by_email": "ext@example.com",
-                "total_debit": total_debit,
-                "total_credit": total_credit,
-                "lines": lines,
-            },
-        }
-
     def test_valid_external_posted_journal_is_accepted(self, company, cash_account, revenue_account):
         from rest_framework.test import APIClient
 
-        _key_obj, raw_key = self._key(company)
-        payload = self._payload(
+        _key_obj, raw_key = _ingest_key(company)
+        payload = _ingest_payload(
             company,
             [
                 {
@@ -1091,8 +1093,8 @@ class TestExternalIngestEmitBoundary:
         ORM — it stays unresolved and surfaces as JE_ACCOUNT_UNKNOWN."""
         from rest_framework.test import APIClient
 
-        _key_obj, raw_key = self._key(company)
-        payload = self._payload(
+        _key_obj, raw_key = _ingest_key(company)
+        payload = _ingest_payload(
             company,
             [
                 {"line_no": 1, "account_public_id": "not-a-uuid", "debit": "50.00", "credit": "0"},
@@ -1112,8 +1114,8 @@ class TestExternalIngestEmitBoundary:
     def test_unbalanced_external_payload_is_rejected_422(self, company, cash_account, revenue_account):
         from rest_framework.test import APIClient
 
-        _key_obj, raw_key = self._key(company)
-        payload = self._payload(
+        _key_obj, raw_key = _ingest_key(company)
+        payload = _ingest_payload(
             company,
             [
                 {"line_no": 1, "account_public_id": str(cash_account.public_id), "debit": "50.00", "credit": "0"},
@@ -1184,3 +1186,374 @@ class TestBoundaryMemoSemantics:
         with pytest.raises(PostedJournalInvalid) as excinfo:
             require_valid_posted_journal(company, payload)
         assert JE_UNBALANCED in excinfo.value.codes
+
+
+# --------------------------------------------------------------------------- #
+# Correction pass (Codex P2 findings on PR #113)
+# Finding 1: PostedJournalInvalid rolls back the OWNING business operation.
+# Finding 2: external-ingest idempotent retries resolve before revalidation.
+# --------------------------------------------------------------------------- #
+
+
+def _fx_drift_setup(company):
+    """EGP-functional company + USD to EGP rate 0.5: a 0.01 USD line
+    quantizes to 0.00 at post-time conversion (half-even), so the exact
+    emitted payload violates the invariant (zero lines / missing sides)
+    while every earlier gate (create/save, pre-conversion balance) passes."""
+    company.functional_currency = "EGP"
+    company.save(update_fields=["functional_currency"])
+    ExchangeRate.objects.create(
+        company=company,
+        from_currency="USD",
+        to_currency="EGP",
+        rate=Decimal("0.5"),
+        effective_date=date.today(),
+        rate_type="SPOT",
+    )
+
+
+@pytest.mark.django_db
+class TestNestedWorkflowRollback:
+    """Finding 1: an invariant rejection inside a composed document workflow
+    rolls back the ENTIRE owning attempt (no CREATED/SAVED events, no DRAFT
+    JE, no document advancement, no sequence) while ordinary failures keep
+    their pre-existing return-based semantics."""
+
+    def _sales_fixtures(self, company):
+        from projections.write_barrier import command_writes_allowed
+        from sales.models import PostingProfile
+
+        ar = Account.objects.create(
+            public_id=uuid4(),
+            company=company,
+            code="1200",
+            name="AR Control",
+            account_type=Account.AccountType.ASSET,
+            normal_balance=Account.NormalBalance.DEBIT,
+            role=Account.AccountRole.RECEIVABLE_CONTROL,
+            requires_counterparty=True,
+            counterparty_kind="CUSTOMER",
+            status=Account.Status.ACTIVE,
+        )
+        customer = Customer.objects.create(
+            public_id=uuid4(), company=company, code="C900", name="Drift Customer", status=Customer.Status.ACTIVE
+        )
+        with command_writes_allowed():
+            profile = PostingProfile.objects.create(
+                company=company,
+                code="A3-AR",
+                name="A3 AR Profile",
+                profile_type=PostingProfile.ProfileType.CUSTOMER,
+                control_account=ar,
+                is_active=True,
+            )
+        return ar, customer, profile
+
+    def _purchase_fixtures(self, company):
+        from projections.write_barrier import command_writes_allowed
+        from sales.models import PostingProfile
+
+        ap = Account.objects.create(
+            public_id=uuid4(),
+            company=company,
+            code="2100",
+            name="AP Control",
+            account_type=Account.AccountType.LIABILITY,
+            normal_balance=Account.NormalBalance.CREDIT,
+            role=Account.AccountRole.PAYABLE_CONTROL,
+            requires_counterparty=True,
+            counterparty_kind="VENDOR",
+            status=Account.Status.ACTIVE,
+        )
+        vendor = Vendor.objects.create(
+            public_id=uuid4(), company=company, code="V900", name="Drift Vendor", status=Vendor.Status.ACTIVE
+        )
+        with command_writes_allowed():
+            profile = PostingProfile.objects.create(
+                company=company,
+                code="A3-AP",
+                name="A3 AP Profile",
+                profile_type=PostingProfile.ProfileType.VENDOR,
+                control_account=ap,
+                is_active=True,
+            )
+        return ap, vendor, profile
+
+    def _drift_invoice(self, actor, company, revenue_account):
+        from sales.commands import create_sales_invoice
+
+        _ar, customer, profile = self._sales_fixtures(company)
+        result = create_sales_invoice(
+            actor=actor,
+            customer_id=customer.id,
+            posting_profile_id=profile.id,
+            invoice_date=date.today(),
+            currency="USD",
+            lines=[
+                {
+                    "account_id": revenue_account.id,
+                    "description": "Drift line",
+                    "quantity": "1",
+                    "unit_price": "0.01",
+                    "discount_amount": "0",
+                }
+            ],
+        )
+        assert result.success, result.error
+        return result.data["invoice"]
+
+    def test_invalid_invoice_posting_rolls_back_entire_attempt(self, actor_context, company, revenue_account):
+        from sales.commands import post_sales_invoice
+        from sales.models import SalesInvoice
+
+        _fx_drift_setup(company)
+        invoice = self._drift_invoice(actor_context, company, revenue_account)
+        seq_before = _seq_next_value(company)
+        je_events_before = BusinessEvent.objects.filter(
+            company=company, event_type__startswith="journal_entry."
+        ).count()
+
+        result = post_sales_invoice(actor_context, invoice.id)
+
+        assert not result.success
+        codes = (result.data or {}).get("codes", [])
+        assert codes, f"stable codes must reach the caller, got error={result.error!r}"
+        assert set(codes) & {"JE_LINE_ZERO", "JE_NO_DEBIT_SIDE", "JE_NO_CREDIT_SIDE", "JE_UNBALANCED"}, codes
+        # Full-attempt rollback: no JE events of ANY kind from the attempt,
+        # no draft/posted JE rows, no source-document advancement, no FK,
+        # no consumed sequence.
+        assert (
+            BusinessEvent.objects.filter(company=company, event_type__startswith="journal_entry.").count()
+            == je_events_before
+        )
+        assert not JournalEntry.objects.filter(company=company).exists()
+        assert not JournalLine.objects.filter(company=company).exists()
+        invoice = SalesInvoice.objects.get(pk=invoice.pk)
+        assert invoice.status != SalesInvoice.Status.POSTED
+        assert invoice.posted_journal_entry_id is None
+        assert _seq_next_value(company) == seq_before
+
+    def test_corrected_retry_after_invoice_rejection_succeeds_once(self, actor_context, company, revenue_account):
+        from sales.commands import post_sales_invoice
+
+        _fx_drift_setup(company)
+        invoice = self._drift_invoice(actor_context, company, revenue_account)
+        assert not post_sales_invoice(actor_context, invoice.id).success
+
+        # Correct the data: the invoice stamped the 0.5 rate at creation, so
+        # the fix is on the document (and the rate table) — 0.01 USD at 48
+        # is representable. The retried operation must succeed exactly once.
+        from sales.models import SalesInvoice
+
+        ExchangeRate.objects.filter(company=company).update(rate=Decimal("48"))
+        SalesInvoice.objects.filter(pk=invoice.pk).update(exchange_rate=Decimal("48"))
+        retry = post_sales_invoice(actor_context, invoice.id)
+        assert retry.success, retry.error
+        assert _posted_events(company).count() == 1
+
+    def test_invalid_bill_posting_rolls_back_entire_attempt(self, actor_context, company, expense_account):
+        from purchases.commands import create_purchase_bill, post_purchase_bill
+        from purchases.models import PurchaseBill
+
+        _fx_drift_setup(company)
+        _ap, vendor, profile = self._purchase_fixtures(company)
+        result = create_purchase_bill(
+            actor=actor_context,
+            vendor_id=vendor.id,
+            posting_profile_id=profile.id,
+            bill_date=date.today(),
+            currency="USD",
+            lines=[
+                {
+                    "account_id": expense_account.id,
+                    "description": "Drift supplies",
+                    "quantity": "1",
+                    "unit_price": "0.01",
+                    "discount_amount": "0",
+                }
+            ],
+        )
+        assert result.success, result.error
+        bill = result.data["bill"] if isinstance(result.data, dict) else result.data
+        seq_before = _seq_next_value(company)
+
+        post = post_purchase_bill(actor_context, bill.id)
+
+        assert not post.success
+        assert (post.data or {}).get("codes"), post.error
+        assert not JournalEntry.objects.filter(company=company).exists()
+        bill = PurchaseBill.objects.get(pk=bill.pk)
+        assert bill.status != PurchaseBill.Status.POSTED
+        assert bill.posted_journal_entry_id is None
+        assert _seq_next_value(company) == seq_before
+
+    def test_valid_nested_invoice_posting_still_commits(self, actor_context, company, revenue_account):
+        from sales.commands import create_sales_invoice, post_sales_invoice
+        from sales.models import SalesInvoice
+
+        _ar, customer, profile = self._sales_fixtures(company)
+        result = create_sales_invoice(
+            actor=actor_context,
+            customer_id=customer.id,
+            posting_profile_id=profile.id,
+            invoice_date=date.today(),
+            lines=[
+                {
+                    "account_id": revenue_account.id,
+                    "description": "Service",
+                    "quantity": "1",
+                    "unit_price": "100.00",
+                    "discount_amount": "0",
+                }
+            ],
+        )
+        assert result.success, result.error
+        invoice = result.data["invoice"]
+        post = post_sales_invoice(actor_context, invoice.id)
+        assert post.success, post.error
+        invoice = SalesInvoice.objects.get(pk=invoice.pk)
+        assert invoice.status == SalesInvoice.Status.POSTED
+        assert _posted_events(company).count() == 1
+
+    def test_ordinary_post_failure_keeps_fail_return_semantics(
+        self, actor_context, company, cash_account, revenue_account
+    ):
+        """An already-POSTED entry re-posted is an ORDINARY failure: it must
+        keep returning CommandResult.fail (no exception, no rollback of the
+        original posting)."""
+        posted = _post_simple_entry(actor_context, cash_account, revenue_account)
+        assert posted.success, posted.error
+
+        again = post_journal_entry(actor_context, posted.data.id)
+        assert not again.success
+        assert "DRAFT" in again.error
+        assert JournalEntry.objects.get(pk=posted.data.pk).status == JournalEntry.Status.POSTED
+        assert _posted_events(company).count() == 1
+
+
+@pytest.mark.django_db
+class TestSettlementRollback:
+    def test_invalid_settlement_rolls_back_platform_settlement_row(self, company, owner_membership):
+        """Decision A required example 4: a single settlement attempt rolls
+        back COMPLETELY (including the PlatformSettlement source-document row
+        staged before the JE post) when the canonical invariant rejects the
+        payload (statistical clearing account means a memo-classified line)."""
+        from accounting.mappings import ModuleAccountMapping
+        from platform_connectors.commands import create_and_post_settlement
+        from platform_connectors.models import PlatformSettlement
+
+        bank = Account.objects.create(
+            public_id=uuid4(),
+            company=company,
+            code="1010",
+            name="Bank",
+            account_type=Account.AccountType.ASSET,
+            normal_balance=Account.NormalBalance.DEBIT,
+            status=Account.Status.ACTIVE,
+        )
+        statistical_clearing = _statistical_account(company, code="1151")
+        ModuleAccountMapping.objects.create(company=company, module="shopify_connector", role="CASH_BANK", account=bank)
+        ModuleAccountMapping.objects.create(
+            company=company, module="shopify_connector", role="SHOPIFY_CLEARING", account=statistical_clearing
+        )
+
+        with pytest.raises(PostedJournalInvalid):
+            with transaction.atomic():
+                create_and_post_settlement(
+                    company=company,
+                    platform="shopify",
+                    platform_document_id="payout-a3-1",
+                    settlement_type=PlatformSettlement.SettlementType.PAYOUT,
+                    gross_amount=Decimal("20.00"),
+                    fees=Decimal("0.00"),
+                    net_amount=Decimal("20.00"),
+                    currency="USD",
+                    settlement_date=date.today(),
+                    reference="A3 correction test",
+                )
+
+        assert not PlatformSettlement.objects.filter(company=company).exists()
+        assert not JournalEntry.objects.filter(company=company).exists()
+        assert _posted_events(company).count() == 0
+
+
+@pytest.mark.django_db
+class TestExternalIngestIdempotentRetry:
+    """Finding 2 / Decision B: already-accepted retries resolve BEFORE any
+    revalidation of mutable account state, and the current same-key contract
+    (return the stored event, payload equality NOT checked) is preserved."""
+
+    def _accept_valid(self, company, cash_account, revenue_account):
+        from rest_framework.test import APIClient
+
+        _key_obj, raw_key = _ingest_key(company)
+        payload = _ingest_payload(
+            company,
+            [
+                {"line_no": 1, "account_public_id": str(cash_account.public_id), "debit": "50.00", "credit": "0"},
+                {"line_no": 2, "account_public_id": str(revenue_account.public_id), "debit": "0", "credit": "50.00"},
+            ],
+            "50.00",
+            "50.00",
+        )
+        response = APIClient().post(
+            "/api/events/ingest/", payload, format="json", HTTP_AUTHORIZATION=f"Api-Key {raw_key}"
+        )
+        assert response.status_code == 201, response.data
+        return raw_key, payload, response.data["event_id"]
+
+    def _retry(self, raw_key, payload):
+        from rest_framework.test import APIClient
+
+        return APIClient().post("/api/events/ingest/", payload, format="json", HTTP_AUTHORIZATION=f"Api-Key {raw_key}")
+
+    def test_retry_after_account_deactivation_returns_stored_event(self, company, cash_account, revenue_account):
+        raw_key, payload, event_id = self._accept_valid(company, cash_account, revenue_account)
+        _lock(cash_account)
+
+        response = self._retry(raw_key, payload)
+
+        assert response.status_code == 201, response.data
+        assert response.data["event_id"] == event_id
+        assert BusinessEvent.objects.filter(company=company).count() == 1
+
+    def test_retry_after_account_becomes_header_returns_stored_event(self, company, cash_account, revenue_account):
+        raw_key, payload, event_id = self._accept_valid(company, cash_account, revenue_account)
+        Account.objects.filter(pk=revenue_account.pk).update(is_header=True)
+
+        response = self._retry(raw_key, payload)
+
+        assert response.status_code == 201, response.data
+        assert response.data["event_id"] == event_id
+        assert BusinessEvent.objects.filter(company=company).count() == 1
+
+    def test_retry_with_different_payload_returns_stored_event(self, company, cash_account, revenue_account):
+        """Pins the CURRENT contract: same company + same key returns the
+        stored event even for a materially different payload; no payload
+        equality check exists at this layer (recorded follow-up debt), and
+        the new ordering must not change that."""
+        raw_key, payload, event_id = self._accept_valid(company, cash_account, revenue_account)
+        _lock(cash_account)  # also proves no account revalidation on this path
+        different = dict(payload)
+        different["data"] = dict(payload["data"])
+        different["data"]["total_debit"] = "999.00"
+        different["data"]["total_credit"] = "999.00"
+
+        response = self._retry(raw_key, different)
+
+        assert response.status_code == 201, response.data
+        assert response.data["event_id"] == event_id
+        assert BusinessEvent.objects.filter(company=company).count() == 1
+
+    def test_same_key_other_company_does_not_resolve(self, company, second_company, cash_account, revenue_account):
+        _raw_key, payload, _event_id = self._accept_valid(company, cash_account, revenue_account)
+        _key2_obj, raw_key2 = _ingest_key(second_company)
+
+        # Same idempotency key, other company: must NOT resolve company 1's
+        # event. Validation runs as a NEW event and rejects the foreign
+        # account references with canonical codes.
+        response = self._retry(raw_key2, payload)
+
+        assert response.status_code == 422, response.data
+        assert set(response.data["codes"]) <= {"JE_ACCOUNT_UNKNOWN", "JE_ACCOUNT_CROSS_COMPANY"}
+        assert BusinessEvent.objects.filter(company=second_company).count() == 0

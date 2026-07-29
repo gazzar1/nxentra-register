@@ -22,8 +22,9 @@ from accounting.commands import (
     CommandResult,
     _next_company_sequence,
     create_journal_entry,
-    post_journal_entry,
+    post_journal_entry_or_raise,
     save_journal_entry_complete,
+    translate_posted_journal_invalid,
 )
 from accounting.models import Account, Customer, JournalEntry
 from accounts.authz import ActorContext, require
@@ -1241,6 +1242,7 @@ def update_sales_invoice(
     return CommandResult.ok(data={"invoice": invoice}, event=event)
 
 
+@translate_posted_journal_invalid
 @transaction.atomic
 def post_sales_invoice(
     actor: ActorContext,
@@ -1529,7 +1531,11 @@ def post_sales_invoice(
     journal_entry = save_result.data
 
     # Post the journal entry
-    post_result = post_journal_entry(actor, journal_entry.id)
+    # A3-PR2 correction: raise-through — a canonical-invariant rejection
+    # rolls back this ENTIRE document-posting attempt (created/saved JE
+    # events, drafts, sequences, document state) before the public boundary
+    # translates it. Ordinary post failures keep the fail-return path.
+    post_result = post_journal_entry_or_raise(actor, journal_entry.id)
     if not post_result.success:
         return CommandResult.fail(f"Failed to post journal entry: {post_result.error}")
 
@@ -1612,6 +1618,7 @@ def post_sales_invoice(
     return CommandResult.ok(data={"invoice": invoice, "journal_entry": journal_entry}, event=event)
 
 
+@translate_posted_journal_invalid
 @transaction.atomic
 def void_sales_invoice(
     actor: ActorContext,
@@ -1854,6 +1861,7 @@ def create_credit_note(
     return CommandResult.ok(data={"credit_note": credit_note}, event=event)
 
 
+@translate_posted_journal_invalid
 @transaction.atomic
 def post_credit_note(
     actor: ActorContext,
@@ -1981,7 +1989,11 @@ def post_credit_note(
         return CommandResult.fail(f"Failed to complete journal entry: {save_result.error}")
     journal_entry = save_result.data
 
-    post_result = post_journal_entry(actor, journal_entry.id)
+    # A3-PR2 correction: raise-through — a canonical-invariant rejection
+    # rolls back this ENTIRE document-posting attempt (created/saved JE
+    # events, drafts, sequences, document state) before the public boundary
+    # translates it. Ordinary post failures keep the fail-return path.
+    post_result = post_journal_entry_or_raise(actor, journal_entry.id)
     if not post_result.success:
         return CommandResult.fail(f"Failed to post journal entry: {post_result.error}")
 
@@ -2032,6 +2044,7 @@ def post_credit_note(
     )
 
 
+@translate_posted_journal_invalid
 @transaction.atomic
 def void_credit_note(
     actor: ActorContext,

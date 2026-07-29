@@ -575,7 +575,10 @@ def test_single_posted_journal_invariant_module():
 # on its exact final payload, and the addition is reviewed here.
 A3_EXPECTED_POSTED_EMITTERS: frozenset[tuple[str, str]] = frozenset(
     {
-        ("accounting/commands.py", "post_journal_entry"),
+        # Correction pass (Codex P2-1): the emitting core became the
+        # raise-through post_journal_entry_or_raise; the public
+        # post_journal_entry wrapper emits nothing itself.
+        ("accounting/commands.py", "post_journal_entry_or_raise"),
         ("accounting/commands.py", "_reverse_posted_journal_entry"),
         ("accounting/commands.py", "close_fiscal_year"),
         ("accounting/commands.py", "reopen_fiscal_year"),

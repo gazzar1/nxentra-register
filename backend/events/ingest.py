@@ -175,20 +175,40 @@ class EventIngestView(APIView):
         # internal emitters enforce. Validated on the exact dict that will
         # be emitted, before any event identity exists. Lazy import keeps
         # the events app free of an accounting dependency at import time.
+        #
+        # Correction (Codex P2 finding 2): the invariant governs NEWLY
+        # emitted events only. An already-accepted retry (same company +
+        # same idempotency key — the same semantics _emit_event_core's
+        # authoritative lookup applies) must keep returning the stored
+        # event idempotently and must NOT be re-judged against mutable
+        # current account state (an account deactivated after acceptance
+        # would otherwise strand the integration in a permanent-retry
+        # loop). The emitter's own race-safe lookup below remains the
+        # authority; this is only an ordering guard. NOTE: matching the
+        # existing contract, a same-key retry returns the stored event
+        # even when the payload differs — payload-equality conflict
+        # detection does not exist at this layer (recorded follow-up debt).
         if event_type == "journal_entry.posted":
-            from accounting.journal_invariant import PostedJournalInvalid, require_valid_posted_journal
+            from events.models import BusinessEvent
 
-            try:
-                require_valid_posted_journal(api_key.company, payload["data"])
-            except PostedJournalInvalid as exc:
-                return Response(
-                    {
-                        "detail": "Posted-journal payload failed the canonical invariant.",
-                        "codes": exc.codes,
-                        "violations": exc.as_dicts(),
-                    },
-                    status=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                )
+            already_accepted = BusinessEvent.objects.filter(
+                company=api_key.company,
+                idempotency_key=payload["idempotency_key"],
+            ).exists()
+            if not already_accepted:
+                from accounting.journal_invariant import PostedJournalInvalid, require_valid_posted_journal
+
+                try:
+                    require_valid_posted_journal(api_key.company, payload["data"])
+                except PostedJournalInvalid as exc:
+                    return Response(
+                        {
+                            "detail": "Posted-journal payload failed the canonical invariant.",
+                            "codes": exc.codes,
+                            "violations": exc.as_dicts(),
+                        },
+                        status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    )
 
         # ── Emit ──────────────────────────────────────────────────────
         try:

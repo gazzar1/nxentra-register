@@ -249,9 +249,11 @@ class TestAtomicity:
 
         import accounting.commands as acct_commands
 
-        monkeypatch.setattr(acct_commands, "post_journal_entry", lambda *a, **kw: CommandResult.fail("boom"))
-        # resolve_difference imports post_journal_entry locally from
-        # accounting.commands, so the module attribute patch covers it.
+        # A3-PR2 correction: resolve_difference now calls the raise-through
+        # core post_journal_entry_or_raise (ordinary failures still RETURN
+        # CommandResult.fail from it), so the failure injection targets that
+        # symbol. The module attribute patch covers the local import.
+        monkeypatch.setattr(acct_commands, "post_journal_entry_or_raise", lambda *a, **kw: CommandResult.fail("boom"))
         result = resolve_difference(
             actor, bank_line.id, reason=BankStatementLine.DifferenceReason.EXTRA_FEE, notes="failpost"
         )
