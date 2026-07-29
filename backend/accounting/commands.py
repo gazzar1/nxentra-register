@@ -29,6 +29,7 @@ logger = logging.getLogger("nxentra.accounting.commands")
 
 from accounting.aggregates import load_account_aggregate, load_journal_entry_aggregate
 from accounting.dimension_validation import validate_line_dimensions
+from accounting.journal_invariant import PostedJournalInvalid, require_valid_posted_journal
 from accounting.models import (
     Account,
     AccountAnalysisDefault,
@@ -130,6 +131,20 @@ class CommandResult:
         # `data` lets a failure carry structured context (e.g. A152's close
         # checklist) alongside the human-readable error.
         return cls(success=False, error=error, data=data)
+
+
+def _posted_journal_invalid_result(exc: PostedJournalInvalid) -> CommandResult:
+    """A3-PR2 failure contract for command-layer emitters: a rejected posting
+    must leave NOTHING — no event, no consumed sequence, no rows. The
+    violation is detected inside the command's atomic block after sequence
+    allocation, so a plain ``CommandResult.fail`` return would COMMIT that
+    increment; marking the block for rollback voids everything the attempt
+    staged (a savepoint when nested inside a caller's transaction) while
+    preserving the CommandResult error shape every caller already handles.
+    Callers act on the stable codes in ``result.data`` — never the message.
+    """
+    transaction.set_rollback(True)
+    return CommandResult.fail(str(exc), data={"violations": exc.as_dicts(), "codes": exc.codes})
 
 
 def _changes_hash(changes: dict) -> str:
@@ -1349,34 +1364,42 @@ def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
     if len(converted_entry_rates) == 1 and Decimal(str(header_exchange_rate)) == Decimal("1.0"):
         header_exchange_rate = converted_entry_rates.pop()
 
-    # Emit event
+    posted_payload = JournalEntryPostedData(
+        entry_public_id=str(entry.public_id),
+        entry_number=entry_number,
+        date=aggregate.date or entry.date.isoformat(),
+        memo=aggregate.memo,
+        memo_ar=aggregate.memo_ar,
+        kind=aggregate.kind,
+        period=entry.period,
+        currency=entry_currency,
+        exchange_rate=str(header_exchange_rate),
+        posted_at=posted_at.isoformat(),
+        posted_by_id=actor.user.id,
+        posted_by_email=actor.user.email,
+        total_debit=str(converted_total_debit),
+        total_credit=str(converted_total_credit),
+        lines=line_data,
+        # A116: echo the row's source provenance (set at create time from
+        # the CREATED event) onto the posted event so it survives rebuild.
+        source_module=entry.source_module or "",
+        source_document=entry.source_document or "",
+    ).to_dict()
+    # A3-PR2: the canonical invariant gates the EXACT payload being emitted —
+    # in particular the post-FX-conversion amounts, which the pre-conversion
+    # balance check at the top of this command cannot see.
+    try:
+        require_valid_posted_journal(actor.company, posted_payload)
+    except PostedJournalInvalid as exc:
+        return _posted_journal_invalid_result(exc)
+
     event = emit_event(
         actor=actor,
         event_type=EventTypes.JOURNAL_ENTRY_POSTED,
         aggregate_type="JournalEntry",
         aggregate_id=str(entry.public_id),
         idempotency_key=f"journal_entry.posted:{entry.public_id}",
-        data=JournalEntryPostedData(
-            entry_public_id=str(entry.public_id),
-            entry_number=entry_number,
-            date=aggregate.date or entry.date.isoformat(),
-            memo=aggregate.memo,
-            memo_ar=aggregate.memo_ar,
-            kind=aggregate.kind,
-            period=entry.period,
-            currency=entry_currency,
-            exchange_rate=str(header_exchange_rate),
-            posted_at=posted_at.isoformat(),
-            posted_by_id=actor.user.id,
-            posted_by_email=actor.user.email,
-            total_debit=str(converted_total_debit),
-            total_credit=str(converted_total_credit),
-            lines=line_data,
-            # A116: echo the row's source provenance (set at create time from
-            # the CREATED event) onto the posted event so it survives rebuild.
-            source_module=entry.source_module or "",
-            source_document=entry.source_document or "",
-        ).to_dict(),
+        data=posted_payload,
     )
 
     _process_projections(actor.company)
@@ -1552,33 +1575,42 @@ def _reverse_posted_journal_entry(
     if memo_context:
         reversal_memo = f"{memo_context} — {reversal_memo}"
 
+    reversal_payload = JournalEntryPostedData(
+        entry_public_id=str(reversal_public_id),
+        entry_number=reversal_entry_number,
+        date=original_date.isoformat(),
+        memo=reversal_memo,
+        memo_ar=(
+            f"عكس قيد {original.entry_number or f'JE#{original.id}'}: {aggregate.memo_ar}" if aggregate.memo_ar else ""
+        ),
+        kind=JournalEntry.Kind.REVERSAL,
+        period=reversal_period,
+        currency=aggregate.currency or original.currency or actor.company.default_currency,
+        exchange_rate=str(aggregate.exchange_rate or original.exchange_rate or "1.0"),
+        posted_at=posted_at.isoformat(),
+        posted_by_id=actor.user.id,
+        posted_by_email=actor.user.email,
+        total_debit=str(aggregate.total_credit),
+        total_credit=str(aggregate.total_debit),
+        lines=reversal_line_data,
+    ).to_dict()
+    # A3-PR2: a reversal is a NEW event and must be exactly canonical (D3 —
+    # no historical tolerance carries forward). An original entry whose
+    # swapped lines cannot satisfy the invariant (e.g. a pre-A3 imbalanced
+    # receipt) is therefore no longer reversible until history policy (PR3)
+    # decides otherwise; the rejection rolls back the entire attempt.
+    try:
+        require_valid_posted_journal(actor.company, reversal_payload)
+    except PostedJournalInvalid as exc:
+        return _posted_journal_invalid_result(exc)
+
     event_posted = emit_event(
         actor=actor,
         event_type=EventTypes.JOURNAL_ENTRY_POSTED,
         aggregate_type="JournalEntry",
         aggregate_id=str(reversal_public_id),
         idempotency_key=f"journal_entry.reversal.posted:{original.public_id}",
-        data=JournalEntryPostedData(
-            entry_public_id=str(reversal_public_id),
-            entry_number=reversal_entry_number,
-            date=original_date.isoformat(),
-            memo=reversal_memo,
-            memo_ar=(
-                f"عكس قيد {original.entry_number or f'JE#{original.id}'}: {aggregate.memo_ar}"
-                if aggregate.memo_ar
-                else ""
-            ),
-            kind=JournalEntry.Kind.REVERSAL,
-            period=reversal_period,
-            currency=aggregate.currency or original.currency or actor.company.default_currency,
-            exchange_rate=str(aggregate.exchange_rate or original.exchange_rate or "1.0"),
-            posted_at=posted_at.isoformat(),
-            posted_by_id=actor.user.id,
-            posted_by_email=actor.user.email,
-            total_debit=str(aggregate.total_credit),
-            total_credit=str(aggregate.total_debit),
-            lines=reversal_line_data,
-        ).to_dict(),
+        data=reversal_payload,
     )
 
     # Emit REVERSED event for audit trail (links original to reversal)
@@ -2551,6 +2583,31 @@ def close_fiscal_year(
     closing_total_credit = sum(Decimal(l["credit"]) for l in je_lines)
 
     if je_lines:
+        closing_payload = JournalEntryPostedData(
+            entry_public_id=closing_entry_public_id,
+            entry_number=str(entry_number),
+            date=p13.end_date.isoformat(),
+            memo=f"Year-end closing entries for FY{fiscal_year}",
+            memo_ar=f"قيود إقفال السنة المالية {fiscal_year}",
+            kind="CLOSING",
+            period=13,
+            total_debit=str(closing_total_debit),
+            total_credit=str(closing_total_credit),
+            lines=je_lines,
+            posted_at=closed_at.isoformat(),
+            posted_by_id=actor.user.id,
+            posted_by_email=actor.user.email,
+            currency=actor.company.default_currency,
+            exchange_rate="1.0",
+        ).to_dict()
+        # A3-PR2: the closing entry is balanced by construction (RE plug) but
+        # was never ASSERTED before — validate the exact payload before ANY
+        # closing event is emitted, so a rejection stages nothing.
+        try:
+            require_valid_posted_journal(actor.company, closing_payload)
+        except PostedJournalInvalid as exc:
+            return _posted_journal_invalid_result(exc)
+
         # Emit closing entry created + posted events
         emit_event(
             actor=actor,
@@ -2580,23 +2637,7 @@ def close_fiscal_year(
             aggregate_type="JournalEntry",
             aggregate_id=closing_entry_public_id,
             idempotency_key=f"closing_entry.posted:{actor.company.public_id}:{fiscal_year}:{closed_at.isoformat()}",
-            data=JournalEntryPostedData(
-                entry_public_id=closing_entry_public_id,
-                entry_number=str(entry_number),
-                date=p13.end_date.isoformat(),
-                memo=f"Year-end closing entries for FY{fiscal_year}",
-                memo_ar=f"قيود إقفال السنة المالية {fiscal_year}",
-                kind="CLOSING",
-                period=13,
-                total_debit=str(closing_total_debit),
-                total_credit=str(closing_total_credit),
-                lines=je_lines,
-                posted_at=closed_at.isoformat(),
-                posted_by_id=actor.user.id,
-                posted_by_email=actor.user.email,
-                currency=actor.company.default_currency,
-                exchange_rate="1.0",
-            ).to_dict(),
+            data=closing_payload,
         )
 
     # Emit closing entry generated audit event
@@ -2871,6 +2912,31 @@ def reopen_fiscal_year(
             reversal_total_debit = sum(Decimal(l.get("debit", "0")) for l in reversal_lines)
             reversal_total_credit = sum(Decimal(l.get("credit", "0")) for l in reversal_lines)
 
+            closing_reversal_payload = JournalEntryPostedData(
+                entry_public_id=reversal_entry_public_id,
+                entry_number=str(entry_number),
+                date=reversal_date,
+                memo=f"Reversal of year-end closing FY{fiscal_year} - {reason}",
+                memo_ar=f"عكس قيود إقفال السنة المالية {fiscal_year}",
+                kind="CLOSING",
+                period=13,
+                total_debit=str(reversal_total_debit),
+                total_credit=str(reversal_total_credit),
+                lines=reversal_lines,
+                posted_at=reopened_at.isoformat(),
+                posted_by_id=actor.user.id,
+                posted_by_email=actor.user.email,
+                currency=actor.company.default_currency,
+                exchange_rate="1.0",
+            ).to_dict()
+            # A3-PR2: the closing reversal is a NEW event — validate the exact
+            # payload before the CREATED emit so a rejection stages nothing
+            # (the whole reopen rolls back via _posted_journal_invalid_result).
+            try:
+                require_valid_posted_journal(actor.company, closing_reversal_payload)
+            except PostedJournalInvalid as exc:
+                return _posted_journal_invalid_result(exc)
+
             emit_event(
                 actor=actor,
                 event_type=EventTypes.JOURNAL_ENTRY_CREATED,
@@ -2898,23 +2964,7 @@ def reopen_fiscal_year(
                 aggregate_type="JournalEntry",
                 aggregate_id=reversal_entry_public_id,
                 idempotency_key=f"closing_reversal.posted:{actor.company.public_id}:{fiscal_year}:{reopened_at.isoformat()}",
-                data=JournalEntryPostedData(
-                    entry_public_id=reversal_entry_public_id,
-                    entry_number=str(entry_number),
-                    date=reversal_date,
-                    memo=f"Reversal of year-end closing FY{fiscal_year} - {reason}",
-                    memo_ar=f"عكس قيود إقفال السنة المالية {fiscal_year}",
-                    kind="CLOSING",
-                    period=13,
-                    total_debit=str(reversal_total_debit),
-                    total_credit=str(reversal_total_credit),
-                    lines=reversal_lines,
-                    posted_at=reopened_at.isoformat(),
-                    posted_by_id=actor.user.id,
-                    posted_by_email=actor.user.email,
-                    currency=actor.company.default_currency,
-                    exchange_rate="1.0",
-                ).to_dict(),
+                data=closing_reversal_payload,
             )
 
             # Emit closing entry reversed audit event
@@ -3937,15 +3987,9 @@ def record_customer_receipt(
     total_debit = sum(Decimal(l["debit"]) for l in lines)
     total_credit = sum(Decimal(l["credit"]) for l in lines)
 
-    # A194: never emit an unbalanced JOURNAL_ENTRY_POSTED. The projection applies
-    # posted events without a balance check, so a lopsided entry here would
-    # silently corrupt the trial balance — refuse loudly instead (Rule 2).
-    if abs(total_debit - total_credit) > Decimal("0.05"):
-        return CommandResult.fail(
-            f"Receipt aborted: the journal entry does not balance "
-            f"(debit {total_debit} vs credit {total_credit}). "
-            "Check the exchange rate and FX account mappings, then retry."
-        )
+    # A3-PR2 supersedes the A194 ±0.05 gate that used to sit here: the
+    # canonical invariant now validates the exact final payload below with
+    # ZERO tolerance (D3) — an imbalance of even one cent refuses to emit.
 
     line_data_list = []
     for line in lines:
@@ -3977,29 +4021,37 @@ def record_customer_receipt(
     ).first()
     resolved_period = fp.period if fp else parsed_acct_date.month
 
-    # Emit journal posted event
+    receipt_je_payload = JournalEntryPostedData(
+        entry_public_id=str(entry_public_id),
+        entry_number=entry_number,
+        date=acct_date_str,
+        memo=description,
+        kind=JournalEntry.Kind.NORMAL,
+        period=resolved_period,
+        total_debit=str(total_debit),
+        total_credit=str(total_credit),
+        lines=[ld.to_dict() for ld in line_data_list],
+        posted_at=posted_at.isoformat(),
+        posted_by_id=actor.user.id,
+        posted_by_email=actor.user.email,
+        currency=receipt_currency,
+        exchange_rate=str(receipt_exchange_rate),
+    ).to_dict()
+    # A3-PR2: canonical zero-tolerance gate on the exact payload (replaces
+    # the removed A194 ±0.05 acceptance band); rejection rolls back the
+    # whole receipt attempt including the consumed JE sequence.
+    try:
+        require_valid_posted_journal(actor.company, receipt_je_payload)
+    except PostedJournalInvalid as exc:
+        return _posted_journal_invalid_result(exc)
+
     journal_event = emit_event(
         actor=actor,
         event_type=EventTypes.JOURNAL_ENTRY_POSTED,
         aggregate_type="JournalEntry",
         aggregate_id=str(entry_public_id),
         idempotency_key=f"customer_receipt:{receipt_public_id}",
-        data=JournalEntryPostedData(
-            entry_public_id=str(entry_public_id),
-            entry_number=entry_number,
-            date=acct_date_str,
-            memo=description,
-            kind=JournalEntry.Kind.NORMAL,
-            period=resolved_period,
-            total_debit=str(total_debit),
-            total_credit=str(total_credit),
-            lines=[ld.to_dict() for ld in line_data_list],
-            posted_at=posted_at.isoformat(),
-            posted_by_id=actor.user.id,
-            posted_by_email=actor.user.email,
-            currency=receipt_currency,
-            exchange_rate=str(receipt_exchange_rate),
-        ).to_dict(),
+        data=receipt_je_payload,
     )
 
     # Build allocation data for event
@@ -4431,14 +4483,9 @@ def record_vendor_payment(
     total_debit = sum(Decimal(l["debit"]) for l in lines)
     total_credit = sum(Decimal(l["credit"]) for l in lines)
 
-    # A194: never emit an unbalanced JOURNAL_ENTRY_POSTED (the projection applies
-    # posted events without a balance check) — refuse loudly instead (Rule 2).
-    if abs(total_debit - total_credit) > Decimal("0.05"):
-        return CommandResult.fail(
-            f"Payment aborted: the journal entry does not balance "
-            f"(debit {total_debit} vs credit {total_credit}). "
-            "Check the exchange rate and FX account mappings, then retry."
-        )
+    # A3-PR2 supersedes the A194 ±0.05 gate that used to sit here: the
+    # canonical invariant now validates the exact final payload below with
+    # ZERO tolerance (D3) — an imbalance of even one cent refuses to emit.
 
     line_data_list = []
     for line in lines:
@@ -4470,29 +4517,37 @@ def record_vendor_payment(
     ).first()
     resolved_period = fp.period if fp else parsed_acct_date.month
 
-    # Emit journal posted event
+    payment_je_payload = JournalEntryPostedData(
+        entry_public_id=str(entry_public_id),
+        entry_number=entry_number,
+        date=acct_date_str,
+        memo=description,
+        kind=JournalEntry.Kind.NORMAL,
+        period=resolved_period,
+        total_debit=str(total_debit),
+        total_credit=str(total_credit),
+        lines=[ld.to_dict() for ld in line_data_list],
+        posted_at=posted_at.isoformat(),
+        posted_by_id=actor.user.id,
+        posted_by_email=actor.user.email,
+        currency=payment_currency,
+        exchange_rate=str(payment_exchange_rate),
+    ).to_dict()
+    # A3-PR2: canonical zero-tolerance gate on the exact payload (replaces
+    # the removed A194 ±0.05 acceptance band); rejection rolls back the
+    # whole payment attempt including the consumed JE sequence.
+    try:
+        require_valid_posted_journal(actor.company, payment_je_payload)
+    except PostedJournalInvalid as exc:
+        return _posted_journal_invalid_result(exc)
+
     journal_event = emit_event(
         actor=actor,
         event_type=EventTypes.JOURNAL_ENTRY_POSTED,
         aggregate_type="JournalEntry",
         aggregate_id=str(entry_public_id),
         idempotency_key=f"vendor_payment:{payment_public_id}",
-        data=JournalEntryPostedData(
-            entry_public_id=str(entry_public_id),
-            entry_number=entry_number,
-            date=acct_date_str,
-            memo=description,
-            kind=JournalEntry.Kind.NORMAL,
-            period=resolved_period,
-            total_debit=str(total_debit),
-            total_credit=str(total_credit),
-            lines=[ld.to_dict() for ld in line_data_list],
-            posted_at=posted_at.isoformat(),
-            posted_by_id=actor.user.id,
-            posted_by_email=actor.user.email,
-            currency=payment_currency,
-            exchange_rate=str(payment_exchange_rate),
-        ).to_dict(),
+        data=payment_je_payload,
     )
 
     # Build allocation data for event

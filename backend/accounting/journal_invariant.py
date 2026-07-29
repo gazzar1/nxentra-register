@@ -417,6 +417,61 @@ def check_posted_journal(
 
 
 # --------------------------------------------------------------------------- #
+# The one raising emit boundary (A3-PR2) and its typed exception
+# --------------------------------------------------------------------------- #
+
+
+class PostedJournalInvalid(Exception):
+    """Raised by :func:`require_valid_posted_journal` when a
+    JOURNAL_ENTRY_POSTED payload fails the canonical emit-mode invariant.
+
+    Carries the structured :class:`JournalViolation` list so callers act on
+    STABLE CODES — never by parsing the message. ``str(exc)`` contains only
+    the deduplicated codes (no amounts, memos, or account identifiers), so
+    the exception is safe to log and to surface verbatim."""
+
+    def __init__(self, violations: list[JournalViolation], *, company_id: int) -> None:
+        self.violations = list(violations)
+        self.codes: list[str] = [v.code for v in self.violations]
+        self.company_id = company_id
+        unique_codes = ", ".join(dict.fromkeys(self.codes))
+        super().__init__(f"Posted journal payload failed the canonical invariant: {unique_codes}")
+
+    def as_dicts(self) -> list[dict]:
+        return [v.as_dict() for v in self.violations]
+
+
+def require_valid_posted_journal(company, data: Mapping) -> None:
+    """THE emit boundary (A3-PR2): validate the EXACT payload dict that is
+    about to be emitted as JOURNAL_ENTRY_POSTED; raise
+    :class:`PostedJournalInvalid` on any violation, return None otherwise.
+
+    Contract:
+
+    - callers MUST pass the very dict handed to ``emit_event`` — never an
+      intermediate representation that is transformed again (amounts, memo
+      flags, line numbers, account ids, header totals) before emission;
+    - ONE account-facts query covers every well-formed referenced account id
+      (malformed references are sanitized out by :func:`load_account_facts`
+      and therefore stay unresolved → ``JE_ACCOUNT_UNKNOWN``);
+    - full ``mode="emit"`` policy: active + postable accounts, exact
+      canonical balance, zero tolerance (founder decision D3);
+    - consults NO settings flag — TESTING / DISABLE_EVENT_VALIDATION do not
+      exist at this boundary and never will;
+    - performs no mutation; violation ordering is deterministic (inherited
+      from :func:`check_posted_journal`).
+    """
+    raw_lines = data.get("lines")
+    referenced: list[object] = []
+    if isinstance(raw_lines, list):
+        referenced = [line.get("account_public_id") for line in raw_lines if isinstance(line, Mapping)]
+    facts = load_account_facts(company, referenced)
+    violations = check_posted_journal(data, company_id=company.id, account_facts=facts, mode="emit")
+    if violations:
+        raise PostedJournalInvalid(violations, company_id=company.id)
+
+
+# --------------------------------------------------------------------------- #
 # The one narrow ORM helper (no validation policy of its own)
 # --------------------------------------------------------------------------- #
 
