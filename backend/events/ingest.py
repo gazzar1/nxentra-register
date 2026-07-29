@@ -191,24 +191,39 @@ class EventIngestView(APIView):
         if event_type == "journal_entry.posted":
             from events.models import BusinessEvent
 
-            already_accepted = BusinessEvent.objects.filter(
-                company=api_key.company,
-                idempotency_key=payload["idempotency_key"],
-            ).exists()
-            if not already_accepted:
+            def _same_key_event_exists() -> bool:
+                """ONE idempotency definition: the same company-scoped
+                (company, idempotency_key) semantics _emit_event_core applies
+                authoritatively at insert time."""
+                return BusinessEvent.objects.filter(
+                    company=api_key.company,
+                    idempotency_key=payload["idempotency_key"],
+                ).exists()
+
+            if not _same_key_event_exists():
                 from accounting.journal_invariant import PostedJournalInvalid, require_valid_posted_journal
 
                 try:
                     require_valid_posted_journal(api_key.company, payload["data"])
                 except PostedJournalInvalid as exc:
-                    return Response(
-                        {
-                            "detail": "Posted-journal payload failed the canonical invariant.",
-                            "codes": exc.codes,
-                            "violations": exc.as_dicts(),
-                        },
-                        status=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    )
+                    # Final concurrency correction (fresh-review P2): two
+                    # overlapping same-key requests can BOTH pass the
+                    # pre-lookup. If the other request committed while this
+                    # one was validating, the endpoint's idempotency contract
+                    # outranks this payload's invariant verdict — recheck,
+                    # and when the stored event now exists fall through to
+                    # the emitter below, whose race-safe lookup returns it.
+                    # With no stored event, the original 422 with the
+                    # original canonical codes stands untouched.
+                    if not _same_key_event_exists():
+                        return Response(
+                            {
+                                "detail": "Posted-journal payload failed the canonical invariant.",
+                                "codes": exc.codes,
+                                "violations": exc.as_dicts(),
+                            },
+                            status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        )
 
         # ── Emit ──────────────────────────────────────────────────────
         try:

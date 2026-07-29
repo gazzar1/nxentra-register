@@ -1736,3 +1736,182 @@ class TestClearanceItemRollback:
         memo = "Bank deposit clearance: settlement batch batch-retry"
         assert JournalEntry.objects.filter(company=company, memo=memo, status=JournalEntry.Status.POSTED).count() == 1
         assert _posted_events(company).filter(data__memo=memo).count() == 1
+
+
+# --------------------------------------------------------------------------- #
+# Final concurrency pass (fresh-review P2): same-key idempotency survives a
+# validation failure that races a concurrent same-key commit. Deterministic
+# non-threaded branch tests — the interleaving is injected around the REAL
+# validation while every company-scoped database lookup stays real. The
+# genuine two-connection race runs on PostgreSQL in
+# tests/e2e/test_ingest_concurrency.py.
+# --------------------------------------------------------------------------- #
+
+
+def _commit_same_key_event(company, payload, cash_account, revenue_account):
+    """Simulate request A committing: store the same-key event through the
+    real emitter with a VALID payload."""
+    from events.emitter import emit_event_no_actor
+
+    return emit_event_no_actor(
+        company=company,
+        event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+        aggregate_type="JournalEntry",
+        aggregate_id=payload["aggregate_id"],
+        idempotency_key=payload["idempotency_key"],
+        data={
+            **payload["data"],
+            "lines": [
+                {"line_no": 1, "account_public_id": str(cash_account.public_id), "debit": "50.00", "credit": "0"},
+                {"line_no": 2, "account_public_id": str(revenue_account.public_id), "debit": "0", "credit": "50.00"},
+            ],
+            "total_debit": "50.00",
+            "total_credit": "50.00",
+        },
+    )
+
+
+@pytest.mark.django_db
+class TestIngestConcurrentRetryRecheck:
+    """The post-validation-failure recheck: PostedJournalInvalid on THIS
+    payload is outranked by a same-company/same-key event that committed
+    concurrently; with no such event the original 422 (original codes)
+    stands. Only PostedJournalInvalid triggers the recheck — envelope,
+    auth, and schema failures are untouched."""
+
+    def _post(self, raw_key, payload):
+        from rest_framework.test import APIClient
+
+        return APIClient().post("/api/events/ingest/", payload, format="json", HTTP_AUTHORIZATION=f"Api-Key {raw_key}")
+
+    def _race_wrapper(self, monkeypatch, on_validate):
+        """Patch the REAL validator with a wrapper that runs `on_validate`
+        (the injected concurrent interleaving) and then delegates to the
+        genuine implementation — lookups and validation stay real."""
+        import accounting.journal_invariant as ji
+
+        real = ji.require_valid_posted_journal
+
+        def wrapper(company, data):
+            on_validate()
+            return real(company, data)
+
+        monkeypatch.setattr(ji, "require_valid_posted_journal", wrapper)
+
+    def test_identical_payload_race_returns_stored_event(self, company, cash_account, revenue_account, monkeypatch):
+        """Required case 1 (deterministic form): B carries the identical
+        payload; A commits and the account is deactivated while B is inside
+        validation. B's invariant verdict (JE_ACCOUNT_INACTIVE) is outranked
+        by the recheck — B returns A's stored event; one event, one
+        aggregate-identity, no 422."""
+        _key_obj, raw_key = _ingest_key(company)
+        payload = _ingest_payload(
+            company,
+            [
+                {"line_no": 1, "account_public_id": str(cash_account.public_id), "debit": "50.00", "credit": "0"},
+                {"line_no": 2, "account_public_id": str(revenue_account.public_id), "debit": "0", "credit": "50.00"},
+            ],
+            "50.00",
+            "50.00",
+        )
+        stored_holder = {}
+
+        def concurrent_commit_then_deactivate():
+            stored_holder["event"] = _commit_same_key_event(company, payload, cash_account, revenue_account)
+            _lock(cash_account)
+
+        self._race_wrapper(monkeypatch, concurrent_commit_then_deactivate)
+
+        response = self._post(raw_key, payload)
+
+        assert response.status_code == 201, response.data
+        assert response.data["event_id"] == str(stored_holder["event"].id)
+        assert BusinessEvent.objects.filter(company=company).count() == 1
+
+    def test_materially_different_payload_race_returns_stored_event(
+        self, company, cash_account, revenue_account, monkeypatch
+    ):
+        """Required case 2: B's payload is materially different (unknown
+        account, different totals) and genuinely fails validation — the
+        recheck still honors the same-key contract; no second event, no
+        sequence, no payload-conflict behavior introduced."""
+        _key_obj, raw_key = _ingest_key(company)
+        b_payload = _ingest_payload(
+            company,
+            [
+                {"line_no": 1, "account_public_id": str(uuid4()), "debit": "999.00", "credit": "0"},
+                {"line_no": 2, "account_public_id": str(uuid4()), "debit": "0", "credit": "999.00"},
+            ],
+            "999.00",
+            "999.00",
+        )
+        stored_holder = {}
+
+        def concurrent_commit():
+            stored_holder["event"] = _commit_same_key_event(company, b_payload, cash_account, revenue_account)
+
+        self._race_wrapper(monkeypatch, concurrent_commit)
+
+        response = self._post(raw_key, b_payload)
+
+        assert response.status_code == 201, response.data
+        assert response.data["event_id"] == str(stored_holder["event"].id)
+        assert BusinessEvent.objects.filter(company=company).count() == 1
+
+    def test_validation_failure_without_concurrent_event_keeps_422_and_codes(self, company, monkeypatch):
+        """Required case 3: the recheck finds nothing — the ORIGINAL 422 with
+        the original canonical codes is returned and nothing is created."""
+        _key_obj, raw_key = _ingest_key(company)
+        payload = _ingest_payload(
+            company,
+            [
+                {"line_no": 1, "account_public_id": "not-a-uuid", "debit": "50.00", "credit": "0"},
+                {"line_no": 2, "account_public_id": "also-bad", "debit": "0", "credit": "50.00"},
+            ],
+            "50.00",
+            "50.00",
+        )
+        self._race_wrapper(monkeypatch, lambda: None)  # no concurrent commit
+
+        response = self._post(raw_key, payload)
+
+        assert response.status_code == 422, response.data
+        assert JE_ACCOUNT_UNKNOWN in response.data["codes"]
+        assert BusinessEvent.objects.filter(company=company).count() == 0
+
+    def test_other_company_same_key_does_not_satisfy_recheck(
+        self, company, second_company, cash_account, revenue_account, monkeypatch
+    ):
+        """Required case 4: a concurrently committed event under the SAME key
+        in ANOTHER company must not satisfy the recheck — company scoping is
+        preserved and the invalid request keeps its 422."""
+        _key_obj, raw_key = _ingest_key(company)
+        payload = _ingest_payload(
+            company,
+            [
+                {"line_no": 1, "account_public_id": str(uuid4()), "debit": "50.00", "credit": "0"},
+                {"line_no": 2, "account_public_id": str(uuid4()), "debit": "0", "credit": "50.00"},
+            ],
+            "50.00",
+            "50.00",
+        )
+
+        def concurrent_commit_other_company():
+            from events.emitter import emit_event_no_actor
+
+            emit_event_no_actor(
+                company=second_company,
+                event_type=EventTypes.COMPANY_CREATED,
+                aggregate_type="Company",
+                aggregate_id=str(second_company.public_id),
+                idempotency_key=payload["idempotency_key"],  # same key, other company
+                data={"company_public_id": str(second_company.public_id), "name": "Other"},
+            )
+
+        self._race_wrapper(monkeypatch, concurrent_commit_other_company)
+
+        response = self._post(raw_key, payload)
+
+        assert response.status_code == 422, response.data
+        assert BusinessEvent.objects.filter(company=company).count() == 0
+        assert BusinessEvent.objects.filter(company=second_company).count() == 1
