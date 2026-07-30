@@ -1861,15 +1861,22 @@ def create_credit_note(
     return CommandResult.ok(data={"credit_note": credit_note}, event=event)
 
 
-@translate_posted_journal_invalid
 @transaction.atomic
-def post_credit_note(
+def post_credit_note_or_raise(
     actor: ActorContext,
     credit_note_id: int,
     control_line_analysis_tags: list | None = None,
 ) -> CommandResult:
     """
     Post a credit note, creating a reversing journal entry.
+
+    RAISE-THROUGH CORE (A3-PR2 final caller-chain fix): a canonical-invariant
+    rejection RAISES PostedJournalInvalid out of this atomic so a COMPOSED
+    owner (create_and_post_credit_note_for_platform, and through it the
+    Shopify refund projection's per-event transaction) rolls back its whole
+    operation — including the DRAFT credit note it staged. Direct callers
+    use :func:`post_credit_note`. Ordinary failures still return
+    ``CommandResult.fail`` unchanged.
 
     Journal Entry (reverses the original invoice posting):
     - Credit: AR Control (reduces customer balance)
@@ -2221,6 +2228,23 @@ def create_and_post_invoice_for_platform(
     return post_result
 
 
+@translate_posted_journal_invalid
+def post_credit_note(
+    actor: ActorContext,
+    credit_note_id: int,
+    control_line_analysis_tags: list | None = None,
+) -> CommandResult:
+    """Public boundary over :func:`post_credit_note_or_raise` — an invariant
+    rejection has already rolled back the entire posting attempt when it is
+    translated here into the standard ``CommandResult`` failure with the
+    stable canonical codes."""
+    return post_credit_note_or_raise(
+        actor,
+        credit_note_id,
+        control_line_analysis_tags=control_line_analysis_tags,
+    )
+
+
 @transaction.atomic
 def create_and_post_credit_note_for_platform(
     company,
@@ -2253,18 +2277,36 @@ def create_and_post_credit_note_for_platform(
     """
     from accounts.authz import system_actor_for_company
 
-    # Idempotency
+    actor = system_actor_for_company(company)
+
+    # Status-aware idempotency (A3-PR2 final caller-chain fix): a
+    # source-matched note is a successfully handled refund ONLY when it
+    # carries its posted journal. A stranded DRAFT (e.g. a pre-fix partial
+    # attempt) is posted HERE through the raise-through path instead of
+    # being reported as fake success — a still-invalid note raises rather
+    # than duplicating; inconsistent state fails visibly.
     existing = SalesCreditNote.objects.filter(
         company=company,
         source=source,
         source_document_id=source_document_id,
     ).first()
     if existing:
-        return CommandResult.ok(
-            data={"credit_note": existing, "journal_entry": existing.posted_journal_entry},
+        if existing.status == SalesCreditNote.Status.DRAFT:
+            post_result = post_credit_note_or_raise(
+                actor,
+                existing.id,
+                control_line_analysis_tags=control_line_analysis_tags,
+            )
+            return post_result
+        if existing.posted_journal_entry_id:
+            return CommandResult.ok(
+                data={"credit_note": existing, "journal_entry": existing.posted_journal_entry},
+            )
+        return CommandResult.fail(
+            f"Credit note for {source} refund {source_document_id} is in an "
+            f"inconsistent state ({existing.status} without a posted journal); "
+            "manual review required."
         )
-
-    actor = system_actor_for_company(company)
 
     # Create DRAFT credit note
     create_result = create_credit_note(
@@ -2284,8 +2326,11 @@ def create_and_post_credit_note_for_platform(
 
     credit_note = create_result.data["credit_note"]
 
-    # Post immediately
-    post_result = post_credit_note(
+    # Post immediately — raise-through: an invariant rejection escapes this
+    # wrapper's transaction, rolling back the DRAFT credit note (and its
+    # CREATED events) staged above, and propagates to the owning boundary
+    # (the Shopify refund projection's per-event atomic → ProjectionFailureLog).
+    post_result = post_credit_note_or_raise(
         actor,
         credit_note.id,
         control_line_analysis_tags=control_line_analysis_tags,

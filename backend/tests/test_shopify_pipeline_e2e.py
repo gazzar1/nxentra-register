@@ -33,6 +33,7 @@ helper from test_system_je_validation.py to avoid duplicating the company
 """
 
 from datetime import date
+from decimal import Decimal
 
 import pytest
 
@@ -367,3 +368,148 @@ def test_shopify_dimensions_truncate_external_values(shopify_company):  # noqa: 
     assert values.filter(dimension__code="PRODUCT").exists()
     assert not values.filter(code__regex=r"^.{21,}$").exists()
     assert not values.filter(name__regex=r"^.{101,}$").exists()
+
+
+def test_refund_invariant_rejection_fails_loud_then_retries_clean(shopify_company):  # noqa: F811
+    """A3-PR2 final caller-chain fix (fresh-review P1): a canonical-invariant
+    rejection inside the refund's platform credit-note wrapper must propagate
+    to the projection framework — event NOT consumed, ProjectionFailureLog
+    written, no ShopifyRefund marked PROCESSED, and NO stranded DRAFT credit
+    note — and the SAME refund event must succeed exactly once after the
+    condition is corrected."""
+    from uuid import uuid4 as _uuid4
+
+    from django.utils import timezone
+
+    from accounting.mappings import ModuleAccountMapping
+    from accounting.models import Account
+    from events.models import BusinessEvent, CompanyEventCounter
+    from projections.models import ProjectionAppliedEvent, ProjectionFailureLog
+    from sales.models import SalesCreditNote, SalesInvoice
+    from shopify_connector.models import ShopifyRefund, ShopifyStore
+    from shopify_connector.projections import ShopifyAccountingHandler
+
+    store = ShopifyStore.objects.create(
+        company=shopify_company,
+        shop_domain=f"a3-refund-{_uuid4().hex[:8]}.myshopify.com",
+        access_token="t",
+        status=ShopifyStore.Status.ACTIVE,
+    )
+
+    def _event(event_type, aggregate_type, key, data):
+        counter, _ = CompanyEventCounter.objects.get_or_create(company=shopify_company)
+        counter.last_sequence += 1
+        counter.save()
+        return BusinessEvent.objects.create(
+            company=shopify_company,
+            event_type=event_type,
+            aggregate_type=aggregate_type,
+            aggregate_id=str(_uuid4()),
+            company_sequence=counter.last_sequence,
+            idempotency_key=key,
+            data=data,
+            occurred_at=timezone.now(),
+        )
+
+    _event(
+        "shopify.order_paid",
+        "ShopifyOrder",
+        "shopify.order.paid:70009",
+        {
+            "amount": "300.00",
+            "currency": "USD",
+            "transaction_date": date.today().isoformat(),
+            "document_ref": "#70009",
+            "shopify_order_id": "70009",
+            "order_number": "70009",
+            "order_name": "#70009",
+            "subtotal": "300.00",
+            "total_tax": "0",
+            "total_shipping": "0",
+            "total_discounts": "0",
+            "financial_status": "paid",
+            "gateway": "shopify_payments",
+            "store_public_id": str(store.public_id),
+            "line_items": [],
+        },
+    )
+    handler = ShopifyAccountingHandler()
+    handler.process_pending(shopify_company)
+    assert SalesInvoice.objects.filter(
+        company=shopify_company, source="shopify", source_document_id="70009", status=SalesInvoice.Status.POSTED
+    ).exists()
+
+    # The sync layer (not the projection) creates ShopifyOrder rows; the
+    # refund handler resolves the settlement-provider tag through this row's
+    # store + gateway, so create it as the webhook sync would have.
+    from django.utils import timezone as _tz
+
+    from shopify_connector.models import ShopifyOrder
+
+    ShopifyOrder.objects.create(
+        company=shopify_company,
+        store=store,
+        shopify_order_id=70009,
+        shopify_order_number="70009",
+        shopify_order_name="#70009",
+        total_price=Decimal("300.00"),
+        subtotal_price=Decimal("300.00"),
+        currency="USD",
+        gateway="shopify_payments",
+        order_date=_tz.now().date(),
+        shopify_created_at=_tz.now(),
+    )
+
+    # Corrupt the emit-time condition AFTER the invoice posted: the mapped
+    # SALES_REVENUE account becomes STATISTICAL-domain, so the refund credit
+    # note's JE payload is memo-classified and the canonical boundary raises
+    # (every ordinary gate — dimensions, postability, period — still passes).
+    revenue = ModuleAccountMapping.get_mapping(shopify_company, "shopify_connector").get("SALES_REVENUE")
+    Account.objects.filter(pk=revenue.pk).update(ledger_domain=Account.LedgerDomain.STATISTICAL, unit_of_measure="EA")
+
+    refund_event = _event(
+        "shopify.refund_created",
+        "ShopifyRefund",
+        "shopify.refund.created:8000070009",
+        {
+            "amount": "100.00",
+            "currency": "USD",
+            "transaction_date": date.today().isoformat(),
+            "document_ref": "#70009",
+            "shopify_refund_id": "8000070009",
+            "shopify_order_id": "70009",
+            "order_number": "70009",
+            "reason": "invariant disposition test",
+            "store_public_id": str(store.public_id),
+        },
+    )
+
+    handler.process_pending(shopify_company)
+
+    # Loud failure through the framework: nothing consumed, nothing staged.
+    assert not ProjectionAppliedEvent.objects.filter(
+        company=shopify_company, projection_name="shopify_accounting", event=refund_event
+    ).exists(), "the rejected refund event must remain unapplied/retryable"
+    failure = ProjectionFailureLog.objects.filter(
+        company=shopify_company, projection_name="shopify_accounting", event=refund_event
+    ).first()
+    assert failure is not None, "ProjectionFailureLog must record the invariant rejection"
+    assert "canonical invariant" in failure.message or "JE_" in failure.message
+    assert not SalesCreditNote.objects.filter(company=shopify_company, source="shopify").exists(), (
+        "no stranded DRAFT credit note may survive the rejected attempt"
+    )
+    assert not ShopifyRefund.objects.filter(company=shopify_company, status=ShopifyRefund.Status.PROCESSED).exists()
+
+    # Corrected retry: restore the account's financial domain — the SAME
+    # event now produces exactly one credit note and one posted journal.
+    Account.objects.filter(pk=revenue.pk).update(ledger_domain=Account.LedgerDomain.FINANCIAL)
+    handler.process_pending(shopify_company)
+
+    notes = SalesCreditNote.objects.filter(company=shopify_company, source="shopify")
+    assert notes.count() == 1
+    note = notes.first()
+    assert note.status == SalesCreditNote.Status.POSTED
+    assert note.posted_journal_entry_id is not None
+    assert ProjectionAppliedEvent.objects.filter(
+        company=shopify_company, projection_name="shopify_accounting", event=refund_event
+    ).exists()

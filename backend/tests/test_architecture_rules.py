@@ -804,6 +804,36 @@ def test_no_posted_journal_acceptance_tolerance_remains():
     )
 
 
+def test_platform_credit_note_composition_uses_raise_through_path():
+    """A3-PR2 final caller-chain fix: create_and_post_credit_note_for_platform
+    owns the transaction that stages the DRAFT credit note, so it must call
+    the raise-through post_credit_note_or_raise — never the translated public
+    post_credit_note, which would convert PostedJournalInvalid into a normal
+    failure INSIDE the wrapper's transaction and commit the stranded DRAFT."""
+    path = BACKEND_ROOT / "sales" / "commands.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    wrapper = next(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "create_and_post_credit_note_for_platform"
+        ),
+        None,
+    )
+    assert wrapper is not None, "create_and_post_credit_note_for_platform must exist"
+    called = set()
+    for inner in ast.walk(wrapper):
+        if isinstance(inner, ast.Call):
+            func = inner.func
+            name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
+            called.add(name)
+    assert "post_credit_note_or_raise" in called, "the platform wrapper must post through the raise-through path"
+    assert "post_credit_note" not in called, (
+        "the platform wrapper must NOT call the translated public post_credit_note "
+        "— PostedJournalInvalid must escape the wrapper transaction"
+    )
+
+
 # =============================================================================
 # Meta: keep allowlists small + intentional
 # =============================================================================

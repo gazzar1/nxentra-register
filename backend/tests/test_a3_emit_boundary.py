@@ -2147,3 +2147,354 @@ class TestEmitMemoNormalization:
         assert JE_ACCOUNT_UNKNOWN in excinfo.value.codes
         # No event, and the caller's payload still carries its original flag.
         assert payload["lines"][1]["is_memo_line"] is True
+
+
+# --------------------------------------------------------------------------- #
+# Final caller-chain P1 (fresh review on c02c1a5): the platform credit-note
+# wrapper owns the transaction that stages the DRAFT note, so the invariant
+# rejection must escape it (post_credit_note_or_raise), and a source-matched
+# note counts as handled only when it carries its posted journal.
+# --------------------------------------------------------------------------- #
+
+
+def _platform_cn_chain(company):
+    """Customer + PostingProfile + AR control + revenue account + a POSTED
+    shopify-tagged invoice — the minimum platform credit-note scaffolding
+    (mirrors the A23 fixtures)."""
+    from projections.write_barrier import command_writes_allowed, projection_writes_allowed
+    from sales.commands import create_and_post_invoice_for_platform
+    from sales.models import Customer as SalesCustomer
+    from sales.models import PostingProfile
+
+    with projection_writes_allowed():
+        ar_control = Account.objects.projection().create(
+            company=company,
+            code="11402",
+            name="Platform AR Control",
+            account_type=Account.AccountType.ASSET,
+            role=Account.AccountRole.RECEIVABLE_CONTROL,
+            status=Account.Status.ACTIVE,
+        )
+        revenue = Account.objects.projection().create(
+            company=company,
+            code="41002",
+            name="Platform Revenue",
+            account_type=Account.AccountType.REVENUE,
+            status=Account.Status.ACTIVE,
+        )
+    with command_writes_allowed():
+        customer = SalesCustomer.objects.create(company=company, code="PCN-CUST", name="Platform Customer")
+        profile = PostingProfile.objects.create(
+            company=company,
+            code="PCN-PROFILE",
+            name="Platform Profile",
+            profile_type=PostingProfile.ProfileType.CUSTOMER,
+            control_account=ar_control,
+        )
+    result = create_and_post_invoice_for_platform(
+        company=company,
+        customer_id=customer.id,
+        posting_profile_id=profile.id,
+        lines=[
+            {
+                "account_id": revenue.id,
+                "description": "Platform order",
+                "quantity": "1",
+                "unit_price": "100.00",
+                "discount_amount": "0",
+            }
+        ],
+        invoice_date=date.today(),
+        source="shopify",
+        source_document_id="PCN-ORDER-1",
+    )
+    assert result.success, result.error
+    return result.data["invoice"], revenue, ar_control
+
+
+def _cn_lines(account_id, unit_price="30.00"):
+    return [
+        {
+            "account_id": account_id,
+            "description": "Refund line",
+            "quantity": "1",
+            "unit_price": unit_price,
+            "discount_amount": "0",
+        }
+    ]
+
+
+def _journal_state(company):
+    return {
+        "je_rows": JournalEntry.objects.filter(company=company).count(),
+        "je_events": BusinessEvent.objects.filter(company=company, event_type__startswith="journal_entry.").count(),
+        "cn_events": BusinessEvent.objects.filter(company=company, event_type__startswith="credit_note.").count(),
+        "seq": _seq_next_value(company),
+    }
+
+
+@pytest.mark.django_db
+class TestPlatformCreditNoteBoundary:
+    def test_direct_manual_invalid_post_keeps_command_result_and_draft(self, company, owner_membership, actor_context):
+        """Required case 1: direct callers keep the translated CommandResult
+        with stable codes; the manually created DRAFT survives (its creation
+        is a separate committed command, unlike the platform wrapper's)."""
+        from sales.commands import create_credit_note, post_credit_note
+        from sales.models import SalesCreditNote
+
+        invoice, _revenue, _ar = _platform_cn_chain(company)
+        statistical = _statistical_account(company, code="9530")
+        created = create_credit_note(
+            actor=actor_context,
+            invoice_id=invoice.id,
+            lines=_cn_lines(statistical.id),
+            credit_note_date=date.today(),
+            reason="RETURN",
+        )
+        assert created.success, created.error
+        cn = created.data["credit_note"]
+        before = _journal_state(company)
+
+        result = post_credit_note(actor_context, cn.id)
+
+        assert not result.success
+        assert (result.data or {}).get("codes"), result.error
+        cn = SalesCreditNote.objects.get(pk=cn.pk)
+        assert cn.status == SalesCreditNote.Status.DRAFT
+        assert _journal_state(company) == before
+
+    def test_platform_invalid_rolls_back_entire_attempt(self, company, owner_membership):
+        """Required case 2: PostedJournalInvalid escapes the wrapper — the
+        DRAFT credit note, its lines, its CREATED events, all journal
+        rows/events, and the consumed sequences vanish; the invoice is
+        untouched."""
+        from sales.commands import create_and_post_credit_note_for_platform
+        from sales.models import SalesCreditNote, SalesInvoice
+
+        invoice, _revenue, _ar = _platform_cn_chain(company)
+        statistical = _statistical_account(company, code="9531")
+        before = _journal_state(company)
+        invoice_before = (invoice.status, str(invoice.total_amount), str(invoice.amount_paid))
+
+        with pytest.raises(PostedJournalInvalid):
+            with transaction.atomic():
+                create_and_post_credit_note_for_platform(
+                    company=company,
+                    invoice_id=invoice.id,
+                    lines=_cn_lines(statistical.id),
+                    credit_note_date=date.today(),
+                    source="shopify",
+                    source_document_id="PCN-REFUND-1",
+                )
+
+        assert not SalesCreditNote.objects.filter(company=company).exists()
+        assert _journal_state(company) == before
+        invoice = SalesInvoice.objects.get(pk=invoice.pk)
+        assert (invoice.status, str(invoice.total_amount), str(invoice.amount_paid)) == invoice_before
+
+    def test_platform_foreign_drift_rolls_back(self, company, owner_membership, actor_context):
+        """Required case 3: a foreign-currency refund whose final CONVERTED JE
+        drifts to invalid (0.01 USD @ 0.5 quantizes to zero lines) rolls the
+        whole platform attempt back with canonical codes — exercised through
+        the DRAFT-recovery path so the drift hits post-time conversion."""
+        from sales.commands import create_and_post_credit_note_for_platform, create_credit_note
+        from sales.models import SalesCreditNote
+
+        company.functional_currency = "EGP"
+        company.save(update_fields=["functional_currency"])
+        rate = ExchangeRate.objects.create(
+            company=company,
+            from_currency="USD",
+            to_currency="EGP",
+            rate=Decimal("48"),
+            effective_date=date.today(),
+            rate_type="SPOT",
+        )
+        invoice, revenue, _ar = _platform_cn_chain(company)
+
+        created = create_credit_note(
+            actor=actor_context,
+            invoice_id=invoice.id,
+            lines=_cn_lines(revenue.id, unit_price="0.01"),
+            credit_note_date=date.today(),
+            reason="RETURN",
+            source="shopify",
+            source_document_id="PCN-REFUND-DRIFT",
+        )
+        assert created.success, created.error
+        draft = created.data["credit_note"]
+        # Strip any stamped rate so post-time conversion does the lookup,
+        # then make the looked-up rate produce sub-cent converted lines.
+        SalesCreditNote.objects.filter(pk=draft.pk).update(exchange_rate=Decimal("0"))
+        ExchangeRate.objects.filter(pk=rate.pk).update(rate=Decimal("0.5"))
+        notes_before = SalesCreditNote.objects.filter(company=company).count()
+
+        with pytest.raises(PostedJournalInvalid) as excinfo:
+            with transaction.atomic():
+                create_and_post_credit_note_for_platform(
+                    company=company,
+                    invoice_id=invoice.id,
+                    lines=_cn_lines(revenue.id, unit_price="0.01"),
+                    credit_note_date=date.today(),
+                    source="shopify",
+                    source_document_id="PCN-REFUND-DRIFT",
+                )
+
+        assert set(excinfo.value.codes) & {"JE_LINE_ZERO", "JE_NO_DEBIT_SIDE", "JE_NO_CREDIT_SIDE", "JE_UNBALANCED"}
+        # The pre-existing DRAFT survives (it was created by a separate
+        # committed command); the failed platform attempt added nothing.
+        notes = SalesCreditNote.objects.filter(company=company)
+        assert notes.count() == notes_before
+        assert notes.get(source_document_id="PCN-REFUND-DRIFT").status == SalesCreditNote.Status.DRAFT
+
+    def test_existing_posted_note_returns_idempotently(self, company, owner_membership):
+        """Required case 6."""
+        from sales.commands import create_and_post_credit_note_for_platform
+        from sales.models import SalesCreditNote
+
+        invoice, revenue, _ar = _platform_cn_chain(company)
+        first = create_and_post_credit_note_for_platform(
+            company=company,
+            invoice_id=invoice.id,
+            lines=_cn_lines(revenue.id),
+            credit_note_date=date.today(),
+            source="shopify",
+            source_document_id="PCN-REFUND-2",
+        )
+        assert first.success, first.error
+        state_after_first = _journal_state(company)
+
+        second = create_and_post_credit_note_for_platform(
+            company=company,
+            invoice_id=invoice.id,
+            lines=_cn_lines(revenue.id),
+            credit_note_date=date.today(),
+            source="shopify",
+            source_document_id="PCN-REFUND-2",
+        )
+        assert second.success, second.error
+        assert second.data["credit_note"].pk == first.data["credit_note"].pk
+        assert second.data["journal_entry"] is not None
+        assert SalesCreditNote.objects.filter(company=company).count() == 1
+        assert _journal_state(company) == state_after_first
+
+    def test_existing_draft_is_posted_not_reported_as_success(self, company, owner_membership, actor_context):
+        """Required case 7: a stranded DRAFT with the same source identity is
+        posted through the raise-through path — never returned as fake
+        success, never duplicated."""
+        from sales.commands import create_and_post_credit_note_for_platform, create_credit_note
+        from sales.models import SalesCreditNote
+
+        invoice, revenue, _ar = _platform_cn_chain(company)
+        created = create_credit_note(
+            actor=actor_context,
+            invoice_id=invoice.id,
+            lines=_cn_lines(revenue.id),
+            credit_note_date=date.today(),
+            reason="RETURN",
+            source="shopify",
+            source_document_id="PCN-REFUND-3",
+        )
+        assert created.success, created.error
+        draft = created.data["credit_note"]
+
+        result = create_and_post_credit_note_for_platform(
+            company=company,
+            invoice_id=invoice.id,
+            lines=_cn_lines(revenue.id),
+            credit_note_date=date.today(),
+            source="shopify",
+            source_document_id="PCN-REFUND-3",
+        )
+
+        assert result.success, result.error
+        cn = SalesCreditNote.objects.get(company=company, source_document_id="PCN-REFUND-3")
+        assert cn.pk == draft.pk
+        assert cn.status == SalesCreditNote.Status.POSTED
+        assert cn.posted_journal_entry_id is not None
+        assert SalesCreditNote.objects.filter(company=company).count() == 1
+
+    def test_existing_invalid_draft_raises_without_duplicate(self, company, owner_membership, actor_context):
+        """Required case 8."""
+        from sales.commands import create_and_post_credit_note_for_platform, create_credit_note
+        from sales.models import SalesCreditNote
+
+        invoice, _revenue, _ar = _platform_cn_chain(company)
+        statistical = _statistical_account(company, code="9532")
+        created = create_credit_note(
+            actor=actor_context,
+            invoice_id=invoice.id,
+            lines=_cn_lines(statistical.id),
+            credit_note_date=date.today(),
+            reason="RETURN",
+            source="shopify",
+            source_document_id="PCN-REFUND-4",
+        )
+        assert created.success, created.error
+
+        with pytest.raises(PostedJournalInvalid):
+            with transaction.atomic():
+                create_and_post_credit_note_for_platform(
+                    company=company,
+                    invoice_id=invoice.id,
+                    lines=_cn_lines(statistical.id),
+                    credit_note_date=date.today(),
+                    source="shopify",
+                    source_document_id="PCN-REFUND-4",
+                )
+
+        notes = SalesCreditNote.objects.filter(company=company, source_document_id="PCN-REFUND-4")
+        assert notes.count() == 1
+        assert notes.first().status == SalesCreditNote.Status.DRAFT
+
+    def test_inconsistent_posted_without_journal_fails_visibly(self, company, owner_membership):
+        """Required case: POSTED without its journal is inconsistent state —
+        never reported as successfully handled."""
+        from sales.commands import create_and_post_credit_note_for_platform
+        from sales.models import SalesCreditNote
+
+        invoice, revenue, _ar = _platform_cn_chain(company)
+        first = create_and_post_credit_note_for_platform(
+            company=company,
+            invoice_id=invoice.id,
+            lines=_cn_lines(revenue.id),
+            credit_note_date=date.today(),
+            source="shopify",
+            source_document_id="PCN-REFUND-5",
+        )
+        assert first.success, first.error
+        SalesCreditNote.objects.filter(pk=first.data["credit_note"].pk).update(posted_journal_entry=None)
+
+        result = create_and_post_credit_note_for_platform(
+            company=company,
+            invoice_id=invoice.id,
+            lines=_cn_lines(revenue.id),
+            credit_note_date=date.today(),
+            source="shopify",
+            source_document_id="PCN-REFUND-5",
+        )
+        assert not result.success
+        assert "inconsistent" in result.error
+
+    def test_ordinary_non_invariant_failure_keeps_public_semantics(self, company, owner_membership, actor_context):
+        """Required case 10: an already-POSTED note re-posted directly keeps
+        the pre-existing fail-return shape (no exception, nothing rolled
+        back)."""
+        from sales.commands import create_and_post_credit_note_for_platform, post_credit_note
+        from sales.models import SalesCreditNote
+
+        invoice, revenue, _ar = _platform_cn_chain(company)
+        first = create_and_post_credit_note_for_platform(
+            company=company,
+            invoice_id=invoice.id,
+            lines=_cn_lines(revenue.id),
+            credit_note_date=date.today(),
+            source="shopify",
+            source_document_id="PCN-REFUND-6",
+        )
+        assert first.success, first.error
+        cn = first.data["credit_note"]
+
+        again = post_credit_note(actor_context, cn.id)
+        assert not again.success
+        assert SalesCreditNote.objects.get(pk=cn.pk).status == SalesCreditNote.Status.POSTED
