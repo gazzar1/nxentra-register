@@ -75,7 +75,7 @@ def test_concurrent_same_key_retry_returns_stored_event(company, cash_account, r
 
     import accounting.journal_invariant as ji
 
-    real_validate = ji.require_valid_posted_journal
+    real_validate = ji.prepare_posted_journal_for_emit
     b_inside_validation = threading.Event()
     a_committed = threading.Event()
     call_no = {"n": 0}
@@ -93,7 +93,7 @@ def test_concurrent_same_key_retry_returns_stored_event(company, cash_account, r
             assert a_committed.wait(timeout=30), "request A never committed"
         return real_validate(company_arg, data)
 
-    monkeypatch.setattr(ji, "require_valid_posted_journal", coordinated)
+    monkeypatch.setattr(ji, "prepare_posted_journal_for_emit", coordinated)
 
     b_result = {}
 

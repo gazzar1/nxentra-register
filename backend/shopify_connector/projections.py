@@ -24,7 +24,7 @@ from decimal import Decimal
 from django.utils import timezone
 
 from accounting.commands import _next_company_sequence
-from accounting.journal_invariant import require_valid_posted_journal
+from accounting.journal_invariant import prepare_posted_journal_for_emit
 from accounting.mappings import ModuleAccountMapping
 from accounting.models import ExchangeRate, JournalEntry, JournalLine
 from events.emitter import emit_event_no_actor
@@ -1339,7 +1339,11 @@ class ShopifyAccountingHandler(BaseProjection):
             # fx_rate double-converted the restock JE on foreign-currency
             # stores (rate× overstated) and would have poisoned avg_cost via
             # the F12 stock receipt. Post the books amount as-is.
-            books_amount = rl["total_cost"]
+            # Final P1 pass: item costs may carry >2dp (average_cost is a
+            # 6dp column); the JE lines and payload must already be the
+            # exact 2dp ledger representation the boundary now requires.
+            # The F12 stock receipt keeps the full-precision total_cost.
+            books_amount = rl["total_cost"].quantize(Decimal("0.01"))
 
             # DR Inventory (return to stock)
             line_no += 1
@@ -1403,7 +1407,7 @@ class ShopifyAccountingHandler(BaseProjection):
         entry.entry_number = entry_number
         entry.save(update_fields=["entry_number"])
 
-        total = sum(rl["total_cost"] for rl in restock_lines)
+        total = sum((rl["total_cost"].quantize(Decimal("0.01")) for rl in restock_lines), Decimal("0"))
 
         lines_data = []
         for line in lines:
@@ -1437,10 +1441,10 @@ class ShopifyAccountingHandler(BaseProjection):
             currency=currency,
             exchange_rate=str(fx_rate),
         ).to_dict()
-        # A3-PR2: canonical gate on the exact payload. A violation RAISES
-        # through the per-event projection atomic, rolling back the POSTED
-        # rows staged above — loud failure, never a silent skip.
-        require_valid_posted_journal(event.company, posted_payload)
+        # A3-PR2: the canonical boundary prepares + gates the exact payload.
+        # A violation RAISES through the per-event projection atomic, rolling
+        # back the POSTED rows staged above — loud failure, never a silent skip.
+        posted_payload = prepare_posted_journal_for_emit(event.company, posted_payload)
         emit_event_no_actor(
             company=event.company,
             event_type=EventTypes.JOURNAL_ENTRY_POSTED,

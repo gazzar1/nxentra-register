@@ -188,6 +188,7 @@ class EventIngestView(APIView):
         # existing contract, a same-key retry returns the stored event
         # even when the payload differs — payload-equality conflict
         # detection does not exist at this layer (recorded follow-up debt).
+        emit_data = payload["data"]
         if event_type == "journal_entry.posted":
             from events.models import BusinessEvent
 
@@ -201,20 +202,25 @@ class EventIngestView(APIView):
                 ).exists()
 
             if not _same_key_event_exists():
-                from accounting.journal_invariant import PostedJournalInvalid, require_valid_posted_journal
+                from accounting.journal_invariant import PostedJournalInvalid, prepare_posted_journal_for_emit
 
                 try:
-                    require_valid_posted_journal(api_key.company, payload["data"])
+                    # Final P1 correction: the boundary returns the EXACT
+                    # canonical payload (authoritative memo flags; strict 2dp
+                    # amounts) and THAT — never the raw caller payload — is
+                    # what gets emitted below.
+                    emit_data = prepare_posted_journal_for_emit(api_key.company, payload["data"])
                 except PostedJournalInvalid as exc:
-                    # Final concurrency correction (fresh-review P2): two
+                    # Concurrency correction (previous fresh-review P2): two
                     # overlapping same-key requests can BOTH pass the
                     # pre-lookup. If the other request committed while this
                     # one was validating, the endpoint's idempotency contract
                     # outranks this payload's invariant verdict — recheck,
                     # and when the stored event now exists fall through to
-                    # the emitter below, whose race-safe lookup returns it.
-                    # With no stored event, the original 422 with the
-                    # original canonical codes stands untouched.
+                    # the emitter below (raw data is fine there: the
+                    # emitter's race-safe lookup returns the stored event,
+                    # nothing is emitted). With no stored event, the
+                    # original 422 with the original canonical codes stands.
                     if not _same_key_event_exists():
                         return Response(
                             {
@@ -233,7 +239,7 @@ class EventIngestView(APIView):
                 aggregate_type=payload["aggregate_type"],
                 aggregate_id=payload["aggregate_id"],
                 idempotency_key=payload["idempotency_key"],
-                data=payload["data"],
+                data=emit_data,
                 metadata=payload.get("metadata"),
             )
         except InvalidEventPayload as exc:

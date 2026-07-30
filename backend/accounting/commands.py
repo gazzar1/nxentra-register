@@ -30,7 +30,7 @@ logger = logging.getLogger("nxentra.accounting.commands")
 
 from accounting.aggregates import load_account_aggregate, load_journal_entry_aggregate
 from accounting.dimension_validation import validate_line_dimensions
-from accounting.journal_invariant import PostedJournalInvalid, require_valid_posted_journal
+from accounting.journal_invariant import PostedJournalInvalid, prepare_posted_journal_for_emit
 from accounting.models import (
     Account,
     AccountAnalysisDefault,
@@ -1422,11 +1422,12 @@ def post_journal_entry_or_raise(actor: ActorContext, entry_id: int) -> CommandRe
         source_module=entry.source_module or "",
         source_document=entry.source_document or "",
     ).to_dict()
-    # A3-PR2: the canonical invariant gates the EXACT payload being emitted —
-    # in particular the post-FX-conversion amounts, which the pre-conversion
-    # balance check at the top of this command cannot see. A violation RAISES
-    # through this atomic block (see the function docstring).
-    require_valid_posted_journal(actor.company, posted_payload)
+    # A3-PR2: the canonical boundary prepares the EXACT payload being
+    # emitted (memo flags authoritative from account facts; strict 2dp
+    # representation) and gates it — in particular the post-FX-conversion
+    # amounts, which the pre-conversion balance check at the top of this
+    # command cannot see. A violation RAISES through this atomic block.
+    posted_payload = prepare_posted_journal_for_emit(actor.company, posted_payload)
 
     event = emit_event(
         actor=actor,
@@ -1660,7 +1661,7 @@ def _reverse_posted_journal_entry(
     # caller's transaction so the ENTIRE owning operation (public reversal,
     # document void, recon unmatch/exclude) rolls back; public boundaries
     # translate it after rollback (translate_posted_journal_invalid).
-    require_valid_posted_journal(actor.company, reversal_payload)
+    reversal_payload = prepare_posted_journal_for_emit(actor.company, reversal_payload)
 
     event_posted = emit_event(
         actor=actor,
@@ -2662,7 +2663,7 @@ def close_fiscal_year(
         # was never ASSERTED before — validate the exact payload before ANY
         # closing event is emitted, so a rejection stages nothing.
         try:
-            require_valid_posted_journal(actor.company, closing_payload)
+            closing_payload = prepare_posted_journal_for_emit(actor.company, closing_payload)
         except PostedJournalInvalid as exc:
             return _posted_journal_invalid_result(exc)
 
@@ -2991,7 +2992,7 @@ def reopen_fiscal_year(
             # payload before the CREATED emit so a rejection stages nothing
             # (the whole reopen rolls back via _posted_journal_invalid_result).
             try:
-                require_valid_posted_journal(actor.company, closing_reversal_payload)
+                closing_reversal_payload = prepare_posted_journal_for_emit(actor.company, closing_reversal_payload)
             except PostedJournalInvalid as exc:
                 return _posted_journal_invalid_result(exc)
 
@@ -4099,7 +4100,7 @@ def record_customer_receipt(
     # the removed A194 ±0.05 acceptance band); rejection rolls back the
     # whole receipt attempt including the consumed JE sequence.
     try:
-        require_valid_posted_journal(actor.company, receipt_je_payload)
+        receipt_je_payload = prepare_posted_journal_for_emit(actor.company, receipt_je_payload)
     except PostedJournalInvalid as exc:
         return _posted_journal_invalid_result(exc)
 
@@ -4595,7 +4596,7 @@ def record_vendor_payment(
     # the removed A194 ±0.05 acceptance band); rejection rolls back the
     # whole payment attempt including the consumed JE sequence.
     try:
-        require_valid_posted_journal(actor.company, payment_je_payload)
+        payment_je_payload = prepare_posted_journal_for_emit(actor.company, payment_je_payload)
     except PostedJournalInvalid as exc:
         return _posted_journal_invalid_result(exc)
 

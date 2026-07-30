@@ -16,7 +16,7 @@ from decimal import Decimal
 from django.utils import timezone
 
 from accounting.commands import _next_company_sequence
-from accounting.journal_invariant import require_valid_posted_journal
+from accounting.journal_invariant import prepare_posted_journal_for_emit
 from accounting.models import (
     AnalysisDimension,
     AnalysisDimensionValue,
@@ -699,10 +699,10 @@ class PropertyAccountingProjection(BaseProjection):
             currency=currency,
             exchange_rate="1.0",
         ).to_dict()
-        # A3-PR2: canonical gate on the exact payload. A violation RAISES
-        # through the per-event projection atomic, rolling back the POSTED
-        # rows staged above — loud failure, never a silent skip.
-        require_valid_posted_journal(company, posted_payload)
+        # A3-PR2: the canonical boundary prepares + gates the exact payload.
+        # A violation RAISES through the per-event projection atomic, rolling
+        # back the POSTED rows staged above — loud failure, never a silent skip.
+        posted_payload = prepare_posted_journal_for_emit(company, posted_payload)
         emit_event_no_actor(
             company=company,
             event_type=EventTypes.JOURNAL_ENTRY_POSTED,

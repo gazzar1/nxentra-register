@@ -41,9 +41,10 @@ from accounting.journal_invariant import (
     JE_ACCOUNT_INACTIVE,
     JE_ACCOUNT_NOT_POSTABLE,
     JE_ACCOUNT_UNKNOWN,
+    JE_AMOUNT_INVALID,
     JE_UNBALANCED,
     PostedJournalInvalid,
-    require_valid_posted_journal,
+    prepare_posted_journal_for_emit,
 )
 from accounting.models import Account, CompanySequence, Customer, ExchangeRate, JournalEntry, JournalLine, Vendor
 from events.models import BusinessEvent
@@ -954,6 +955,26 @@ class TestShopifyRestockEmitBoundary:
         handler = ShopifyAccountingHandler()
         handler._handle_refund_restock(trigger, refund, None, date.today(), "USD", Decimal("1.0"), False, None)
 
+    def test_restock_with_six_decimal_average_cost_emits_exact_payload(self, company, owner_membership):
+        """Final P1 required case 5: internal emitters may CALCULATE at higher
+        precision (average_cost is a 6dp column), but the final emitted
+        payload must already be exactly representable — the restock JE
+        quantizes its books amounts before building lines and payload, so
+        the workflow stays green under the strict emit rule."""
+        from sales.models import Item
+
+        refund, trigger = self._refund_fixture(company)
+        Item.objects.filter(company=company, code="SKU-A3").update(
+            default_cost=Decimal("0"), average_cost=Decimal("10.002500")
+        )
+        self._handle(company, refund, trigger)
+
+        je = JournalEntry.objects.filter(company=company, memo__startswith="Shopify restock:").first()
+        assert je is not None and je.status == JournalEntry.Status.POSTED
+        line = je.lines.order_by("line_no").first()
+        assert line.debit == Decimal("20.00")  # 2 x 10.0025 = 20.005 -> half-even -> 20.00
+        assert _posted_events(company).count() == 1
+
     def test_valid_restock_posts_je(self, company, owner_membership):
         refund, trigger = self._refund_fixture(company)
         self._handle(company, refund, trigger)
@@ -1045,6 +1066,7 @@ def _ingest_payload(company, lines, total_debit, total_credit):
             "date": date.today().isoformat(),
             "memo": "external journal",
             "kind": "NORMAL",
+            "period": date.today().month,
             "currency": "USD",
             "exchange_rate": "1.0",
             "posted_at": timezone.now().isoformat(),
@@ -1160,7 +1182,7 @@ class TestBoundaryMemoSemantics:
             "total_debit": "100.00",
             "total_credit": "100.00",
         }
-        require_valid_posted_journal(company, payload)  # must not raise
+        prepare_posted_journal_for_emit(company, payload)  # must not raise
 
     def test_flagged_memo_on_financial_account_cannot_smuggle_amounts(self, company, cash_account, revenue_account):
         payload = {
@@ -1184,7 +1206,7 @@ class TestBoundaryMemoSemantics:
             "total_credit": "100.00",
         }
         with pytest.raises(PostedJournalInvalid) as excinfo:
-            require_valid_posted_journal(company, payload)
+            prepare_posted_journal_for_emit(company, payload)
         assert JE_UNBALANCED in excinfo.value.codes
 
 
@@ -1790,13 +1812,13 @@ class TestIngestConcurrentRetryRecheck:
         genuine implementation — lookups and validation stay real."""
         import accounting.journal_invariant as ji
 
-        real = ji.require_valid_posted_journal
+        real = ji.prepare_posted_journal_for_emit
 
         def wrapper(company, data):
             on_validate()
             return real(company, data)
 
-        monkeypatch.setattr(ji, "require_valid_posted_journal", wrapper)
+        monkeypatch.setattr(ji, "prepare_posted_journal_for_emit", wrapper)
 
     def test_identical_payload_race_returns_stored_event(self, company, cash_account, revenue_account, monkeypatch):
         """Required case 1 (deterministic form): B carries the identical
@@ -1915,3 +1937,213 @@ class TestIngestConcurrentRetryRecheck:
         assert response.status_code == 422, response.data
         assert BusinessEvent.objects.filter(company=company).count() == 0
         assert BusinessEvent.objects.filter(company=second_company).count() == 1
+
+
+# --------------------------------------------------------------------------- #
+# Final P1 pass (fresh-review P1s): the boundary validates the EXACT ledger
+# representation that is emitted — over-precision is rejected, and the
+# emitted is_memo_line flag is derived authoritatively from account facts.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.django_db
+class TestEmitOverPrecision:
+    def _post_ingest(self, company, lines, total_debit, total_credit):
+        from rest_framework.test import APIClient
+
+        _key_obj, raw_key = _ingest_key(company)
+        payload = _ingest_payload(company, lines, total_debit, total_credit)
+        response = APIClient().post(
+            "/api/events/ingest/", payload, format="json", HTTP_AUTHORIZATION=f"Api-Key {raw_key}"
+        )
+        return response
+
+    def test_over_precise_external_debit_is_rejected_with_zero_residue(self, company, cash_account, revenue_account):
+        """Required case 1: debit 10.005 / credit 10.00 — under the old
+        quantized interpretation this LOOKED balanced; now it is rejected
+        outright and nothing is created."""
+        response = self._post_ingest(
+            company,
+            [
+                {"line_no": 1, "account_public_id": str(cash_account.public_id), "debit": "10.005", "credit": "0"},
+                {"line_no": 2, "account_public_id": str(revenue_account.public_id), "debit": "0", "credit": "10.00"},
+            ],
+            "10.00",
+            "10.00",
+        )
+        assert response.status_code == 422, response.data
+        assert JE_AMOUNT_INVALID in response.data["codes"]
+        assert BusinessEvent.objects.filter(company=company).count() == 0
+        assert not JournalEntry.objects.filter(company=company).exists()
+        assert _seq_next_value(company) is None  # no sequence row ever created
+
+    def test_balanced_looking_sub_cent_pair_is_rejected_not_rounded(self, company, cash_account, revenue_account):
+        """Required case 2: 0.004/0.004 would quantize to 0.00/0.00 — the
+        emit boundary rejects the over-precision instead of rounding."""
+        response = self._post_ingest(
+            company,
+            [
+                {"line_no": 1, "account_public_id": str(cash_account.public_id), "debit": "0.004", "credit": "0"},
+                {"line_no": 2, "account_public_id": str(revenue_account.public_id), "debit": "0", "credit": "0.004"},
+            ],
+            "0.00",
+            "0.00",
+        )
+        assert response.status_code == 422, response.data
+        assert JE_AMOUNT_INVALID in response.data["codes"]
+        assert BusinessEvent.objects.filter(company=company).count() == 0
+
+    def test_over_precise_header_with_exact_lines_is_rejected(self, company, cash_account, revenue_account):
+        """Required case 3."""
+        response = self._post_ingest(
+            company,
+            [
+                {"line_no": 1, "account_public_id": str(cash_account.public_id), "debit": "10.00", "credit": "0"},
+                {"line_no": 2, "account_public_id": str(revenue_account.public_id), "debit": "0", "credit": "10.00"},
+            ],
+            "10.000001",
+            "10.00",
+        )
+        assert response.status_code == 422, response.data
+        assert JE_AMOUNT_INVALID in response.data["codes"]
+        assert BusinessEvent.objects.filter(company=company).count() == 0
+
+    def test_numerically_canonical_spelling_is_accepted_and_stored_exact(self, company, cash_account, revenue_account):
+        """Required case 4: "1.230" equals 1.23 — accepted, and the
+        materialized JournalLine stores exactly 1.23."""
+        response = self._post_ingest(
+            company,
+            [
+                {"line_no": 1, "account_public_id": str(cash_account.public_id), "debit": "1.230", "credit": "0"},
+                {"line_no": 2, "account_public_id": str(revenue_account.public_id), "debit": "0", "credit": "1.23"},
+            ],
+            "1.23",
+            "1.230",
+        )
+        assert response.status_code == 201, response.data
+        # External ingest schedules projections on_commit — run them
+        # explicitly inside the test transaction.
+        from projections.base import projection_registry
+
+        projection_registry.get("journal_entry_read_model").process_pending(company)
+        line = JournalLine.objects.get(company=company, account=cash_account)
+        assert line.debit == Decimal("1.23")
+
+
+@pytest.mark.django_db
+class TestEmitMemoNormalization:
+    """Decision 2: is_memo_line is derived metadata — the emitted payload
+    carries the account-facts truth, never the caller's flag."""
+
+    def test_financial_account_with_caller_true_emits_false(self, company, cash_account, revenue_account):
+        payload = {
+            "lines": [
+                {"line_no": 1, "account_public_id": str(cash_account.public_id), "debit": "100.00", "credit": "0"},
+                {
+                    "line_no": 2,
+                    "account_public_id": str(revenue_account.public_id),
+                    "debit": "0",
+                    "credit": "100.00",
+                    "is_memo_line": True,  # smuggle attempt on a financial account
+                },
+            ],
+            "total_debit": "100.00",
+            "total_credit": "100.00",
+        }
+        prepared = prepare_posted_journal_for_emit(company, payload)
+        assert prepared["lines"][1]["is_memo_line"] is False
+        assert prepared["lines"][0]["is_memo_line"] is False
+
+    def test_statistical_account_with_caller_false_or_missing_emits_true(self, company, cash_account, revenue_account):
+        statistical = _statistical_account(company, code="9510")
+        payload = {
+            "lines": [
+                {"line_no": 1, "account_public_id": str(cash_account.public_id), "debit": "100.00", "credit": "0"},
+                {"line_no": 2, "account_public_id": str(revenue_account.public_id), "debit": "0", "credit": "100.00"},
+                {
+                    "line_no": 3,
+                    "account_public_id": str(statistical.public_id),
+                    "debit": "5.00",
+                    "credit": "0",
+                    "is_memo_line": False,  # caller lies; account is statistical
+                },
+            ],
+            "total_debit": "100.00",
+            "total_credit": "100.00",
+        }
+        prepared = prepare_posted_journal_for_emit(company, payload)
+        assert prepared["lines"][2]["is_memo_line"] is True
+
+    def test_off_balance_and_legacy_memo_accounts_emit_true(self, company, cash_account, revenue_account, memo_account):
+        off_balance = Account.objects.create(
+            public_id=uuid4(),
+            company=company,
+            code="9600",
+            name="Off Balance",
+            account_type=Account.AccountType.ASSET,
+            normal_balance=Account.NormalBalance.DEBIT,
+            ledger_domain=Account.LedgerDomain.OFF_BALANCE,
+            unit_of_measure="EA",
+            status=Account.Status.ACTIVE,
+        )
+        payload = {
+            "lines": [
+                {"line_no": 1, "account_public_id": str(cash_account.public_id), "debit": "100.00", "credit": "0"},
+                {"line_no": 2, "account_public_id": str(revenue_account.public_id), "debit": "0", "credit": "100.00"},
+                {
+                    "line_no": 3,
+                    "account_public_id": str(off_balance.public_id),
+                    "debit": "5.00",
+                    "credit": "0",
+                    "is_memo_line": "yes-ish",  # non-boolean caller value: replaced, never emitted raw
+                },
+                {"line_no": 4, "account_public_id": str(memo_account.public_id), "debit": "7.00", "credit": "0"},
+            ],
+            "total_debit": "100.00",
+            "total_credit": "100.00",
+        }
+        prepared = prepare_posted_journal_for_emit(company, payload)
+        assert prepared["lines"][2]["is_memo_line"] is True
+        assert prepared["lines"][3]["is_memo_line"] is True
+
+    def test_caller_payload_object_is_never_mutated(self, company, cash_account, revenue_account):
+        line = {
+            "line_no": 2,
+            "account_public_id": str(revenue_account.public_id),
+            "debit": "0",
+            "credit": "100.00",
+            "is_memo_line": True,
+        }
+        payload = {
+            "lines": [
+                {"line_no": 1, "account_public_id": str(cash_account.public_id), "debit": "100.00", "credit": "0"},
+                line,
+            ],
+            "total_debit": "100.00",
+            "total_credit": "100.00",
+        }
+        prepared = prepare_posted_journal_for_emit(company, payload)
+        assert line["is_memo_line"] is True  # original untouched
+        assert prepared is not payload
+        assert prepared["lines"][1] is not line
+
+    def test_unknown_account_keeps_existing_violation_and_no_invented_memo_truth(self, company, cash_account):
+        payload = {
+            "lines": [
+                {"line_no": 1, "account_public_id": str(cash_account.public_id), "debit": "100.00", "credit": "0"},
+                {
+                    "line_no": 2,
+                    "account_public_id": str(uuid4()),
+                    "debit": "0",
+                    "credit": "100.00",
+                    "is_memo_line": True,
+                },
+            ],
+            "total_debit": "100.00",
+            "total_credit": "100.00",
+        }
+        with pytest.raises(PostedJournalInvalid) as excinfo:
+            prepare_posted_journal_for_emit(company, payload)
+        assert JE_ACCOUNT_UNKNOWN in excinfo.value.codes
+        # No event, and the caller's payload still carries its original flag.
+        assert payload["lines"][1]["is_memo_line"] is True

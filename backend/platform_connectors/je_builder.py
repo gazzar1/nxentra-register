@@ -18,7 +18,7 @@ from decimal import Decimal
 from django.utils import timezone
 
 from accounting.commands import _next_company_sequence
-from accounting.journal_invariant import require_valid_posted_journal
+from accounting.journal_invariant import prepare_posted_journal_for_emit
 from accounting.models import ExchangeRate, JournalEntry, JournalLine
 from events.emitter import emit_event_no_actor
 from events.models import BusinessEvent
@@ -407,11 +407,12 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
         currency=req.currency,
         exchange_rate=str(fx_rate),
     ).to_dict()
-    # A3-PR2: canonical gate on the exact payload. A violation RAISES through
-    # the caller's per-event projection atomic (projections/base.py), rolling
-    # back the POSTED rows staged above and leaving the event unconsumed —
-    # loud (ProjectionFailureLog), never an unbalanced emitted truth.
-    require_valid_posted_journal(req.company, posted_payload)
+    # A3-PR2: the canonical boundary prepares + gates the exact payload. A
+    # violation RAISES through the caller's per-event projection atomic
+    # (projections/base.py), rolling back the POSTED rows staged above and
+    # leaving the event unconsumed — loud (ProjectionFailureLog), never an
+    # unbalanced emitted truth.
+    posted_payload = prepare_posted_journal_for_emit(req.company, posted_payload)
     emit_event_no_actor(
         company=req.company,
         event_type=EventTypes.JOURNAL_ENTRY_POSTED,

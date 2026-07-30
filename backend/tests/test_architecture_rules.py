@@ -551,7 +551,7 @@ def test_single_posted_journal_invariant_module():
             source = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue
-        if "def check_posted_journal" in source:
+        if "def check_posted_journal" in source or "def prepare_posted_journal_for_emit" in source:
             offenders.append(f"{path.relative_to(BACKEND_ROOT).as_posix()} (function definition)")
     assert not offenders, (
         "Only accounting/journal_invariant.py may define the posted-journal "
@@ -564,7 +564,7 @@ def test_single_posted_journal_invariant_module():
 # canonical emit boundary — and nothing substitutes or bypasses it
 # =============================================================================
 #
-# PR2 wires require_valid_posted_journal() in front of every emitter. These
+# PR2 wires prepare_posted_journal_for_emit() in front of every emitter. These
 # rules freeze that state: a NEW emitter (or a boundary call removed from an
 # existing one) fails the build; the removed ±0.05 acceptance tolerance can
 # never quietly return; and no emitter consults TESTING /
@@ -623,23 +623,45 @@ def _functions_emitting_posted(path: Path) -> dict[str, tuple[bool, str]]:
             continue
         emits = False
         guards = False
+        emit_data_names: set[str] = set()
+        prepared_names: set[str] = set()
         for inner in ast.walk(node):
+            # Names assigned from the canonical preparation boundary.
+            if isinstance(inner, ast.Assign) and isinstance(inner.value, ast.Call):
+                afunc = inner.value.func
+                call_name = (
+                    afunc.id if isinstance(afunc, ast.Name) else afunc.attr if isinstance(afunc, ast.Attribute) else ""
+                )
+                if call_name == "prepare_posted_journal_for_emit":
+                    for target in inner.targets:
+                        if isinstance(target, ast.Name):
+                            prepared_names.add(target.id)
             if not isinstance(inner, ast.Call):
                 continue
             func = inner.func
             name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
             if name in {"emit_event", "emit_event_no_actor"}:
+                is_posted_call = False
                 for kw in inner.keywords:
                     if kw.arg == "event_type" and _is_posted_event_type(kw.value):
-                        emits = True
+                        is_posted_call = True
                 # positional event_type (emit_event(actor, EventTypes.X, ...))
                 for arg in inner.args:
                     if _is_posted_event_type(arg):
-                        emits = True
-            if name == "require_valid_posted_journal":
+                        is_posted_call = True
+                if is_posted_call:
+                    emits = True
+                    for kw in inner.keywords:
+                        if kw.arg == "data" and isinstance(kw.value, ast.Name):
+                            emit_data_names.add(kw.value.id)
+            if name == "prepare_posted_journal_for_emit":
                 guards = True
         if emits:
-            results[node.name] = (guards, ast.get_source_segment(source, node) or "")
+            # Final P1 pass: the emitted payload must BE the prepared payload —
+            # the emit call's data kwarg is a plain Name assigned from the
+            # canonical preparation boundary in the same function.
+            emits_prepared = bool(emit_data_names) and emit_data_names <= prepared_names
+            results[node.name] = (guards and emits_prepared, ast.get_source_segment(source, node) or "")
     return results
 
 
@@ -658,8 +680,10 @@ def _collect_posted_emitters() -> dict[tuple[str, str], tuple[bool, str]]:
 
 def test_every_posted_journal_emission_goes_through_canonical_boundary():
     """A3-PR2: the set of functions emitting JOURNAL_ENTRY_POSTED is frozen,
-    and every one of them calls require_valid_posted_journal() in the same
-    function body (on the exact payload it emits — the tests in
+    and every one of them EMITS THE PAYLOAD RETURNED by
+    prepare_posted_journal_for_emit() — the emit call's data kwarg must be a
+    name assigned from the canonical preparation boundary, so
+    validate-then-emit-raw cannot reappear (on the exact payload it emits — the tests in
     test_a3_emit_boundary.py prove the runtime behavior; this rule proves
     no emitter exists outside the guarded set)."""
     emitters = _collect_posted_emitters()
@@ -671,7 +695,7 @@ def test_every_posted_journal_emission_goes_through_canonical_boundary():
 
     assert not unexpected, (
         "New JOURNAL_ENTRY_POSTED emitter(s) outside the frozen set — every "
-        "emitter must call require_valid_posted_journal() on its exact final "
+        "emitter must emit the payload prepared by prepare_posted_journal_for_emit() as its exact final "
         "payload and be added to A3_EXPECTED_POSTED_EMITTERS deliberately:\n  "
         + "\n  ".join(f"{f}:{fn}" for f, fn in sorted(unexpected))
     )
@@ -680,8 +704,9 @@ def test_every_posted_journal_emission_goes_through_canonical_boundary():
         "A3_EXPECTED_POSTED_EMITTERS consciously:\n  " + "\n  ".join(f"{f}:{fn}" for f, fn in sorted(missing))
     )
     assert not unguarded, (
-        "Emitter(s) no longer call require_valid_posted_journal() in the "
-        "emitting function:\n  " + "\n  ".join(f"{f}:{fn}" for f, fn in sorted(unguarded))
+        "Emitter(s) do not emit the payload returned by "
+        "prepare_posted_journal_for_emit() in the emitting function:\n  "
+        + "\n  ".join(f"{f}:{fn}" for f, fn in sorted(unguarded))
     )
 
 
@@ -692,9 +717,13 @@ def test_external_ingest_guards_posted_journal_payloads():
     consult the test-mode flags around it."""
     path = BACKEND_ROOT / "events" / "ingest.py"
     source = path.read_text(encoding="utf-8")
-    assert "require_valid_posted_journal" in source, (
-        "events/ingest.py must validate journal_entry.posted payloads with the canonical boundary"
+    assert "prepare_posted_journal_for_emit" in source, (
+        "events/ingest.py must prepare journal_entry.posted payloads with the canonical boundary"
     )
+    assert "emit_data = prepare_posted_journal_for_emit" in source, (
+        "events/ingest.py must emit the PREPARED payload, never the raw caller payload"
+    )
+    assert "data=emit_data" in source
     assert "DISABLE_EVENT_VALIDATION" not in source
     assert "settings.TESTING" not in source
 
