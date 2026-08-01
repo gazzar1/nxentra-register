@@ -444,6 +444,20 @@ def check_posted_journal(
     return violations
 
 
+def quantize_current_ledger_amount(value: Decimal) -> Decimal:
+    """THE current-ledger books amount for a full-precision economic value:
+    quantize to ``TWO_PLACES`` with the explicit ledger rounding
+    (``ROUND_HALF_EVEN``). This encodes the CURRENT constrained-pilot/schema
+    contract — EGP-only pilot; JournalLine debit/credit, stored stock values
+    and value deltas persist at two decimal places — it is NOT the permanent
+    global currency policy (the Precision Foundation decision governs ISO
+    4217 minor units and multi-currency precision before any non-EGP
+    support). Provider-neutral by construction: emitters derive their GL
+    books amounts here while keeping full-precision quantities and unit
+    costs as stock/costing evidence."""
+    return value.quantize(TWO_PLACES, rounding=MONEY_ROUNDING)
+
+
 # --------------------------------------------------------------------------- #
 # The one raising emit-preparation boundary (A3-PR2) and its typed exception
 # --------------------------------------------------------------------------- #
