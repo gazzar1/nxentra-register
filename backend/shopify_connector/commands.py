@@ -10,13 +10,14 @@ import hmac
 import logging
 import secrets
 from datetime import UTC, datetime
-from decimal import ROUND_HALF_EVEN, Decimal
+from decimal import Decimal
 
 import requests
 from django.conf import settings
 from django.db import IntegrityError, transaction
 
 from accounting.commands import CommandResult
+from accounting.journal_invariant import quantize_current_ledger_amount
 from accounts.authz import ActorContext, require
 from events.emitter import emit_event
 from events.types import EventTypes
@@ -2270,7 +2271,9 @@ def process_fulfillment(store: ShopifyStore, payload: dict) -> CommandResult:
         fulfillment_status = ShopifyFulfillment.Status.RECEIVED
         error_msg = ""
 
-    if defer_cogs and cogs_lines and booked_total > 0:
+    # §8 (A3-PR2 final pass): defer/post decisions follow MATCHED inventory
+    # lines — a zero-books movement still owes its stock issue.
+    if defer_cogs and cogs_lines:
         # Partial matches still defer — the deferred booking recomputes
         # lines from raw_payload at collection time anyway. The unmatched
         # detail survives in error_message.
@@ -2330,7 +2333,7 @@ def process_fulfillment(store: ShopifyStore, payload: dict) -> CommandResult:
     # Create COGS journal entry + stock ledger entries via commands
     # (moved from projection to command layer — events come from commands).
     # F13: deferred for unpaid COD orders — booked by process_order_paid.
-    if cogs_lines and booked_total > 0 and not defer_cogs:
+    if cogs_lines and not defer_cogs:
         _create_cogs_for_fulfillment(
             company=store.company,
             cogs_lines=cogs_lines,
@@ -2359,23 +2362,12 @@ def process_fulfillment(store: ShopifyStore, payload: dict) -> CommandResult:
     )
 
 
-def _ledger_books_amount(value: Decimal) -> Decimal:
-    """The General Ledger books amount for a full-precision stock cost under
-    the CURRENT constrained-pilot ledger contract (EGP-only, JournalLine
-    persists at two decimal places): quantize to Decimal("0.01") with the
-    explicit ledger rounding, ROUND_HALF_EVEN. Stock costing keeps its full
-    precision — this is POSTING precision, not a global currency policy (the
-    Precision Foundation decision governs multi-currency/minor-unit rules
-    before any non-EGP support)."""
-    return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
-
-
 def _booked_cogs_total(cogs_lines: list) -> Decimal:
     """Sum of the INDIVIDUALLY quantized per-line books amounts — the exact
     value the COGS journal debits and credits (per-line-quantize-then-sum,
     matching JournalLine materialization; never quantize an aggregate)."""
     return sum(
-        (_ledger_books_amount(Decimal(str(cl.get("cogs_value", "0")))) for cl in cogs_lines),
+        (quantize_current_ledger_amount(Decimal(str(cl.get("cogs_value", "0")))) for cl in cogs_lines),
         Decimal("0"),
     )
 
@@ -2519,7 +2511,7 @@ def _book_deferred_cogs(store: ShopifyStore, order: ShopifyOrder, paid_date) -> 
     for fulfillment in pending:
         cogs_lines, _unmatched, total_cogs = _build_cogs_lines(store, fulfillment.raw_payload or {})
         booked_total = _booked_cogs_total(cogs_lines)
-        if not cogs_lines or booked_total <= 0:
+        if not cogs_lines:
             logger.warning(
                 "F13: deferred COGS for fulfillment %s produced no bookable lines — leaving COGS_PENDING",
                 fulfillment.shopify_fulfillment_id,
@@ -2577,16 +2569,15 @@ def _create_cogs_for_fulfillment(company, cogs_lines, total_cogs, fulfillment, o
 
     for cl in cogs_lines:
         cogs_value = Decimal(str(cl.get("cogs_value", "0")))
-        # A3-PR2 precision fix: the JE books ONE two-decimal ledger amount
-        # per item (half-even), derived from the full-precision stock cost.
-        # A line whose books amount is zero (sub-half-cent item total) books
-        # nothing — no JE line, no stock line — matching the existing
-        # cogs_value<=0 skip semantics.
-        books_value = _ledger_books_amount(cogs_value)
-        if books_value <= 0:
-            if cogs_value > 0:
-                logger.debug("COGS for %s rounds below one cent — skipping", cl.get("item_code", "?"))
+        if cogs_value <= 0:
             continue
+        # A3-PR2 final pass (founder policy): stock eligibility and JE
+        # eligibility are SEPARATE. Every matched positive-cost line issues
+        # stock (quantity truth is never discarded); only lines whose
+        # two-decimal books amount is nonzero contribute JE lines. A
+        # sub-half-cent item therefore moves quantity with a stored value
+        # delta of 0.00 and no zero-value JE line.
+        books_value = quantize_current_ledger_amount(cogs_value)
 
         cogs_account_id = cl.get("cogs_account_id")
         inventory_account_id = cl.get("inventory_account_id")
@@ -2600,25 +2591,26 @@ def _create_cogs_for_fulfillment(company, cogs_lines, total_cogs, fulfillment, o
             logger.warning("COGS/Inventory account not found for %s — skipping", item_code)
             continue
 
-        # JE: DR COGS — the exact same books amount on both sides.
-        je_lines.append(
-            {
-                "account_id": cogs_account.id,
-                "description": f"COGS: {item_code} x {qty}",
-                "debit": str(books_value),
-                "credit": "0",
-            }
-        )
+        if books_value > 0:
+            # JE: DR COGS — the exact same books amount on both sides.
+            je_lines.append(
+                {
+                    "account_id": cogs_account.id,
+                    "description": f"COGS: {item_code} x {qty}",
+                    "debit": str(books_value),
+                    "credit": "0",
+                }
+            )
 
-        # JE: CR Inventory
-        je_lines.append(
-            {
-                "account_id": inventory_account.id,
-                "description": f"Inventory issued: {item_code} x {qty}",
-                "debit": "0",
-                "credit": str(books_value),
-            }
-        )
+            # JE: CR Inventory
+            je_lines.append(
+                {
+                    "account_id": inventory_account.id,
+                    "description": f"Inventory issued: {item_code} x {qty}",
+                    "debit": "0",
+                    "credit": str(books_value),
+                }
+            )
 
         # Stock ledger line
         item = Item.objects.filter(company=company, code=item_code).first()
@@ -2662,66 +2654,93 @@ def _create_cogs_for_fulfillment(company, cogs_lines, total_cogs, fulfillment, o
                     }
                 )
 
-    if not je_lines:
+    if not je_lines and not stock_lines:
         return
 
-    # Create and post the COGS JE
+    # One nested atomic boundary owns the whole COGS attempt (JE + stock
+    # issue + status flip): a stock-issue failure rolls back a just-posted
+    # JE instead of stranding it, and the fulfillment is parked in the
+    # existing retryable state (COGS_PENDING) for the 4h sweep. Zero-books
+    # fulfillments post NO journal (founder policy) but still issue stock
+    # with journal_entry=None.
+    from django.db import transaction as _transaction
+
     memo = f"Shopify COGS: {order_name} (Fulfillment {fulfillment_id})"
-    result = create_journal_entry(
-        actor=actor,
-        date=fulfillment_date,
-        memo=memo,
-        lines=je_lines,
-        kind="NORMAL",
-    )
-
-    if not result.success:
-        logger.error("Failed to create COGS JE for fulfillment %s: %s", fulfillment_id, result.error)
-        return
-
-    entry = result.data
-    save_result = save_journal_entry_complete(actor, entry.id)
-    if not save_result.success:
-        logger.error("Failed to save COGS JE for fulfillment %s: %s", fulfillment_id, save_result.error)
-        return
-
-    entry = save_result.data
-    post_result = post_journal_entry(actor, entry.id)
-    if not post_result.success:
-        logger.error("Failed to post COGS JE for fulfillment %s: %s", fulfillment_id, post_result.error)
-        return
-
-    journal_entry = post_result.data
-
-    # Record stock issue (creates StockLedgerEntry + updates InventoryBalance)
-    if stock_lines:
-        from inventory.models import StockLedgerEntry as SLE
-
-        # Allow negative inventory for Shopify (merchants don't manage stock in Nxentra)
-        orig_allow = company.allow_negative_inventory
-        try:
-            company.allow_negative_inventory = True
-            stock_result = record_stock_issue(
+    journal_entry = None
+    stock_failed = False
+    with _transaction.atomic():
+        if je_lines:
+            result = create_journal_entry(
                 actor=actor,
-                source_type=SLE.SourceType.SALES_INVOICE,
-                source_id=str(fulfillment.public_id),
-                lines=stock_lines,
-                journal_entry=journal_entry,
+                date=fulfillment_date,
+                memo=memo,
+                lines=je_lines,
+                kind="NORMAL",
             )
+
+            if not result.success:
+                logger.error("Failed to create COGS JE for fulfillment %s: %s", fulfillment_id, result.error)
+                _transaction.set_rollback(True)
+                return
+
+            entry = result.data
+            save_result = save_journal_entry_complete(actor, entry.id)
+            if not save_result.success:
+                logger.error("Failed to save COGS JE for fulfillment %s: %s", fulfillment_id, save_result.error)
+                _transaction.set_rollback(True)
+                return
+
+            entry = save_result.data
+            post_result = post_journal_entry(actor, entry.id)
+            if not post_result.success:
+                logger.error("Failed to post COGS JE for fulfillment %s: %s", fulfillment_id, post_result.error)
+                _transaction.set_rollback(True)
+                return
+
+            journal_entry = post_result.data
+
+        # Record stock issue (creates StockLedgerEntry + updates InventoryBalance)
+        if stock_lines:
+            from inventory.models import StockLedgerEntry as SLE
+
+            # Allow negative inventory for Shopify (merchants don't manage stock in Nxentra)
+            orig_allow = company.allow_negative_inventory
+            try:
+                company.allow_negative_inventory = True
+                stock_result = record_stock_issue(
+                    actor=actor,
+                    source_type=SLE.SourceType.SALES_INVOICE,
+                    source_id=str(fulfillment.public_id),
+                    lines=stock_lines,
+                    journal_entry=journal_entry,
+                )
+            finally:
+                company.allow_negative_inventory = orig_allow
             if not stock_result.success:
                 logger.warning("Stock issue failed for fulfillment %s: %s", fulfillment_id, stock_result.error)
-        finally:
-            company.allow_negative_inventory = orig_allow
+                _transaction.set_rollback(True)
+                stock_failed = True
 
-    # Update fulfillment record with JE. total_cogs is the BOOKED financial
-    # amount (the model column is (18,2)): the sum of the individually
-    # quantized per-line books amounts — identical to the posted journal's
-    # debit and credit totals by construction.
-    with command_writes_allowed():
-        fulfillment.journal_entry_id = journal_entry.public_id if journal_entry else None
-        fulfillment.status = "PROCESSED"
-        fulfillment.total_cogs = _booked_cogs_total(cogs_lines)
-        fulfillment.save(update_fields=["journal_entry_id", "status", "total_cogs"])
+        if not stock_failed:
+            # Update fulfillment record with JE. total_cogs is the BOOKED
+            # financial amount (the model column is (18,2)): the sum of the
+            # individually quantized per-line books amounts — identical to
+            # the posted journal's debit and credit totals by construction
+            # (0.00 for an all-zero-books fulfillment, which has no JE).
+            with command_writes_allowed():
+                fulfillment.journal_entry_id = journal_entry.public_id if journal_entry else None
+                fulfillment.status = "PROCESSED"
+                fulfillment.total_cogs = _booked_cogs_total(cogs_lines)
+                fulfillment.save(update_fields=["journal_entry_id", "status", "total_cogs"])
+
+    if stock_failed:
+        # Park in the existing retryable state so the 4h sweep (paid orders
+        # with COGS_PENDING fulfillments) can finish the operation; the JE
+        # rolled back with the savepoint, so the retry cannot duplicate it.
+        with command_writes_allowed():
+            fulfillment.status = ShopifyFulfillment.Status.COGS_PENDING
+            fulfillment.save(update_fields=["status"])
+        return
 
     logger.info(
         "Created COGS JE %s + stock issue for fulfillment %s (%s)",

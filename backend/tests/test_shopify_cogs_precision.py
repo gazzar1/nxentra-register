@@ -270,3 +270,140 @@ class TestIdempotencyAndOptionB:
         assert not _cogs_je(company).exists()
         assert not StockLedgerEntry.objects.filter(company=company).exists()
         assert fulfillment.total_cogs == Decimal("0.00")
+
+
+# --------------------------------------------------------------------------- #
+# Final inventory-precision pass (§10): zero-books stock movements. Founder
+# policy — quantity truth is never discarded because the books amount rounds
+# to 0.00: stock issues happen with journal_entry=None; no zero-value JE, no
+# posted-journal event, no consumed journal sequence.
+# --------------------------------------------------------------------------- #
+
+
+class TestZeroBooksFulfillment:
+    def test_single_sub_cent_line_moves_stock_without_je(self, store, company):
+        """§10.1: 0.004-cost item — quantity decremented, stock entry created,
+        NO JE, total_cogs=0.00, PROCESSED only after stock success."""
+        item = _make_item(company, "PREC-Z1", "0.004")
+        assert process_order_paid(store, _order_payload("paid", [{"sku": "PREC-Z1", "quantity": 1}])).success
+        res = process_fulfillment(store, _fulfillment_payload([{"sku": "PREC-Z1", "quantity": 1}]))
+        assert res.success, res.error
+
+        fulfillment = ShopifyFulfillment.objects.get(company=company, shopify_fulfillment_id=FULFILLMENT_ID)
+        assert fulfillment.status == ShopifyFulfillment.Status.PROCESSED
+        assert fulfillment.total_cogs == Decimal("0.00")
+        assert fulfillment.journal_entry_id is None
+        assert not _cogs_je(company).exists()
+        assert not BusinessEvent.objects.filter(company=company, event_type="journal_entry.posted").exists()
+        sle = StockLedgerEntry.objects.get(company=company, source_id=str(fulfillment.public_id))
+        assert sle.journal_entry_id is None
+        balance = InventoryBalance.objects.get(company=company, item=item)
+        assert balance.qty_on_hand == Decimal("9")
+        assert balance.avg_cost == Decimal("0.004")
+
+    def test_mixed_zero_and_nonzero_lines(self, store, company):
+        """§10.2: every quantity decrements; the JE carries only the nonzero
+        amount; headers equal persisted lines; total_cogs = posted total."""
+        item_zero = _make_item(company, "PREC-Z2", "0.004")
+        item_real = _make_item(company, "PREC-R2", "5.00")
+        lines = [{"sku": "PREC-Z2", "quantity": 1}, {"sku": "PREC-R2", "quantity": 2}]
+        assert process_order_paid(store, _order_payload("paid", lines)).success
+        res = process_fulfillment(store, _fulfillment_payload(lines))
+        assert res.success, res.error
+
+        fulfillment = ShopifyFulfillment.objects.get(company=company, shopify_fulfillment_id=FULFILLMENT_ID)
+        je = _assert_booked(company, fulfillment, Decimal("10.00"))
+        assert je.lines.count() == 2  # DR/CR for the nonzero item only
+        assert StockLedgerEntry.objects.filter(company=company, source_id=str(fulfillment.public_id)).count() == 2
+        assert InventoryBalance.objects.get(company=company, item=item_zero).qty_on_hand == Decimal("9")
+        assert InventoryBalance.objects.get(company=company, item=item_real).qty_on_hand == Decimal("8")
+
+    def test_all_zero_books_retry_is_idempotent(self, store, company):
+        """§10.3: repeated webhook for an all-zero-books fulfillment issues
+        stock exactly once and never creates a JE."""
+        _make_item(company, "PREC-Z3", "0.004")
+        assert process_order_paid(store, _order_payload("paid", [{"sku": "PREC-Z3", "quantity": 1}])).success
+        assert process_fulfillment(store, _fulfillment_payload([{"sku": "PREC-Z3", "quantity": 1}])).success
+        again = process_fulfillment(store, _fulfillment_payload([{"sku": "PREC-Z3", "quantity": 1}]))
+        assert again.success and again.data.get("skipped") is True
+
+        fulfillment = ShopifyFulfillment.objects.get(company=company, shopify_fulfillment_id=FULFILLMENT_ID)
+        assert StockLedgerEntry.objects.filter(company=company, source_id=str(fulfillment.public_id)).count() == 1
+        assert not _cogs_je(company).exists()
+
+    def test_all_zero_books_deferred_cod(self, store, company):
+        """§10.4: unpaid COD with matched zero-books lines stays deferred
+        (gating follows matched lines, not booked_total); collection issues
+        the stock with no JE; processed exactly once."""
+        item = _make_item(company, "PREC-Z4", "0.004")
+        assert process_order_pending(store, _order_payload("pending", [{"sku": "PREC-Z4", "quantity": 1}])).success
+        res = process_fulfillment(store, _fulfillment_payload([{"sku": "PREC-Z4", "quantity": 1}]))
+        assert res.success, res.error
+        fulfillment = ShopifyFulfillment.objects.get(company=company, shopify_fulfillment_id=FULFILLMENT_ID)
+        assert fulfillment.status == ShopifyFulfillment.Status.COGS_PENDING
+        assert not StockLedgerEntry.objects.filter(company=company).exists()
+
+        paid = _order_payload("pending", [{"sku": "PREC-Z4", "quantity": 1}])
+        paid["financial_status"] = "paid"
+        assert process_order_paid(store, paid).success
+
+        fulfillment.refresh_from_db()
+        assert fulfillment.status == ShopifyFulfillment.Status.PROCESSED
+        assert fulfillment.total_cogs == Decimal("0.00")
+        assert not _cogs_je(company).exists()
+        assert StockLedgerEntry.objects.filter(company=company, source_id=str(fulfillment.public_id)).count() == 1
+        assert InventoryBalance.objects.get(company=company, item=item).qty_on_hand == Decimal("9")
+
+    def test_sweep_finishes_paid_zero_books_fulfillment(self, store, company):
+        """§10.5: the 4h sweep books a stranded paid zero-books fulfillment
+        exactly once (stock only, no JE); repeats are no-ops."""
+        from shopify_connector.tasks import _sweep_deferred_cogs
+
+        _make_item(company, "PREC-Z5", "0.004")
+        assert process_order_pending(store, _order_payload("pending", [{"sku": "PREC-Z5", "quantity": 1}])).success
+        assert process_order_paid(store, _order_payload("paid", [{"sku": "PREC-Z5", "quantity": 1}])).success
+        res = process_fulfillment(store, _fulfillment_payload([{"sku": "PREC-Z5", "quantity": 1}]))
+        assert res.success, res.error
+        fulfillment = ShopifyFulfillment.objects.get(company=company, shopify_fulfillment_id=FULFILLMENT_ID)
+
+        if fulfillment.status != ShopifyFulfillment.Status.PROCESSED:
+            assert _sweep_deferred_cogs(store) == 1
+        assert _sweep_deferred_cogs(store) == 0
+
+        fulfillment.refresh_from_db()
+        assert fulfillment.status == ShopifyFulfillment.Status.PROCESSED
+        assert not _cogs_je(company).exists()
+        assert StockLedgerEntry.objects.filter(company=company, source_id=str(fulfillment.public_id)).count() == 1
+
+    def test_stock_issue_failure_leaves_retryable_state_and_rolls_back_je(self, store, company, monkeypatch):
+        """§10.6: a stock-issue failure must not mark PROCESSED — the posted
+        JE rolls back with the per-attempt savepoint, the fulfillment parks
+        in the existing retryable state (COGS_PENDING), and the sweep later
+        finishes exactly once with no duplicate JE or stock issue."""
+        import inventory.commands as inv_commands
+        from accounting.commands import CommandResult as CR
+
+        _make_item(company, "PREC-F9", "5.00")
+        assert process_order_paid(store, _order_payload("paid", [{"sku": "PREC-F9", "quantity": 1}])).success
+
+        real_issue = inv_commands.record_stock_issue
+        monkeypatch.setattr(inv_commands, "record_stock_issue", lambda **kw: CR.fail("simulated stock failure"))
+        res = process_fulfillment(store, _fulfillment_payload([{"sku": "PREC-F9", "quantity": 1}]))
+        assert res.success, res.error  # webhook contract: command itself succeeds
+
+        fulfillment = ShopifyFulfillment.objects.get(company=company, shopify_fulfillment_id=FULFILLMENT_ID)
+        assert fulfillment.status == ShopifyFulfillment.Status.COGS_PENDING
+        assert fulfillment.journal_entry_id is None
+        assert not _cogs_je(company).exists(), "the posted JE must roll back with the failed stock issue"
+        assert not StockLedgerEntry.objects.filter(company=company).exists()
+
+        # Recovery: restore the real stock issue; the sweep finishes it once.
+        monkeypatch.setattr(inv_commands, "record_stock_issue", real_issue)
+        from shopify_connector.tasks import _sweep_deferred_cogs
+
+        assert _sweep_deferred_cogs(store) == 1
+        assert _sweep_deferred_cogs(store) == 0
+        fulfillment.refresh_from_db()
+        assert fulfillment.status == ShopifyFulfillment.Status.PROCESSED
+        assert _cogs_je(company).count() == 1
+        assert StockLedgerEntry.objects.filter(company=company, source_id=str(fulfillment.public_id)).count() == 1
