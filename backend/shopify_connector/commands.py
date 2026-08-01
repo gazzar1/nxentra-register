@@ -10,7 +10,7 @@ import hmac
 import logging
 import secrets
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal
 
 import requests
 from django.conf import settings
@@ -2243,6 +2243,12 @@ def process_fulfillment(store: ShopifyStore, payload: dict) -> CommandResult:
         fulfillment_date = datetime.now().date()
 
     cogs_lines, unmatched_skus, total_cogs = _build_cogs_lines(store, payload)
+    # A3-PR2 precision fix: everything FINANCIAL about this fulfillment (the
+    # stored total_cogs column is (18,2), the fulfilled-event amounts, the
+    # defer/post gates, the JE) uses the booked total — the sum of the
+    # individually quantized per-line books amounts. cogs_lines themselves
+    # keep full precision as stock/costing evidence.
+    booked_total = _booked_cogs_total(cogs_lines)
     line_items = payload.get("line_items", [])
 
     # F13: COD — the order was captured but not collected. Booking COGS
@@ -2264,7 +2270,7 @@ def process_fulfillment(store: ShopifyStore, payload: dict) -> CommandResult:
         fulfillment_status = ShopifyFulfillment.Status.RECEIVED
         error_msg = ""
 
-    if defer_cogs and cogs_lines and total_cogs > 0:
+    if defer_cogs and cogs_lines and booked_total > 0:
         # Partial matches still defer — the deferred booking recomputes
         # lines from raw_payload at collection time anyway. The unmatched
         # detail survives in error_message.
@@ -2280,7 +2286,7 @@ def process_fulfillment(store: ShopifyStore, payload: dict) -> CommandResult:
             tracking_company=payload.get("tracking_company", "") or "",
             shopify_status=payload.get("status", ""),
             shopify_created_at=created_at_str or datetime.now().isoformat(),
-            total_cogs=total_cogs,
+            total_cogs=booked_total,
             currency=order.currency,
             matched_items=matched_items,
             total_items=total_items,
@@ -2301,7 +2307,7 @@ def process_fulfillment(store: ShopifyStore, payload: dict) -> CommandResult:
             idempotency_key=f"shopify.fulfillment:{shopify_fulfillment_id}",
             metadata={"source": "shopify_webhook", "shop_domain": store.shop_domain},
             data=ShopifyOrderFulfilledData(
-                amount=str(total_cogs),
+                amount=str(booked_total),
                 currency=order.currency,
                 transaction_date=str(fulfillment_date),
                 document_ref=order.shopify_order_name,
@@ -2310,7 +2316,7 @@ def process_fulfillment(store: ShopifyStore, payload: dict) -> CommandResult:
                 shopify_order_id=str(shopify_order_id),
                 order_name=order.shopify_order_name,
                 fulfillment_date=str(fulfillment_date),
-                total_cogs=str(total_cogs),
+                total_cogs=str(booked_total),
                 cogs_lines=cogs_lines,
                 unmatched_skus=unmatched_skus,
                 cogs_deferred=defer_cogs,
@@ -2324,7 +2330,7 @@ def process_fulfillment(store: ShopifyStore, payload: dict) -> CommandResult:
     # Create COGS journal entry + stock ledger entries via commands
     # (moved from projection to command layer — events come from commands).
     # F13: deferred for unpaid COD orders — booked by process_order_paid.
-    if cogs_lines and total_cogs > 0 and not defer_cogs:
+    if cogs_lines and booked_total > 0 and not defer_cogs:
         _create_cogs_for_fulfillment(
             company=store.company,
             cogs_lines=cogs_lines,
@@ -2348,8 +2354,29 @@ def process_fulfillment(store: ShopifyStore, payload: dict) -> CommandResult:
             "fulfillment": fulfillment,
             "matched": matched_items,
             "unmatched": len(unmatched_skus),
-            "total_cogs": total_cogs,
+            "total_cogs": booked_total,
         }
+    )
+
+
+def _ledger_books_amount(value: Decimal) -> Decimal:
+    """The General Ledger books amount for a full-precision stock cost under
+    the CURRENT constrained-pilot ledger contract (EGP-only, JournalLine
+    persists at two decimal places): quantize to Decimal("0.01") with the
+    explicit ledger rounding, ROUND_HALF_EVEN. Stock costing keeps its full
+    precision — this is POSTING precision, not a global currency policy (the
+    Precision Foundation decision governs multi-currency/minor-unit rules
+    before any non-EGP support)."""
+    return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
+
+
+def _booked_cogs_total(cogs_lines: list) -> Decimal:
+    """Sum of the INDIVIDUALLY quantized per-line books amounts — the exact
+    value the COGS journal debits and credits (per-line-quantize-then-sum,
+    matching JournalLine materialization; never quantize an aggregate)."""
+    return sum(
+        (_ledger_books_amount(Decimal(str(cl.get("cogs_value", "0")))) for cl in cogs_lines),
+        Decimal("0"),
     )
 
 
@@ -2491,16 +2518,17 @@ def _book_deferred_cogs(store: ShopifyStore, order: ShopifyOrder, paid_date) -> 
     booked = 0
     for fulfillment in pending:
         cogs_lines, _unmatched, total_cogs = _build_cogs_lines(store, fulfillment.raw_payload or {})
-        if not cogs_lines or total_cogs <= 0:
+        booked_total = _booked_cogs_total(cogs_lines)
+        if not cogs_lines or booked_total <= 0:
             logger.warning(
                 "F13: deferred COGS for fulfillment %s produced no bookable lines — leaving COGS_PENDING",
                 fulfillment.shopify_fulfillment_id,
             )
             continue
 
-        if total_cogs != fulfillment.total_cogs:
+        if booked_total != fulfillment.total_cogs:
             with command_writes_allowed():
-                fulfillment.total_cogs = total_cogs
+                fulfillment.total_cogs = booked_total
                 fulfillment.save(update_fields=["total_cogs"])
 
         _create_cogs_for_fulfillment(
@@ -2549,7 +2577,15 @@ def _create_cogs_for_fulfillment(company, cogs_lines, total_cogs, fulfillment, o
 
     for cl in cogs_lines:
         cogs_value = Decimal(str(cl.get("cogs_value", "0")))
-        if cogs_value <= 0:
+        # A3-PR2 precision fix: the JE books ONE two-decimal ledger amount
+        # per item (half-even), derived from the full-precision stock cost.
+        # A line whose books amount is zero (sub-half-cent item total) books
+        # nothing — no JE line, no stock line — matching the existing
+        # cogs_value<=0 skip semantics.
+        books_value = _ledger_books_amount(cogs_value)
+        if books_value <= 0:
+            if cogs_value > 0:
+                logger.debug("COGS for %s rounds below one cent — skipping", cl.get("item_code", "?"))
             continue
 
         cogs_account_id = cl.get("cogs_account_id")
@@ -2564,12 +2600,12 @@ def _create_cogs_for_fulfillment(company, cogs_lines, total_cogs, fulfillment, o
             logger.warning("COGS/Inventory account not found for %s — skipping", item_code)
             continue
 
-        # JE: DR COGS
+        # JE: DR COGS — the exact same books amount on both sides.
         je_lines.append(
             {
                 "account_id": cogs_account.id,
                 "description": f"COGS: {item_code} x {qty}",
-                "debit": str(cogs_value),
+                "debit": str(books_value),
                 "credit": "0",
             }
         )
@@ -2580,7 +2616,7 @@ def _create_cogs_for_fulfillment(company, cogs_lines, total_cogs, fulfillment, o
                 "account_id": inventory_account.id,
                 "description": f"Inventory issued: {item_code} x {qty}",
                 "debit": "0",
-                "credit": str(cogs_value),
+                "credit": str(books_value),
             }
         )
 
@@ -2677,11 +2713,15 @@ def _create_cogs_for_fulfillment(company, cogs_lines, total_cogs, fulfillment, o
         finally:
             company.allow_negative_inventory = orig_allow
 
-    # Update fulfillment record with JE
+    # Update fulfillment record with JE. total_cogs is the BOOKED financial
+    # amount (the model column is (18,2)): the sum of the individually
+    # quantized per-line books amounts — identical to the posted journal's
+    # debit and credit totals by construction.
     with command_writes_allowed():
         fulfillment.journal_entry_id = journal_entry.public_id if journal_entry else None
         fulfillment.status = "PROCESSED"
-        fulfillment.save(update_fields=["journal_entry_id", "status"])
+        fulfillment.total_cogs = _booked_cogs_total(cogs_lines)
+        fulfillment.save(update_fields=["journal_entry_id", "status", "total_cogs"])
 
     logger.info(
         "Created COGS JE %s + stock issue for fulfillment %s (%s)",
