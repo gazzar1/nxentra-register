@@ -955,25 +955,27 @@ class TestShopifyRestockEmitBoundary:
         handler = ShopifyAccountingHandler()
         handler._handle_refund_restock(trigger, refund, None, date.today(), "USD", Decimal("1.0"), False, None)
 
-    def test_restock_with_six_decimal_average_cost_emits_exact_payload(self, company, owner_membership):
-        """Final P1 required case 5: internal emitters may CALCULATE at higher
-        precision (average_cost is a 6dp column), but the final emitted
-        payload must already be exactly representable — the restock JE
-        quantizes its books amounts before building lines and payload, so
-        the workflow stays green under the strict emit rule."""
+    def test_restock_with_six_decimal_average_cost_fails_loud(self, company, owner_membership):
+        """A3-PR2 de-scope: inventory books policy is deferred to the
+        Inventory Books-Delta Foundation, so the restock emitter performs NO
+        silent rounding. Cost evidence that is not already an exact
+        two-decimal ledger amount (average_cost is a 6dp column) is rejected
+        at the emit boundary and the whole attempt rolls back — no journal,
+        no event, no partial rows. Unreachable in the constrained pilot
+        (ISOLATED_SHADOW_LEDGER_V1 forces NON_STOCK items)."""
         from sales.models import Item
 
         refund, trigger = self._refund_fixture(company)
         Item.objects.filter(company=company, code="SKU-A3").update(
             default_cost=Decimal("0"), average_cost=Decimal("10.002500")
         )
-        self._handle(company, refund, trigger)
+        with pytest.raises(PostedJournalInvalid) as excinfo:
+            with transaction.atomic():
+                self._handle(company, refund, trigger)
 
-        je = JournalEntry.objects.filter(company=company, memo__startswith="Shopify restock:").first()
-        assert je is not None and je.status == JournalEntry.Status.POSTED
-        line = je.lines.order_by("line_no").first()
-        assert line.debit == Decimal("20.00")  # 2 x 10.0025 = 20.005 -> half-even -> 20.00
-        assert _posted_events(company).count() == 1
+        assert JE_AMOUNT_INVALID in excinfo.value.codes
+        assert not JournalEntry.objects.filter(company=company, memo__startswith="Shopify restock:").exists()
+        assert _posted_events(company).count() == 0
 
     def test_valid_restock_posts_je(self, company, owner_membership):
         refund, trigger = self._refund_fixture(company)

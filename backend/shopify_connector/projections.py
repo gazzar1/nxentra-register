@@ -1339,11 +1339,14 @@ class ShopifyAccountingHandler(BaseProjection):
             # fx_rate double-converted the restock JE on foreign-currency
             # stores (rate× overstated) and would have poisoned avg_cost via
             # the F12 stock receipt. Post the books amount as-is.
-            # Final P1 pass: item costs may carry >2dp (average_cost is a
-            # 6dp column); the JE lines and payload must already be the
-            # exact 2dp ledger representation the boundary now requires.
-            # The F12 stock receipt keeps the full-precision total_cost.
-            books_amount = rl["total_cost"].quantize(Decimal("0.01"))
+            # A3-PR2 de-scope: no silent rounding — a restock whose cost
+            # evidence is not already an exact two-decimal ledger amount
+            # fails loudly at the emit boundary (JE_AMOUNT_INVALID raises
+            # through the per-event atomic; the refund parks in
+            # ProjectionFailureLog). Inventory books policy is deferred to
+            # the Inventory Books-Delta Foundation; the constrained pilot
+            # cannot reach this path (NON_STOCK items only).
+            books_amount = rl["total_cost"]
 
             # DR Inventory (return to stock)
             line_no += 1
@@ -1407,7 +1410,7 @@ class ShopifyAccountingHandler(BaseProjection):
         entry.entry_number = entry_number
         entry.save(update_fields=["entry_number"])
 
-        total = sum((rl["total_cost"].quantize(Decimal("0.01")) for rl in restock_lines), Decimal("0"))
+        total = sum((rl["total_cost"] for rl in restock_lines), Decimal("0"))
 
         lines_data = []
         for line in lines:

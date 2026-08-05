@@ -27,7 +27,6 @@ from accounting.commands import (
     save_journal_entry_complete,
     translate_posted_journal_invalid,
 )
-from accounting.journal_invariant import quantize_current_ledger_amount
 from accounting.models import Account, JournalEntry
 from accounts.authz import ActorContext, require
 from events.emitter import emit_event
@@ -438,7 +437,7 @@ def record_stock_receipt(
             # Update balance
             balance.qty_on_hand = new_qty
             balance.avg_cost = new_avg_cost
-            balance.stock_value = quantize_current_ledger_amount(result.new_stock_value)
+            balance.stock_value = result.new_stock_value
             balance.entry_count += 1
             balance.last_entry_date = posted_at.date()
             balance.save()
@@ -551,18 +550,12 @@ def _post_negative_stock_variance_je(
 
     je_lines = []
     for (cogs_account_id, inventory_account_id), variance in variance_by_accounts.items():
-        # Current-ledger precision (A3-PR2 final pass): the variance books
-        # amount is the two-decimal ledger value; a variance that rounds to
-        # 0.00 books nothing (the full-precision figure remains derivable
-        # from the stock evidence).
-        books_variance = quantize_current_ledger_amount(variance)
-        if books_variance == 0:
+        if variance == 0:
             continue
         if not cogs_account_id or not inventory_account_id:
             # The value-continuous fallback already absorbed these lines.
             continue
-        amount = str(abs(books_variance))
-        variance = books_variance
+        amount = str(abs(variance))
         desc = "Negative-stock replacement cost variance (F18)"
         if variance > 0:
             je_lines.append({"account_id": cogs_account_id, "description": desc, "debit": amount, "credit": "0"})
@@ -877,13 +870,6 @@ def adjust_inventory(
             else:
                 je_value = value_delta
 
-            # Current-ledger precision (A3-PR2 final pass): quantity and unit
-            # cost keep full precision as stock evidence; the STORED movement
-            # (JournalLine, StockLedgerEntry.value_delta, stock_value) is the
-            # per-MOVEMENT two-decimal books amount — quantized individually,
-            # never as a raw aggregate.
-            books_delta = quantize_current_ledger_amount(je_value)
-
             processed_lines.append(
                 {
                     "item": item,
@@ -891,17 +877,15 @@ def adjust_inventory(
                     "qty_delta": qty_delta,
                     "unit_cost": unit_cost,
                     "value_delta": value_delta,
-                    "books_delta": books_delta,
                     "balance": balance,
                     "receipt_result": receipt_result,
                     "source_line_id": line.get("source_line_id"),
                 }
             )
 
-            # Accumulate by inventory account (individually quantized books
-            # amounts, so header totals equal what JournalLine stores)
+            # Accumulate by inventory account
             inv_account_id = item.inventory_account_id
-            inventory_by_account[inv_account_id] = inventory_by_account.get(inv_account_id, Decimal("0")) + books_delta
+            inventory_by_account[inv_account_id] = inventory_by_account.get(inv_account_id, Decimal("0")) + je_value
 
     # Build journal entry lines
     for inv_account_id, total_value in inventory_by_account.items():
@@ -943,37 +927,31 @@ def adjust_inventory(
                 }
             )
 
-    # Create and post journal entry — ONLY when a nonzero books amount
-    # exists. Founder policy (A3-PR2 final pass): quantity truth is never
-    # discarded because the books amount rounds to 0.00 — the stock moves,
-    # the JE is simply absent (no zero-value lines, no 0/0 journal event,
-    # no consumed journal identity).
-    journal_entry = None
-    if je_lines:
-        je_result = create_journal_entry(
-            actor=actor,
-            date=adjustment_date,
-            memo=f"Inventory Adjustment: {reason}",
-            lines=je_lines,
-            kind=JournalEntry.Kind.NORMAL,
-        )
+    # Create and post journal entry
+    je_result = create_journal_entry(
+        actor=actor,
+        date=adjustment_date,
+        memo=f"Inventory Adjustment: {reason}",
+        lines=je_lines,
+        kind=JournalEntry.Kind.NORMAL,
+    )
 
-        if not je_result.success:
-            return CommandResult.fail(f"Failed to create journal entry: {je_result.error}")
+    if not je_result.success:
+        return CommandResult.fail(f"Failed to create journal entry: {je_result.error}")
 
-        journal_entry = je_result.data
+    journal_entry = je_result.data
 
-        save_result = save_journal_entry_complete(actor, journal_entry.id)
-        if not save_result.success:
-            return CommandResult.fail(f"Failed to complete journal entry: {save_result.error}")
+    save_result = save_journal_entry_complete(actor, journal_entry.id)
+    if not save_result.success:
+        return CommandResult.fail(f"Failed to complete journal entry: {save_result.error}")
 
-        journal_entry = save_result.data
+    journal_entry = save_result.data
 
-        # A3-PR2 correction: raise-through — an invariant rejection rolls back
-        # the whole inventory operation before the public boundary translates it.
-        post_result = post_journal_entry_or_raise(actor, journal_entry.id)
-        if not post_result.success:
-            return CommandResult.fail(f"Failed to post journal entry: {post_result.error}")
+    # A3-PR2 correction: raise-through — an invariant rejection rolls back
+    # the whole inventory operation before the public boundary translates it.
+    post_result = post_journal_entry_or_raise(actor, journal_entry.id)
+    if not post_result.success:
+        return CommandResult.fail(f"Failed to post journal entry: {post_result.error}")
 
     # Now create stock ledger entries
     created_entries = []
@@ -985,7 +963,7 @@ def adjust_inventory(
             warehouse = pline["warehouse"]
             qty_delta = pline["qty_delta"]
             unit_cost = pline["unit_cost"]
-            books_delta = pline["books_delta"]
+            value_delta = pline["value_delta"]
             balance = pline["balance"]
 
             # Calculate new balance
@@ -1016,10 +994,10 @@ def adjust_inventory(
                 item=item,
                 qty_delta=qty_delta,
                 unit_cost=unit_cost,
-                value_delta=books_delta,
+                value_delta=value_delta,
                 costing_method_snapshot=item.costing_method,
                 qty_balance_after=new_qty,
-                value_balance_after=quantize_current_ledger_amount(new_stock_value),
+                value_balance_after=new_stock_value,
                 avg_cost_after=new_avg_cost,
                 posted_at=posted_at,
                 posted_by=actor.user,
@@ -1030,7 +1008,7 @@ def adjust_inventory(
             # Update balance
             balance.qty_on_hand = new_qty
             balance.avg_cost = new_avg_cost
-            balance.stock_value = quantize_current_ledger_amount(new_stock_value)
+            balance.stock_value = new_stock_value
             balance.entry_count += 1
             balance.last_entry_date = posted_at.date()
             balance.save()
@@ -1047,7 +1025,7 @@ def adjust_inventory(
                     warehouse_public_id=str(warehouse.public_id),
                     qty_delta=str(qty_delta),
                     unit_cost=str(unit_cost),
-                    value_delta=str(books_delta),
+                    value_delta=str(value_delta),
                     costing_method_snapshot=item.costing_method,
                     source_line_id=pline.get("source_line_id"),
                 ).to_dict()
@@ -1067,7 +1045,7 @@ def adjust_inventory(
             else str(adjustment_date),
             reason=reason,
             entries=[e for e in event_entries],
-            journal_entry_public_id=str(journal_entry.public_id) if journal_entry else "",
+            journal_entry_public_id=str(journal_entry.public_id),
             adjusted_at=posted_at.isoformat(),
             adjusted_by_id=actor.user.id,
             adjusted_by_email=actor.user.email,
@@ -1145,10 +1123,6 @@ def record_opening_balance(
             return CommandResult.fail(f"Item {item.code} has no inventory account configured.")
 
         value = qty * unit_cost
-        # Current-ledger precision (A3-PR2 final pass): the STORED opening
-        # movement is the per-LINE two-decimal books value; quantity and unit
-        # cost keep full precision as stock evidence.
-        books_value = quantize_current_ledger_amount(value)
 
         processed_lines.append(
             {
@@ -1157,22 +1131,17 @@ def record_opening_balance(
                 "qty": qty,
                 "unit_cost": unit_cost,
                 "value": value,
-                "books_value": books_value,
             }
         )
 
         inv_account_id = item.inventory_account_id
-        inventory_by_account[inv_account_id] = inventory_by_account.get(inv_account_id, Decimal("0")) + books_value
+        inventory_by_account[inv_account_id] = inventory_by_account.get(inv_account_id, Decimal("0")) + value
 
-    # Build journal entry lines from the individually quantized books values
-    # (zero-books groups produce NO line; the equity credit equals the sum of
-    # the stored inventory lines).
+    # Build journal entry lines
     je_lines = []
     total_value = Decimal("0")
 
     for inv_account_id, value in inventory_by_account.items():
-        if value == 0:
-            continue
         je_lines.append(
             {
                 "account_id": inv_account_id,
@@ -1183,45 +1152,41 @@ def record_opening_balance(
         )
         total_value += value
 
-    if je_lines:
-        # Credit Opening Balance Equity
-        je_lines.append(
-            {
-                "account_id": opening_balance_equity_account_id,
-                "description": "Opening Inventory Balance",
-                "debit": Decimal("0"),
-                "credit": total_value,
-            }
-        )
+    # Credit Opening Balance Equity
+    je_lines.append(
+        {
+            "account_id": opening_balance_equity_account_id,
+            "description": "Opening Inventory Balance",
+            "debit": Decimal("0"),
+            "credit": total_value,
+        }
+    )
 
-    # Create and post journal entry — ONLY when a nonzero books amount
-    # exists (founder policy: sub-cent openings still record stock).
-    journal_entry = None
-    if je_lines:
-        je_result = create_journal_entry(
-            actor=actor,
-            date=as_of_date,
-            memo="Opening Inventory Balance",
-            lines=je_lines,
-            kind=JournalEntry.Kind.OPENING,
-        )
+    # Create and post journal entry
+    je_result = create_journal_entry(
+        actor=actor,
+        date=as_of_date,
+        memo="Opening Inventory Balance",
+        lines=je_lines,
+        kind=JournalEntry.Kind.OPENING,
+    )
 
-        if not je_result.success:
-            return CommandResult.fail(f"Failed to create journal entry: {je_result.error}")
+    if not je_result.success:
+        return CommandResult.fail(f"Failed to create journal entry: {je_result.error}")
 
-        journal_entry = je_result.data
+    journal_entry = je_result.data
 
-        save_result = save_journal_entry_complete(actor, journal_entry.id)
-        if not save_result.success:
-            return CommandResult.fail(f"Failed to complete journal entry: {save_result.error}")
+    save_result = save_journal_entry_complete(actor, journal_entry.id)
+    if not save_result.success:
+        return CommandResult.fail(f"Failed to complete journal entry: {save_result.error}")
 
-        journal_entry = save_result.data
+    journal_entry = save_result.data
 
-        # A3-PR2 correction: raise-through — an invariant rejection rolls back
-        # the whole inventory operation before the public boundary translates it.
-        post_result = post_journal_entry_or_raise(actor, journal_entry.id)
-        if not post_result.success:
-            return CommandResult.fail(f"Failed to post journal entry: {post_result.error}")
+    # A3-PR2 correction: raise-through — an invariant rejection rolls back
+    # the whole inventory operation before the public boundary translates it.
+    post_result = post_journal_entry_or_raise(actor, journal_entry.id)
+    if not post_result.success:
+        return CommandResult.fail(f"Failed to post journal entry: {post_result.error}")
 
     # Now create stock ledger entries
     created_entries = []
@@ -1234,7 +1199,7 @@ def record_opening_balance(
             warehouse = pline["warehouse"]
             qty = pline["qty"]
             unit_cost = pline["unit_cost"]
-            books_value = pline["books_value"]
+            value = pline["value"]
 
             # Get or create inventory balance
             balance, _ = InventoryBalance.objects.select_for_update().get_or_create(
@@ -1284,10 +1249,10 @@ def record_opening_balance(
                 item=item,
                 qty_delta=qty,
                 unit_cost=unit_cost,
-                value_delta=books_value,
+                value_delta=value,
                 costing_method_snapshot=item.costing_method,
                 qty_balance_after=new_qty,
-                value_balance_after=quantize_current_ledger_amount(result.new_stock_value),
+                value_balance_after=result.new_stock_value,
                 avg_cost_after=new_avg_cost,
                 posted_at=posted_at,
                 posted_by=actor.user,
@@ -1314,7 +1279,7 @@ def record_opening_balance(
                     warehouse_public_id=str(warehouse.public_id),
                     qty_delta=str(qty),
                     unit_cost=str(unit_cost),
-                    value_delta=str(books_value),
+                    value_delta=str(value),
                     costing_method_snapshot=item.costing_method,
                 ).to_dict()
             )
@@ -1344,7 +1309,7 @@ def record_opening_balance(
             company_public_id=str(actor.company.public_id),
             as_of_date=as_of_date.isoformat() if hasattr(as_of_date, "isoformat") else str(as_of_date),
             entries=[e for e in event_entries],
-            journal_entry_public_id=str(journal_entry.public_id) if journal_entry else "",
+            journal_entry_public_id=str(journal_entry.public_id),
             recorded_at=posted_at.isoformat(),
             recorded_by_id=actor.user.id,
             recorded_by_email=actor.user.email,
