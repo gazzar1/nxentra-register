@@ -834,6 +834,38 @@ def test_platform_credit_note_composition_uses_raise_through_path():
     )
 
 
+def test_platform_invoice_composition_uses_raise_through_path():
+    """A3-PR2 caller-chain fix (invoice twin of the credit-note rule):
+    create_and_post_invoice_for_platform owns the transaction that stages the
+    DRAFT invoice, so it must call the raise-through
+    post_sales_invoice_or_raise — never the translated public
+    post_sales_invoice, which would convert PostedJournalInvalid into a
+    normal failure INSIDE the wrapper's transaction and commit the stranded
+    DRAFT with its source_document_id reserved."""
+    path = BACKEND_ROOT / "sales" / "commands.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    wrapper = next(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "create_and_post_invoice_for_platform"
+        ),
+        None,
+    )
+    assert wrapper is not None, "create_and_post_invoice_for_platform must exist"
+    called = set()
+    for inner in ast.walk(wrapper):
+        if isinstance(inner, ast.Call):
+            func = inner.func
+            name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
+            called.add(name)
+    assert "post_sales_invoice_or_raise" in called, "the platform wrapper must post through the raise-through path"
+    assert "post_sales_invoice" not in called, (
+        "the platform wrapper must NOT call the translated public post_sales_invoice "
+        "— PostedJournalInvalid must escape the wrapper transaction"
+    )
+
+
 # =============================================================================
 # Meta: keep allowlists small + intentional
 # =============================================================================

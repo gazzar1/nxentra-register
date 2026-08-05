@@ -2500,3 +2500,258 @@ class TestPlatformCreditNoteBoundary:
         again = post_credit_note(actor_context, cn.id)
         assert not again.success
         assert SalesCreditNote.objects.get(pk=cn.pk).status == SalesCreditNote.Status.POSTED
+
+
+# --------------------------------------------------------------------------- #
+# 14. Platform sales-invoice wrapper — raw/public split + status-aware
+#     idempotency (fresh-review P1: invoice twin of the credit-note fix)
+# --------------------------------------------------------------------------- #
+
+
+def _platform_invoice_scaffold(company):
+    """Customer + PostingProfile + AR control + revenue account — the
+    platform-invoice scaffolding WITHOUT any invoice, so each test controls
+    the wrapper's first contact with the source identity."""
+    from projections.write_barrier import command_writes_allowed, projection_writes_allowed
+    from sales.models import Customer as SalesCustomer
+    from sales.models import PostingProfile
+
+    with projection_writes_allowed():
+        ar_control = Account.objects.projection().create(
+            company=company,
+            code="11404",
+            name="Platform AR Control",
+            account_type=Account.AccountType.ASSET,
+            role=Account.AccountRole.RECEIVABLE_CONTROL,
+            status=Account.Status.ACTIVE,
+        )
+        revenue = Account.objects.projection().create(
+            company=company,
+            code="41004",
+            name="Platform Revenue",
+            account_type=Account.AccountType.REVENUE,
+            status=Account.Status.ACTIVE,
+        )
+    with command_writes_allowed():
+        customer = SalesCustomer.objects.create(company=company, code="PIV-CUST", name="Platform Customer")
+        profile = PostingProfile.objects.create(
+            company=company,
+            code="PIV-PROFILE",
+            name="Platform Profile",
+            profile_type=PostingProfile.ProfileType.CUSTOMER,
+            control_account=ar_control,
+        )
+    return customer, profile, revenue
+
+
+def _inv_lines(account_id, unit_price="100.00"):
+    return [
+        {
+            "account_id": account_id,
+            "description": "Platform order line",
+            "quantity": "1",
+            "unit_price": unit_price,
+            "discount_amount": "0",
+        }
+    ]
+
+
+def _inv_state(company):
+    from sales.models import SalesInvoice, SalesInvoiceLine
+
+    return {
+        "invoices": SalesInvoice.objects.filter(company=company).count(),
+        "invoice_lines": SalesInvoiceLine.objects.filter(company=company).count(),
+        "invoice_events": BusinessEvent.objects.filter(company=company, event_type__startswith="sales.invoice").count(),
+        "invoice_seq": _seq_next_value(company, "sales_invoice_number"),
+        "je_rows": JournalEntry.objects.filter(company=company).count(),
+        "je_events": BusinessEvent.objects.filter(company=company, event_type__startswith="journal_entry.").count(),
+        "je_seq": _seq_next_value(company, "journal_entry_number"),
+    }
+
+
+def _platform_invoice(company, customer, profile, account_id, source_document_id, unit_price="100.00"):
+    from sales.commands import create_and_post_invoice_for_platform
+
+    return create_and_post_invoice_for_platform(
+        company=company,
+        customer_id=customer.id,
+        posting_profile_id=profile.id,
+        lines=_inv_lines(account_id, unit_price=unit_price),
+        invoice_date=date.today(),
+        source="shopify",
+        source_document_id=source_document_id,
+    )
+
+
+@pytest.mark.django_db
+class TestPlatformInvoiceBoundary:
+    def test_direct_manual_invalid_post_keeps_command_result_and_draft(self, company, owner_membership, actor_context):
+        """Required case 1: the public post_sales_invoice keeps the translated
+        CommandResult with stable codes; the manually created DRAFT (a
+        separate committed command) survives; the posting attempt's JE rows,
+        journal events and sequences all roll back."""
+        from sales.commands import create_sales_invoice, post_sales_invoice
+        from sales.models import SalesInvoice
+
+        customer, profile, _revenue = _platform_invoice_scaffold(company)
+        statistical = _statistical_account(company, code="9550")
+        created = create_sales_invoice(
+            actor=actor_context,
+            customer_id=customer.id,
+            posting_profile_id=profile.id,
+            lines=_inv_lines(statistical.id),
+            invoice_date=date.today(),
+        )
+        assert created.success, created.error
+        invoice = created.data["invoice"]
+        before = _inv_state(company)
+
+        result = post_sales_invoice(actor_context, invoice.id)
+
+        assert not result.success
+        assert (result.data or {}).get("codes"), result.error
+        invoice = SalesInvoice.objects.get(pk=invoice.pk)
+        assert invoice.status == SalesInvoice.Status.DRAFT
+        assert _inv_state(company) == before
+
+    def test_platform_invalid_rolls_back_entire_attempt(self, company, owner_membership):
+        """Required case 2: PostedJournalInvalid escapes the wrapper — the
+        staged SalesInvoice, its lines, its created events, all journal
+        rows/events, and both sequences vanish; the source_document_id is
+        NOT left reserved by a failed invoice."""
+        from sales.models import SalesInvoice
+
+        customer, profile, _revenue = _platform_invoice_scaffold(company)
+        statistical = _statistical_account(company, code="9551")
+        before = _inv_state(company)
+
+        with pytest.raises(PostedJournalInvalid):
+            with transaction.atomic():
+                _platform_invoice(company, customer, profile, statistical.id, "PIV-ORDER-1")
+
+        assert not SalesInvoice.objects.filter(
+            company=company, source="shopify", source_document_id="PIV-ORDER-1"
+        ).exists(), "the failed attempt must not reserve the source identity"
+        assert _inv_state(company) == before
+
+    def test_existing_posted_invoice_returns_idempotently(self, company, owner_membership):
+        """Required case 5: POSTED-with-journal returns the same invoice and
+        journal; nothing new is created."""
+        customer, profile, revenue = _platform_invoice_scaffold(company)
+        first = _platform_invoice(company, customer, profile, revenue.id, "PIV-ORDER-2")
+        assert first.success, first.error
+        state_after_first = _inv_state(company)
+
+        second = _platform_invoice(company, customer, profile, revenue.id, "PIV-ORDER-2")
+        assert second.success, second.error
+        assert second.data["invoice"].pk == first.data["invoice"].pk
+        assert second.data["journal_entry"] is not None
+        assert second.data["journal_entry"].pk == first.data["journal_entry"].pk
+        assert _inv_state(company) == state_after_first
+
+    def test_existing_draft_is_posted_not_reported_as_success(self, company, owner_membership, actor_context):
+        """Required case 6: a stranded valid DRAFT with the same source
+        identity is posted through the raise-through path — same row, no
+        duplicate, never fake success."""
+        from sales.commands import create_sales_invoice
+        from sales.models import SalesInvoice
+
+        customer, profile, revenue = _platform_invoice_scaffold(company)
+        created = create_sales_invoice(
+            actor=actor_context,
+            customer_id=customer.id,
+            posting_profile_id=profile.id,
+            lines=_inv_lines(revenue.id),
+            invoice_date=date.today(),
+            source="shopify",
+            source_document_id="PIV-ORDER-3",
+        )
+        assert created.success, created.error
+        draft = created.data["invoice"]
+
+        result = _platform_invoice(company, customer, profile, revenue.id, "PIV-ORDER-3")
+
+        assert result.success, result.error
+        rows = SalesInvoice.objects.filter(company=company, source_document_id="PIV-ORDER-3")
+        assert rows.count() == 1
+        recovered = rows.first()
+        assert recovered.pk == draft.pk
+        assert recovered.status == SalesInvoice.Status.POSTED
+        assert recovered.posted_journal_entry_id is not None
+
+    def test_existing_invalid_draft_raises_without_duplicate(self, company, owner_membership, actor_context):
+        """Required case 7: a still-invalid DRAFT raises PostedJournalInvalid,
+        is never reported successful, and stays exactly one DRAFT."""
+        from sales.commands import create_sales_invoice
+        from sales.models import SalesInvoice
+
+        customer, profile, _revenue = _platform_invoice_scaffold(company)
+        statistical = _statistical_account(company, code="9552")
+        created = create_sales_invoice(
+            actor=actor_context,
+            customer_id=customer.id,
+            posting_profile_id=profile.id,
+            lines=_inv_lines(statistical.id),
+            invoice_date=date.today(),
+            source="shopify",
+            source_document_id="PIV-ORDER-4",
+        )
+        assert created.success, created.error
+
+        with pytest.raises(PostedJournalInvalid):
+            with transaction.atomic():
+                _platform_invoice(company, customer, profile, statistical.id, "PIV-ORDER-4")
+
+        rows = SalesInvoice.objects.filter(company=company, source_document_id="PIV-ORDER-4")
+        assert rows.count() == 1
+        assert rows.first().status == SalesInvoice.Status.DRAFT
+
+    def test_inconsistent_posted_without_journal_fails_visibly(self, company, owner_membership):
+        """Required case 8: POSTED without its journal is inconsistent state —
+        never success, no replacement invoice."""
+        from sales.models import SalesInvoice
+
+        customer, profile, revenue = _platform_invoice_scaffold(company)
+        first = _platform_invoice(company, customer, profile, revenue.id, "PIV-ORDER-5")
+        assert first.success, first.error
+        SalesInvoice.objects.filter(pk=first.data["invoice"].pk).update(posted_journal_entry=None)
+
+        result = _platform_invoice(company, customer, profile, revenue.id, "PIV-ORDER-5")
+        assert not result.success
+        assert "inconsistent" in result.error
+        assert SalesInvoice.objects.filter(company=company, source_document_id="PIV-ORDER-5").count() == 1
+
+    def test_voided_invoice_fails_visibly_without_replacement(self, company, owner_membership, actor_context):
+        """Required case 9: a VOIDED source-matched invoice fails visibly with
+        its status named; no second invoice is created for the same source
+        identity."""
+        from sales.commands import void_sales_invoice
+        from sales.models import SalesInvoice
+
+        customer, profile, revenue = _platform_invoice_scaffold(company)
+        first = _platform_invoice(company, customer, profile, revenue.id, "PIV-ORDER-6")
+        assert first.success, first.error
+        voided = void_sales_invoice(actor_context, first.data["invoice"].id, reason="test void")
+        assert voided.success, voided.error
+
+        result = _platform_invoice(company, customer, profile, revenue.id, "PIV-ORDER-6")
+        assert not result.success
+        assert "VOIDED" in result.error
+        assert SalesInvoice.objects.filter(company=company, source_document_id="PIV-ORDER-6").count() == 1
+
+    def test_ordinary_non_invariant_failure_keeps_public_semantics(self, company, owner_membership, actor_context):
+        """Required case 10: an already-POSTED invoice re-posted directly keeps
+        the pre-existing fail-return shape (no exception, nothing rolled
+        back)."""
+        from sales.commands import post_sales_invoice
+        from sales.models import SalesInvoice
+
+        customer, profile, revenue = _platform_invoice_scaffold(company)
+        first = _platform_invoice(company, customer, profile, revenue.id, "PIV-ORDER-7")
+        assert first.success, first.error
+        invoice = first.data["invoice"]
+
+        again = post_sales_invoice(actor_context, invoice.id)
+        assert not again.success
+        assert SalesInvoice.objects.get(pk=invoice.pk).status == SalesInvoice.Status.POSTED

@@ -513,3 +513,116 @@ def test_refund_invariant_rejection_fails_loud_then_retries_clean(shopify_compan
     assert ProjectionAppliedEvent.objects.filter(
         company=shopify_company, projection_name="shopify_accounting", event=refund_event
     ).exists()
+
+
+def test_order_invariant_rejection_fails_loud_then_retries_clean(shopify_company):  # noqa: F811
+    """A3-PR2 invoice caller-chain fix (fresh-review P1): a canonical-invariant
+    rejection inside the order's platform invoice wrapper must propagate to
+    the projection framework — event NOT consumed, ProjectionFailureLog
+    written, ShopifyOrder NOT marked PROCESSED, and NO stranded DRAFT
+    invoice with the source identity reserved — and the SAME order event
+    must succeed exactly once after the condition is corrected."""
+    from uuid import uuid4 as _uuid4
+
+    from django.utils import timezone
+
+    from accounting.mappings import ModuleAccountMapping
+    from accounting.models import Account, JournalEntry
+    from events.models import BusinessEvent, CompanyEventCounter
+    from projections.models import ProjectionAppliedEvent, ProjectionFailureLog
+    from sales.models import SalesInvoice
+    from shopify_connector.models import ShopifyOrder, ShopifyStore
+    from shopify_connector.projections import ShopifyAccountingHandler
+
+    store = ShopifyStore.objects.create(
+        company=shopify_company,
+        shop_domain=f"a3-order-{_uuid4().hex[:8]}.myshopify.com",
+        access_token="t",
+        status=ShopifyStore.Status.ACTIVE,
+    )
+    ShopifyOrder.objects.create(
+        company=shopify_company,
+        store=store,
+        shopify_order_id=70010,
+        shopify_order_number="70010",
+        shopify_order_name="#70010",
+        total_price=Decimal("300.00"),
+        subtotal_price=Decimal("300.00"),
+        currency="USD",
+        gateway="shopify_payments",
+        order_date=timezone.now().date(),
+        shopify_created_at=timezone.now(),
+    )
+
+    # Corrupt the emit-time condition BEFORE the order event: the mapped
+    # SALES_REVENUE account becomes STATISTICAL-domain, so the invoice JE
+    # payload is memo-classified and the canonical boundary raises (every
+    # ordinary gate — postability, period, dimensions — still passes).
+    revenue = ModuleAccountMapping.get_mapping(shopify_company, "shopify_connector").get("SALES_REVENUE")
+    Account.objects.filter(pk=revenue.pk).update(ledger_domain=Account.LedgerDomain.STATISTICAL, unit_of_measure="EA")
+
+    counter, _ = CompanyEventCounter.objects.get_or_create(company=shopify_company)
+    counter.last_sequence += 1
+    counter.save()
+    order_event = BusinessEvent.objects.create(
+        company=shopify_company,
+        event_type="shopify.order_paid",
+        aggregate_type="ShopifyOrder",
+        aggregate_id=str(_uuid4()),
+        company_sequence=counter.last_sequence,
+        idempotency_key="shopify.order.paid:70010",
+        data={
+            "amount": "300.00",
+            "currency": "USD",
+            "transaction_date": date.today().isoformat(),
+            "document_ref": "#70010",
+            "shopify_order_id": "70010",
+            "order_number": "70010",
+            "order_name": "#70010",
+            "subtotal": "300.00",
+            "total_tax": "0",
+            "total_shipping": "0",
+            "total_discounts": "0",
+            "financial_status": "paid",
+            "gateway": "shopify_payments",
+            "store_public_id": str(store.public_id),
+            "line_items": [],
+        },
+        occurred_at=timezone.now(),
+    )
+
+    handler = ShopifyAccountingHandler()
+    handler.process_pending(shopify_company)
+
+    # Loud failure through the framework: nothing consumed, nothing staged.
+    assert not ProjectionAppliedEvent.objects.filter(
+        company=shopify_company, projection_name="shopify_accounting", event=order_event
+    ).exists(), "the rejected order event must remain unapplied/retryable"
+    failure = ProjectionFailureLog.objects.filter(
+        company=shopify_company, projection_name="shopify_accounting", event=order_event
+    ).first()
+    assert failure is not None, "ProjectionFailureLog must record the invariant rejection"
+    assert "canonical invariant" in failure.message or "JE_" in failure.message
+    assert not SalesInvoice.objects.filter(
+        company=shopify_company, source="shopify", source_document_id="70010"
+    ).exists(), "no stranded DRAFT invoice may reserve the source identity"
+    assert not JournalEntry.objects.filter(company=shopify_company, memo__contains="70010").exists()
+    order = ShopifyOrder.objects.get(company=shopify_company, shopify_order_id=70010)
+    assert order.status != ShopifyOrder.Status.PROCESSED
+    assert order.journal_entry_id is None
+
+    # Corrected retry: restore the account's financial domain — the SAME
+    # event now produces exactly one POSTED invoice and one journal.
+    Account.objects.filter(pk=revenue.pk).update(ledger_domain=Account.LedgerDomain.FINANCIAL)
+    handler.process_pending(shopify_company)
+
+    invoices = SalesInvoice.objects.filter(company=shopify_company, source="shopify", source_document_id="70010")
+    assert invoices.count() == 1
+    invoice = invoices.first()
+    assert invoice.status == SalesInvoice.Status.POSTED
+    assert invoice.posted_journal_entry_id is not None
+    assert ProjectionAppliedEvent.objects.filter(
+        company=shopify_company, projection_name="shopify_accounting", event=order_event
+    ).exists()
+    order.refresh_from_db()
+    assert order.status == ShopifyOrder.Status.PROCESSED
