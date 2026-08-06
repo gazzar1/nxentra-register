@@ -18,6 +18,7 @@ from decimal import Decimal
 from django.utils import timezone
 
 from accounting.commands import _next_company_sequence
+from accounting.journal_invariant import prepare_posted_journal_for_emit
 from accounting.models import ExchangeRate, JournalEntry, JournalLine
 from events.emitter import emit_event_no_actor
 from events.models import BusinessEvent
@@ -390,6 +391,28 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
 
     # Emit JOURNAL_ENTRY_POSTED
     idem_prefix = req.projection_name or req.source_module
+    posted_payload = JournalEntryPostedData(
+        entry_public_id=str(entry.public_id),
+        entry_number=entry_number,
+        date=str(req.entry_date),
+        memo=req.memo,
+        kind=req.kind,
+        posted_at=str(now),
+        posted_by_id=0,
+        posted_by_email=req.posted_by_email,
+        total_debit=str(total_debit),
+        total_credit=str(total_credit),
+        lines=lines_data,
+        period=period,
+        currency=req.currency,
+        exchange_rate=str(fx_rate),
+    ).to_dict()
+    # A3-PR2: the canonical boundary prepares + gates the exact payload. A
+    # violation RAISES through the caller's per-event projection atomic
+    # (projections/base.py), rolling back the POSTED rows staged above and
+    # leaving the event unconsumed — loud (ProjectionFailureLog), never an
+    # unbalanced emitted truth.
+    posted_payload = prepare_posted_journal_for_emit(req.company, posted_payload)
     emit_event_no_actor(
         company=req.company,
         event_type=EventTypes.JOURNAL_ENTRY_POSTED,
@@ -397,22 +420,7 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
         aggregate_id=str(entry.public_id),
         idempotency_key=f"{idem_prefix}.je.posted:{entry.public_id}",
         metadata={"source_projection": req.projection_name} if req.projection_name else {},
-        data=JournalEntryPostedData(
-            entry_public_id=str(entry.public_id),
-            entry_number=entry_number,
-            date=str(req.entry_date),
-            memo=req.memo,
-            kind=req.kind,
-            posted_at=str(now),
-            posted_by_id=0,
-            posted_by_email=req.posted_by_email,
-            total_debit=str(total_debit),
-            total_credit=str(total_credit),
-            lines=lines_data,
-            period=period,
-            currency=req.currency,
-            exchange_rate=str(fx_rate),
-        ),
+        data=posted_payload,
         caused_by_event=req.caused_by_event,
     )
 

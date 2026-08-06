@@ -148,14 +148,14 @@ class AccountFacts:
 # --------------------------------------------------------------------------- #
 
 
-def _normalize_decimal(value: object) -> Decimal | None:
-    """Shared normalization core: parse and quantize to the canonical ledger
-    quantum (0.01, explicit ROUND_HALF_EVEN). Returns the quantized value, or
-    None when invalid: booleans, NaN, ±Infinity, unparseable strings,
-    unsupported types, and quantization failures (e.g. Decimal("1e100") —
-    finite but unquantizable within the decimal context). Never coerces to
-    zero; callers must not run any further monetary logic on a value that
-    failed normalization."""
+def _parse_and_quantize(value: object) -> tuple[Decimal, Decimal] | None:
+    """Shared normalization core: parse, then quantize to the canonical
+    ledger quantum (0.01, explicit ROUND_HALF_EVEN). Returns
+    ``(parsed, quantized)``, or None when invalid: booleans, NaN, ±Infinity,
+    unparseable strings, unsupported types, and quantization failures (e.g.
+    Decimal("1e100") — finite but unquantizable within the decimal context).
+    Never coerces to zero; callers must not run any further monetary logic
+    on a value that failed normalization."""
     if isinstance(value, bool):  # bool is an int subclass — reject explicitly
         return None
     if not isinstance(value, str | int | Decimal):
@@ -167,26 +167,49 @@ def _normalize_decimal(value: object) -> Decimal | None:
     if not parsed.is_finite():
         return None
     try:
-        return parsed.quantize(TWO_PLACES, rounding=MONEY_ROUNDING)
+        return parsed, parsed.quantize(TWO_PLACES, rounding=MONEY_ROUNDING)
     except (InvalidOperation, OverflowError):
         return None
 
 
-def _normalize_money(value: object) -> Decimal | None:
+def _normalize_money(value: object, *, strict: bool = False) -> Decimal | None:
     """LINE-amount normalization: the shared core PLUS the representability
-    bound of the JournalLine storage columns (|v| <= MAX_ABS_AMOUNT)."""
-    quantized = _normalize_decimal(value)
-    if quantized is None or quantized.copy_abs() > MAX_ABS_AMOUNT:
+    bound of the JournalLine storage columns (|v| <= MAX_ABS_AMOUNT).
+
+    ``strict=True`` (mode="emit", final P1 correction): the supplied value
+    must ALREADY equal its canonical two-decimal representation — an
+    over-precise amount ("10.005", "0.004") is rejected rather than rounded,
+    because the validated view would otherwise diverge from what the
+    (18,2) ledger columns materialize from the raw emitted payload.
+    Numerically canonical spellings ("10", "10.0", "1.230") stay valid —
+    the comparison is by VALUE, not by string. Historical evaluation
+    (mode="apply"/the corpus scanner) keeps the quantized interpretation
+    pending founder decision D3."""
+    pq = _parse_and_quantize(value)
+    if pq is None:
+        return None
+    parsed, quantized = pq
+    if strict and parsed != quantized:
+        return None
+    if quantized.copy_abs() > MAX_ABS_AMOUNT:
         return None
     return quantized
 
 
-def _normalize_header_total(value: object) -> Decimal | None:
+def _normalize_header_total(value: object, *, strict: bool = False) -> Decimal | None:
     """HEADER-total normalization: the shared core WITHOUT the per-line
     storage bound — JournalEntry.total_debit/total_credit are computed
     aggregates, not (18,2) columns, and a many-line entry may legitimately
-    sum beyond one line's maximum. Unquantizable magnitudes still fail."""
-    return _normalize_decimal(value)
+    sum beyond one line's maximum. Unquantizable magnitudes still fail.
+    ``strict`` follows the same emit-only exact-representation rule as
+    :func:`_normalize_money`."""
+    pq = _parse_and_quantize(value)
+    if pq is None:
+        return None
+    parsed, quantized = pq
+    if strict and parsed != quantized:
+        return None
+    return quantized
 
 
 def canonical_account_id(value: object) -> str | None:
@@ -229,6 +252,11 @@ def check_posted_journal(
         raise ValueError(f"mode must be 'emit' or 'apply', got {mode!r}")
 
     violations: list[JournalViolation] = []
+
+    # Final P1 correction: mode="emit" requires every monetary value to
+    # ALREADY be its canonical two-decimal representation (see
+    # _normalize_money); apply/scanner keep the quantized interpretation.
+    strict = mode == "emit"
 
     # The line CONTAINER must be a list before anything iterates it. A
     # JSON-valid payload like {"lines": 1} is a structural defect the same
@@ -333,8 +361,8 @@ def check_posted_journal(
         # fails normalization contributes to NOTHING further; only FINANCIAL
         # normalization failures suppress the derived balance checks (a bad
         # memo amount cannot corrupt financial totals it never enters).
-        debit = _normalize_money(line.get("debit", "0"))
-        credit = _normalize_money(line.get("credit", "0"))
+        debit = _normalize_money(line.get("debit", "0"), strict=strict)
+        credit = _normalize_money(line.get("credit", "0"), strict=strict)
         if debit is None or credit is None:
             if not is_memo:
                 amounts_clean = False
@@ -395,8 +423,8 @@ def check_posted_journal(
                 )
             )
 
-        header_debit = _normalize_header_total(data.get("total_debit"))
-        header_credit = _normalize_header_total(data.get("total_credit"))
+        header_debit = _normalize_header_total(data.get("total_debit"), strict=strict)
+        header_credit = _normalize_header_total(data.get("total_credit"), strict=strict)
         if header_debit is None or header_credit is None:
             violations.append(
                 JournalViolation(
@@ -414,6 +442,95 @@ def check_posted_journal(
             )
 
     return violations
+
+
+# --------------------------------------------------------------------------- #
+# The one raising emit-preparation boundary (A3-PR2) and its typed exception
+# --------------------------------------------------------------------------- #
+
+
+class PostedJournalInvalid(Exception):
+    """Raised at the emit boundary when a JOURNAL_ENTRY_POSTED payload fails
+    the canonical emit-mode invariant.
+
+    Raised by :func:`prepare_posted_journal_for_emit`. Carries the structured
+    :class:`JournalViolation` list so callers act on
+    STABLE CODES — never by parsing the message. ``str(exc)`` contains only
+    the deduplicated codes (no amounts, memos, or account identifiers), so
+    the exception is safe to log and to surface verbatim."""
+
+    def __init__(self, violations: list[JournalViolation], *, company_id: int) -> None:
+        self.violations = list(violations)
+        self.codes: list[str] = [v.code for v in self.violations]
+        self.company_id = company_id
+        unique_codes = ", ".join(dict.fromkeys(self.codes))
+        super().__init__(f"Posted journal payload failed the canonical invariant: {unique_codes}")
+
+    def as_dicts(self) -> list[dict]:
+        return [v.as_dict() for v in self.violations]
+
+
+def prepare_posted_journal_for_emit(company, data: Mapping) -> dict:
+    """THE emit boundary (A3-PR2, final P1 correction): produce the EXACT
+    canonical payload that will be emitted as JOURNAL_ENTRY_POSTED — or
+    raise :class:`PostedJournalInvalid`.
+
+    The invariant must validate the exact ledger representation that is
+    emitted and later applied, so validate-then-emit-raw is forbidden:
+    every emitter passes THIS function's return value to ``emit_event``.
+
+    Contract:
+
+    - ONE account-facts query covers every well-formed referenced account id
+      (malformed references are sanitized out by :func:`load_account_facts`
+      and therefore stay unresolved → ``JE_ACCOUNT_UNKNOWN``); facts are
+      never loaded twice;
+    - the caller's payload object is NEVER mutated — the returned payload is
+      a copy in which ONLY the authoritative derived field ``is_memo_line``
+      is normalized: for every RESOLVED account the emitted flag equals
+      ``AccountFacts.is_memo`` (MEMO type OR STATISTICAL/OFF_BALANCE ledger
+      domain), regardless of any caller-supplied value or type. Unresolved
+      accounts get no invented memo truth (their lines keep the caller value
+      and validation fails with the existing referential violations).
+      Nothing else — identity, idempotency, account ids, line numbers,
+      memos, references, source metadata, counterparties, provider fields —
+      is touched;
+    - monetary amounts are NOT silently normalized: mode="emit" REJECTS any
+      amount that is not already its exact two-decimal canonical value
+      (``JE_AMOUNT_INVALID``);
+    - full ``mode="emit"`` policy runs against the exact prepared payload:
+      active + postable accounts, exact canonical balance, zero tolerance
+      (founder decision D3);
+    - consults NO settings flag — TESTING / DISABLE_EVENT_VALIDATION do not
+      exist at this boundary and never will;
+    - violation ordering is deterministic (inherited from
+      :func:`check_posted_journal`).
+    """
+    raw_lines = data.get("lines")
+    referenced: list[object] = []
+    if isinstance(raw_lines, list):
+        referenced = [line.get("account_public_id") for line in raw_lines if isinstance(line, Mapping)]
+    facts = load_account_facts(company, referenced)
+
+    prepared = dict(data)
+    if isinstance(raw_lines, list):
+        prepared_lines: list = []
+        for line in raw_lines:
+            if isinstance(line, Mapping):
+                new_line = dict(line)
+                canonical_id = canonical_account_id(new_line.get("account_public_id"))
+                line_facts = facts.get(canonical_id) if canonical_id is not None else None
+                if line_facts is not None:
+                    new_line["is_memo_line"] = line_facts.is_memo
+                prepared_lines.append(new_line)
+            else:
+                prepared_lines.append(line)
+        prepared["lines"] = prepared_lines
+
+    violations = check_posted_journal(prepared, company_id=company.id, account_facts=facts, mode="emit")
+    if violations:
+        raise PostedJournalInvalid(violations, company_id=company.id)
+    return prepared
 
 
 # --------------------------------------------------------------------------- #

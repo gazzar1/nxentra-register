@@ -301,27 +301,35 @@ def test_header_nan_rejected():
 
 
 def test_half_even_quantization_boundaries():
-    # 10.005 → 10.00 (ties to even), so it balances against 10.00 exactly.
+    """Final P1 pass split these semantics by mode: HISTORICAL evaluation
+    (mode="apply", the corpus scanner) keeps the quantized interpretation
+    pending D3; mode="emit" REJECTS over-precision outright (a new event
+    must already be its exact 2dp canonical value — otherwise the payload
+    that validates differs from what the (18,2) columns materialize)."""
+    # 10.005 → 10.00 (ties to even) under APPLY, balancing against 10.00.
     data = _payload(
         [_line(1, ACC_A, debit="10.005"), _line(2, ACC_B, credit="10.00")],
         total_debit="10.00",
         total_credit="10.00",
     )
-    assert _check(data) == []
-    # 10.015 → 10.02 (ties to even), so 10.02 balances...
+    assert _check(data, mode="apply") == []
+    # The same payload is REJECTED at emit — over-precision, not rounding.
+    assert JE_AMOUNT_INVALID in _codes(_check(data, mode="emit"))
+    # 10.015 → 10.02 (ties to even) under APPLY...
     data = _payload(
         [_line(1, ACC_A, debit="10.015"), _line(2, ACC_B, credit="10.02")],
         total_debit="10.02",
         total_credit="10.02",
     )
-    assert _check(data) == []
-    # ...and 10.01 does not.
+    assert _check(data, mode="apply") == []
+    assert JE_AMOUNT_INVALID in _codes(_check(data, mode="emit"))
+    # ...and 10.01 does not balance it under APPLY.
     data = _payload(
         [_line(1, ACC_A, debit="10.015"), _line(2, ACC_B, credit="10.01")],
         total_debit="10.02",
         total_credit="10.01",
     )
-    assert JE_UNBALANCED in _codes(_check(data))
+    assert JE_UNBALANCED in _codes(_check(data, mode="apply"))
 
 
 def test_per_line_quantization_matches_ledger_materialization():
@@ -340,10 +348,12 @@ def test_per_line_quantization_matches_ledger_materialization():
         total_debit="0.02",
         total_credit="0.01",
     )
-    assert JE_UNBALANCED in _codes(_check(data))
+    assert JE_UNBALANCED in _codes(_check(data, mode="apply"))
+    # At emit, the over-precise inputs never reach balance logic at all.
+    assert JE_AMOUNT_INVALID in _codes(_check(data, mode="emit"))
 
-    # Per-line quantization that lands exactly is fine: 50.002 → 50.00 and
-    # 49.998 → 50.00 stored, vs 100.00 credit → balanced as stored.
+    # Per-line quantization that lands exactly is fine UNDER APPLY: 50.002 →
+    # 50.00 and 49.998 → 50.00 stored, vs 100.00 credit → balanced as stored.
     data = _payload(
         [
             _line(1, ACC_A, debit="50.002"),
@@ -351,19 +361,26 @@ def test_per_line_quantization_matches_ledger_materialization():
             _line(3, ACC_B, credit="100.00"),
         ]
     )
-    assert _check(data) == []
+    assert _check(data, mode="apply") == []
+    # Emit still rejects: the raw payload is not what would be stored.
+    assert JE_AMOUNT_INVALID in _codes(_check(data, mode="emit"))
 
 
 def test_lines_that_quantize_to_zero_are_zero_lines():
     # 0.004 debit vs 0.004 credit: both store as 0.00 → zero-value financial
-    # lines that cannot form a valid JE.
+    # lines that cannot form a valid JE (APPLY interpretation).
     data = _payload(
         [_line(1, ACC_A, debit="0.004"), _line(2, ACC_B, credit="0.004")],
         total_debit="0.00",
         total_credit="0.00",
     )
-    codes = _codes(_check(data))
+    codes = _codes(_check(data, mode="apply"))
     assert codes.count(JE_LINE_ZERO) == 2
+    # At EMIT the sub-cent values are rejected as over-precision —
+    # JE_AMOUNT_INVALID, deliberately NOT JE_LINE_ZERO.
+    emit_codes = _codes(_check(data, mode="emit"))
+    assert emit_codes.count(JE_AMOUNT_INVALID) == 2
+    assert JE_LINE_ZERO not in emit_codes
 
 
 # --------------------------------------------------------------------------- #
@@ -588,8 +605,12 @@ def test_memo_zero_zero_is_line_zero():
 
 
 def test_memo_sub_cent_quantizing_to_zero_is_line_zero():
-    violations = _check(_with_memo({"debit": "0.004"}))
+    # APPLY interpretation: the memo line stores as 0.00 → JE_LINE_ZERO.
+    violations = _check(_with_memo({"debit": "0.004"}), mode="apply")
     assert any(v.code == JE_LINE_ZERO and v.line_no == 3 for v in violations)
+    # EMIT rejects the over-precision itself, before any zero-shape logic.
+    emit_violations = _check(_with_memo({"debit": "0.004"}), mode="emit")
+    assert any(v.code == JE_AMOUNT_INVALID and v.line_no == 3 for v in emit_violations)
 
 
 def test_memo_oversized_amount_is_invalid():
@@ -805,3 +826,86 @@ def test_totals_use_decimal_never_float():
         total_credit="0.30",
     )
     assert _check(data) == []
+
+
+# --------------------------------------------------------------------------- #
+# Final P1 pass: emit-only exact-representation rule (mode distinction)
+# --------------------------------------------------------------------------- #
+def test_emit_accepts_numerically_canonical_spellings():
+    """The strict rule compares by VALUE, not by string: 10, 10.0, 10.00 and
+    1.230 are all exactly their 2dp canonical value."""
+    from decimal import Decimal as D
+
+    data = _payload(
+        [_line(1, ACC_A, debit=10), _line(2, ACC_B, credit="10.0")],
+        total_debit="10.00",
+        total_credit="10",
+    )
+    assert _check(data, mode="emit") == []
+
+    data = _payload(
+        [_line(1, ACC_A, debit="1.230"), _line(2, ACC_B, credit=D("1.23"))],
+        total_debit="1.23",
+        total_credit="1.230",
+    )
+    assert _check(data, mode="emit") == []
+
+
+def test_emit_rejects_over_precise_headers_even_with_exact_lines():
+    data = _payload(
+        [_line(1, ACC_A, debit="10.00"), _line(2, ACC_B, credit="10.00")],
+        total_debit="10.000001",
+        total_credit="10.00",
+    )
+    emit_codes = _codes(_check(data, mode="emit"))
+    assert JE_AMOUNT_INVALID in emit_codes
+    # APPLY keeps the quantized interpretation: 10.000001 → 10.00 matches.
+    assert _check(data, mode="apply") == []
+
+
+def test_emit_accepts_large_exact_aggregate_headers():
+    """Headers keep the prior decision: no per-line max bound — a large but
+    EXACT aggregate is fine in both modes."""
+    from accounting.journal_invariant import MAX_ABS_AMOUNT
+
+    big = str(MAX_ABS_AMOUNT)
+    double_big = str(MAX_ABS_AMOUNT * 2)  # beyond any single line, exact 2dp
+    data = _payload(
+        [
+            _line(1, ACC_A, debit=big),
+            _line(2, ACC_A, debit=big),
+            _line(3, ACC_B, credit=double_big),
+        ],
+        total_debit=double_big,
+        total_credit=double_big,
+    )
+    # The credit line itself exceeds the per-line bound → invalid; header
+    # totals alone must NOT trip the bound. Prove headers directly with a
+    # balanced two-line big entry.
+    data = _payload(
+        [_line(1, ACC_A, debit=big), _line(2, ACC_B, credit=big)],
+        total_debit=big,
+        total_credit=big,
+    )
+    assert _check(data, mode="emit") == []
+
+
+def test_emit_strictness_keeps_deterministic_ordering():
+    """Repeated evaluation returns the identical list, and the line-then-entry
+    ordering is unchanged by the strict rule."""
+    data = _payload(
+        [
+            _line(1, ACC_A, debit="10.005"),
+            _line(2, ACC_B, credit="-1.00"),
+        ],
+        total_debit="10.00",
+        total_credit="-1.00",
+    )
+    first = _check(data, mode="emit")
+    second = _check(data, mode="emit")
+    assert first == second
+    codes = _codes(first)
+    # Line-level in line order: line 1 over-precision, line 2 negative;
+    # entry-level (too-few) after.
+    assert codes.index(JE_AMOUNT_INVALID) < codes.index(JE_LINE_NEGATIVE)
+    assert JE_TOO_FEW_LINES in codes

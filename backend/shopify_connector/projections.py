@@ -24,6 +24,7 @@ from decimal import Decimal
 from django.utils import timezone
 
 from accounting.commands import _next_company_sequence
+from accounting.journal_invariant import prepare_posted_journal_for_emit
 from accounting.mappings import ModuleAccountMapping
 from accounting.models import ExchangeRate, JournalEntry, JournalLine
 from events.emitter import emit_event_no_actor
@@ -189,100 +190,6 @@ def _resolve_exchange_rate(company, currency, entry_date):
 def _convert_amount(amount, exchange_rate):
     """Convert a foreign amount to functional currency."""
     return (amount * exchange_rate).quantize(Decimal("0.01"))
-
-
-def _fix_fx_rounding(lines, entry, company, currency, fx_rate):
-    """
-    Fix penny rounding imbalance caused by independent per-line FX conversion.
-
-    When multiple foreign-currency lines are each rounded to 2 decimal places,
-    the sum of credits may differ from the sum of debits by a small amount
-    (typically 0.01).
-
-    Following SAP/Oracle/NetSuite convention, adds a visible rounding line
-    to a dedicated FX Rounding account rather than silently adjusting
-    existing lines. Only applies for trivial imbalances (≤ 0.05).
-    """
-    from accounting.mappings import ModuleAccountMapping
-    from accounting.models import Account
-
-    total_debit = sum(l.debit for l in lines)
-    total_credit = sum(l.credit for l in lines)
-    diff = total_debit - total_credit
-
-    if diff == Decimal("0"):
-        return  # Already balanced
-
-    if abs(diff) > Decimal("0.05"):
-        return  # Too large to be a rounding error — don't touch
-
-    # Find the FX rounding account (prefer core mapping, fallback to role)
-    rounding_account = ModuleAccountMapping.get_account(company, "core", "FX_ROUNDING")
-    if not rounding_account:
-        rounding_account = Account.objects.filter(
-            company=company,
-            role=Account.AccountRole.FX_ROUNDING,
-            is_header=False,
-            status=Account.Status.ACTIVE,
-        ).first()
-
-    if not rounding_account:
-        # Fallback: adjust the largest line (pre-seed behavior)
-        if diff > 0:
-            credit_lines = [l for l in lines if l.credit > 0]
-            target = max(credit_lines, key=lambda l: l.credit) if credit_lines else max(lines, key=lambda l: l.debit)
-            if target.credit > 0:
-                target.credit += diff
-            else:
-                target.debit -= diff
-        else:
-            debit_lines = [l for l in lines if l.debit > 0]
-            target = max(debit_lines, key=lambda l: l.debit) if debit_lines else max(lines, key=lambda l: l.credit)
-            if target.debit > 0:
-                target.debit -= diff
-            else:
-                target.credit += diff
-        logger.debug("FX rounding adjustment (no rounding account): %s on line %s", diff, target.line_no)
-        return
-
-    # Add a dedicated rounding line
-    next_line_no = max(l.line_no for l in lines) + 1
-    if diff > 0:
-        # Debits exceed credits — add credit rounding line
-        rounding_line = JournalLine(
-            entry=entry,
-            company=company,
-            public_id=uuid.uuid4(),
-            line_no=next_line_no,
-            account=rounding_account,
-            description="FX rounding adjustment",
-            debit=Decimal("0"),
-            credit=diff,
-            currency=currency,
-            exchange_rate=fx_rate,
-        )
-    else:
-        # Credits exceed debits — add debit rounding line
-        rounding_line = JournalLine(
-            entry=entry,
-            company=company,
-            public_id=uuid.uuid4(),
-            line_no=next_line_no,
-            account=rounding_account,
-            description="FX rounding adjustment",
-            debit=abs(diff),
-            credit=Decimal("0"),
-            currency=currency,
-            exchange_rate=fx_rate,
-        )
-
-    lines.append(rounding_line)
-    logger.info(
-        "FX rounding line added: %s %s to account %s",
-        "CR" if diff > 0 else "DR",
-        abs(diff),
-        rounding_account.code,
-    )
 
 
 def _ensure_dimension_and_value(company, dim_code, dim_name, dim_name_ar, val_code, val_name, applies_to=None):
@@ -1432,6 +1339,13 @@ class ShopifyAccountingHandler(BaseProjection):
             # fx_rate double-converted the restock JE on foreign-currency
             # stores (rate× overstated) and would have poisoned avg_cost via
             # the F12 stock receipt. Post the books amount as-is.
+            # A3-PR2 de-scope: no silent rounding — a restock whose cost
+            # evidence is not already an exact two-decimal ledger amount
+            # fails loudly at the emit boundary (JE_AMOUNT_INVALID raises
+            # through the per-event atomic; the refund parks in
+            # ProjectionFailureLog). Inventory books policy is deferred to
+            # the Inventory Books-Delta Foundation; the constrained pilot
+            # cannot reach this path (NON_STOCK items only).
             books_amount = rl["total_cost"]
 
             # DR Inventory (return to stock)
@@ -1496,7 +1410,7 @@ class ShopifyAccountingHandler(BaseProjection):
         entry.entry_number = entry_number
         entry.save(update_fields=["entry_number"])
 
-        total = sum(rl["total_cost"] for rl in restock_lines)
+        total = sum((rl["total_cost"] for rl in restock_lines), Decimal("0"))
 
         lines_data = []
         for line in lines:
@@ -1514,6 +1428,26 @@ class ShopifyAccountingHandler(BaseProjection):
                 }
             )
 
+        posted_payload = JournalEntryPostedData(
+            entry_public_id=str(entry.public_id),
+            entry_number=entry_number,
+            date=str(entry_date),
+            memo=memo,
+            kind="NORMAL",
+            posted_at=str(now),
+            posted_by_id=0,
+            posted_by_email="system@shopify",
+            total_debit=str(total),
+            total_credit=str(total),
+            lines=lines_data,
+            period=period,
+            currency=currency,
+            exchange_rate=str(fx_rate),
+        ).to_dict()
+        # A3-PR2: the canonical boundary prepares + gates the exact payload.
+        # A violation RAISES through the per-event projection atomic, rolling
+        # back the POSTED rows staged above — loud failure, never a silent skip.
+        posted_payload = prepare_posted_journal_for_emit(event.company, posted_payload)
         emit_event_no_actor(
             company=event.company,
             event_type=EventTypes.JOURNAL_ENTRY_POSTED,
@@ -1521,22 +1455,7 @@ class ShopifyAccountingHandler(BaseProjection):
             aggregate_id=str(entry.public_id),
             idempotency_key=f"shopify.restock.je:{refund_record.shopify_refund_id}",
             metadata={"source_projection": PROJECTION_NAME},
-            data=JournalEntryPostedData(
-                entry_public_id=str(entry.public_id),
-                entry_number=entry_number,
-                date=str(entry_date),
-                memo=memo,
-                kind="NORMAL",
-                posted_at=str(now),
-                posted_by_id=0,
-                posted_by_email="system@shopify",
-                total_debit=str(total),
-                total_credit=str(total),
-                lines=lines_data,
-                period=period,
-                currency=currency,
-                exchange_rate=str(fx_rate),
-            ),
+            data=posted_payload,
             caused_by_event=event,
         )
 

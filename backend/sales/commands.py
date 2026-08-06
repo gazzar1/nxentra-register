@@ -22,8 +22,9 @@ from accounting.commands import (
     CommandResult,
     _next_company_sequence,
     create_journal_entry,
-    post_journal_entry,
+    post_journal_entry_or_raise,
     save_journal_entry_complete,
+    translate_posted_journal_invalid,
 )
 from accounting.models import Account, Customer, JournalEntry
 from accounts.authz import ActorContext, require
@@ -1242,7 +1243,7 @@ def update_sales_invoice(
 
 
 @transaction.atomic
-def post_sales_invoice(
+def post_sales_invoice_or_raise(
     actor: ActorContext,
     invoice_id: int,
     skip_cogs: bool = False,
@@ -1250,6 +1251,14 @@ def post_sales_invoice(
 ) -> CommandResult:
     """
     Post a sales invoice, creating a journal entry and stock issues.
+
+    RAW emitting core (A3-PR2 raw/public split, mirroring
+    :func:`post_credit_note_or_raise`): ``PostedJournalInvalid`` is NOT
+    translated here — it escapes this function's own transaction (rolling
+    back the complete posting attempt) so composed owners such as
+    ``create_and_post_invoice_for_platform`` can let it reach THEIR owning
+    boundary. Direct callers use the public :func:`post_sales_invoice`.
+    Ordinary (non-invariant) failures keep their return-based semantics.
 
     Journal Entry:
     - Debit: AR Control (posting_profile.control_account) with customer counterparty
@@ -1529,7 +1538,11 @@ def post_sales_invoice(
     journal_entry = save_result.data
 
     # Post the journal entry
-    post_result = post_journal_entry(actor, journal_entry.id)
+    # A3-PR2 correction: raise-through — a canonical-invariant rejection
+    # rolls back this ENTIRE document-posting attempt (created/saved JE
+    # events, drafts, sequences, document state) before the public boundary
+    # translates it. Ordinary post failures keep the fail-return path.
+    post_result = post_journal_entry_or_raise(actor, journal_entry.id)
     if not post_result.success:
         return CommandResult.fail(f"Failed to post journal entry: {post_result.error}")
 
@@ -1612,6 +1625,26 @@ def post_sales_invoice(
     return CommandResult.ok(data={"invoice": invoice, "journal_entry": journal_entry}, event=event)
 
 
+@translate_posted_journal_invalid
+def post_sales_invoice(
+    actor: ActorContext,
+    invoice_id: int,
+    skip_cogs: bool = False,
+    control_line_analysis_tags: list | None = None,
+) -> CommandResult:
+    """Public boundary over :func:`post_sales_invoice_or_raise` — an
+    invariant rejection has already rolled back the entire posting attempt
+    when it is translated here into the standard ``CommandResult`` failure
+    with the stable canonical codes."""
+    return post_sales_invoice_or_raise(
+        actor,
+        invoice_id,
+        skip_cogs=skip_cogs,
+        control_line_analysis_tags=control_line_analysis_tags,
+    )
+
+
+@translate_posted_journal_invalid
 @transaction.atomic
 def void_sales_invoice(
     actor: ActorContext,
@@ -1855,13 +1888,21 @@ def create_credit_note(
 
 
 @transaction.atomic
-def post_credit_note(
+def post_credit_note_or_raise(
     actor: ActorContext,
     credit_note_id: int,
     control_line_analysis_tags: list | None = None,
 ) -> CommandResult:
     """
     Post a credit note, creating a reversing journal entry.
+
+    RAISE-THROUGH CORE (A3-PR2 final caller-chain fix): a canonical-invariant
+    rejection RAISES PostedJournalInvalid out of this atomic so a COMPOSED
+    owner (create_and_post_credit_note_for_platform, and through it the
+    Shopify refund projection's per-event transaction) rolls back its whole
+    operation — including the DRAFT credit note it staged. Direct callers
+    use :func:`post_credit_note`. Ordinary failures still return
+    ``CommandResult.fail`` unchanged.
 
     Journal Entry (reverses the original invoice posting):
     - Credit: AR Control (reduces customer balance)
@@ -1981,7 +2022,11 @@ def post_credit_note(
         return CommandResult.fail(f"Failed to complete journal entry: {save_result.error}")
     journal_entry = save_result.data
 
-    post_result = post_journal_entry(actor, journal_entry.id)
+    # A3-PR2 correction: raise-through — a canonical-invariant rejection
+    # rolls back this ENTIRE document-posting attempt (created/saved JE
+    # events, drafts, sequences, document state) before the public boundary
+    # translates it. Ordinary post failures keep the fail-return path.
+    post_result = post_journal_entry_or_raise(actor, journal_entry.id)
     if not post_result.success:
         return CommandResult.fail(f"Failed to post journal entry: {post_result.error}")
 
@@ -2032,6 +2077,7 @@ def post_credit_note(
     )
 
 
+@translate_posted_journal_invalid
 @transaction.atomic
 def void_credit_note(
     actor: ActorContext,
@@ -2120,6 +2166,7 @@ def void_credit_note(
 
 
 @transaction.atomic
+@transaction.atomic
 def create_and_post_invoice_for_platform(
     company,
     customer_id: int,
@@ -2144,6 +2191,26 @@ def create_and_post_invoice_for_platform(
     The invoice is created as DRAFT, then posted in one transaction.
     COGS is skipped by default (handled at fulfillment for Shopify).
 
+    A3-PR2 caller-chain fix (mirrors
+    :func:`create_and_post_credit_note_for_platform`): the fresh-invoice
+    path posts through :func:`post_sales_invoice_or_raise`, so a canonical
+    ``PostedJournalInvalid`` escapes THIS wrapper's transaction — the
+    staged SalesInvoice/lines, their created events, and every journal
+    row/event/sequence of the failed attempt roll back together, the
+    source_document_id is not left reserved by a failed invoice, and the
+    typed violations reach the owning projection failure boundary.
+    Idempotency is status-aware: only a POSTED invoice carrying its posted
+    journal is a successfully handled source document.
+
+    Known limitation (documented, not heuristically "fixed"): a stranded
+    DRAFT platform invoice from historical pre-A80 partial attempts has no
+    FK linkage to any orphaned INCOMPLETE journal that attempt may have
+    left (``JournalEntry.source_document`` is a free-text reference), so
+    such residue cannot be reliably identified here. The DRAFT branch
+    therefore posts the SAME invoice through the raise-through path (which
+    builds its own journal); any historical INCOMPLETE journal residue
+    stays untouched and operator-visible, and is never deleted.
+
     Args:
         company: Company instance
         customer_id: Platform customer record ID
@@ -2162,18 +2229,38 @@ def create_and_post_invoice_for_platform(
     """
     from accounts.authz import system_actor_for_company
 
-    # Idempotency: check if invoice already exists for this source document
+    actor = system_actor_for_company(company)
+
+    # Status-aware idempotency: a source-matched invoice is a successfully
+    # handled order ONLY when it is POSTED with its posted journal. A
+    # stranded DRAFT is posted HERE through the raise-through path instead
+    # of being reported as fake success — a still-invalid invoice raises
+    # rather than duplicating; VOIDED or otherwise inconsistent state fails
+    # visibly and never spawns a second invoice for the same source
+    # identity.
     existing = SalesInvoice.objects.filter(
         company=company,
         source=source,
         source_document_id=source_document_id,
     ).first()
     if existing:
-        return CommandResult.ok(
-            data={"invoice": existing, "journal_entry": existing.posted_journal_entry},
+        if existing.status == SalesInvoice.Status.POSTED and existing.posted_journal_entry_id:
+            return CommandResult.ok(
+                data={"invoice": existing, "journal_entry": existing.posted_journal_entry},
+            )
+        if existing.status == SalesInvoice.Status.DRAFT:
+            return post_sales_invoice_or_raise(
+                actor,
+                existing.id,
+                skip_cogs=skip_cogs,
+                control_line_analysis_tags=control_line_analysis_tags,
+            )
+        return CommandResult.fail(
+            f"Invoice for {source} order {source_document_id} is in an "
+            f"inconsistent state ({existing.status}"
+            f"{' without a posted journal' if existing.status == SalesInvoice.Status.POSTED else ''}); "
+            "manual review required."
         )
-
-    actor = system_actor_for_company(company)
 
     # Create DRAFT invoice
     create_result = create_sales_invoice(
@@ -2195,8 +2282,13 @@ def create_and_post_invoice_for_platform(
 
     invoice = create_result.data["invoice"]
 
-    # Post immediately (creates JE, skips COGS if requested)
-    post_result = post_sales_invoice(
+    # Post immediately (creates JE, skips COGS if requested) — raise-through:
+    # an invariant rejection escapes this wrapper's transaction, rolling back
+    # the DRAFT invoice/lines (and their created events) staged above, and
+    # propagates to the owning boundary (the Shopify order projection's
+    # per-event atomic → ProjectionFailureLog). Ordinary posting refusals
+    # keep the fail-return path.
+    post_result = post_sales_invoice_or_raise(
         actor,
         invoice.id,
         skip_cogs=skip_cogs,
@@ -2206,6 +2298,23 @@ def create_and_post_invoice_for_platform(
         return post_result
 
     return post_result
+
+
+@translate_posted_journal_invalid
+def post_credit_note(
+    actor: ActorContext,
+    credit_note_id: int,
+    control_line_analysis_tags: list | None = None,
+) -> CommandResult:
+    """Public boundary over :func:`post_credit_note_or_raise` — an invariant
+    rejection has already rolled back the entire posting attempt when it is
+    translated here into the standard ``CommandResult`` failure with the
+    stable canonical codes."""
+    return post_credit_note_or_raise(
+        actor,
+        credit_note_id,
+        control_line_analysis_tags=control_line_analysis_tags,
+    )
 
 
 @transaction.atomic
@@ -2240,18 +2349,36 @@ def create_and_post_credit_note_for_platform(
     """
     from accounts.authz import system_actor_for_company
 
-    # Idempotency
+    actor = system_actor_for_company(company)
+
+    # Status-aware idempotency (A3-PR2 final caller-chain fix): a
+    # source-matched note is a successfully handled refund ONLY when it
+    # carries its posted journal. A stranded DRAFT (e.g. a pre-fix partial
+    # attempt) is posted HERE through the raise-through path instead of
+    # being reported as fake success — a still-invalid note raises rather
+    # than duplicating; inconsistent state fails visibly.
     existing = SalesCreditNote.objects.filter(
         company=company,
         source=source,
         source_document_id=source_document_id,
     ).first()
     if existing:
-        return CommandResult.ok(
-            data={"credit_note": existing, "journal_entry": existing.posted_journal_entry},
+        if existing.status == SalesCreditNote.Status.DRAFT:
+            post_result = post_credit_note_or_raise(
+                actor,
+                existing.id,
+                control_line_analysis_tags=control_line_analysis_tags,
+            )
+            return post_result
+        if existing.posted_journal_entry_id:
+            return CommandResult.ok(
+                data={"credit_note": existing, "journal_entry": existing.posted_journal_entry},
+            )
+        return CommandResult.fail(
+            f"Credit note for {source} refund {source_document_id} is in an "
+            f"inconsistent state ({existing.status} without a posted journal); "
+            "manual review required."
         )
-
-    actor = system_actor_for_company(company)
 
     # Create DRAFT credit note
     create_result = create_credit_note(
@@ -2271,8 +2398,11 @@ def create_and_post_credit_note_for_platform(
 
     credit_note = create_result.data["credit_note"]
 
-    # Post immediately
-    post_result = post_credit_note(
+    # Post immediately — raise-through: an invariant rejection escapes this
+    # wrapper's transaction, rolling back the DRAFT credit note (and its
+    # CREATED events) staged above, and propagates to the owning boundary
+    # (the Shopify refund projection's per-event atomic → ProjectionFailureLog).
+    post_result = post_credit_note_or_raise(
         actor,
         credit_note.id,
         control_line_analysis_tags=control_line_analysis_tags,

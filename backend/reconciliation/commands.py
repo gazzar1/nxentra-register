@@ -46,7 +46,7 @@ from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
 
-from accounting.commands import CommandResult
+from accounting.commands import CommandResult, translate_posted_journal_invalid
 from accounting.models import (
     Account,
     BankStatement,
@@ -408,58 +408,77 @@ def _create_settlement_clearance_je(
     """
     from accounting.commands import (
         create_journal_entry,
-        post_journal_entry,
+        post_journal_entry_or_raise,
         save_journal_entry_complete,
     )
+    from accounting.journal_invariant import PostedJournalInvalid
     from accounts.authz import system_actor_for_company
 
     actor = system_actor_for_company(company)
     memo = f"Bank deposit clearance: settlement batch {batch_id}"
 
-    create_result = create_journal_entry(
-        actor=actor,
-        date=value_date,
-        memo=memo,
-        lines=[
-            {
-                "account_id": bank_account.id,
-                "description": f"{memo} — bank deposit",
-                "debit": str(net_amount),
-                "credit": "0",
-            },
-            {
-                "account_id": ebd_account.id,
-                "description": f"{memo} — clear EBD",
-                "debit": "0",
-                "credit": str(net_amount),
-            },
-        ],
-        kind=JournalEntry.Kind.NORMAL,
-        period=period,
-        # A116: source provenance travels in the event payload (not a post-hoc
-        # ORM update) so it survives a from-scratch projection rebuild.
-        source_module="payment_settlement_clearance",
-        source_document=settlement_entry.source_document or batch_id,
-        # A177: stable request identity — a crash between create and post
-        # returns the original clearance JE on retry instead of duplicating.
-        request_id=f"payment_settlement_clearance:{settlement_entry.source_document or batch_id}",
-    )
-    if not create_result.success:
-        logger.error("Settlement clearance create failed: %s", create_result.error)
-        return None
-    entry = create_result.data
+    # A3-PR2 correction (fresh-review P2): the per-item savepoint owns the
+    # ENTIRE clearance attempt — create, save-complete, AND post — beginning
+    # before any clearance-specific mutation, event emission, or sequence
+    # allocation. A failed item therefore commits ZERO partial state (no
+    # DRAFT/POSTED rows, no CREATED/SAVED/POSTED events, no sequence, no
+    # source link, no balance change) while the auto/manual match loops keep
+    # their best-effort skip-and-continue contract: the helper still returns
+    # None and the outer transaction is untouched. Only PostedJournalInvalid
+    # is CAUGHT (the canonical invariant raise-through); ordinary failures
+    # keep their fail-return shape and mark just this savepoint for rollback.
+    try:
+        with transaction.atomic():
+            create_result = create_journal_entry(
+                actor=actor,
+                date=value_date,
+                memo=memo,
+                lines=[
+                    {
+                        "account_id": bank_account.id,
+                        "description": f"{memo} — bank deposit",
+                        "debit": str(net_amount),
+                        "credit": "0",
+                    },
+                    {
+                        "account_id": ebd_account.id,
+                        "description": f"{memo} — clear EBD",
+                        "debit": "0",
+                        "credit": str(net_amount),
+                    },
+                ],
+                kind=JournalEntry.Kind.NORMAL,
+                period=period,
+                # A116: source provenance travels in the event payload (not a post-hoc
+                # ORM update) so it survives a from-scratch projection rebuild.
+                source_module="payment_settlement_clearance",
+                source_document=settlement_entry.source_document or batch_id,
+                # A177: stable request identity — a crash between create and post
+                # returns the original clearance JE on retry instead of duplicating.
+                request_id=f"payment_settlement_clearance:{settlement_entry.source_document or batch_id}",
+            )
+            if not create_result.success:
+                logger.error("Settlement clearance create failed: %s", create_result.error)
+                transaction.set_rollback(True)
+                return None
+            entry = create_result.data
 
-    save_result = save_journal_entry_complete(actor, entry.id)
-    if not save_result.success:
-        logger.error("Settlement clearance save_complete failed: %s", save_result.error)
-        return None
-    entry = save_result.data
+            save_result = save_journal_entry_complete(actor, entry.id)
+            if not save_result.success:
+                logger.error("Settlement clearance save_complete failed: %s", save_result.error)
+                transaction.set_rollback(True)
+                return None
+            entry = save_result.data
 
-    post_result = post_journal_entry(actor, entry.id)
-    if not post_result.success:
-        logger.error("Settlement clearance post failed: %s", post_result.error)
+            post_result = post_journal_entry_or_raise(actor, entry.id)
+            if not post_result.success:
+                logger.error("Settlement clearance post failed: %s", post_result.error)
+                transaction.set_rollback(True)
+                return None
+            entry = post_result.data
+    except PostedJournalInvalid as exc:
+        logger.error("Settlement clearance rejected by canonical invariant: %s", exc)
         return None
-    entry = post_result.data
 
     return entry.lines.filter(account=bank_account).first()
 
@@ -1433,7 +1452,7 @@ def _reverse_match_side_effects(
     event's audit trail — empty list when the unmatch was flag-flip
     only.
     """
-    from accounting.commands import reverse_journal_entry
+    from accounting.commands import reverse_journal_entry_or_raise
     from accounting.mappings import ModuleAccountMapping
 
     journal_line = bank_line.matched_journal_line
@@ -1460,13 +1479,16 @@ def _reverse_match_side_effects(
     # Reverse the A16 difference adjustment first so EBD is back to its
     # post-clearance state before we reverse the clearance itself.
     if adjustment_entry and adjustment_entry.status == JournalEntry.Status.POSTED:
-        rev = reverse_journal_entry(actor, adjustment_entry.id)
+        # A3-PR2 correction: raise-through — an invariant rejection on EITHER
+        # reversal rolls back the whole unmatch/exclude attempt (including a
+        # first reversal that already succeeded in this transaction).
+        rev = reverse_journal_entry_or_raise(actor, adjustment_entry.id)
         if not rev.success:
             return False, f"Could not reverse difference adjustment: {rev.error}", None, []
         reversed_je_public_ids.append(str(adjustment_entry.public_id))
 
     if clearance_je and clearance_je.status == JournalEntry.Status.POSTED:
-        rev = reverse_journal_entry(actor, clearance_je.id)
+        rev = reverse_journal_entry_or_raise(actor, clearance_je.id)
         if not rev.success:
             return False, f"Could not reverse clearance entry: {rev.error}", None, []
         reversed_je_public_ids.append(str(clearance_je.public_id))
@@ -1660,6 +1682,7 @@ def preview_unmatch_line(
     )
 
 
+@translate_posted_journal_invalid
 @transaction.atomic
 def unmatch_line(
     actor: ActorContext,
@@ -1784,6 +1807,7 @@ def unmatch_and_delete_statement(
     return CommandResult.ok(data={"statement_id": statement_id, "unmatched_lines": len(matched_line_ids)})
 
 
+@translate_posted_journal_invalid
 @transaction.atomic
 def exclude_line(
     actor: ActorContext,
@@ -1842,6 +1866,7 @@ def exclude_line(
 # =============================================================================
 
 
+@translate_posted_journal_invalid
 @transaction.atomic
 def resolve_difference(
     actor: ActorContext,
@@ -1925,7 +1950,7 @@ def resolve_difference(
 
     from accounting.commands import (
         create_journal_entry,
-        post_journal_entry,
+        post_journal_entry_or_raise,
         save_journal_entry_complete,
     )
     from accounting.mappings import ModuleAccountMapping
@@ -2037,7 +2062,9 @@ def resolve_difference(
         return CommandResult.fail(f"Failed to complete adjustment JE: {save_result.error}")
     entry = save_result.data
 
-    post_result = post_journal_entry(sys_actor, entry.id)
+    # A3-PR2 correction: raise-through — an invariant rejection rolls back
+    # the whole resolve-difference attempt before boundary translation.
+    post_result = post_journal_entry_or_raise(sys_actor, entry.id)
     if not post_result.success:
         transaction.set_rollback(True)
         return CommandResult.fail(f"Failed to post adjustment JE: {post_result.error}")

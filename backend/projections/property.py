@@ -16,6 +16,7 @@ from decimal import Decimal
 from django.utils import timezone
 
 from accounting.commands import _next_company_sequence
+from accounting.journal_invariant import prepare_posted_journal_for_emit
 from accounting.models import (
     AnalysisDimension,
     AnalysisDimensionValue,
@@ -682,6 +683,26 @@ class PropertyAccountingProjection(BaseProjection):
             },
         ]
 
+        posted_payload = JournalEntryPostedData(
+            entry_public_id=str(entry.public_id),
+            entry_number=entry_number,
+            date=str(entry_date),
+            memo=memo,
+            kind="NORMAL",
+            posted_at=str(now),
+            posted_by_id=0,
+            posted_by_email="system@property",
+            total_debit=str(amount),
+            total_credit=str(amount),
+            lines=lines_data,
+            period=period,
+            currency=currency,
+            exchange_rate="1.0",
+        ).to_dict()
+        # A3-PR2: the canonical boundary prepares + gates the exact payload.
+        # A violation RAISES through the per-event projection atomic, rolling
+        # back the POSTED rows staged above — loud failure, never a silent skip.
+        posted_payload = prepare_posted_journal_for_emit(company, posted_payload)
         emit_event_no_actor(
             company=company,
             event_type=EventTypes.JOURNAL_ENTRY_POSTED,
@@ -689,22 +710,7 @@ class PropertyAccountingProjection(BaseProjection):
             aggregate_id=str(entry.public_id),
             idempotency_key=f"property.je.posted:{entry.public_id}",
             metadata={"source_projection": PROJECTION_NAME},
-            data=JournalEntryPostedData(
-                entry_public_id=str(entry.public_id),
-                entry_number=entry_number,
-                date=str(entry_date),
-                memo=memo,
-                kind="NORMAL",
-                posted_at=str(now),
-                posted_by_id=0,
-                posted_by_email="system@property",
-                total_debit=str(amount),
-                total_credit=str(amount),
-                lines=lines_data,
-                period=period,
-                currency=currency,
-                exchange_rate="1.0",
-            ),
+            data=posted_payload,
             caused_by_event=event,
         )
 

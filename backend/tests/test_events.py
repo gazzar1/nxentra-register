@@ -171,7 +171,7 @@ class TestEventSequencing:
         assert sequences == sorted(sequences)
         assert len(set(sequences)) == 5  # All unique
 
-    def test_aggregate_sequence_increments_per_aggregate(self, company, user):
+    def test_aggregate_sequence_increments_per_aggregate(self, company, user, cash_account, revenue_account):
         """Aggregate sequence increments per aggregate."""
         aggregate_id = str(uuid4())
 
@@ -201,7 +201,28 @@ class TestEventSequencing:
             event_type=EventTypes.JOURNAL_ENTRY_POSTED,
             aggregate_type="JournalEntry",
             aggregate_id=aggregate_id,
-            data={"entry_public_id": aggregate_id, "entry_number": "JE-001", "lines": []},
+            data={
+                "entry_public_id": aggregate_id,
+                "entry_number": "JE-001",
+                "total_debit": "10.00",
+                "total_credit": "10.00",
+                # A3-PR2: even sequencing tests emit genuinely valid posted
+                # journals — balanced one-sided lines on real accounts.
+                "lines": [
+                    {
+                        "line_no": 1,
+                        "account_public_id": str(cash_account.public_id),
+                        "debit": "10.00",
+                        "credit": "0.00",
+                    },
+                    {
+                        "line_no": 2,
+                        "account_public_id": str(revenue_account.public_id),
+                        "debit": "0.00",
+                        "credit": "10.00",
+                    },
+                ],
+            },
             caused_by_user=user,
             idempotency_key=f"agg-seq:3:{uuid4()}",
         )
@@ -480,7 +501,7 @@ class TestEventBookmark:
 class TestCausationChain:
     """Test event causation tracking."""
 
-    def test_caused_by_event_links(self, company, user):
+    def test_caused_by_event_links(self, company, user, cash_account, revenue_account):
         """Events can be linked via caused_by_event."""
         # Create original event
         original = emit_event(
@@ -488,7 +509,27 @@ class TestCausationChain:
             event_type=EventTypes.JOURNAL_ENTRY_POSTED,
             aggregate_type="JournalEntry",
             aggregate_id=str(uuid4()),
-            data={"entry_public_id": str(uuid4()), "entry_number": "JE-001", "lines": []},
+            data={
+                "entry_public_id": str(uuid4()),
+                "entry_number": "JE-001",
+                "total_debit": "10.00",
+                "total_credit": "10.00",
+                # A3-PR2: causation tests emit genuinely valid posted journals.
+                "lines": [
+                    {
+                        "line_no": 1,
+                        "account_public_id": str(cash_account.public_id),
+                        "debit": "10.00",
+                        "credit": "0.00",
+                    },
+                    {
+                        "line_no": 2,
+                        "account_public_id": str(revenue_account.public_id),
+                        "debit": "0.00",
+                        "credit": "10.00",
+                    },
+                ],
+            },
             caused_by_user=user,
             idempotency_key=f"causation:original:{uuid4()}",
         )

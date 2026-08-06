@@ -23,8 +23,9 @@ from django.utils import timezone
 from accounting.commands import (
     CommandResult,
     create_journal_entry,
-    post_journal_entry,
+    post_journal_entry_or_raise,
     save_journal_entry_complete,
+    translate_posted_journal_invalid,
 )
 from accounting.models import Account, JournalEntry
 from accounts.authz import ActorContext, require
@@ -760,6 +761,7 @@ def record_stock_issue(
     )
 
 
+@translate_posted_journal_invalid
 @transaction.atomic
 def adjust_inventory(
     actor: ActorContext,
@@ -945,7 +947,9 @@ def adjust_inventory(
 
     journal_entry = save_result.data
 
-    post_result = post_journal_entry(actor, journal_entry.id)
+    # A3-PR2 correction: raise-through — an invariant rejection rolls back
+    # the whole inventory operation before the public boundary translates it.
+    post_result = post_journal_entry_or_raise(actor, journal_entry.id)
     if not post_result.success:
         return CommandResult.fail(f"Failed to post journal entry: {post_result.error}")
 
@@ -1059,6 +1063,7 @@ def adjust_inventory(
     )
 
 
+@translate_posted_journal_invalid
 @transaction.atomic
 def record_opening_balance(
     actor: ActorContext,
@@ -1177,7 +1182,9 @@ def record_opening_balance(
 
     journal_entry = save_result.data
 
-    post_result = post_journal_entry(actor, journal_entry.id)
+    # A3-PR2 correction: raise-through — an invariant rejection rolls back
+    # the whole inventory operation before the public boundary translates it.
+    post_result = post_journal_entry_or_raise(actor, journal_entry.id)
     if not post_result.success:
         return CommandResult.fail(f"Failed to post journal entry: {post_result.error}")
 

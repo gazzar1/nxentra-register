@@ -15,7 +15,7 @@ from django.utils import timezone
 from accounting.commands import (
     CommandResult,
     create_journal_entry,
-    post_journal_entry,
+    post_journal_entry_or_raise,
     save_journal_entry_complete,
 )
 from accounting.mappings import ModuleAccountMapping, module_key_for_provider
@@ -348,7 +348,11 @@ def create_and_post_settlement(
         return save_result
 
     entry = save_result.data
-    post_result = post_journal_entry(actor, entry.id)
+    # A3-PR2 correction: raise-through — an invariant rejection rolls back
+    # the ENTIRE settlement attempt (PlatformSettlement row included) and
+    # propagates to the owning per-event projection atomic, which records a
+    # ProjectionFailureLog. Ordinary post failures keep the fail-return path.
+    post_result = post_journal_entry_or_raise(actor, entry.id)
     if not post_result.success:
         return post_result
 

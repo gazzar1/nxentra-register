@@ -33,18 +33,23 @@ from events.types import EventTypes
 class TestLEPHExternalStorageRoundtrip:
     """Verify external storage payloads are fully recoverable."""
 
-    def _make_large_je_posted_data(self, entry_public_id, user, num_lines=300):
+    def _make_large_je_posted_data(self, entry_public_id, user, debit_account, credit_account, num_lines=300):
         """
         Build a JOURNAL_ENTRY_POSTED payload with enough lines to exceed
         the 64KB inline threshold, forcing external storage.
+
+        A3-PR2 fixture correction: every line references a REAL account
+        (repeating the fixture accounts keeps the payload just as large —
+        the padding drives the size), so the emitted event is genuinely
+        valid, not merely balanced.
         """
         lines = []
         for i in range(1, num_lines + 1):
             lines.append(
                 {
                     "line_no": i,
-                    "account_public_id": str(uuid4()),
-                    "account_code": f"{1000 + i}",
+                    "account_public_id": str(debit_account.public_id),
+                    "account_code": debit_account.code,
                     "description": f"Test line {i} with padding " + ("x" * 150),
                     "debit": f"{Decimal('100.00')}",
                     "credit": "0.00",
@@ -55,8 +60,8 @@ class TestLEPHExternalStorageRoundtrip:
         lines.append(
             {
                 "line_no": num_lines + 1,
-                "account_public_id": str(uuid4()),
-                "account_code": "2000",
+                "account_public_id": str(credit_account.public_id),
+                "account_code": credit_account.code,
                 "description": "Balancing credit line",
                 "debit": "0.00",
                 "credit": str(total_debit),
@@ -77,7 +82,7 @@ class TestLEPHExternalStorageRoundtrip:
             "lines": lines,
         }
 
-    def test_external_storage_roundtrip(self, company, user, owner_membership):
+    def test_external_storage_roundtrip(self, company, user, owner_membership, cash_account, revenue_account):
         """
         Emit a JE event with payload > 64KB.
         Verify:
@@ -87,7 +92,7 @@ class TestLEPHExternalStorageRoundtrip:
         - Totals match
         """
         entry_id = uuid4()
-        data = self._make_large_je_posted_data(entry_id, user)
+        data = self._make_large_je_posted_data(entry_id, user, cash_account, revenue_account)
 
         # Sanity: confirm payload exceeds inline threshold
         payload_size = estimate_json_size(data)
@@ -132,13 +137,15 @@ class TestLEPHExternalStorageRoundtrip:
         # Verify totals match
         assert recovered["total_debit"] == recovered["total_credit"]
 
-    def test_aggregate_replay_with_external_payload(self, company, user, owner_membership):
+    def test_aggregate_replay_with_external_payload(
+        self, company, user, owner_membership, cash_account, revenue_account
+    ):
         """
         Emit a JOURNAL_ENTRY_POSTED event with external storage,
         then replay the aggregate and verify totals match.
         """
         entry_id = uuid4()
-        data = self._make_large_je_posted_data(entry_id, user)
+        data = self._make_large_je_posted_data(entry_id, user, cash_account, revenue_account)
 
         emit_event_no_actor(
             company=company,
@@ -163,13 +170,13 @@ class TestLEPHExternalStorageRoundtrip:
         assert aggregate.total_credit == expected_total
         assert aggregate.status == "POSTED"
 
-    def test_payload_hash_integrity(self, company, user, owner_membership):
+    def test_payload_hash_integrity(self, company, user, owner_membership, cash_account, revenue_account):
         """
         Verify that get_data() checks the SHA-256 hash on external payloads.
         If the hash doesn't match, it should raise IntegrityError.
         """
         entry_id = uuid4()
-        data = self._make_large_je_posted_data(entry_id, user)
+        data = self._make_large_je_posted_data(entry_id, user, cash_account, revenue_account)
 
         event = emit_event_no_actor(
             company=company,
@@ -199,7 +206,7 @@ class TestLEPHExternalStorageRoundtrip:
         with pytest.raises(IntegrityError, match="hash mismatch"):
             event.get_data()
 
-    def test_inline_small_payload_still_works(self, company, user, owner_membership):
+    def test_inline_small_payload_still_works(self, company, user, owner_membership, cash_account, revenue_account):
         """
         Verify that small payloads remain inline and get_data() works.
         This is the baseline: LEPH should not break normal events.
@@ -219,16 +226,16 @@ class TestLEPHExternalStorageRoundtrip:
             "lines": [
                 {
                     "line_no": 1,
-                    "account_public_id": str(uuid4()),
-                    "account_code": "1000",
+                    "account_public_id": str(cash_account.public_id),
+                    "account_code": cash_account.code,
                     "description": "Debit",
                     "debit": "500.00",
                     "credit": "0.00",
                 },
                 {
                     "line_no": 2,
-                    "account_public_id": str(uuid4()),
-                    "account_code": "2000",
+                    "account_public_id": str(revenue_account.public_id),
+                    "account_code": revenue_account.code,
                     "description": "Credit",
                     "debit": "0.00",
                     "credit": "500.00",
@@ -258,7 +265,7 @@ class TestLEPHExternalStorageRoundtrip:
         assert len(recovered["lines"]) == 2
         assert recovered["total_debit"] == "500.00"
 
-    def test_content_addressed_deduplication(self, company, user, owner_membership):
+    def test_content_addressed_deduplication(self, company, user, owner_membership, cash_account, revenue_account):
         """
         Verify that identical external payloads share the same EventPayload record.
         """
@@ -267,7 +274,7 @@ class TestLEPHExternalStorageRoundtrip:
 
         # Build two events with IDENTICAL payload content
         # (same lines, same everything except the idempotency key)
-        data = self._make_large_je_posted_data(entry_id_1, user)
+        data = self._make_large_je_posted_data(entry_id_1, user, cash_account, revenue_account)
 
         event1 = emit_event_no_actor(
             company=company,

@@ -73,27 +73,36 @@ def egp_books_company(db):
         is_active=True,
     )
 
+    # Date-rot fix (2026-08-01): the CSV fixtures below are pinned to
+    # payout_date 2026-07-01, but this fixture only created a fiscal period
+    # for the CURRENT month (and a rate effective the current month's 1st) —
+    # green all July, quarantining every settlement from August onward. Pin
+    # a period for the CSV's month AND keep the current month for the
+    # today-dated event tests; the rate becomes effective at the CSV date so
+    # both fixed- and today-dated lookups resolve.
     today = date.today()
-    last_day = calendar.monthrange(today.year, today.month)[1]
+    csv_month = date(2026, 7, 1)
     with projection_writes_allowed():
-        FiscalPeriod.objects.get_or_create(
-            company=company,
-            fiscal_year=today.year,
-            period=today.month,
-            defaults=dict(
-                period_type=FiscalPeriod.PeriodType.NORMAL,
-                start_date=today.replace(day=1),
-                end_date=today.replace(day=last_day),
-                status=FiscalPeriod.Status.OPEN,
-            ),
-        )
+        for anchor in {csv_month, today.replace(day=1)}:
+            last_day = calendar.monthrange(anchor.year, anchor.month)[1]
+            FiscalPeriod.objects.get_or_create(
+                company=company,
+                fiscal_year=anchor.year,
+                period=anchor.month,
+                defaults=dict(
+                    period_type=FiscalPeriod.PeriodType.NORMAL,
+                    start_date=anchor,
+                    end_date=anchor.replace(day=last_day),
+                    status=FiscalPeriod.Status.OPEN,
+                ),
+            )
 
     ExchangeRate.objects.create(
         company=company,
         from_currency="USD",
         to_currency="EGP",
         rate=USD_EGP_RATE,
-        effective_date=today.replace(day=1),
+        effective_date=csv_month,
         rate_type="SPOT",
     )
     return company
