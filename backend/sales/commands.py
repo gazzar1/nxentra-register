@@ -1921,6 +1921,14 @@ def post_credit_note_or_raise(
     except SalesCreditNote.DoesNotExist:
         return CommandResult.fail("Credit note not found.")
 
+    # A3-PR2b §9.3: this command writes the ORIGINAL invoice's amount_paid
+    # after its journal emits, which made that write a Counter→SalesInvoice
+    # edge — the AB/BA pair of invoice posting's Invoice→Counter. Lock the
+    # original invoice HERE, before the first emit, so every SalesInvoice
+    # acquisition in the system is document-before-Counter and concurrent
+    # receipt/credit-note/posting operations serialize on the row.
+    list(SalesInvoice.objects.select_for_update().filter(pk=cn.invoice_id).only("pk"))
+
     if cn.status != SalesCreditNote.Status.DRAFT:
         return CommandResult.fail("Only DRAFT credit notes can be posted.")
 
@@ -2232,12 +2240,16 @@ def create_and_post_invoice_for_platform(
     actor = system_actor_for_company(company)
 
     # Status-aware idempotency: a source-matched invoice is a successfully
-    # handled order ONLY when it is POSTED with its posted journal. A
-    # stranded DRAFT is posted HERE through the raise-through path instead
-    # of being reported as fake success — a still-invalid invoice raises
-    # rather than duplicating; VOIDED or otherwise inconsistent state fails
-    # visibly and never spawns a second invoice for the same source
-    # identity.
+    # handled order ONLY when it is POSTED with its posted journal. Any
+    # other pre-existing state — including a stranded DRAFT — fails VISIBLY
+    # for manual review (A3-PR2b §9.4): this wrapper runs inside the
+    # Counter-owning Shopify projection transaction, and automatically
+    # locking a PRE-EXISTING document row from there (the old DRAFT
+    # auto-post) was a Counter→SalesInvoice deadlock edge against direct
+    # posting's Invoice→Counter. Nothing supported is lost: the pilot
+    # database starts clean, and correct rollback (raise-through) prevents
+    # new stranded DRAFTs; no fake success, no duplicate document, no
+    # opposing lock acquisition.
     existing = SalesInvoice.objects.filter(
         company=company,
         source=source,
@@ -2247,13 +2259,6 @@ def create_and_post_invoice_for_platform(
         if existing.status == SalesInvoice.Status.POSTED and existing.posted_journal_entry_id:
             return CommandResult.ok(
                 data={"invoice": existing, "journal_entry": existing.posted_journal_entry},
-            )
-        if existing.status == SalesInvoice.Status.DRAFT:
-            return post_sales_invoice_or_raise(
-                actor,
-                existing.id,
-                skip_cogs=skip_cogs,
-                control_line_analysis_tags=control_line_analysis_tags,
             )
         return CommandResult.fail(
             f"Invoice for {source} order {source_document_id} is in an "
@@ -2351,32 +2356,30 @@ def create_and_post_credit_note_for_platform(
 
     actor = system_actor_for_company(company)
 
-    # Status-aware idempotency (A3-PR2 final caller-chain fix): a
-    # source-matched note is a successfully handled refund ONLY when it
-    # carries its posted journal. A stranded DRAFT (e.g. a pre-fix partial
-    # attempt) is posted HERE through the raise-through path instead of
-    # being reported as fake success — a still-invalid note raises rather
-    # than duplicating; inconsistent state fails visibly.
+    # Status-aware idempotency: a source-matched note is a successfully
+    # handled refund ONLY when it is POSTED with its posted journal. Any
+    # other pre-existing state — including a stranded DRAFT — fails VISIBLY
+    # for manual review (A3-PR2b §9.4): this wrapper runs inside the
+    # Counter-owning Shopify refund projection transaction, and the old
+    # DRAFT auto-post locked a PRE-EXISTING document row from there — a
+    # Counter→SalesCreditNote deadlock edge against direct CN posting's
+    # CN→Counter. Nothing supported is lost (fresh pilot database; correct
+    # rollback prevents new stranded DRAFTs); no fake success, no duplicate
+    # document, no opposing lock acquisition.
     existing = SalesCreditNote.objects.filter(
         company=company,
         source=source,
         source_document_id=source_document_id,
     ).first()
     if existing:
-        if existing.status == SalesCreditNote.Status.DRAFT:
-            post_result = post_credit_note_or_raise(
-                actor,
-                existing.id,
-                control_line_analysis_tags=control_line_analysis_tags,
-            )
-            return post_result
-        if existing.posted_journal_entry_id:
+        if existing.status == SalesCreditNote.Status.POSTED and existing.posted_journal_entry_id:
             return CommandResult.ok(
                 data={"credit_note": existing, "journal_entry": existing.posted_journal_entry},
             )
         return CommandResult.fail(
             f"Credit note for {source} refund {source_document_id} is in an "
-            f"inconsistent state ({existing.status} without a posted journal); "
+            f"inconsistent state ({existing.status}"
+            f"{' without a posted journal' if existing.status == SalesCreditNote.Status.POSTED else ''}); "
             "manual review required."
         )
 
