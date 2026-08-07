@@ -42,8 +42,18 @@ Pillow>=10.0.0
 weasyprint>=60.0
 
 # Testing
-pytest>=8.0.0
-pytest-django>=4.7.0
+# Test-runner toolchain PINNED as one compatibility unit (2026-08-07).
+# Unbounded `>=` minimums let a clean CI environment drift to
+# pytest 9.1.1 + pytest-django 4.13.0, which fails EVERY Django-backed
+# test at setup (AttributeError: PytestDjangoTestCase has no attribute
+# '_pre_setup_ran_eagerly' in pytest_django/fixtures.py) — a
+# repository-wide red on all backend CI jobs regardless of the diff.
+# pytest 9.0.2 + pytest-django 4.12.0 is the last repository-proven
+# green pair. Bump BOTH deliberately, validated through the full SQLite,
+# PostgreSQL invariant, PostgreSQL E2E and architecture suites — never
+# via silent drift.
+pytest==9.0.2
+pytest-django==4.12.0
 
 # Error tracking
 sentry-sdk[django,celery]>=2.0.0
