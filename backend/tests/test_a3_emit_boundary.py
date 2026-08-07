@@ -1808,19 +1808,28 @@ class TestIngestConcurrentRetryRecheck:
 
         return APIClient().post("/api/events/ingest/", payload, format="json", HTTP_AUTHORIZATION=f"Api-Key {raw_key}")
 
-    def _race_wrapper(self, monkeypatch, on_validate):
-        """Patch the REAL validator with a wrapper that runs `on_validate`
-        (the injected concurrent interleaving) and then delegates to the
-        genuine implementation — lookups and validation stay real."""
-        import accounting.journal_invariant as ji
+    def _race_wrapper(self, monkeypatch, on_pre_lookup_miss):
+        """Inject the concurrent interleaving into the ONE window where it
+        can still occur under A3-PR2b serialization: after the boundary's
+        same-key pre-lookup misses and BEFORE it acquires the
+        CompanyEventCounter lock (once the Counter is held, no same-company
+        event can commit until the boundary releases it). The wrapper runs
+        the injected commit right after the first (miss) lookup returns;
+        the post-validation-failure recheck uses the genuine lookup."""
+        import accounting.posted_journal_boundary as boundary
 
-        real = ji.prepare_posted_journal_for_emit
+        real = boundary._stored_event
+        state = {"first": True}
 
-        def wrapper(company, data):
-            on_validate()
-            return real(company, data)
+        def wrapper(company, idempotency_key):
+            result = real(company, idempotency_key)
+            if state["first"]:
+                state["first"] = False
+                if result is None:
+                    on_pre_lookup_miss()
+            return result
 
-        monkeypatch.setattr(ji, "prepare_posted_journal_for_emit", wrapper)
+        monkeypatch.setattr(boundary, "_stored_event", wrapper)
 
     def test_identical_payload_race_returns_stored_event(self, company, cash_account, revenue_account, monkeypatch):
         """Required case 1 (deterministic form): B carries the identical
@@ -2296,10 +2305,13 @@ class TestPlatformCreditNoteBoundary:
 
     def test_platform_foreign_drift_rolls_back(self, company, owner_membership, actor_context):
         """Required case 3: a foreign-currency refund whose final CONVERTED JE
-        drifts to invalid (0.01 USD @ 0.5 quantizes to zero lines) rolls the
-        whole platform attempt back with canonical codes — exercised through
-        the DRAFT-recovery path so the drift hits post-time conversion."""
-        from sales.commands import create_and_post_credit_note_for_platform, create_credit_note
+        drifts to invalid (0.01 USD @ 0.5 quantizes to zero lines) keeps the
+        translated CommandResult with canonical codes on the DIRECT public
+        path and leaves the DRAFT intact. (A3-PR2b: the platform wrapper no
+        longer auto-posts pre-existing DRAFTs — that recovery is now a
+        visible manual-review failure, asserted separately — so post-time
+        FX-drift coverage lives on the direct posting path.)"""
+        from sales.commands import create_credit_note, post_credit_note
         from sales.models import SalesCreditNote
 
         company.functional_currency = "EGP"
@@ -2330,24 +2342,22 @@ class TestPlatformCreditNoteBoundary:
         SalesCreditNote.objects.filter(pk=draft.pk).update(exchange_rate=Decimal("0"))
         ExchangeRate.objects.filter(pk=rate.pk).update(rate=Decimal("0.5"))
         notes_before = SalesCreditNote.objects.filter(company=company).count()
+        state_before = _journal_state(company)
 
-        with pytest.raises(PostedJournalInvalid) as excinfo:
-            with transaction.atomic():
-                create_and_post_credit_note_for_platform(
-                    company=company,
-                    invoice_id=invoice.id,
-                    lines=_cn_lines(revenue.id, unit_price="0.01"),
-                    credit_note_date=date.today(),
-                    source="shopify",
-                    source_document_id="PCN-REFUND-DRIFT",
-                )
+        result = post_credit_note(actor_context, draft.pk)
 
-        assert set(excinfo.value.codes) & {"JE_LINE_ZERO", "JE_NO_DEBIT_SIDE", "JE_NO_CREDIT_SIDE", "JE_UNBALANCED"}
-        # The pre-existing DRAFT survives (it was created by a separate
-        # committed command); the failed platform attempt added nothing.
+        assert not result.success
+        assert set((result.data or {}).get("codes", [])) & {
+            "JE_LINE_ZERO",
+            "JE_NO_DEBIT_SIDE",
+            "JE_NO_CREDIT_SIDE",
+            "JE_UNBALANCED",
+        }
+        # The DRAFT survives; the failed posting attempt added nothing.
         notes = SalesCreditNote.objects.filter(company=company)
         assert notes.count() == notes_before
         assert notes.get(source_document_id="PCN-REFUND-DRIFT").status == SalesCreditNote.Status.DRAFT
+        assert _journal_state(company) == state_before
 
     def test_existing_posted_note_returns_idempotently(self, company, owner_membership):
         """Required case 6."""
@@ -2380,9 +2390,10 @@ class TestPlatformCreditNoteBoundary:
         assert SalesCreditNote.objects.filter(company=company).count() == 1
         assert _journal_state(company) == state_after_first
 
-    def test_existing_draft_is_posted_not_reported_as_success(self, company, owner_membership, actor_context):
-        """Required case 7: a stranded DRAFT with the same source identity is
-        posted through the raise-through path — never returned as fake
+    def test_existing_draft_fails_visibly_without_posting(self, company, owner_membership, actor_context):
+        """Required case 7 (A3-PR2b form): a stranded DRAFT with the same
+        source identity is NEVER auto-posted from the Counter-owning wrapper
+        — it fails visibly for manual review, untouched, never faked as
         success, never duplicated."""
         from sales.commands import create_and_post_credit_note_for_platform, create_credit_note
         from sales.models import SalesCreditNote
@@ -2399,6 +2410,7 @@ class TestPlatformCreditNoteBoundary:
         )
         assert created.success, created.error
         draft = created.data["credit_note"]
+        state_before = _journal_state(company)
 
         result = create_and_post_credit_note_for_platform(
             company=company,
@@ -2409,15 +2421,19 @@ class TestPlatformCreditNoteBoundary:
             source_document_id="PCN-REFUND-3",
         )
 
-        assert result.success, result.error
+        assert not result.success
+        assert "inconsistent" in result.error and "DRAFT" in result.error
         cn = SalesCreditNote.objects.get(company=company, source_document_id="PCN-REFUND-3")
         assert cn.pk == draft.pk
-        assert cn.status == SalesCreditNote.Status.POSTED
-        assert cn.posted_journal_entry_id is not None
+        assert cn.status == SalesCreditNote.Status.DRAFT, "the wrapper must not touch the stranded DRAFT"
         assert SalesCreditNote.objects.filter(company=company).count() == 1
+        assert _journal_state(company) == state_before
 
-    def test_existing_invalid_draft_raises_without_duplicate(self, company, owner_membership, actor_context):
-        """Required case 8."""
+    def test_existing_invalid_draft_fails_visibly_without_posting(self, company, owner_membership, actor_context):
+        """Required case 8 (A3-PR2b form): a stranded INVALID DRAFT is never
+        auto-posted by the Counter-owning wrapper — it fails visibly for
+        manual review WITHOUT acquiring the document row or attempting a
+        post, and is never duplicated."""
         from sales.commands import create_and_post_credit_note_for_platform, create_credit_note
         from sales.models import SalesCreditNote
 
@@ -2433,21 +2449,23 @@ class TestPlatformCreditNoteBoundary:
             source_document_id="PCN-REFUND-4",
         )
         assert created.success, created.error
+        state_before = _journal_state(company)
 
-        with pytest.raises(PostedJournalInvalid):
-            with transaction.atomic():
-                create_and_post_credit_note_for_platform(
-                    company=company,
-                    invoice_id=invoice.id,
-                    lines=_cn_lines(statistical.id),
-                    credit_note_date=date.today(),
-                    source="shopify",
-                    source_document_id="PCN-REFUND-4",
-                )
+        result = create_and_post_credit_note_for_platform(
+            company=company,
+            invoice_id=invoice.id,
+            lines=_cn_lines(statistical.id),
+            credit_note_date=date.today(),
+            source="shopify",
+            source_document_id="PCN-REFUND-4",
+        )
 
+        assert not result.success
+        assert "inconsistent" in result.error and "DRAFT" in result.error
         notes = SalesCreditNote.objects.filter(company=company, source_document_id="PCN-REFUND-4")
         assert notes.count() == 1
         assert notes.first().status == SalesCreditNote.Status.DRAFT
+        assert _journal_state(company) == state_before
 
     def test_inconsistent_posted_without_journal_fails_visibly(self, company, owner_membership):
         """Required case: POSTED without its journal is inconsistent state —
@@ -2650,10 +2668,11 @@ class TestPlatformInvoiceBoundary:
         assert second.data["journal_entry"].pk == first.data["journal_entry"].pk
         assert _inv_state(company) == state_after_first
 
-    def test_existing_draft_is_posted_not_reported_as_success(self, company, owner_membership, actor_context):
-        """Required case 6: a stranded valid DRAFT with the same source
-        identity is posted through the raise-through path — same row, no
-        duplicate, never fake success."""
+    def test_existing_draft_fails_visibly_without_posting(self, company, owner_membership, actor_context):
+        """Required case 6 (A3-PR2b form): a stranded valid DRAFT with the
+        same source identity is NEVER auto-posted from the Counter-owning
+        wrapper — it fails visibly for manual review, untouched, never faked
+        as success, never duplicated."""
         from sales.commands import create_sales_invoice
         from sales.models import SalesInvoice
 
@@ -2669,20 +2688,24 @@ class TestPlatformInvoiceBoundary:
         )
         assert created.success, created.error
         draft = created.data["invoice"]
+        before = _inv_state(company)
 
         result = _platform_invoice(company, customer, profile, revenue.id, "PIV-ORDER-3")
 
-        assert result.success, result.error
+        assert not result.success
+        assert "inconsistent" in result.error and "DRAFT" in result.error
         rows = SalesInvoice.objects.filter(company=company, source_document_id="PIV-ORDER-3")
         assert rows.count() == 1
-        recovered = rows.first()
-        assert recovered.pk == draft.pk
-        assert recovered.status == SalesInvoice.Status.POSTED
-        assert recovered.posted_journal_entry_id is not None
+        untouched = rows.first()
+        assert untouched.pk == draft.pk
+        assert untouched.status == SalesInvoice.Status.DRAFT, "the wrapper must not touch the stranded DRAFT"
+        assert _inv_state(company) == before
 
-    def test_existing_invalid_draft_raises_without_duplicate(self, company, owner_membership, actor_context):
-        """Required case 7: a still-invalid DRAFT raises PostedJournalInvalid,
-        is never reported successful, and stays exactly one DRAFT."""
+    def test_existing_invalid_draft_fails_visibly_without_posting(self, company, owner_membership, actor_context):
+        """Required case 7 (A3-PR2b form): a stranded INVALID DRAFT is never
+        auto-posted by the Counter-owning wrapper — it fails visibly for
+        manual review WITHOUT acquiring the document row or attempting a
+        post, and stays exactly one DRAFT."""
         from sales.commands import create_sales_invoice
         from sales.models import SalesInvoice
 
@@ -2698,14 +2721,16 @@ class TestPlatformInvoiceBoundary:
             source_document_id="PIV-ORDER-4",
         )
         assert created.success, created.error
+        before = _inv_state(company)
 
-        with pytest.raises(PostedJournalInvalid):
-            with transaction.atomic():
-                _platform_invoice(company, customer, profile, statistical.id, "PIV-ORDER-4")
+        result = _platform_invoice(company, customer, profile, statistical.id, "PIV-ORDER-4")
 
+        assert not result.success
+        assert "inconsistent" in result.error and "DRAFT" in result.error
         rows = SalesInvoice.objects.filter(company=company, source_document_id="PIV-ORDER-4")
         assert rows.count() == 1
         assert rows.first().status == SalesInvoice.Status.DRAFT
+        assert _inv_state(company) == before
 
     def test_inconsistent_posted_without_journal_fails_visibly(self, company, owner_membership):
         """Required case 8: POSTED without its journal is inconsistent state —

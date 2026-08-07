@@ -127,7 +127,10 @@ def test_invalid_platform_refund_rolls_back_completely_on_postgres(company, owne
     assert _seq(company, "credit_note_number") == seq_cn
 
 
-def test_stranded_draft_recovers_exactly_once_on_postgres(company, owner_membership, actor_context):
+def test_stranded_draft_fails_visibly_on_postgres(company, owner_membership, actor_context):
+    """A3-PR2b §9.4: the Counter-owning platform wrapper never auto-posts a
+    pre-existing DRAFT (that acquisition was a Counter→document deadlock
+    edge) — it fails visibly for manual review and touches nothing."""
     from sales.commands import create_and_post_credit_note_for_platform, create_credit_note
     from sales.models import SalesCreditNote
 
@@ -152,6 +155,8 @@ def test_stranded_draft_recovers_exactly_once_on_postgres(company, owner_members
     )
     assert created.success, created.error
     draft = created.data["credit_note"]
+    je_rows = JournalEntry.objects.filter(company=company).count()
+    events = BusinessEvent.objects.filter(company=company).count()
 
     result = create_and_post_credit_note_for_platform(
         company=company,
@@ -162,10 +167,13 @@ def test_stranded_draft_recovers_exactly_once_on_postgres(company, owner_members
         source_document_id="PGCN-REFUND-2",
     )
 
-    assert result.success, result.error
+    assert not result.success
+    assert "inconsistent" in result.error and "DRAFT" in result.error
     notes = SalesCreditNote.objects.filter(company=company, source_document_id="PGCN-REFUND-2")
     assert notes.count() == 1
-    recovered = notes.first()
-    assert recovered.pk == draft.pk
-    assert recovered.status == SalesCreditNote.Status.POSTED
-    assert recovered.posted_journal_entry_id is not None
+    untouched = notes.first()
+    assert untouched.pk == draft.pk
+    assert untouched.status == SalesCreditNote.Status.DRAFT
+    assert untouched.posted_journal_entry_id is None
+    assert JournalEntry.objects.filter(company=company).count() == je_rows
+    assert BusinessEvent.objects.filter(company=company).count() == events
