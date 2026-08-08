@@ -504,3 +504,73 @@ class TestReservedInternalEventTypes:
         )
         assert resp.status_code == 201
         assert resp.json()["status"] == "created"
+
+
+# =============================================================================
+# Malformed posted-journal lines at ingest (fresh Codex P2 correction)
+# =============================================================================
+
+
+@pytest.mark.django_db
+class TestMalformedPostedJournalLines:
+    """A truthy non-iterable `lines` value must produce the canonical 422
+    (JE_AMOUNT_INVALID via the serialized boundary), never a TypeError/500,
+    with zero financial persistence."""
+
+    @pytest.mark.parametrize("malformed_lines", [True, 1], ids=["true", "one"])
+    def test_non_list_lines_returns_422_with_canonical_codes(self, client, company, malformed_lines):
+        from datetime import date
+
+        from django.utils import timezone
+
+        from events.models import CompanyEventCounter
+
+        _, raw_key = ExternalAPIKey.create_key(
+            company=company,
+            name="JE Ingest",
+            source_system="erp",
+            allowed_event_types=["journal_entry.posted"],
+        )
+        events_before = BusinessEvent.objects.count()
+        counters_before = list(
+            CompanyEventCounter.objects.filter(company=company).values_list("last_sequence", flat=True)
+        )
+
+        resp = client.post(
+            _ingest_url(),
+            data={
+                "event_type": "journal_entry.posted",
+                "aggregate_type": "JournalEntry",
+                "aggregate_id": str(uuid4()),
+                "idempotency_key": f"p2-ingest:{uuid4()}",
+                "data": {
+                    "entry_public_id": str(uuid4()),
+                    "entry_number": "",
+                    "date": date.today().isoformat(),
+                    "memo": "malformed lines probe",
+                    "kind": "NORMAL",
+                    "period": date.today().month,
+                    "currency": "EGP",
+                    "exchange_rate": "1.0",
+                    "posted_at": timezone.now().isoformat(),
+                    "posted_by_id": 0,
+                    "posted_by_email": "p2@example.com",
+                    "total_debit": "10.00",
+                    "total_credit": "10.00",
+                    "lines": malformed_lines,
+                },
+            },
+            format="json",
+            HTTP_AUTHORIZATION=f"Api-Key {raw_key}",
+        )
+
+        assert resp.status_code == 422
+        body = resp.json()
+        assert "JE_AMOUNT_INVALID" in body["codes"]
+        # Zero financial persistence: no event, no consumed sequence — and
+        # therefore no projection work scheduled for the rejected event.
+        assert BusinessEvent.objects.count() == events_before
+        assert (
+            list(CompanyEventCounter.objects.filter(company=company).values_list("last_sequence", flat=True))
+            == counters_before
+        )

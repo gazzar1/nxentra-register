@@ -2780,3 +2780,132 @@ class TestPlatformInvoiceBoundary:
         again = post_sales_invoice(actor_context, invoice.id)
         assert not again.success
         assert SalesInvoice.objects.get(pk=invoice.pk).status == SalesInvoice.Status.POSTED
+
+
+# --------------------------------------------------------------------------- #
+# Fresh Codex P2 (head c03bd39 review): shape-safe referenced-account
+# extraction — malformed `lines` containers must reach the canonical
+# invariant, never escape as TypeError/500.
+# --------------------------------------------------------------------------- #
+
+
+def _raw_posted_payload(company, debit_account, credit_account, amount="75.00"):
+    return {
+        "entry_public_id": str(uuid4()),
+        "entry_number": "",
+        "date": date.today().isoformat(),
+        "memo": "p2 shape-safety probe",
+        "kind": "NORMAL",
+        "period": date.today().month,
+        "currency": company.default_currency or "EGP",
+        "exchange_rate": "1.0",
+        "posted_at": timezone.now().isoformat(),
+        "posted_by_id": 0,
+        "posted_by_email": "p2@example.com",
+        "total_debit": amount,
+        "total_credit": amount,
+        "lines": [
+            {"line_no": 1, "account_public_id": str(debit_account.public_id), "debit": amount, "credit": "0"},
+            {"line_no": 2, "account_public_id": str(credit_account.public_id), "debit": "0", "credit": amount},
+        ],
+    }
+
+
+def _company_sequence(company):
+    from events.models import CompanyEventCounter
+
+    row = CompanyEventCounter.objects.filter(company=company).first()
+    return row.last_sequence if row else 0
+
+
+@pytest.mark.django_db
+class TestMalformedLinesContainerAtBoundary:
+    """The serialized boundary's lock-set extraction is defensive only: a
+    non-list `lines` yields an empty lock set and flows to canonical
+    preparation, which owns the rejection (JE_AMOUNT_INVALID). It must never
+    surface as TypeError. Falsy malformed values (False, 0) are included —
+    they never crashed, and must keep rejecting identically."""
+
+    @pytest.mark.parametrize(
+        "malformed_lines",
+        [True, False, 1, 0, "not-a-list", {"unexpected": "object"}],
+        ids=["true", "false", "one", "zero", "string", "mapping"],
+    )
+    def test_non_list_lines_rejects_canonically_not_typeerror(
+        self, company, cash_account, revenue_account, malformed_lines
+    ):
+        from accounting.posted_journal_boundary import emit_posted_journal
+
+        payload = _raw_posted_payload(company, cash_account, revenue_account)
+        payload["lines"] = malformed_lines
+        events_before = _posted_events(company).count()
+        sequence_before = _company_sequence(company)
+
+        with pytest.raises(PostedJournalInvalid) as excinfo:
+            emit_posted_journal(
+                company=company,
+                data=payload,
+                aggregate_type="JournalEntry",
+                aggregate_id=payload["entry_public_id"],
+                idempotency_key=f"p2-shape:{uuid4()}",
+            )
+
+        assert JE_AMOUNT_INVALID in excinfo.value.codes
+        assert any("lines" in v.message for v in excinfo.value.violations)
+        assert _posted_events(company).count() == events_before
+        assert _company_sequence(company) == sequence_before
+
+    def test_same_key_retry_with_malformed_lines_returns_stored_event(self, company, cash_account, revenue_account):
+        """Idempotency contract: a pre-existing same-key event returns
+        BEFORE malformed-payload inspection or revalidation."""
+        from accounting.posted_journal_boundary import emit_posted_journal
+
+        key = f"p2-retry:{uuid4()}"
+        stored = emit_posted_journal(
+            company=company,
+            data=_raw_posted_payload(company, cash_account, revenue_account),
+            aggregate_type="JournalEntry",
+            aggregate_id=str(uuid4()),
+            idempotency_key=key,
+        )
+        events_before = BusinessEvent.objects.filter(company=company).count()
+        sequence_before = _company_sequence(company)
+
+        malformed = _raw_posted_payload(company, cash_account, revenue_account)
+        malformed["lines"] = True
+        returned = emit_posted_journal(
+            company=company,
+            data=malformed,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(uuid4()),
+            idempotency_key=key,
+        )
+
+        assert returned.pk == stored.pk
+        assert BusinessEvent.objects.filter(company=company).count() == events_before
+        assert _company_sequence(company) == sequence_before
+
+    def test_mapping_line_contributes_account_to_lock_set(self, company, cash_account):
+        """Lock-set extraction recognizes Mapping line objects exactly as
+        canonical preparation does — a line whose AccountFacts preparation
+        may load must contribute its Account to the deterministic lock set."""
+        from collections.abc import Mapping as ABCMapping
+
+        from accounting.posted_journal_boundary import _referenced_account_pks
+
+        class LineView(ABCMapping):
+            def __init__(self, backing):
+                self._backing = backing
+
+            def __getitem__(self, key):
+                return self._backing[key]
+
+            def __iter__(self):
+                return iter(self._backing)
+
+            def __len__(self):
+                return len(self._backing)
+
+        line = LineView({"account_public_id": str(cash_account.public_id)})
+        pks = _referenced_account_pks(company, {"lines": [line]})
+        assert pks == [cash_account.pk]

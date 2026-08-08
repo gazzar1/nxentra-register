@@ -58,6 +58,7 @@ accounting) only.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from uuid import UUID
 
 from django.db import connections, transaction
@@ -82,10 +83,23 @@ def _stored_event(company, idempotency_key: str) -> BusinessEvent | None:
 
 def _referenced_account_pks(company, data: dict) -> list[int]:
     """Canonicalized, deduplicated, company-scoped account pks in ascending
-    order — the exact lock order for every path."""
+    order — the exact lock order for every path.
+
+    Total over malformed caller-controlled containers: a non-list ``lines``
+    (True, 1, "text", {...}) yields an empty lock set WITHOUT iterating,
+    coercing or validating it — this is defensive extraction only, never
+    financial validation. Canonical preparation remains the ONE owner of the
+    rejection (JE_AMOUNT_INVALID, "'lines' must be a list ..."), and for a
+    malformed container it loads no AccountFacts, so the empty lock set is
+    sound. Line items are recognized as Mapping — matching the invariant's
+    own line recognition — so every line whose AccountFacts canonical
+    preparation may load contributes its Account to the lock set."""
+    raw_lines = data.get("lines")
+    if not isinstance(raw_lines, list):
+        return []
     canonical_ids: set[str] = set()
-    for line in data.get("lines") or []:
-        if not isinstance(line, dict):
+    for line in raw_lines:
+        if not isinstance(line, Mapping):
             continue
         canonical = canonical_account_id(line.get("account_public_id"))
         if canonical:
