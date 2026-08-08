@@ -20,6 +20,7 @@ import pytest
 from rest_framework.test import APIClient
 
 from events.api_keys import ExternalAPIKey, hash_api_key
+from events.ingest_policy import RESERVED_EXTERNAL_INGEST_EVENT_TYPES
 from events.models import BusinessEvent
 from events.types import EventTypes
 
@@ -383,3 +384,123 @@ class TestExternalEventDownstreamProjection:
         assert len(lines) == 2
         assert lines[0].debit == Decimal("5000.00")
         assert lines[1].credit == Decimal("5000.00")
+
+
+# =============================================================================
+# Reserved internal event types (A3-PR2b correction)
+# =============================================================================
+
+
+def _key_bypassing_creation_validation(company, event_types):
+    """Create a key whose allowed_event_types contains the given types,
+    bypassing create_key validation the way a pre-existing row or a direct
+    DB/admin edit would. Returns (instance, raw_key)."""
+    from events.api_keys import generate_api_key
+
+    raw_key = generate_api_key()
+    instance = ExternalAPIKey.objects.create(
+        company=company,
+        name="Legacy Key",
+        source_system="legacy_erp",
+        key_prefix=raw_key[:12],
+        key_hash=hash_api_key(raw_key),
+        allowed_event_types=list(event_types),
+    )
+    return instance, raw_key
+
+
+@pytest.mark.django_db
+class TestReservedInternalEventTypes:
+    """The runtime ingest guard — not key configuration — is the
+    authoritative prohibition on command-owned account.* lifecycle events.
+
+    A3-PR2b Codex P2: an externally ingested account event commits at
+    sequence N while its Account row-apply lags in the post-commit
+    projection pass, so a journal at N+1 could lock the still-unchanged
+    row and validate against pre-update facts. Prohibition closes the
+    door entirely: external ingest cannot mutate account state at all.
+    """
+
+    @pytest.mark.parametrize("event_type", sorted(RESERVED_EXTERNAL_INGEST_EVENT_TYPES))
+    def test_runtime_guard_rejects_reserved_type_listed_on_preexisting_key(self, client, company, event_type):
+        from accounting.models import Account
+        from events.models import CompanyEventCounter
+
+        account = Account.objects.create(
+            company=company,
+            public_id=uuid4(),
+            code="1000",
+            name="Cash",
+            account_type=Account.AccountType.ASSET,
+            normal_balance=Account.NormalBalance.DEBIT,
+            status=Account.Status.ACTIVE,
+        )
+        # The key's allowed_event_types EXPLICITLY contains the reserved
+        # type — proving the runtime guard fires regardless of row content.
+        _, raw_key = _key_bypassing_creation_validation(company, [event_type])
+
+        events_before = BusinessEvent.objects.count()
+        counters_before = list(
+            CompanyEventCounter.objects.filter(company=company).values_list("last_sequence", flat=True)
+        )
+        accounts_before = list(
+            Account.objects.filter(company=company)
+            .order_by("pk")
+            .values("pk", "status", "name", "account_type", "code")
+        )
+
+        resp = client.post(
+            _ingest_url(),
+            data={
+                "event_type": event_type,
+                "aggregate_type": "Account",
+                "aggregate_id": str(account.public_id),
+                "idempotency_key": f"legacy:{uuid4()}",
+                "data": {"account_public_id": str(account.public_id)},
+            },
+            format="json",
+            HTTP_AUTHORIZATION=f"Api-Key {raw_key}",
+        )
+
+        assert resp.status_code == 403
+        assert "reserved for internal emission" in resp.json()["detail"]
+
+        # No financial persistence of any kind: no BusinessEvent inserted,
+        # no company sequence consumed, no Account row created/changed/
+        # deleted (and therefore no projection work scheduled — scheduling
+        # happens only after an event insert).
+        assert BusinessEvent.objects.count() == events_before
+        assert (
+            list(CompanyEventCounter.objects.filter(company=company).values_list("last_sequence", flat=True))
+            == counters_before
+        )
+        assert (
+            list(
+                Account.objects.filter(company=company)
+                .order_by("pk")
+                .values("pk", "status", "name", "account_type", "code")
+            )
+            == accounts_before
+        )
+
+    @pytest.mark.parametrize("event_type", sorted(RESERVED_EXTERNAL_INGEST_EVENT_TYPES))
+    def test_create_key_rejects_reserved_type_early(self, company, event_type):
+        with pytest.raises(ValueError, match="reserved internal event type"):
+            ExternalAPIKey.create_key(
+                company=company,
+                name="Bad Scope",
+                source_system="erp",
+                allowed_event_types=["rent.due_posted", event_type],
+            )
+        assert not ExternalAPIKey.objects.filter(name="Bad Scope").exists()
+
+    def test_allowed_non_reserved_event_still_ingests(self, client, api_key):
+        _, raw_key = api_key
+        resp = client.post(
+            _ingest_url(),
+            data=_valid_rent_payload(),
+            format="json",
+            HTTP_AUTHORIZATION=f"Api-Key {raw_key}",
+        )
+        assert resp.status_code == 201
+        assert resp.json()["status"] == "created"

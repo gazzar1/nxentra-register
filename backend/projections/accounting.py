@@ -133,7 +133,23 @@ class AccountProjection(BaseProjection):
                 logger.warning("Account not found for update: %s", data["account_public_id"])
                 return
 
-            for field, change in data.get("changes", {}).items():
+            # A3-PR2b: apply ONLY the frozen supported field set (pinned
+            # equal to update_account's ACCOUNT_UPDATE_ALLOWED_FIELDS by an
+            # architecture meta-test). An event naming any other field is a
+            # VISIBLE projection failure — never a silent arbitrary setattr
+            # that could mutate invariant inputs (is_header, ledger_domain,
+            # role, company, ...) the command layer does not support.
+            from accounting.commands import ACCOUNT_UPDATE_ALLOWED_FIELDS
+
+            changes = data.get("changes", {})
+            unknown = set(changes) - ACCOUNT_UPDATE_ALLOWED_FIELDS
+            if unknown:
+                raise ValueError(
+                    f"ACCOUNT_UPDATED event {event.id} names unsupported Account "
+                    f"field(s) {sorted(unknown)}; supported fields are "
+                    f"{sorted(ACCOUNT_UPDATE_ALLOWED_FIELDS)}."
+                )
+            for field, change in changes.items():
                 setattr(account, field, change.get("new"))
             account.save(_projection_write=True)
             return

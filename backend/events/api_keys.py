@@ -20,6 +20,7 @@ from django.db import models
 from django.utils import timezone
 
 from accounts.models import Company
+from events.ingest_policy import RESERVED_EXTERNAL_INGEST_EVENT_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,20 @@ class ExternalAPIKey(models.Model):
         Create a new API key. Returns (instance, raw_key).
 
         The raw key is returned exactly once. It cannot be recovered later.
+
+        Raises ValueError if allowed_event_types names a reserved internal
+        event type. This early validation supplements — never replaces —
+        the authoritative runtime guard in events/ingest.py: pre-existing
+        rows or direct DB/admin edits bypass this factory, and the ingest
+        boundary rejects reserved types regardless of key configuration.
         """
+        reserved = sorted(set(allowed_event_types) & RESERVED_EXTERNAL_INGEST_EVENT_TYPES)
+        if reserved:
+            raise ValueError(
+                f"allowed_event_types may not include reserved internal event type(s) "
+                f"{reserved}: these are command-owned and can never be ingested "
+                "externally."
+            )
         raw_key = generate_api_key()
         instance = cls.objects.create(
             company=company,

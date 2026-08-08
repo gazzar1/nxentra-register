@@ -357,21 +357,26 @@ class BusinessEvent(models.Model):
 
         with transaction.atomic():
             # ─── Company-wide serialization ───────────────────────────────
-            # select_for_update() on CompanyEventCounter serializes ALL
+            # The FOR UPDATE lock on CompanyEventCounter serializes ALL
             # event emissions for a company. This is intentional:
             # it guarantees that per-aggregate sequence allocation (below)
             # is also serialized, since only one transaction at a time can
             # hold the row lock on CompanyEventCounter for a given company.
             #
+            # A3-PR2b: acquisition lives in the ONE canonical helper
+            # (events.locks.lock_company_event_counter) so callers that must
+            # serialize financial-state validation against the event log
+            # (the posted-journal boundary, account mutations) share this
+            # exact lock; re-acquiring here in the same transaction is
+            # reentrant and free.
+            #
             # If you ever shard or remove this lock, you MUST add explicit
             # per-aggregate locking (e.g. AggregateEventCounter with
             # select_for_update) to prevent aggregate sequence collisions.
             # ──────────────────────────────────────────────────────────────
-            try:
-                counter, _ = CompanyEventCounter.objects.select_for_update().get_or_create(company=self.company)
-            except IntegrityError:
-                # Race: someone created it between get_or_create attempts
-                counter = CompanyEventCounter.objects.select_for_update().get(company=self.company)
+            from events.locks import lock_company_event_counter
+
+            counter = lock_company_event_counter(self.company)
 
             counter.last_sequence = F("last_sequence") + 1
             counter.save(update_fields=["last_sequence"])

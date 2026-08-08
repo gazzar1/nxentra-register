@@ -588,6 +588,10 @@ A3_EXPECTED_POSTED_EMITTERS: frozenset[tuple[str, str]] = frozenset(
         ("projections/property.py", "_create_posted_entry"),
         ("clinic/projections.py", "_create_posted_entry"),
         ("shopify_connector/projections.py", "_handle_refund_restock"),
+        # A3-PR2b: external ingest now calls the serialized boundary
+        # directly, so the AST detector covers the third door too (the old
+        # source-text rule remains as test_external_ingest_guards_...).
+        ("events/ingest.py", "post"),
     }
 )
 
@@ -598,11 +602,19 @@ needs the exact file, exact symbol, a written reason, and a linked follow-up
 decision, per the A3-PR2 contract."""
 
 
-def _functions_emitting_posted(path: Path) -> dict[str, tuple[bool, str]]:
-    """Map function name -> (calls_canonical_boundary, source_segment) for
-    every function in `path` that emits JOURNAL_ENTRY_POSTED via
-    emit_event/emit_event_no_actor (event_type given as the EventTypes
-    attribute or the literal string)."""
+BOUNDARY_MODULE = "accounting/posted_journal_boundary.py"
+
+
+def _is_posted_event_type(value) -> bool:
+    if isinstance(value, ast.Attribute) and value.attr == "JOURNAL_ENTRY_POSTED":
+        return True
+    return isinstance(value, ast.Constant) and value.value == "journal_entry.posted"
+
+
+def _functions_emitting_posted(path: Path) -> dict[str, str]:
+    """Map function name -> source segment for every function in `path` that
+    calls the serialized boundary emit_posted_journal (A3-PR2b: the ONLY
+    legitimate way to emit JOURNAL_ENTRY_POSTED)."""
     try:
         source = path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
@@ -611,119 +623,170 @@ def _functions_emitting_posted(path: Path) -> dict[str, tuple[bool, str]]:
         tree = ast.parse(source)
     except SyntaxError:
         return {}
-
-    def _is_posted_event_type(value) -> bool:
-        if isinstance(value, ast.Attribute) and value.attr == "JOURNAL_ENTRY_POSTED":
-            return True
-        return isinstance(value, ast.Constant) and value.value == "journal_entry.posted"
-
-    results: dict[str, tuple[bool, str]] = {}
+    results: dict[str, str] = {}
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
-        emits = False
-        guards = False
-        emit_data_names: set[str] = set()
-        prepared_names: set[str] = set()
         for inner in ast.walk(node):
-            # Names assigned from the canonical preparation boundary.
-            if isinstance(inner, ast.Assign) and isinstance(inner.value, ast.Call):
-                afunc = inner.value.func
-                call_name = (
-                    afunc.id if isinstance(afunc, ast.Name) else afunc.attr if isinstance(afunc, ast.Attribute) else ""
-                )
-                if call_name == "prepare_posted_journal_for_emit":
-                    for target in inner.targets:
-                        if isinstance(target, ast.Name):
-                            prepared_names.add(target.id)
             if not isinstance(inner, ast.Call):
                 continue
             func = inner.func
             name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
-            if name in {"emit_event", "emit_event_no_actor"}:
-                is_posted_call = False
-                for kw in inner.keywords:
-                    if kw.arg == "event_type" and _is_posted_event_type(kw.value):
-                        is_posted_call = True
-                # positional event_type (emit_event(actor, EventTypes.X, ...))
-                for arg in inner.args:
-                    if _is_posted_event_type(arg):
-                        is_posted_call = True
-                if is_posted_call:
-                    emits = True
-                    for kw in inner.keywords:
-                        if kw.arg == "data" and isinstance(kw.value, ast.Name):
-                            emit_data_names.add(kw.value.id)
-            if name == "prepare_posted_journal_for_emit":
-                guards = True
-        if emits:
-            # Final P1 pass: the emitted payload must BE the prepared payload —
-            # the emit call's data kwarg is a plain Name assigned from the
-            # canonical preparation boundary in the same function.
-            emits_prepared = bool(emit_data_names) and emit_data_names <= prepared_names
-            results[node.name] = (guards and emits_prepared, ast.get_source_segment(source, node) or "")
+            if name == "emit_posted_journal":
+                results[node.name] = ast.get_source_segment(source, node) or ""
+                break
     return results
 
 
-def _collect_posted_emitters() -> dict[tuple[str, str], tuple[bool, str]]:
-    files = _python_files_under(
+def _raw_posted_emissions(path: Path) -> list[str]:
+    """Function names in `path` that pass JOURNAL_ENTRY_POSTED to
+    emit_event/emit_event_no_actor/emit_external_event/_emit_event_core —
+    forbidden everywhere except inside the boundary module itself."""
+    try:
+        source = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return []
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Call):
+                continue
+            func = inner.func
+            name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
+            if name in {"emit_event", "emit_event_no_actor", "emit_external_event", "_emit_event_core"}:
+                posted = any(_is_posted_event_type(kw.value) for kw in inner.keywords if kw.arg == "event_type")
+                posted = posted or any(_is_posted_event_type(arg) for arg in inner.args)
+                if posted:
+                    offenders.append(node.name)
+                    break
+    return offenders
+
+
+def _production_files():
+    return _python_files_under(
         BACKEND_ROOT,
         exclude=("migrations/", "tests/", "venv", ".venv", "__pycache__", "test_"),
     )
-    emitters: dict[tuple[str, str], tuple[bool, str]] = {}
-    for path in files:
+
+
+def _collect_posted_emitters() -> dict[tuple[str, str], str]:
+    emitters: dict[tuple[str, str], str] = {}
+    for path in _production_files():
         rel = path.relative_to(BACKEND_ROOT).as_posix()
-        for func_name, info in _functions_emitting_posted(path).items():
-            emitters[(rel, func_name)] = info
+        if rel == BOUNDARY_MODULE:
+            continue  # the boundary itself is audited by its own rule below
+        for func_name, segment in _functions_emitting_posted(path).items():
+            emitters[(rel, func_name)] = segment
     return emitters
 
 
 def test_every_posted_journal_emission_goes_through_canonical_boundary():
-    """A3-PR2: the set of functions emitting JOURNAL_ENTRY_POSTED is frozen,
-    and every one of them EMITS THE PAYLOAD RETURNED by
-    prepare_posted_journal_for_emit() — the emit call's data kwarg must be a
-    name assigned from the canonical preparation boundary, so
-    validate-then-emit-raw cannot reappear (on the exact payload it emits — the tests in
-    test_a3_emit_boundary.py prove the runtime behavior; this rule proves
-    no emitter exists outside the guarded set)."""
+    """A3-PR2b: the set of functions that CALL the serialized boundary
+    emit_posted_journal is frozen, and NO production function anywhere
+    passes JOURNAL_ENTRY_POSTED to a raw emitter (emit_event,
+    emit_event_no_actor, emit_external_event, _emit_event_core) outside the
+    boundary module itself — prepare-then-emit-raw, prepare-then-release-
+    locks-then-emit, and unvalidated emission are all structurally
+    impossible."""
     emitters = _collect_posted_emitters()
     found = set(emitters)
 
     unexpected = found - A3_EXPECTED_POSTED_EMITTERS - A3_UNINTEGRATED_EMITTER_ALLOWLIST
     missing = A3_EXPECTED_POSTED_EMITTERS - found
-    unguarded = [key for key in found & A3_EXPECTED_POSTED_EMITTERS if not emitters[key][0]]
 
     assert not unexpected, (
-        "New JOURNAL_ENTRY_POSTED emitter(s) outside the frozen set — every "
-        "emitter must emit the payload prepared by prepare_posted_journal_for_emit() as its exact final "
-        "payload and be added to A3_EXPECTED_POSTED_EMITTERS deliberately:\n  "
+        "New emit_posted_journal caller(s) outside the frozen set — a new "
+        "posted-journal emitter is a deliberate act reviewed here:\n  "
         + "\n  ".join(f"{f}:{fn}" for f, fn in sorted(unexpected))
     )
     assert not missing, (
         "Expected emitter(s) vanished — if the path was removed, drop it from "
         "A3_EXPECTED_POSTED_EMITTERS consciously:\n  " + "\n  ".join(f"{f}:{fn}" for f, fn in sorted(missing))
     )
-    assert not unguarded, (
-        "Emitter(s) do not emit the payload returned by "
-        "prepare_posted_journal_for_emit() in the emitting function:\n  "
-        + "\n  ".join(f"{f}:{fn}" for f, fn in sorted(unguarded))
+
+    raw = {
+        (path.relative_to(BACKEND_ROOT).as_posix(), fn)
+        for path in _production_files()
+        if path.relative_to(BACKEND_ROOT).as_posix() != BOUNDARY_MODULE
+        for fn in _raw_posted_emissions(path)
+    }
+    assert not raw, (
+        "Raw JOURNAL_ENTRY_POSTED emission outside the serialized boundary — "
+        "every posted-journal event must go through emit_posted_journal:\n  "
+        + "\n  ".join(f"{f}:{fn}" for f, fn in sorted(raw))
+    )
+
+
+def test_posted_boundary_module_owns_locks_preparation_and_emit():
+    """A3-PR2b: inside accounting/posted_journal_boundary.py the order is
+    structural — Counter lock and pk-ordered Account locks precede the ONE
+    prepare_posted_journal_for_emit call inside transaction.atomic, and
+    every emit passes data=prepared. The boundary is also the ONLY
+    production caller of prepare_posted_journal_for_emit."""
+    source = (BACKEND_ROOT / BOUNDARY_MODULE).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    segment = ""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "emit_posted_journal":
+            segment = ast.get_source_segment(source, node) or ""
+            break
+    assert segment, "emit_posted_journal must exist in the boundary module"
+    atomic_pos = segment.index("with transaction.atomic():")
+    lock_pos = segment.index("lock_company_event_counter(company)")
+    accounts_pos = segment.index("_lock_accounts_in_pk_order(")
+    prepare_pos = segment.index("prepared = prepare_posted_journal_for_emit(")
+    assert atomic_pos < lock_pos < accounts_pos < prepare_pos, (
+        "boundary order must be atomic -> Counter lock -> Account locks -> prepare"
+    )
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
+        if name in {"emit_event", "emit_event_no_actor", "emit_external_event"}:
+            data_kwargs = [kw for kw in node.keywords if kw.arg == "data"]
+            assert data_kwargs, "boundary emit calls must pass data= explicitly"
+            assert all(isinstance(kw.value, ast.Name) and kw.value.id == "prepared" for kw in data_kwargs), (
+                "the boundary must emit the PREPARED payload, never anything else"
+            )
+
+    # Sole-production-caller rule: prepare_posted_journal_for_emit is pure
+    # validation/normalization; production emitters must go through the
+    # serialized boundary (the scanner/apply path uses check_posted_journal).
+    offenders = []
+    for path in _production_files():
+        rel = path.relative_to(BACKEND_ROOT).as_posix()
+        if rel in (BOUNDARY_MODULE, "accounting/journal_invariant.py"):
+            continue
+        if "prepare_posted_journal_for_emit" in path.read_text(encoding="utf-8"):
+            offenders.append(rel)
+    assert not offenders, (
+        "prepare_posted_journal_for_emit called outside the serialized "
+        "boundary — production emitters must use emit_posted_journal:\n  " + "\n  ".join(sorted(offenders))
     )
 
 
 def test_external_ingest_guards_posted_journal_payloads():
     """The third door into _emit_event_core: events/ingest.py accepts
     caller-supplied payloads for any key-authorized event type, so it must
-    call the canonical boundary for journal_entry.posted — and must not
-    consult the test-mode flags around it."""
+    route journal_entry.posted through the SERIALIZED boundary (which owns
+    the pre-lookup, the transaction + Counter/Account locks, the exact
+    preparation and the post-failure recheck) — and must not consult the
+    test-mode flags around it."""
     path = BACKEND_ROOT / "events" / "ingest.py"
     source = path.read_text(encoding="utf-8")
-    assert "prepare_posted_journal_for_emit" in source, (
-        "events/ingest.py must prepare journal_entry.posted payloads with the canonical boundary"
+    assert "emit_posted_journal(" in source, (
+        "events/ingest.py must route journal_entry.posted through the serialized boundary"
     )
-    assert "emit_data = prepare_posted_journal_for_emit" in source, (
-        "events/ingest.py must emit the PREPARED payload, never the raw caller payload"
+    assert "prepare_posted_journal_for_emit" not in source, (
+        "events/ingest.py must not call the pure preparation directly — the boundary owns it"
     )
-    assert "data=emit_data" in source
     assert "DISABLE_EVENT_VALIDATION" not in source
     assert "settings.TESTING" not in source
 
@@ -735,9 +798,12 @@ def test_posted_emitters_do_not_consult_test_mode_flags():
     schema validator."""
     emitters = _collect_posted_emitters()
     violations: list[str] = []
-    for (rel, func_name), (_guarded, segment) in sorted(emitters.items()):
+    for (rel, func_name), segment in sorted(emitters.items()):
         if "DISABLE_EVENT_VALIDATION" in segment or "TESTING" in segment:
             violations.append(f"{rel}:{func_name}")
+    boundary_source = (BACKEND_ROOT / BOUNDARY_MODULE).read_text(encoding="utf-8")
+    assert "DISABLE_EVENT_VALIDATION" not in boundary_source
+    assert "TESTING" not in boundary_source
     # The canonical module itself must have NO settings access at all — its
     # docstrings may NAME the flags (to forbid them), so the check is on the
     # import/usage surface, not on the words.
@@ -867,6 +933,119 @@ def test_platform_invoice_composition_uses_raise_through_path():
 
 
 # =============================================================================
+# Rule 8 (A3-PR2b): account-state serialization — Counter before Account,
+# frozen mutation fields, no Account bulk-write bypass
+# =============================================================================
+
+
+def _statement_order(source: str, func_name: str, first_marker: str, second_marker: str) -> bool:
+    """True when `first_marker` appears before `second_marker` inside the
+    named function's source segment."""
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == func_name:
+            segment = ast.get_source_segment(source, node) or ""
+            return (
+                first_marker in segment
+                and second_marker in segment
+                and segment.index(first_marker) < segment.index(second_marker)
+            )
+    return False
+
+
+def test_account_mutations_take_counter_before_account_row():
+    """A3-PR2b: every live mutation of AccountFacts inputs must acquire the
+    CompanyEventCounter (the company financial-state linearization lock)
+    BEFORE the Account row — the same direction as the serialized posted-
+    journal boundary — so mutation-vs-posting is deadlock-free and every
+    accepted journal observes serialized account state."""
+    source = (BACKEND_ROOT / "accounting" / "commands.py").read_text(encoding="utf-8")
+    for func in ("update_account", "delete_account"):
+        assert _statement_order(
+            source,
+            func,
+            "lock_company_event_counter(actor.company)",
+            "Account.objects.select_for_update()",
+        ), f"{func} must call lock_company_event_counter BEFORE locking the Account row"
+
+
+def test_account_update_field_sets_stay_synchronized():
+    """A3-PR2b: the command layer's supported update fields and the
+    AccountProjection UPDATED handler's applied fields are ONE frozen set.
+    The projection must import and enforce the command constant (unknown
+    fields are a visible projection failure, never an arbitrary setattr),
+    and the set itself is pinned here so neither side drifts silently."""
+    from accounting.commands import ACCOUNT_UPDATE_ALLOWED_FIELDS
+
+    assert (
+        frozenset(
+            {
+                "name",
+                "name_ar",
+                "description",
+                "description_ar",
+                "status",
+                "code",
+                "account_type",
+                "unit_of_measure",
+            }
+        )
+        == ACCOUNT_UPDATE_ALLOWED_FIELDS
+    ), "changing the supported Account update fields is a deliberate reviewed act"
+
+    projection_source = (BACKEND_ROOT / "projections" / "accounting.py").read_text(encoding="utf-8")
+    assert "ACCOUNT_UPDATE_ALLOWED_FIELDS" in projection_source, (
+        "AccountProjection must enforce the frozen command field set"
+    )
+    assert "unknown = set(changes) - ACCOUNT_UPDATE_ALLOWED_FIELDS" in projection_source, (
+        "AccountProjection must reject unknown fields visibly"
+    )
+
+
+def test_no_account_bulk_write_bypass():
+    """A3-PR2b: Account rows must never be mutated via QuerySet.update /
+    bulk_update outside the single pinned projection site (the
+    ACCOUNT_DELETED soft-delete in projections/accounting.py) — bulk writes
+    skip Account.save(), the write barrier, derived fields AND the
+    serialized lock order."""
+    allowed = {"projections/accounting.py": 1}
+    found: dict[str, int] = {}
+    for path in _production_files():
+        rel = path.relative_to(BACKEND_ROOT).as_posix()
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        count = 0
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (isinstance(func, ast.Attribute) and func.attr in {"update", "bulk_update"}):
+                continue
+            # Walk the attribute chain looking for the Account name root
+            # (Account.objects...update(...) in any chain shape).
+            chain = func.value
+            names: set[str] = set()
+            while isinstance(chain, ast.Attribute | ast.Call):
+                if isinstance(chain, ast.Call):
+                    chain = chain.func
+                    continue
+                names.add(chain.attr)
+                chain = chain.value
+            if isinstance(chain, ast.Name):
+                names.add(chain.id)
+            if "Account" in names:
+                count += 1
+        if count:
+            found[rel] = count
+    assert found == allowed, (
+        f"Account QuerySet.update/bulk_update drift — expected exactly {allowed}, found {found}. "
+        "A new bulk Account write bypasses the serialized lock order and the write barrier."
+    )
+
+
+# =============================================================================
 # Meta: keep allowlists small + intentional
 # =============================================================================
 
@@ -890,4 +1069,108 @@ def test_allowlists_are_documented_in_this_file():
         "A3_UNINTEGRATED_EMITTER_ALLOWLIST must stay empty — A3-PR2 integrated "
         "every emitter; a new unintegrated path needs a written reason and a "
         "linked follow-up decision, not a quiet entry."
+    )
+
+
+def test_external_ingest_reserved_set_pins_account_namespace():
+    """A3-PR2b correction ratchet: canonical account.* lifecycle events are
+    command-owned and PROHIBITED at external ingest (the sole fresh-review
+    P2: an ingested account event commits at sequence N while its row-apply
+    lags, so a journal at N+1 could validate against pre-update facts).
+
+    Three directions, all pinned to the single reserved-set definition in
+    events/ingest_policy.py:
+    1. Every REGISTERED account.* event type is deliberately reserved — a
+       future account.renamed cannot silently become externally ingestible
+       merely by being added to EVENT_DATA_CLASSES.
+    2. Every reserved entry is a registered event type — the set cannot
+       accumulate stale or misspelled strings.
+    3. Every event type AccountProjection consumes is reserved — any event
+       whose projection mutates Account rows (the AccountFacts source) must
+       be prohibited at the ingest boundary even if named outside the
+       account.* namespace.
+    """
+    from events.ingest_policy import RESERVED_EXTERNAL_INGEST_EVENT_TYPES
+    from events.types import EVENT_DATA_CLASSES, EventTypes
+    from projections.accounting import AccountProjection
+
+    registered = {str(t) for t in EVENT_DATA_CLASSES}
+    account_namespace = {t for t in registered if t.startswith("account.")}
+
+    missing = account_namespace - RESERVED_EXTERNAL_INGEST_EVENT_TYPES
+    assert not missing, (
+        f"Registered account.* event type(s) {sorted(missing)} are missing from "
+        "RESERVED_EXTERNAL_INGEST_EVENT_TYPES (events/ingest_policy.py). "
+        "account.* aggregates are command-owned: add the type to the reserved "
+        "set, or record an explicit design decision for why an external system "
+        "may emit it."
+    )
+
+    stale = set(RESERVED_EXTERNAL_INGEST_EVENT_TYPES) - registered
+    assert not stale, (
+        f"Reserved external-ingest entr{'y' if len(stale) == 1 else 'ies'} "
+        f"{sorted(stale)} are not registered event types — remove stale or "
+        "misspelled strings from events/ingest_policy.py."
+    )
+
+    consumed = set(AccountProjection().consumes)
+    unreserved_consumed = consumed - RESERVED_EXTERNAL_INGEST_EVENT_TYPES
+    assert not unreserved_consumed, (
+        f"AccountProjection consumes {sorted(unreserved_consumed)} which are "
+        "not reserved from external ingest — every event type that mutates "
+        "Account rows must be prohibited at the ingest boundary regardless of "
+        "its namespace."
+    )
+
+    # The prohibition must never capture the serialized posted-journal
+    # ingest route (it flows through emit_posted_journal, not projections).
+    assert EventTypes.JOURNAL_ENTRY_POSTED not in RESERVED_EXTERNAL_INGEST_EVENT_TYPES, (
+        "journal_entry.posted must remain externally ingestible through the serialized emit_posted_journal boundary."
+    )
+
+
+def test_account_mutations_require_materialization_proof():
+    """A3-PR2b fresh-review P1 ratchet: update_account and delete_account
+    must not return success after emitting their account event without
+    passing through the fail-closed required-materialization check (per-event
+    ProjectionAppliedEvent marker AND Account-row postcondition, then
+    set_rollback on failure). Narrow by design — only AccountProjection is
+    part of the account-facts serialization guarantee; this is NOT a generic
+    mandatory-projection framework."""
+    import inspect
+
+    from accounting import commands as cmd
+    from projections.accounting import AccountProjection
+
+    # The helper watches the projection that actually owns the Account row.
+    assert AccountProjection().name == cmd.ACCOUNT_READ_MODEL_PROJECTION, (
+        "ACCOUNT_READ_MODEL_PROJECTION drifted from AccountProjection().name — "
+        "the materialization proof would watch the wrong consumer."
+    )
+
+    for fn in (cmd.update_account, cmd.delete_account):
+        src = inspect.getsource(fn)
+        assert "_verify_account_materialization(" in src, (
+            f"{fn.__name__} no longer calls _verify_account_materialization — "
+            "it could commit an account event the read model never applied."
+        )
+        drain = src.index("_process_projections(")
+        verify = src.index("_verify_account_materialization(")
+        assert drain < verify, (
+            f"{fn.__name__}: the materialization check must run AFTER the synchronous projection drain."
+        )
+        assert "CommandResult.ok" not in src[drain:verify], (
+            f"{fn.__name__}: a success return between the drain and the "
+            "materialization check would bypass the fail-closed contract."
+        )
+
+    helper_src = inspect.getsource(cmd._verify_account_materialization)
+    assert "set_rollback(True)" in helper_src, (
+        "_verify_account_materialization must mark the owning transaction for "
+        "rollback on failure — returning fail while committing the event would "
+        "recreate the forbidden history."
+    )
+    assert "ProjectionAppliedEvent" in helper_src, (
+        "_verify_account_materialization must require the per-event applied "
+        "marker, not bookmark position or row state alone."
     )

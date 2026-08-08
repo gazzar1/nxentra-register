@@ -18,11 +18,10 @@ from decimal import Decimal
 from django.utils import timezone
 
 from accounting.commands import _next_company_sequence
-from accounting.journal_invariant import prepare_posted_journal_for_emit
 from accounting.models import ExchangeRate, JournalEntry, JournalLine
-from events.emitter import emit_event_no_actor
+from accounting.posted_journal_boundary import emit_posted_journal
 from events.models import BusinessEvent
-from events.types import EventTypes, JournalEntryPostedData
+from events.types import JournalEntryPostedData
 from projections.models import FiscalPeriod
 
 logger = logging.getLogger(__name__)
@@ -407,20 +406,19 @@ def build_journal_entry(req: JERequest) -> JournalEntry | None:
         currency=req.currency,
         exchange_rate=str(fx_rate),
     ).to_dict()
-    # A3-PR2: the canonical boundary prepares + gates the exact payload. A
-    # violation RAISES through the caller's per-event projection atomic
+    # A3-PR2b: the serialized boundary locks Counter + referenced Account
+    # rows, prepares + gates the exact payload and emits it. A violation
+    # RAISES through the caller's per-event projection atomic
     # (projections/base.py), rolling back the POSTED rows staged above and
     # leaving the event unconsumed — loud (ProjectionFailureLog), never an
     # unbalanced emitted truth.
-    posted_payload = prepare_posted_journal_for_emit(req.company, posted_payload)
-    emit_event_no_actor(
+    emit_posted_journal(
         company=req.company,
-        event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+        data=posted_payload,
         aggregate_type="JournalEntry",
         aggregate_id=str(entry.public_id),
         idempotency_key=f"{idem_prefix}.je.posted:{entry.public_id}",
         metadata={"source_projection": req.projection_name} if req.projection_name else {},
-        data=posted_payload,
         caused_by_event=req.caused_by_event,
     )
 
