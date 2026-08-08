@@ -21,6 +21,7 @@ from rest_framework.views import APIView
 
 from events.api_keys import ExternalAPIKey
 from events.external import emit_external_event
+from events.ingest_policy import is_reserved_external_event_type
 from events.types import EVENT_DATA_CLASSES, InvalidEventPayload
 
 logger = logging.getLogger(__name__)
@@ -120,7 +121,8 @@ class EventIngestView(APIView):
         (idempotency: same idempotency_key returns existing event)
 
     Response 401: Invalid or missing API key
-    Response 403: Event type not authorized for this key
+    Response 403: Event type not authorized for this key, or reserved
+                  for internal emission (no key can authorize those)
     Response 422: Payload validation failed
     Response 429: Rate limit exceeded
     """
@@ -145,6 +147,36 @@ class EventIngestView(APIView):
         payload = serializer.validated_data
 
         event_type = payload["event_type"]
+
+        # ── Reserved internal event types: prohibited outright ────────
+        # account.* lifecycle events are command-owned: their projection
+        # mutates the Account rows that feed posted-journal validation,
+        # and live commands mutate those rows only under the A3-PR2b
+        # serialization protocol (CompanyEventCounter → Account locks).
+        # An ingested account event would commit at sequence N with its
+        # row-apply lagging in the post-commit projection pass, so a
+        # journal at N+1 could validate against pre-update facts. NO key
+        # may authorize these types — including a pre-existing key whose
+        # allowed_event_types row already lists them (rows and direct
+        # DB/admin edits bypass key-creation validation, so this runtime
+        # check is the authoritative guard). Rejected before any lookup,
+        # lock, emission or projection scheduling.
+        if is_reserved_external_event_type(event_type):
+            logger.warning(
+                "Reserved internal event type %s rejected from key %s (%s)",
+                event_type,
+                api_key.key_prefix,
+                api_key.source_system,
+            )
+            return Response(
+                {
+                    "detail": (
+                        f"Event type '{event_type}' is reserved for internal "
+                        "emission and cannot be ingested externally."
+                    ),
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         # ── Authorization: is this event type allowed? ────────────────
         if not api_key.is_event_type_allowed(event_type):

@@ -1070,3 +1070,60 @@ def test_allowlists_are_documented_in_this_file():
         "every emitter; a new unintegrated path needs a written reason and a "
         "linked follow-up decision, not a quiet entry."
     )
+
+
+def test_external_ingest_reserved_set_pins_account_namespace():
+    """A3-PR2b correction ratchet: canonical account.* lifecycle events are
+    command-owned and PROHIBITED at external ingest (the sole fresh-review
+    P2: an ingested account event commits at sequence N while its row-apply
+    lags, so a journal at N+1 could validate against pre-update facts).
+
+    Three directions, all pinned to the single reserved-set definition in
+    events/ingest_policy.py:
+    1. Every REGISTERED account.* event type is deliberately reserved — a
+       future account.renamed cannot silently become externally ingestible
+       merely by being added to EVENT_DATA_CLASSES.
+    2. Every reserved entry is a registered event type — the set cannot
+       accumulate stale or misspelled strings.
+    3. Every event type AccountProjection consumes is reserved — any event
+       whose projection mutates Account rows (the AccountFacts source) must
+       be prohibited at the ingest boundary even if named outside the
+       account.* namespace.
+    """
+    from events.ingest_policy import RESERVED_EXTERNAL_INGEST_EVENT_TYPES
+    from events.types import EVENT_DATA_CLASSES, EventTypes
+    from projections.accounting import AccountProjection
+
+    registered = {str(t) for t in EVENT_DATA_CLASSES}
+    account_namespace = {t for t in registered if t.startswith("account.")}
+
+    missing = account_namespace - RESERVED_EXTERNAL_INGEST_EVENT_TYPES
+    assert not missing, (
+        f"Registered account.* event type(s) {sorted(missing)} are missing from "
+        "RESERVED_EXTERNAL_INGEST_EVENT_TYPES (events/ingest_policy.py). "
+        "account.* aggregates are command-owned: add the type to the reserved "
+        "set, or record an explicit design decision for why an external system "
+        "may emit it."
+    )
+
+    stale = set(RESERVED_EXTERNAL_INGEST_EVENT_TYPES) - registered
+    assert not stale, (
+        f"Reserved external-ingest entr{'y' if len(stale) == 1 else 'ies'} "
+        f"{sorted(stale)} are not registered event types — remove stale or "
+        "misspelled strings from events/ingest_policy.py."
+    )
+
+    consumed = set(AccountProjection().consumes)
+    unreserved_consumed = consumed - RESERVED_EXTERNAL_INGEST_EVENT_TYPES
+    assert not unreserved_consumed, (
+        f"AccountProjection consumes {sorted(unreserved_consumed)} which are "
+        "not reserved from external ingest — every event type that mutates "
+        "Account rows must be prohibited at the ingest boundary regardless of "
+        "its namespace."
+    )
+
+    # The prohibition must never capture the serialized posted-journal
+    # ingest route (it flows through emit_posted_journal, not projections).
+    assert EventTypes.JOURNAL_ENTRY_POSTED not in RESERVED_EXTERNAL_INGEST_EVENT_TYPES, (
+        "journal_entry.posted must remain externally ingestible through the serialized emit_posted_journal boundary."
+    )
