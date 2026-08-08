@@ -47,6 +47,12 @@ ACCOUNT_UPDATE_ALLOWED_FIELDS = frozenset(
     }
 )
 
+# The projection whose Account-row writes feed AccountFacts. Pinned equal to
+# AccountProjection().name by an architecture meta-test — the fail-closed
+# materialization proof below must watch the projection that actually owns
+# the row.
+ACCOUNT_READ_MODEL_PROJECTION = "account_read_model"
+
 from accounting.aggregates import load_account_aggregate, load_journal_entry_aggregate
 from accounting.dimension_validation import validate_line_dimensions
 from accounting.journal_invariant import PostedJournalInvalid
@@ -476,6 +482,114 @@ def _process_projections(company, exclude: set[str] | None = None) -> None:
         projection.process_pending(company, limit=1000)
 
 
+def _verify_account_materialization(
+    *,
+    company,
+    account_public_id: str,
+    event,
+    operation: str,
+    expected_fields: dict,
+    locked_counter,
+) -> CommandResult | None:
+    """A3-PR2b fail-closed required materialization (fresh-review P1).
+
+    The synchronous projection drain is deliberately fail-soft: a paused
+    account_read_model bookmark, a handler error, or PROJECTIONS_SYNC=False
+    all return control here with the account event pending and the Account
+    row untouched. Committing that event would admit the forbidden history —
+    a journal at a higher company sequence validating against pre-mutation
+    AccountFacts — so the command may report success ONLY after proving this
+    exact mutation materialized inside its own transaction:
+
+    1. the per-event ProjectionAppliedEvent marker exists for
+       account_read_model (framework completion — a bookmark can be rewound,
+       paused, or moved by unrelated events; the per-event marker is the
+       precise evidence), AND
+    2. the stored Account row satisfies the operation's postcondition
+       (the financial fact actually materialized — a marker can exist with
+       NO row change: account-not-found return, 0-row UPDATE, unhandled-type
+       fallthrough, ProjectionTerminalSkip).
+
+    Neither proof substitutes for the other. Every decision read happens
+    BEFORE transaction.set_rollback(True) — queries after it raise
+    TransactionManagementError. On failure the whole attempt rolls back:
+    the account event, the consumed CompanyEventCounter sequence, the
+    marker/bookmark writes, any partial row change, and the on_commit
+    projection dispatch registered at event insert (Django discards
+    callbacks of rolled-back transactions). Transaction-local
+    ProjectionFailureLog/bookmark-error diagnostics roll back with it —
+    CommandResult.fail and the structured ERROR log below are the surviving
+    signals; durable operator-visible handling for this class is A5 scope.
+
+    Returns None when materialization is proven; otherwise the failing
+    CommandResult.
+
+    Stale idempotent replays are diagnosed separately: when emit_event
+    dedups on a historical idempotency key (e.g. an A→B→A→B toggle reuses
+    the first A→B changes-hash), the returned event predates this command's
+    locked counter value — nothing new was emitted, so a postcondition
+    mismatch means the caller replayed a historical transition, NOT that
+    the projection is unhealthy. Before this check that path was a silent
+    success-lie (ok with the row unchanged); it must fail with the accurate
+    cause, never blame projection health.
+    """
+    from projections.models import ProjectionAppliedEvent
+
+    is_replay = event.company_sequence <= locked_counter.last_sequence
+
+    with rls_bypass():
+        marker_present = ProjectionAppliedEvent.objects.filter(
+            company=company,
+            projection_name=ACCOUNT_READ_MODEL_PROJECTION,
+            event=event,
+        ).exists()
+        row = Account.objects.filter(company=company, public_id=account_public_id).first()
+
+    failed_postconditions = []
+    if row is None:
+        failed_postconditions.append("account row missing")
+    else:
+        # Compare against change["new"] ONLY — the "old" side may come from
+        # aggregate state rather than the exact pre-command row.
+        for field, expected in expected_fields.items():
+            stored = getattr(row, field)
+            if stored != expected:
+                failed_postconditions.append(f"{field}: stored {stored!r} != expected {expected!r}")
+
+    if marker_present and not failed_postconditions:
+        return None
+
+    logger.error(
+        "Account materialization FAILED (fail-closed rollback): operation=%s "
+        "company=%s account=%s event=%s event_type=%s applied_marker_present=%s "
+        "stale_idempotent_replay=%s failed_postconditions=%s",
+        operation,
+        company.pk,
+        account_public_id,
+        event.pk,
+        event.event_type,
+        marker_present,
+        is_replay,
+        failed_postconditions or ["<marker missing; row postconditions not evaluated as proof>"],
+    )
+    transaction.set_rollback(True)
+    if is_replay:
+        return CommandResult.fail(
+            f"Account {operation} was not committed: this exact change collides "
+            "with a historical mutation's idempotency key, so no new event was "
+            "emitted (stale idempotent replay) — and the account's current state "
+            "does not match that historical outcome. This is NOT a projection "
+            "failure. If the change is genuinely intended, apply it through a "
+            "distinct intermediate value."
+        )
+    return CommandResult.fail(
+        f"Account {operation} was not committed: the account read model did not "
+        "materialize this mutation (projection paused, failed, or disabled). "
+        "The event and its sequence were rolled back; retry after the account "
+        "projection is healthy."
+    )
+
+
 # =============================================================================
 # Account Commands
 # =============================================================================
@@ -620,7 +734,7 @@ def update_account(
     # either the mutation linearizes first (its account event gets the
     # lower company sequence and a waiting journal observes the committed
     # new state) or a journal linearizes first and this mutation waits.
-    lock_company_event_counter(actor.company)
+    counter = lock_company_event_counter(actor.company)
 
     # Use rls_bypass for lookup since authorization is already done above
     # and the view has already validated company ownership
@@ -688,6 +802,21 @@ def update_account(
     )
 
     _process_projections(actor.company)
+
+    # Fail-closed required materialization (fresh-review P1): success is
+    # reported only after THIS event provably applied — marker AND row
+    # postcondition — else the whole mutation rolls back visibly.
+    failure = _verify_account_materialization(
+        company=actor.company,
+        account_public_id=str(account.public_id),
+        event=event,
+        operation="update",
+        expected_fields={field: change["new"] for field, change in changes.items()},
+        locked_counter=counter,
+    )
+    if failure is not None:
+        return failure
+
     account = Account.objects.get(company=actor.company, public_id=account.public_id)
     return CommandResult.ok(account, event=event)
 
@@ -709,7 +838,7 @@ def delete_account(actor: ActorContext, account_id: int) -> CommandResult:
     # A3-PR2b canonical lock order: Counter BEFORE the Account row (see
     # update_account) — a soft delete is a status mutation feeding
     # AccountFacts and must serialize against posted-journal emission.
-    lock_company_event_counter(actor.company)
+    counter = lock_company_event_counter(actor.company)
 
     # Use rls_bypass for lookup since authorization is already done above
     with rls_bypass():
@@ -737,6 +866,21 @@ def delete_account(actor: ActorContext, account_id: int) -> CommandResult:
     )
 
     _process_projections(actor.company)
+
+    # Fail-closed required materialization (fresh-review P1): a soft delete
+    # is a status mutation feeding AccountFacts — prove it materialized or
+    # roll back the whole attempt.
+    failure = _verify_account_materialization(
+        company=actor.company,
+        account_public_id=str(account.public_id),
+        event=event,
+        operation="delete",
+        expected_fields={"status": Account.Status.INACTIVE},
+        locked_counter=counter,
+    )
+    if failure is not None:
+        return failure
+
     return CommandResult.ok({"deleted": True}, event=event)
 
 

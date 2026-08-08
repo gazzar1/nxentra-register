@@ -1127,3 +1127,50 @@ def test_external_ingest_reserved_set_pins_account_namespace():
     assert EventTypes.JOURNAL_ENTRY_POSTED not in RESERVED_EXTERNAL_INGEST_EVENT_TYPES, (
         "journal_entry.posted must remain externally ingestible through the serialized emit_posted_journal boundary."
     )
+
+
+def test_account_mutations_require_materialization_proof():
+    """A3-PR2b fresh-review P1 ratchet: update_account and delete_account
+    must not return success after emitting their account event without
+    passing through the fail-closed required-materialization check (per-event
+    ProjectionAppliedEvent marker AND Account-row postcondition, then
+    set_rollback on failure). Narrow by design — only AccountProjection is
+    part of the account-facts serialization guarantee; this is NOT a generic
+    mandatory-projection framework."""
+    import inspect
+
+    from accounting import commands as cmd
+    from projections.accounting import AccountProjection
+
+    # The helper watches the projection that actually owns the Account row.
+    assert AccountProjection().name == cmd.ACCOUNT_READ_MODEL_PROJECTION, (
+        "ACCOUNT_READ_MODEL_PROJECTION drifted from AccountProjection().name — "
+        "the materialization proof would watch the wrong consumer."
+    )
+
+    for fn in (cmd.update_account, cmd.delete_account):
+        src = inspect.getsource(fn)
+        assert "_verify_account_materialization(" in src, (
+            f"{fn.__name__} no longer calls _verify_account_materialization — "
+            "it could commit an account event the read model never applied."
+        )
+        drain = src.index("_process_projections(")
+        verify = src.index("_verify_account_materialization(")
+        assert drain < verify, (
+            f"{fn.__name__}: the materialization check must run AFTER the synchronous projection drain."
+        )
+        assert "CommandResult.ok" not in src[drain:verify], (
+            f"{fn.__name__}: a success return between the drain and the "
+            "materialization check would bypass the fail-closed contract."
+        )
+
+    helper_src = inspect.getsource(cmd._verify_account_materialization)
+    assert "set_rollback(True)" in helper_src, (
+        "_verify_account_materialization must mark the owning transaction for "
+        "rollback on failure — returning fail while committing the event would "
+        "recreate the forbidden history."
+    )
+    assert "ProjectionAppliedEvent" in helper_src, (
+        "_verify_account_materialization must require the per-event applied "
+        "marker, not bookmark position or row state alone."
+    )
