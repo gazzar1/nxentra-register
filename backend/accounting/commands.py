@@ -28,9 +28,34 @@ from django.utils import timezone
 
 logger = logging.getLogger("nxentra.accounting.commands")
 
+# A3-PR2b: the ONE supported Account update-field set. update_account
+# diffs against exactly these fields, and the AccountProjection UPDATED
+# handler applies exactly these fields (an architecture meta-test pins
+# the two sets equal), so an ACCOUNT_UPDATED event can never smuggle a
+# mutation of an unsupported column (is_header, ledger_domain, role,
+# company, ...) through the event stream.
+ACCOUNT_UPDATE_ALLOWED_FIELDS = frozenset(
+    {
+        "name",
+        "name_ar",
+        "description",
+        "description_ar",
+        "status",
+        "code",
+        "account_type",
+        "unit_of_measure",
+    }
+)
+
+# The projection whose Account-row writes feed AccountFacts. Pinned equal to
+# AccountProjection().name by an architecture meta-test — the fail-closed
+# materialization proof below must watch the projection that actually owns
+# the row.
+ACCOUNT_READ_MODEL_PROJECTION = "account_read_model"
+
 from accounting.aggregates import load_account_aggregate, load_journal_entry_aggregate
 from accounting.dimension_validation import validate_line_dimensions
-from accounting.journal_invariant import PostedJournalInvalid, prepare_posted_journal_for_emit
+from accounting.journal_invariant import PostedJournalInvalid
 from accounting.models import (
     Account,
     AccountAnalysisDefault,
@@ -58,9 +83,11 @@ from accounting.policies import (
     validate_line_counterparty,
     validate_subledger_tieout,
 )
+from accounting.posted_journal_boundary import emit_posted_journal
 from accounts.authz import ActorContext, require
 from accounts.rls import rls_bypass
 from events.emitter import emit_event
+from events.locks import lock_company_event_counter
 from events.types import (
     AccountAnalysisDefaultRemovedData,
     AccountAnalysisDefaultSetData,
@@ -455,6 +482,114 @@ def _process_projections(company, exclude: set[str] | None = None) -> None:
         projection.process_pending(company, limit=1000)
 
 
+def _verify_account_materialization(
+    *,
+    company,
+    account_public_id: str,
+    event,
+    operation: str,
+    expected_fields: dict,
+    locked_counter,
+) -> CommandResult | None:
+    """A3-PR2b fail-closed required materialization (fresh-review P1).
+
+    The synchronous projection drain is deliberately fail-soft: a paused
+    account_read_model bookmark, a handler error, or PROJECTIONS_SYNC=False
+    all return control here with the account event pending and the Account
+    row untouched. Committing that event would admit the forbidden history —
+    a journal at a higher company sequence validating against pre-mutation
+    AccountFacts — so the command may report success ONLY after proving this
+    exact mutation materialized inside its own transaction:
+
+    1. the per-event ProjectionAppliedEvent marker exists for
+       account_read_model (framework completion — a bookmark can be rewound,
+       paused, or moved by unrelated events; the per-event marker is the
+       precise evidence), AND
+    2. the stored Account row satisfies the operation's postcondition
+       (the financial fact actually materialized — a marker can exist with
+       NO row change: account-not-found return, 0-row UPDATE, unhandled-type
+       fallthrough, ProjectionTerminalSkip).
+
+    Neither proof substitutes for the other. Every decision read happens
+    BEFORE transaction.set_rollback(True) — queries after it raise
+    TransactionManagementError. On failure the whole attempt rolls back:
+    the account event, the consumed CompanyEventCounter sequence, the
+    marker/bookmark writes, any partial row change, and the on_commit
+    projection dispatch registered at event insert (Django discards
+    callbacks of rolled-back transactions). Transaction-local
+    ProjectionFailureLog/bookmark-error diagnostics roll back with it —
+    CommandResult.fail and the structured ERROR log below are the surviving
+    signals; durable operator-visible handling for this class is A5 scope.
+
+    Returns None when materialization is proven; otherwise the failing
+    CommandResult.
+
+    Stale idempotent replays are diagnosed separately: when emit_event
+    dedups on a historical idempotency key (e.g. an A→B→A→B toggle reuses
+    the first A→B changes-hash), the returned event predates this command's
+    locked counter value — nothing new was emitted, so a postcondition
+    mismatch means the caller replayed a historical transition, NOT that
+    the projection is unhealthy. Before this check that path was a silent
+    success-lie (ok with the row unchanged); it must fail with the accurate
+    cause, never blame projection health.
+    """
+    from projections.models import ProjectionAppliedEvent
+
+    is_replay = event.company_sequence <= locked_counter.last_sequence
+
+    with rls_bypass():
+        marker_present = ProjectionAppliedEvent.objects.filter(
+            company=company,
+            projection_name=ACCOUNT_READ_MODEL_PROJECTION,
+            event=event,
+        ).exists()
+        row = Account.objects.filter(company=company, public_id=account_public_id).first()
+
+    failed_postconditions = []
+    if row is None:
+        failed_postconditions.append("account row missing")
+    else:
+        # Compare against change["new"] ONLY — the "old" side may come from
+        # aggregate state rather than the exact pre-command row.
+        for field, expected in expected_fields.items():
+            stored = getattr(row, field)
+            if stored != expected:
+                failed_postconditions.append(f"{field}: stored {stored!r} != expected {expected!r}")
+
+    if marker_present and not failed_postconditions:
+        return None
+
+    logger.error(
+        "Account materialization FAILED (fail-closed rollback): operation=%s "
+        "company=%s account=%s event=%s event_type=%s applied_marker_present=%s "
+        "stale_idempotent_replay=%s failed_postconditions=%s",
+        operation,
+        company.pk,
+        account_public_id,
+        event.pk,
+        event.event_type,
+        marker_present,
+        is_replay,
+        failed_postconditions or ["<marker missing; row postconditions not evaluated as proof>"],
+    )
+    transaction.set_rollback(True)
+    if is_replay:
+        return CommandResult.fail(
+            f"Account {operation} was not committed: this exact change collides "
+            "with a historical mutation's idempotency key, so no new event was "
+            "emitted (stale idempotent replay) — and the account's current state "
+            "does not match that historical outcome. This is NOT a projection "
+            "failure. If the change is genuinely intended, apply it through a "
+            "distinct intermediate value."
+        )
+    return CommandResult.fail(
+        f"Account {operation} was not committed: the account read model did not "
+        "materialize this mutation (projection paused, failed, or disabled). "
+        "The event and its sequence were rolled back; retry after the account "
+        "projection is healthy."
+    )
+
+
 # =============================================================================
 # Account Commands
 # =============================================================================
@@ -573,7 +708,6 @@ def create_account(
 
 
 @transaction.atomic
-@transaction.atomic
 def update_account(
     actor: ActorContext,
     account_id: int,
@@ -591,6 +725,16 @@ def update_account(
         CommandResult with updated Account or error
     """
     require(actor, "accounts.manage")
+
+    # A3-PR2b canonical lock order: CompanyEventCounter BEFORE the Account
+    # row. The posted-journal boundary takes Counter → Account, so an
+    # account mutation taking Account → Counter (the old order) formed an
+    # AB/BA deadlock pair with every concurrent posting. Holding the
+    # Counter first also serializes this mutation against the event log:
+    # either the mutation linearizes first (its account event gets the
+    # lower company sequence and a waiting journal observes the committed
+    # new state) or a journal linearizes first and this mutation waits.
+    counter = lock_company_event_counter(actor.company)
 
     # Use rls_bypass for lookup since authorization is already done above
     # and the view has already validated company ownership
@@ -633,16 +777,7 @@ def update_account(
     # Track changes for event
     # Use aggregate state if available, otherwise fall back to DB model (legacy accounts)
     changes = {}
-    allowed_fields = {
-        "name",
-        "name_ar",
-        "description",
-        "description_ar",
-        "status",
-        "code",
-        "account_type",
-        "unit_of_measure",
-    }
+    allowed_fields = ACCOUNT_UPDATE_ALLOWED_FIELDS
 
     for field, value in updates.items():
         if field in allowed_fields:
@@ -667,6 +802,21 @@ def update_account(
     )
 
     _process_projections(actor.company)
+
+    # Fail-closed required materialization (fresh-review P1): success is
+    # reported only after THIS event provably applied — marker AND row
+    # postcondition — else the whole mutation rolls back visibly.
+    failure = _verify_account_materialization(
+        company=actor.company,
+        account_public_id=str(account.public_id),
+        event=event,
+        operation="update",
+        expected_fields={field: change["new"] for field, change in changes.items()},
+        locked_counter=counter,
+    )
+    if failure is not None:
+        return failure
+
     account = Account.objects.get(company=actor.company, public_id=account.public_id)
     return CommandResult.ok(account, event=event)
 
@@ -684,6 +834,11 @@ def delete_account(actor: ActorContext, account_id: int) -> CommandResult:
         CommandResult with deletion confirmation or error
     """
     require(actor, "accounts.manage")
+
+    # A3-PR2b canonical lock order: Counter BEFORE the Account row (see
+    # update_account) — a soft delete is a status mutation feeding
+    # AccountFacts and must serialize against posted-journal emission.
+    counter = lock_company_event_counter(actor.company)
 
     # Use rls_bypass for lookup since authorization is already done above
     with rls_bypass():
@@ -711,6 +866,21 @@ def delete_account(actor: ActorContext, account_id: int) -> CommandResult:
     )
 
     _process_projections(actor.company)
+
+    # Fail-closed required materialization (fresh-review P1): a soft delete
+    # is a status mutation feeding AccountFacts — prove it materialized or
+    # roll back the whole attempt.
+    failure = _verify_account_materialization(
+        company=actor.company,
+        account_public_id=str(account.public_id),
+        event=event,
+        operation="delete",
+        expected_fields={"status": Account.Status.INACTIVE},
+        locked_counter=counter,
+    )
+    if failure is not None:
+        return failure
+
     return CommandResult.ok({"deleted": True}, event=event)
 
 
@@ -1422,20 +1592,19 @@ def post_journal_entry_or_raise(actor: ActorContext, entry_id: int) -> CommandRe
         source_module=entry.source_module or "",
         source_document=entry.source_document or "",
     ).to_dict()
-    # A3-PR2: the canonical boundary prepares the EXACT payload being
-    # emitted (memo flags authoritative from account facts; strict 2dp
-    # representation) and gates it — in particular the post-FX-conversion
-    # amounts, which the pre-conversion balance check at the top of this
-    # command cannot see. A violation RAISES through this atomic block.
-    posted_payload = prepare_posted_journal_for_emit(actor.company, posted_payload)
-
-    event = emit_event(
-        actor=actor,
-        event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+    # A3-PR2b: the serialized boundary locks the Counter + referenced
+    # Account rows, prepares the EXACT payload (memo flags authoritative
+    # from serialized account facts; strict 2dp representation) and emits
+    # it — in particular gating the post-FX-conversion amounts, which the
+    # pre-conversion balance check at the top of this command cannot see.
+    # A violation RAISES through this atomic block.
+    event = emit_posted_journal(
+        company=actor.company,
+        data=posted_payload,
         aggregate_type="JournalEntry",
         aggregate_id=str(entry.public_id),
         idempotency_key=f"journal_entry.posted:{entry.public_id}",
-        data=posted_payload,
+        actor=actor,
     )
 
     _process_projections(actor.company)
@@ -1661,15 +1830,13 @@ def _reverse_posted_journal_entry(
     # caller's transaction so the ENTIRE owning operation (public reversal,
     # document void, recon unmatch/exclude) rolls back; public boundaries
     # translate it after rollback (translate_posted_journal_invalid).
-    reversal_payload = prepare_posted_journal_for_emit(actor.company, reversal_payload)
-
-    event_posted = emit_event(
-        actor=actor,
-        event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+    event_posted = emit_posted_journal(
+        company=actor.company,
+        data=reversal_payload,
         aggregate_type="JournalEntry",
         aggregate_id=str(reversal_public_id),
         idempotency_key=f"journal_entry.reversal.posted:{original.public_id}",
-        data=reversal_payload,
+        actor=actor,
     )
 
     # Emit REVERSED event for audit trail (links original to reversal)
@@ -2662,11 +2829,6 @@ def close_fiscal_year(
         # A3-PR2: the closing entry is balanced by construction (RE plug) but
         # was never ASSERTED before — validate the exact payload before ANY
         # closing event is emitted, so a rejection stages nothing.
-        try:
-            closing_payload = prepare_posted_journal_for_emit(actor.company, closing_payload)
-        except PostedJournalInvalid as exc:
-            return _posted_journal_invalid_result(exc)
-
         # Emit closing entry created + posted events
         emit_event(
             actor=actor,
@@ -2690,14 +2852,21 @@ def close_fiscal_year(
         )
 
         # Post the closing entry
-        emit_event(
-            actor=actor,
-            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
-            aggregate_type="JournalEntry",
-            aggregate_id=closing_entry_public_id,
-            idempotency_key=f"closing_entry.posted:{actor.company.public_id}:{fiscal_year}:{closed_at.isoformat()}",
-            data=closing_payload,
-        )
+        # A3-PR2b: serialized boundary validates against locked account
+        # state at emit time; a violation is translated via set_rollback so
+        # the ENTIRE close attempt (including the CREATED event above) rolls
+        # back — same failure contract as before, same public return shape.
+        try:
+            emit_posted_journal(
+                company=actor.company,
+                data=closing_payload,
+                aggregate_type="JournalEntry",
+                aggregate_id=closing_entry_public_id,
+                idempotency_key=f"closing_entry.posted:{actor.company.public_id}:{fiscal_year}:{closed_at.isoformat()}",
+                actor=actor,
+            )
+        except PostedJournalInvalid as exc:
+            return _posted_journal_invalid_result(exc)
 
     # Emit closing entry generated audit event
     emit_event(
@@ -2988,14 +3157,6 @@ def reopen_fiscal_year(
                 currency=actor.company.default_currency,
                 exchange_rate="1.0",
             ).to_dict()
-            # A3-PR2: the closing reversal is a NEW event — validate the exact
-            # payload before the CREATED emit so a rejection stages nothing
-            # (the whole reopen rolls back via _posted_journal_invalid_result).
-            try:
-                closing_reversal_payload = prepare_posted_journal_for_emit(actor.company, closing_reversal_payload)
-            except PostedJournalInvalid as exc:
-                return _posted_journal_invalid_result(exc)
-
             emit_event(
                 actor=actor,
                 event_type=EventTypes.JOURNAL_ENTRY_CREATED,
@@ -3017,14 +3178,22 @@ def reopen_fiscal_year(
                 ).to_dict(),
             )
 
-            emit_event(
-                actor=actor,
-                event_type=EventTypes.JOURNAL_ENTRY_POSTED,
-                aggregate_type="JournalEntry",
-                aggregate_id=reversal_entry_public_id,
-                idempotency_key=f"closing_reversal.posted:{actor.company.public_id}:{fiscal_year}:{reopened_at.isoformat()}",
-                data=closing_reversal_payload,
-            )
+            # A3-PR2b: serialized boundary validates against locked account
+            # state at emit time; a violation is translated via set_rollback
+            # so the ENTIRE reopen attempt (including the CREATED and
+            # period-reopened events above) rolls back — same failure
+            # contract, same public return shape.
+            try:
+                emit_posted_journal(
+                    company=actor.company,
+                    data=closing_reversal_payload,
+                    aggregate_type="JournalEntry",
+                    aggregate_id=reversal_entry_public_id,
+                    idempotency_key=f"closing_reversal.posted:{actor.company.public_id}:{fiscal_year}:{reopened_at.isoformat()}",
+                    actor=actor,
+                )
+            except PostedJournalInvalid as exc:
+                return _posted_journal_invalid_result(exc)
 
             # Emit closing entry reversed audit event
             emit_event(
@@ -3832,6 +4001,21 @@ def record_customer_receipt(
     total_allocated = Decimal("0")
 
     if allocations:
+        # A3-PR2b §9.2: allocated invoices are written (amount_paid) AFTER
+        # this command's emits, which made the old unlocked read a
+        # Counter→SalesInvoice edge — the AB/BA pair of invoice posting's
+        # Invoice→Counter. Lock every allocated invoice HERE, before any
+        # emit, in ascending PRIMARY-KEY order (one row per query — the
+        # only way PostgreSQL guarantees acquisition order), restoring the
+        # one canonical direction and serializing concurrent receipts so
+        # two allocations cannot over-apply one invoice.
+        requested_ids = [a.get("invoice_public_id") for a in allocations if a.get("invoice_public_id")]
+        locked_pks = SalesInvoice.objects.filter(
+            company=actor.company, customer=customer, public_id__in=requested_ids
+        ).values_list("pk", flat=True)
+        for pk in sorted(locked_pks):
+            list(SalesInvoice.objects.select_for_update().filter(pk=pk).only("pk"))
+
         for idx, alloc in enumerate(allocations):
             invoice_public_id = alloc.get("invoice_public_id")
             alloc_amount_str = alloc.get("amount")
@@ -3849,7 +4033,8 @@ def record_customer_receipt(
             if alloc_amount <= 0:
                 return CommandResult.fail(f"Allocation {idx + 1}: amount must be positive.")
 
-            # Find the invoice
+            # Row already locked by the pk-ordered pre-pass above; this
+            # read observes the serialized state.
             try:
                 invoice = SalesInvoice.objects.get(
                     company=actor.company,
@@ -4096,22 +4281,20 @@ def record_customer_receipt(
         currency=receipt_currency,
         exchange_rate=str(receipt_exchange_rate),
     ).to_dict()
-    # A3-PR2: canonical zero-tolerance gate on the exact payload (replaces
+    # A3-PR2b: serialized zero-tolerance gate on the exact payload (replaces
     # the removed A194 ±0.05 acceptance band); rejection rolls back the
     # whole receipt attempt including the consumed JE sequence.
     try:
-        receipt_je_payload = prepare_posted_journal_for_emit(actor.company, receipt_je_payload)
+        journal_event = emit_posted_journal(
+            company=actor.company,
+            data=receipt_je_payload,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(entry_public_id),
+            idempotency_key=f"customer_receipt:{receipt_public_id}",
+            actor=actor,
+        )
     except PostedJournalInvalid as exc:
         return _posted_journal_invalid_result(exc)
-
-    journal_event = emit_event(
-        actor=actor,
-        event_type=EventTypes.JOURNAL_ENTRY_POSTED,
-        aggregate_type="JournalEntry",
-        aggregate_id=str(entry_public_id),
-        idempotency_key=f"customer_receipt:{receipt_public_id}",
-        data=receipt_je_payload,
-    )
 
     # Build allocation data for event
     allocation_data = []
@@ -4316,6 +4499,24 @@ def record_vendor_payment(
 
     if allocations:
         from purchases.models import PurchaseBill
+
+        # A3-PR2b §9.1: matched bills are written (amount_paid) AFTER this
+        # command's emits, which made the old post-emit lock a
+        # Counter→PurchaseBill edge — the AB/BA pair of post_purchase_bill's
+        # Bill→Counter (the pre-existing vendor-payment deadlock candidate).
+        # Lock every allocation-matched bill HERE, before any emit, in
+        # ascending PRIMARY-KEY order (one row per query — the only way
+        # PostgreSQL guarantees acquisition order). This also serializes
+        # concurrent payments so two allocations cannot over-apply one bill.
+        requested_refs = [a.get("bill_reference") for a in allocations if a.get("bill_reference")]
+        matched_pks = PurchaseBill.objects.filter(
+            company=actor.company,
+            vendor=vendor,
+            bill_number__in=requested_refs,
+            status=PurchaseBill.Status.POSTED,
+        ).values_list("pk", flat=True)
+        for pk in sorted(matched_pks):
+            list(PurchaseBill.objects.select_for_update().filter(pk=pk).only("pk"))
 
         for idx, alloc in enumerate(allocations):
             bill_reference = alloc.get("bill_reference")
@@ -4592,22 +4793,20 @@ def record_vendor_payment(
         currency=payment_currency,
         exchange_rate=str(payment_exchange_rate),
     ).to_dict()
-    # A3-PR2: canonical zero-tolerance gate on the exact payload (replaces
+    # A3-PR2b: serialized zero-tolerance gate on the exact payload (replaces
     # the removed A194 ±0.05 acceptance band); rejection rolls back the
     # whole payment attempt including the consumed JE sequence.
     try:
-        payment_je_payload = prepare_posted_journal_for_emit(actor.company, payment_je_payload)
+        journal_event = emit_posted_journal(
+            company=actor.company,
+            data=payment_je_payload,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(entry_public_id),
+            idempotency_key=f"vendor_payment:{payment_public_id}",
+            actor=actor,
+        )
     except PostedJournalInvalid as exc:
         return _posted_journal_invalid_result(exc)
-
-    journal_event = emit_event(
-        actor=actor,
-        event_type=EventTypes.JOURNAL_ENTRY_POSTED,
-        aggregate_type="JournalEntry",
-        aggregate_id=str(entry_public_id),
-        idempotency_key=f"vendor_payment:{payment_public_id}",
-        data=payment_je_payload,
-    )
 
     # Build allocation data for event
     allocation_data = []

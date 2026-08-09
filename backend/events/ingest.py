@@ -21,6 +21,7 @@ from rest_framework.views import APIView
 
 from events.api_keys import ExternalAPIKey
 from events.external import emit_external_event
+from events.ingest_policy import is_reserved_external_event_type
 from events.types import EVENT_DATA_CLASSES, InvalidEventPayload
 
 logger = logging.getLogger(__name__)
@@ -120,7 +121,8 @@ class EventIngestView(APIView):
         (idempotency: same idempotency_key returns existing event)
 
     Response 401: Invalid or missing API key
-    Response 403: Event type not authorized for this key
+    Response 403: Event type not authorized for this key, or reserved
+                  for internal emission (no key can authorize those)
     Response 422: Payload validation failed
     Response 429: Rate limit exceeded
     """
@@ -146,6 +148,36 @@ class EventIngestView(APIView):
 
         event_type = payload["event_type"]
 
+        # ── Reserved internal event types: prohibited outright ────────
+        # account.* lifecycle events are command-owned: their projection
+        # mutates the Account rows that feed posted-journal validation,
+        # and live commands mutate those rows only under the A3-PR2b
+        # serialization protocol (CompanyEventCounter → Account locks).
+        # An ingested account event would commit at sequence N with its
+        # row-apply lagging in the post-commit projection pass, so a
+        # journal at N+1 could validate against pre-update facts. NO key
+        # may authorize these types — including a pre-existing key whose
+        # allowed_event_types row already lists them (rows and direct
+        # DB/admin edits bypass key-creation validation, so this runtime
+        # check is the authoritative guard). Rejected before any lookup,
+        # lock, emission or projection scheduling.
+        if is_reserved_external_event_type(event_type):
+            logger.warning(
+                "Reserved internal event type %s rejected from key %s (%s)",
+                event_type,
+                api_key.key_prefix,
+                api_key.source_system,
+            )
+            return Response(
+                {
+                    "detail": (
+                        f"Event type '{event_type}' is reserved for internal "
+                        "emission and cannot be ingested externally."
+                    ),
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         # ── Authorization: is this event type allowed? ────────────────
         if not api_key.is_event_type_allowed(event_type):
             logger.warning(
@@ -169,79 +201,56 @@ class EventIngestView(APIView):
                 status=status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
 
-        # ── A3-PR2: canonical posted-journal emit boundary ────────────
+        # ── A3-PR2b: serialized posted-journal emit boundary ──────────
         # External ingest is the third door into _emit_event_core; a key
-        # scoped to journal_entry.posted must not bypass the invariant the
-        # internal emitters enforce. Validated on the exact dict that will
-        # be emitted, before any event identity exists. Lazy import keeps
-        # the events app free of an accounting dependency at import time.
-        #
-        # Correction (Codex P2 finding 2): the invariant governs NEWLY
-        # emitted events only. An already-accepted retry (same company +
-        # same idempotency key — the same semantics _emit_event_core's
-        # authoritative lookup applies) must keep returning the stored
-        # event idempotently and must NOT be re-judged against mutable
-        # current account state (an account deactivated after acceptance
-        # would otherwise strand the integration in a permanent-retry
-        # loop). The emitter's own race-safe lookup below remains the
-        # authority; this is only an ordering guard. NOTE: matching the
-        # existing contract, a same-key retry returns the stored event
-        # even when the payload differs — payload-equality conflict
-        # detection does not exist at this layer (recorded follow-up debt).
-        emit_data = payload["data"]
-        if event_type == "journal_entry.posted":
-            from events.models import BusinessEvent
-
-            def _same_key_event_exists() -> bool:
-                """ONE idempotency definition: the same company-scoped
-                (company, idempotency_key) semantics _emit_event_core applies
-                authoritatively at insert time."""
-                return BusinessEvent.objects.filter(
-                    company=api_key.company,
-                    idempotency_key=payload["idempotency_key"],
-                ).exists()
-
-            if not _same_key_event_exists():
-                from accounting.journal_invariant import PostedJournalInvalid, prepare_posted_journal_for_emit
+        # scoped to journal_entry.posted must not bypass the serialized
+        # boundary the internal emitters use. emit_posted_journal owns the
+        # ENTIRE contract for this path: same-key pre-lookup (an accepted
+        # retry returns the stored event with no locks and no revalidation
+        # against mutable account state — same-key-different-payload
+        # included, the recorded contract), ONE transaction wrapping the
+        # CompanyEventCounter lock + pk-ordered Account locks + exact
+        # payload preparation + insertion (this path previously validated
+        # in autocommit), and the post-validation-failure same-key recheck
+        # (a concurrently committed competitor outranks this payload's
+        # invariant verdict). Only a genuinely invalid NEW payload raises,
+        # translated here to the same 422 + canonical codes. Lazy import
+        # keeps the events app free of an accounting dependency at import
+        # time.
+        try:
+            if event_type == "journal_entry.posted":
+                from accounting.journal_invariant import PostedJournalInvalid
+                from accounting.posted_journal_boundary import emit_posted_journal
 
                 try:
-                    # Final P1 correction: the boundary returns the EXACT
-                    # canonical payload (authoritative memo flags; strict 2dp
-                    # amounts) and THAT — never the raw caller payload — is
-                    # what gets emitted below.
-                    emit_data = prepare_posted_journal_for_emit(api_key.company, payload["data"])
+                    event = emit_posted_journal(
+                        company=api_key.company,
+                        data=payload["data"],
+                        aggregate_type=payload["aggregate_type"],
+                        aggregate_id=payload["aggregate_id"],
+                        idempotency_key=payload["idempotency_key"],
+                        api_key=api_key,
+                        metadata=payload.get("metadata"),
+                    )
                 except PostedJournalInvalid as exc:
-                    # Concurrency correction (previous fresh-review P2): two
-                    # overlapping same-key requests can BOTH pass the
-                    # pre-lookup. If the other request committed while this
-                    # one was validating, the endpoint's idempotency contract
-                    # outranks this payload's invariant verdict — recheck,
-                    # and when the stored event now exists fall through to
-                    # the emitter below (raw data is fine there: the
-                    # emitter's race-safe lookup returns the stored event,
-                    # nothing is emitted). With no stored event, the
-                    # original 422 with the original canonical codes stands.
-                    if not _same_key_event_exists():
-                        return Response(
-                            {
-                                "detail": "Posted-journal payload failed the canonical invariant.",
-                                "codes": exc.codes,
-                                "violations": exc.as_dicts(),
-                            },
-                            status=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                        )
-
-        # ── Emit ──────────────────────────────────────────────────────
-        try:
-            event = emit_external_event(
-                api_key=api_key,
-                event_type=event_type,
-                aggregate_type=payload["aggregate_type"],
-                aggregate_id=payload["aggregate_id"],
-                idempotency_key=payload["idempotency_key"],
-                data=emit_data,
-                metadata=payload.get("metadata"),
-            )
+                    return Response(
+                        {
+                            "detail": "Posted-journal payload failed the canonical invariant.",
+                            "codes": exc.codes,
+                            "violations": exc.as_dicts(),
+                        },
+                        status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    )
+            else:
+                event = emit_external_event(
+                    api_key=api_key,
+                    event_type=event_type,
+                    aggregate_type=payload["aggregate_type"],
+                    aggregate_id=payload["aggregate_id"],
+                    idempotency_key=payload["idempotency_key"],
+                    data=payload["data"],
+                    metadata=payload.get("metadata"),
+                )
         except InvalidEventPayload as exc:
             return Response(
                 {"detail": "Payload validation failed.", "errors": str(exc)},

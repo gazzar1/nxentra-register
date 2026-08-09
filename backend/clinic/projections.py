@@ -18,7 +18,6 @@ from decimal import Decimal
 
 from django.utils import timezone
 
-from accounting.journal_invariant import prepare_posted_journal_for_emit
 from accounting.mappings import ModuleAccountMapping
 from accounting.models import (
     AnalysisDimension,
@@ -27,8 +26,8 @@ from accounting.models import (
     JournalLine,
     JournalLineAnalysis,
 )
+from accounting.posted_journal_boundary import emit_posted_journal
 from clinic.models import Patient
-from events.emitter import emit_event_no_actor
 from events.models import BusinessEvent
 from events.types import EventTypes, JournalEntryPostedData
 from projections.base import BaseProjection
@@ -339,18 +338,17 @@ class ClinicAccountingProjection(BaseProjection):
             currency=currency,
             exchange_rate="1.0",
         ).to_dict()
-        # A3-PR2: the canonical boundary prepares + gates the exact payload.
-        # A violation RAISES through the per-event projection atomic, rolling
-        # back the POSTED rows staged above — loud failure, never a silent skip.
-        posted_payload = prepare_posted_journal_for_emit(company, posted_payload)
-        emit_event_no_actor(
+        # A3-PR2b: the serialized boundary locks Counter + referenced Account
+        # rows, prepares + gates the exact payload and emits it. A violation
+        # RAISES through the per-event projection atomic, rolling back the
+        # POSTED rows staged above — loud failure, never a silent skip.
+        emit_posted_journal(
             company=company,
-            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+            data=posted_payload,
             aggregate_type="JournalEntry",
             aggregate_id=str(entry.public_id),
             idempotency_key=f"clinic.je.posted:{entry.public_id}",
             metadata={"source_projection": PROJECTION_NAME},
-            data=posted_payload,
             caused_by_event=event,
         )
 

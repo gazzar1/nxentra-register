@@ -1,21 +1,28 @@
 # tests/e2e/test_ingest_concurrency.py
-"""A3-PR2 final concurrency pass (fresh-review P2): the REAL two-connection
-race on PostgreSQL.
+"""A3-PR2 concurrency contract, updated for the A3-PR2b serialized boundary:
+the REAL two-connection race.
 
-Two overlapping same-company/same-key `journal_entry.posted` ingest requests:
-request B passes the pre-validation idempotency lookup while no event exists,
-request A then commits the event, the referenced account is deactivated, and
-B's canonical validation fails — B's post-failure recheck must find A's
-committed event (cross-connection visibility) and return it idempotently
-instead of 422.
+Under A3-PR2b, validation holds the CompanyEventCounter lock, so a same-key
+competitor can no longer commit WHILE this request validates — the one
+window the serialized boundary leaves open is between the same-key
+pre-lookup (no locks) and the Counter acquisition. This test drives exactly
+that window with two real connections: request B's pre-lookup misses and B
+is held BEFORE it takes any lock; request A then commits the same-key event
+on its own connection; the referenced account is deactivated; B resumes,
+acquires the Counter + Account locks, genuinely fails validation
+(JE_ACCOUNT_INACTIVE), and the boundary's post-failure recheck must find
+A's committed event (cross-connection visibility) and return it
+idempotently instead of 422.
 
 Synchronization uses threading.Event barriers — no timing sleeps. The
-validator is wrapped ONLY to coordinate the interleaving; every
-company-scoped database lookup and the genuine validation run for real.
+boundary's pre-lookup is wrapped ONLY to coordinate the interleaving (and
+only on request B's thread); every database lookup and the genuine
+validation run for real.
 
-This file lives under tests/e2e/ so CI runs it on the PostgreSQL service
-(the SQLite job ignores tests/e2e/); pytest-django's transaction=True makes
-A's commit visible to B's independent connection.
+This file lives under tests/e2e/ so CI runs it on the PostgreSQL service;
+pytest-django's transaction=True makes A's commit visible to B's
+independent connection. (It also passes on SQLite: B holds NO transaction
+during the injected window.)
 """
 
 import threading
@@ -73,27 +80,29 @@ def test_concurrent_same_key_retry_returns_stored_event(company, cash_account, r
     idempotency_key = f"a3.race:{uuid4()}"
     payload = _payload(idempotency_key, cash_account, revenue_account)
 
-    import accounting.journal_invariant as ji
+    import accounting.posted_journal_boundary as boundary
 
-    real_validate = ji.prepare_posted_journal_for_emit
-    b_inside_validation = threading.Event()
+    real_lookup = boundary._stored_event
+    b_at_window = threading.Event()
     a_committed = threading.Event()
-    call_no = {"n": 0}
-    call_lock = threading.Lock()
+    held_once = {"done": False}
+    hold_lock = threading.Lock()
 
-    def coordinated(company_arg, data):
-        with call_lock:
-            call_no["n"] += 1
-            mine = call_no["n"]
-        if mine == 1:
-            # Request B: it already passed the pre-lookup (no event existed).
-            # Hold it inside validation until A has committed and the account
-            # has been deactivated, then run the REAL validator.
-            b_inside_validation.set()
-            assert a_committed.wait(timeout=30), "request A never committed"
-        return real_validate(company_arg, data)
+    def coordinated(company_arg, idem_key):
+        result = real_lookup(company_arg, idem_key)
+        # Hold ONLY request B (its thread), only on its first (miss) lookup,
+        # in the pre-lock window: no Counter, no Account rows, no open
+        # transaction — A can commit freely on its own connection.
+        if threading.current_thread().name == "ingest-b" and result is None:
+            with hold_lock:
+                first = not held_once["done"]
+                held_once["done"] = True
+            if first:
+                b_at_window.set()
+                assert a_committed.wait(timeout=30), "request A never committed"
+        return result
 
-    monkeypatch.setattr(ji, "prepare_posted_journal_for_emit", coordinated)
+    monkeypatch.setattr(boundary, "_stored_event", coordinated)
 
     b_result = {}
 
@@ -110,10 +119,10 @@ def test_concurrent_same_key_retry_returns_stored_event(company, cash_account, r
             for conn in connections.all():
                 conn.close()
 
-    thread_b = threading.Thread(target=run_b)
+    thread_b = threading.Thread(target=run_b, name="ingest-b")
     thread_b.start()
     try:
-        assert b_inside_validation.wait(timeout=30), "request B never reached validation"
+        assert b_at_window.wait(timeout=30), "request B never reached the pre-lock window"
 
         # Request A: identical payload, same key — commits while B is held.
         response_a = APIClient().post(

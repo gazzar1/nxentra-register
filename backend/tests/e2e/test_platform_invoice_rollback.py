@@ -113,7 +113,10 @@ def test_invalid_platform_invoice_rolls_back_completely_on_postgres(company, own
     assert _seq(company, "sales_invoice_number") == seq_inv
 
 
-def test_stranded_draft_invoice_recovers_exactly_once_on_postgres(company, owner_membership, actor_context):
+def test_stranded_draft_invoice_fails_visibly_on_postgres(company, owner_membership, actor_context):
+    """A3-PR2b §9.4: the Counter-owning platform wrapper never auto-posts a
+    pre-existing DRAFT invoice — visible manual-review failure, nothing
+    touched, nothing emitted."""
     from sales.commands import create_and_post_invoice_for_platform, create_sales_invoice
     from sales.models import SalesInvoice
 
@@ -129,6 +132,8 @@ def test_stranded_draft_invoice_recovers_exactly_once_on_postgres(company, owner
     )
     assert created.success, created.error
     draft = created.data["invoice"]
+    je_rows = JournalEntry.objects.filter(company=company).count()
+    events = BusinessEvent.objects.filter(company=company).count()
 
     result = create_and_post_invoice_for_platform(
         company=company,
@@ -140,10 +145,13 @@ def test_stranded_draft_invoice_recovers_exactly_once_on_postgres(company, owner
         source_document_id="PGIV-ORDER-2",
     )
 
-    assert result.success, result.error
+    assert not result.success
+    assert "inconsistent" in result.error and "DRAFT" in result.error
     rows = SalesInvoice.objects.filter(company=company, source_document_id="PGIV-ORDER-2")
     assert rows.count() == 1
-    recovered = rows.first()
-    assert recovered.pk == draft.pk
-    assert recovered.status == SalesInvoice.Status.POSTED
-    assert recovered.posted_journal_entry_id is not None
+    untouched = rows.first()
+    assert untouched.pk == draft.pk
+    assert untouched.status == SalesInvoice.Status.DRAFT
+    assert untouched.posted_journal_entry_id is None
+    assert JournalEntry.objects.filter(company=company).count() == je_rows
+    assert BusinessEvent.objects.filter(company=company).count() == events
