@@ -3,10 +3,14 @@
 Evidence-based map of every important financial fact: where it comes from, what
 its canonical form is, who is allowed to write it, who derives from it, what
 legacy/competing representations still exist, and what gap remains. Paths,
-classes, functions, and event names below are taken from current `main`
-(post-A4, PR #107). Where the repository still has hybrid or competing sources,
-this document says so explicitly — Rule 1 requires naming legacy paths, not
-pretending they are gone.
+classes, functions, and event names below are verified against `main` at
+`aeeeed0` (post-A3-PR2b, PR #116, 2026-08-09). Where the repository still has
+hybrid or competing sources, this document says so explicitly — Rule 1 requires
+naming legacy paths, not pretending they are gone.
+
+This map records **writers, readers, and architectural gaps** — gate progress
+is owned by [docs/status/constrained_pilot_status.md](../status/constrained_pilot_status.md);
+this document is not a second status ledger.
 
 Product-contract status refers to [`ISOLATED_SHADOW_LEDGER_V1`](supported-product-contracts.md)
 (the only constrained contract). "In scope" / "out of scope" is enforced at
@@ -104,7 +108,7 @@ and verified by [`backend/accounts/pilot_preflight.py`](../../backend/accounts/p
 | Derived readers | Account/period/dimension balances ([backend/projections/](../../backend/projections/)), all reports, drill-downs. |
 | Legacy / competing | None at the model level; the **validity checks are duplicated across layers** (emitter payload validation, model-level postability checks, period gates in `accounting/policies.py` / `accounting/validation.py`) rather than one canonical implementation. |
 | Contract status | In scope (shadow-ledger reports are the pilot's output). Rebuild/replay is **blocked** for pilot companies (`Capability.PROJECTION_REBUILD` gate in [backend/projections/base.py](../../backend/projections/base.py)). |
-| Known gap | **A3 (open): emit boundary enforced; apply/replay boundary remains open.** A3-PR1 introduced the canonical invariant core ([backend/accounting/journal_invariant.py](../../backend/accounting/journal_invariant.py), 14 stable violation codes) and the read-only corpus scanner (`audit_posted_journal_corpus`); A3-PR2 enforces the invariant at every JOURNAL_ENTRY_POSTED emit boundary (`prepare_posted_journal_for_emit()`, exact prepared-payload emission, zero tolerance for new events, ±0.05 receipt/payment acceptance removed). **Apply/replay enforcement is still pending (A3-PR3)**, and **A3-PR2b (account-state serialization) is IN REVIEW**: the serialized boundary `emit_posted_journal` ([backend/accounting/posted_journal_boundary.py](../../backend/accounting/posted_journal_boundary.py)) validates every newly inserted posted journal against Account rows serialized with the CompanyEventCounter linearization point (live account mutations take Counter → Account) — it must merge before A3-PR3, the fresh pilot database deployment, or real merchant data. Nine pre-existing document/lock-order pairs remain deferred to the Lock-Order Normalization workstream (availability hazards, tracker § Open architectural decisions). Historical events, rebuild and restore paths carry no runtime protection yet, so Rule 3 for JE validity is only enforced for newly emitted events. |
+| Known gap | **A3 (open): emit boundary enforced and serialized; the remaining gap is apply/replay (A3-PR3).** A3-PR1 introduced the canonical invariant core ([backend/accounting/journal_invariant.py](../../backend/accounting/journal_invariant.py), 14 stable violation codes) and the read-only corpus scanner (`audit_posted_journal_corpus`); A3-PR2 enforces the invariant at every JOURNAL_ENTRY_POSTED emit boundary (`prepare_posted_journal_for_emit()`, exact prepared-payload emission, zero tolerance for new events, ±0.05 receipt/payment acceptance removed). **A3-PR2b (account-state serialization) is COMPLETE** (squash-merged in PR #116, `aeeeed0`, 2026-08-09): all production posted-JE emission paths use the serialized boundary `emit_posted_journal` ([backend/accounting/posted_journal_boundary.py](../../backend/accounting/posted_journal_boundary.py)) — for a newly inserted JOURNAL_ENTRY_POSTED event, all account facts used by canonical validation come from Account rows serialized against the CompanyEventCounter linearization point; external ingest cannot mutate account state at all; an Account mutation event may commit only when its Account row has materialized inside the same owning transaction. NOT claimed: apply/replay protection, anything about historical events, or global deadlock freedom. **Apply/replay enforcement remains open (A3-PR3)** — historical events, rebuild and restore paths carry no runtime protection yet, so Rule 3 for JE validity is enforced only for newly emitted events. Nine pre-existing document/lock-order pairs remain deferred to the Lock-Order Normalization workstream (availability hazards, tracker § Open architectural decisions). |
 
 ---
 

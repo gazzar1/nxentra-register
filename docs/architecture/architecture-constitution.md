@@ -146,8 +146,34 @@ architecture debt has **not** been eliminated by adopting this document.
 | Rule 5 — versioned contracts | **Materially enforced for `ISOLATED_SHADOW_LEDGER_V1` by A4** (merged PR #107): runtime gates at shared boundaries, transactional audited activation, exhaustive setup/go-live preflight, ~80 acceptance tests. |
 | Rule 6 — evidence-gated refactors | **Begins with the PR contract** (`.github/pull_request_template.md` + the `PR Architecture Contract` check): every PR must state its evidence. |
 
-**Advisory-first rollout:** the `PR Architecture Contract` workflow runs on
-every pull request and fails loudly on non-compliance, but it is **initially
-advisory** — it does not block merges until a later GitHub ruleset /
-branch-protection step marks it as required. The existing `main` Quality Gate
-is not modified by this governance baseline.
+**Required checks (current, superseding the original advisory-first
+rollout):** branch protection on `main` requires **two** status checks, and
+both have been required since the trusted-checker hardening completed
+(ADR-0003's advisory-removal trigger has fired):
+
+1. **Quality Gate** — the CI workflow's aggregator job;
+2. **PR Architecture Contract** — the trusted-base checker validating the
+   enforced pull-request template.
+
+Neither check may be weakened, bypassed, or overridden by ordinary
+working-practice documents; changing either requires an accepted ADR.
+
+## Document authority and ownership
+
+One owner per kind of fact. These documents govern **different subjects** —
+this is an ownership map, not a total ordering:
+
+| Kind of fact | Sole owner |
+|---|---|
+| Supported and excluded product scope | [supported-product-contracts.md](supported-product-contracts.md) |
+| Binding architecture rules and approved exceptions | this constitution + accepted [ADRs](../adr/) |
+| Event/write/projection policy (subordinate to this constitution) | [docs/finance_event_first_policy.md](../finance_event_first_policy.md) |
+| Current gate progress (A1–A5, G1–G2) | [docs/status/constrained_pilot_status.md](../status/constrained_pilot_status.md) |
+| Per-PR change contract | [.github/pull_request_template.md](../../.github/pull_request_template.md) + the required `PR Architecture Contract` check |
+| Current execution sequence | a future `work-order.md`, when created — that document will own the execution sequence **only**, nothing else |
+| Writers, readers, and architectural gaps of financial facts | [canonical-money-spine.md](canonical-money-spine.md) (evidence map — not a status ledger) |
+
+Architecture maps, audits, and runbooks are **evidence and execution
+reference** — never independent scope authorities. Archived or tombstoned
+documents are historical and non-authoritative; no rule from a retired
+document may be cited as a current exception.

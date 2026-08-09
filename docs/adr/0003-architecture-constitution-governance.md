@@ -101,13 +101,21 @@ outcomes remain **A5 (open)**.
   ([.github/workflows/pr-architecture-contract.yml](../../.github/workflows/pr-architecture-contract.yml))
   running the deterministic body checker, with pure tests in
   [backend/tests/test_pr_architecture_contract.py](../../backend/tests/test_pr_architecture_contract.py).
-- **Honest status: the new workflow is initially advisory.** It runs and fails
-  loudly on every PR, but it does not block merges until a later GitHub
-  ruleset / branch-protection step marks it as required. The existing `main`
-  Quality Gate is not modified by this PR. Rules 1–4 enforcement remains
+- **Honest status: the new workflow was initially advisory.** It ran and
+  failed loudly on every PR, but did not block merges until a later GitHub
+  ruleset / branch-protection step marked it as required. The existing `main`
+  Quality Gate was not modified by this PR. Rules 1–4 enforcement remains
   partial and is strengthened incrementally through A3 and A5; Rule 5 is
   materially enforced for ISOLATED_SHADOW_LEDGER_V1 by A4; Rule 6 begins
   through the PR evidence contract.
+- **Update 2026-08-09 — the advisory-removal trigger has fired.** Branch
+  protection on `main` now requires both status checks: **Quality Gate** and
+  **PR Architecture Contract** (verified against live branch-protection
+  settings; both were required throughout the A3-PR2b review cycle, PR #116).
+  The advisory history above is preserved as decision record; the current
+  governance truth is recorded in the
+  [architecture constitution](../architecture/architecture-constitution.md)
+  ("Required checks" section).
 
 ## Exception scope
 
@@ -181,5 +189,9 @@ inside it carry their own triggers: the "advisory" status of the PR check ends
 when a branch-protection/ruleset step (explicitly deferred from this PR) marks
 `PR Architecture Contract` as required — which, per the bootstrap limitation
 in *Exception scope*, is only permitted after the trusted-checker follow-up PR
-is merged and proven; the Rule 3/Rule 4 partial-enforcement notes end when
-A3/A5 land and their fitness functions replace the prose.
+is merged and proven. **This trigger has FIRED (recorded 2026-08-09):** the
+trusted-checker design (PR #110) is merged and proven, and branch protection
+requires both `Quality Gate` and `PR Architecture Contract`. The Rule 3/Rule 4
+partial-enforcement notes end when A3/A5 land and their fitness functions
+replace the prose — A3 is partially closed (emit-side: A3-PR1/PR2/PR2b
+merged; apply/replay PR3 open), so those notes remain live.

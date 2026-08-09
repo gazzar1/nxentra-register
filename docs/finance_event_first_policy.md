@@ -14,18 +14,26 @@ Related documents:
 
 ## 1. The core rule
 
-**The `BusinessEvent` log is the source of truth. Everything else is a derived view.**
+**For financial ledger facts, the `BusinessEvent` log is the source of truth, and ledger read models are derived views.**
 
-Every accounting movement starts as an emitted event. `SalesInvoice`, `JournalEntry`, `BankStatement`, `CustomerBalance`, `InventoryBalance` — all of these are **read models** projected from events. They are replayable, deletable, and regenerable. The event log is none of those things.
+Replayability is a **per-model, per-workflow property — not a repository-wide guarantee.** The records in this system fall into four categories, and treating them as one category is how evidence gets destroyed:
+
+1. **Immutable financial `BusinessEvent`s** — the event log itself. Append-only, never edited, never deleted. Event-first semantics apply in full.
+2. **Authoritative raw/source or input evidence** — imported bank CSV rows, provider settlement files and raw provider objects, uploaded documents, external identifiers. These are evidence captured from outside the system: they are not derived from events and **cannot be regenerated from the event log**. They must never be deleted on the assumption that replay can recreate them.
+3. **Genuinely derived projections** — read models whose every field is reconstructed from events alone (e.g., `AccountBalance`; `BankStatementLine` match state, canonically event-derived since A86.7b). For these — and only these — replay convergence (§1.1) holds and "replay it, don't patch it" is the correct remedy.
+4. **Hybrid records** — models carrying BOTH event-derived state and directly-written source/document state (e.g., `SalesInvoice` and other sales/purchase documents, inventory records). Each hybrid's source-of-truth and recovery semantics must be named explicitly, per model; hybrids must **not** be deleted or "replayed" on the assumption that the event log can recreate them.
 
 Consequences:
-- If you need to change accounting state, **emit an event** — never UPDATE a read model directly from a view, command, or shell session
+- If you need to change accounting state, **emit an event** — never UPDATE a financial truth table directly from a view, command, or shell session (write barriers enforce this)
 - If you need a new aggregate (e.g., "open AR by salesperson"), **add a projection** — never query across commands
-- If a read model disagrees with the event log, **the read model is wrong** — replay it, don't patch it
+- If a **category-3 projection** disagrees with the event log, the projection is wrong — replay it, don't patch it. For category-2 evidence and category-4 hybrids this remedy **does not apply**: repair goes through the owning command path under that model's named recovery semantics
+- An explicitly documented hybrid is a named, bounded fact about one model — it is **not** a general permission to bypass canonical writers or the [architecture constitution](architecture/architecture-constitution.md)'s rules
+
+**Recovery under the pilot:** rebuild/replay is **excluded as a recovery mechanism** under `ISOLATED_SHADOW_LEDGER_V1` ([supported product contracts](architecture/supported-product-contracts.md)). The load-bearing pilot recovery proof is the **G2 isolated-database restore drill**, not projection replay. Rebuild-v2 and broader replay guarantees remain deferred; apply/replay runtime enforcement is A3-PR3 (open).
 
 ### 1.1 Replay convergence — a load-bearing property
 
-The above only holds if dropping every read-model row and re-running every projection from the event log reproduces the exact same state. This is **replay convergence**, and it is the property that distinguishes "we happen to write events" from "the event log is canonical."
+Category-3 (derived-projection) status is earned, not assumed: it only holds if dropping every read-model row and re-running every projection from the event log reproduces the exact same state. This is **replay convergence**, and it is the property that distinguishes "we happen to write events" from "the event log is canonical."
 
 Verticals are responsible for proving this with at least one test that:
 1. Runs a representative lifecycle through commands.
@@ -103,7 +111,7 @@ Every platform connector must:
 - SELECT existing records by `(company, source, source_document_id)` before INSERT
 - Return the existing record gracefully if found — don't INSERT and rely on the DB to error
 
-The 2026-05-25 A78 incident exposed a gap: the SELECT in `create_and_post_invoice_for_platform` missed an existing row, then the INSERT hit the unique constraint and raised `IntegrityError`. **A82** in the post-listing queue addresses this — the SELECT and the INSERT must agree on the same uniqueness boundary.
+The 2026-05-25 A78 incident exposed a gap: the SELECT in `create_and_post_invoice_for_platform` missed an existing row, then the INSERT hit the unique constraint and raised `IntegrityError`. This was tracked as A82 in a since-retired task queue; the rule it established stands regardless: the SELECT and the INSERT must agree on the same uniqueness boundary.
 
 ---
 

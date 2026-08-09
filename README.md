@@ -1,6 +1,10 @@
-# Nxentra Register — Smart ERP Platform
+# Nxentra Register
 
-Multi-tenant accounting and ERP platform built with Django REST Framework (backend) and Next.js 14 (frontend).
+Nxentra is a **commerce accounting control plane and financial truth engine**: it connects sales channels, fulfillment/courier evidence, payment settlements, and banks to a double-entry general ledger, and reconciles them with explained differences.
+
+The initial supported contract is the **constrained isolated shadow-ledger pilot** — [`ISOLATED_SHADOW_LEDGER_V1`](docs/architecture/supported-product-contracts.md). Everything else in this repository is implementation surface, not supported product scope (see [Modules present in the repository](#modules-present-in-the-repository) below).
+
+Built with Django REST Framework (backend) and Next.js 14 (frontend).
 
 ## Architecture
 
@@ -15,7 +19,9 @@ Multi-tenant accounting and ERP platform built with Django REST Framework (backe
 - [Architecture Decision Records](docs/adr/) — ADRs + [template](docs/adr/template.md); governance baseline in [ADR-0003](docs/adr/0003-architecture-constitution-governance.md)
 - [Constrained-pilot status tracker](docs/status/constrained_pilot_status.md) — authoritative A1–A5/G1–G2 status
 
-## Key Modules
+## Modules present in the repository
+
+The table below lists what **exists in the codebase**. It is **not** the supported pilot scope. [`ISOLATED_SHADOW_LEDGER_V1`](docs/architecture/supported-product-contracts.md) supports: one merchant, one owner, one active Shopify store, EGP only, Shopify orders/refunds, Paymob/Bosta settlement evidence, expected bank deposits, bank CSV, general ledger, reconciliation/exceptions — **shadow accounting only**. Inventory accounting, purchasing accounting, multi-currency input, multiple users, Stripe, Shopify Payments payout accounting, disputes, rebuild/replay as a recovery mechanism, and legacy banking routes are **explicitly unsupported in the pilot** regardless of their presence below; runtime pilot gates enforce this.
 
 | Module | Description |
 |---|---|
@@ -96,7 +102,7 @@ Run the deploy check: `python manage.py check --deploy` — must return **0 warn
 - **Projections**: run synchronously in-process — `PROJECTIONS_SYNC=True` is REQUIRED in production and asserted at boot (A162). `run_projections --daemon` remains a catch-up supplement only.
 - **Celery worker**: `celery -A nxentra_backend worker -l info`
 - **Celery beat**: `celery -A nxentra_backend beat -l info`
-- **Frontend**: `npm run build && npm start` or deploy to Vercel
+- **Frontend**: `npm run build && npm start` under pm2 — the controlled procedure is [docs/runbook-frontend-deploy.md](docs/runbook-frontend-deploy.md). Production deployments are controlled and documented; do not blind-pull onto the production host.
 
 ### Pre-Release Validation
 
@@ -107,10 +113,12 @@ Run the deploy check: `python manage.py check --deploy` — must return **0 warn
 
 ## CI/CD
 
-GitHub Actions workflow (`.github/workflows/ci.yml`) runs on every push/PR to `main`:
+GitHub Actions on every push/PR to `main`:
 
-1. **Backend Tests** — unit + integration on SQLite
-2. **Backend E2E** — full tests on PostgreSQL 16
-3. **Frontend Build** — Next.js type-check + build
-4. **Security Check** — `manage.py check --deploy` + dependency audit
-5. **Quality Gate** — all jobs must pass to merge
+- **CI workflow** (`.github/workflows/ci.yml`) — seven jobs: Backend Tests (SQLite), Backend Invariants (Postgres), Backend E2E Tests (Postgres), Frontend Tests & Build, Lint & Type Check, Security & Deploy Check, and Quality Gate (the aggregator job).
+- **PR Architecture Contract** (`.github/workflows/pr-architecture-contract.yml`) — a separate workflow validating the enforced pull-request template ([ADR-0003](docs/adr/0003-architecture-constitution-governance.md)).
+
+Two checks are **required by branch protection** to merge into `main`, listed distinctly:
+
+1. **Quality Gate**
+2. **PR Architecture Contract**
