@@ -769,7 +769,10 @@ def delete_purchase_bill(actor: ActorContext, bill_id: int) -> CommandResult:
     try:
         bill = PurchaseBill.objects.select_for_update().get(company=actor.company, pk=bill_id)
     except PurchaseBill.DoesNotExist:
-        return CommandResult.fail("Bill not found.")
+        # Structured code so the route can keep 404 semantics in EVERY
+        # interleaving (a view-side exists() pre-check would misreport the
+        # concurrent-delete race as a 400).
+        return CommandResult.fail("Bill not found.", data={"code": "not_found"})
 
     if bill.status != PurchaseBill.Status.DRAFT:
         return CommandResult.fail(

@@ -120,13 +120,13 @@ class PurchaseBillDetailView(APIView):
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
 
-        # Preserve the existing 404-for-missing behavior; the command owns the
-        # DRAFT-only rule and the actual delete.
-        if not PurchaseBill.objects.filter(company=actor.company, pk=pk).exists():
-            return Response({"detail": "Bill not found."}, status=404)
-
         result = delete_purchase_bill(actor, pk)
         if not result.success:
+            # Preserve the existing 404-for-missing behavior via the command's
+            # structured code — correct in every interleaving, including the
+            # concurrent-delete race a view-side exists() pre-check would miss.
+            if result.data and result.data.get("code") == "not_found":
+                return Response({"detail": result.error}, status=404)
             return Response({"detail": result.error}, status=400)
 
         return Response(status=204)

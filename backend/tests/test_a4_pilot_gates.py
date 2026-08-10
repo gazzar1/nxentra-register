@@ -1346,16 +1346,11 @@ _PURCHASE_MUTATION_ROUTES = [
 ]
 
 
-def _seed_purchase_bill(company, *, posted=False):
-    """Create a minimal purchase-bill graph DIRECTLY (bypassing the runtime gate,
-    as pre-activation drift would) so the preflight has something to catch. The
-    Account, VENDOR PostingProfile and Vendor are EXEMPT master data; only the
-    PurchaseBill document (and, when ``posted``, its posted journal entry) is
-    purchasing execution state."""
-    import datetime as _dt
-
-    from accounting.models import Account, JournalEntry, Vendor
-    from purchases.models import PurchaseBill
+def _seed_purchase_master(company):
+    """EXEMPT master data only (AP account, VENDOR posting profile, vendor) —
+    none of it is purchasing execution state, proven by
+    test_preflight_purchase_exemptions_are_clean."""
+    from accounting.models import Account, Vendor
     from sales.models import PostingProfile
 
     ap = Account.objects.create(company=company, code="21000", name="AP Control", account_type="LIABILITY")
@@ -1368,6 +1363,20 @@ def _seed_purchase_bill(company, *, posted=False):
         control_account=ap,
     )
     vendor = Vendor.objects.create(company=company, code="VEND1", name="Vendor One")
+    return vendor, profile
+
+
+def _seed_purchase_bill(company, *, posted=False):
+    """Create a minimal purchase-bill graph DIRECTLY (bypassing the runtime gate,
+    as pre-activation drift would) so the preflight has something to catch. Only
+    the PurchaseBill document (and, when ``posted``, its posted journal entry) is
+    purchasing execution state."""
+    import datetime as _dt
+
+    from accounting.models import JournalEntry
+    from purchases.models import PurchaseBill
+
+    vendor, profile = _seed_purchase_master(company)
     je = None
     if posted:
         je = JournalEntry.objects.create(
@@ -1381,6 +1390,53 @@ def _seed_purchase_bill(company, *, posted=False):
         posting_profile=profile,
         posted_journal_entry=je,
         status=PurchaseBill.Status.POSTED if posted else PurchaseBill.Status.DRAFT,
+    )
+
+
+def _seed_purchase_document(company, kind):
+    """Seed drift of one purchase document ``kind`` (bill / order / receipt /
+    credit_note). A receipt necessarily brings its PO (FK), a credit note its
+    bill — the parametrized test pins the exact expected document count so a
+    dropped model leg in the preflight sum cannot hide behind the companion."""
+    import datetime as _dt
+
+    from purchases.models import GoodsReceipt, PurchaseCreditNote, PurchaseOrder
+
+    if kind == "bill":
+        return _seed_purchase_bill(company)
+
+    if kind == "credit_note":
+        bill = _seed_purchase_bill(company)  # DRAFT: contributes no financial state
+        return PurchaseCreditNote.objects.create(
+            company=company,
+            credit_note_number="PCN-000001",
+            credit_note_date=_dt.date(2026, 1, 20),
+            bill=bill,
+            vendor=bill.vendor,
+            posting_profile=bill.posting_profile,
+        )
+
+    vendor, profile = _seed_purchase_master(company)
+    order = PurchaseOrder.objects.create(
+        company=company,
+        order_number="PO-000001",
+        order_date=_dt.date(2026, 1, 10),
+        vendor=vendor,
+        posting_profile=profile,
+    )
+    if kind == "order":
+        return order
+
+    from inventory.models import Warehouse
+
+    wh = Warehouse.objects.create(company=company, code="WH-P", name="Main")
+    return GoodsReceipt.objects.create(
+        company=company,
+        receipt_number="GRN-000001",
+        receipt_date=_dt.date(2026, 1, 12),
+        purchase_order=order,
+        vendor=vendor,
+        warehouse=wh,
     )
 
 
@@ -1630,3 +1686,145 @@ def test_activation_refuses_company_with_purchase_document(company, user, owner_
         call_command("activate_pilot_profile", "--company", str(company.id), "--yes")
     company.refresh_from_db()
     assert company.pilot_profile == Company.PilotProfile.NONE
+
+
+# --- adversarial self-review round (2026-08-10): hardening additions --------- #
+@pytest.mark.django_db
+def test_module_put_mixed_payload_writes_nothing_for_pilot(company, user, owner_membership, api_client):
+    """Full-payload validation happens BEFORE any write: a mixed payload listing
+    an allowed enable (sales) BEFORE the forbidden purchases enable is refused
+    atomically — not even the sales row is written. Discriminating: a check
+    moved inside the (non-transactional) write loop would persist sales first
+    and only then 403."""
+    from accounts.models import CompanyModule
+
+    _make_pilot(company)
+    api_client.force_authenticate(user=user)
+    resp = api_client.put(
+        "/api/modules/",
+        [{"key": "sales", "is_enabled": True}, {"key": "purchases", "is_enabled": True}],
+        format="json",
+    )
+    assert resp.status_code == 403
+    assert not CompanyModule.objects.filter(company=company).exists()
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "kind,expected_count",
+    [("bill", 1), ("order", 1), ("receipt", 2), ("credit_note", 2)],
+)
+def test_preflight_detects_each_purchase_document_type(kind, expected_count, company, owner_membership):
+    """Every model leg of the purchase_document_state sum fires — the pinned
+    count proves the leg itself is counted (a receipt's companion PO alone
+    would yield 1, not 2)."""
+    _make_pilot(company)
+    _seed_purchase_document(company, kind)
+    violations = [v for v in pilot_policy_run(company, phase="setup") if v.code == "purchase_document_state"]
+    assert violations, f"purchase_document_state did not fire for {kind}"
+    assert violations[0].message.startswith(f"{expected_count} purchase document(s)"), violations[0].message
+
+
+@pytest.mark.django_db
+def test_preflight_detects_posted_credit_note_financial_state(company, owner_membership):
+    """The PurchaseCreditNote leg of purchase_financial_state fires on its own:
+    the target bill stays DRAFT (no JE), so only the posted credit note can
+    trip the code."""
+    import datetime as _dt
+
+    from accounting.models import JournalEntry
+    from purchases.models import PurchaseCreditNote
+
+    _make_pilot(company)
+    bill = _seed_purchase_bill(company, posted=False)
+    je = JournalEntry.objects.create(
+        company=company, entry_number="JE-PCN-1", date=_dt.date(2026, 1, 21), period=1, currency="EGP"
+    )
+    PurchaseCreditNote.objects.create(
+        company=company,
+        credit_note_number="PCN-000009",
+        credit_note_date=_dt.date(2026, 1, 21),
+        bill=bill,
+        vendor=bill.vendor,
+        posting_profile=bill.posting_profile,
+        status=PurchaseCreditNote.Status.POSTED,
+        posted_journal_entry=je,
+    )
+    codes = {v.code for v in pilot_policy_run(company, phase="setup")}
+    assert "purchase_financial_state" in codes
+
+
+# --- NONE-profile delete path: the one route this correction restructured ---- #
+@pytest.mark.django_db
+def test_delete_route_none_profile_draft_bill_deleted(company, user, owner_membership, api_client):
+    from accounts.models import CompanyModule
+    from purchases.models import PurchaseBill
+
+    CompanyModule.objects.create(company=company, module_key="purchases", is_enabled=True)
+    bill = _seed_purchase_bill(company, posted=False)
+    api_client.force_authenticate(user=user)
+    resp = api_client.delete(f"/api/purchases/bills/{bill.id}/")
+    assert resp.status_code == 204
+    assert not PurchaseBill.objects.filter(pk=bill.pk).exists()
+
+
+@pytest.mark.django_db
+def test_delete_route_none_profile_posted_bill_refused(company, user, owner_membership, api_client):
+    from accounts.models import CompanyModule
+    from purchases.models import PurchaseBill
+
+    CompanyModule.objects.create(company=company, module_key="purchases", is_enabled=True)
+    bill = _seed_purchase_bill(company, posted=True)
+    api_client.force_authenticate(user=user)
+    resp = api_client.delete(f"/api/purchases/bills/{bill.id}/")
+    assert resp.status_code == 400
+    assert "Void posted bills instead" in resp.data["detail"]
+    assert PurchaseBill.objects.filter(pk=bill.pk).exists()
+
+
+@pytest.mark.django_db
+def test_delete_route_none_profile_missing_bill_404(company, user, owner_membership, api_client):
+    from accounts.models import CompanyModule
+
+    CompanyModule.objects.create(company=company, module_key="purchases", is_enabled=True)
+    api_client.force_authenticate(user=user)
+    resp = api_client.delete("/api/purchases/bills/999999/")
+    assert resp.status_code == 404
+
+
+# --- the vendor-payment HTTP door ------------------------------------------- #
+@pytest.mark.django_db
+def test_route_vendor_payment_blocked_for_pilot_zero_side_effects(company, user, owner_membership, api_client):
+    """The only HTTP door to record_vendor_payment refuses a pilot with zero
+    side effects, and the refusal is attributable to the pilot gate (the
+    response names the capability, ruling out a coincidental domain error).
+
+    KNOWN RESIDUAL (adversarial self-review, 2026-08-10): the view's
+    pre-existing broad ``except Exception`` (accounting/views.py) re-renders
+    the gate's 403 APIException as HTTP 400 "Internal error: ...". That view
+    is outside this correction's 8-file envelope, so the status is asserted as
+    a refusal (400/403) here; tighten to ``== 403`` when the view's catch is
+    narrowed to re-raise PilotScopeBlocked (named follow-up in the PR).
+    """
+    from accounting.models import CompanySequence, JournalEntry
+    from events.models import BusinessEvent
+
+    _make_pilot(company)
+    be_before = BusinessEvent.objects.filter(company=company).count()
+    api_client.force_authenticate(user=user)
+    resp = api_client.post(
+        "/api/accounting/vendor-payments/",
+        {
+            "vendor_id": 1,
+            "payment_date": "2026-01-15",
+            "amount": "100",
+            "bank_account_id": 1,
+            "ap_control_account_id": 1,
+        },
+        format="json",
+    )
+    assert resp.status_code in (400, 403)
+    assert "purchasing_accounting" in str(resp.data)
+    assert not JournalEntry.objects.filter(company=company).exists()
+    assert BusinessEvent.objects.filter(company=company).count() == be_before
+    assert not CompanySequence.objects.filter(company=company, name="journal_entry_number").exists()
