@@ -1792,6 +1792,47 @@ def test_delete_route_none_profile_missing_bill_404(company, user, owner_members
     assert resp.status_code == 404
 
 
+# --- activation/admission serialization (SQLite-visible regression) ---------- #
+@pytest.mark.django_db
+def test_stale_actor_cannot_bypass_purchasing_gate_after_activation(company, owner_membership):
+    """Serialized admission regression: an ActorContext resolved while the
+    profile was NONE cannot admit a purchasing mutation after activation —
+    requires_capability REFETCHES the Company row (under the admission lock)
+    instead of trusting the cached instance. This closes the reproduced
+    stale-profile race; the PostgreSQL two-connection orderings live in
+    tests/e2e/test_pilot_admission_serialization.py."""
+    from django.core.management import call_command
+
+    from accounting.models import CompanySequence
+    from events.models import BusinessEvent
+    from purchases.commands import create_purchase_bill
+    from purchases.models import PurchaseBill
+
+    company.default_currency = "EGP"
+    company.functional_currency = "EGP"
+    company.fiscal_year_start_month = 1
+    company.save()
+    from projections.models import FiscalPeriodConfig
+
+    FiscalPeriodConfig.objects.get_or_create(company=company, fiscal_year=2026, defaults={"period_count": 13})
+
+    stale_actor = _actor(company)  # caches Company with pilot_profile == NONE
+    call_command("activate_pilot_profile", "--company", str(company.id), "--yes")
+
+    be_before = BusinessEvent.objects.filter(company=company).count()
+    with pytest.raises(PilotScopeBlocked):
+        create_purchase_bill(
+            stale_actor,
+            vendor_id=1,
+            posting_profile_id=1,
+            lines=[{"account_id": 1, "quantity": "1", "unit_price": "10"}],
+            bill_date="2026-01-15",
+        )
+    assert not PurchaseBill.objects.filter(company=company).exists()
+    assert BusinessEvent.objects.filter(company=company).count() == be_before
+    assert not CompanySequence.objects.filter(company=company, name="purchase_bill_number").exists()
+
+
 # --- the vendor-payment HTTP door ------------------------------------------- #
 @pytest.mark.django_db
 def test_route_vendor_payment_blocked_for_pilot_zero_side_effects(company, user, owner_membership, api_client, caplog):

@@ -1241,6 +1241,19 @@ def test_every_public_purchasing_command_carries_pilot_gate_marker():
         f"`_pilot_capability`). Ungated: {ungated}"
     )
 
+    # A4 serialization: the gate must be the SERIALIZED variant (Company
+    # admission lock held through the mutation) — a future non-serialized gate
+    # cannot silently return.
+    unserialized = sorted(
+        name
+        for name, fn in discovered.items()
+        if name not in PURCHASING_COMMAND_GATE_EXEMPT and getattr(fn, "_pilot_capability_serialized", None) is not True
+    )
+    assert not unserialized, (
+        "Every public purchasing command must carry the SERIALIZED admission "
+        f"gate (`_pilot_capability_serialized is True`). Unserialized: {unserialized}"
+    )
+
 
 # =============================================================================
 # Rule 10 (A4): every registered optional module has an explicit
@@ -1305,3 +1318,96 @@ def test_every_optional_module_has_explicit_enablement_disposition():
     assert is_supported(pilot, Capability.PURCHASING_ACCOUNTING) is False, (
         "PURCHASING_ACCOUNTING must be blocked under ISOLATED_SHADOW_LEDGER_V1."
     )
+
+
+# =============================================================================
+# Rule 11 (A4 activation/admission serialization): capability-gated mutations
+# and pilot activation share ONE serializable ordering on the Company row
+# =============================================================================
+#
+# The reproduced race: capability gates read pilot_profile off a cached,
+# unlocked Company, so a mutation admitted at NONE could commit AFTER a clean
+# activation. The closure: mutations admit under the Company ADMISSION LOCK
+# (FOR NO KEY UPDATE where supported) held through their outermost commit;
+# activation keeps its explicit FOR UPDATE before preflight and profile write.
+# These rules pin the structural shape; the PostgreSQL two-connection proofs
+# live in tests/e2e/test_pilot_admission_serialization.py.
+
+# The WITNESSED set of commands whose Company-event emission triggers a
+# synchronous CompanyProjection UPDATE of the Company row (Counter -> Company
+# without alignment). Each must acquire the Company admission lock BEFORE its
+# emission so the global order stays Company -> domain -> Counter -> Accounts.
+# Explicit documented set — do NOT infer global Company lock-order safety from
+# naming patterns; a new Company-event writer belongs here via review.
+COMPANY_EVENT_WRITER_COMMANDS: frozenset[str] = frozenset(
+    {
+        "update_company",
+        "update_company_settings",
+        "upload_company_logo",
+        "delete_company_logo",
+    }
+)
+
+
+def test_record_vendor_payment_carries_serialized_capability_marker():
+    from accounting import commands as accounting_commands
+    from accounts.pilot_policy import Capability
+
+    fn = accounting_commands.record_vendor_payment
+    assert getattr(fn, "_pilot_capability", None) is Capability.PURCHASING_ACCOUNTING, (
+        "record_vendor_payment must carry the PURCHASING_ACCOUNTING gate."
+    )
+    assert getattr(fn, "_pilot_capability_serialized", None) is True, (
+        "record_vendor_payment must carry the SERIALIZED admission gate."
+    )
+
+
+def test_requires_capability_owns_serialized_admission():
+    """The decorator owns: outer transaction -> canonical Company admission
+    lock -> capability check on the LOCKED row -> command invoked with an
+    ActorContext referencing the locked Company. The primitive refetches under
+    FOR NO KEY UPDATE (exact feature flag) and demands an open transaction."""
+    import inspect
+
+    from accounts import pilot_policy
+
+    src = inspect.getsource(pilot_policy.requires_capability)
+    assert "transaction.atomic()" in src, "requires_capability must open the owning transaction"
+    assert "lock_company_for_admission(" in src, "requires_capability must take the canonical admission lock"
+    assert "require_supported(locked_company" in src, "the capability must be evaluated on the LOCKED Company"
+    assert "dataclasses.replace(actor, company=locked_company)" in src, (
+        "the wrapped command must run with an ActorContext referencing the locked Company"
+    )
+
+    prim = inspect.getsource(pilot_policy.lock_company_for_admission)
+    assert "select_for_update(no_key=True)" in prim, "admission lock must be FOR NO KEY UPDATE where supported"
+    assert "has_select_for_no_key_update" in prim, "the exact Django feature flag must gate the lock mode"
+    assert "in_atomic_block" in prim, "the primitive must refuse to run outside transaction.atomic()"
+
+
+def test_activation_locks_company_before_preflight_and_write():
+    """activate_pilot_profile must retain its explicit Company select_for_update
+    BEFORE run_preflight and BEFORE the pilot_profile write — it is the
+    exclusive half of the admission serialization (FOR UPDATE conflicts with
+    the mutations' FOR NO KEY UPDATE; the profile UPDATE alone would not)."""
+    source = (BACKEND_ROOT / "accounts" / "management" / "commands" / "activate_pilot_profile.py").read_text(
+        encoding="utf-8"
+    )
+    assert _statement_order(source, "handle", "select_for_update", "run_preflight("), (
+        "activation must lock the Company row before running the preflight"
+    )
+    assert _statement_order(source, "handle", "run_preflight(", "pilot_profile = Company.PilotProfile"), (
+        "activation must hold the lock from preflight through the profile write"
+    )
+
+
+def test_company_event_writers_lock_company_before_emission():
+    """Every witnessed Company-event writer acquires the Company admission lock
+    BEFORE its event emission (Counter acquisition), keeping the global order
+    Company -> Counter and preventing the AB/BA the serialization fix would
+    otherwise create against these paths."""
+    source = (BACKEND_ROOT / "accounts" / "commands.py").read_text(encoding="utf-8")
+    for func in sorted(COMPANY_EVENT_WRITER_COMMANDS):
+        assert _statement_order(source, func, "lock_company_for_admission(", "emit_event("), (
+            f"{func} must acquire the Company admission lock before emitting its Company event"
+        )

@@ -85,6 +85,7 @@ from accounting.policies import (
 )
 from accounting.posted_journal_boundary import emit_posted_journal
 from accounts.authz import ActorContext, require
+from accounts.pilot_policy import Capability, requires_capability
 from accounts.rls import rls_bypass
 from events.emitter import emit_event
 from events.locks import lock_company_event_counter
@@ -4387,6 +4388,7 @@ def record_customer_receipt(
     )
 
 
+@requires_capability(Capability.PURCHASING_ACCOUNTING)
 @transaction.atomic
 def record_vendor_payment(
     actor: ActorContext,
@@ -4440,13 +4442,11 @@ def record_vendor_payment(
 
     require(actor, "journal.post")
 
-    # A4: the vendor-payment / AP-allocation posting workflow is part of the
-    # purchasing accounting surface a constrained-pilot profile forbids. Gate IN
-    # FULL here — before any vendor/account lookup, allocation lock, sequence
-    # allocation, event or write — so a blocked pilot burns nothing.
-    from accounts.pilot_policy import Capability, require_supported
-
-    require_supported(actor.company, Capability.PURCHASING_ACCOUNTING)
+    # A4: the vendor-payment / AP-allocation posting workflow is gated by the
+    # SERIALIZED @requires_capability(PURCHASING_ACCOUNTING) decorator above —
+    # outermost, before this transaction: it holds the Company admission lock,
+    # re-reads the profile fresh, and raises before any vendor/account lookup,
+    # allocation lock, sequence allocation, event or write.
 
     # Validate vendor
     try:
