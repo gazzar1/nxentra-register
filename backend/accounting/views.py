@@ -2166,6 +2166,8 @@ class VendorPaymentCreateView(APIView):
         return Response(results)
 
     def post(self, request):
+        from accounts.pilot_policy import PilotScopeBlocked
+
         from .commands import record_vendor_payment
 
         actor = resolve_actor(request)
@@ -2225,6 +2227,11 @@ class VendorPaymentCreateView(APIView):
                 currency=str(payment_currency) if payment_currency else "",
                 exchange_rate=str(payment_exchange_rate) if payment_exchange_rate else "",
             )
+        except PilotScopeBlocked:
+            # A4: a pilot-scope refusal is a deliberate policy outcome, not an
+            # internal failure — re-raise so DRF renders the stable 403 with
+            # machine code pilot_scope_blocked (no error-level log noise).
+            raise
         except Exception as e:
             import traceback
 

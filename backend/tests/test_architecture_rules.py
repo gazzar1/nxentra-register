@@ -1243,43 +1243,65 @@ def test_every_public_purchasing_command_carries_pilot_gate_marker():
 
 
 # =============================================================================
-# Rule 10 (A4): every registered optional module has an explicit pilot disposition
+# Rule 10 (A4): every registered optional module has an explicit
+# MODULE-ENABLEMENT disposition
 # =============================================================================
 #
-# So a NEW optional module cannot silently join the pilot: each registered
-# optional module must be either capability-gated at the module-enablement
-# boundary (MODULE_CAPABILITIES) or carry a deliberate pilot-allowed disposition
-# (PILOT_ALLOWED_MODULES). Both are data in accounts.pilot_policy — no
-# source-string pinning. Adding a module without a disposition fails here,
-# forcing a reviewed decision (the deeper vertical posted-JE-emitter assessment
-# for clinic/properties is tracked separately for the pre-G1 review).
+# So a NEW optional module cannot silently join the module-enablement surface:
+# each registered optional module must be either capability-gated at the
+# module-enablement boundary (MODULE_CAPABILITIES) or carry an explicit
+# ungated-at-enablement entry (MODULES_UNGATED_AT_PILOT_ENABLEMENT). Both are
+# data in accounts.pilot_policy — no source-string pinning. This is
+# module-enablement admission coverage ONLY: "ungated at enablement" does not
+# mean process-certified or safe for pilot use, and this rule proves nothing
+# about non-module financial processes (record_vendor_payment is gated
+# separately). The per-process dispositions belong to the Pilot Process-Surface
+# Completeness Assessment tracked for the pre-G1 review.
 
 
-def test_every_optional_module_has_explicit_pilot_disposition():
+def test_every_optional_module_has_explicit_enablement_disposition():
     from accounts.module_registry import module_registry
-    from accounts.pilot_policy import MODULE_CAPABILITIES, PILOT_ALLOWED_MODULES
+    from accounts.pilot_policy import (
+        MODULE_CAPABILITIES,
+        MODULES_UNGATED_AT_PILOT_ENABLEMENT,
+        Capability,
+    )
 
     optional = {m["key"] for m in module_registry.optional_modules()}
     gated = set(MODULE_CAPABILITIES)
-    allowed = set(PILOT_ALLOWED_MODULES)
+    ungated = set(MODULES_UNGATED_AT_PILOT_ENABLEMENT)
 
-    undispositioned = sorted(optional - gated - allowed)
+    undispositioned = sorted(optional - gated - ungated)
     assert not undispositioned, (
-        "Registered optional module(s) with NO pilot disposition — a new module "
-        "must be either capability-gated (MODULE_CAPABILITIES) or deliberately "
-        f"pilot-allowed (PILOT_ALLOWED_MODULES): {undispositioned}"
+        "Registered optional module(s) with NO module-enablement disposition — a "
+        "new module must be either capability-gated (MODULE_CAPABILITIES) or "
+        "explicitly recorded as ungated at enablement "
+        f"(MODULES_UNGATED_AT_PILOT_ENABLEMENT): {undispositioned}"
     )
 
-    stale = sorted((gated | allowed) - optional)
+    stale = sorted((gated | ungated) - optional)
     assert not stale, (
-        "Pilot disposition points at a module that is not a registered optional "
-        f"module (stale / misspelled / core): {stale}"
+        "Module-enablement disposition points at a module that is not a "
+        f"registered optional module (stale / misspelled / core): {stale}"
     )
 
-    both = sorted(gated & allowed)
-    assert not both, f"Module(s) both capability-gated AND pilot-allowed — pick one: {both}"
+    both = sorted(gated & ungated)
+    assert not both, f"Module(s) both capability-gated AND recorded as ungated — pick one: {both}"
 
-    # The purchases gate specifically must stay wired (this PR's load-bearing entry).
-    assert MODULE_CAPABILITIES.get("purchases") is not None, (
-        "purchases must be capability-gated at the module-enablement boundary."
+    # The purchasing entry specifically must stay wired, canonically:
+    # purchases -> PURCHASING_ACCOUNTING, every mapped value a real Capability,
+    # and the capability actually blocked under the pilot profile.
+    assert MODULE_CAPABILITIES.get("purchases") is Capability.PURCHASING_ACCOUNTING, (
+        "purchases must map canonically to Capability.PURCHASING_ACCOUNTING."
+    )
+    assert all(isinstance(cap, Capability) for cap in MODULE_CAPABILITIES.values()), (
+        "every MODULE_CAPABILITIES value must be a real Capability member."
+    )
+
+    from accounts.models import Company
+    from accounts.pilot_policy import is_supported
+
+    pilot = Company(pilot_profile=Company.PilotProfile.ISOLATED_SHADOW_LEDGER_V1)
+    assert is_supported(pilot, Capability.PURCHASING_ACCOUNTING) is False, (
+        "PURCHASING_ACCOUNTING must be blocked under ISOLATED_SHADOW_LEDGER_V1."
     )

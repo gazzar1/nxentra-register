@@ -3145,6 +3145,8 @@ class CompanyModulesView(APIView):
         return Response(result)
 
     def put(self, request):
+        from django.db import transaction
+
         from accounts.authz import resolve_actor
         from accounts.models import CompanyModule
         from accounts.module_registry import module_registry
@@ -3163,14 +3165,17 @@ class CompanyModulesView(APIView):
 
         # A4: refuse enabling a pilot-forbidden module (e.g. purchases). Validate
         # the COMPLETE payload here, before any CompanyModule write, so a refusal
-        # never leaves a partial apply — this up-front validation is a behavior
-        # change from the prior write-as-you-iterate loop. Disabling stays
-        # allowed; NONE-profile companies are unaffected.
+        # never leaves a partial apply. Disabling stays allowed; NONE-profile
+        # companies are unaffected.
         require_module_enable_allowed(actor.company, modules)
 
         optional_keys = {m["key"] for m in module_registry.optional_modules()}
 
-        with command_writes_allowed():
+        # Validate-then-write, all-or-nothing: the whole batch commits in ONE
+        # transaction, so a mid-batch failure cannot leave a partial module
+        # update either. (Both this and the up-front validation are behavior
+        # changes from the prior write-as-you-iterate loop.)
+        with transaction.atomic(), command_writes_allowed():
             for item in modules:
                 key = item.get("key")
                 enabled = item.get("is_enabled", False)

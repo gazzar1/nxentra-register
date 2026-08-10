@@ -1722,7 +1722,7 @@ def test_preflight_detects_each_purchase_document_type(kind, expected_count, com
     _seed_purchase_document(company, kind)
     violations = [v for v in pilot_policy_run(company, phase="setup") if v.code == "purchase_document_state"]
     assert violations, f"purchase_document_state did not fire for {kind}"
-    assert violations[0].message.startswith(f"{expected_count} purchase document(s)"), violations[0].message
+    assert violations[0].message.startswith(f"{expected_count} purchase document row(s)"), violations[0].message
 
 
 @pytest.mark.django_db
@@ -1794,37 +1794,174 @@ def test_delete_route_none_profile_missing_bill_404(company, user, owner_members
 
 # --- the vendor-payment HTTP door ------------------------------------------- #
 @pytest.mark.django_db
-def test_route_vendor_payment_blocked_for_pilot_zero_side_effects(company, user, owner_membership, api_client):
-    """The only HTTP door to record_vendor_payment refuses a pilot with zero
-    side effects, and the refusal is attributable to the pilot gate (the
-    response names the capability, ruling out a coincidental domain error).
+def test_route_vendor_payment_blocked_for_pilot_zero_side_effects(company, user, owner_membership, api_client, caplog):
+    """The only HTTP door to record_vendor_payment refuses a pilot with the
+    STABLE pilot-scope envelope — exact 403, machine code pilot_scope_blocked,
+    the capability named — with zero side effects and no error-level log noise
+    (the refusal is an expected policy outcome, not an internal failure)."""
+    import logging
 
-    KNOWN RESIDUAL (adversarial self-review, 2026-08-10): the view's
-    pre-existing broad ``except Exception`` (accounting/views.py) re-renders
-    the gate's 403 APIException as HTTP 400 "Internal error: ...". That view
-    is outside this correction's 8-file envelope, so the status is asserted as
-    a refusal (400/403) here; tighten to ``== 403`` when the view's catch is
-    narrowed to re-raise PilotScopeBlocked (named follow-up in the PR).
-    """
     from accounting.models import CompanySequence, JournalEntry
     from events.models import BusinessEvent
 
     _make_pilot(company)
     be_before = BusinessEvent.objects.filter(company=company).count()
     api_client.force_authenticate(user=user)
-    resp = api_client.post(
-        "/api/accounting/vendor-payments/",
-        {
-            "vendor_id": 1,
-            "payment_date": "2026-01-15",
-            "amount": "100",
-            "bank_account_id": 1,
-            "ap_control_account_id": 1,
-        },
-        format="json",
-    )
-    assert resp.status_code in (400, 403)
+    with caplog.at_level(logging.ERROR):
+        resp = api_client.post(
+            "/api/accounting/vendor-payments/",
+            {
+                "vendor_id": 1,
+                "payment_date": "2026-01-15",
+                "amount": "100",
+                "bank_account_id": 1,
+                "ap_control_account_id": 1,
+            },
+            format="json",
+        )
+    assert resp.status_code == 403
+    assert resp.data["detail"].code == "pilot_scope_blocked"
     assert "purchasing_accounting" in str(resp.data)
     assert not JournalEntry.objects.filter(company=company).exists()
     assert BusinessEvent.objects.filter(company=company).count() == be_before
     assert not CompanySequence.objects.filter(company=company, name="journal_entry_number").exists()
+    # The expected refusal must not be logged as an internal failure.
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert not errors, [r.getMessage() for r in errors]
+
+
+# --- module PUT is all-or-nothing (not merely refuse-before-write) ----------- #
+@pytest.mark.django_db
+def test_module_put_is_all_or_nothing(company, user, owner_membership, api_client, monkeypatch):
+    """A mid-batch write failure rolls back every already-applied module write —
+    the batch commits in one transaction. Discriminating: without the atomic
+    wrapper the first (sales) row would survive the second write's failure."""
+    from accounts.models import CompanyModule
+
+    real = CompanyModule.objects.update_or_create
+    calls = {"n": 0}
+
+    def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("boom (test-injected mid-batch failure)")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(CompanyModule.objects, "update_or_create", flaky)
+    api_client.force_authenticate(user=user)
+    with pytest.raises(RuntimeError, match="boom"):
+        api_client.put(
+            "/api/modules/",
+            [{"key": "sales", "is_enabled": True}, {"key": "inventory", "is_enabled": True}],
+            format="json",
+        )
+    assert calls["n"] == 2
+    assert not CompanyModule.objects.filter(company=company).exists()
+
+
+# --- durable-evidence preflight: financial/document history survives rows ---- #
+def _seed_purchase_business_event(company, event_type, *, seq):
+    """Seed a canonical purchase/AP BusinessEvent directly — the immutable
+    evidence a deleted document (or a document-free vendor payment) leaves
+    behind."""
+    from uuid import uuid4 as _uuid4
+
+    from events.models import BusinessEvent
+
+    return BusinessEvent.objects.create(
+        company=company,
+        event_type=str(event_type),
+        aggregate_type="PurchaseBill",
+        aggregate_id=str(_uuid4()),
+        idempotency_key=f"a4-drift-{_uuid4()}",
+        company_sequence=seq,
+        data={},
+    )
+
+
+@pytest.mark.django_db
+def test_preflight_detects_vendor_payment_event_without_documents(company, owner_membership):
+    """An allocation-free vendor payment leaves a cash.vendor_payment_recorded
+    event and no purchase document at all — financial state must fire (at
+    preflight AND at activation), document state must not."""
+    from events.types import EventTypes
+
+    _make_pilot(company)
+    _seed_purchase_business_event(company, EventTypes.VENDOR_PAYMENT_RECORDED, seq=990001)
+    codes = {v.code for v in pilot_policy_run(company, phase="setup")}
+    assert "purchase_financial_state" in codes
+    assert "purchase_document_state" not in codes
+    activation_codes = {v.code for v in _run_preflight_activation(company)}
+    assert "purchase_financial_state" in activation_codes
+
+
+@pytest.mark.django_db
+def test_preflight_detects_vendor_payment_allocation(company, owner_membership):
+    """A vendor-side PaymentAllocation row is AP history even with every event
+    and document gone. sales.PaymentAllocation is vendor-only by construction
+    (record_vendor_payment is its sole writer; customer receipts use
+    ReceiptAllocation; properties uses its own model)."""
+    import datetime as _dt
+
+    from sales.models import PaymentAllocation
+
+    _make_pilot(company)
+    vendor, _profile = _seed_purchase_master(company)
+    PaymentAllocation.objects.create(
+        company=company,
+        payment_public_id=uuid4(),
+        payment_date=_dt.date(2026, 1, 15),
+        vendor=vendor,
+        bill_reference="LEGACY-77",
+        amount="100.00",
+    )
+    violations = [v for v in pilot_policy_run(company, phase="setup") if v.code == "purchase_financial_state"]
+    assert violations
+    assert "1 vendor payment allocation(s)" in violations[0].message
+
+
+@pytest.mark.django_db
+def test_preflight_detects_evidence_after_bill_deletion(company, owner_membership):
+    """Operator-style direct deletion of a posted bill (the admin bulk-delete
+    residual) removes the rows but not the immutable posting event — BOTH codes
+    must still fire on the surviving evidence."""
+    from events.types import EventTypes
+    from purchases.models import PurchaseBill
+
+    _make_pilot(company)
+    bill = _seed_purchase_bill(company, posted=True)
+    _seed_purchase_business_event(company, EventTypes.PURCHASES_BILL_POSTED, seq=990002)
+    bill.delete()
+    assert not PurchaseBill.objects.filter(company=company).exists()
+    codes = {v.code for v in pilot_policy_run(company, phase="setup")}
+    assert "purchase_financial_state" in codes
+    assert "purchase_document_state" in codes
+
+
+@pytest.mark.django_db
+def test_preflight_detects_evidence_after_credit_note_deletion(company, owner_membership):
+    """Credit-note equivalent of the deletion case: the surviving
+    purchases.credit_note_posted event alone must trip both codes."""
+    from events.types import EventTypes
+    from purchases.models import PurchaseBill, PurchaseCreditNote
+
+    _make_pilot(company)
+    cn = _seed_purchase_document(company, "credit_note")
+    _seed_purchase_business_event(company, EventTypes.PURCHASES_CREDIT_NOTE_POSTED, seq=990003)
+    cn.delete()
+    PurchaseBill.objects.filter(company=company).delete()
+    assert not PurchaseCreditNote.objects.filter(company=company).exists()
+    codes = {v.code for v in pilot_policy_run(company, phase="setup")}
+    assert "purchase_financial_state" in codes
+    assert "purchase_document_state" in codes
+
+
+@pytest.mark.django_db
+def test_preflight_purchase_sweep_ignores_unrelated_events(company, owner_membership):
+    """No fuzzy matching: an unrelated event type must not trip either purchase
+    code (clean company stays clean)."""
+    _seed_purchase_business_event(company, "account.created", seq=990004)
+    _make_pilot(company)
+    codes = {v.code for v in pilot_policy_run(company, phase="setup")}
+    assert "purchase_financial_state" not in codes
+    assert "purchase_document_state" not in codes

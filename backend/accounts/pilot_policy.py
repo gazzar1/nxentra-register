@@ -78,24 +78,27 @@ MODULE_CAPABILITIES: dict[str, Capability] = {
     "purchases": Capability.PURCHASING_ACCOUNTING,
 }
 
-# Every OTHER registered optional module carries a DELIBERATE pilot disposition
-# here: it is not gated at the module-enablement boundary (this set has NO
-# runtime effect — it is consumed only by the module-completeness architecture
-# ratchet, which requires every registered optional module to be either mapped
-# in ``MODULE_CAPABILITIES`` or listed here, so a NEW optional module cannot
-# silently join the pilot without a reviewed decision). "Pilot-allowed" means
-# "enablement is not pilot-gated", NOT "fully certified safe under the pilot":
+# Every OTHER registered optional module carries an explicit MODULE-ENABLEMENT
+# disposition here: it is currently NOT gated at the module-enablement boundary.
+# Ungated at module enablement does NOT mean process-certified, supported, or
+# safe for pilot use — several of these modules are blocked at deeper runtime
+# boundaries, and the process-level posture of the verticals is unresolved
+# pending the Pilot Process-Surface Completeness Assessment. This set has NO
+# runtime effect: it is consumed only by the module-enablement-disposition
+# architecture ratchet, which requires every registered optional module to be
+# either mapped in ``MODULE_CAPABILITIES`` or listed here, so a NEW optional
+# module cannot silently join this surface without a reviewed decision.
 #   - sales / shopify_connector — the pilot's own supported workflow;
-#   - inventory — enablement allowed; items are forced NON_STOCK by Option B
+#   - inventory — enablement ungated; items are forced NON_STOCK by Option B
 #     (``Capability.INVENTORY``) at the item layer, not here;
 #   - stripe_connector — module visible; Stripe is blocked at connect / sync /
 #     webhook (``Capability.STRIPE``);
 #   - bank_connector — legacy; blocked at ``Capability.LEGACY_BANKING`` and
 #     surfaced as ``legacy_bank_data`` preflight residue;
 #   - clinic / properties — verticals that post their own journals; their
-#     deeper posted-JE-emitter posture under the pilot is the read-only
-#     module-exposure assessment tracked for the pre-G1 review, NOT decided here.
-PILOT_ALLOWED_MODULES: frozenset[str] = frozenset(
+#     posted-JE-emitter posture under the pilot is unresolved pending the
+#     read-only assessment tracked for the pre-G1 review, NOT decided here.
+MODULES_UNGATED_AT_PILOT_ENABLEMENT: frozenset[str] = frozenset(
     {
         "sales",
         "shopify_connector",
