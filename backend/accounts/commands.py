@@ -3432,6 +3432,16 @@ def complete_onboarding(
 
     company = actor.company
 
+    # A4: the onboarding wizard's Step 4 is the second module-enable door. Refuse
+    # enabling a pilot-forbidden module (e.g. purchases) and validate the FULL
+    # module payload HERE — before ANY onboarding write — so a refusal never
+    # leaves the company half-configured. The check no-ops for NONE-profile
+    # companies, so ordinary onboarding (which runs before pilot activation) is
+    # never blocked; only a re-run on an already-active pilot can be refused.
+    from accounts.pilot_policy import require_module_enable_allowed
+
+    require_module_enable_allowed(company, modules)
+
     # ---- Step 1: Company profile ----
     profile_fields = {}
     if company_name:

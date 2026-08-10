@@ -16,6 +16,10 @@ for these gates.
   - projection rebuild / replay (every entry point);
   - adding members / invitations / a second merchant company;
   - inventory: ``INVENTORY`` items and inventory/COGS account mappings (Option B);
+  - purchasing / accounts-payable: purchase documents (bills, orders, goods
+    receipts, credit notes), purchase-originated journals, and the
+    vendor-payment / AP-allocation posting workflow — manual journals (incl.
+    vendor-tagged lines) remain governed by the ordinary manual-journal rules;
   - currency / fiscal-configuration changes;
   - unsafe automatic bank match / unmatch / rematch.
 
@@ -25,6 +29,7 @@ unrecognized stored profile value fails closed (everything gated is blocked).
 
 from __future__ import annotations
 
+import functools
 import logging
 from enum import StrEnum
 
@@ -44,6 +49,7 @@ class Capability(StrEnum):
     ADD_MEMBER = "add_member"
     CREATE_COMPANY = "create_company"
     INVENTORY = "inventory"
+    PURCHASING_ACCOUNTING = "purchasing_accounting"
     CURRENCY_FISCAL_CHANGE = "currency_fiscal_change"
     UNSAFE_BANK_MATCH = "unsafe_bank_match"
 
@@ -59,6 +65,53 @@ NON_EGP_INGESTION = "non_egp_ingestion"
 _BLOCKED_BY_PROFILE: dict[str, frozenset[str]] = {
     "ISOLATED_SHADOW_LEDGER_V1": frozenset(c.value for c in Capability),
 }
+
+
+# Optional modules whose ``ModuleEnabled`` route permission is capability-aware:
+# under a pilot profile that forbids the capability, the permission RAISES
+# ``PilotScopeBlocked`` (403) BEFORE the enablement lookup, so a stale
+# ``CompanyModule.is_enabled=True`` row cannot reopen the module. Both
+# module-enable doors (``CompanyModulesView.put`` + onboarding Step 4) consult
+# this map to refuse enabling a blocked module. Modules NOT listed here are
+# unaffected (their ``ModuleEnabled`` behavior is unchanged).
+MODULE_CAPABILITIES: dict[str, Capability] = {
+    "purchases": Capability.PURCHASING_ACCOUNTING,
+}
+
+# Every OTHER registered optional module carries a DELIBERATE pilot disposition
+# here: it is not gated at the module-enablement boundary (this set has NO
+# runtime effect — it is consumed only by the module-completeness architecture
+# ratchet, which requires every registered optional module to be either mapped
+# in ``MODULE_CAPABILITIES`` or listed here, so a NEW optional module cannot
+# silently join the pilot without a reviewed decision). "Pilot-allowed" means
+# "enablement is not pilot-gated", NOT "fully certified safe under the pilot":
+#   - sales / shopify_connector — the pilot's own supported workflow;
+#   - inventory — enablement allowed; items are forced NON_STOCK by Option B
+#     (``Capability.INVENTORY``) at the item layer, not here;
+#   - stripe_connector — module visible; Stripe is blocked at connect / sync /
+#     webhook (``Capability.STRIPE``);
+#   - bank_connector — legacy; blocked at ``Capability.LEGACY_BANKING`` and
+#     surfaced as ``legacy_bank_data`` preflight residue;
+#   - clinic / properties — verticals that post their own journals; their
+#     deeper posted-JE-emitter posture under the pilot is the read-only
+#     module-exposure assessment tracked for the pre-G1 review, NOT decided here.
+PILOT_ALLOWED_MODULES: frozenset[str] = frozenset(
+    {
+        "sales",
+        "shopify_connector",
+        "inventory",
+        "stripe_connector",
+        "bank_connector",
+        "clinic",
+        "properties",
+    }
+)
+
+
+def capability_for_module(module_key: str) -> Capability | None:
+    """The pilot capability gating ``module_key`` at the module-enablement
+    boundary, or ``None`` when the module is not capability-gated there."""
+    return MODULE_CAPABILITIES.get(module_key)
 
 
 class PilotScopeBlocked(APIException):
@@ -137,6 +190,56 @@ def require_supported(company, capability) -> None:
     forbidden; do nothing when supported."""
     if not is_supported(company, capability):
         raise PilotScopeBlocked(_cap_value(capability), profile_of(company))
+
+
+def requires_capability(capability):
+    """Reusable interactive command gate.
+
+    Decorate a command whose FIRST positional argument is the ``ActorContext``.
+    The wrapper RAISES ``PilotScopeBlocked`` (HTTP 403) BEFORE the command runs
+    — before it opens a transaction, allocates a sequence, takes a lock, emits
+    an event or writes a row — whenever the actor's company pilot profile
+    forbids ``capability``. This is the load-bearing runtime boundary; it must
+    be the OUTERMOST decorator so nothing (not even the transaction) is entered
+    first. ``NONE``-profile companies are unaffected.
+
+    ``_pilot_capability`` is an introspectable marker so an architecture ratchet
+    can prove every command on a gated surface carries the gate. The wrapped
+    ``__wrapped__`` chain preserves the original signature for introspection.
+    """
+
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(actor, *args, **kwargs):
+            require_supported(getattr(actor, "company", None), capability)
+            return func(actor, *args, **kwargs)
+
+        wrapper._pilot_capability = capability
+        return wrapper
+
+    return decorator
+
+
+def require_module_enable_allowed(company, modules) -> None:
+    """Module-enable-door gate. Given an inbound ``[{"key", "is_enabled"}, ...]``
+    payload, validate the COMPLETE payload and RAISE ``PilotScopeBlocked`` for
+    the first module whose enablement the company's pilot profile forbids —
+    BEFORE the caller performs any module write, so a refusal never leaves a
+    partial apply. ENABLING a capability-gated module is refused; DISABLING it
+    (``is_enabled`` falsy) and any unmapped module are always allowed;
+    ``NONE``-profile companies are never restricted (so ordinary onboarding,
+    which runs before pilot activation, is never blocked)."""
+    if not is_pilot(company):
+        return
+    for item in modules or []:
+        if not isinstance(item, dict):
+            continue
+        key = item.get("key", "")
+        if not key or not item.get("is_enabled", False):
+            continue
+        capability = capability_for_module(key)
+        if capability is not None:
+            require_supported(company, capability)
 
 
 def inventory_forced_non_stock(company) -> bool:

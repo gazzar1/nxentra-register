@@ -16,6 +16,7 @@ from accounts.module_permissions import ModuleEnabled
 from .commands import (
     create_purchase_bill,
     create_purchase_credit_note,
+    delete_purchase_bill,
     post_purchase_bill,
     post_purchase_credit_note,
     void_purchase_bill,
@@ -112,27 +113,21 @@ class PurchaseBillDetailView(APIView):
         return Response(serializer.data)
 
     def delete(self, request, pk):
-        """Delete a DRAFT bill. Posted bills must be voided, not deleted —
-        deletion would orphan the JE and break the audit trail."""
-        from projections.write_barrier import command_writes_allowed
-
+        """Delete a DRAFT bill through the gated ``delete_purchase_bill`` command
+        (pilot capability gate + write barrier). Posted bills must be voided, not
+        deleted — deletion would orphan the JE and break the audit trail."""
         actor = resolve_actor(request)
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
 
-        try:
-            bill = PurchaseBill.objects.get(company=actor.company, pk=pk)
-        except PurchaseBill.DoesNotExist:
+        # Preserve the existing 404-for-missing behavior; the command owns the
+        # DRAFT-only rule and the actual delete.
+        if not PurchaseBill.objects.filter(company=actor.company, pk=pk).exists():
             return Response({"detail": "Bill not found."}, status=404)
 
-        if bill.status != PurchaseBill.Status.DRAFT:
-            return Response(
-                {"detail": f"Only DRAFT bills can be deleted (this bill is {bill.status}). Void posted bills instead."},
-                status=400,
-            )
-
-        with command_writes_allowed():
-            bill.delete()
+        result = delete_purchase_bill(actor, pk)
+        if not result.success:
+            return Response({"detail": result.error}, status=400)
 
         return Response(status=204)
 

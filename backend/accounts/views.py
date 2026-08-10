@@ -3148,6 +3148,7 @@ class CompanyModulesView(APIView):
         from accounts.authz import resolve_actor
         from accounts.models import CompanyModule
         from accounts.module_registry import module_registry
+        from accounts.pilot_policy import require_module_enable_allowed
         from projections.write_barrier import command_writes_allowed
 
         actor = resolve_actor(request)
@@ -3159,6 +3160,13 @@ class CompanyModulesView(APIView):
         modules = request.data
         if not isinstance(modules, list):
             return Response({"detail": "Expected a list of {key, is_enabled}."}, status=400)
+
+        # A4: refuse enabling a pilot-forbidden module (e.g. purchases). Validate
+        # the COMPLETE payload here, before any CompanyModule write, so a refusal
+        # never leaves a partial apply — this up-front validation is a behavior
+        # change from the prior write-as-you-iterate loop. Disabling stays
+        # allowed; NONE-profile companies are unaffected.
+        require_module_enable_allowed(actor.company, modules)
 
         optional_keys = {m["key"] for m in module_registry.optional_modules()}
 

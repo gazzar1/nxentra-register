@@ -62,6 +62,7 @@ Unknown profile values fail closed (every gated capability blocked).
 | Shopify Payments payout accounting | `Capability.SHOPIFY_PAYOUT_ACCOUNTING` — scheduled sync skips; interactive views 403 |
 | Disputes / chargebacks | `Capability.SHOPIFY_DISPUTES` — `process_dispute` skips (no row, no event) |
 | Inventory / COGS / FIFO | `Capability.INVENTORY` (Option B) — items forced NON_STOCK; no inventory/COGS module mappings; no cost fetch, no FX cost conversion |
+| Purchasing / accounts payable | `Capability.PURCHASING_ACCOUNTING` — purchase documents (bills, orders, goods receipts, credit notes), purchase-originated journals, and the vendor-payment / AP-allocation workflow. Three enforcement layers: module admission (`ModuleEnabled` raises before the enablement lookup, and both enable doors — `CompanyModulesView.put` + onboarding Step 4 — refuse enabling), the `purchases` command boundary (a `requires_capability` gate on every command, before sequence/lock/emit/write), and `record_vendor_payment`. Manual journals — including vendor-tagged lines — remain governed by the ordinary manual-journal rules |
 | Foreign currency | `require_pilot_currency` at settlement/bank/Shopify ingestion; EGP-only proven at go-live |
 | Multiple users | `Capability.ADD_MEMBER` on every membership path |
 | Legacy banking module | `Capability.LEGACY_BANKING` |
@@ -91,10 +92,14 @@ Unknown profile values fail closed (every gated capability blocked).
 ### Acceptance tests
 
 [backend/tests/test_a4_pilot_gates.py](../../backend/tests/test_a4_pilot_gates.py)
-(~80 tests: every gate at unit + HTTP route + webhook level, Option B and
+(~117 tests: every gate at unit + HTTP route + webhook level, Option B and
 no-FX proofs, activation audit, one seeded test per preflight violation code,
-admin bypass closures) plus the architecture rules in
-[backend/tests/test_architecture_rules.py](../../backend/tests/test_architecture_rules.py).
+admin bypass closures, and the purchasing/AP exclusion — every command blocked
+with zero side effects, both enable doors, stale-enabled-row route 403s,
+per-code purchase drift) plus the architecture rules in
+[backend/tests/test_architecture_rules.py](../../backend/tests/test_architecture_rules.py)
+(including the purchasing-command gate-marker ratchet and the optional-module
+pilot-disposition ratchet).
 
 ### Graduation requirements
 

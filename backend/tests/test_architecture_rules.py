@@ -1070,6 +1070,10 @@ def test_allowlists_are_documented_in_this_file():
         "every emitter; a new unintegrated path needs a written reason and a "
         "linked follow-up decision, not a quiet entry."
     )
+    assert len(PURCHASING_COMMAND_GATE_EXEMPT) == 0, (
+        "PURCHASING_COMMAND_GATE_EXEMPT must stay empty — a purchasing command "
+        "without the pilot gate needs its own guard, not an exemption entry."
+    )
 
 
 def test_external_ingest_reserved_set_pins_account_namespace():
@@ -1173,4 +1177,109 @@ def test_account_mutations_require_materialization_proof():
     assert "ProjectionAppliedEvent" in helper_src, (
         "_verify_account_materialization must require the per-event applied "
         "marker, not bookmark position or row state alone."
+    )
+
+
+# =============================================================================
+# Rule 9 (A4): every public purchasing command carries the pilot gate marker
+# =============================================================================
+#
+# The purchasing / accounts-payable surface is out of scope for the constrained
+# pilot. Each public command in purchases.commands must carry the
+# requires_capability(PURCHASING_ACCOUNTING) gate, exposed as the introspectable
+# `_pilot_capability` marker. This ratchet is registry-derived (it discovers the
+# commands by introspecting the module, so a NEW command is covered
+# automatically) and marker-based (it reads the live attribute, not source
+# text), with an empty exemption allowlist.
+
+PURCHASING_COMMAND_GATE_EXEMPT: set[str] = set()
+"""Empty by design. A public purchasing command WITHOUT the pilot gate needs a
+written reason and its own guard, not a quiet exemption here."""
+
+
+def _public_actor_commands(module) -> dict:
+    """Discover the command surface of `module`: every public, module-defined
+    function whose first parameter is `actor`. Decorated commands keep their
+    original signature via functools.wraps, so introspection still sees `actor`
+    and imported helpers (different __module__) are excluded."""
+    import inspect
+
+    commands: dict = {}
+    for name, obj in vars(module).items():
+        if name.startswith("_") or not inspect.isfunction(obj):
+            continue
+        if getattr(obj, "__module__", None) != module.__name__:
+            continue
+        try:
+            params = list(inspect.signature(obj).parameters)
+        except (ValueError, TypeError):
+            continue
+        if params and params[0] == "actor":
+            commands[name] = obj
+    return commands
+
+
+def test_every_public_purchasing_command_carries_pilot_gate_marker():
+    from accounts.pilot_policy import Capability
+    from purchases import commands as purchasing_commands
+
+    discovered = _public_actor_commands(purchasing_commands)
+    # Sanity: the surface is non-trivial (the 14 documented commands + the new
+    # delete command). A near-zero discovery means the filter broke, not that the
+    # gate is universal.
+    assert len(discovered) >= 14, f"purchasing command discovery looks wrong: {sorted(discovered)}"
+
+    ungated = sorted(
+        name
+        for name, fn in discovered.items()
+        if name not in PURCHASING_COMMAND_GATE_EXEMPT
+        and getattr(fn, "_pilot_capability", None) != Capability.PURCHASING_ACCOUNTING
+    )
+    assert not ungated, (
+        "Every public purchasing command must carry the "
+        "requires_capability(PURCHASING_ACCOUNTING) gate (introspectable via "
+        f"`_pilot_capability`). Ungated: {ungated}"
+    )
+
+
+# =============================================================================
+# Rule 10 (A4): every registered optional module has an explicit pilot disposition
+# =============================================================================
+#
+# So a NEW optional module cannot silently join the pilot: each registered
+# optional module must be either capability-gated at the module-enablement
+# boundary (MODULE_CAPABILITIES) or carry a deliberate pilot-allowed disposition
+# (PILOT_ALLOWED_MODULES). Both are data in accounts.pilot_policy — no
+# source-string pinning. Adding a module without a disposition fails here,
+# forcing a reviewed decision (the deeper vertical posted-JE-emitter assessment
+# for clinic/properties is tracked separately for the pre-G1 review).
+
+
+def test_every_optional_module_has_explicit_pilot_disposition():
+    from accounts.module_registry import module_registry
+    from accounts.pilot_policy import MODULE_CAPABILITIES, PILOT_ALLOWED_MODULES
+
+    optional = {m["key"] for m in module_registry.optional_modules()}
+    gated = set(MODULE_CAPABILITIES)
+    allowed = set(PILOT_ALLOWED_MODULES)
+
+    undispositioned = sorted(optional - gated - allowed)
+    assert not undispositioned, (
+        "Registered optional module(s) with NO pilot disposition — a new module "
+        "must be either capability-gated (MODULE_CAPABILITIES) or deliberately "
+        f"pilot-allowed (PILOT_ALLOWED_MODULES): {undispositioned}"
+    )
+
+    stale = sorted((gated | allowed) - optional)
+    assert not stale, (
+        "Pilot disposition points at a module that is not a registered optional "
+        f"module (stale / misspelled / core): {stale}"
+    )
+
+    both = sorted(gated & allowed)
+    assert not both, f"Module(s) both capability-gated AND pilot-allowed — pick one: {both}"
+
+    # The purchases gate specifically must stay wired (this PR's load-bearing entry).
+    assert MODULE_CAPABILITIES.get("purchases") is not None, (
+        "purchases must be capability-gated at the module-enablement boundary."
     )

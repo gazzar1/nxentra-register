@@ -137,6 +137,7 @@ def run_preflight(company, *, phase: str = "go-live", for_activation: bool = Fal
         v += _inventory_state_violations(company)
         v += _out_of_scope_data_violations(company)
         v += _legacy_bank_violations(company)
+        v += _purchase_state_violations(company)
 
     return v
 
@@ -344,6 +345,59 @@ def _legacy_bank_violations(company) -> list[Violation]:
             )
         ]
     return []
+
+
+def _purchase_state_violations(company) -> list[Violation]:
+    """A4: the purchasing / accounts-payable workflow is out of scope. Detect —
+    read-only, never repaired — any purchases-module enablement, purchase
+    document, or purchase-originated posting drift. Vendors, VENDOR posting
+    profiles, NON_STOCK items and the purchase sequence counters are shared
+    master data / harmless counters, NOT purchasing execution state, and are
+    intentionally exempt. (Going-forward, the runtime gates on the purchasing
+    commands and ``record_vendor_payment`` keep these paths unreachable; this is
+    drift detection for anything that predates activation.)"""
+    from accounts.models import CompanyModule
+    from purchases.models import GoodsReceipt, PurchaseBill, PurchaseCreditNote, PurchaseOrder
+
+    out: list[Violation] = []
+
+    if CompanyModule.objects.filter(company=company, module_key="purchases", is_enabled=True).exists():
+        out.append(
+            Violation(
+                "purchases_module_enabled",
+                "The purchases module is enabled; the purchasing/AP workflow is out of scope for the pilot.",
+            )
+        )
+
+    documents = (
+        PurchaseBill.objects.filter(company=company).count()
+        + PurchaseOrder.objects.filter(company=company).count()
+        + GoodsReceipt.objects.filter(company=company).count()
+        + PurchaseCreditNote.objects.filter(company=company).count()
+    )
+    if documents:
+        out.append(
+            Violation(
+                "purchase_document_state",
+                f"{documents} purchase document(s) (bills / orders / goods receipts / credit notes) exist; "
+                "the purchasing workflow is out of scope for the pilot.",
+            )
+        )
+
+    posted = (
+        PurchaseBill.objects.filter(company=company, posted_journal_entry__isnull=False).count()
+        + PurchaseCreditNote.objects.filter(company=company, posted_journal_entry__isnull=False).count()
+    )
+    if posted:
+        out.append(
+            Violation(
+                "purchase_financial_state",
+                f"{posted} purchase document(s) carry posted journal entries; purchase-originated "
+                "AP/expense/input-VAT postings are out of scope for the pilot.",
+            )
+        )
+
+    return out
 
 
 def _capability_gate_violations(company) -> list[Violation]:

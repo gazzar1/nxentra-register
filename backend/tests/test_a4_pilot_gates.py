@@ -1303,3 +1303,330 @@ def _run_preflight_activation(company):
     from accounts.pilot_preflight import run_preflight
 
     return run_preflight(company, phase="setup", for_activation=True)
+
+
+# =========================================================================== #
+# A4 correction (2026-08-10): purchasing / accounts-payable exclusion.
+#
+# Gap re-closed after the PR #117 review: a pilot OWNER could enable the
+# `purchases` module via two doors and post NON_STOCK bills → full AP / expense
+# / input-VAT journals through the posted-journal boundary. These prove the
+# runtime boundaries block every path (not UI hiding), with zero side effects,
+# plus preflight/activation drift detection — and that NONE-profile companies
+# keep the existing behavior.
+# =========================================================================== #
+
+_PURCHASING_COMMANDS = [
+    "create_purchase_bill",
+    "post_purchase_bill",
+    "void_purchase_bill",
+    "delete_purchase_bill",
+    "create_purchase_order",
+    "approve_purchase_order",
+    "cancel_purchase_order",
+    "close_purchase_order",
+    "create_goods_receipt",
+    "post_goods_receipt",
+    "void_goods_receipt",
+    "create_bill_from_po",
+    "create_purchase_credit_note",
+    "post_purchase_credit_note",
+    "void_purchase_credit_note",
+]
+
+_PURCHASE_MUTATION_ROUTES = [
+    ("post", "/api/purchases/bills/"),
+    ("post", "/api/purchases/orders/"),
+    ("post", "/api/purchases/receipts/"),
+    ("post", "/api/purchases/credit-notes/"),
+    ("post", "/api/purchases/bills/999999/post/"),
+    ("post", "/api/purchases/bills/999999/void/"),
+    ("post", "/api/purchases/orders/999999/approve/"),
+    ("delete", "/api/purchases/bills/999999/"),
+]
+
+
+def _seed_purchase_bill(company, *, posted=False):
+    """Create a minimal purchase-bill graph DIRECTLY (bypassing the runtime gate,
+    as pre-activation drift would) so the preflight has something to catch. The
+    Account, VENDOR PostingProfile and Vendor are EXEMPT master data; only the
+    PurchaseBill document (and, when ``posted``, its posted journal entry) is
+    purchasing execution state."""
+    import datetime as _dt
+
+    from accounting.models import Account, JournalEntry, Vendor
+    from purchases.models import PurchaseBill
+    from sales.models import PostingProfile
+
+    ap = Account.objects.create(company=company, code="21000", name="AP Control", account_type="LIABILITY")
+    profile = PostingProfile.objects.create(
+        company=company,
+        code="AP-M",
+        name="AP Manual",
+        profile_type=PostingProfile.ProfileType.VENDOR,
+        usage=PostingProfile.Usage.MANUAL,
+        control_account=ap,
+    )
+    vendor = Vendor.objects.create(company=company, code="VEND1", name="Vendor One")
+    je = None
+    if posted:
+        je = JournalEntry.objects.create(
+            company=company, entry_number="JE-PUR-1", date=_dt.date(2026, 1, 15), period=1, currency="EGP"
+        )
+    return PurchaseBill.objects.create(
+        company=company,
+        bill_number="BILL-000001",
+        bill_date=_dt.date(2026, 1, 15),
+        vendor=vendor,
+        posting_profile=profile,
+        posted_journal_entry=je,
+        status=PurchaseBill.Status.POSTED if posted else PurchaseBill.Status.DRAFT,
+    )
+
+
+# --- capability presence ---------------------------------------------------- #
+def test_purchasing_capability_present_and_blocked():
+    pilot = Company(pilot_profile=ISO)
+    normal = Company(pilot_profile=Company.PilotProfile.NONE)
+    assert is_supported(pilot, Capability.PURCHASING_ACCOUNTING) is False
+    assert is_supported(normal, Capability.PURCHASING_ACCOUNTING) is True
+
+
+# --- command-layer gate: raises before any side effect ---------------------- #
+@pytest.mark.django_db
+@pytest.mark.parametrize("cmd_name", _PURCHASING_COMMANDS)
+def test_every_purchasing_command_blocked_for_pilot(cmd_name, company, owner_membership):
+    """Every public purchasing command RAISES PilotScopeBlocked for a pilot — the
+    decorator gate fires before the wrapped body, so even a call with no valid
+    arguments is refused (the gate precedes sequence/lock/emit/write)."""
+    from purchases import commands as pc
+
+    _make_pilot(company)
+    fn = getattr(pc, cmd_name)
+    with pytest.raises(PilotScopeBlocked):
+        fn(_actor(company))
+
+
+@pytest.mark.django_db
+def test_create_purchase_bill_blocked_with_zero_side_effects(company, owner_membership):
+    from accounting.models import CompanySequence, JournalEntry
+    from events.models import BusinessEvent
+    from inventory.models import StockLedgerEntry
+    from purchases.commands import create_purchase_bill
+    from purchases.models import PurchaseBill
+
+    _make_pilot(company)
+    je_before = JournalEntry.objects.filter(company=company).count()
+    be_before = BusinessEvent.objects.filter(company=company).count()
+
+    with pytest.raises(PilotScopeBlocked):
+        create_purchase_bill(
+            _actor(company),
+            vendor_id=1,
+            posting_profile_id=1,
+            lines=[{"account_id": 1, "quantity": "1", "unit_price": "10"}],
+            bill_date="2026-01-15",
+        )
+
+    assert not PurchaseBill.objects.filter(company=company).exists()
+    assert JournalEntry.objects.filter(company=company).count() == je_before
+    assert BusinessEvent.objects.filter(company=company).count() == be_before
+    assert not StockLedgerEntry.objects.filter(company=company).exists()
+    # The gate precedes sequence allocation — no purchase_bill_number is burned.
+    assert not CompanySequence.objects.filter(company=company, name="purchase_bill_number").exists()
+
+
+@pytest.mark.django_db
+def test_record_vendor_payment_blocked_with_zero_side_effects(company, owner_membership):
+    from accounting.commands import record_vendor_payment
+    from accounting.models import CompanySequence, JournalEntry
+    from events.models import BusinessEvent
+    from sales.models import PaymentAllocation
+
+    _make_pilot(company)
+    je_before = JournalEntry.objects.filter(company=company).count()
+    be_before = BusinessEvent.objects.filter(company=company).count()
+
+    with pytest.raises(PilotScopeBlocked):
+        record_vendor_payment(
+            _actor(company),
+            vendor_id=1,
+            payment_date="2026-01-15",
+            amount="100",
+            bank_account_id=1,
+            ap_control_account_id=1,
+        )
+
+    assert JournalEntry.objects.filter(company=company).count() == je_before
+    assert BusinessEvent.objects.filter(company=company).count() == be_before
+    assert not PaymentAllocation.objects.filter(company=company).exists()
+    assert not CompanySequence.objects.filter(company=company, name="journal_entry_number").exists()
+
+
+@pytest.mark.django_db
+def test_purchasing_command_unaffected_for_none_profile(company, owner_membership):
+    """NONE profile: the gate is inert — the command runs normally and reports an
+    ordinary domain failure (missing vendor), never PilotScopeBlocked."""
+    from purchases.commands import create_purchase_bill
+
+    result = create_purchase_bill(
+        _actor(company),
+        vendor_id=999999,
+        posting_profile_id=999999,
+        lines=[{"account_id": 999999, "quantity": "1", "unit_price": "10"}],
+        bill_date="2026-01-15",
+    )
+    assert not result.success
+    assert "Vendor not found" in result.error
+
+
+# --- route-level gate: 403 pre-serializer, even with a stale enabled row ----- #
+@pytest.mark.django_db
+@pytest.mark.parametrize("method,path", _PURCHASE_MUTATION_ROUTES)
+def test_purchase_routes_403_for_pilot_even_with_stale_enabled_row(
+    method, path, company, user, owner_membership, api_client
+):
+    """Route-level gate: for a pilot, EVERY purchases mutation route returns 403
+    at permission-check time — BEFORE the serializer — even when a stale
+    CompanyModule row says the module is enabled (drift cannot reopen it). An
+    invalid payload still yields 403, not a 400 validation error, proving the
+    gate precedes the serializer."""
+    from accounts.models import CompanyModule
+
+    _make_pilot(company)
+    CompanyModule.objects.create(company=company, module_key="purchases", is_enabled=True)
+    api_client.force_authenticate(user=user)
+
+    if method == "post":
+        resp = api_client.post(path, {"definitely": "invalid"}, format="json")
+    else:
+        resp = api_client.delete(path)
+    assert resp.status_code == 403, (path, resp.status_code)
+
+
+@pytest.mark.django_db
+def test_purchase_route_not_pilot_blocked_for_none_profile(company, user, owner_membership, api_client):
+    """NONE profile with the module enabled: the pilot gate is inert — an invalid
+    payload reaches the serializer and returns 400, never the pilot 403."""
+    from accounts.models import CompanyModule
+
+    CompanyModule.objects.create(company=company, module_key="purchases", is_enabled=True)
+    api_client.force_authenticate(user=user)
+    resp = api_client.post("/api/purchases/bills/", {"definitely": "invalid"}, format="json")
+    assert resp.status_code == 400
+
+
+# --- both module-enable doors refuse enabling; disabling stays allowed ------- #
+@pytest.mark.django_db
+@pytest.mark.parametrize("door", ["modules_put", "onboarding_step4"])
+def test_both_enable_doors_refuse_enabling_purchases_for_pilot(door, company, user, owner_membership, api_client):
+    from accounts.models import CompanyModule
+
+    _make_pilot(company)
+    if door == "modules_put":
+        api_client.force_authenticate(user=user)
+        resp = api_client.put("/api/modules/", [{"key": "purchases", "is_enabled": True}], format="json")
+        assert resp.status_code == 403
+    else:
+        from accounts.commands import complete_onboarding
+
+        with pytest.raises(PilotScopeBlocked):
+            complete_onboarding(_actor(company), modules=[{"key": "purchases", "is_enabled": True}])
+    # Validate-before-write: no purchases CompanyModule row was created at all.
+    assert not CompanyModule.objects.filter(company=company, module_key="purchases").exists()
+
+
+@pytest.mark.django_db
+def test_module_put_allows_disabling_purchases_for_pilot(company, user, owner_membership, api_client):
+    _make_pilot(company)
+    api_client.force_authenticate(user=user)
+    resp = api_client.put("/api/modules/", [{"key": "purchases", "is_enabled": False}], format="json")
+    assert resp.status_code == 200
+
+
+@pytest.mark.django_db
+def test_module_put_enables_purchases_for_none_profile(company, user, owner_membership, api_client):
+    from accounts.models import CompanyModule
+
+    api_client.force_authenticate(user=user)
+    resp = api_client.put("/api/modules/", [{"key": "purchases", "is_enabled": True}], format="json")
+    assert resp.status_code == 200
+    assert CompanyModule.objects.filter(company=company, module_key="purchases", is_enabled=True).exists()
+
+
+# --- preflight / activation drift detection --------------------------------- #
+@pytest.mark.django_db
+def test_preflight_detects_purchases_module_enabled(company, owner_membership):
+    from accounts.models import CompanyModule
+
+    _make_pilot(company)
+    CompanyModule.objects.create(company=company, module_key="purchases", is_enabled=True)
+    codes = {v.code for v in pilot_policy_run(company, phase="setup")}
+    assert "purchases_module_enabled" in codes
+
+
+@pytest.mark.django_db
+def test_preflight_detects_purchase_document_state(company, owner_membership):
+    _make_pilot(company)
+    _seed_purchase_bill(company, posted=False)
+    codes = {v.code for v in pilot_policy_run(company, phase="setup")}
+    assert "purchase_document_state" in codes
+    assert "purchase_financial_state" not in codes  # a DRAFT bill has no posted JE
+
+
+@pytest.mark.django_db
+def test_preflight_detects_purchase_financial_state(company, owner_membership):
+    _make_pilot(company)
+    _seed_purchase_bill(company, posted=True)
+    codes = {v.code for v in pilot_policy_run(company, phase="setup")}
+    assert "purchase_financial_state" in codes
+    assert "purchase_document_state" in codes
+
+
+@pytest.mark.django_db
+def test_preflight_purchase_exemptions_are_clean(company, owner_membership):
+    """Vendors, VENDOR posting profiles, NON_STOCK items and the purchase
+    sequence counters are shared master data / harmless counters — NOT purchasing
+    execution state — so none of the purchase violation codes fire for them."""
+    from accounting.models import Account, CompanySequence, Vendor
+    from sales.models import Item, PostingProfile
+
+    _make_pilot(company)
+    ap = Account.objects.create(company=company, code="21000", name="AP", account_type="LIABILITY")
+    PostingProfile.objects.create(
+        company=company,
+        code="AP-M",
+        name="AP Manual",
+        profile_type=PostingProfile.ProfileType.VENDOR,
+        usage=PostingProfile.Usage.MANUAL,
+        control_account=ap,
+    )
+    Vendor.objects.create(company=company, code="VEND1", name="Vendor One")
+    Item.objects.create(company=company, code="SVC1", name="Service", item_type=Item.ItemType.NON_STOCK)
+    CompanySequence.objects.create(company=company, name="purchase_bill_number", next_value=7)
+
+    codes = {v.code for v in pilot_policy_run(company, phase="setup")}
+    assert "purchase_document_state" not in codes
+    assert "purchase_financial_state" not in codes
+    assert "purchases_module_enabled" not in codes
+
+
+@pytest.mark.django_db
+def test_activation_refuses_company_with_purchase_document(company, user, owner_membership):
+    from django.core.management import call_command
+    from django.core.management.base import CommandError
+
+    # An otherwise setup-clean EGP company; a purchase document is forbidden drift.
+    company.default_currency = "EGP"
+    company.functional_currency = "EGP"
+    company.fiscal_year_start_month = 1
+    company.save()
+    from projections.models import FiscalPeriodConfig
+
+    FiscalPeriodConfig.objects.get_or_create(company=company, fiscal_year=2026, defaults={"period_count": 13})
+    _seed_purchase_bill(company)
+
+    with pytest.raises(CommandError):
+        call_command("activate_pilot_profile", "--company", str(company.id), "--yes")
+    company.refresh_from_db()
+    assert company.pilot_profile == Company.PilotProfile.NONE

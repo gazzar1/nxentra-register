@@ -4440,6 +4440,14 @@ def record_vendor_payment(
 
     require(actor, "journal.post")
 
+    # A4: the vendor-payment / AP-allocation posting workflow is part of the
+    # purchasing accounting surface a constrained-pilot profile forbids. Gate IN
+    # FULL here — before any vendor/account lookup, allocation lock, sequence
+    # allocation, event or write — so a blocked pilot burns nothing.
+    from accounts.pilot_policy import Capability, require_supported
+
+    require_supported(actor.company, Capability.PURCHASING_ACCOUNTING)
+
     # Validate vendor
     try:
         vendor = Vendor.objects.get(pk=vendor_id, company=actor.company)

@@ -21,6 +21,7 @@ from accounting.commands import (
 )
 from accounting.models import Account, JournalEntry, Vendor
 from accounts.authz import ActorContext, require
+from accounts.pilot_policy import Capability, requires_capability
 from events.emitter import emit_event
 from events.types import (
     EventTypes,
@@ -75,6 +76,7 @@ def _calculate_line(line_data: dict) -> dict:
     }
 
 
+@requires_capability(Capability.PURCHASING_ACCOUNTING)
 @transaction.atomic
 def create_purchase_bill(
     actor: ActorContext,
@@ -343,6 +345,7 @@ def create_purchase_bill(
     return CommandResult.ok(data={"bill": bill}, event=event)
 
 
+@requires_capability(Capability.PURCHASING_ACCOUNTING)
 @translate_posted_journal_invalid
 @transaction.atomic
 def post_purchase_bill(actor: ActorContext, bill_id: int) -> CommandResult:
@@ -667,6 +670,7 @@ def post_purchase_bill(actor: ActorContext, bill_id: int) -> CommandResult:
     return CommandResult.ok(data={"bill": bill, "journal_entry": journal_entry}, event=event)
 
 
+@requires_capability(Capability.PURCHASING_ACCOUNTING)
 @translate_posted_journal_invalid
 @transaction.atomic
 def void_purchase_bill(
@@ -748,11 +752,42 @@ def void_purchase_bill(
     return CommandResult.ok(data={"bill": bill, "reversing_entry": reversal_je}, event=event)
 
 
+@requires_capability(Capability.PURCHASING_ACCOUNTING)
+@transaction.atomic
+def delete_purchase_bill(actor: ActorContext, bill_id: int) -> CommandResult:
+    """Delete a DRAFT purchase bill (its lines cascade).
+
+    Replaces the former direct ``bill.delete()`` in ``PurchaseBillDetailView`` so
+    the delete runs through the gated command layer — the pilot capability gate
+    and the projection write barrier both apply. Posted bills must be voided, not
+    deleted: deletion would orphan the journal entry and break the audit trail.
+
+    Authorization is unchanged from the previous in-view delete (module access +
+    authentication, enforced at the view); this command adds no new permission
+    requirement.
+    """
+    try:
+        bill = PurchaseBill.objects.select_for_update().get(company=actor.company, pk=bill_id)
+    except PurchaseBill.DoesNotExist:
+        return CommandResult.fail("Bill not found.")
+
+    if bill.status != PurchaseBill.Status.DRAFT:
+        return CommandResult.fail(
+            f"Only DRAFT bills can be deleted (this bill is {bill.status}). Void posted bills instead."
+        )
+
+    with command_writes_allowed():
+        bill.delete()
+
+    return CommandResult.ok(data={"bill_id": bill_id})
+
+
 # =============================================================================
 # Purchase Order Commands
 # =============================================================================
 
 
+@requires_capability(Capability.PURCHASING_ACCOUNTING)
 @transaction.atomic
 def create_purchase_order(
     actor: ActorContext,
@@ -892,6 +927,7 @@ def create_purchase_order(
     return CommandResult.ok(data={"order": order}, event=event)
 
 
+@requires_capability(Capability.PURCHASING_ACCOUNTING)
 @transaction.atomic
 def approve_purchase_order(actor: ActorContext, order_id: int) -> CommandResult:
     """Approve a DRAFT purchase order."""
@@ -932,6 +968,7 @@ def approve_purchase_order(actor: ActorContext, order_id: int) -> CommandResult:
     return CommandResult.ok(data={"order": order}, event=event)
 
 
+@requires_capability(Capability.PURCHASING_ACCOUNTING)
 @transaction.atomic
 def cancel_purchase_order(actor: ActorContext, order_id: int, reason: str = "") -> CommandResult:
     """Cancel a purchase order (only if no goods received)."""
@@ -970,6 +1007,7 @@ def cancel_purchase_order(actor: ActorContext, order_id: int, reason: str = "") 
     return CommandResult.ok(data={"order": order}, event=event)
 
 
+@requires_capability(Capability.PURCHASING_ACCOUNTING)
 @transaction.atomic
 def close_purchase_order(actor: ActorContext, order_id: int) -> CommandResult:
     """Manually close a PO (all billing done or remaining qty abandoned)."""
@@ -1013,6 +1051,7 @@ def close_purchase_order(actor: ActorContext, order_id: int) -> CommandResult:
 # =============================================================================
 
 
+@requires_capability(Capability.PURCHASING_ACCOUNTING)
 @transaction.atomic
 def create_goods_receipt(
     actor: ActorContext,
@@ -1133,6 +1172,7 @@ def create_goods_receipt(
     return CommandResult.ok(data={"receipt": receipt}, event=event)
 
 
+@requires_capability(Capability.PURCHASING_ACCOUNTING)
 @transaction.atomic
 def post_goods_receipt(actor: ActorContext, receipt_id: int) -> CommandResult:
     """
@@ -1248,6 +1288,7 @@ def post_goods_receipt(actor: ActorContext, receipt_id: int) -> CommandResult:
     return CommandResult.ok(data={"receipt": receipt}, event=event)
 
 
+@requires_capability(Capability.PURCHASING_ACCOUNTING)
 @transaction.atomic
 def void_goods_receipt(actor: ActorContext, receipt_id: int, reason: str = "") -> CommandResult:
     """Void a posted goods receipt — reverses stock and PO quantities."""
@@ -1334,6 +1375,7 @@ def void_goods_receipt(actor: ActorContext, receipt_id: int, reason: str = "") -
 # =============================================================================
 
 
+@requires_capability(Capability.PURCHASING_ACCOUNTING)
 @transaction.atomic
 def create_bill_from_po(
     actor: ActorContext,
@@ -1436,6 +1478,7 @@ def create_bill_from_po(
 # =============================================================================
 
 
+@requires_capability(Capability.PURCHASING_ACCOUNTING)
 @transaction.atomic
 def create_purchase_credit_note(
     actor: ActorContext,
@@ -1660,6 +1703,7 @@ def create_purchase_credit_note(
     return CommandResult.ok(data={"credit_note": cn}, event=event)
 
 
+@requires_capability(Capability.PURCHASING_ACCOUNTING)
 @translate_posted_journal_invalid
 @transaction.atomic
 def post_purchase_credit_note(actor: ActorContext, credit_note_id: int) -> CommandResult:
@@ -1869,6 +1913,7 @@ def post_purchase_credit_note(actor: ActorContext, credit_note_id: int) -> Comma
     )
 
 
+@requires_capability(Capability.PURCHASING_ACCOUNTING)
 @translate_posted_journal_invalid
 @transaction.atomic
 def void_purchase_credit_note(
