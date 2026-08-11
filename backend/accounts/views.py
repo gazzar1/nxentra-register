@@ -1670,20 +1670,22 @@ class OnboardingSetupView(APIView):
     def patch(self, request):
         """Save partial onboarding progress without completing."""
         actor = resolve_actor(request)
-        company = actor.company
 
         # A4: a constrained-pilot company's currency/fiscal configuration is
-        # frozen (activation already required EGP + January). Block later
-        # changes to those fields.
-        from accounts.pilot_policy import Capability, require_supported
-
-        _fiscal_keys = {"fiscal_year_start_month", "default_currency", "functional_currency"}
-        if _fiscal_keys & set(request.data.keys()):
-            require_supported(company, Capability.CURRENCY_FISCAL_CHANGE)
-
+        # frozen (activation already required EGP + January). Both the
+        # conditional capability decision AND the direct Company write are
+        # serialized against pilot activation on the Company ADMISSION LOCK: the
+        # profile is re-read from the freshly LOCKED row and the save commits
+        # under the held lock, so a fiscal/currency change admitted on a cached
+        # NONE profile can never land after a concurrent activation.
+        from accounts.pilot_policy import (
+            Capability,
+            require_supported,
+            serialized_company_admission,
+        )
         from projections.write_barrier import command_writes_allowed
 
-        updates = {}
+        _fiscal_keys = {"fiscal_year_start_month", "default_currency", "functional_currency"}
         field_map = {
             "business_type": "business_type",
             "company_name": "name",
@@ -1695,24 +1697,28 @@ class OnboardingSetupView(APIView):
             "date_format": "date_format",
             "enable_arabic_fields": "enable_arabic_fields",
         }
-
         # Booleans are meaningful even when False, so don't apply the
         # "skip empty string" guard to them.
         bool_fields = {"enable_arabic_fields"}
 
-        for payload_key, model_field in field_map.items():
-            if payload_key in request.data:
-                val = request.data[payload_key]
-                if payload_key in bool_fields:
-                    setattr(company, model_field, bool(val))
-                    updates[model_field] = bool(val)
-                elif val is not None and val != "":
-                    setattr(company, model_field, val)
-                    updates[model_field] = val
+        updates = {}
+        with serialized_company_admission(actor.company.pk) as company:
+            if _fiscal_keys & set(request.data.keys()):
+                require_supported(company, Capability.CURRENCY_FISCAL_CHANGE)
 
-        if updates:
-            with command_writes_allowed():
-                company.save(update_fields=list(updates.keys()))
+            for payload_key, model_field in field_map.items():
+                if payload_key in request.data:
+                    val = request.data[payload_key]
+                    if payload_key in bool_fields:
+                        setattr(company, model_field, bool(val))
+                        updates[model_field] = bool(val)
+                    elif val is not None and val != "":
+                        setattr(company, model_field, val)
+                        updates[model_field] = val
+
+            if updates:
+                with command_writes_allowed():
+                    company.save(update_fields=list(updates.keys()))
 
         return Response({"saved": list(updates.keys())})
 

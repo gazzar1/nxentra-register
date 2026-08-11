@@ -1243,9 +1243,15 @@ def _process_order_paid_inner(store: ShopifyStore, payload: dict) -> CommandResu
     # record/event is written (webhook context: acknowledge, no mutation, no
     # retry). A correctly-scoped EGP store never triggers this — it guards against
     # a mis-scoped store slipping a foreign-currency order into the shadow ledger.
-    from accounts.pilot_policy import skip_pilot_currency
+    # Serialize the decision against pilot activation on the Company ADMISSION
+    # LOCK: this @transaction.atomic is the outermost tx (webhook view opens none;
+    # the poller wraps its own atomic under which this nests), so the currency
+    # decision reads the freshly LOCKED profile and every order write/emit below
+    # commits under the held lock.
+    from accounts.pilot_policy import lock_company_for_admission, skip_pilot_currency
 
-    _skip = skip_pilot_currency(store.company, payload.get("currency"), task="shopify.process_order_paid")
+    locked_company = lock_company_for_admission(store.company_id)
+    _skip = skip_pilot_currency(locked_company, payload.get("currency"), task="shopify.process_order_paid")
     if _skip is not None:
         return CommandResult.ok(_skip)
 
@@ -1450,9 +1456,12 @@ def process_refund(store: ShopifyStore, payload: dict) -> CommandResult:
 
     # A4: pilot ingests EGP only — skip a refund against a non-EGP order before
     # any record/event is written (webhook context: no mutation, no retry).
-    from accounts.pilot_policy import skip_pilot_currency
+    # Serialize the decision on the Company ADMISSION LOCK (held through this
+    # @transaction.atomic's commit); the dedup + order reads above take no lock.
+    from accounts.pilot_policy import lock_company_for_admission, skip_pilot_currency
 
-    _skip = skip_pilot_currency(store.company, order.currency, task="shopify.process_refund")
+    locked_company = lock_company_for_admission(store.company_id)
+    _skip = skip_pilot_currency(locked_company, order.currency, task="shopify.process_refund")
     if _skip is not None:
         return CommandResult.ok(_skip)
 
@@ -1533,10 +1542,13 @@ def process_order_pending(store: ShopifyStore, payload: dict) -> CommandResult:
         return CommandResult.fail("Missing order ID in payload.")
 
     # A4: pilot ingests EGP only — skip a non-EGP order before any record is
-    # written (webhook context: no mutation, no retry).
-    from accounts.pilot_policy import skip_pilot_currency
+    # written (webhook context: no mutation, no retry). Serialize the decision on
+    # the Company ADMISSION LOCK (held through this @transaction.atomic's commit).
+    # The paid-delegation below re-locks the same Company row reentrantly (free).
+    from accounts.pilot_policy import lock_company_for_admission, skip_pilot_currency
 
-    _skip = skip_pilot_currency(store.company, payload.get("currency"), task="shopify.process_order_pending")
+    locked_company = lock_company_for_admission(store.company_id)
+    _skip = skip_pilot_currency(locked_company, payload.get("currency"), task="shopify.process_order_pending")
     if _skip is not None:
         return CommandResult.ok(_skip)
 
@@ -1822,12 +1834,15 @@ def sync_payouts(store: ShopifyStore) -> CommandResult:
     Fetches payouts with status=paid that haven't been recorded yet.
     Each payout becomes a SHOPIFY_PAYOUT_SETTLED event for the projection.
     """
-    from accounts.pilot_policy import Capability, skip_if_unsupported
+    from accounts.pilot_policy import Capability, lock_company_for_admission, skip_if_unsupported
 
     # A4: Shopify Payments payout ACCOUNTING is out of scope for the constrained
     # pilot. This is the sole emitter of SHOPIFY_PAYOUT_SETTLED, so skipping here
     # means no payout settlement event, no payout JE, and the abs() negative-payout
     # branch is unreachable — while Shopify order/refund accounting is untouched.
+    # This top check is an UNLOCKED fast-path that avoids the remote fetch for a
+    # known pilot; the AUTHORITATIVE decision is re-made under the admission lock
+    # below, after the fetch (see the lock note before the write loop).
     skipped = skip_if_unsupported(store.company, Capability.SHOPIFY_PAYOUT_ACCOUNTING, task="shopify.sync_payouts")
     if skipped is not None:
         return CommandResult.ok(data={**skipped, "created": 0, "skipped": 0})
@@ -1887,6 +1902,18 @@ def sync_payouts(store: ShopifyStore) -> CommandResult:
             store.shop_domain,
         )
         return payouts_unavailable
+
+    # A4 admission serialization: the remote list_payouts fetch above must NOT run
+    # under the Company lock (never hold a row lock across network I/O), so the
+    # lock is acquired HERE — after the fetch, before the first write — and the
+    # SHOPIFY_PAYOUT_ACCOUNTING decision re-checked on the LOCKED profile. If a
+    # concurrent activation landed during the fetch, return the structured skip
+    # with zero payout writes. The lock is held through the write loop and the
+    # store.last_sync_at save to this @transaction.atomic's commit.
+    locked_company = lock_company_for_admission(store.company_id)
+    skipped = skip_if_unsupported(locked_company, Capability.SHOPIFY_PAYOUT_ACCOUNTING, task="shopify.sync_payouts")
+    if skipped is not None:
+        return CommandResult.ok(data={**skipped, "created": 0, "skipped": 0})
 
     created_count = 0
     skipped_count = 0
@@ -2143,6 +2170,14 @@ def verify_payout(store: ShopifyStore, payout_id: int) -> CommandResult:
 
     If transactions already exist, re-runs verification against stored data.
     """
+    # A4: payout accounting is out of scope for the pilot and has no gate of its
+    # own today beyond the view's unlocked check. The MUTATING branches below
+    # (A169 delete+refetch, and the no-cache fetch) serialize against pilot
+    # activation on the Company ADMISSION LOCK and re-check
+    # SHOPIFY_PAYOUT_ACCOUNTING on the locked row before any write. The read-only
+    # cached-verification path stays lock-free.
+    from accounts.pilot_policy import Capability, require_supported, serialized_company_admission
+
     try:
         payout = ShopifyPayout.objects.get(
             company=store.company,
@@ -2175,9 +2210,13 @@ def verify_payout(store: ShopifyStore, payout_id: int) -> CommandResult:
                 payout.shopify_payout_id,
                 existing.count(),
             )
-            with command_writes_allowed():
-                existing.delete()
-            return fetch_payout_transactions(store, payout)
+            with serialized_company_admission(store.company.pk) as locked_company:
+                require_supported(locked_company, Capability.SHOPIFY_PAYOUT_ACCOUNTING)
+                with command_writes_allowed():
+                    existing.delete()
+                # fetch_payout_transactions' own @atomic nests as a savepoint; the
+                # delete + refetch now co-commit under the held admission lock.
+                return fetch_payout_transactions(store, payout)
 
         return CommandResult.ok(
             data={
@@ -2190,8 +2229,14 @@ def verify_payout(store: ShopifyStore, payout_id: int) -> CommandResult:
             }
         )
 
-    # Fetch from Shopify API
-    return fetch_payout_transactions(store, payout)
+    # Fetch from Shopify API — serialized against pilot activation on the Company
+    # ADMISSION LOCK, with SHOPIFY_PAYOUT_ACCOUNTING re-checked on the locked row
+    # before any transaction row is written (the remote read stays inside
+    # fetch_payout_transactions' atomic/savepoint as today — a read, not an
+    # irreversible effect).
+    with serialized_company_admission(store.company.pk) as locked_company:
+        require_supported(locked_company, Capability.SHOPIFY_PAYOUT_ACCOUNTING)
+        return fetch_payout_transactions(store, payout)
 
 
 # =============================================================================
@@ -2708,9 +2753,13 @@ def process_dispute(store: ShopifyStore, payload: dict) -> CommandResult:
     # pilot. This is the deepest shared boundary for both disputes/create and
     # disputes/update (webhook-driven): skip with a structured result — no
     # ShopifyDispute row, no event, no retry — so the webhook simply acks.
-    from accounts.pilot_policy import Capability, skip_if_unsupported
+    # Serialize the decision on the Company ADMISSION LOCK (held through this
+    # @transaction.atomic's commit) so a dispute admitted on a cached NONE profile
+    # cannot write a ShopifyDispute row / event after a concurrent activation.
+    from accounts.pilot_policy import Capability, lock_company_for_admission, skip_if_unsupported
 
-    skipped = skip_if_unsupported(store.company, Capability.SHOPIFY_DISPUTES, task="shopify.process_dispute")
+    locked_company = lock_company_for_admission(store.company_id)
+    skipped = skip_if_unsupported(locked_company, Capability.SHOPIFY_DISPUTES, task="shopify.process_dispute")
     if skipped is not None:
         return CommandResult.ok(skipped)
 
@@ -3532,16 +3581,19 @@ def _auto_create_item_from_line(store, sku: str, line_item: dict):
             price = (price * rate).quantize(Decimal("0.01"))
 
     # A4 / Option B: a constrained-pilot company gets NON_STOCK items with no
-    # inventory/COGS accounts — no FIFO layer, no stock ledger, no COGS.
-    from accounts.pilot_policy import inventory_forced_non_stock
-
-    _non_stock = inventory_forced_non_stock(store.company)
+    # inventory/COGS accounts — no FIFO layer, no stock ledger, no COGS. The
+    # Option-B decision is made on the freshly LOCKED Company profile and held
+    # through the item create (this savepoint's admission row lock persists to the
+    # outer webhook commit; when reached via _process_order_paid_inner the same
+    # Company row is already admission-locked — this re-locks it reentrantly/free).
+    from accounts.pilot_policy import inventory_forced_non_stock, serialized_company_admission
 
     try:
-        with transaction.atomic():
+        with serialized_company_admission(store.company.pk) as locked_company:
+            _non_stock = inventory_forced_non_stock(locked_company)
             with command_writes_allowed():
                 item = Item.objects.create(
-                    company=store.company,
+                    company=locked_company,
                     code=code,
                     name=title,
                     item_type=(Item.ItemType.NON_STOCK if _non_stock else "INVENTORY"),
@@ -3557,7 +3609,7 @@ def _auto_create_item_from_line(store, sku: str, line_item: dict):
 
                 # Create ShopifyProduct mapping
                 ShopifyProduct.objects.create(
-                    company=store.company,
+                    company=locked_company,
                     store=store,
                     shopify_product_id=product_id or 0,
                     shopify_variant_id=variant_id or 0,
@@ -3986,34 +4038,40 @@ def _create_item_from_variant(
     image_url="",
 ):
     """Create a Nxentra Item from a Shopify variant with full account defaults."""
-    from accounts.pilot_policy import inventory_forced_non_stock
+    from accounts.pilot_policy import inventory_forced_non_stock, serialized_company_admission
     from sales.models import Item
 
     # A4 / Option B: constrained-pilot companies never create INVENTORY items —
-    # force NON_STOCK with no inventory/COGS accounts.
-    if inventory_forced_non_stock(company):
-        inv_account = None
-        cogs_account = None
+    # force NON_STOCK with no inventory/COGS accounts. Decide on the freshly
+    # LOCKED Company profile and create the Item under the held admission lock:
+    # in the process_product_webhook path the outer @atomic makes this a savepoint
+    # whose row lock persists to that commit; in the sync_products path it is a
+    # real top-level admission-locked transaction per item.
+    with serialized_company_admission(company.pk) as locked_company:
+        if inventory_forced_non_stock(locked_company):
+            inv_account = None
+            cogs_account = None
 
-    name = f"{product_title} - {variant_title}" if variant_title else product_title
-    item_type = Item.ItemType.INVENTORY if (inv_account and cogs_account) else Item.ItemType.NON_STOCK
+        name = f"{product_title} - {variant_title}" if variant_title else product_title
+        item_type = Item.ItemType.INVENTORY if (inv_account and cogs_account) else Item.ItemType.NON_STOCK
 
-    with command_writes_allowed():
-        item = Item.objects.create(
-            company=company,
-            code=sku,
-            name=name[:255],
-            item_type=item_type,
-            default_unit_price=price,
-            default_cost=cost,
-            sales_account=sales_account,
-            purchase_account=purchase_account,
-            inventory_account=inv_account if item_type == Item.ItemType.INVENTORY else None,
-            cogs_account=cogs_account if item_type == Item.ItemType.INVENTORY else None,
-            costing_method=Item.CostingMethod.WEIGHTED_AVERAGE,
-        )
+        with command_writes_allowed():
+            item = Item.objects.create(
+                company=locked_company,
+                code=sku,
+                name=name[:255],
+                item_type=item_type,
+                default_unit_price=price,
+                default_cost=cost,
+                sales_account=sales_account,
+                purchase_account=purchase_account,
+                inventory_account=inv_account if item_type == Item.ItemType.INVENTORY else None,
+                cogs_account=cogs_account if item_type == Item.ItemType.INVENTORY else None,
+                costing_method=Item.CostingMethod.WEIGHTED_AVERAGE,
+            )
 
-    # Download and save product image if available
+    # Download and save product image if available (OUTSIDE the admission lock —
+    # never hold the lock across the remote image download).
     if image_url:
         _download_item_image(item, image_url)
 
@@ -4038,40 +4096,43 @@ def _update_item_defaults(
     ever HEALS items that were created before a value was captured — it never
     overwrites something the merchant set by hand.
     """
-    from accounts.pilot_policy import inventory_forced_non_stock
+    from accounts.pilot_policy import inventory_forced_non_stock, serialized_company_admission
 
     # Option B: never heal a pilot company's item toward inventory/COGS accounts.
     # (The item is already NON_STOCK; attaching these accounts is the exact state
-    # the invariant forbids.)
-    if inventory_forced_non_stock(item.company):
-        inv_account = None
-        cogs_account = None
+    # the invariant forbids.) Decide on the freshly LOCKED Company profile and save
+    # under the held admission lock — sync_products has no ambient transaction, so
+    # this is a real top-level admission-locked transaction per item.
+    with serialized_company_admission(item.company.pk) as locked_company:
+        if inventory_forced_non_stock(locked_company):
+            inv_account = None
+            cogs_account = None
 
-    updates = []
-    if cost > 0 and not item.default_cost:
-        item.default_cost = cost
-        updates.append("default_cost")
-    # Backfill the selling price only when it's still blank (e.g. an item that
-    # was order-line auto-created with a 0 price, then later seen by a product
-    # sync that carries the variant price). Never clobber a manual price.
-    if price > 0 and not item.default_unit_price:
-        item.default_unit_price = price
-        updates.append("default_unit_price")
-    if sales_account and not item.sales_account:
-        item.sales_account = sales_account
-        updates.append("sales_account_id")
-    if purchase_account and not item.purchase_account:
-        item.purchase_account = purchase_account
-        updates.append("purchase_account_id")
-    if inv_account and not item.inventory_account:
-        item.inventory_account = inv_account
-        updates.append("inventory_account_id")
-    if cogs_account and not item.cogs_account:
-        item.cogs_account = cogs_account
-        updates.append("cogs_account_id")
-    if updates:
-        with command_writes_allowed():
-            item.save(update_fields=updates)
+        updates = []
+        if cost > 0 and not item.default_cost:
+            item.default_cost = cost
+            updates.append("default_cost")
+        # Backfill the selling price only when it's still blank (e.g. an item that
+        # was order-line auto-created with a 0 price, then later seen by a product
+        # sync that carries the variant price). Never clobber a manual price.
+        if price > 0 and not item.default_unit_price:
+            item.default_unit_price = price
+            updates.append("default_unit_price")
+        if sales_account and not item.sales_account:
+            item.sales_account = sales_account
+            updates.append("sales_account_id")
+        if purchase_account and not item.purchase_account:
+            item.purchase_account = purchase_account
+            updates.append("purchase_account_id")
+        if inv_account and not item.inventory_account:
+            item.inventory_account = inv_account
+            updates.append("inventory_account_id")
+        if cogs_account and not item.cogs_account:
+            item.cogs_account = cogs_account
+            updates.append("cogs_account_id")
+        if updates:
+            with command_writes_allowed():
+                item.save(update_fields=updates)
 
     # Backfill the product image too — a separate save because image.save()
     # writes the file, not a plain field. Only when the item has no image yet,

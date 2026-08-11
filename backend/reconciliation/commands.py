@@ -55,6 +55,7 @@ from accounting.models import (
     JournalLine,
 )
 from accounts.authz import ActorContext, require
+from accounts.pilot_policy import Capability, requires_capability
 from events.emitter import emit_event_no_actor
 from events.types import EventTypes
 from projections.write_barrier import command_writes_allowed, statement_delete_allowed
@@ -1019,6 +1020,7 @@ def preview_auto_match(
 # =============================================================================
 
 
+@requires_capability(Capability.UNSAFE_BANK_MATCH)
 @transaction.atomic
 def auto_match_statement(
     actor: ActorContext,
@@ -1057,10 +1059,9 @@ def auto_match_statement(
 
     # A4: automatic matching is an unsafe bank action for the constrained pilot —
     # only the founder-reviewed manual workflow (manual_match, import,
-    # resolve_difference) is supported.
-    from accounts.pilot_policy import Capability, require_supported
-
-    require_supported(actor.company, Capability.UNSAFE_BANK_MATCH)
+    # resolve_difference) is supported. Enforced by the SERIALIZED
+    # @requires_capability(UNSAFE_BANK_MATCH) decorator above (Company admission
+    # row locked, profile re-read fresh, held through the whole match commit).
 
     try:
         statement = BankStatement.objects.get(
@@ -1682,6 +1683,7 @@ def preview_unmatch_line(
     )
 
 
+@requires_capability(Capability.UNSAFE_BANK_MATCH)
 @translate_posted_journal_invalid
 @transaction.atomic
 def unmatch_line(
@@ -1701,10 +1703,9 @@ def unmatch_line(
     """
     require(actor, "accounting.reconciliation")
 
-    # A4: unmatch/rematch is an unsafe bank action for the constrained pilot.
-    from accounts.pilot_policy import Capability, require_supported
-
-    require_supported(actor.company, Capability.UNSAFE_BANK_MATCH)
+    # A4: unmatch/rematch is an unsafe bank action for the constrained pilot —
+    # enforced by the SERIALIZED @requires_capability(UNSAFE_BANK_MATCH)
+    # decorator above (outermost, over @translate_posted_journal_invalid).
 
     try:
         bank_line = BankStatementLine.objects.get(
@@ -1745,6 +1746,7 @@ def unmatch_line(
     return CommandResult.ok()
 
 
+@requires_capability(Capability.UNSAFE_BANK_MATCH)
 @transaction.atomic
 def unmatch_and_delete_statement(
     actor: ActorContext,
@@ -1762,10 +1764,10 @@ def unmatch_and_delete_statement(
     """
     require(actor, "accounting.reconciliation")
 
-    # A4: bulk unmatch + statement delete is an unsafe bank action for the pilot.
-    from accounts.pilot_policy import Capability, require_supported
-
-    require_supported(actor.company, Capability.UNSAFE_BANK_MATCH)
+    # A4: bulk unmatch + statement delete is an unsafe bank action for the pilot —
+    # enforced by the SERIALIZED @requires_capability(UNSAFE_BANK_MATCH) decorator
+    # above; the nested per-line unmatch_line re-locks the same Company row
+    # reentrantly in this one transaction (free).
 
     try:
         statement = BankStatement.objects.get(id=statement_id, company=actor.company)

@@ -2154,6 +2154,7 @@ def _calculate_period_boundaries(fiscal_year: int, start_month: int, period_coun
     return periods
 
 
+@requires_capability(Capability.CURRENCY_FISCAL_CHANGE)
 @transaction.atomic
 def configure_periods(
     actor: ActorContext,
@@ -2175,10 +2176,11 @@ def configure_periods(
     require(actor, "periods.configure")
     # Constrained pilot freezes the fiscal configuration. Lazy posting-time
     # provisioning (`ensure_fiscal_periods_for_date`) and close/open of individual
-    # periods remain available; only interactive re-configuration is blocked.
-    from accounts.pilot_policy import Capability, require_supported
-
-    require_supported(actor.company, Capability.CURRENCY_FISCAL_CHANGE)
+    # periods remain available; only interactive re-configuration is blocked —
+    # by the SERIALIZED @requires_capability(CURRENCY_FISCAL_CHANGE) decorator
+    # above (Company admission row locked, profile re-read fresh, held to commit),
+    # so a reconfiguration admitted on a cached NONE profile cannot commit after a
+    # concurrent activation.
 
     # Standard ERP: always 13 periods (12 monthly + 1 adjustment)
     period_count = 13

@@ -1411,3 +1411,201 @@ def test_company_event_writers_lock_company_before_emission():
         assert _statement_order(source, func, "lock_company_for_admission(", "emit_event("), (
             f"{func} must acquire the Company admission lock before emitting its Company event"
         )
+
+
+# =============================================================================
+# Rule 12 (A4 runtime admission serialization): EVERY pilot-gate call site is
+# either serialized, serialized by its locked caller, an explicit read-only/UX
+# site, or an explicit design-deferred residual — a NEW unlocked gate call fails.
+# =============================================================================
+#
+# PR #118 serialized the four purchasing families; the A4 Runtime Admission
+# Serialization PR extends coverage to EVERY production call site of the
+# pilot-policy gate functions. Each capability-gated MUTATION must admit under
+# the Company admission lock — via ``serialized_company_admission`` /
+# ``lock_company_for_admission`` in the enclosing function, or via the
+# ``requires_capability`` decorator (whose commands carry NO in-body gate call
+# and are covered by Rule 12b). Sites that legitimately run UNLOCKED are pinned
+# in explicit witnessed sets so a NEW unlocked gate call on a mutating path
+# cannot land silently. Detection is AST-based (enclosing-function ownership +
+# call identity), not line numbers or source-substring pinning.
+
+A4_GATE_FUNCTIONS: frozenset[str] = frozenset(
+    {
+        "require_supported",
+        "is_supported",
+        "skip_if_unsupported",
+        "require_pilot_currency",
+        "skip_pilot_currency",
+        "inventory_forced_non_stock",
+        "require_module_enable_allowed",
+        "deployment_has_pilot",
+    }
+)
+A4_ADMISSION_LOCK_CALLS: frozenset[str] = frozenset({"serialized_company_admission", "lock_company_for_admission"})
+
+# UNLOCKED gate sites that are genuinely READ-ONLY or UX-only (no persistence in
+# the enclosing function). This allowlist must NEVER contain a writer / webhook /
+# background / ingestion / CLI mutation — those must serialize. `relpath::qualname`.
+A4_READ_ONLY_OR_UX_GATE_SITES: frozenset[str] = frozenset(
+    {
+        "accounts/admin.py::_deployment_has_pilot",
+        "accounts/module_permissions.py::ModuleEnabled.has_permission",
+        "accounts/pilot_preflight.py::_capability_gate_violations",
+        "bank_connector/views.py::resolve_actor",
+        "shopify_connector/commands.py::_convert_costs_to_functional",
+        "shopify_connector/commands.py::_fetch_variant_cost",
+        # Interactive views whose require_supported is only a fast HTTP 403; the
+        # authoritative mutation is delegated to a SERIALIZED command
+        # (commands.sync_payouts / commands.verify_payout).
+        "shopify_connector/views.py::ShopifySyncPayoutsView.post",
+        "shopify_connector/views.py::ShopifyPayoutVerifyView.post",
+    }
+)
+
+# UNLOCKED gate sites that DO decide a mutation but run entirely inside a caller
+# that already holds the Company admission lock (serialized-by-caller). Each MUST
+# be reachable only through a serialized caller.
+A4_SERIALIZED_BY_CALLER_GATE_SITES: frozenset[str] = frozenset(
+    {
+        # _setup_shopify_accounts runs ONLY inside complete_onboarding, which holds
+        # the admission lock (lock_company_for_admission) across its transaction.
+        "accounts/commands.py::_setup_shopify_accounts",
+    }
+)
+
+# UNLOCKED gate sites that are DESIGN-DEFERRED residuals: mutating paths the A4
+# Runtime Admission Serialization PR deliberately does NOT serialize (documented
+# in docs/status/constrained_pilot_status.md). This is NOT the read-only allowlist.
+A4_DESIGN_DEFERRED_MUTATING_SITES: frozenset[str] = frozenset(
+    {
+        # Family B — deployment-wide company creation: no existing Company row to
+        # admission-lock; a migration-free deployment-lock design was not established.
+        "accounts/commands.py::register_signup",
+        "accounts/commands.py::create_company",
+        # Family H — projection rebuild/replay: a multi-transaction drain that
+        # cannot retain admission ownership across its whole authoritative operation.
+        "projections/base.py::BaseProjection.rebuild",
+        # Scheduled / batched MULTI-COMMIT paths (same shape as H): they stay on
+        # their fail-closed point-in-time skip / up-front currency sweep.
+        "stripe_connector/sync.py::sync_payouts",
+        "accounting/settlement_imports.py::import_settlement_csv",
+    }
+)
+
+
+def _a4_gate_call_sites() -> dict[str, bool]:
+    """Map every production gate call site to ``relpath::qualname`` -> has_lock.
+    Excludes the policy module itself (pilot_policy.py composes the gates), tests,
+    conftest and migrations. `has_lock` is True when the enclosing function also
+    calls one of the admission-lock primitives."""
+    sites: dict[str, bool] = {}
+    for path in BACKEND_ROOT.rglob("*.py"):
+        rel = path.relative_to(BACKEND_ROOT).as_posix()
+        probe = "/" + rel
+        if any(frag in probe for frag in ("/migrations/", "/tests/", "test_", "/conftest.py", "/pilot_policy.py")):
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+
+        class _Visitor(ast.NodeVisitor):
+            def __init__(self):
+                self.stack: list[str] = []
+                self.fns: dict[str, dict] = {}
+
+            def _scope(self, node):
+                self.stack.append(node.name)
+                if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                    self.fns.setdefault(".".join(self.stack), {"gates": set(), "locks": set()})
+                self.generic_visit(node)
+                self.stack.pop()
+
+            visit_ClassDef = _scope
+            visit_FunctionDef = _scope
+            visit_AsyncFunctionDef = _scope
+
+            def visit_Call(self, node):
+                name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+                q = ".".join(self.stack)
+                if q in self.fns:
+                    if name in A4_GATE_FUNCTIONS:
+                        self.fns[q]["gates"].add(name)
+                    if name in A4_ADMISSION_LOCK_CALLS:
+                        self.fns[q]["locks"].add(name)
+                self.generic_visit(node)
+
+        visitor = _Visitor()
+        visitor.visit(tree)
+        for q, info in visitor.fns.items():
+            if info["gates"]:
+                sites[f"{rel}::{q}"] = bool(info["locks"])
+    return sites
+
+
+def test_every_gate_call_site_is_serialized_or_explicitly_classified():
+    sites = _a4_gate_call_sites()
+    # Sanity: the surface is non-trivial. A near-zero discovery means the AST walk
+    # broke, not that the pilot surface vanished.
+    assert len(sites) >= 30, f"pilot gate-site discovery looks broken: found only {len(sites)}"
+
+    unlocked = {site for site, has_lock in sites.items() if not has_lock}
+    classified = A4_READ_ONLY_OR_UX_GATE_SITES | A4_SERIALIZED_BY_CALLER_GATE_SITES | A4_DESIGN_DEFERRED_MUTATING_SITES
+
+    # (1) No NEW unlocked gate call site may appear without an explicit decision.
+    unclassified = sorted(unlocked - classified)
+    assert not unclassified, (
+        "UNLOCKED pilot-gate call site(s) with no explicit A4 classification. A "
+        "capability-gated MUTATION must admit under the Company admission lock "
+        "(serialized_company_admission / lock_company_for_admission, or the "
+        "requires_capability decorator). If genuinely read-only/UX add it to "
+        "A4_READ_ONLY_OR_UX_GATE_SITES; if serialized by a locked caller add it to "
+        "A4_SERIALIZED_BY_CALLER_GATE_SITES; if a tracked residual add it to "
+        f"A4_DESIGN_DEFERRED_MUTATING_SITES (and docs): {unclassified}"
+    )
+
+    # (2) No stale entries — every witnessed-set member must still be an UNLOCKED
+    #     gate call site (renamed/removed/now-serialized entries must be pruned).
+    stale = sorted(classified - unlocked)
+    assert not stale, (
+        "A4 gate-site allowlist/residual entry no longer matches an UNLOCKED gate "
+        f"call site (renamed, removed, or now serialized) — prune it: {stale}"
+    )
+
+    # (3) The read-only allowlist must not overlap the writer / residual sets.
+    overlap = sorted(
+        A4_READ_ONLY_OR_UX_GATE_SITES & (A4_SERIALIZED_BY_CALLER_GATE_SITES | A4_DESIGN_DEFERRED_MUTATING_SITES)
+    )
+    assert not overlap, f"a site is both read-only/UX AND a writer/residual — pick one: {overlap}"
+
+
+# Rule 12b: the families this PR serialized via the requires_capability DECORATOR
+# (no in-body gate call, so invisible to Rule 12's scan) carry the SERIALIZED
+# marker — a future non-serialized gate variant on any of them fails CI.
+A4_SERIALIZED_DECORATOR_COMMANDS: tuple[tuple[str, str, str], ...] = (
+    ("accounting.commands", "configure_periods", "CURRENCY_FISCAL_CHANGE"),
+    ("accounts.commands", "create_user_with_membership", "ADD_MEMBER"),
+    ("accounts.commands", "add_user_to_company", "ADD_MEMBER"),
+    ("accounts.commands", "create_invitation", "ADD_MEMBER"),
+    ("reconciliation.commands", "auto_match_statement", "UNSAFE_BANK_MATCH"),
+    ("reconciliation.commands", "unmatch_line", "UNSAFE_BANK_MATCH"),
+    ("reconciliation.commands", "unmatch_and_delete_statement", "UNSAFE_BANK_MATCH"),
+)
+
+
+def test_new_capability_families_carry_serialized_marker():
+    import importlib
+
+    from accounts.pilot_policy import Capability
+
+    for modname, fnname, capname in A4_SERIALIZED_DECORATOR_COMMANDS:
+        fn = getattr(importlib.import_module(modname), fnname)
+        cap = getattr(Capability, capname)
+        assert getattr(fn, "_pilot_capability", None) is cap, (
+            f"{modname}.{fnname} must carry the requires_capability({capname}) gate."
+        )
+        assert getattr(fn, "_pilot_capability_serialized", None) is True, (
+            f"{modname}.{fnname} must carry the SERIALIZED admission gate marker "
+            "(_pilot_capability_serialized is True)."
+        )

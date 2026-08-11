@@ -32,6 +32,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 import logging
+from contextlib import contextmanager
 from enum import StrEnum
 
 from django.db import transaction
@@ -243,6 +244,55 @@ def lock_company_for_admission(company_pk):
         else Company.objects.select_for_update()
     )
     return qs.get(pk=company_pk)
+
+
+@contextmanager
+def serialized_company_admission(company_pk):
+    """Serialize a NON-actor mutation against pilot activation on the Company
+    ADMISSION LOCK — the context-manager twin of :func:`requires_capability`
+    for direct-company / webhook / ingestion / scheduled / CLI paths whose
+    first argument is NOT an ``ActorContext``.
+
+    Opens the mutation's OUTERMOST transaction, takes the Company admission lock
+    (:func:`lock_company_for_admission` — ``FOR NO KEY UPDATE`` where supported,
+    refetched fresh) and YIELDS the locked ``Company``. Unlike
+    ``requires_capability`` it makes NO capability decision itself: the caller
+    decides on the YIELDED row with the existing point-in-time checks
+    (``require_supported`` / ``skip_if_unsupported`` / ``require_pilot_currency``
+    / ``skip_pilot_currency`` / ``inventory_forced_non_stock``). Currency gates,
+    Option-B non-stock forcing and scheduled-skip *returns* each need a
+    different decision and control-flow (raise vs structured-skip return) on the
+    locked row, so the choice stays with the caller.
+
+    Contract (inherited from :func:`lock_company_for_admission`):
+
+    - the yielded row is the SOLE authoritative profile source for the mutation
+      — never decide on a cached instance;
+    - the ``with`` block IS the transaction: perform EVERY authoritative local
+      mutation (and any irreversible external effect that must not rest on an
+      unlocked profile decision) INSIDE it, so the lock is held to the outermost
+      commit/rollback — a lock released before the mutation commits closes
+      nothing;
+    - FORBIDDEN: release+reacquire, ``refresh_from_db`` without locking, or a
+      final pre-commit recheck instead of this Company-first admission;
+    - lock order is Company admission -> domain/config rows ->
+      ``CompanyEventCounter`` -> ``Account`` rows (decide on the yielded row
+      FIRST, before acquiring any of those).
+
+    Reentrant: a nested ``serialized_company_admission`` /
+    ``requires_capability`` for the same company re-locks the same row in the
+    same transaction (free), so decorated inner commands compose::
+
+        with serialized_company_admission(store.company.pk) as company:
+            if skip_pilot_currency(company, currency, task="..."):
+                return skipped
+            ...  # authoritative mutation, lock held to commit
+
+    A raise inside the ``with`` rolls the outer transaction back with the lock
+    still held to that rollback — activation then wins the ordering.
+    """
+    with transaction.atomic():
+        yield lock_company_for_admission(company_pk)
 
 
 def requires_capability(capability):

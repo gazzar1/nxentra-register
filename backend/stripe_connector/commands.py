@@ -255,11 +255,12 @@ def connect_stripe_account(company, credential: str, display_name: str = ""):
       * seed the platform_stripe accounts + SettlementProvider and kick an
         initial backfill.
     """
-    from accounts.pilot_policy import Capability, require_supported
+    from accounts.pilot_policy import Capability, require_supported, serialized_company_admission
 
-    # A4: Stripe is out of scope for the constrained pilot. Gate at the single
-    # place a credential first enters the system, so no Stripe account, sync,
-    # webhook or accounting can ever begin for a pilot company.
+    # A4: Stripe is out of scope for the constrained pilot. This is an UNLOCKED
+    # fast-fail so a pilot company never even reaches the remote probe; the
+    # AUTHORITATIVE decision is re-made under the Company admission lock, before
+    # the first persistence, below.
     require_supported(company, Capability.STRIPE)
 
     from django.conf import settings as dj_settings
@@ -316,36 +317,51 @@ def connect_stripe_account(company, credential: str, display_name: str = ""):
     except StripeApiError:
         logger.info("Stripe account read unavailable for the connect key — using best-effort metadata.")
 
-    # Key on the account's REAL id when we have it, so a different real account
-    # gets its own row and the same one updates in place — never clobbering a
-    # synced account's identity (its payouts FK to this row). When /v1/account is
-    # denied we fall back to a stable per-company synthetic id (reused across
-    # account-read-denied reconnects). update_or_create resolves the unique
-    # (company, stripe_account_id) safely either way.
-    account, _ = StripeAccount.objects.update_or_create(
-        company=company,
-        stripe_account_id=acct_id or f"stripe:company:{company.id}",
-        defaults={
-            "auth_type": StripeAccount.AuthType.RESTRICTED_KEY,
-            "credential_ref": credential,  # EncryptedTextField → encrypted at rest (A47)
-            "status": StripeAccount.Status.ACTIVE,
-            "livemode": livemode,
-            "display_name": name,
-            "error_message": "",
-        },
-    )
+    # A4 admission serialization: the remote probe/retrieve above are side-effect-
+    # free READS and ran BEFORE the lock (never hold a DB lock across the Stripe
+    # network calls). Persist under the Company ADMISSION LOCK, re-checking STRIPE
+    # on the freshly LOCKED profile before the first write, so a credential
+    # admitted on a cached NONE profile can never land a StripeAccount after a
+    # concurrent activation. The backfill enqueue moves to on_commit so an outer
+    # rollback leaves no dangling task for an uncommitted account.
+    with serialized_company_admission(company.pk) as locked_company:
+        require_supported(locked_company, Capability.STRIPE)
 
-    # Seed the platform_stripe accounts + SettlementProvider so the first synced
-    # payout's JE can resolve its mapping (idempotent).
-    with command_writes_allowed():
-        setup_stripe_platform(company)
+        # Key on the account's REAL id when we have it, so a different real account
+        # gets its own row and the same one updates in place — never clobbering a
+        # synced account's identity (its payouts FK to this row). When /v1/account
+        # is denied we fall back to a stable per-company synthetic id (reused
+        # across account-read-denied reconnects). update_or_create resolves the
+        # unique (company, stripe_account_id) safely either way.
+        account, _ = StripeAccount.objects.update_or_create(
+            company=locked_company,
+            stripe_account_id=acct_id or f"stripe:company:{locked_company.id}",
+            defaults={
+                "auth_type": StripeAccount.AuthType.RESTRICTED_KEY,
+                "credential_ref": credential,  # EncryptedTextField → encrypted at rest (A47)
+                "status": StripeAccount.Status.ACTIVE,
+                "livemode": livemode,
+                "display_name": name,
+                "error_message": "",
+            },
+        )
 
-    # Kick an initial backfill (best-effort — a broker hiccup must not fail connect).
-    try:
-        from .tasks import initial_stripe_sync
+        # Seed the platform_stripe accounts + SettlementProvider so the first
+        # synced payout's JE can resolve its mapping (idempotent).
+        with command_writes_allowed():
+            setup_stripe_platform(locked_company)
 
-        initial_stripe_sync.delay(account.id)
-    except Exception:
-        logger.warning("Could not enqueue initial Stripe sync for account %s", account.id)
+        # Kick an initial backfill AFTER commit (best-effort — a broker hiccup must
+        # not fail connect, and a rollback must not enqueue a task for an
+        # uncommitted account).
+        def _enqueue_initial_sync(account_id=account.id):
+            try:
+                from .tasks import initial_stripe_sync
+
+                initial_stripe_sync.delay(account_id)
+            except Exception:
+                logger.warning("Could not enqueue initial Stripe sync for account %s", account_id)
+
+        transaction.on_commit(_enqueue_initial_sync)
 
     return CommandResult.ok(data={"account": account})
