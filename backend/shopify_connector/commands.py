@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import logging
 import secrets
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -1224,17 +1225,31 @@ def process_order_paid(store: ShopifyStore, payload: dict) -> CommandResult:
 
     Wrapped in transaction.atomic internally so callers can handle
     failures without breaking their own transaction.
+
+    P2 two-phase unknown-item handling: remote item metadata (variant cost, store
+    currency) is resolved HERE, BEFORE the serialized mutation transaction, so the
+    Company admission lock is never held across a Shopify network request. The
+    frozen metadata is then applied under the lock in _process_order_paid_inner.
     """
     try:
-        return _process_order_paid_inner(store, payload)
+        prepared_items = _prepare_order_item_metadata(store, payload)
+        return _process_order_paid_inner(store, payload, prepared_items)
     except Exception as e:
         logger.error("process_order_paid failed for store %s: %s", store.shop_domain, e)
         return CommandResult.fail(str(e))
 
 
 @transaction.atomic
-def _process_order_paid_inner(store: ShopifyStore, payload: dict) -> CommandResult:
-    """Inner implementation — runs inside transaction.atomic."""
+def _process_order_paid_inner(
+    store: ShopifyStore, payload: dict, prepared_items: dict[str, "_PreparedLineItem"] | None = None
+) -> CommandResult:
+    """Inner implementation — runs inside transaction.atomic.
+
+    ``prepared_items`` is the Phase-1 remote item metadata (keyed by item code)
+    resolved by :func:`_prepare_order_item_metadata` before the admission lock;
+    the locked Phase-2 apply (:func:`_apply_auto_create_item_from_line`) consumes
+    it network-free. ``None`` is treated as an empty mapping (defensive)."""
+    prepared_items = prepared_items or {}
     shopify_order_id = payload.get("id")
     if not shopify_order_id:
         return CommandResult.fail("Missing order ID in payload.")
@@ -1376,8 +1391,10 @@ def _process_order_paid_inner(store: ShopifyStore, payload: dict) -> CommandResu
         # Auto-create Item if no matching Item in Nxentra. Egyptian
         # merchants frequently sell items without SKUs (custom / one-off
         # products); the helper falls back to a synthetic code derived
-        # from the Shopify variant_id when sku is empty (A9).
-        _auto_create_item_from_line(store, sku, item)
+        # from the Shopify variant_id when sku is empty (A9). P2: the remote
+        # metadata was resolved in Phase 1 (before this admission lock); the
+        # apply here is network-free.
+        _apply_auto_create_item_from_line(store, sku, item, prepared_items)
 
     # Extract customer info. Shopify sends "customer": null when the order
     # has no customer attached (e.g. admin-created draft marked-as-paid),
@@ -1541,20 +1558,27 @@ def process_order_pending(store: ShopifyStore, payload: dict) -> CommandResult:
     if not shopify_order_id:
         return CommandResult.fail("Missing order ID in payload.")
 
+    # A paid-at-creation order (e.g. Paymob / PayPal, where payment clears before
+    # the orders/create webhook) routes to process_order_paid — which owns its OWN
+    # Phase-1 remote item-metadata preparation, Company admission lock and EGP-only
+    # currency gate. Delegate BEFORE acquiring this function's admission lock so
+    # the paid path's remote reads never run under a Company row lock (P2). The
+    # currency skip below is unchanged: skip_pilot_currency returns the identical
+    # structured result regardless of which task label logs it, and process_order_
+    # paid re-applies it on its own locked Company for the paid branch.
+    financial_status = (payload.get("financial_status") or "").lower()
+    if financial_status in ("paid", "authorized", "partially_paid"):
+        return process_order_paid(store, payload)
+
     # A4: pilot ingests EGP only — skip a non-EGP order before any record is
     # written (webhook context: no mutation, no retry). Serialize the decision on
     # the Company ADMISSION LOCK (held through this @transaction.atomic's commit).
-    # The paid-delegation below re-locks the same Company row reentrantly (free).
     from accounts.pilot_policy import lock_company_for_admission, skip_pilot_currency
 
     locked_company = lock_company_for_admission(store.company_id)
     _skip = skip_pilot_currency(locked_company, payload.get("currency"), task="shopify.process_order_pending")
     if _skip is not None:
         return CommandResult.ok(_skip)
-
-    financial_status = (payload.get("financial_status") or "").lower()
-    if financial_status in ("paid", "authorized", "partially_paid"):
-        return process_order_paid(store, payload)
 
     # Skip if we already have any record (idempotent — orders/create can fire twice)
     if ShopifyOrder.objects.filter(
@@ -3513,14 +3537,149 @@ def resolve_store_currency(store, *, allow_remote: bool = False, persist: bool =
     return cur
 
 
-def _auto_create_item_from_line(store, sku: str, line_item: dict):
-    """Auto-create a Nxentra Item from a Shopify order line item if no match exists.
+def _line_item_code(sku: str, variant_id, product_id) -> str:
+    """The deterministic Nxentra Item code for a Shopify order line.
 
     A9: when sku is empty (common for Egyptian merchants selling custom /
-    one-off products), fall back to a synthetic code derived from the
-    Shopify variant_id (or product_id). The variant_id check below is the
-    durable identity — re-orders for the same variant find the existing
-    mapping and skip, regardless of whether the SKU is set.
+    one-off products), fall back to a synthetic code derived from the Shopify
+    variant_id (or product_id). Returns "" when there is no identifiable handle.
+    """
+    if sku:
+        return sku
+    if variant_id:
+        return f"SHOP-{variant_id}"
+    if product_id:
+        return f"SHOP-PROD-{product_id}"
+    return ""
+
+
+def _shopify_item_or_mapping_exists(store, code: str, sku: str, variant_id) -> bool:
+    """True when an Item with ``code``, or a ShopifyProduct mapping for this
+    variant / sku, already exists for the company — the auto-create skip
+    conditions. variant_id is the per-company unique identity; a sku-keyed lookup
+    would false-positive across multiple empty-SKU products.
+    """
+    from sales.models import Item
+    from shopify_connector.models import ShopifyProduct
+
+    if Item.objects.filter(company=store.company, code=code).exists():
+        return True
+    if variant_id and ShopifyProduct.objects.filter(company=store.company, shopify_variant_id=variant_id).exists():
+        return True
+    return bool(sku and ShopifyProduct.objects.filter(company=store.company, sku=sku).exists())
+
+
+@dataclass(frozen=True)
+class _PreparedLineItem:
+    """Frozen Phase-1 metadata for one unknown order line, keyed by Item ``code``.
+
+    Everything the locked Phase-2 apply needs to create the Item WITHOUT any
+    Shopify network request: identity, display title, and the already
+    FX-converted selling price and unit cost."""
+
+    code: str
+    sku: str
+    variant_id: object
+    product_id: object
+    title: str
+    unit_price: Decimal
+    cost: Decimal
+    variant_title: str
+
+
+def _prepare_order_item_metadata(store, payload: dict) -> dict[str, "_PreparedLineItem"]:
+    """P2 Phase 1 — REMOTE PREPARATION, BEFORE the Company admission lock.
+
+    Resolve the remote item metadata (variant cost, store currency) for every
+    unknown SKU in the immutable order payload via side-effect-free Shopify reads,
+    deduplicated per stable Item code, FX-converted, and frozen. Performs NO Item
+    creation, NO BusinessEvent emission, consumes NO company sequence and makes NO
+    order / accounting / inventory write — those all happen in Phase 2 under the
+    admission lock, network-free. Runs before ``_process_order_paid_inner`` so the
+    Company admission lock is never held across a Shopify network request.
+
+    The unlocked existence check and ``_fetch_variant_cost``'s unlocked Option-B
+    check are PERFORMANCE HINTS only (skip the remote fetch for an item that
+    already exists or a known pilot); the authoritative Item-existence and
+    Option-B decisions are re-made on the freshly LOCKED Company in Phase 2.
+
+    On remote failure the underlying helpers preserve their documented fallbacks
+    (``_fetch_variant_cost`` → 0, ``_get_shopify_store_currency`` → "", i.e. no FX
+    conversion) — no new valuation or currency default is invented here.
+    """
+    # Performance HINT (unlocked, NOT authoritative): if the pilot EGP-only
+    # currency gate would skip this out-of-scope order, do NO remote reads at all.
+    # _process_order_paid_inner re-makes the AUTHORITATIVE skip on the freshly
+    # locked Company; this only preserves the pre-split behavior where a non-EGP
+    # order made zero Shopify API calls (the network reads used to live behind the
+    # in-`_inner` currency gate, not ahead of it).
+    from accounts.pilot_policy import skip_pilot_currency
+
+    if skip_pilot_currency(store.company, payload.get("currency"), task="shopify.prepare_order_items") is not None:
+        return {}
+
+    prepared: dict[str, _PreparedLineItem] = {}
+    functional_currency = getattr(store.company, "functional_currency", "") or store.company.default_currency
+    store_currency_resolved = False
+    store_currency = ""
+
+    for line in payload.get("line_items", []):
+        sku = (line.get("sku") or "").strip()
+        variant_id = line.get("variant_id")
+        product_id = line.get("product_id")
+        code = _line_item_code(sku, variant_id, product_id)
+        if not code or code in prepared:
+            continue
+        # Hint: skip the remote fetch for an item that already exists / is already
+        # mapped. Re-checked authoritatively under the lock in Phase 2.
+        if _shopify_item_or_mapping_exists(store, code, sku, variant_id):
+            continue
+
+        # Side-effect-free remote reads. Each owns its fallback (0 / "").
+        cost = _fetch_variant_cost(store, variant_id, convert_to_currency=functional_currency)
+        if not store_currency_resolved:
+            store_currency = _get_shopify_store_currency(store)
+            store_currency_resolved = True
+
+        price = Decimal(str(line.get("price", "0")))
+        if store_currency and store_currency != functional_currency and price > 0:
+            from datetime import date as date_type
+
+            from accounting.models import ExchangeRate
+
+            rate = ExchangeRate.get_rate(
+                store.company,
+                store_currency,
+                functional_currency,
+                date_type.today(),
+            )
+            if rate and rate > 0:
+                price = (price * rate).quantize(Decimal("0.01"))
+
+        prepared[code] = _PreparedLineItem(
+            code=code,
+            sku=sku,
+            variant_id=variant_id,
+            product_id=product_id,
+            title=line.get("title", code),
+            unit_price=price,
+            cost=cost,
+            variant_title=line.get("variant_title") or "",
+        )
+    return prepared
+
+
+def _apply_auto_create_item_from_line(store, sku: str, line_item: dict, prepared_items: dict[str, "_PreparedLineItem"]):
+    """P2 Phase 2 — SERIALIZED LOCAL APPLY, under the Company admission lock.
+
+    Creates the Item + ShopifyProduct mapping using ONLY the frozen Phase-1
+    metadata (``prepared_items``, keyed by Item code) — no Shopify network request,
+    no ShopifyAdminClient, no ``requests``, no fallback to ``_fetch_variant_cost``
+    / ``_get_shopify_store_currency``. Re-checks Item existence and the Option-B
+    ``inventory_forced_non_stock`` decision on the freshly LOCKED Company: if
+    another transaction created the Item between preparation and apply the existing
+    Item is reused (no duplicate); if a concurrent activation flipped the profile
+    the authoritative NON_STOCK decision is taken here.
     """
     from sales.models import Item
     from shopify_connector.models import ShopifyProduct
@@ -3528,77 +3687,45 @@ def _auto_create_item_from_line(store, sku: str, line_item: dict):
     sku = (sku or "").strip()
     variant_id = line_item.get("variant_id")
     product_id = line_item.get("product_id")
-
-    if sku:
-        code = sku
-    elif variant_id:
-        code = f"SHOP-{variant_id}"
-    elif product_id:
-        code = f"SHOP-PROD-{product_id}"
-    else:
+    code = _line_item_code(sku, variant_id, product_id)
+    if not code:
         # No identifiable handle — nothing we can create deterministically.
         return
 
-    # Skip if Item already exists for this code
-    if Item.objects.filter(company=store.company, code=code).exists():
-        return
-    # Skip if ShopifyProduct mapping already exists for this variant.
-    # variant_id is the per-company unique identity; sku-keyed lookup
-    # would false-positive across multiple empty-SKU products.
-    if variant_id and ShopifyProduct.objects.filter(company=store.company, shopify_variant_id=variant_id).exists():
-        return
-    if sku and ShopifyProduct.objects.filter(company=store.company, sku=sku).exists():
+    meta = prepared_items.get(code)
+    if meta is None:
+        # Phase 1 did not prepare this code: it already existed (hint skip) or
+        # had no identifiable handle. Nothing to create; the authoritative
+        # existence recheck under the lock below would skip it anyway.
         return
 
-    title = line_item.get("title", code)
-    price = Decimal(str(line_item.get("price", "0")))
-
-    # Resolve default accounts (Sales, Inventory, COGS, Purchase) so the
-    # merchant gets a usable Item out of the box and so fulfillment can
-    # generate COGS journal entries later. Driven by ModuleAccountMapping
-    # which is seeded by _setup_shopify_accounts during onboarding.
+    # Resolve default accounts (Sales, Inventory, COGS, Purchase) so the merchant
+    # gets a usable Item out of the box. Driven by ModuleAccountMapping seeded by
+    # _setup_shopify_accounts during onboarding. DB read (no network).
     defaults = _resolve_default_item_accounts(store.company)
 
-    # Fetch cost from Shopify's product data (cost_per_item on variant)
-    # Convert to company's functional currency if different from store currency
-    functional_currency = getattr(store.company, "functional_currency", "") or store.company.default_currency
-    cost = _fetch_variant_cost(store, variant_id, convert_to_currency=functional_currency)
-
-    # Convert selling price to functional currency if store currency differs
-    store_currency = _get_shopify_store_currency(store)
-    if store_currency and store_currency != functional_currency and price > 0:
-        from datetime import date as date_type
-
-        from accounting.models import ExchangeRate
-
-        rate = ExchangeRate.get_rate(
-            store.company,
-            store_currency,
-            functional_currency,
-            date_type.today(),
-        )
-        if rate and rate > 0:
-            price = (price * rate).quantize(Decimal("0.01"))
-
     # A4 / Option B: a constrained-pilot company gets NON_STOCK items with no
-    # inventory/COGS accounts — no FIFO layer, no stock ledger, no COGS. The
-    # Option-B decision is made on the freshly LOCKED Company profile and held
-    # through the item create (this savepoint's admission row lock persists to the
-    # outer webhook commit; when reached via _process_order_paid_inner the same
-    # Company row is already admission-locked — this re-locks it reentrantly/free).
+    # inventory/COGS accounts. The Option-B decision AND the Item-existence recheck
+    # are made on the freshly LOCKED Company and held through the create. When
+    # reached via _process_order_paid_inner the same Company row is already
+    # admission-locked — this re-locks it reentrantly/free.
     from accounts.pilot_policy import inventory_forced_non_stock, serialized_company_admission
 
     try:
         with serialized_company_admission(store.company.pk) as locked_company:
+            # Authoritative recheck UNDER the lock: another transaction may have
+            # created the Item / mapping between Phase-1 preparation and here.
+            if _shopify_item_or_mapping_exists(store, code, sku, variant_id):
+                return
             _non_stock = inventory_forced_non_stock(locked_company)
             with command_writes_allowed():
                 item = Item.objects.create(
                     company=locked_company,
                     code=code,
-                    name=title,
+                    name=meta.title,
                     item_type=(Item.ItemType.NON_STOCK if _non_stock else "INVENTORY"),
-                    default_unit_price=price,
-                    default_cost=cost,
+                    default_unit_price=meta.unit_price,
+                    default_cost=meta.cost,
                     is_active=True,
                     sales_account=defaults.get("sales"),
                     purchase_account=defaults.get("purchase"),
@@ -3614,16 +3741,16 @@ def _auto_create_item_from_line(store, sku: str, line_item: dict):
                     shopify_product_id=product_id or 0,
                     shopify_variant_id=variant_id or 0,
                     sku=sku,
-                    title=title,
-                    variant_title=line_item.get("variant_title") or "",
+                    title=meta.title,
+                    variant_title=meta.variant_title,
                     item=item,
                     auto_created=True,
                 )
             logger.info(
                 "Auto-created Item %s (%s) cost=%s (inventory=%s, cogs=%s)",
                 code,
-                title,
-                cost,
+                meta.title,
+                meta.cost,
                 defaults.get("inventory"),
                 defaults.get("cogs"),
             )

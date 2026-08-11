@@ -10,16 +10,147 @@ Tasks:
 """
 
 import logging
+from contextlib import contextmanager
 from datetime import timedelta
 
 import requests
 from celery import shared_task
-from django.db import transaction
+from django.conf import settings
+from django.db import connections, transaction
 from django.utils import timezone as tz
 
+from accounts import rls
 from accounts.rls import rls_bypass
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# A4 — scheduled-task tenant / RLS execution context
+# =============================================================================
+# A Celery task has no request, so TenantRlsMiddleware never runs: it has no
+# tenant routing and no PostgreSQL RLS session context. Cross-tenant store
+# discovery legitimately runs under a short ``rls_bypass()`` (system / default
+# DB), but the COMMANDS that discovery feeds must NOT execute under broad bypass
+# — since PR #119 every covered Shopify command takes a fresh ``Company``
+# admission lock, and under production ``RLS_BYPASS=False`` that lock's
+# ``Company`` query is hidden by RLS unless ``app.current_company_id`` is set on
+# the tenant connection (``Company.DoesNotExist`` otherwise). The two helpers
+# below give a scheduled task the SAME tenant routing + RLS session context that
+# ``accounts.middleware.TenantRlsMiddleware`` gives a request — using only the
+# existing tenant/RLS primitives — without ever holding a transaction or a row
+# lock across the remote Shopify sync.
+
+
+def _reassert_shopify_rls() -> None:
+    """Re-apply the PostgreSQL RLS session context for the CURRENT tenant.
+
+    ``events.emitter.emit_event_no_actor`` establishes its own tenant/RLS context
+    for each event write and then CLEARS the connection's RLS session settings in
+    its ``finally`` (``accounts.rls.clear_rls_context``). So after the first event
+    a scheduled command emits, ``app.current_company_id`` / ``app.rls_bypass`` are
+    wiped, and the NEXT admission lock's fresh ``Company`` query is hidden by RLS
+    (``Company.DoesNotExist``). Each admission-locking unit of work therefore
+    re-asserts the session context — derived from the tenant contextvar
+    established by :func:`_shopify_tenant_execution` (scheduled path) or by
+    ``TenantRlsMiddleware`` (the in-request re-sync view, which chains the same
+    per-order locks and has the identical post-emit exposure) — immediately before
+    it acquires its lock. No-op when there is no tenant context (nothing to
+    re-assert), so it is safe to call from paths that run without one.
+    """
+    from tenant.context import get_current_tenant
+
+    ctx = get_current_tenant()
+    if ctx is None:
+        return
+    conn = connections[ctx.db_alias]
+    if ctx.is_shared:
+        rls.set_rls_context(ctx.company_id, bypass=settings.RLS_BYPASS, conn=conn)
+    else:
+        # Dedicated DB: single tenant in the database, RLS bypassed — the
+        # established dedicated-tenant semantics (mirrors TenantRlsMiddleware).
+        rls.set_rls_bypass(True, conn=conn)
+
+
+@contextmanager
+def _shopify_tenant_execution(company_id: int):
+    """Run a scheduled Shopify command for ONE tenant under the same tenant
+    routing + RLS session context ``TenantRlsMiddleware`` establishes for a
+    request — its private, Celery-side twin, built only from existing primitives.
+
+    Mirrors ``TenantRlsMiddleware.__call__`` CASE 3 exactly:
+
+    - look up ``TenantDirectory.get_tenant_info`` on the system / default DB
+      (short cross-tenant discovery);
+    - enter ``override_tenant_context`` FIRST so database routing is established
+      before the RLS connection is selected — restored on exit, even on
+      exception, via its contextvar token;
+    - THEN select the connection for the routed alias and set the RLS session
+      context: for a SHARED tenant, ``app.current_company_id`` + bypass =
+      ``settings.RLS_BYPASS`` (``False`` in production — RLS enforced); for a
+      DEDICATED-DB tenant, bypass on (single tenant, no RLS) — the established
+      dedicated-tenant semantics;
+    - RESTORE the connection's prior RLS session state in ``finally`` (the prior
+      state is clean in a production worker, the signal-installed bypass under
+      tests) so nothing — least of all ``app.rls_bypass='on'`` — leaks into the
+      next task on a reused worker connection, and company A never leaks into a
+      later company B task.
+
+    Callers refetch the ``ShopifyStore`` through the routed connection inside this
+    scope; a store instance loaded during cross-tenant discovery is never the
+    authoritative command instance. This CM holds NO transaction and NO row lock:
+    the tenant / RLS context may span the remote Shopify sync, but the ``Company``
+    admission lock (taken inside each command) may not.
+    """
+    from tenant.context import override_tenant_context, system_db_context
+    from tenant.models import TenantDirectory
+
+    with system_db_context():
+        tenant_info = TenantDirectory.get_tenant_info(company_id)
+    db_alias = tenant_info["db_alias"]
+    is_shared = tenant_info["is_shared"]
+
+    with override_tenant_context(company_id=company_id, db_alias=db_alias, is_shared=is_shared):
+        conn = connections[db_alias]
+        prev_company = rls.get_current_company_id(conn=conn)
+        prev_bypass = rls.is_rls_bypassed(conn=conn)
+        if is_shared:
+            rls.set_rls_context(company_id, bypass=settings.RLS_BYPASS, conn=conn)
+        else:
+            rls.set_rls_bypass(True, conn=conn)
+        try:
+            yield tenant_info
+        finally:
+            # Restore (never blindly clear) so a reused worker connection keeps
+            # whatever state it had before this task — mirrors rls_bypass().
+            rls.set_current_company_id(prev_company, conn=conn)
+            rls.set_rls_bypass(prev_bypass, conn=conn)
+
+
+def _execute_scheduled_store_sync(store_id: int, company_id: int, runner):
+    """Run a discovered store's scheduled Shopify sync under its tenant/RLS
+    execution context — the single per-tenant execution path for every scheduled
+    entrypoint.
+
+    Enters :func:`_shopify_tenant_execution`, SKIPS a tenant that is not writable
+    (``is_writable`` False — MIGRATING / READ_ONLY / SUSPENDED), refetches the
+    ``ShopifyStore`` through the routed connection, and calls ``runner(store)``.
+
+    The writable skip mirrors ``TenantRlsMiddleware`` CASE 3 (which 503s every
+    non-GET request to a non-writable tenant) and ``projections.tasks`` (which
+    excludes MIGRATING tenants from per-company background processing): a
+    scheduled WRITER must never emit orders/events into a frozen tenant — during a
+    shared→dedicated migration ``get_tenant_info`` forces the alias back to the
+    source ``default`` DB, so an un-skipped sync would write past the migration
+    snapshot and split-brain at cutover.
+    """
+    from .models import ShopifyStore
+
+    with _shopify_tenant_execution(company_id) as tenant_info:
+        if not tenant_info["is_writable"]:
+            return {"status": "skipped", "reason": "tenant not writable (migrating / read-only / suspended)"}
+        store = ShopifyStore.objects.select_related("company").get(id=store_id)
+        return runner(store)
 
 
 @shared_task(
@@ -47,20 +178,31 @@ def sync_shopify_all(self, lookback_hours: int = 48) -> dict:
     """
     from .models import ShopifyStore
 
+    # Cross-tenant discovery: a short system/default-DB lookup under bypass. The
+    # discovery rows are used only for their identity (id / company_id / domain);
+    # the authoritative command instance is refetched under each tenant's context.
     with rls_bypass():
-        stores = list(ShopifyStore.objects.filter(status=ShopifyStore.Status.ACTIVE).select_related("company"))
+        discovered = list(
+            ShopifyStore.objects.filter(status=ShopifyStore.Status.ACTIVE).values_list(
+                "id", "company_id", "shop_domain"
+            )
+        )
 
     results = {}
-    for store in stores:
+    for store_id, company_id, shop_domain in discovered:
         try:
-            result = _sync_store(store, lookback_hours)
-            results[store.shop_domain] = result
+            # Per-tenant execution: tenant routing + RLS session context (bypass
+            # OFF for shared tenants in production), non-writable tenants skipped,
+            # refetched store, command run, guaranteed cleanup.
+            results[shop_domain] = _execute_scheduled_store_sync(
+                store_id, company_id, lambda store: _sync_store(store, lookback_hours)
+            )
         except Exception:
-            logger.exception("Shopify re-sync failed for store %s", store.shop_domain)
-            results[store.shop_domain] = {"status": "error", "error": "See logs"}
+            logger.exception("Shopify re-sync failed for store %s", shop_domain)
+            results[shop_domain] = {"status": "error", "error": "See logs"}
 
     return {
-        "stores_processed": len(stores),
+        "stores_processed": len(discovered),
         "results": results,
     }
 
@@ -85,15 +227,14 @@ def initial_store_sync(self, store_id: int) -> dict:
     from .models import ShopifyStore
 
     with rls_bypass():
-        try:
-            store = ShopifyStore.objects.select_related("company").get(id=store_id)
-        except ShopifyStore.DoesNotExist:
-            return {"status": "error", "error": "Store not found"}
-
-    if store.status != ShopifyStore.Status.ACTIVE:
+        disc = ShopifyStore.objects.filter(id=store_id).values_list("id", "company_id", "status").first()
+    if disc is None:
+        return {"status": "error", "error": "Store not found"}
+    _id, company_id, status = disc
+    if status != ShopifyStore.Status.ACTIVE:
         return {"status": "skipped", "reason": "Store not active"}
 
-    return _sync_store(store, lookback_hours=24 * 7)
+    return _execute_scheduled_store_sync(store_id, company_id, lambda store: _sync_store(store, lookback_hours=24 * 7))
 
 
 @shared_task(
@@ -119,19 +260,18 @@ def sync_shopify_store_orders(
     from .models import ShopifyStore
 
     with rls_bypass():
-        try:
-            store = ShopifyStore.objects.select_related("company").get(id=store_id)
-        except ShopifyStore.DoesNotExist:
-            return {"status": "error", "error": "Store not found"}
-
-    if store.status != ShopifyStore.Status.ACTIVE:
+        disc = ShopifyStore.objects.filter(id=store_id).values_list("id", "company_id", "status").first()
+    if disc is None:
+        return {"status": "error", "error": "Store not found"}
+    _id, company_id, status = disc
+    if status != ShopifyStore.Status.ACTIVE:
         return {"status": "skipped", "reason": "Store not active"}
 
     now = tz.now()
     min_date = created_at_min or (now - timedelta(days=7)).isoformat()
     max_date = created_at_max or now.isoformat()
 
-    return _sync_orders(store, min_date, max_date)
+    return _execute_scheduled_store_sync(store_id, company_id, lambda store: _sync_orders(store, min_date, max_date))
 
 
 def _sync_store(store, lookback_hours: int) -> dict:
@@ -146,6 +286,7 @@ def _sync_store(store, lookback_hours: int) -> dict:
     max_date = now.isoformat()
 
     try:
+        _reassert_shopify_rls()
         order_result = _sync_orders(store, min_date, max_date)
         result["orders"] = order_result
     except Exception as e:
@@ -154,6 +295,7 @@ def _sync_store(store, lookback_hours: int) -> dict:
 
     # 2. Sync payouts (existing function handles idempotency)
     try:
+        _reassert_shopify_rls()
         payout_result = sync_payouts(store)
         if payout_result.success:
             result["payouts"] = payout_result.data or {"status": "ok"}
@@ -165,6 +307,7 @@ def _sync_store(store, lookback_hours: int) -> dict:
 
     # 3. Sync products (existing function handles idempotency)
     try:
+        _reassert_shopify_rls()
         product_result = sync_products(store)
         if product_result.success:
             result["products"] = product_result.data or {"status": "ok"}
@@ -180,6 +323,7 @@ def _sync_store(store, lookback_hours: int) -> dict:
     # lookback — this pass searches by updated_at + financial_status and
     # is the durable recovery path for both.
     try:
+        _reassert_shopify_rls()
         result["refunds"] = _sync_refunds(store, min_date, max_date)
     except Exception as e:
         logger.error("Refund catch-up failed for %s: %s", store.shop_domain, e)
@@ -192,6 +336,7 @@ def _sync_store(store, lookback_hours: int) -> dict:
     # COGS_PENDING fulfillment whose order is already paid gets booked
     # here.
     try:
+        _reassert_shopify_rls()
         result["deferred_cogs"] = {"booked": _sweep_deferred_cogs(store)}
     except Exception as e:
         logger.error("Deferred-COGS sweep failed for %s: %s", store.shop_domain, e)
@@ -222,6 +367,7 @@ def _sweep_deferred_cogs(store) -> int:
     booked = 0
     for order in ShopifyOrder.objects.filter(id__in=list(order_ids)):
         try:
+            _reassert_shopify_rls()
             with transaction.atomic():
                 booked += _book_deferred_cogs(store, order, order.order_date or tz.now().date())
         except Exception as e:
@@ -268,6 +414,7 @@ def _sync_refunds(store, updated_at_min: str, updated_at_max: str) -> dict:
         # ordering within the same pass keeps stale refunds processable.
         # process_order_paid is idempotent (skips already-booked orders).
         try:
+            _reassert_shopify_rls()
             with transaction.atomic():
                 order_result = process_order_paid(store, order_payload)
             if not order_result.success:
@@ -323,6 +470,7 @@ def _backfill_order_refunds(store, client, shopify_order_id) -> int:
     booked = 0
     for refund in refunds:
         try:
+            _reassert_shopify_rls()
             with transaction.atomic():
                 result = process_refund(store, refund)
             if result.success and not (result.data and result.data.get("skipped")):
@@ -459,6 +607,7 @@ def _sync_orders(store, created_at_min: str, created_at_max: str) -> dict:
         # doesn't break the entire batch
         booked_paid = False
         try:
+            _reassert_shopify_rls()
             with transaction.atomic():
                 result = handler(store, order_payload)
                 if result.success:
@@ -576,6 +725,7 @@ def _backfill_order_fulfillments(store, client, shopify_order_id) -> int:
     booked = 0
     for fulfillment in fulfillments:
         try:
+            _reassert_shopify_rls()
             with transaction.atomic():
                 result = process_fulfillment(store, fulfillment)
             if result.success and not (result.data and result.data.get("skipped")):

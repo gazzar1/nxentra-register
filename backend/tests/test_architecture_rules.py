@@ -1455,6 +1455,12 @@ A4_READ_ONLY_OR_UX_GATE_SITES: frozenset[str] = frozenset(
         "bank_connector/views.py::resolve_actor",
         "shopify_connector/commands.py::_convert_costs_to_functional",
         "shopify_connector/commands.py::_fetch_variant_cost",
+        # P2 pre-lock remote preparation: resolves item metadata and freezes it —
+        # NO Item creation, NO event, NO write. Its skip_pilot_currency call is an
+        # unlocked PERFORMANCE HINT only (skip remote reads for an out-of-scope
+        # order); the AUTHORITATIVE skip is re-made on the locked Company in
+        # _process_order_paid_inner.
+        "shopify_connector/commands.py::_prepare_order_item_metadata",
         # Interactive views whose require_supported is only a fast HTTP 403; the
         # authoritative mutation is delegated to a SERIALIZED command
         # (commands.sync_payouts / commands.verify_payout).
@@ -1609,3 +1615,159 @@ def test_new_capability_families_carry_serialized_marker():
             f"{modname}.{fnname} must carry the SERIALIZED admission gate marker "
             "(_pilot_capability_serialized is True)."
         )
+
+
+# =============================================================================
+# Rule 13 (A4 scheduled Shopify tenant/RLS execution): every scheduled Shopify
+# task entrypoint runs its per-tenant commands through the single private
+# execution path `_execute_scheduled_store_sync`, which wraps them in
+# `_shopify_tenant_execution` AND skips non-writable tenants — NOT under a broad
+# rls_bypass. A Celery task has no request/middleware, so without the tenant/RLS
+# context the fresh Company admission lock (PR #119) is hidden by RLS
+# (Company.DoesNotExist) in production; without the is_writable skip a scheduled
+# writer would emit into a frozen (migrating/read-only/suspended) tenant that
+# TenantRlsMiddleware CASE 3 would 503. Detection is AST-based (structural
+# ownership: the command runs inside the tenant-execution `with`, guarded by the
+# writable check, never inside a discovery `rls_bypass()`), not line numbers.
+# =============================================================================
+
+# The scheduled @shared_task entrypoints whose per-tenant command execution MUST
+# route through the private tenant/RLS execution path.
+SHOPIFY_SCHEDULED_TENANT_ENTRYPOINTS: frozenset[str] = frozenset(
+    {
+        "sync_shopify_all",
+        "initial_store_sync",
+        "sync_shopify_store_orders",
+    }
+)
+
+# The per-tenant store-processing helpers that must run ONLY inside the tenant
+# execution context (never inside cross-tenant discovery).
+_SHOPIFY_TENANT_COMMAND_CALLS: frozenset[str] = frozenset({"_sync_store", "_sync_orders"})
+_SHOPIFY_TENANT_CM = "_shopify_tenant_execution"
+_SHOPIFY_EXEC_HELPER = "_execute_scheduled_store_sync"
+_SHOPIFY_DISCOVERY_CM = "rls_bypass"
+
+
+def _with_item_callee(item: ast.withitem) -> str | None:
+    """The called name of a `with <call>(...)` context expression, or None."""
+    ctx = item.context_expr
+    if isinstance(ctx, ast.Call):
+        return getattr(ctx.func, "id", None) or getattr(ctx.func, "attr", None)
+    return None
+
+
+def _subtree_call_names(node: ast.AST) -> set[str]:
+    names: set[str] = set()
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Call):
+            name = getattr(sub.func, "id", None) or getattr(sub.func, "attr", None)
+            if name:
+                names.add(name)
+    return names
+
+
+def _subtree_str_constants(node: ast.AST) -> set[str]:
+    return {s.value for s in ast.walk(node) if isinstance(s, ast.Constant) and isinstance(s.value, str)}
+
+
+def _shopify_tasks_tree() -> tuple[ast.Module, dict[str, ast.FunctionDef]]:
+    path = BACKEND_ROOT / "shopify_connector" / "tasks.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    fns = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)}
+    return tree, fns
+
+
+def test_scheduled_shopify_tasks_execute_commands_under_tenant_context():
+    _tree, fns = _shopify_tasks_tree()
+
+    # The private CM and the single per-tenant execution helper must exist.
+    assert _SHOPIFY_TENANT_CM in fns, f"{_SHOPIFY_TENANT_CM} context manager is missing from shopify_connector/tasks.py"
+    helper = fns.get(_SHOPIFY_EXEC_HELPER)
+    assert helper is not None, f"{_SHOPIFY_EXEC_HELPER} (single per-tenant execution path) is missing"
+
+    # The helper wraps execution in the tenant CM, and inside that block it both
+    # gates on tenant writability and invokes the runner command.
+    tenant_blocks = [
+        w
+        for w in ast.walk(helper)
+        if isinstance(w, ast.With) and any(_with_item_callee(it) == _SHOPIFY_TENANT_CM for it in w.items)
+    ]
+    assert tenant_blocks, f"{_SHOPIFY_EXEC_HELPER} must run under `with {_SHOPIFY_TENANT_CM}(...)`"
+    block_calls: set[str] = set()
+    block_consts: set[str] = set()
+    for blk in tenant_blocks:
+        for stmt in blk.body:
+            block_calls |= _subtree_call_names(stmt)
+            block_consts |= _subtree_str_constants(stmt)
+    assert "runner" in block_calls, f"{_SHOPIFY_EXEC_HELPER} must invoke the per-tenant runner inside the tenant CM"
+    assert "is_writable" in block_consts, (
+        f"{_SHOPIFY_EXEC_HELPER} must gate on tenant `is_writable` inside the tenant CM — a scheduled writer must "
+        "skip a non-writable (migrating/read-only/suspended) tenant, mirroring TenantRlsMiddleware CASE 3."
+    )
+
+    # Every pinned entrypoint routes its per-tenant work through the helper.
+    for entry in sorted(SHOPIFY_SCHEDULED_TENANT_ENTRYPOINTS):
+        fn = fns.get(entry)
+        assert fn is not None, f"scheduled entrypoint {entry} not found in shopify_connector/tasks.py"
+        assert _SHOPIFY_EXEC_HELPER in _subtree_call_names(fn), (
+            f"{entry} must run its per-tenant commands through {_SHOPIFY_EXEC_HELPER}() "
+            "(the single tenant/RLS-guarded execution path)."
+        )
+
+    # NO discovery `with rls_bypass():` block anywhere in tasks.py may execute a
+    # per-tenant command or the execution helper — broad bypass is discovery only.
+    forbidden_in_bypass = _SHOPIFY_TENANT_COMMAND_CALLS | {_SHOPIFY_EXEC_HELPER, "runner"}
+    for fn in fns.values():
+        for w in ast.walk(fn):
+            if isinstance(w, ast.With) and any(_with_item_callee(it) == _SHOPIFY_DISCOVERY_CM for it in w.items):
+                leaked = set()
+                for stmt in w.body:
+                    leaked |= _subtree_call_names(stmt) & forbidden_in_bypass
+                assert not leaked, (
+                    f"{fn.name} executes per-tenant work {sorted(leaked)} inside a broad "
+                    f"`with {_SHOPIFY_DISCOVERY_CM}()` block — discovery bypass must never run tenant commands."
+                )
+
+
+# =============================================================================
+# Rule 13b (A4 P2 — remote prepare / locked apply): the locked unknown-item apply
+# helper must have NO dependency on the remote metadata functions; the network
+# reads live only in the pre-lock preparation helper. This proves the P2 split
+# actually moved the network out from under the admission lock (not merely that
+# the lock region "looks" clean).
+# =============================================================================
+
+_REMOTE_METADATA_FUNCS: frozenset[str] = frozenset(
+    {"_fetch_variant_cost", "_get_shopify_store_currency", "_admin_client", "requests"}
+)
+
+
+def _shopify_commands_fn(name: str) -> ast.FunctionDef:
+    path = BACKEND_ROOT / "shopify_connector" / "commands.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for n in ast.walk(tree):
+        if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef) and n.name == name:
+            return n
+    raise AssertionError(f"{name} not found in shopify_connector/commands.py")
+
+
+def test_locked_item_apply_has_no_remote_metadata_dependency():
+    apply_fn = _shopify_commands_fn("_apply_auto_create_item_from_line")
+    called = _subtree_call_names(apply_fn)
+    forbidden = called & _REMOTE_METADATA_FUNCS
+    assert not forbidden, (
+        "_apply_auto_create_item_from_line runs UNDER the Company admission lock and "
+        f"must make no remote metadata call, but references: {sorted(forbidden)}. "
+        "Remote reads belong in _prepare_order_item_metadata (before the lock)."
+    )
+
+
+def test_remote_item_preparation_owns_the_network_reads():
+    prep_fn = _shopify_commands_fn("_prepare_order_item_metadata")
+    called = _subtree_call_names(prep_fn)
+    assert {"_fetch_variant_cost", "_get_shopify_store_currency"} <= called, (
+        "_prepare_order_item_metadata must own the remote item-metadata reads "
+        "(_fetch_variant_cost / _get_shopify_store_currency) so the locked apply can be "
+        "network-free — the P2 split moved the network, it did not delete it."
+    )
