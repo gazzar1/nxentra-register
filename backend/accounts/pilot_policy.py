@@ -16,6 +16,10 @@ for these gates.
   - projection rebuild / replay (every entry point);
   - adding members / invitations / a second merchant company;
   - inventory: ``INVENTORY`` items and inventory/COGS account mappings (Option B);
+  - purchasing / accounts-payable: purchase documents (bills, orders, goods
+    receipts, credit notes), purchase-originated journals, and the
+    vendor-payment / AP-allocation posting workflow — manual journals (incl.
+    vendor-tagged lines) remain governed by the ordinary manual-journal rules;
   - currency / fiscal-configuration changes;
   - unsafe automatic bank match / unmatch / rematch.
 
@@ -25,9 +29,12 @@ unrecognized stored profile value fails closed (everything gated is blocked).
 
 from __future__ import annotations
 
+import dataclasses
+import functools
 import logging
 from enum import StrEnum
 
+from django.db import transaction
 from rest_framework.exceptions import APIException
 
 logger = logging.getLogger(__name__)
@@ -44,6 +51,7 @@ class Capability(StrEnum):
     ADD_MEMBER = "add_member"
     CREATE_COMPANY = "create_company"
     INVENTORY = "inventory"
+    PURCHASING_ACCOUNTING = "purchasing_accounting"
     CURRENCY_FISCAL_CHANGE = "currency_fiscal_change"
     UNSAFE_BANK_MATCH = "unsafe_bank_match"
 
@@ -59,6 +67,56 @@ NON_EGP_INGESTION = "non_egp_ingestion"
 _BLOCKED_BY_PROFILE: dict[str, frozenset[str]] = {
     "ISOLATED_SHADOW_LEDGER_V1": frozenset(c.value for c in Capability),
 }
+
+
+# Optional modules whose ``ModuleEnabled`` route permission is capability-aware:
+# under a pilot profile that forbids the capability, the permission RAISES
+# ``PilotScopeBlocked`` (403) BEFORE the enablement lookup, so a stale
+# ``CompanyModule.is_enabled=True`` row cannot reopen the module. Both
+# module-enable doors (``CompanyModulesView.put`` + onboarding Step 4) consult
+# this map to refuse enabling a blocked module. Modules NOT listed here are
+# unaffected (their ``ModuleEnabled`` behavior is unchanged).
+MODULE_CAPABILITIES: dict[str, Capability] = {
+    "purchases": Capability.PURCHASING_ACCOUNTING,
+}
+
+# Every OTHER registered optional module carries an explicit MODULE-ENABLEMENT
+# disposition here: it is currently NOT gated at the module-enablement boundary.
+# Ungated at module enablement does NOT mean process-certified, supported, or
+# safe for pilot use — several of these modules are blocked at deeper runtime
+# boundaries, and the process-level posture of the verticals is unresolved
+# pending the Pilot Process-Surface Completeness Assessment. This set has NO
+# runtime effect: it is consumed only by the module-enablement-disposition
+# architecture ratchet, which requires every registered optional module to be
+# either mapped in ``MODULE_CAPABILITIES`` or listed here, so a NEW optional
+# module cannot silently join this surface without a reviewed decision.
+#   - sales / shopify_connector — the pilot's own supported workflow;
+#   - inventory — enablement ungated; items are forced NON_STOCK by Option B
+#     (``Capability.INVENTORY``) at the item layer, not here;
+#   - stripe_connector — module visible; Stripe is blocked at connect / sync /
+#     webhook (``Capability.STRIPE``);
+#   - bank_connector — legacy; blocked at ``Capability.LEGACY_BANKING`` and
+#     surfaced as ``legacy_bank_data`` preflight residue;
+#   - clinic / properties — verticals that post their own journals; their
+#     posted-JE-emitter posture under the pilot is unresolved pending the
+#     read-only assessment tracked for the pre-G1 review, NOT decided here.
+MODULES_UNGATED_AT_PILOT_ENABLEMENT: frozenset[str] = frozenset(
+    {
+        "sales",
+        "shopify_connector",
+        "inventory",
+        "stripe_connector",
+        "bank_connector",
+        "clinic",
+        "properties",
+    }
+)
+
+
+def capability_for_module(module_key: str) -> Capability | None:
+    """The pilot capability gating ``module_key`` at the module-enablement
+    boundary, or ``None`` when the module is not capability-gated there."""
+    return MODULE_CAPABILITIES.get(module_key)
 
 
 class PilotScopeBlocked(APIException):
@@ -137,6 +195,131 @@ def require_supported(company, capability) -> None:
     forbidden; do nothing when supported."""
     if not is_supported(company, capability):
         raise PilotScopeBlocked(_cap_value(capability), profile_of(company))
+
+
+def lock_company_for_admission(company_pk):
+    """The mutation-side Company ADMISSION LOCK — the serialization point
+    between capability-gated mutations and pilot activation.
+
+    Contract:
+
+    - MUST be called inside ``transaction.atomic()`` (raises otherwise); the
+      caller must keep that transaction open through the COMPLETE mutation
+      commit/rollback — the returned row lock is what serializes the mutation
+      against ``activate_pilot_profile`` (which takes ``Company`` ``FOR
+      UPDATE`` before its preflight and profile write). A lock released before
+      the mutation commits is NOT a safety boundary.
+    - REFETCHES the exact Company row from the database — never trust a cached
+      instance's ``pilot_profile`` for a mutation decision.
+    - Lock mode: ``FOR NO KEY UPDATE`` where supported
+      (``connection.features.has_select_for_no_key_update`` — PostgreSQL).
+      Deliberately NOT full ``FOR UPDATE``: NO KEY UPDATE conflicts with
+      activation's explicit ``FOR UPDATE`` (both orderings serialize) and with
+      other admission locks (covered mutations serialize per company), while
+      staying compatible with the implicit ``FOR KEY SHARE`` taken by every
+      company-FK row INSERT (events, documents) — full FOR UPDATE would block
+      those and widen the Counter→Company deadlock surface. Falls back to the
+      established plain ``select_for_update()`` where the feature is
+      unavailable (a no-op on SQLite, where the local battery is
+      single-threaded; the PostgreSQL e2e suite carries the concurrency proof).
+
+    Plain ``require_supported()`` / ``is_supported()`` / the ``ModuleEnabled``
+    route permission and similar UNLOCKED checks are insufficient as the sole
+    authorization for any mutation that can race with activation — they read a
+    point-in-time (usually cached) profile with no serialization. Use this
+    lock (directly, or via ``requires_capability``) for every such mutation.
+    """
+    from accounts.models import Company
+
+    conn = transaction.get_connection()
+    if not conn.in_atomic_block:
+        raise RuntimeError(
+            "lock_company_for_admission() must be called inside transaction.atomic() — "
+            "the admission lock must live until the mutation's outermost commit/rollback."
+        )
+    qs = (
+        Company.objects.select_for_update(no_key=True)
+        if conn.features.has_select_for_no_key_update
+        else Company.objects.select_for_update()
+    )
+    return qs.get(pk=company_pk)
+
+
+def requires_capability(capability):
+    """Reusable SERIALIZED interactive command gate.
+
+    Decorate a command whose FIRST positional argument is the ``ActorContext``.
+    The wrapper owns the mutation's OUTERMOST transaction and the Company
+    admission lock:
+
+        transaction.atomic()
+          -> lock_company_for_admission(actor.company.pk)   (fresh row, locked)
+          -> require_supported(locked_company, capability)  (raises 403 when forbidden)
+          -> func(dataclasses.replace(actor, company=locked_company), ...)
+          -> outer commit/rollback (lock held throughout)
+
+    So exactly one serializable ordering with ``activate_pilot_profile`` can
+    occur: either this mutation commits first and activation's preflight sees
+    its durable state, or activation commits first and this wrapper reads the
+    ACTIVE profile and raises ``PilotScopeBlocked`` with zero side effects. A
+    stale ``ActorContext`` resolved before activation cannot bypass the gate —
+    the profile is re-read from the locked row, and the wrapped command runs
+    with an ActorContext referencing that locked instance (``ActorContext`` is
+    frozen, hence ``dataclasses.replace``). Existing inner
+    ``@transaction.atomic`` decorators become savepoints; nested decorated
+    commands re-lock the same row in the same transaction (free/reentrant).
+
+    Must remain the OUTERMOST decorator. ``NONE``-profile companies keep their
+    functional behavior; the covered mutations serialize per company on the
+    admission row (the deliberate correctness-first tradeoff).
+
+    ``_pilot_capability`` / ``_pilot_capability_serialized`` are introspectable
+    markers so architecture ratchets can prove every command on a gated surface
+    carries the SERIALIZED gate.
+    """
+
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(actor, *args, **kwargs):
+            company = getattr(actor, "company", None)
+            if company is None:
+                # Company-less actor: preserve the pre-existing gate semantics
+                # (profile_of(None) == NONE -> supported); the command itself
+                # fails on actor.company access. Nothing to lock.
+                require_supported(company, capability)
+                return func(actor, *args, **kwargs)
+            with transaction.atomic():
+                locked_company = lock_company_for_admission(company.pk)
+                require_supported(locked_company, capability)
+                return func(dataclasses.replace(actor, company=locked_company), *args, **kwargs)
+
+        wrapper._pilot_capability = capability
+        wrapper._pilot_capability_serialized = True
+        return wrapper
+
+    return decorator
+
+
+def require_module_enable_allowed(company, modules) -> None:
+    """Module-enable-door gate. Given an inbound ``[{"key", "is_enabled"}, ...]``
+    payload, validate the COMPLETE payload and RAISE ``PilotScopeBlocked`` for
+    the first module whose enablement the company's pilot profile forbids —
+    BEFORE the caller performs any module write, so a refusal never leaves a
+    partial apply. ENABLING a capability-gated module is refused; DISABLING it
+    (``is_enabled`` falsy) and any unmapped module are always allowed;
+    ``NONE``-profile companies are never restricted (so ordinary onboarding,
+    which runs before pilot activation, is never blocked)."""
+    if not is_pilot(company):
+        return
+    for item in modules or []:
+        if not isinstance(item, dict):
+            continue
+        key = item.get("key", "")
+        if not key or not item.get("is_enabled", False):
+            continue
+        capability = capability_for_module(key)
+        if capability is not None:
+            require_supported(company, capability)
 
 
 def inventory_forced_non_stock(company) -> bool:

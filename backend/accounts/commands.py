@@ -14,6 +14,7 @@ This ensures:
 3. Single point of enforcement
 """
 
+import dataclasses
 import hashlib
 import json
 import logging
@@ -1552,13 +1553,21 @@ def update_company(
     # 1. Authorization
     require(actor, "company.update")
 
-    # 2. Load company
+    # 2. Load company — A4 lock-order alignment: this command emits a
+    # COMPANY_UPDATED event (Counter lock) whose synchronous CompanyProjection
+    # applies a Company row UPDATE. Take the Company ADMISSION LOCK on the
+    # EXACT target row FIRST (before reading the values that build the change
+    # set and before any Counter acquisition) so the global order stays
+    # Company -> Counter and no AB/BA forms against serialized admissions.
+    from accounts.pilot_policy import lock_company_for_admission
+
     try:
-        company = Company.objects.get(id=company_id)
+        company = lock_company_for_admission(company_id)
     except Company.DoesNotExist:
         return CommandResult.fail("Company not found.")
 
-    # 3. Validate actor belongs to this company
+    # 3. Validate actor belongs to this company (existing authorization
+    # contract preserved — the lock does not widen who may update).
     if actor.company_id != company.id:
         return CommandResult.fail("Cannot update another company.")
 
@@ -1617,7 +1626,17 @@ def update_company_settings(
     # 1. Authorization
     require(actor, "company.settings.update")
 
-    company = actor.company
+    # A4 lock-order alignment + serialized gate: this command emits
+    # COMPANY_SETTINGS_CHANGED (Counter lock) whose synchronous
+    # CompanyProjection applies a Company row UPDATE. Take the Company
+    # ADMISSION LOCK FIRST — before reading the old values that build the
+    # change set and before any Counter acquisition — so the global order
+    # stays Company -> Counter, and the CURRENCY_FISCAL_CHANGE gate below
+    # evaluates against the freshly locked profile (serialized with
+    # activation) rather than a cached snapshot.
+    from accounts.pilot_policy import Capability, lock_company_for_admission, require_supported
+
+    company = lock_company_for_admission(actor.company.pk)
 
     # 2. Build changes
     allowed_settings = {
@@ -1649,8 +1668,6 @@ def update_company_settings(
     # Constrained pilot freezes the currency + fiscal configuration (EGP / January).
     # Non-currency/fiscal edits (name, separators, Arabic fields) remain allowed.
     if changes.keys() & {"default_currency", "fiscal_year_start_month"}:
-        from accounts.pilot_policy import Capability, require_supported
-
         require_supported(company, Capability.CURRENCY_FISCAL_CHANGE)
 
     # 3. Validate settings
@@ -1745,6 +1762,17 @@ def upload_company_logo(
     # Save the file first, projection will update the model
     saved_path = default_storage.save(new_logo_path, logo_file)
 
+    # 7b. A4 lock-order alignment: the emit below takes the Counter lock and
+    # its synchronous CompanyProjection UPDATEs the Company row. Acquire the
+    # Company ADMISSION LOCK here — AFTER the external storage work (never
+    # hold a row lock across storage I/O) and BEFORE the first Counter
+    # acquisition — so the global order stays Company -> Counter. This does
+    # not solve the pre-existing non-transactional storage/DB consistency
+    # window; it only closes the lock-order reversal.
+    from accounts.pilot_policy import lock_company_for_admission
+
+    company = lock_company_for_admission(company.pk)
+
     # 8. Emit event
     event = emit_event(
         actor=actor,
@@ -1817,6 +1845,12 @@ def delete_company_logo(actor: ActorContext) -> CommandResult:
         default_storage.delete(logo_path)
     except Exception:
         pass  # Ignore deletion errors (file may not exist)
+
+    # 4b. A4 lock-order alignment: Company admission lock AFTER the storage
+    # operation, BEFORE the first Counter acquisition (see upload_company_logo).
+    from accounts.pilot_policy import lock_company_for_admission
+
+    company = lock_company_for_admission(company.pk)
 
     # 5. Emit event
     event = emit_event(
@@ -3430,7 +3464,20 @@ def complete_onboarding(
     """
     require(actor, "company.settings.update")
 
-    company = actor.company
+    # A4 serialized admission: the onboarding wizard's Step 4 is the second
+    # module-enable door. Acquire the Company ADMISSION LOCK at the start of
+    # this transaction (held to commit), rebind the actor to the freshly locked
+    # row, and validate the FULL module payload against that locked profile —
+    # before ANY onboarding write — so a refusal never leaves the company
+    # half-configured and a stale-profile actor cannot enable a forbidden
+    # module after activation (both orderings with activate_pilot_profile
+    # serialize on the admission row). NONE-profile onboarding is functionally
+    # unchanged; only a re-run on an already-active pilot can be refused.
+    from accounts.pilot_policy import lock_company_for_admission, require_module_enable_allowed
+
+    company = lock_company_for_admission(actor.company.pk)
+    actor = dataclasses.replace(actor, company=company)
+    require_module_enable_allowed(company, modules)
 
     # ---- Step 1: Company profile ----
     profile_fields = {}

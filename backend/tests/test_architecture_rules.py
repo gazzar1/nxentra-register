@@ -1070,6 +1070,10 @@ def test_allowlists_are_documented_in_this_file():
         "every emitter; a new unintegrated path needs a written reason and a "
         "linked follow-up decision, not a quiet entry."
     )
+    assert len(PURCHASING_COMMAND_GATE_EXEMPT) == 0, (
+        "PURCHASING_COMMAND_GATE_EXEMPT must stay empty — a purchasing command "
+        "without the pilot gate needs its own guard, not an exemption entry."
+    )
 
 
 def test_external_ingest_reserved_set_pins_account_namespace():
@@ -1174,3 +1178,236 @@ def test_account_mutations_require_materialization_proof():
         "_verify_account_materialization must require the per-event applied "
         "marker, not bookmark position or row state alone."
     )
+
+
+# =============================================================================
+# Rule 9 (A4): every public purchasing command carries the pilot gate marker
+# =============================================================================
+#
+# The purchasing / accounts-payable surface is out of scope for the constrained
+# pilot. Each public command in purchases.commands must carry the
+# requires_capability(PURCHASING_ACCOUNTING) gate, exposed as the introspectable
+# `_pilot_capability` marker. This ratchet is registry-derived (it discovers the
+# commands by introspecting the module, so a NEW command is covered
+# automatically) and marker-based (it reads the live attribute, not source
+# text), with an empty exemption allowlist.
+
+PURCHASING_COMMAND_GATE_EXEMPT: set[str] = set()
+"""Empty by design. A public purchasing command WITHOUT the pilot gate needs a
+written reason and its own guard, not a quiet exemption here."""
+
+
+def _public_actor_commands(module) -> dict:
+    """Discover the command surface of `module`: every public, module-defined
+    function whose first parameter is `actor`. Decorated commands keep their
+    original signature via functools.wraps, so introspection still sees `actor`
+    and imported helpers (different __module__) are excluded."""
+    import inspect
+
+    commands: dict = {}
+    for name, obj in vars(module).items():
+        if name.startswith("_") or not inspect.isfunction(obj):
+            continue
+        if getattr(obj, "__module__", None) != module.__name__:
+            continue
+        try:
+            params = list(inspect.signature(obj).parameters)
+        except (ValueError, TypeError):
+            continue
+        if params and params[0] == "actor":
+            commands[name] = obj
+    return commands
+
+
+def test_every_public_purchasing_command_carries_pilot_gate_marker():
+    from accounts.pilot_policy import Capability
+    from purchases import commands as purchasing_commands
+
+    discovered = _public_actor_commands(purchasing_commands)
+    # Sanity: the surface is non-trivial (the 14 documented commands + the new
+    # delete command). A near-zero discovery means the filter broke, not that the
+    # gate is universal.
+    assert len(discovered) >= 14, f"purchasing command discovery looks wrong: {sorted(discovered)}"
+
+    ungated = sorted(
+        name
+        for name, fn in discovered.items()
+        if name not in PURCHASING_COMMAND_GATE_EXEMPT
+        and getattr(fn, "_pilot_capability", None) != Capability.PURCHASING_ACCOUNTING
+    )
+    assert not ungated, (
+        "Every public purchasing command must carry the "
+        "requires_capability(PURCHASING_ACCOUNTING) gate (introspectable via "
+        f"`_pilot_capability`). Ungated: {ungated}"
+    )
+
+    # A4 serialization: the gate must be the SERIALIZED variant (Company
+    # admission lock held through the mutation) — a future non-serialized gate
+    # cannot silently return.
+    unserialized = sorted(
+        name
+        for name, fn in discovered.items()
+        if name not in PURCHASING_COMMAND_GATE_EXEMPT and getattr(fn, "_pilot_capability_serialized", None) is not True
+    )
+    assert not unserialized, (
+        "Every public purchasing command must carry the SERIALIZED admission "
+        f"gate (`_pilot_capability_serialized is True`). Unserialized: {unserialized}"
+    )
+
+
+# =============================================================================
+# Rule 10 (A4): every registered optional module has an explicit
+# MODULE-ENABLEMENT disposition
+# =============================================================================
+#
+# So a NEW optional module cannot silently join the module-enablement surface:
+# each registered optional module must be either capability-gated at the
+# module-enablement boundary (MODULE_CAPABILITIES) or carry an explicit
+# ungated-at-enablement entry (MODULES_UNGATED_AT_PILOT_ENABLEMENT). Both are
+# data in accounts.pilot_policy — no source-string pinning. This is
+# module-enablement admission coverage ONLY: "ungated at enablement" does not
+# mean process-certified or safe for pilot use, and this rule proves nothing
+# about non-module financial processes (record_vendor_payment is gated
+# separately). The per-process dispositions belong to the Pilot Process-Surface
+# Completeness Assessment tracked for the pre-G1 review.
+
+
+def test_every_optional_module_has_explicit_enablement_disposition():
+    from accounts.module_registry import module_registry
+    from accounts.pilot_policy import (
+        MODULE_CAPABILITIES,
+        MODULES_UNGATED_AT_PILOT_ENABLEMENT,
+        Capability,
+    )
+
+    optional = {m["key"] for m in module_registry.optional_modules()}
+    gated = set(MODULE_CAPABILITIES)
+    ungated = set(MODULES_UNGATED_AT_PILOT_ENABLEMENT)
+
+    undispositioned = sorted(optional - gated - ungated)
+    assert not undispositioned, (
+        "Registered optional module(s) with NO module-enablement disposition — a "
+        "new module must be either capability-gated (MODULE_CAPABILITIES) or "
+        "explicitly recorded as ungated at enablement "
+        f"(MODULES_UNGATED_AT_PILOT_ENABLEMENT): {undispositioned}"
+    )
+
+    stale = sorted((gated | ungated) - optional)
+    assert not stale, (
+        "Module-enablement disposition points at a module that is not a "
+        f"registered optional module (stale / misspelled / core): {stale}"
+    )
+
+    both = sorted(gated & ungated)
+    assert not both, f"Module(s) both capability-gated AND recorded as ungated — pick one: {both}"
+
+    # The purchasing entry specifically must stay wired, canonically:
+    # purchases -> PURCHASING_ACCOUNTING, every mapped value a real Capability,
+    # and the capability actually blocked under the pilot profile.
+    assert MODULE_CAPABILITIES.get("purchases") is Capability.PURCHASING_ACCOUNTING, (
+        "purchases must map canonically to Capability.PURCHASING_ACCOUNTING."
+    )
+    assert all(isinstance(cap, Capability) for cap in MODULE_CAPABILITIES.values()), (
+        "every MODULE_CAPABILITIES value must be a real Capability member."
+    )
+
+    from accounts.models import Company
+    from accounts.pilot_policy import is_supported
+
+    pilot = Company(pilot_profile=Company.PilotProfile.ISOLATED_SHADOW_LEDGER_V1)
+    assert is_supported(pilot, Capability.PURCHASING_ACCOUNTING) is False, (
+        "PURCHASING_ACCOUNTING must be blocked under ISOLATED_SHADOW_LEDGER_V1."
+    )
+
+
+# =============================================================================
+# Rule 11 (A4 activation/admission serialization): capability-gated mutations
+# and pilot activation share ONE serializable ordering on the Company row
+# =============================================================================
+#
+# The reproduced race: capability gates read pilot_profile off a cached,
+# unlocked Company, so a mutation admitted at NONE could commit AFTER a clean
+# activation. The closure: mutations admit under the Company ADMISSION LOCK
+# (FOR NO KEY UPDATE where supported) held through their outermost commit;
+# activation keeps its explicit FOR UPDATE before preflight and profile write.
+# These rules pin the structural shape; the PostgreSQL two-connection proofs
+# live in tests/e2e/test_pilot_admission_serialization.py.
+
+# The WITNESSED set of commands whose Company-event emission triggers a
+# synchronous CompanyProjection UPDATE of the Company row (Counter -> Company
+# without alignment). Each must acquire the Company admission lock BEFORE its
+# emission so the global order stays Company -> domain -> Counter -> Accounts.
+# Explicit documented set — do NOT infer global Company lock-order safety from
+# naming patterns; a new Company-event writer belongs here via review.
+COMPANY_EVENT_WRITER_COMMANDS: frozenset[str] = frozenset(
+    {
+        "update_company",
+        "update_company_settings",
+        "upload_company_logo",
+        "delete_company_logo",
+    }
+)
+
+
+def test_record_vendor_payment_carries_serialized_capability_marker():
+    from accounting import commands as accounting_commands
+    from accounts.pilot_policy import Capability
+
+    fn = accounting_commands.record_vendor_payment
+    assert getattr(fn, "_pilot_capability", None) is Capability.PURCHASING_ACCOUNTING, (
+        "record_vendor_payment must carry the PURCHASING_ACCOUNTING gate."
+    )
+    assert getattr(fn, "_pilot_capability_serialized", None) is True, (
+        "record_vendor_payment must carry the SERIALIZED admission gate."
+    )
+
+
+def test_requires_capability_owns_serialized_admission():
+    """The decorator owns: outer transaction -> canonical Company admission
+    lock -> capability check on the LOCKED row -> command invoked with an
+    ActorContext referencing the locked Company. The primitive refetches under
+    FOR NO KEY UPDATE (exact feature flag) and demands an open transaction."""
+    import inspect
+
+    from accounts import pilot_policy
+
+    src = inspect.getsource(pilot_policy.requires_capability)
+    assert "transaction.atomic()" in src, "requires_capability must open the owning transaction"
+    assert "lock_company_for_admission(" in src, "requires_capability must take the canonical admission lock"
+    assert "require_supported(locked_company" in src, "the capability must be evaluated on the LOCKED Company"
+    assert "dataclasses.replace(actor, company=locked_company)" in src, (
+        "the wrapped command must run with an ActorContext referencing the locked Company"
+    )
+
+    prim = inspect.getsource(pilot_policy.lock_company_for_admission)
+    assert "select_for_update(no_key=True)" in prim, "admission lock must be FOR NO KEY UPDATE where supported"
+    assert "has_select_for_no_key_update" in prim, "the exact Django feature flag must gate the lock mode"
+    assert "in_atomic_block" in prim, "the primitive must refuse to run outside transaction.atomic()"
+
+
+def test_activation_locks_company_before_preflight_and_write():
+    """activate_pilot_profile must retain its explicit Company select_for_update
+    BEFORE run_preflight and BEFORE the pilot_profile write — it is the
+    exclusive half of the admission serialization (FOR UPDATE conflicts with
+    the mutations' FOR NO KEY UPDATE; the profile UPDATE alone would not)."""
+    source = (BACKEND_ROOT / "accounts" / "management" / "commands" / "activate_pilot_profile.py").read_text(
+        encoding="utf-8"
+    )
+    assert _statement_order(source, "handle", "select_for_update", "run_preflight("), (
+        "activation must lock the Company row before running the preflight"
+    )
+    assert _statement_order(source, "handle", "run_preflight(", "pilot_profile = Company.PilotProfile"), (
+        "activation must hold the lock from preflight through the profile write"
+    )
+
+
+def test_company_event_writers_lock_company_before_emission():
+    """Every witnessed Company-event writer acquires the Company admission lock
+    BEFORE its event emission (Counter acquisition), keeping the global order
+    Company -> Counter and preventing the AB/BA the serialization fix would
+    otherwise create against these paths."""
+    source = (BACKEND_ROOT / "accounts" / "commands.py").read_text(encoding="utf-8")
+    for func in sorted(COMPANY_EVENT_WRITER_COMMANDS):
+        assert _statement_order(source, func, "lock_company_for_admission(", "emit_event("), (
+            f"{func} must acquire the Company admission lock before emitting its Company event"
+        )

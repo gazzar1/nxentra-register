@@ -62,6 +62,7 @@ Unknown profile values fail closed (every gated capability blocked).
 | Shopify Payments payout accounting | `Capability.SHOPIFY_PAYOUT_ACCOUNTING` — scheduled sync skips; interactive views 403 |
 | Disputes / chargebacks | `Capability.SHOPIFY_DISPUTES` — `process_dispute` skips (no row, no event) |
 | Inventory / COGS / FIFO | `Capability.INVENTORY` (Option B) — items forced NON_STOCK; no inventory/COGS module mappings; no cost fetch, no FX cost conversion |
+| Purchasing / accounts payable | `Capability.PURCHASING_ACCOUNTING` — purchase documents (bills, orders, goods receipts, credit notes), purchase-originated journals, and the vendor-payment / AP-allocation workflow. Three enforcement layers: module admission (`ModuleEnabled` raises before the enablement lookup, and both enable doors — `CompanyModulesView.put` + onboarding Step 4 — refuse enabling with locked full-payload validation before any write), the `purchases` command boundary (a **serialized** `requires_capability` gate on every command — the Company admission row is locked, the profile re-read fresh, and the lock held through the mutation's commit, so admission and `activate_pilot_profile` share one serializable ordering), and `record_vendor_payment` (same serialized gate; stable 403 `pilot_scope_blocked` at its route). Preflight drift detection runs on durable canonical evidence — surviving documents, immutable purchase/AP events, vendor payment allocations — not only document rows. Manual journals — including vendor-tagged lines — remain governed by the ordinary manual-journal rules |
 | Foreign currency | `require_pilot_currency` at settlement/bank/Shopify ingestion; EGP-only proven at go-live |
 | Multiple users | `Capability.ADD_MEMBER` on every membership path |
 | Legacy banking module | `Capability.LEGACY_BANKING` |
@@ -91,10 +92,15 @@ Unknown profile values fail closed (every gated capability blocked).
 ### Acceptance tests
 
 [backend/tests/test_a4_pilot_gates.py](../../backend/tests/test_a4_pilot_gates.py)
-(~80 tests: every gate at unit + HTTP route + webhook level, Option B and
+(~133 tests: every gate at unit + HTTP route + webhook level, Option B and
 no-FX proofs, activation audit, one seeded test per preflight violation code,
-admin bypass closures) plus the architecture rules in
-[backend/tests/test_architecture_rules.py](../../backend/tests/test_architecture_rules.py).
+admin bypass closures, and the purchasing/AP exclusion — every command blocked
+with zero side effects, both enable doors incl. mixed-payload atomicity,
+stale-enabled-row route 403s, per-leg durable-evidence drift detection) plus
+the architecture rules in
+[backend/tests/test_architecture_rules.py](../../backend/tests/test_architecture_rules.py)
+(including the purchasing-command gate-marker ratchet and the optional-module
+module-enablement-disposition ratchet).
 
 ### Graduation requirements
 

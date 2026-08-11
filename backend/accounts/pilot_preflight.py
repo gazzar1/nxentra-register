@@ -137,6 +137,7 @@ def run_preflight(company, *, phase: str = "go-live", for_activation: bool = Fal
         v += _inventory_state_violations(company)
         v += _out_of_scope_data_violations(company)
         v += _legacy_bank_violations(company)
+        v += _purchase_state_violations(company)
 
     return v
 
@@ -344,6 +345,117 @@ def _legacy_bank_violations(company) -> list[Violation]:
             )
         ]
     return []
+
+
+def _purchase_state_violations(company) -> list[Violation]:
+    """A4: the purchasing / accounts-payable workflow is out of scope. Detect —
+    read-only, never repaired — purchases-module enablement, purchase documents,
+    and purchase/AP FINANCIAL history via DURABLE canonical evidence, not only
+    surviving document rows: the immutable event stream and vendor-side payment
+    allocations survive document deletion (the privileged admin bulk-delete
+    residual), and ``record_vendor_payment`` creates a posted journal, a
+    ``cash.vendor_payment_recorded`` event and allocation rows WITHOUT any
+    purchase document. Explicit canonical event constants only — never prefix
+    matching. Vendors, VENDOR posting profiles, NON_STOCK items and the purchase
+    sequence counters are shared master data / harmless counters, NOT purchasing
+    execution state, and are intentionally exempt. (Going-forward, the runtime
+    gates on the purchasing commands and ``record_vendor_payment`` keep these
+    paths unreachable; this is drift detection for anything that predates
+    activation or bypassed a guard.)"""
+    from accounts.models import CompanyModule
+    from events.models import BusinessEvent
+    from events.types import EventTypes
+    from purchases.models import GoodsReceipt, PurchaseBill, PurchaseCreditNote, PurchaseOrder
+    from sales.models import PaymentAllocation
+
+    # Any of these proves a purchase document existed, even if the row is gone.
+    document_event_types = (
+        EventTypes.PURCHASES_BILL_CREATED,
+        EventTypes.PURCHASES_BILL_UPDATED,
+        EventTypes.PURCHASES_BILL_POSTED,
+        EventTypes.PURCHASES_BILL_VOIDED,
+        EventTypes.PURCHASES_ORDER_CREATED,
+        EventTypes.PURCHASES_ORDER_UPDATED,
+        EventTypes.PURCHASES_ORDER_APPROVED,
+        EventTypes.PURCHASES_ORDER_CANCELLED,
+        EventTypes.PURCHASES_ORDER_CLOSED,
+        EventTypes.PURCHASES_GOODS_RECEIPT_CREATED,
+        EventTypes.PURCHASES_GOODS_RECEIPT_POSTED,
+        EventTypes.PURCHASES_GOODS_RECEIPT_VOIDED,
+        EventTypes.PURCHASES_CREDIT_NOTE_CREATED,
+        EventTypes.PURCHASES_CREDIT_NOTE_POSTED,
+        EventTypes.PURCHASES_CREDIT_NOTE_VOIDED,
+    )
+    # Any of these proves purchase-originated or AP JOURNAL history (posting,
+    # reversal-on-void, or a vendor payment).
+    financial_event_types = (
+        EventTypes.PURCHASES_BILL_POSTED,
+        EventTypes.PURCHASES_BILL_VOIDED,
+        EventTypes.PURCHASES_CREDIT_NOTE_POSTED,
+        EventTypes.PURCHASES_CREDIT_NOTE_VOIDED,
+        EventTypes.VENDOR_PAYMENT_RECORDED,
+    )
+
+    out: list[Violation] = []
+
+    if CompanyModule.objects.filter(company=company, module_key="purchases", is_enabled=True).exists():
+        out.append(
+            Violation(
+                "purchases_module_enabled",
+                "The purchases module is enabled; the purchasing/AP workflow is out of scope for the pilot.",
+            )
+        )
+
+    # --- document evidence: live rows OR canonical lifecycle events ---------
+    documents = (
+        PurchaseBill.objects.filter(company=company).count()
+        + PurchaseOrder.objects.filter(company=company).count()
+        + GoodsReceipt.objects.filter(company=company).count()
+        + PurchaseCreditNote.objects.filter(company=company).count()
+    )
+    document_events = BusinessEvent.objects.filter(company=company, event_type__in=document_event_types).count()
+    if documents or document_events:
+        parts: list[str] = []
+        if documents:
+            parts.append(f"{documents} purchase document row(s) (bills / orders / goods receipts / credit notes)")
+        if document_events:
+            parts.append(f"{document_events} canonical purchase lifecycle event(s)")
+        out.append(
+            Violation(
+                "purchase_document_state",
+                "; ".join(parts) + " exist; the purchasing workflow is out of scope for the pilot.",
+            )
+        )
+
+    # --- financial evidence: surviving posted FKs, posting/void + vendor-
+    # payment events, and vendor-side allocations. sales.PaymentAllocation is
+    # vendor-only by construction: record_vendor_payment is its sole writer
+    # (customer receipts use ReceiptAllocation; the properties vertical uses
+    # its own properties.PaymentAllocation model), so no customer allocation
+    # can be falsely counted here. ---------------------------------------
+    posted_rows = (
+        PurchaseBill.objects.filter(company=company, posted_journal_entry__isnull=False).count()
+        + PurchaseCreditNote.objects.filter(company=company, posted_journal_entry__isnull=False).count()
+    )
+    financial_events = BusinessEvent.objects.filter(company=company, event_type__in=financial_event_types).count()
+    vendor_allocations = PaymentAllocation.objects.filter(company=company).count()
+    if posted_rows or financial_events or vendor_allocations:
+        parts = []
+        if posted_rows:
+            parts.append(f"{posted_rows} purchase document(s) with posted journal entries")
+        if financial_events:
+            parts.append(f"{financial_events} purchase posting/void or vendor-payment event(s)")
+        if vendor_allocations:
+            parts.append(f"{vendor_allocations} vendor payment allocation(s)")
+        out.append(
+            Violation(
+                "purchase_financial_state",
+                "; ".join(parts) + " exist; purchase-originated AP/expense/input-VAT and "
+                "vendor-payment history is out of scope for the pilot.",
+            )
+        )
+
+    return out
 
 
 def _capability_gate_violations(company) -> list[Violation]:

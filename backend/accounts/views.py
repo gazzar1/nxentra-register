@@ -3145,9 +3145,12 @@ class CompanyModulesView(APIView):
         return Response(result)
 
     def put(self, request):
+        from django.db import transaction
+
         from accounts.authz import resolve_actor
         from accounts.models import CompanyModule
         from accounts.module_registry import module_registry
+        from accounts.pilot_policy import lock_company_for_admission, require_module_enable_allowed
         from projections.write_barrier import command_writes_allowed
 
         actor = resolve_actor(request)
@@ -3162,17 +3165,32 @@ class CompanyModulesView(APIView):
 
         optional_keys = {m["key"] for m in module_registry.optional_modules()}
 
-        with command_writes_allowed():
-            for item in modules:
-                key = item.get("key")
-                enabled = item.get("is_enabled", False)
-                if key not in optional_keys:
-                    continue
-                CompanyModule.objects.update_or_create(
-                    company=actor.company,
-                    module_key=key,
-                    defaults={"is_enabled": enabled},
-                )
+        # A4 serialized admission: lock the Company row (fresh read), THEN
+        # validate the COMPLETE payload against the locked profile, THEN apply
+        # every permitted write — all in ONE transaction with the admission
+        # lock held to commit. A stale-profile request cannot enable a
+        # pilot-forbidden module after activation (the lock serializes both
+        # orderings), a refusal never leaves a partial apply, and a mid-batch
+        # failure still rolls back the whole batch. Disabling stays allowed;
+        # NONE-profile behavior is functionally unchanged (the covered writes
+        # now serialize per company on the admission row). The ModuleEnabled
+        # route permission stays the early UX gate — it is explicitly NOT the
+        # load-bearing activation-race boundary; this is.
+        with transaction.atomic():
+            locked_company = lock_company_for_admission(actor.company.pk)
+            require_module_enable_allowed(locked_company, modules)
+
+            with command_writes_allowed():
+                for item in modules:
+                    key = item.get("key")
+                    enabled = item.get("is_enabled", False)
+                    if key not in optional_keys:
+                        continue
+                    CompanyModule.objects.update_or_create(
+                        company=locked_company,
+                        module_key=key,
+                        defaults={"is_enabled": enabled},
+                    )
 
         return Response({"detail": "Modules updated."})
 
