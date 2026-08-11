@@ -1771,3 +1771,30 @@ def test_remote_item_preparation_owns_the_network_reads():
         "(_fetch_variant_cost / _get_shopify_store_currency) so the locked apply can be "
         "network-free — the P2 split moved the network, it did not delete it."
     )
+
+
+# verify_payout's locked apply (C): the remote list_payout_transactions read lives
+# only in the pre-lock Phase-1 fetch; the locked Phase-2 apply is network-free.
+_PAYOUT_REMOTE_FUNCS: frozenset[str] = frozenset(
+    {"_admin_client", "requests", "list_payout_transactions", "_fetch_payout_transactions_remote"}
+)
+
+
+def test_locked_payout_apply_has_no_remote_dependency():
+    apply_fn = _shopify_commands_fn("_apply_payout_transactions")
+    called = _subtree_call_names(apply_fn)
+    forbidden = called & _PAYOUT_REMOTE_FUNCS
+    assert not forbidden, (
+        "_apply_payout_transactions runs UNDER the Company admission lock and must make no "
+        f"remote/provider call, but references: {sorted(forbidden)}. The remote payout-transaction "
+        "fetch belongs in _fetch_payout_transactions_remote (before the lock)."
+    )
+
+
+def test_remote_payout_fetch_owns_the_network_read():
+    fetch_fn = _shopify_commands_fn("_fetch_payout_transactions_remote")
+    called = _subtree_call_names(fetch_fn)
+    assert {"_admin_client", "list_payout_transactions"} <= called, (
+        "_fetch_payout_transactions_remote must own the remote payout-transaction read "
+        "(_admin_client + list_payout_transactions) so the locked apply can be network-free."
+    )

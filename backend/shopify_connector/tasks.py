@@ -26,81 +26,139 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# A4 — scheduled-task tenant / RLS execution context
+# A4 — scheduled-task TWO-PLANE tenant / RLS execution context
 # =============================================================================
-# A Celery task has no request, so TenantRlsMiddleware never runs: it has no
-# tenant routing and no PostgreSQL RLS session context. Cross-tenant store
-# discovery legitimately runs under a short ``rls_bypass()`` (system / default
-# DB), but the COMMANDS that discovery feeds must NOT execute under broad bypass
-# — since PR #119 every covered Shopify command takes a fresh ``Company``
-# admission lock, and under production ``RLS_BYPASS=False`` that lock's
-# ``Company`` query is hidden by RLS unless ``app.current_company_id`` is set on
-# the tenant connection (``Company.DoesNotExist`` otherwise). The two helpers
-# below give a scheduled task the SAME tenant routing + RLS session context that
-# ``accounts.middleware.TenantRlsMiddleware`` gives a request — using only the
-# existing tenant/RLS primitives — without ever holding a transaction or a row
-# lock across the remote Shopify sync.
+# A Celery task has no request, so TenantRlsMiddleware never runs and there is no
+# tenant routing / PostgreSQL RLS session context. Cross-tenant store discovery
+# legitimately runs under a short ``rls_bypass()`` on default, but the COMMANDS
+# that discovery feeds must NOT execute under broad bypass — since PR #119 every
+# covered Shopify command takes a fresh ``Company`` admission lock, hidden by
+# forced RLS under production ``RLS_BYPASS=False`` unless the session is
+# company-scoped on the connection that actually holds the row.
+#
+# The execution context is TWO-PLANE, not one connection (a single-connection
+# model — the one TenantRlsMiddleware happens to assume — is wrong for a
+# dedicated-DB tenant, because ``TenantDatabaseRouter`` routes ``accounts.Company``
+# and the ``shopify_connector`` models to ``default`` regardless of tenant):
+#
+#   CONTROL / SYSTEM plane = ``default``   — always. Holds Company, TenantDirectory
+#     and the Shopify connector models. Configured company-scoped: ``app.current_
+#     company_id`` = the exact company, ``app.rls_bypass`` = ``settings.RLS_BYPASS``
+#     (OFF in production). Broad bypass is NEVER enabled on default merely because
+#     the tenant DATA database is dedicated.
+#   DATA plane = ``tenant_info["db_alias"]`` — only when it is a DISTINCT dedicated
+#     alias. Holds the tenant's migrated ``events`` / ``accounting`` / ``projections``
+#     data. Configured ``app.current_company_id`` = the exact company, ``app.rls_
+#     bypass`` = on (single tenant per DB — the established dedicated semantics).
+#
+# RLS state is captured RAW and restored EXACTLY per DISTINCT connection (unset,
+# ``'off'`` and ``'on'`` are three distinct states, never collapsed to a Boolean).
+# No transaction and no row lock is held across the remote Shopify sync.
+
+_RLS_GUCS = ("app.current_company_id", "app.rls_bypass")
+
+
+def _snapshot_conn_rls(conn):
+    """RAW prior ``(app.current_company_id, app.rls_bypass)`` GUC strings for a
+    connection — ``''`` when unset, else the literal (e.g. ``'off'`` / ``'on'`` /
+    a company id). ``None`` on non-PostgreSQL (no session GUCs to snapshot)."""
+    if conn.vendor != "postgresql":
+        return None
+    with conn.cursor() as cur:
+        cur.execute("SELECT current_setting('app.current_company_id', true), current_setting('app.rls_bypass', true)")
+        return cur.fetchone()
+
+
+def _restore_conn_rls(conn, snapshot) -> None:
+    """Restore the EXACT raw prior GUCs captured by :func:`_snapshot_conn_rls`.
+    A prior of ``''`` (unset) is ``RESET`` — unset and ``'off'`` are never
+    conflated, so exact restoration is exact."""
+    if snapshot is None or conn.vendor != "postgresql":
+        return
+    with conn.cursor() as cur:
+        for name, raw in zip(_RLS_GUCS, snapshot, strict=True):
+            if raw is None or raw == "":
+                cur.execute(f"RESET {name}")
+            else:
+                cur.execute("SELECT set_config(%s, %s, false)", [name, raw])
+
+
+def _shopify_execution_planes(db_alias: str):
+    """The distinct (alias, kind) connection planes a scheduled sync configures:
+    the CONTROL plane is ALWAYS ``default`` (Company / TenantDirectory / Shopify
+    connector models route there); the DATA plane is the tenant's own ``db_alias``
+    only when it is a distinct dedicated database. A shared tenant has
+    ``db_alias == 'default'`` and therefore a single plane."""
+    planes = [("default", "control")]
+    if db_alias and db_alias != "default":
+        planes.append((db_alias, "data"))
+    return planes
+
+
+def _configure_plane(conn, kind: str, company_id: int) -> None:
+    """Company-scope a plane's RLS session. Control plane (default) uses
+    ``settings.RLS_BYPASS`` (OFF in production — RLS enforced on the shared
+    system DB); the data plane (a distinct dedicated DB) uses bypass ON."""
+    rls.set_current_company_id(company_id, conn=conn)
+    rls.set_rls_bypass(settings.RLS_BYPASS if kind == "control" else True, conn=conn)
 
 
 def _reassert_shopify_rls() -> None:
-    """Re-apply the PostgreSQL RLS session context for the CURRENT tenant.
+    """Re-apply the RLS session context for the CURRENT tenant on EVERY plane.
 
     ``events.emitter.emit_event_no_actor`` establishes its own tenant/RLS context
     for each event write and then CLEARS the connection's RLS session settings in
     its ``finally`` (``accounts.rls.clear_rls_context``). So after the first event
     a scheduled command emits, ``app.current_company_id`` / ``app.rls_bypass`` are
-    wiped, and the NEXT admission lock's fresh ``Company`` query is hidden by RLS
-    (``Company.DoesNotExist``). Each admission-locking unit of work therefore
-    re-asserts the session context — derived from the tenant contextvar
+    wiped on that connection, and the NEXT admission lock's fresh ``Company`` query
+    is hidden by RLS (``Company.DoesNotExist``). Each admission-locking unit of
+    work therefore re-asserts BOTH the default control connection and (when the
+    tenant is dedicated) the distinct data connection, from the tenant contextvar
     established by :func:`_shopify_tenant_execution` (scheduled path) or by
     ``TenantRlsMiddleware`` (the in-request re-sync view, which chains the same
-    per-order locks and has the identical post-emit exposure) — immediately before
-    it acquires its lock. No-op when there is no tenant context (nothing to
-    re-assert), so it is safe to call from paths that run without one.
+    per-order locks with the identical post-emit exposure). No-op when there is no
+    tenant context, so it is safe to call from a shared/default context.
     """
     from tenant.context import get_current_tenant
 
     ctx = get_current_tenant()
     if ctx is None:
         return
-    conn = connections[ctx.db_alias]
-    if ctx.is_shared:
-        rls.set_rls_context(ctx.company_id, bypass=settings.RLS_BYPASS, conn=conn)
-    else:
-        # Dedicated DB: single tenant in the database, RLS bypassed — the
-        # established dedicated-tenant semantics (mirrors TenantRlsMiddleware).
-        rls.set_rls_bypass(True, conn=conn)
+    for alias, kind in _shopify_execution_planes(ctx.db_alias):
+        _configure_plane(connections[alias], kind, ctx.company_id)
 
 
 @contextmanager
 def _shopify_tenant_execution(company_id: int):
-    """Run a scheduled Shopify command for ONE tenant under the same tenant
-    routing + RLS session context ``TenantRlsMiddleware`` establishes for a
-    request — its private, Celery-side twin, built only from existing primitives.
+    """Run a scheduled Shopify command for ONE tenant under the TWO-PLANE
+    control/data-plane RLS session contract (see the module header) — the
+    private, Celery-side execution context, built only from existing primitives.
 
-    Mirrors ``TenantRlsMiddleware.__call__`` CASE 3 exactly:
+    (``TenantRlsMiddleware`` is a *request* analogue but it assumes a single
+    connection; it is NOT the architectural source of truth here — a dedicated-DB
+    tenant reads Company/ShopifyStore from the control plane ``default`` while its
+    events/accounting live on the data plane, so both planes must be scoped.)
 
-    - look up ``TenantDirectory.get_tenant_info`` on the system / default DB
-      (short cross-tenant discovery);
-    - enter ``override_tenant_context`` FIRST so database routing is established
-      before the RLS connection is selected — restored on exit, even on
-      exception, via its contextvar token;
-    - THEN select the connection for the routed alias and set the RLS session
-      context: for a SHARED tenant, ``app.current_company_id`` + bypass =
-      ``settings.RLS_BYPASS`` (``False`` in production — RLS enforced); for a
-      DEDICATED-DB tenant, bypass on (single tenant, no RLS) — the established
-      dedicated-tenant semantics;
-    - RESTORE the connection's prior RLS session state in ``finally`` (the prior
-      state is clean in a production worker, the signal-installed bypass under
-      tests) so nothing — least of all ``app.rls_bypass='on'`` — leaks into the
-      next task on a reused worker connection, and company A never leaks into a
-      later company B task.
+    Order:
 
-    Callers refetch the ``ShopifyStore`` through the routed connection inside this
-    scope; a store instance loaded during cross-tenant discovery is never the
-    authoritative command instance. This CM holds NO transaction and NO row lock:
-    the tenant / RLS context may span the remote Shopify sync, but the ``Company``
-    admission lock (taken inside each command) may not.
+    1. read ``TenantDirectory.get_tenant_info`` under ``system_db_context`` (short
+       cross-tenant discovery on the system DB);
+    2. enter ``override_tenant_context`` so routing is established before any RLS
+       connection is selected — restored on exit, even on exception, by its token;
+    3. capture the RAW prior ``app.current_company_id`` / ``app.rls_bypass`` for
+       every DISTINCT plane connection;
+    4. configure the default control plane (company-scoped, bypass =
+       ``settings.RLS_BYPASS``);
+    5. configure the distinct dedicated data plane, when present (company-scoped,
+       bypass on);
+    6. yield to the scheduled command;
+    7. restore every connection's exact raw prior state in REVERSE order, on
+       normal return and on exception.
+
+    Holds NO transaction and NO row lock: the tenant/RLS context may span the
+    remote Shopify sync, but the ``Company`` admission lock (taken inside each
+    command) may not. Callers refetch the authoritative ``ShopifyStore`` from
+    ``default`` inside this scope — never the cross-tenant discovery instance.
     """
     from tenant.context import override_tenant_context, system_db_context
     from tenant.models import TenantDirectory
@@ -111,20 +169,17 @@ def _shopify_tenant_execution(company_id: int):
     is_shared = tenant_info["is_shared"]
 
     with override_tenant_context(company_id=company_id, db_alias=db_alias, is_shared=is_shared):
-        conn = connections[db_alias]
-        prev_company = rls.get_current_company_id(conn=conn)
-        prev_bypass = rls.is_rls_bypassed(conn=conn)
-        if is_shared:
-            rls.set_rls_context(company_id, bypass=settings.RLS_BYPASS, conn=conn)
-        else:
-            rls.set_rls_bypass(True, conn=conn)
+        planes = _shopify_execution_planes(db_alias)
+        snapshots = [(connections[alias], _snapshot_conn_rls(connections[alias])) for alias, _kind in planes]
         try:
+            for alias, kind in planes:
+                _configure_plane(connections[alias], kind, company_id)
             yield tenant_info
         finally:
-            # Restore (never blindly clear) so a reused worker connection keeps
-            # whatever state it had before this task — mirrors rls_bypass().
-            rls.set_current_company_id(prev_company, conn=conn)
-            rls.set_rls_bypass(prev_bypass, conn=conn)
+            # Restore each connection's exact raw prior state in reverse order —
+            # no plane is left company-scoped or bypass-on for the next task.
+            for conn, snap in reversed(snapshots):
+                _restore_conn_rls(conn, snap)
 
 
 def _execute_scheduled_store_sync(store_id: int, company_id: int, runner):
@@ -134,7 +189,8 @@ def _execute_scheduled_store_sync(store_id: int, company_id: int, runner):
 
     Enters :func:`_shopify_tenant_execution`, SKIPS a tenant that is not writable
     (``is_writable`` False — MIGRATING / READ_ONLY / SUSPENDED), refetches the
-    ``ShopifyStore`` through the routed connection, and calls ``runner(store)``.
+    ``ShopifyStore`` from the company-scoped control plane (``default``, where the
+    connector models route), and calls ``runner(store)``.
 
     The writable skip mirrors ``TenantRlsMiddleware`` CASE 3 (which 503s every
     non-GET request to a non-writable tenant) and ``projections.tasks`` (which

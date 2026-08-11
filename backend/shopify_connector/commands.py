@@ -2064,32 +2064,37 @@ def sync_payouts(store: ShopifyStore) -> CommandResult:
 
 
 @transaction.atomic
-def fetch_payout_transactions(store: ShopifyStore, payout: ShopifyPayout) -> CommandResult:
-    """
-    Fetch individual transactions for a payout from Shopify's API.
-
-    Stores each transaction and attempts to match to local orders/refunds.
-    Verifies that sum(transactions) matches the payout's reported amounts.
-    """
+def _fetch_payout_transactions_remote(store: ShopifyStore, payout: ShopifyPayout):
+    """Payout-verification Phase 1 — REMOTE FETCH, OUTSIDE the Company admission
+    lock. Builds/validates the client and fetches the COMPLETE payout-transaction
+    payload. Performs NO delete, NO ``ShopifyPayoutTransaction`` create, NO local
+    order-matching write, and acquires NO admission lock. Returns
+    ``(transactions_list, None)`` on success or ``(None, CommandResult)`` carrying
+    the established remote-failure / unavailable result. On any failure NOTHING is
+    written or deleted, so every existing cache row is preserved intact."""
     client = _admin_client(store)
     if not client:
-        return CommandResult.fail("Token expired or revoked — please reconnect the store.")
-
-    # Skip if transactions already fetched
-    if payout.transactions.exists():
-        return CommandResult.ok(data={"skipped": True, "reason": "Transactions already fetched."})
-
+        return None, CommandResult.fail("Token expired or revoked — please reconnect the store.")
     try:
         # A169: no cap — verification sums must cover the COMPLETE set
         # or every large payout reports a false Net/Fee mismatch.
         transactions = client.list_payout_transactions(payout.shopify_payout_id)
     except requests.RequestException as e:
         logger.error("Failed to fetch payout transactions: %s", e)
-        return CommandResult.fail(f"Shopify API error: {e}")
-
+        return None, CommandResult.fail(f"Shopify API error: {e}")
     if transactions is None:
-        return CommandResult.fail("Shopify Payments isn't available on this store.")
+        return None, CommandResult.fail("Shopify Payments isn't available on this store.")
+    return list(transactions), None
 
+
+def _apply_payout_transactions(store: ShopifyStore, payout: ShopifyPayout, transactions: list) -> CommandResult:
+    """Payout-verification Phase 2 — LOCAL APPLY, under the caller's HELD Company
+    admission lock. Consumes the frozen Phase-1 payload; makes NO Shopify or
+    generic network call. Inserts one ``ShopifyPayoutTransaction`` per line (local
+    order matching is a local DB read), computes verification totals /
+    discrepancies, and returns the ``CommandResult``. The caller rechecks the cache
+    under the lock before calling, so this never duplicates a concurrently-created
+    cache."""
     created = 0
     verified = 0
     sum_amount = Decimal("0")
@@ -2188,6 +2193,53 @@ def fetch_payout_transactions(store: ShopifyStore, payout: ShopifyPayout) -> Com
     )
 
 
+def fetch_payout_transactions(store: ShopifyStore, payout: ShopifyPayout) -> CommandResult:
+    """Fetch + store a payout's transactions: Phase-1 remote fetch then Phase-2
+    local apply. For NON-locked callers (e.g. a direct fetch) — ``verify_payout``
+    drives the two phases explicitly so the remote read never runs under the
+    Company admission lock. Skips when the cache is already populated."""
+    if payout.transactions.exists():
+        return CommandResult.ok(data={"skipped": True, "reason": "Transactions already fetched."})
+    transactions, failure = _fetch_payout_transactions_remote(store, payout)
+    if failure is not None:
+        return failure
+    return _apply_payout_transactions(store, payout, transactions)
+
+
+def _payout_verification_discrepancies(payout: ShopifyPayout, txns: list) -> list[str]:
+    """Net/Fee mismatch messages between a payout's cached transactions and its
+    reported summary (fees compared on absolute value)."""
+    sum_net = sum(t.net for t in txns)
+    sum_fee = sum(abs(t.fee) for t in txns)
+    discrepancies = []
+    if sum_net != payout.net_amount:
+        discrepancies.append(f"Net mismatch: transactions={sum_net}, payout={payout.net_amount}")
+    if sum_fee != payout.fees:
+        discrepancies.append(f"Fee mismatch: transactions={sum_fee}, payout={payout.fees}")
+    return discrepancies
+
+
+def _payout_cache_is_stale(payout: ShopifyPayout, txns: list) -> bool:
+    """A169 truncation signature: a discrepant cache at or above the old 250 cap —
+    the incomplete set that must be dropped and re-fetched complete."""
+    return len(txns) >= 250 and bool(_payout_verification_discrepancies(payout, txns))
+
+
+def _cached_payout_verification(payout: ShopifyPayout, txns: list) -> CommandResult:
+    """Read-only verification result from the CACHED transactions (no network)."""
+    discrepancies = _payout_verification_discrepancies(payout, txns)
+    return CommandResult.ok(
+        data={
+            "payout_id": payout.shopify_payout_id,
+            "transactions_total": len(txns),
+            "transactions_verified": sum(1 for t in txns if t.verified),
+            "discrepancies": discrepancies,
+            "balanced": len(discrepancies) == 0,
+            "source": "cached",
+        }
+    )
+
+
 def verify_payout(store: ShopifyStore, payout_id: int) -> CommandResult:
     """
     Verify a single payout by fetching its transactions.
@@ -2196,10 +2248,12 @@ def verify_payout(store: ShopifyStore, payout_id: int) -> CommandResult:
     """
     # A4: payout accounting is out of scope for the pilot and has no gate of its
     # own today beyond the view's unlocked check. The MUTATING branches below
-    # (A169 delete+refetch, and the no-cache fetch) serialize against pilot
-    # activation on the Company ADMISSION LOCK and re-check
-    # SHOPIFY_PAYOUT_ACCOUNTING on the locked row before any write. The read-only
-    # cached-verification path stays lock-free.
+    # (A169 delete+replace, and the no-cache fetch) serialize against pilot
+    # activation on the Company ADMISSION LOCK and re-check SHOPIFY_PAYOUT_
+    # ACCOUNTING on the locked row before any write. The remote fetch always runs
+    # in Phase 1 BEFORE the lock (never a Shopify request under the admission
+    # lock); the locked Phase 2 is network-free. The read-only cached-verification
+    # path stays lock-free.
     from accounts.pilot_policy import Capability, require_supported, serialized_company_admission
 
     try:
@@ -2210,57 +2264,47 @@ def verify_payout(store: ShopifyStore, payout_id: int) -> CommandResult:
     except ShopifyPayout.DoesNotExist:
         return CommandResult.fail(f"Payout {payout_id} not found.")
 
-    # If transactions already fetched, verify from stored data
-    existing = payout.transactions.all()
-    if existing.exists():
-        sum_net = sum(t.net for t in existing)
-        sum_fee = sum(abs(t.fee) for t in existing)
-        verified_count = existing.filter(verified=True).count()
+    existing = list(payout.transactions.all())
+    if existing:
+        if not _payout_cache_is_stale(payout, existing):
+            # Read-only cached verification — lock-free.
+            return _cached_payout_verification(payout, existing)
 
-        discrepancies = []
-        if sum_net != payout.net_amount:
-            discrepancies.append(f"Net mismatch: transactions={sum_net}, payout={payout.net_amount}")
-        if sum_fee != payout.fees:
-            discrepancies.append(f"Fee mismatch: transactions={sum_fee}, payout={payout.fees}")
-
-        # A169 remediation: payouts fetched under the old 250-cap were
-        # frozen incomplete forever by the fetch-once guard, re-serving a
-        # false discrepancy from cache on every verify. A discrepant
-        # cache at or above the old cap is the truncation signature —
-        # drop it and re-fetch the complete set.
-        if discrepancies and existing.count() >= 250:
-            logger.info(
-                "A169: payout %s cached with %d transactions and discrepancies — likely pre-fix truncation; re-fetching.",
-                payout.shopify_payout_id,
-                existing.count(),
-            )
-            with serialized_company_admission(store.company.pk) as locked_company:
-                require_supported(locked_company, Capability.SHOPIFY_PAYOUT_ACCOUNTING)
-                with command_writes_allowed():
-                    existing.delete()
-                # fetch_payout_transactions' own @atomic nests as a savepoint; the
-                # delete + refetch now co-commit under the held admission lock.
-                return fetch_payout_transactions(store, payout)
-
-        return CommandResult.ok(
-            data={
-                "payout_id": payout.shopify_payout_id,
-                "transactions_total": existing.count(),
-                "transactions_verified": verified_count,
-                "discrepancies": discrepancies,
-                "balanced": len(discrepancies) == 0,
-                "source": "cached",
-            }
+        # A169 remediation: a discrepant cache at/above the old 250-cap is the
+        # truncation signature — drop it and replace with the complete set. Phase
+        # 1 fetches the replacement BEFORE acquiring the lock and BEFORE any
+        # delete, so a remote failure leaves the existing cache completely intact.
+        logger.info(
+            "A169: payout %s cached with %d transactions and discrepancies — likely pre-fix truncation; re-fetching.",
+            payout.shopify_payout_id,
+            len(existing),
         )
+        transactions, failure = _fetch_payout_transactions_remote(store, payout)
+        if failure is not None:
+            return failure  # remote failed → cache preserved, nothing deleted
+        with serialized_company_admission(store.company.pk) as locked_company:
+            require_supported(locked_company, Capability.SHOPIFY_PAYOUT_ACCOUNTING)
+            # Recompute the stale signature on the freshly locked state — another
+            # transaction may already have repaired it; if so, reuse it.
+            fresh = list(payout.transactions.all())
+            if not _payout_cache_is_stale(payout, fresh):
+                return _cached_payout_verification(payout, fresh)
+            with command_writes_allowed():
+                payout.transactions.all().delete()
+                return _apply_payout_transactions(store, payout, transactions)
 
-    # Fetch from Shopify API — serialized against pilot activation on the Company
-    # ADMISSION LOCK, with SHOPIFY_PAYOUT_ACCOUNTING re-checked on the locked row
-    # before any transaction row is written (the remote read stays inside
-    # fetch_payout_transactions' atomic/savepoint as today — a read, not an
-    # irreversible effect).
+    # No cache: Phase 1 fetch (no lock), then Phase 2 apply under the lock.
+    transactions, failure = _fetch_payout_transactions_remote(store, payout)
+    if failure is not None:
+        return failure
     with serialized_company_admission(store.company.pk) as locked_company:
         require_supported(locked_company, Capability.SHOPIFY_PAYOUT_ACCOUNTING)
-        return fetch_payout_transactions(store, payout)
+        # Another verifier may have populated the cache while Phase 1 fetched —
+        # reuse the committed cache rather than inserting duplicates.
+        concurrent = list(payout.transactions.all())
+        if concurrent:
+            return _cached_payout_verification(payout, concurrent)
+        return _apply_payout_transactions(store, payout, transactions)
 
 
 # =============================================================================

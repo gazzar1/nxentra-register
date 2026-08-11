@@ -76,6 +76,16 @@ for key in list(DATABASES.keys()):
     if key.startswith('tenant_'):
         del DATABASES[key]
 
+# A4 two-plane RLS proof (PostgreSQL only): a SECOND Django connection alias to
+# the SAME test database, used by tests/e2e/test_a4_shopify_scheduled_rls.py to
+# exercise the DEDICATED-tenant data plane as a genuinely distinct PostgreSQL
+# session (not a second physical database). TEST['MIRROR'] tells Django's test
+# runner not to create/migrate it — it reuses default's test DB. Added AFTER the
+# tenant-alias strip above so it survives it.
+if _use_postgres:
+    DATABASES['tenant_rls_test'] = dj_database_url.parse(_use_postgres, conn_max_age=0)
+    DATABASES['tenant_rls_test']['TEST'] = {'MIRROR': 'default'}
+
 # A47: a fixed Fernet key so EncryptedTextField round-trips deterministically
 # across runs (--reuse-db persists ciphertext between runs; a generated key
 # would fail to decrypt prior rows). Tests that exercise rotation override
