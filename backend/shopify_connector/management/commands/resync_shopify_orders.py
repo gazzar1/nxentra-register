@@ -5,6 +5,15 @@ Management command for manual Shopify order re-sync.
 Catches up missed orders by polling the Shopify Orders API for a given
 date range. Existing orders are skipped (idempotent).
 
+Every covered Shopify command takes a fresh ``Company`` admission lock (PR #119),
+whose ``Company`` query is hidden by production RLS unless the tenant's RLS
+session context is set. A management command has no request/middleware, so — like
+the scheduled Celery tasks — this command routes its per-store work through the
+single private tenant/RLS execution path ``tasks._execute_scheduled_store_sync``
+(two-plane tenant context + non-writable skip). Cross-tenant store discovery runs
+under a short ``rls_bypass()`` and keeps store IDENTITIES only; the authoritative
+``ShopifyStore`` is refetched inside the tenant context.
+
 Usage:
     # Re-sync last 7 days (default) for all active stores
     python manage.py resync_shopify_orders
@@ -67,7 +76,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         from shopify_connector.models import ShopifyStore
-        from shopify_connector.tasks import _sync_orders
+        from shopify_connector.tasks import _execute_scheduled_store_sync
 
         now = tz.now()
 
@@ -82,62 +91,113 @@ class Command(BaseCommand):
         else:
             created_at_max = now.isoformat()
 
+        include_payouts = options["include_payouts"]
+        include_products = options["include_products"]
+
         self.stdout.write(f"Re-syncing orders from {created_at_min} to {created_at_max}")
 
-        # Find stores
+        # Cross-tenant discovery: a short bypass on the system/default DB. Keep
+        # IDENTITIES only (id / company_id / domain / name) — never the
+        # discovery-loaded Store as authoritative; the per-tenant runner refetches
+        # the ShopifyStore on the control plane inside its RLS context.
         with rls_bypass():
-            stores_qs = ShopifyStore.objects.filter(status=ShopifyStore.Status.ACTIVE).select_related("company")
-
+            stores_qs = ShopifyStore.objects.filter(status=ShopifyStore.Status.ACTIVE)
             if options["company"]:
                 stores_qs = stores_qs.filter(company__slug=options["company"])
+            discovered = list(stores_qs.values_list("id", "company_id", "shop_domain", "company__name"))
 
-            stores = list(stores_qs)
-
-        if not stores:
+        if not discovered:
             self.stdout.write(self.style.WARNING("No active Shopify stores found."))
             return
 
-        self.stdout.write(f"Found {len(stores)} active store(s)")
+        self.stdout.write(f"Found {len(discovered)} active store(s)")
 
-        for store in stores:
-            self.stdout.write(f"\n--- {store.shop_domain} ({store.company.name}) ---")
-
-            # Sync orders
-            result = _sync_orders(store, created_at_min, created_at_max)
-            self.stdout.write(
-                f"  Orders: fetched={result.get('fetched', 0)}, "
-                f"created={result.get('created', 0)}, "
-                f"skipped={result.get('skipped', 0)}, "
-                f"errors={result.get('errors', 0)}"
+        for store_id, company_id, shop_domain, company_name in discovered:
+            self.stdout.write(f"\n--- {shop_domain} ({company_name}) ---")
+            # Per-tenant execution: tenant routing + RLS session context (bypass OFF
+            # for shared tenants in production), non-writable tenants skipped,
+            # refetched store, command run, guaranteed cleanup.
+            result = _execute_scheduled_store_sync(
+                store_id,
+                company_id,
+                lambda store: self._resync_one(
+                    store, created_at_min, created_at_max, include_payouts, include_products
+                ),
             )
-
-            if result.get("error"):
-                self.stdout.write(self.style.ERROR(f"  Error: {result['error']}"))
-
-            # Optionally sync payouts
-            if options["include_payouts"]:
-                from shopify_connector.commands import sync_payouts
-
-                payout_result = sync_payouts(store)
-                if payout_result.success:
-                    data = payout_result.data or {}
-                    self.stdout.write(f"  Payouts: created={data.get('created', 0)}, skipped={data.get('skipped', 0)}")
-                else:
-                    self.stdout.write(self.style.ERROR(f"  Payout error: {payout_result.error}"))
-
-            # Optionally sync products
-            if options["include_products"]:
-                from shopify_connector.commands import sync_products
-
-                product_result = sync_products(store)
-                if product_result.success:
-                    data = product_result.data or {}
-                    self.stdout.write(
-                        f"  Products: created={data.get('created', 0)}, "
-                        f"linked={data.get('linked', 0)}, "
-                        f"updated={data.get('updated', 0)}"
-                    )
-                else:
-                    self.stdout.write(self.style.ERROR(f"  Product error: {product_result.error}"))
+            self._report(result)
 
         self.stdout.write(self.style.SUCCESS("\nRe-sync complete."))
+
+    def _resync_one(self, store, created_at_min, created_at_max, include_payouts, include_products):
+        """Per-tenant re-sync body — runs INSIDE ``_shopify_tenant_execution`` (via
+        ``_execute_scheduled_store_sync``) so each covered command's fresh Company
+        admission lock is visible under production RLS.
+
+        Mirrors ``tasks._sync_store``: it re-asserts the tenant RLS session before
+        every covered command, because ``events.emitter`` clears the connection's
+        RLS session after each emit — without the re-assert the NEXT admission lock
+        would be hidden by RLS (``Company.DoesNotExist``). Kept faithful to the
+        original manual scope: orders, plus payouts / products only when requested.
+        """
+        from shopify_connector.commands import sync_payouts, sync_products
+        from shopify_connector.tasks import _reassert_shopify_rls, _sync_orders
+
+        out = {}
+
+        _reassert_shopify_rls()
+        out["orders"] = _sync_orders(store, created_at_min, created_at_max)
+
+        if include_payouts:
+            _reassert_shopify_rls()
+            payout_result = sync_payouts(store)
+            if payout_result.success:
+                out["payouts"] = payout_result.data or {"status": "ok"}
+            else:
+                out["payouts"] = {"status": "error", "error": payout_result.error}
+
+        if include_products:
+            _reassert_shopify_rls()
+            product_result = sync_products(store)
+            if product_result.success:
+                out["products"] = product_result.data or {"status": "ok"}
+            else:
+                out["products"] = {"status": "error", "error": product_result.error}
+
+        return out
+
+    def _report(self, result):
+        # Non-writable (migrating / read-only / suspended) tenants are skipped by
+        # the shared execution path — report that honestly rather than silently.
+        if result.get("status") == "skipped":
+            self.stdout.write(self.style.WARNING(f"  Skipped: {result.get('reason', 'tenant not writable')}"))
+            return
+
+        orders = result.get("orders", {})
+        self.stdout.write(
+            f"  Orders: fetched={orders.get('fetched', 0)}, "
+            f"created={orders.get('created', 0)}, "
+            f"skipped={orders.get('skipped', 0)}, "
+            f"errors={orders.get('errors', 0)}"
+        )
+        if orders.get("error"):
+            self.stdout.write(self.style.ERROR(f"  Error: {orders['error']}"))
+
+        if "payouts" in result:
+            payouts = result["payouts"]
+            if payouts.get("status") == "error":
+                self.stdout.write(self.style.ERROR(f"  Payout error: {payouts.get('error')}"))
+            else:
+                self.stdout.write(
+                    f"  Payouts: created={payouts.get('created', 0)}, skipped={payouts.get('skipped', 0)}"
+                )
+
+        if "products" in result:
+            products = result["products"]
+            if products.get("status") == "error":
+                self.stdout.write(self.style.ERROR(f"  Product error: {products.get('error')}"))
+            else:
+                self.stdout.write(
+                    f"  Products: created={products.get('created', 0)}, "
+                    f"linked={products.get('linked', 0)}, "
+                    f"updated={products.get('updated', 0)}"
+                )

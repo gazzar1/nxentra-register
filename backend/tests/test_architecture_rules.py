@@ -1474,8 +1474,12 @@ A4_READ_ONLY_OR_UX_GATE_SITES: frozenset[str] = frozenset(
 # be reachable only through a serialized caller.
 A4_SERIALIZED_BY_CALLER_GATE_SITES: frozenset[str] = frozenset(
     {
-        # _setup_shopify_accounts runs ONLY inside complete_onboarding, which holds
-        # the admission lock (lock_company_for_admission) across its transaction.
+        # _setup_shopify_accounts makes an is_supported(INVENTORY) admission decision
+        # but takes no lock of its own — every caller holds the Company admission lock
+        # instead. The COMPLETE caller set (complete_onboarding + the settlement-
+        # provider backfill runner, both serialized) is pinned and enforced by
+        # test_setup_shopify_accounts_callers_are_all_serialized; a new caller fails CI
+        # there until it is proven serialized.
         "accounts/commands.py::_setup_shopify_accounts",
     }
 )
@@ -1584,6 +1588,105 @@ def test_every_gate_call_site_is_serialized_or_explicitly_classified():
         A4_READ_ONLY_OR_UX_GATE_SITES & (A4_SERIALIZED_BY_CALLER_GATE_SITES | A4_DESIGN_DEFERRED_MUTATING_SITES)
     )
     assert not overlap, f"a site is both read-only/UX AND a writer/residual — pick one: {overlap}"
+
+
+# Rule 12c (A4 serialized-by-caller closure): _setup_shopify_accounts is an UNLOCKED
+# gate site (A4_SERIALIZED_BY_CALLER_GATE_SITES) that makes an is_supported(INVENTORY)
+# decision. Its safety rests ENTIRELY on every caller holding the Company admission
+# lock, so the complete caller set is pinned here — a new caller (or a caller that
+# stops locking) fails CI until it is classified/serialized.
+_SETUP_SHOPIFY_ACCOUNTS = "_setup_shopify_accounts"
+_SETUP_SHOPIFY_ACCOUNTS_CALLERS: frozenset[str] = frozenset(
+    {
+        "accounts/commands.py::complete_onboarding",
+        "shopify_connector/management/commands/backfill_settlement_providers.py::Command._backfill_one",
+    }
+)
+
+
+def _callers_of(callee: str) -> dict[str, bool]:
+    """Map ``relpath::qualname`` -> holds_admission_lock for every PRODUCTION
+    function whose body calls ``callee``. Skips migrations, tests and conftest by
+    path SEGMENT (a production file merely CONTAINING ``test_`` in its name — e.g.
+    a seed command — is scanned; Rule 12's broader substring exclusion would
+    blind-spot it here, where the caller set is the entire safety argument)."""
+    sites: dict[str, bool] = {}
+    for path in BACKEND_ROOT.rglob("*.py"):
+        rel = path.relative_to(BACKEND_ROOT).as_posix()
+        segments = rel.split("/")
+        if (
+            "migrations" in segments
+            or "tests" in segments
+            or segments[-1] == "conftest.py"
+            or segments[-1].startswith("test_")
+        ):
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+
+        class _Visitor(ast.NodeVisitor):
+            def __init__(self):
+                self.stack: list[str] = []
+                self.fns: dict[str, dict] = {}
+
+            def _scope(self, node):
+                self.stack.append(node.name)
+                if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                    self.fns.setdefault(".".join(self.stack), {"calls": set(), "locks": set()})
+                self.generic_visit(node)
+                self.stack.pop()
+
+            visit_ClassDef = _scope
+            visit_FunctionDef = _scope
+            visit_AsyncFunctionDef = _scope
+
+            def visit_Call(self, node):
+                name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+                q = ".".join(self.stack)
+                if q in self.fns:
+                    self.fns[q]["calls"].add(name)
+                    if name in A4_ADMISSION_LOCK_CALLS:
+                        self.fns[q]["locks"].add(name)
+                self.generic_visit(node)
+
+        visitor = _Visitor()
+        visitor.visit(tree)
+        for q, info in visitor.fns.items():
+            if callee in info["calls"]:
+                sites[f"{rel}::{q}"] = bool(info["locks"])
+    return sites
+
+
+def test_setup_shopify_accounts_callers_are_all_serialized():
+    callers = _callers_of(_SETUP_SHOPIFY_ACCOUNTS)
+
+    assert set(callers) == _SETUP_SHOPIFY_ACCOUNTS_CALLERS, (
+        "_setup_shopify_accounts caller set changed. It is an UNLOCKED gate site "
+        "(A4_SERIALIZED_BY_CALLER_GATE_SITES) that decides is_supported(INVENTORY) but "
+        "takes no lock of its own, so EVERY caller must hold the Company admission lock "
+        "(serialized_company_admission / lock_company_for_admission). Pin the new/removed "
+        f"caller here after proving it serialized: expected {sorted(_SETUP_SHOPIFY_ACCOUNTS_CALLERS)}, "
+        f"found {sorted(callers)}"
+    )
+    unserialized = sorted(q for q, has_lock in callers.items() if not has_lock)
+    assert not unserialized, (
+        "_setup_shopify_accounts caller(s) do NOT hold the Company admission lock in the "
+        "calling body — its is_supported(INVENTORY) decision would race pilot activation "
+        f"(a constrained pilot could end up with INVENTORY/COGS module mappings): {unserialized}"
+    )
+
+    # Lock BEFORE the call, not merely somewhere in the body. complete_onboarding is
+    # source-order pinned (its lock is a direct statement); the backfill runner is
+    # structurally pinned by test_backfill_serializes_setup_under_company_admission
+    # (the call must sit INSIDE the `with serialized_company_admission(...)` block).
+    source = (BACKEND_ROOT / "accounts" / "commands.py").read_text(encoding="utf-8")
+    assert _statement_order(source, "complete_onboarding", "lock_company_for_admission(", "_setup_shopify_accounts("), (
+        "complete_onboarding must acquire the Company admission lock BEFORE calling "
+        "_setup_shopify_accounts — a lock after the call would leave the "
+        "is_supported(INVENTORY) decision unserialized against activation."
+    )
 
 
 # Rule 12b: the families this PR serialized via the requires_capability DECORATOR
@@ -1728,6 +1831,165 @@ def test_scheduled_shopify_tasks_execute_commands_under_tenant_context():
                     f"{fn.name} executes per-tenant work {sorted(leaked)} inside a broad "
                     f"`with {_SHOPIFY_DISCOVERY_CM}()` block — discovery bypass must never run tenant commands."
                 )
+
+
+# =============================================================================
+# Rule 13c (A4 operator entrypoints): the MANUAL Shopify management commands
+# (resync_shopify_orders, backfill_settlement_providers) run their per-store work
+# through the SAME private tenant/RLS execution path as the scheduled tasks
+# (`_execute_scheduled_store_sync`). A management command has no request/middleware,
+# so without it the covered commands' fresh Company admission lock (PR #119) is
+# hidden by production RLS. Cross-tenant discovery may use `rls_bypass()` for
+# IDENTITIES only — never to run a per-tenant command. Named entrypoints only — this
+# is NOT a repo-wide management-command framework rule.
+# =============================================================================
+
+# relpath -> (per-tenant work, the pinned RUNNER qualnames that are the ONLY
+# functions allowed to invoke it). The runner is what the command hands to
+# _execute_scheduled_store_sync, so confining the per-tenant calls to it makes a
+# direct no-context call in handle() (or a new helper) fail CI — not only a call
+# inside a discovery bypass block.
+_OPERATOR_SHOPIFY_COMMANDS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
+    "shopify_connector/management/commands/resync_shopify_orders.py": (
+        frozenset({"_sync_orders", "sync_payouts", "sync_products"}),
+        frozenset({"Command._resync_one"}),
+    ),
+    "shopify_connector/management/commands/backfill_settlement_providers.py": (
+        frozenset(
+            {"_setup_shopify_accounts", "_ensure_shopify_sales_setup", "_bootstrap_shopify_settlement_providers"}
+        ),
+        frozenset({"Command._backfill_one"}),
+    ),
+}
+
+
+def _command_tree(relpath: str) -> ast.Module:
+    return ast.parse((BACKEND_ROOT / relpath).read_text(encoding="utf-8"))
+
+
+def _calls_in_with_body(with_node: ast.With) -> set[str]:
+    names: set[str] = set()
+    for stmt in with_node.body:
+        names |= _subtree_call_names(stmt)
+    return names
+
+
+def _module_functions(tree: ast.Module) -> dict[str, ast.FunctionDef]:
+    """qualname -> function node for every (possibly class-nested) function."""
+    fns: dict[str, ast.FunctionDef] = {}
+
+    def walk(node, stack):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.ClassDef):
+                walk(child, [*stack, child.name])
+            elif isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
+                fns[".".join([*stack, child.name])] = child
+                walk(child, [*stack, child.name])
+
+    walk(tree, [])
+    return fns
+
+
+def test_operator_shopify_commands_route_per_store_work_through_tenant_execution():
+    for relpath, (per_tenant, runner_qualnames) in _OPERATOR_SHOPIFY_COMMANDS.items():
+        tree = _command_tree(relpath)
+        fns = _module_functions(tree)
+
+        # handle() itself must dispatch through the tenant execution helper.
+        handle = fns.get("Command.handle")
+        assert handle is not None, f"{relpath} has no Command.handle"
+        assert _SHOPIFY_EXEC_HELPER in _subtree_call_names(handle), (
+            f"{relpath}: Command.handle must route per-store work through {_SHOPIFY_EXEC_HELPER}() — the "
+            "single tenant/RLS-guarded execution path (a management command has no request/middleware, so "
+            "the covered commands' fresh Company admission lock is hidden by production RLS otherwise)."
+        )
+
+        # The per-tenant commands may be invoked ONLY inside the pinned runner
+        # function(s) — a direct call from handle() (no tenant context) or from a
+        # new unpinned helper fails here, not just calls inside a bypass block.
+        for qualname, fn in fns.items():
+            called = {
+                getattr(n.func, "id", None) or getattr(n.func, "attr", None)
+                for n in ast.walk(fn)
+                if isinstance(n, ast.Call)
+            } & per_tenant
+            # A nested scan double-reports parents; restrict to direct ownership by
+            # excluding calls that belong to a nested pinned runner.
+            if called and qualname not in runner_qualnames:
+                nested_ok = any(r.startswith(qualname + ".") or qualname.startswith(r + ".") for r in runner_qualnames)
+                assert nested_ok, (
+                    f"{relpath}::{qualname} invokes per-tenant work {sorted(called)} outside the pinned "
+                    f"runner(s) {sorted(runner_qualnames)} — it would run with NO tenant/RLS context. "
+                    "Route it through the runner handed to the tenant execution helper."
+                )
+
+        # No per-tenant command (nor the execution helper) may run inside a broad
+        # discovery `with rls_bypass():` block — discovery is identities only.
+        forbidden = per_tenant | {_SHOPIFY_EXEC_HELPER}
+        for w in ast.walk(tree):
+            if isinstance(w, ast.With) and any(_with_item_callee(it) == _SHOPIFY_DISCOVERY_CM for it in w.items):
+                leaked = sorted(_calls_in_with_body(w) & forbidden)
+                assert not leaked, (
+                    f"{relpath} runs per-tenant work {leaked} inside a broad "
+                    f"`with {_SHOPIFY_DISCOVERY_CM}()` block — discovery bypass is identities only."
+                )
+
+
+def test_backfill_serializes_setup_under_company_admission():
+    """The settlement-provider backfill's local writes admit under the Company
+    admission lock; `_setup_shopify_accounts` runs INSIDE that lock (so it sees
+    the yielded locked Company for its is_supported(INVENTORY) decision); and the
+    ShopifyStore row is locked (`select_for_update`) inside the same block BEFORE
+    the provider/config writes — the same store-row-first direction as the
+    unlocked projection self-heal (`_ensure_shopify_sales_setup` writes the store
+    row before its provider bootstrap), closing the ABBA deadlock the backfill's
+    single held-to-commit transaction would otherwise open against it."""
+    _admission_cm = "serialized_company_admission"
+    tree = _command_tree("shopify_connector/management/commands/backfill_settlement_providers.py")
+
+    holders = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        and "_setup_shopify_accounts" in _subtree_call_names(node)
+    ]
+    assert holders, "backfill must call _setup_shopify_accounts"
+    for holder in holders:
+        assert _admission_cm in _subtree_call_names(holder), (
+            f"{holder.name} calls _setup_shopify_accounts but never opens the Company admission "
+            f"lock ({_admission_cm}) — the setup must be serialized by its caller."
+        )
+        admission_blocks = [
+            w
+            for w in ast.walk(holder)
+            if isinstance(w, ast.With) and any(_with_item_callee(it) == _admission_cm for it in w.items)
+        ]
+        inside = any("_setup_shopify_accounts" in _calls_in_with_body(w) for w in admission_blocks)
+        assert inside, (
+            "_setup_shopify_accounts must run INSIDE the `with serialized_company_admission(...)` "
+            "block (using the yielded locked Company), not before it."
+        )
+        # Store-row lock inside the admission block, positioned BEFORE the setup /
+        # provider writes (first statement ordering is enforced by source order).
+        for w in admission_blocks:
+            if "_setup_shopify_accounts" not in _calls_in_with_body(w):
+                continue
+            calls_in_order: list[str] = []
+            for stmt in w.body:
+                for n in ast.walk(stmt):
+                    if isinstance(n, ast.Call):
+                        name = getattr(n.func, "id", None) or getattr(n.func, "attr", None)
+                        if name in ("select_for_update", "_setup_shopify_accounts"):
+                            calls_in_order.append(name)
+            assert "select_for_update" in calls_in_order, (
+                "the backfill admission block must lock the ShopifyStore row (select_for_update) — "
+                "without it the held-to-commit transaction deadlocks ABBA against the projection "
+                "self-heal's store-row-then-provider write order."
+            )
+            assert calls_in_order.index("select_for_update") < calls_in_order.index("_setup_shopify_accounts"), (
+                "the ShopifyStore row lock must be taken BEFORE _setup_shopify_accounts / the "
+                "provider bootstrap (store-row-first, matching the projection self-heal's order)."
+            )
 
 
 # =============================================================================
