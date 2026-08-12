@@ -88,6 +88,18 @@ def sync_payouts(account: StripeAccount, *, lookback_hours: int = 168) -> dict:
     # webhook-triggered). A pilot company should have no Stripe account at all
     # (connect is gated), but skip fail-closed here too — structured skip, no
     # event emission, no mutation, no retry.
+    #
+    # A4 RUNTIME-ADMISSION-SERIALIZATION RESIDUAL (design-deferred): this is a
+    # scheduled MULTI-COMMIT remote per-payout loop — it commits each payout's
+    # provenance/event/read-model in its own transaction interleaved with remote
+    # Stripe fetches. The Company admission lock cannot span that authoritative
+    # mutation without holding a DB row lock across remote I/O or release+
+    # reacquiring per payout, so this path is deliberately NOT serialized under a
+    # single admission lock. It stays gated by this fail-closed point-in-time
+    # skip; the serialized connect gate (a pilot company never gets a
+    # StripeAccount) plus this per-account skip are the layered defense. Do NOT
+    # wrap this loop in one admission transaction. See
+    # docs/status/constrained_pilot_status.md (A4 residuals).
     skipped = skip_if_unsupported(account.company, Capability.STRIPE, task="stripe.sync_payouts")
     if skipped is not None:
         return skipped

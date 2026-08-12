@@ -13,6 +13,7 @@ Pattern:
 5. Return CommandResult
 """
 
+import dataclasses
 from decimal import Decimal
 
 from django.db import transaction
@@ -28,6 +29,7 @@ from accounting.commands import (
 )
 from accounting.models import Account, Customer, JournalEntry
 from accounts.authz import ActorContext, require
+from accounts.pilot_policy import Capability, lock_company_for_admission, require_supported
 from events.emitter import emit_event
 from events.types import (
     EventTypes,
@@ -85,6 +87,13 @@ def create_item(
 ) -> CommandResult:
     """Create a new item in the catalog."""
     require(actor, "sales.item.create")
+    # A4 admission serialization: lock the Company admission row and re-read the
+    # profile from it BEFORE the conditional Option-B (INVENTORY) decision below,
+    # so an item admitted on a cached NONE profile cannot commit after a
+    # concurrent activation. Company-first: this lock precedes any Item/Account
+    # row. Supported NON_STOCK/service items stay allowed (the gate is conditional).
+    locked_company = lock_company_for_admission(actor.company.pk)
+    actor = dataclasses.replace(actor, company=locked_company)
 
     # Validate unique code
     if Item.objects.filter(company=actor.company, code=code).exists():
@@ -129,9 +138,8 @@ def create_item(
             return CommandResult.fail("COGS account not found.")
 
     # A4 / Option B: a constrained-pilot company may not create INVENTORY items
-    # or items carrying inventory/COGS accounts.
-    from accounts.pilot_policy import Capability, require_supported
-
+    # or items carrying inventory/COGS accounts. The decision reads the LOCKED
+    # profile acquired above (Company admission lock held through commit).
     if item_type == Item.ItemType.INVENTORY or inventory_account or cogs_account:
         require_supported(actor.company, Capability.INVENTORY)
 
@@ -194,6 +202,13 @@ def update_item(actor: ActorContext, item_id: int, **updates) -> CommandResult:
     """Update an existing item."""
     require(actor, "sales.item.update")
 
+    # A4 admission serialization: HOIST the Company admission lock ABOVE the Item
+    # row lock (Company -> Item, never Item -> Company) and re-read the profile
+    # from the locked row, so the conditional Option-B (INVENTORY) decision below
+    # is serialized against activation and the lock order stays Company-first.
+    locked_company = lock_company_for_admission(actor.company.pk)
+    actor = dataclasses.replace(actor, company=locked_company)
+
     try:
         item = Item.objects.select_for_update().get(company=actor.company, pk=item_id)
     except Item.DoesNotExist:
@@ -201,9 +216,7 @@ def update_item(actor: ActorContext, item_id: int, **updates) -> CommandResult:
 
     # A4 / Option B: block re-arming inventory on a constrained-pilot company via
     # an item update (changing type to INVENTORY or attaching inventory/COGS
-    # accounts).
-    from accounts.pilot_policy import Capability, require_supported
-
+    # accounts). The decision reads the LOCKED profile acquired above.
     if (
         updates.get("item_type") == Item.ItemType.INVENTORY
         or updates.get("inventory_account_id")

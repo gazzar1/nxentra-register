@@ -14,6 +14,17 @@ from shopify_connector.commands import _ensure_shopify_warehouse
 from shopify_connector.models import ShopifyStore
 
 
+def _auto_create(store, sku, line_item):
+    """Two-phase auto-create for a single Shopify order line (P2): Phase-1 remote
+    prepare then Phase-2 locked apply — one iteration of what process_order_paid
+    now does so the batch's remote metadata reads all precede the admission lock.
+    Exercises the real production helpers; the tests below patch the remote reads."""
+    from shopify_connector.commands import _apply_auto_create_item_from_line, _prepare_order_item_metadata
+
+    prepared = _prepare_order_item_metadata(store, {"line_items": [line_item]})
+    _apply_auto_create_item_from_line(store, sku, line_item, prepared)
+
+
 @pytest.fixture
 def shopify_store(db, company):
     return ShopifyStore.objects.create(
@@ -108,7 +119,7 @@ def test_finalize_shopify_stores_wires_sales_routing(db, company, owner_membersh
 
 def test_auto_created_item_from_shopify_line_gets_all_four_gl_accounts(db, company, monkeypatch):
     # Why: when a Shopify webhook order arrives with a SKU we don't yet
-    # have an Item for, _auto_create_item_from_line creates one. The
+    # have an Item for, the paid-order auto-create path creates one. The
     # newly-created Item must have sales / purchase / inventory / cogs
     # accounts auto-filled from the company's shopify_connector
     # ModuleAccountMapping — otherwise the merchant's books are
@@ -126,7 +137,6 @@ def test_auto_created_item_from_shopify_line_gets_all_four_gl_accounts(db, compa
     from accounting.models import Account
     from projections.write_barrier import command_writes_allowed, projection_writes_allowed
     from sales.models import Item
-    from shopify_connector.commands import _auto_create_item_from_line
     from shopify_connector.models import ShopifyStore
 
     # Seed the four accounts + mappings the way _setup_shopify_accounts would.
@@ -197,7 +207,7 @@ def test_auto_created_item_from_shopify_line_gets_all_four_gl_accounts(db, compa
         "variant_id": 999,
         "product_id": 888,
     }
-    _auto_create_item_from_line(store, "HEAD-001", line_item)
+    _auto_create(store, "HEAD-001", line_item)
 
     item = Item.objects.get(company=company, code="HEAD-001")
     assert item.sales_account_id == sales_acct.id, "Sales account should default from SALES_REVENUE mapping"
@@ -221,7 +231,7 @@ def test_auto_create_and_update_defaults_never_overwrite_user_customizations(db,
     from accounting.models import Account
     from projections.write_barrier import command_writes_allowed, projection_writes_allowed
     from sales.models import Item
-    from shopify_connector.commands import _auto_create_item_from_line, _update_item_defaults
+    from shopify_connector.commands import _update_item_defaults
     from shopify_connector.models import ShopifyStore
 
     # Seed Shopify default accounts + mappings (what onboarding would do).
@@ -315,7 +325,7 @@ def test_auto_create_and_update_defaults_never_overwrite_user_customizations(db,
     # Path 1: a Shopify webhook comes in with HEAD-001. The auto-create
     # helper must short-circuit because the Item already exists — it does
     # not touch GL accounts on existing items.
-    _auto_create_item_from_line(
+    _auto_create(
         store,
         "HEAD-001",
         {
@@ -360,7 +370,6 @@ def test_a9_auto_create_falls_back_to_variant_id_when_sku_empty(db, company, mon
     from accounting.models import Account
     from projections.write_barrier import command_writes_allowed, projection_writes_allowed
     from sales.models import Item
-    from shopify_connector.commands import _auto_create_item_from_line
     from shopify_connector.models import ShopifyProduct, ShopifyStore
 
     with projection_writes_allowed():
@@ -423,7 +432,7 @@ def test_a9_auto_create_falls_back_to_variant_id_when_sku_empty(db, company, mon
         "variant_id": 12345,
         "product_id": 678,
     }
-    _auto_create_item_from_line(store, "", line_item_a)
+    _auto_create(store, "", line_item_a)
 
     item = Item.objects.get(company=company, code="SHOP-12345")
     assert item.name == "Custom mug"
@@ -436,7 +445,7 @@ def test_a9_auto_create_falls_back_to_variant_id_when_sku_empty(db, company, mon
     # paper. Must NOT create a duplicate (the variant_id check matches
     # the existing mapping; pre-A9 the empty-string SKU lookup would
     # also have false-positived against ANY empty-SKU product).
-    _auto_create_item_from_line(store, "", line_item_a)
+    _auto_create(store, "", line_item_a)
     assert Item.objects.filter(company=company, code="SHOP-12345").count() == 1
 
     # Third call — DIFFERENT variant, also no SKU. Must create a fresh
@@ -448,7 +457,7 @@ def test_a9_auto_create_falls_back_to_variant_id_when_sku_empty(db, company, mon
         "variant_id": 99999,
         "product_id": 4321,
     }
-    _auto_create_item_from_line(store, "", line_item_b)
+    _auto_create(store, "", line_item_b)
 
     item_b = Item.objects.get(company=company, code="SHOP-99999")
     assert item_b.name == "Custom poster"

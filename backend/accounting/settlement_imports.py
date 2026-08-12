@@ -772,6 +772,17 @@ def import_settlement_csv(
     # foreign-currency batch up-front — before a single PAYMENT_SETTLEMENT_RECEIVED
     # event is emitted — so no FX conversion is ever booked and no partial import
     # is left behind.
+    #
+    # A4 RUNTIME-ADMISSION-SERIALIZATION RESIDUAL (design-deferred): this importer
+    # commits each batch in its OWN top-level transaction (the per-batch
+    # `with transaction.atomic()` below; the caller opens no outer atomic), so no
+    # single Company admission lock can span the whole authoritative import. This
+    # up-front currency sweep therefore runs UNLOCKED (point-in-time). Serializing
+    # it would require either collapsing the deliberate per-batch commit /
+    # partial-import model into one all-or-nothing transaction, or per-batch
+    # admission locking that turns whole-file rejection into per-batch rejection —
+    # both are behavior changes out of scope here. Tracked as a residual; see
+    # docs/status/constrained_pilot_status.md (A4 residuals).
     from accounts.pilot_policy import require_pilot_currency
 
     for _batch in batches:

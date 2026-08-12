@@ -8,6 +8,7 @@ Provides endpoints for:
 - Bank transactions list
 """
 
+from contextlib import contextmanager
 from decimal import Decimal
 
 from django.db.models import Q
@@ -36,6 +37,22 @@ def resolve_actor(request):
     if actor.company is not None:
         require_supported(actor.company, Capability.LEGACY_BANKING)
     return actor
+
+
+@contextmanager
+def _legacy_banking_admission(actor):
+    """Serialize a legacy-banking MUTATION against pilot activation: open the
+    Company admission transaction, hold the admission lock, and re-check
+    LEGACY_BANKING on the freshly LOCKED profile before the write — so a request
+    admitted on ``resolve_actor``'s UNLOCKED fast-fail (a cached NONE profile)
+    can never commit a legacy-banking row after a concurrent activation. Every
+    MUTATING bank_connector endpoint wraps its authoritative write in this;
+    read-only endpoints keep only ``resolve_actor``'s check."""
+    from accounts.pilot_policy import Capability, require_supported, serialized_company_admission
+
+    with serialized_company_admission(actor.company.pk) as locked_company:
+        require_supported(locked_company, Capability.LEGACY_BANKING)
+        yield locked_company
 
 
 # ─── Bank Accounts ──────────────────────────────────────────────
@@ -90,14 +107,15 @@ class BankAccountListCreateView(APIView):
                 status=400,
             )
 
-        account = BankAccount.objects.create(
-            company=actor.company,
-            bank_name=bank_name,
-            account_name=account_name,
-            account_number_last4=request.data.get("account_number_last4", ""),
-            currency=request.data.get("currency", "USD"),
-            gl_account_id=request.data.get("gl_account_id") or None,
-        )
+        with _legacy_banking_admission(actor):
+            account = BankAccount.objects.create(
+                company=actor.company,
+                bank_name=bank_name,
+                account_name=account_name,
+                account_number_last4=request.data.get("account_number_last4", ""),
+                currency=request.data.get("currency", "USD"),
+                gl_account_id=request.data.get("gl_account_id") or None,
+            )
         return Response(
             {
                 "id": account.id,
@@ -126,12 +144,13 @@ class BankAccountDetailView(APIView):
         except BankAccount.DoesNotExist:
             return Response({"detail": "Not found."}, status=404)
 
-        for field in ("bank_name", "account_name", "account_number_last4", "currency", "status"):
-            if field in request.data:
-                setattr(account, field, request.data[field])
-        if "gl_account_id" in request.data:
-            account.gl_account_id = request.data["gl_account_id"] or None
-        account.save()
+        with _legacy_banking_admission(actor):
+            for field in ("bank_name", "account_name", "account_number_last4", "currency", "status"):
+                if field in request.data:
+                    setattr(account, field, request.data[field])
+            if "gl_account_id" in request.data:
+                account.gl_account_id = request.data["gl_account_id"] or None
+            account.save()
         return Response({"status": "updated"})
 
     def delete(self, request, pk):
@@ -144,7 +163,8 @@ class BankAccountDetailView(APIView):
         except BankAccount.DoesNotExist:
             return Response({"detail": "Not found."}, status=404)
 
-        account.delete()
+        with _legacy_banking_admission(actor):
+            account.delete()
         return Response(status=204)
 
 
@@ -254,82 +274,87 @@ class BankStatementImportView(APIView):
             "mapped_description": str(first_mapped.get("description", ""))[:50],
         }
 
-        # Create statement
-        statement = BankStatement.objects.create(
-            company=actor.company,
-            bank_account=bank_account,
-            filename=uploaded_file.name,
-            column_mapping=mapping,
-        )
-
-        # Create transactions
-        created = 0
-        skipped = 0
-        errors = []
-        total_debits = Decimal("0")
-        total_credits = Decimal("0")
-        min_date = None
-        max_date = None
-
-        for i, row in enumerate(mapped_rows, start=2):
-            if not row.get("transaction_date"):
-                errors.append(f"Row {i}: could not parse date")
-                continue
-            if row.get("amount") is None:
-                errors.append(f"Row {i}: could not parse amount")
-                continue
-
-            tx_date = row["transaction_date"]
-            amount = row["amount"]
-            description = row.get("description", "")
-
-            # Duplicate detection: same account + date + description + amount
-            if BankTransaction.objects.filter(
+        # Parsing/mapping above is side-effect-free and stays UNLOCKED. Create the
+        # statement + its transaction rows + the summary as ONE admission-locked
+        # transaction: serialized against pilot activation, and (as a side benefit)
+        # the former multi-commit import becomes a single all-or-nothing statement.
+        with _legacy_banking_admission(actor):
+            # Create statement
+            statement = BankStatement.objects.create(
                 company=actor.company,
                 bank_account=bank_account,
-                transaction_date=tx_date,
-                description=description,
-                amount=amount,
-            ).exists():
-                skipped += 1
-                continue
-
-            # Track period
-            if min_date is None or tx_date < min_date:
-                min_date = tx_date
-            if max_date is None or tx_date > max_date:
-                max_date = tx_date
-
-            # Track totals
-            if amount >= 0:
-                total_credits += amount
-            else:
-                total_debits += abs(amount)
-
-            BankTransaction.objects.create(
-                company=actor.company,
-                statement=statement,
-                bank_account=bank_account,
-                transaction_date=tx_date,
-                value_date=row.get("value_date"),
-                description=description,
-                reference=row.get("reference", ""),
-                amount=amount,
-                transaction_type=row.get("transaction_type", "CREDIT"),
-                running_balance=row.get("running_balance"),
-                raw_data=row.get("raw_data", {}),
+                filename=uploaded_file.name,
+                column_mapping=mapping,
             )
-            created += 1
 
-        # Update statement summary
-        statement.transaction_count = created
-        statement.total_debits = total_debits
-        statement.total_credits = total_credits
-        statement.period_start = min_date
-        statement.period_end = max_date
-        statement.status = "ERROR" if errors and not created else "PROCESSED"
-        statement.error_message = "\n".join(errors[:20]) if errors else ""
-        statement.save()
+            # Create transactions
+            created = 0
+            skipped = 0
+            errors = []
+            total_debits = Decimal("0")
+            total_credits = Decimal("0")
+            min_date = None
+            max_date = None
+
+            for i, row in enumerate(mapped_rows, start=2):
+                if not row.get("transaction_date"):
+                    errors.append(f"Row {i}: could not parse date")
+                    continue
+                if row.get("amount") is None:
+                    errors.append(f"Row {i}: could not parse amount")
+                    continue
+
+                tx_date = row["transaction_date"]
+                amount = row["amount"]
+                description = row.get("description", "")
+
+                # Duplicate detection: same account + date + description + amount
+                if BankTransaction.objects.filter(
+                    company=actor.company,
+                    bank_account=bank_account,
+                    transaction_date=tx_date,
+                    description=description,
+                    amount=amount,
+                ).exists():
+                    skipped += 1
+                    continue
+
+                # Track period
+                if min_date is None or tx_date < min_date:
+                    min_date = tx_date
+                if max_date is None or tx_date > max_date:
+                    max_date = tx_date
+
+                # Track totals
+                if amount >= 0:
+                    total_credits += amount
+                else:
+                    total_debits += abs(amount)
+
+                BankTransaction.objects.create(
+                    company=actor.company,
+                    statement=statement,
+                    bank_account=bank_account,
+                    transaction_date=tx_date,
+                    value_date=row.get("value_date"),
+                    description=description,
+                    reference=row.get("reference", ""),
+                    amount=amount,
+                    transaction_type=row.get("transaction_type", "CREDIT"),
+                    running_balance=row.get("running_balance"),
+                    raw_data=row.get("raw_data", {}),
+                )
+                created += 1
+
+            # Update statement summary
+            statement.transaction_count = created
+            statement.total_debits = total_debits
+            statement.total_credits = total_credits
+            statement.period_start = min_date
+            statement.period_end = max_date
+            statement.status = "ERROR" if errors and not created else "PROCESSED"
+            statement.error_message = "\n".join(errors[:20]) if errors else ""
+            statement.save()
 
         return Response(
             {
@@ -483,31 +508,32 @@ class BankTransactionUpdateView(APIView):
         except BankTransaction.DoesNotExist:
             return Response({"detail": "Not found."}, status=404)
 
-        action = request.data.get("action")
+        with _legacy_banking_admission(actor):
+            action = request.data.get("action")
 
-        if action == "exclude":
-            tx.status = "EXCLUDED"
-            tx.save(update_fields=["status"])
-            return Response({"status": "excluded"})
+            if action == "exclude":
+                tx.status = "EXCLUDED"
+                tx.save(update_fields=["status"])
+                return Response({"status": "excluded"})
 
-        if action == "unmatch":
-            if tx.status != "EXCLUDED":
-                return Response(
-                    {
-                        "detail": (
-                            "The banking matcher is retired (A166). Matched state can "
-                            "only be undone through Accounting → Bank Reconciliation, "
-                            "which reverses the accounting the match created."
-                        )
-                    },
-                    status=409,
-                )
-            # Restore an excluded feed row — never touched accounting.
-            tx.status = "UNMATCHED"
-            tx.save(update_fields=["status"])
-            return Response({"status": "unmatched"})
+            if action == "unmatch":
+                if tx.status != "EXCLUDED":
+                    return Response(
+                        {
+                            "detail": (
+                                "The banking matcher is retired (A166). Matched state can "
+                                "only be undone through Accounting → Bank Reconciliation, "
+                                "which reverses the accounting the match created."
+                            )
+                        },
+                        status=409,
+                    )
+                # Restore an excluded feed row — never touched accounting.
+                tx.status = "UNMATCHED"
+                tx.save(update_fields=["status"])
+                return Response({"status": "unmatched"})
 
-        return Response({"detail": "Unknown action."}, status=400)
+            return Response({"detail": "Unknown action."}, status=400)
 
 
 # ─── Summary ────────────────────────────────────────────────────
@@ -664,7 +690,8 @@ class ExceptionScanView(APIView):
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
 
-        result = scan_all(actor.company)
+        with _legacy_banking_admission(actor):
+            result = scan_all(actor.company)
         return Response(result)
 
 
@@ -695,70 +722,71 @@ class ExceptionDetailView(APIView):
         except ReconciliationException.DoesNotExist:
             return Response({"detail": "Not found."}, status=404)
 
-        action = request.data.get("action")
+        with _legacy_banking_admission(actor):
+            action = request.data.get("action")
 
-        if action == "assign":
-            user_id = request.data.get("assigned_to")
-            exc.assigned_to_id = user_id
-            if exc.status == ReconciliationException.Status.OPEN:
-                exc.status = ReconciliationException.Status.IN_PROGRESS
-            exc.save(update_fields=["assigned_to", "status", "updated_at"])
-            return Response(_serialize_exception(exc))
+            if action == "assign":
+                user_id = request.data.get("assigned_to")
+                exc.assigned_to_id = user_id
+                if exc.status == ReconciliationException.Status.OPEN:
+                    exc.status = ReconciliationException.Status.IN_PROGRESS
+                exc.save(update_fields=["assigned_to", "status", "updated_at"])
+                return Response(_serialize_exception(exc))
 
-        if action == "resolve":
-            exc.status = ReconciliationException.Status.RESOLVED
-            exc.resolved_at = timezone.now()
-            exc.resolved_by_id = request.user.id
-            exc.resolution_note = request.data.get("resolution_note", "")
-            exc.save(
-                update_fields=[
-                    "status",
-                    "resolved_at",
-                    "resolved_by",
-                    "resolution_note",
-                    "updated_at",
-                ]
-            )
-            return Response(_serialize_exception(exc))
+            if action == "resolve":
+                exc.status = ReconciliationException.Status.RESOLVED
+                exc.resolved_at = timezone.now()
+                exc.resolved_by_id = request.user.id
+                exc.resolution_note = request.data.get("resolution_note", "")
+                exc.save(
+                    update_fields=[
+                        "status",
+                        "resolved_at",
+                        "resolved_by",
+                        "resolution_note",
+                        "updated_at",
+                    ]
+                )
+                return Response(_serialize_exception(exc))
 
-        if action == "escalate":
-            exc.status = ReconciliationException.Status.ESCALATED
-            exc.save(update_fields=["status", "updated_at"])
-            return Response(_serialize_exception(exc))
+            if action == "escalate":
+                exc.status = ReconciliationException.Status.ESCALATED
+                exc.save(update_fields=["status", "updated_at"])
+                return Response(_serialize_exception(exc))
 
-        if action == "dismiss":
-            exc.status = ReconciliationException.Status.DISMISSED
-            exc.resolved_at = timezone.now()
-            exc.resolved_by_id = request.user.id
-            exc.resolution_note = request.data.get("resolution_note", "")
-            exc.save(
-                update_fields=[
-                    "status",
-                    "resolved_at",
-                    "resolved_by",
-                    "resolution_note",
-                    "updated_at",
-                ]
-            )
-            return Response(_serialize_exception(exc))
+            if action == "dismiss":
+                exc.status = ReconciliationException.Status.DISMISSED
+                exc.resolved_at = timezone.now()
+                exc.resolved_by_id = request.user.id
+                exc.resolution_note = request.data.get("resolution_note", "")
+                exc.save(
+                    update_fields=[
+                        "status",
+                        "resolved_at",
+                        "resolved_by",
+                        "resolution_note",
+                        "updated_at",
+                    ]
+                )
+                return Response(_serialize_exception(exc))
 
-        if action == "reopen":
-            exc.status = ReconciliationException.Status.OPEN
-            exc.resolved_at = None
-            exc.resolved_by = None
-            exc.resolution_note = ""
-            exc.save(
-                update_fields=[
-                    "status",
-                    "resolved_at",
-                    "resolved_by",
-                    "resolution_note",
-                    "updated_at",
-                ]
-            )
-            return Response(_serialize_exception(exc))
+            if action == "reopen":
+                exc.status = ReconciliationException.Status.OPEN
+                exc.resolved_at = None
+                exc.resolved_by = None
+                exc.resolution_note = ""
+                exc.save(
+                    update_fields=[
+                        "status",
+                        "resolved_at",
+                        "resolved_by",
+                        "resolution_note",
+                        "updated_at",
+                    ]
+                )
+                return Response(_serialize_exception(exc))
 
-        return Response({"detail": "Unknown action."}, status=400)
+            return Response({"detail": "Unknown action."}, status=400)
 
 
 class ExceptionSummaryView(APIView):

@@ -28,6 +28,7 @@ from django.utils import timezone
 from accounts.authz import ActorContext, require
 from accounts.models import Company, CompanyMembership, NxPermission
 from accounts.passwords import password_rule_errors
+from accounts.pilot_policy import Capability, lock_company_for_admission, requires_capability
 from accounts.rls import rls_bypass
 from events.emitter import emit_event, emit_event_no_actor
 from events.types import (
@@ -692,6 +693,7 @@ def switch_active_company(user, target_company_id: int) -> CommandResult:
 # =============================================================================
 
 
+@requires_capability(Capability.ADD_MEMBER)
 @transaction.atomic
 def create_user_with_membership(
     actor,  # ActorContext
@@ -714,12 +716,12 @@ def create_user_with_membership(
         CommandResult with user and membership
     """
     from accounts.authz import require
-    from accounts.pilot_policy import Capability, require_supported
 
     require(actor, "company.manage_users")
-    # Single-user contract: the constrained pilot admits exactly one OWNER; no
-    # additional member may be provisioned by any path.
-    require_supported(actor.company, Capability.ADD_MEMBER)
+    # Single-user contract (Capability.ADD_MEMBER): admission is enforced by the
+    # SERIALIZED @requires_capability decorator above — the Company admission row
+    # is locked and the profile re-read fresh, so no add-member mutation admitted
+    # on a cached NONE profile can commit after a concurrent activation.
 
     password_errors = password_rule_errors(password)
     if password_errors:
@@ -1076,6 +1078,7 @@ def admin_reset_password(
 # =============================================================================
 
 
+@requires_capability(Capability.ADD_MEMBER)
 @transaction.atomic
 def add_user_to_company(
     actor,  # ActorContext
@@ -1097,10 +1100,9 @@ def add_user_to_company(
 
     require(actor, "company.manage_users")
 
-    # A4: single-user pilot — block adding another active membership.
-    from accounts.pilot_policy import Capability, require_supported
-
-    require_supported(actor.company, Capability.ADD_MEMBER)
+    # A4: single-user pilot — adding another active membership is blocked by the
+    # SERIALIZED @requires_capability(ADD_MEMBER) decorator above (Company
+    # admission row locked, profile re-read fresh, held through commit).
 
     try:
         user = User.objects.get(pk=user_id)
@@ -2551,6 +2553,7 @@ def admin_verify_user_email(admin_user, user_id: int) -> CommandResult:
 # =============================================================================
 
 
+@requires_capability(Capability.ADD_MEMBER)
 @transaction.atomic
 def create_invitation(
     actor,  # ActorContext
@@ -2586,11 +2589,10 @@ def create_invitation(
 
     require(actor, "company.manage_users")
 
-    # A4: the constrained pilot is single-user (one active OWNER). Block adding
-    # members / invitations.
-    from accounts.pilot_policy import Capability, require_supported
-
-    require_supported(actor.company, Capability.ADD_MEMBER)
+    # A4: the constrained pilot is single-user (one active OWNER). Adding
+    # members / invitations is blocked by the SERIALIZED
+    # @requires_capability(ADD_MEMBER) decorator above — admission runs under the
+    # Company admission lock, before the Invitation INSERT and the email send.
 
     # Normalize email
     email = email.lower().strip()
@@ -2780,20 +2782,35 @@ def accept_invitation(
 
     # Single-user contract: no membership may be materialized into a constrained
     # pilot company, even from an invitation issued before the profile was set.
-    from accounts.pilot_policy import Capability, require_supported
+    # Serialize against pilot activation by taking the Company ADMISSION LOCK
+    # (FOR NO KEY UPDATE) on every EXISTING target company in ascending-pk order
+    # — deterministic, so deadlock-free vs. activation's FOR UPDATE and a peer
+    # accept — and re-reading the profile from each LOCKED row. This is a public,
+    # no-actor/no-tenant path, so acquire under rls_bypass; the row locks bind to
+    # this outermost transaction and live to its commit. Missing companies are
+    # skipped exactly as before. Under the isolated-deployment contract N == 1;
+    # the single-company serialized_company_admission CM cannot express N locks
+    # across one body-spanning transaction, so the primitive is used directly.
+    from accounts.pilot_policy import require_supported
 
+    locked_companies: dict[int, Company] = {}
     with rls_bypass():
-        for company_id in invitation.company_ids:
-            target = Company.objects.filter(pk=company_id).first()
-            if target is not None:
-                require_supported(target, Capability.ADD_MEMBER)
+        target_pks = sorted({cid for cid in invitation.company_ids if Company.objects.filter(pk=cid).exists()})
+        for company_id in target_pks:
+            locked = lock_company_for_admission(company_id)
+            require_supported(locked, Capability.ADD_MEMBER)
+            locked_companies[company_id] = locked
 
     # Use invitation name if no name provided
     user_name = name.strip() if name else invitation.name
 
     # Generate public IDs
     user_public_id = uuid.uuid4()
-    primary_company = invitation.primary_company
+    # Prefer the LOCKED instance for the primary company so every membership /
+    # switch / projection decision reads the profile serialized under the
+    # admission lock (falls back to the select_related cache only if the primary
+    # company was concurrently removed and thus never locked).
+    primary_company = locked_companies.get(invitation.primary_company_id, invitation.primary_company)
     membership_public_ids = []
 
     # Create user
@@ -2825,10 +2842,9 @@ def accept_invitation(
     events = [event_user]
 
     for company_id in invitation.company_ids:
-        try:
-            company = Company.objects.get(pk=company_id)
-        except Company.DoesNotExist:
-            continue  # Skip invalid company IDs
+        company = locked_companies.get(company_id)
+        if company is None:
+            continue  # Skip invalid/missing company IDs (excluded from the admission locks above)
 
         membership_public_id = uuid.uuid4()
         membership_public_ids.append(str(membership_public_id))

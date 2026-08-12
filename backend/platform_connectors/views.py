@@ -192,20 +192,42 @@ class PlatformWebhookView(APIView):
             # Connector chose to skip (e.g. optional dispute handler)
             return HttpResponse(status=200)
 
-        # Step 7: Convert parsed canonical to event data and emit
+        # Step 7: emit the canonical event, SERIALIZED against pilot activation for
+        # capability-GATED topics — the capability is re-checked on the LOCKED
+        # profile before the emit, so a delivery admitted on a cached NONE profile
+        # cannot emit after a concurrent activation. For an in-scope topic
+        # (topic_cap None) no capability can be raced, so no lock is taken.
+        #
+        # Only the EMIT is wrapped. Step 8 (store_webhook_record) stays
+        # AUTOCOMMIT-separate below, exactly as before: some connector handlers
+        # (e.g. Stripe store_refund) recover from IntegrityError WITHOUT a
+        # savepoint, which is only safe in autocommit — running them inside this
+        # admission transaction would poison the connection and silently roll back
+        # the just-emitted event. Serializing the emit alone is sufficient (the
+        # canonical event is the raceable fact; the connector record is its
+        # derived read-model, keyed by the committed event_id).
+        from contextlib import nullcontext
+
+        from accounts.pilot_policy import is_supported, serialized_company_admission
+
+        emit_ctx = serialized_company_admission(company.pk) if topic_cap is not None else nullcontext(company)
         try:
-            event_data = _canonical_to_event_data(parsed, data_class, platform_slug)
-            aggregate_id = _extract_aggregate_id(parsed)
+            with emit_ctx as emit_company:
+                if topic_cap is not None and not is_supported(emit_company, topic_cap):
+                    # A concurrent activation landed between the unlocked topic skip
+                    # above and here — acknowledge, emit nothing.
+                    return HttpResponse(status=200)
 
-            business_event = emit_event_no_actor(
-                company=company,
-                event_type=event_type,
-                aggregate_type=f"Platform{canonical_topic.split('_')[0].title()}",
-                aggregate_id=aggregate_id,
-                idempotency_key=f"{platform_slug}.{canonical_topic}:{aggregate_id}",
-                data=event_data,
-            )
-
+                event_data = _canonical_to_event_data(parsed, data_class, platform_slug)
+                aggregate_id = _extract_aggregate_id(parsed)
+                business_event = emit_event_no_actor(
+                    company=emit_company,
+                    event_type=event_type,
+                    aggregate_type=f"Platform{canonical_topic.split('_')[0].title()}",
+                    aggregate_id=aggregate_id,
+                    idempotency_key=f"{platform_slug}.{canonical_topic}:{aggregate_id}",
+                    data=event_data,
+                )
             logger.info(
                 "Emitted %s for %s (company=%s, id=%s)",
                 event_type,
@@ -217,7 +239,8 @@ class PlatformWebhookView(APIView):
             logger.exception("Error emitting event for %s webhook %s", platform_slug, topic)
             return HttpResponse(status=500)
 
-        # Step 8: Store platform-specific local record for reconciliation
+        # Step 8: Store platform-specific local record for reconciliation —
+        # OUTSIDE the admission transaction (autocommit, as before).
         event_id = getattr(business_event, "public_id", None)
         try:
             connector.store_webhook_record(

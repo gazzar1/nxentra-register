@@ -1411,3 +1411,652 @@ def test_company_event_writers_lock_company_before_emission():
         assert _statement_order(source, func, "lock_company_for_admission(", "emit_event("), (
             f"{func} must acquire the Company admission lock before emitting its Company event"
         )
+
+
+# =============================================================================
+# Rule 12 (A4 runtime admission serialization): EVERY pilot-gate call site is
+# either serialized, serialized by its locked caller, an explicit read-only/UX
+# site, or an explicit design-deferred residual — a NEW unlocked gate call fails.
+# =============================================================================
+#
+# PR #118 serialized the four purchasing families; the A4 Runtime Admission
+# Serialization PR extends coverage to EVERY production call site of the
+# pilot-policy gate functions. Each capability-gated MUTATION must admit under
+# the Company admission lock — via ``serialized_company_admission`` /
+# ``lock_company_for_admission`` in the enclosing function, or via the
+# ``requires_capability`` decorator (whose commands carry NO in-body gate call
+# and are covered by Rule 12b). Sites that legitimately run UNLOCKED are pinned
+# in explicit witnessed sets so a NEW unlocked gate call on a mutating path
+# cannot land silently. Detection is AST-based (enclosing-function ownership +
+# call identity), not line numbers or source-substring pinning.
+
+A4_GATE_FUNCTIONS: frozenset[str] = frozenset(
+    {
+        "require_supported",
+        "is_supported",
+        "skip_if_unsupported",
+        "require_pilot_currency",
+        "skip_pilot_currency",
+        "inventory_forced_non_stock",
+        "require_module_enable_allowed",
+        "deployment_has_pilot",
+    }
+)
+A4_ADMISSION_LOCK_CALLS: frozenset[str] = frozenset({"serialized_company_admission", "lock_company_for_admission"})
+
+# UNLOCKED gate sites that are genuinely READ-ONLY or UX-only (no persistence in
+# the enclosing function). This allowlist must NEVER contain a writer / webhook /
+# background / ingestion / CLI mutation — those must serialize. `relpath::qualname`.
+A4_READ_ONLY_OR_UX_GATE_SITES: frozenset[str] = frozenset(
+    {
+        "accounts/admin.py::_deployment_has_pilot",
+        "accounts/module_permissions.py::ModuleEnabled.has_permission",
+        "accounts/pilot_preflight.py::_capability_gate_violations",
+        "bank_connector/views.py::resolve_actor",
+        "shopify_connector/commands.py::_convert_costs_to_functional",
+        "shopify_connector/commands.py::_fetch_variant_cost",
+        # P2 pre-lock remote preparation: resolves item metadata and freezes it —
+        # NO Item creation, NO event, NO write. Its skip_pilot_currency call is an
+        # unlocked PERFORMANCE HINT only (skip remote reads for an out-of-scope
+        # order); the AUTHORITATIVE skip is re-made on the locked Company in
+        # _process_order_paid_inner.
+        "shopify_connector/commands.py::_prepare_order_item_metadata",
+        # Interactive views whose require_supported is only a fast HTTP 403; the
+        # authoritative mutation is delegated to a SERIALIZED command
+        # (commands.sync_payouts / commands.verify_payout).
+        "shopify_connector/views.py::ShopifySyncPayoutsView.post",
+        "shopify_connector/views.py::ShopifyPayoutVerifyView.post",
+    }
+)
+
+# UNLOCKED gate sites that DO decide a mutation but run entirely inside a caller
+# that already holds the Company admission lock (serialized-by-caller). Each MUST
+# be reachable only through a serialized caller.
+A4_SERIALIZED_BY_CALLER_GATE_SITES: frozenset[str] = frozenset(
+    {
+        # _setup_shopify_accounts makes an is_supported(INVENTORY) admission decision
+        # but takes no lock of its own — every caller holds the Company admission lock
+        # instead. The COMPLETE caller set (complete_onboarding + the settlement-
+        # provider backfill runner, both serialized) is pinned and enforced by
+        # test_setup_shopify_accounts_callers_are_all_serialized; a new caller fails CI
+        # there until it is proven serialized.
+        "accounts/commands.py::_setup_shopify_accounts",
+    }
+)
+
+# UNLOCKED gate sites that are DESIGN-DEFERRED residuals: mutating paths the A4
+# Runtime Admission Serialization PR deliberately does NOT serialize (documented
+# in docs/status/constrained_pilot_status.md). This is NOT the read-only allowlist.
+A4_DESIGN_DEFERRED_MUTATING_SITES: frozenset[str] = frozenset(
+    {
+        # Family B — deployment-wide company creation: no existing Company row to
+        # admission-lock; a migration-free deployment-lock design was not established.
+        "accounts/commands.py::register_signup",
+        "accounts/commands.py::create_company",
+        # Family H — projection rebuild/replay: a multi-transaction drain that
+        # cannot retain admission ownership across its whole authoritative operation.
+        "projections/base.py::BaseProjection.rebuild",
+        # Scheduled / batched MULTI-COMMIT paths (same shape as H): they stay on
+        # their fail-closed point-in-time skip / up-front currency sweep.
+        "stripe_connector/sync.py::sync_payouts",
+        "accounting/settlement_imports.py::import_settlement_csv",
+    }
+)
+
+
+def _a4_gate_call_sites() -> dict[str, bool]:
+    """Map every production gate call site to ``relpath::qualname`` -> has_lock.
+    Excludes the policy module itself (pilot_policy.py composes the gates), tests,
+    conftest and migrations. `has_lock` is True when the enclosing function also
+    calls one of the admission-lock primitives."""
+    sites: dict[str, bool] = {}
+    for path in BACKEND_ROOT.rglob("*.py"):
+        rel = path.relative_to(BACKEND_ROOT).as_posix()
+        probe = "/" + rel
+        if any(frag in probe for frag in ("/migrations/", "/tests/", "test_", "/conftest.py", "/pilot_policy.py")):
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+
+        class _Visitor(ast.NodeVisitor):
+            def __init__(self):
+                self.stack: list[str] = []
+                self.fns: dict[str, dict] = {}
+
+            def _scope(self, node):
+                self.stack.append(node.name)
+                if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                    self.fns.setdefault(".".join(self.stack), {"gates": set(), "locks": set()})
+                self.generic_visit(node)
+                self.stack.pop()
+
+            visit_ClassDef = _scope
+            visit_FunctionDef = _scope
+            visit_AsyncFunctionDef = _scope
+
+            def visit_Call(self, node):
+                name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+                q = ".".join(self.stack)
+                if q in self.fns:
+                    if name in A4_GATE_FUNCTIONS:
+                        self.fns[q]["gates"].add(name)
+                    if name in A4_ADMISSION_LOCK_CALLS:
+                        self.fns[q]["locks"].add(name)
+                self.generic_visit(node)
+
+        visitor = _Visitor()
+        visitor.visit(tree)
+        for q, info in visitor.fns.items():
+            if info["gates"]:
+                sites[f"{rel}::{q}"] = bool(info["locks"])
+    return sites
+
+
+def test_every_gate_call_site_is_serialized_or_explicitly_classified():
+    sites = _a4_gate_call_sites()
+    # Sanity: the surface is non-trivial. A near-zero discovery means the AST walk
+    # broke, not that the pilot surface vanished.
+    assert len(sites) >= 30, f"pilot gate-site discovery looks broken: found only {len(sites)}"
+
+    unlocked = {site for site, has_lock in sites.items() if not has_lock}
+    classified = A4_READ_ONLY_OR_UX_GATE_SITES | A4_SERIALIZED_BY_CALLER_GATE_SITES | A4_DESIGN_DEFERRED_MUTATING_SITES
+
+    # (1) No NEW unlocked gate call site may appear without an explicit decision.
+    unclassified = sorted(unlocked - classified)
+    assert not unclassified, (
+        "UNLOCKED pilot-gate call site(s) with no explicit A4 classification. A "
+        "capability-gated MUTATION must admit under the Company admission lock "
+        "(serialized_company_admission / lock_company_for_admission, or the "
+        "requires_capability decorator). If genuinely read-only/UX add it to "
+        "A4_READ_ONLY_OR_UX_GATE_SITES; if serialized by a locked caller add it to "
+        "A4_SERIALIZED_BY_CALLER_GATE_SITES; if a tracked residual add it to "
+        f"A4_DESIGN_DEFERRED_MUTATING_SITES (and docs): {unclassified}"
+    )
+
+    # (2) No stale entries — every witnessed-set member must still be an UNLOCKED
+    #     gate call site (renamed/removed/now-serialized entries must be pruned).
+    stale = sorted(classified - unlocked)
+    assert not stale, (
+        "A4 gate-site allowlist/residual entry no longer matches an UNLOCKED gate "
+        f"call site (renamed, removed, or now serialized) — prune it: {stale}"
+    )
+
+    # (3) The read-only allowlist must not overlap the writer / residual sets.
+    overlap = sorted(
+        A4_READ_ONLY_OR_UX_GATE_SITES & (A4_SERIALIZED_BY_CALLER_GATE_SITES | A4_DESIGN_DEFERRED_MUTATING_SITES)
+    )
+    assert not overlap, f"a site is both read-only/UX AND a writer/residual — pick one: {overlap}"
+
+
+# Rule 12c (A4 serialized-by-caller closure): _setup_shopify_accounts is an UNLOCKED
+# gate site (A4_SERIALIZED_BY_CALLER_GATE_SITES) that makes an is_supported(INVENTORY)
+# decision. Its safety rests ENTIRELY on every caller holding the Company admission
+# lock, so the complete caller set is pinned here — a new caller (or a caller that
+# stops locking) fails CI until it is classified/serialized.
+_SETUP_SHOPIFY_ACCOUNTS = "_setup_shopify_accounts"
+_SETUP_SHOPIFY_ACCOUNTS_CALLERS: frozenset[str] = frozenset(
+    {
+        "accounts/commands.py::complete_onboarding",
+        "shopify_connector/management/commands/backfill_settlement_providers.py::Command._backfill_one",
+    }
+)
+
+
+def _callers_of(callee: str) -> dict[str, bool]:
+    """Map ``relpath::qualname`` -> holds_admission_lock for every PRODUCTION
+    function whose body calls ``callee``. Skips migrations, tests and conftest by
+    path SEGMENT (a production file merely CONTAINING ``test_`` in its name — e.g.
+    a seed command — is scanned; Rule 12's broader substring exclusion would
+    blind-spot it here, where the caller set is the entire safety argument)."""
+    sites: dict[str, bool] = {}
+    for path in BACKEND_ROOT.rglob("*.py"):
+        rel = path.relative_to(BACKEND_ROOT).as_posix()
+        segments = rel.split("/")
+        if (
+            "migrations" in segments
+            or "tests" in segments
+            or segments[-1] == "conftest.py"
+            or segments[-1].startswith("test_")
+        ):
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+
+        class _Visitor(ast.NodeVisitor):
+            def __init__(self):
+                self.stack: list[str] = []
+                self.fns: dict[str, dict] = {}
+
+            def _scope(self, node):
+                self.stack.append(node.name)
+                if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                    self.fns.setdefault(".".join(self.stack), {"calls": set(), "locks": set()})
+                self.generic_visit(node)
+                self.stack.pop()
+
+            visit_ClassDef = _scope
+            visit_FunctionDef = _scope
+            visit_AsyncFunctionDef = _scope
+
+            def visit_Call(self, node):
+                name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+                q = ".".join(self.stack)
+                if q in self.fns:
+                    self.fns[q]["calls"].add(name)
+                    if name in A4_ADMISSION_LOCK_CALLS:
+                        self.fns[q]["locks"].add(name)
+                self.generic_visit(node)
+
+        visitor = _Visitor()
+        visitor.visit(tree)
+        for q, info in visitor.fns.items():
+            if callee in info["calls"]:
+                sites[f"{rel}::{q}"] = bool(info["locks"])
+    return sites
+
+
+def test_setup_shopify_accounts_callers_are_all_serialized():
+    callers = _callers_of(_SETUP_SHOPIFY_ACCOUNTS)
+
+    assert set(callers) == _SETUP_SHOPIFY_ACCOUNTS_CALLERS, (
+        "_setup_shopify_accounts caller set changed. It is an UNLOCKED gate site "
+        "(A4_SERIALIZED_BY_CALLER_GATE_SITES) that decides is_supported(INVENTORY) but "
+        "takes no lock of its own, so EVERY caller must hold the Company admission lock "
+        "(serialized_company_admission / lock_company_for_admission). Pin the new/removed "
+        f"caller here after proving it serialized: expected {sorted(_SETUP_SHOPIFY_ACCOUNTS_CALLERS)}, "
+        f"found {sorted(callers)}"
+    )
+    unserialized = sorted(q for q, has_lock in callers.items() if not has_lock)
+    assert not unserialized, (
+        "_setup_shopify_accounts caller(s) do NOT hold the Company admission lock in the "
+        "calling body — its is_supported(INVENTORY) decision would race pilot activation "
+        f"(a constrained pilot could end up with INVENTORY/COGS module mappings): {unserialized}"
+    )
+
+    # Lock BEFORE the call, not merely somewhere in the body. complete_onboarding is
+    # source-order pinned (its lock is a direct statement); the backfill runner is
+    # structurally pinned by test_backfill_serializes_setup_under_company_admission
+    # (the call must sit INSIDE the `with serialized_company_admission(...)` block).
+    source = (BACKEND_ROOT / "accounts" / "commands.py").read_text(encoding="utf-8")
+    assert _statement_order(source, "complete_onboarding", "lock_company_for_admission(", "_setup_shopify_accounts("), (
+        "complete_onboarding must acquire the Company admission lock BEFORE calling "
+        "_setup_shopify_accounts — a lock after the call would leave the "
+        "is_supported(INVENTORY) decision unserialized against activation."
+    )
+
+
+# Rule 12b: the families this PR serialized via the requires_capability DECORATOR
+# (no in-body gate call, so invisible to Rule 12's scan) carry the SERIALIZED
+# marker — a future non-serialized gate variant on any of them fails CI.
+A4_SERIALIZED_DECORATOR_COMMANDS: tuple[tuple[str, str, str], ...] = (
+    ("accounting.commands", "configure_periods", "CURRENCY_FISCAL_CHANGE"),
+    ("accounts.commands", "create_user_with_membership", "ADD_MEMBER"),
+    ("accounts.commands", "add_user_to_company", "ADD_MEMBER"),
+    ("accounts.commands", "create_invitation", "ADD_MEMBER"),
+    ("reconciliation.commands", "auto_match_statement", "UNSAFE_BANK_MATCH"),
+    ("reconciliation.commands", "unmatch_line", "UNSAFE_BANK_MATCH"),
+    ("reconciliation.commands", "unmatch_and_delete_statement", "UNSAFE_BANK_MATCH"),
+)
+
+
+def test_new_capability_families_carry_serialized_marker():
+    import importlib
+
+    from accounts.pilot_policy import Capability
+
+    for modname, fnname, capname in A4_SERIALIZED_DECORATOR_COMMANDS:
+        fn = getattr(importlib.import_module(modname), fnname)
+        cap = getattr(Capability, capname)
+        assert getattr(fn, "_pilot_capability", None) is cap, (
+            f"{modname}.{fnname} must carry the requires_capability({capname}) gate."
+        )
+        assert getattr(fn, "_pilot_capability_serialized", None) is True, (
+            f"{modname}.{fnname} must carry the SERIALIZED admission gate marker "
+            "(_pilot_capability_serialized is True)."
+        )
+
+
+# =============================================================================
+# Rule 13 (A4 scheduled Shopify tenant/RLS execution): every scheduled Shopify
+# task entrypoint runs its per-tenant commands through the single private
+# execution path `_execute_scheduled_store_sync`, which wraps them in
+# `_shopify_tenant_execution` AND skips non-writable tenants — NOT under a broad
+# rls_bypass. A Celery task has no request/middleware, so without the tenant/RLS
+# context the fresh Company admission lock (PR #119) is hidden by RLS
+# (Company.DoesNotExist) in production; without the is_writable skip a scheduled
+# writer would emit into a frozen (migrating/read-only/suspended) tenant that
+# TenantRlsMiddleware CASE 3 would 503. Detection is AST-based (structural
+# ownership: the command runs inside the tenant-execution `with`, guarded by the
+# writable check, never inside a discovery `rls_bypass()`), not line numbers.
+# =============================================================================
+
+# The scheduled @shared_task entrypoints whose per-tenant command execution MUST
+# route through the private tenant/RLS execution path.
+SHOPIFY_SCHEDULED_TENANT_ENTRYPOINTS: frozenset[str] = frozenset(
+    {
+        "sync_shopify_all",
+        "initial_store_sync",
+        "sync_shopify_store_orders",
+    }
+)
+
+# The per-tenant store-processing helpers that must run ONLY inside the tenant
+# execution context (never inside cross-tenant discovery).
+_SHOPIFY_TENANT_COMMAND_CALLS: frozenset[str] = frozenset({"_sync_store", "_sync_orders"})
+_SHOPIFY_TENANT_CM = "_shopify_tenant_execution"
+_SHOPIFY_EXEC_HELPER = "_execute_scheduled_store_sync"
+_SHOPIFY_DISCOVERY_CM = "rls_bypass"
+
+
+def _with_item_callee(item: ast.withitem) -> str | None:
+    """The called name of a `with <call>(...)` context expression, or None."""
+    ctx = item.context_expr
+    if isinstance(ctx, ast.Call):
+        return getattr(ctx.func, "id", None) or getattr(ctx.func, "attr", None)
+    return None
+
+
+def _subtree_call_names(node: ast.AST) -> set[str]:
+    names: set[str] = set()
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Call):
+            name = getattr(sub.func, "id", None) or getattr(sub.func, "attr", None)
+            if name:
+                names.add(name)
+    return names
+
+
+def _subtree_str_constants(node: ast.AST) -> set[str]:
+    return {s.value for s in ast.walk(node) if isinstance(s, ast.Constant) and isinstance(s.value, str)}
+
+
+def _shopify_tasks_tree() -> tuple[ast.Module, dict[str, ast.FunctionDef]]:
+    path = BACKEND_ROOT / "shopify_connector" / "tasks.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    fns = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)}
+    return tree, fns
+
+
+def test_scheduled_shopify_tasks_execute_commands_under_tenant_context():
+    _tree, fns = _shopify_tasks_tree()
+
+    # The private CM and the single per-tenant execution helper must exist.
+    assert _SHOPIFY_TENANT_CM in fns, f"{_SHOPIFY_TENANT_CM} context manager is missing from shopify_connector/tasks.py"
+    helper = fns.get(_SHOPIFY_EXEC_HELPER)
+    assert helper is not None, f"{_SHOPIFY_EXEC_HELPER} (single per-tenant execution path) is missing"
+
+    # The helper wraps execution in the tenant CM, and inside that block it both
+    # gates on tenant writability and invokes the runner command.
+    tenant_blocks = [
+        w
+        for w in ast.walk(helper)
+        if isinstance(w, ast.With) and any(_with_item_callee(it) == _SHOPIFY_TENANT_CM for it in w.items)
+    ]
+    assert tenant_blocks, f"{_SHOPIFY_EXEC_HELPER} must run under `with {_SHOPIFY_TENANT_CM}(...)`"
+    block_calls: set[str] = set()
+    block_consts: set[str] = set()
+    for blk in tenant_blocks:
+        for stmt in blk.body:
+            block_calls |= _subtree_call_names(stmt)
+            block_consts |= _subtree_str_constants(stmt)
+    assert "runner" in block_calls, f"{_SHOPIFY_EXEC_HELPER} must invoke the per-tenant runner inside the tenant CM"
+    assert "is_writable" in block_consts, (
+        f"{_SHOPIFY_EXEC_HELPER} must gate on tenant `is_writable` inside the tenant CM — a scheduled writer must "
+        "skip a non-writable (migrating/read-only/suspended) tenant, mirroring TenantRlsMiddleware CASE 3."
+    )
+
+    # Every pinned entrypoint routes its per-tenant work through the helper.
+    for entry in sorted(SHOPIFY_SCHEDULED_TENANT_ENTRYPOINTS):
+        fn = fns.get(entry)
+        assert fn is not None, f"scheduled entrypoint {entry} not found in shopify_connector/tasks.py"
+        assert _SHOPIFY_EXEC_HELPER in _subtree_call_names(fn), (
+            f"{entry} must run its per-tenant commands through {_SHOPIFY_EXEC_HELPER}() "
+            "(the single tenant/RLS-guarded execution path)."
+        )
+
+    # NO discovery `with rls_bypass():` block anywhere in tasks.py may execute a
+    # per-tenant command or the execution helper — broad bypass is discovery only.
+    forbidden_in_bypass = _SHOPIFY_TENANT_COMMAND_CALLS | {_SHOPIFY_EXEC_HELPER, "runner"}
+    for fn in fns.values():
+        for w in ast.walk(fn):
+            if isinstance(w, ast.With) and any(_with_item_callee(it) == _SHOPIFY_DISCOVERY_CM for it in w.items):
+                leaked = set()
+                for stmt in w.body:
+                    leaked |= _subtree_call_names(stmt) & forbidden_in_bypass
+                assert not leaked, (
+                    f"{fn.name} executes per-tenant work {sorted(leaked)} inside a broad "
+                    f"`with {_SHOPIFY_DISCOVERY_CM}()` block — discovery bypass must never run tenant commands."
+                )
+
+
+# =============================================================================
+# Rule 13c (A4 operator entrypoints): the MANUAL Shopify management commands
+# (resync_shopify_orders, backfill_settlement_providers) run their per-store work
+# through the SAME private tenant/RLS execution path as the scheduled tasks
+# (`_execute_scheduled_store_sync`). A management command has no request/middleware,
+# so without it the covered commands' fresh Company admission lock (PR #119) is
+# hidden by production RLS. Cross-tenant discovery may use `rls_bypass()` for
+# IDENTITIES only — never to run a per-tenant command. Named entrypoints only — this
+# is NOT a repo-wide management-command framework rule.
+# =============================================================================
+
+# relpath -> (per-tenant work, the pinned RUNNER qualnames that are the ONLY
+# functions allowed to invoke it). The runner is what the command hands to
+# _execute_scheduled_store_sync, so confining the per-tenant calls to it makes a
+# direct no-context call in handle() (or a new helper) fail CI — not only a call
+# inside a discovery bypass block.
+_OPERATOR_SHOPIFY_COMMANDS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
+    "shopify_connector/management/commands/resync_shopify_orders.py": (
+        frozenset({"_sync_orders", "sync_payouts", "sync_products"}),
+        frozenset({"Command._resync_one"}),
+    ),
+    "shopify_connector/management/commands/backfill_settlement_providers.py": (
+        frozenset(
+            {"_setup_shopify_accounts", "_ensure_shopify_sales_setup", "_bootstrap_shopify_settlement_providers"}
+        ),
+        frozenset({"Command._backfill_one"}),
+    ),
+}
+
+
+def _command_tree(relpath: str) -> ast.Module:
+    return ast.parse((BACKEND_ROOT / relpath).read_text(encoding="utf-8"))
+
+
+def _calls_in_with_body(with_node: ast.With) -> set[str]:
+    names: set[str] = set()
+    for stmt in with_node.body:
+        names |= _subtree_call_names(stmt)
+    return names
+
+
+def _module_functions(tree: ast.Module) -> dict[str, ast.FunctionDef]:
+    """qualname -> function node for every (possibly class-nested) function."""
+    fns: dict[str, ast.FunctionDef] = {}
+
+    def walk(node, stack):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.ClassDef):
+                walk(child, [*stack, child.name])
+            elif isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
+                fns[".".join([*stack, child.name])] = child
+                walk(child, [*stack, child.name])
+
+    walk(tree, [])
+    return fns
+
+
+def test_operator_shopify_commands_route_per_store_work_through_tenant_execution():
+    for relpath, (per_tenant, runner_qualnames) in _OPERATOR_SHOPIFY_COMMANDS.items():
+        tree = _command_tree(relpath)
+        fns = _module_functions(tree)
+
+        # handle() itself must dispatch through the tenant execution helper.
+        handle = fns.get("Command.handle")
+        assert handle is not None, f"{relpath} has no Command.handle"
+        assert _SHOPIFY_EXEC_HELPER in _subtree_call_names(handle), (
+            f"{relpath}: Command.handle must route per-store work through {_SHOPIFY_EXEC_HELPER}() — the "
+            "single tenant/RLS-guarded execution path (a management command has no request/middleware, so "
+            "the covered commands' fresh Company admission lock is hidden by production RLS otherwise)."
+        )
+
+        # The per-tenant commands may be invoked ONLY inside the pinned runner
+        # function(s) — a direct call from handle() (no tenant context) or from a
+        # new unpinned helper fails here, not just calls inside a bypass block.
+        for qualname, fn in fns.items():
+            called = {
+                getattr(n.func, "id", None) or getattr(n.func, "attr", None)
+                for n in ast.walk(fn)
+                if isinstance(n, ast.Call)
+            } & per_tenant
+            # A nested scan double-reports parents; restrict to direct ownership by
+            # excluding calls that belong to a nested pinned runner.
+            if called and qualname not in runner_qualnames:
+                nested_ok = any(r.startswith(qualname + ".") or qualname.startswith(r + ".") for r in runner_qualnames)
+                assert nested_ok, (
+                    f"{relpath}::{qualname} invokes per-tenant work {sorted(called)} outside the pinned "
+                    f"runner(s) {sorted(runner_qualnames)} — it would run with NO tenant/RLS context. "
+                    "Route it through the runner handed to the tenant execution helper."
+                )
+
+        # No per-tenant command (nor the execution helper) may run inside a broad
+        # discovery `with rls_bypass():` block — discovery is identities only.
+        forbidden = per_tenant | {_SHOPIFY_EXEC_HELPER}
+        for w in ast.walk(tree):
+            if isinstance(w, ast.With) and any(_with_item_callee(it) == _SHOPIFY_DISCOVERY_CM for it in w.items):
+                leaked = sorted(_calls_in_with_body(w) & forbidden)
+                assert not leaked, (
+                    f"{relpath} runs per-tenant work {leaked} inside a broad "
+                    f"`with {_SHOPIFY_DISCOVERY_CM}()` block — discovery bypass is identities only."
+                )
+
+
+def test_backfill_serializes_setup_under_company_admission():
+    """The settlement-provider backfill's local writes admit under the Company
+    admission lock; `_setup_shopify_accounts` runs INSIDE that lock (so it sees
+    the yielded locked Company for its is_supported(INVENTORY) decision); and the
+    ShopifyStore row is locked (`select_for_update`) inside the same block BEFORE
+    the provider/config writes — the same store-row-first direction as the
+    unlocked projection self-heal (`_ensure_shopify_sales_setup` writes the store
+    row before its provider bootstrap), closing the ABBA deadlock the backfill's
+    single held-to-commit transaction would otherwise open against it."""
+    _admission_cm = "serialized_company_admission"
+    tree = _command_tree("shopify_connector/management/commands/backfill_settlement_providers.py")
+
+    holders = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        and "_setup_shopify_accounts" in _subtree_call_names(node)
+    ]
+    assert holders, "backfill must call _setup_shopify_accounts"
+    for holder in holders:
+        assert _admission_cm in _subtree_call_names(holder), (
+            f"{holder.name} calls _setup_shopify_accounts but never opens the Company admission "
+            f"lock ({_admission_cm}) — the setup must be serialized by its caller."
+        )
+        admission_blocks = [
+            w
+            for w in ast.walk(holder)
+            if isinstance(w, ast.With) and any(_with_item_callee(it) == _admission_cm for it in w.items)
+        ]
+        inside = any("_setup_shopify_accounts" in _calls_in_with_body(w) for w in admission_blocks)
+        assert inside, (
+            "_setup_shopify_accounts must run INSIDE the `with serialized_company_admission(...)` "
+            "block (using the yielded locked Company), not before it."
+        )
+        # Store-row lock inside the admission block, positioned BEFORE the setup /
+        # provider writes (first statement ordering is enforced by source order).
+        for w in admission_blocks:
+            if "_setup_shopify_accounts" not in _calls_in_with_body(w):
+                continue
+            calls_in_order: list[str] = []
+            for stmt in w.body:
+                for n in ast.walk(stmt):
+                    if isinstance(n, ast.Call):
+                        name = getattr(n.func, "id", None) or getattr(n.func, "attr", None)
+                        if name in ("select_for_update", "_setup_shopify_accounts"):
+                            calls_in_order.append(name)
+            assert "select_for_update" in calls_in_order, (
+                "the backfill admission block must lock the ShopifyStore row (select_for_update) — "
+                "without it the held-to-commit transaction deadlocks ABBA against the projection "
+                "self-heal's store-row-then-provider write order."
+            )
+            assert calls_in_order.index("select_for_update") < calls_in_order.index("_setup_shopify_accounts"), (
+                "the ShopifyStore row lock must be taken BEFORE _setup_shopify_accounts / the "
+                "provider bootstrap (store-row-first, matching the projection self-heal's order)."
+            )
+
+
+# =============================================================================
+# Rule 13b (A4 P2 — remote prepare / locked apply): the locked unknown-item apply
+# helper must have NO dependency on the remote metadata functions; the network
+# reads live only in the pre-lock preparation helper. This proves the P2 split
+# actually moved the network out from under the admission lock (not merely that
+# the lock region "looks" clean).
+# =============================================================================
+
+_REMOTE_METADATA_FUNCS: frozenset[str] = frozenset(
+    {"_fetch_variant_cost", "_get_shopify_store_currency", "_admin_client", "requests"}
+)
+
+
+def _shopify_commands_fn(name: str) -> ast.FunctionDef:
+    path = BACKEND_ROOT / "shopify_connector" / "commands.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for n in ast.walk(tree):
+        if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef) and n.name == name:
+            return n
+    raise AssertionError(f"{name} not found in shopify_connector/commands.py")
+
+
+def test_locked_item_apply_has_no_remote_metadata_dependency():
+    apply_fn = _shopify_commands_fn("_apply_auto_create_item_from_line")
+    called = _subtree_call_names(apply_fn)
+    forbidden = called & _REMOTE_METADATA_FUNCS
+    assert not forbidden, (
+        "_apply_auto_create_item_from_line runs UNDER the Company admission lock and "
+        f"must make no remote metadata call, but references: {sorted(forbidden)}. "
+        "Remote reads belong in _prepare_order_item_metadata (before the lock)."
+    )
+
+
+def test_remote_item_preparation_owns_the_network_reads():
+    prep_fn = _shopify_commands_fn("_prepare_order_item_metadata")
+    called = _subtree_call_names(prep_fn)
+    assert {"_fetch_variant_cost", "_get_shopify_store_currency"} <= called, (
+        "_prepare_order_item_metadata must own the remote item-metadata reads "
+        "(_fetch_variant_cost / _get_shopify_store_currency) so the locked apply can be "
+        "network-free — the P2 split moved the network, it did not delete it."
+    )
+
+
+# verify_payout's locked apply (C): the remote list_payout_transactions read lives
+# only in the pre-lock Phase-1 fetch; the locked Phase-2 apply is network-free.
+_PAYOUT_REMOTE_FUNCS: frozenset[str] = frozenset(
+    {"_admin_client", "requests", "list_payout_transactions", "_fetch_payout_transactions_remote"}
+)
+
+
+def test_locked_payout_apply_has_no_remote_dependency():
+    apply_fn = _shopify_commands_fn("_apply_payout_transactions")
+    called = _subtree_call_names(apply_fn)
+    forbidden = called & _PAYOUT_REMOTE_FUNCS
+    assert not forbidden, (
+        "_apply_payout_transactions runs UNDER the Company admission lock and must make no "
+        f"remote/provider call, but references: {sorted(forbidden)}. The remote payout-transaction "
+        "fetch belongs in _fetch_payout_transactions_remote (before the lock)."
+    )
+
+
+def test_remote_payout_fetch_owns_the_network_read():
+    fetch_fn = _shopify_commands_fn("_fetch_payout_transactions_remote")
+    called = _subtree_call_names(fetch_fn)
+    assert {"_admin_client", "list_payout_transactions"} <= called, (
+        "_fetch_payout_transactions_remote must own the remote payout-transaction read "
+        "(_admin_client + list_payout_transactions) so the locked apply can be network-free."
+    )

@@ -241,10 +241,14 @@ def import_bank_statement(
         return CommandResult.fail("No transaction lines provided.")
 
     # A4: the constrained pilot ingests EGP only — reject a foreign-currency bank
-    # statement before any BankStatement / line row is written.
-    from accounts.pilot_policy import require_pilot_currency
+    # statement before any BankStatement / line row is written. Serialize the
+    # currency decision against pilot activation on the Company ADMISSION LOCK
+    # (held through this @transaction.atomic's commit); the account lookup above
+    # takes no lock (a read).
+    from accounts.pilot_policy import lock_company_for_admission, require_pilot_currency
 
-    require_pilot_currency(actor.company, currency, context="Bank statement")
+    locked_company = lock_company_for_admission(actor.company.pk)
+    require_pilot_currency(locked_company, currency, context="Bank statement")
 
     # A17: load every dedup_hash already imported for this account so we
     # can skip duplicates when an overlapping period gets re-uploaded

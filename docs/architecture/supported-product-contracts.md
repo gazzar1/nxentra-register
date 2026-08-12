@@ -27,6 +27,19 @@ retry**. The preflight
 is an exhaustive read-only proof + drift detector, never the enforcement.
 Unknown profile values fail closed (every gated capability blocked).
 
+Each blocked runtime **mutation** additionally admits under the Company
+**admission lock**, serialized against the `activate_pilot_profile` cutover: the
+capability is decided on the freshly locked Company profile and the decision is
+held through the mutation's commit, so exactly one ordering with activation can
+occur — the mutation commits first and activation judges its durable state, or
+activation commits first and the mutation observes the active profile and
+refuses / skips with zero side effects. A small set of multi-transaction /
+deployment-wide paths (second-company creation, projection rebuild, the
+scheduled/batched Stripe-payout and settlement-CSV imports) are **tracked
+design-deferred residuals** that stay on their fail-closed point-in-time gate;
+see [docs/status/constrained_pilot_status.md](../status/constrained_pilot_status.md).
+No global deadlock-freedom is claimed.
+
 ### Deployment boundary
 
 - one isolated deployment/database (no other `Company` row — active **or
