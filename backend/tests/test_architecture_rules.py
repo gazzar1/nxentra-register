@@ -1002,6 +1002,174 @@ def test_account_update_field_sets_stay_synchronized():
     )
 
 
+# =============================================================================
+# A4 control-plane integrity: Company/User projection field OWNERSHIP + the
+# pilot_profile SOLE-WRITER ratchet. A read-model projection is the apply half of
+# an admission-gated command and must own EXACTLY the fields its command emits —
+# never a generic setattr over event-supplied names — and pilot_profile has ONE
+# production writer, activate_pilot_profile.
+# =============================================================================
+
+# The privilege / control fields no identity projection may ever apply from an
+# event's changes dict.
+_FORBIDDEN_PROJECTION_APPLY_FIELDS = frozenset(
+    {"pilot_profile", "is_superuser", "is_staff", "password", "active_company"}
+)
+
+
+def _local_set_literal(source: str, func_name: str, var_name: str) -> frozenset[str] | None:
+    """Extract the string set-literal assigned to ``var_name`` inside ``func_name``
+    (a module-level function in ``source``)."""
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == func_name:
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Assign) and isinstance(sub.value, ast.Set):
+                    if any(isinstance(t, ast.Name) and t.id == var_name for t in sub.targets):
+                        return frozenset(
+                            e.value for e in sub.value.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)
+                        )
+    return None
+
+
+def test_company_user_projection_field_ownership():
+    """CompanyProjection / UserProjection apply ONLY the fields their producing
+    command whitelists, fail closed on any other field (incl. pilot_profile), and
+    persist with a narrow update_fields. The apply-sets are pinned EQUAL to the
+    command whitelists so neither side can drift silently."""
+    from projections.accounts import (
+        COMPANY_SETTINGS_CHANGED_APPLY_FIELDS,
+        COMPANY_UPDATED_APPLY_FIELDS,
+        USER_UPDATED_APPLY_FIELDS,
+    )
+
+    # (1) No forbidden control/privilege field is ever applyable.
+    for name, s in (
+        ("COMPANY_UPDATED", COMPANY_UPDATED_APPLY_FIELDS),
+        ("COMPANY_SETTINGS_CHANGED", COMPANY_SETTINGS_CHANGED_APPLY_FIELDS),
+        ("USER_UPDATED", USER_UPDATED_APPLY_FIELDS),
+    ):
+        overlap = s & _FORBIDDEN_PROJECTION_APPLY_FIELDS
+        assert not overlap, f"{name} projection apply-set must never include control/privilege field(s): {overlap}"
+
+    # (2) The apply-sets EQUAL the producing command whitelists (anti-drift: a new
+    #     command field that the projection cannot apply would wedge a rebuild).
+    cmd_source = (BACKEND_ROOT / "accounts" / "commands.py").read_text(encoding="utf-8")
+    assert _local_set_literal(cmd_source, "update_company", "allowed_fields") == COMPANY_UPDATED_APPLY_FIELDS, (
+        "COMPANY_UPDATED_APPLY_FIELDS must equal update_company's allowed_fields"
+    )
+    assert (
+        _local_set_literal(cmd_source, "update_company_settings", "allowed_settings")
+        == COMPANY_SETTINGS_CHANGED_APPLY_FIELDS
+    ), "COMPANY_SETTINGS_CHANGED_APPLY_FIELDS must equal update_company_settings' allowed_settings"
+    assert _local_set_literal(cmd_source, "update_user", "allowed_fields") == USER_UPDATED_APPLY_FIELDS, (
+        "USER_UPDATED_APPLY_FIELDS must equal update_user's allowed_fields"
+    )
+
+    # (3) The projection is fail-closed and carries NO unguarded setattr loop over
+    #     event-supplied names for Company/User (the guarded generic setattr lives
+    #     in _apply_owned_changes, which subtracts the allowed set first).
+    proj = (BACKEND_ROOT / "projections" / "accounts.py").read_text(encoding="utf-8")
+    assert "unknown = set(changes) - allowed" in proj, "the projection must reject unknown fields visibly (fail-closed)"
+    assert "setattr(company," not in proj, "CompanyProjection must not setattr over arbitrary event field names"
+    assert "setattr(user," not in proj, "UserProjection must not setattr over arbitrary event field names"
+
+
+_PILOT_PROFILE = "pilot_profile"
+# The ONLY production function permitted to WRITE Company.pilot_profile.
+_PILOT_PROFILE_SOLE_WRITER = "accounts/management/commands/activate_pilot_profile.py::Command.handle"
+
+
+def _pilot_profile_writers() -> set[str]:
+    """``relpath::qualname`` for every PRODUCTION function that WRITES
+    ``pilot_profile`` — attribute assignment, ``.update(pilot_profile=...)``,
+    ``bulk_update`` field list, ``setattr(x, "pilot_profile", ...)``, or
+    ``save(update_fields=[... "pilot_profile" ...])``. Reads (``getattr`` /
+    ``.filter`` / ``.exclude`` / ``.values``) are NOT writes. Excludes migrations,
+    tests and conftest (a dynamic ``setattr(obj, field, ...)`` over a variable is
+    not caught here — that class is closed by the projection allow-set test above)."""
+    writers: set[str] = set()
+    for path in BACKEND_ROOT.rglob("*.py"):
+        rel = path.relative_to(BACKEND_ROOT).as_posix()
+        segs = rel.split("/")
+        if "migrations" in segs or "tests" in segs or segs[-1] == "conftest.py" or segs[-1].startswith("test_"):
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+
+        class _V(ast.NodeVisitor):
+            def __init__(self):
+                self.stack: list[str] = []
+                self.hits: set[str] = set()
+
+            def _scope(self, node):
+                self.stack.append(node.name)
+                self.generic_visit(node)
+                self.stack.pop()
+
+            visit_ClassDef = _scope
+            visit_FunctionDef = _scope
+            visit_AsyncFunctionDef = _scope
+
+            def _q(self) -> str:
+                return ".".join(self.stack)
+
+            def _list_has_pp(self, node) -> bool:
+                return isinstance(node, ast.List | ast.Tuple | ast.Set) and any(
+                    isinstance(e, ast.Constant) and e.value == _PILOT_PROFILE for e in node.elts
+                )
+
+            def visit_Assign(self, node):
+                for t in node.targets:
+                    if isinstance(t, ast.Attribute) and t.attr == _PILOT_PROFILE:
+                        self.hits.add(self._q())
+                self.generic_visit(node)
+
+            def visit_AugAssign(self, node):
+                if isinstance(node.target, ast.Attribute) and node.target.attr == _PILOT_PROFILE:
+                    self.hits.add(self._q())
+                self.generic_visit(node)
+
+            def visit_Call(self, node):
+                name = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+                if name in ("update", "bulk_update"):
+                    if any(kw.arg == _PILOT_PROFILE for kw in node.keywords):
+                        self.hits.add(self._q())
+                    if any(self._list_has_pp(a) for a in node.args) or any(
+                        self._list_has_pp(kw.value) for kw in node.keywords
+                    ):
+                        self.hits.add(self._q())
+                if name == "setattr" and len(node.args) >= 2:
+                    a = node.args[1]
+                    if isinstance(a, ast.Constant) and a.value == _PILOT_PROFILE:
+                        self.hits.add(self._q())
+                if name == "save":
+                    for kw in node.keywords:
+                        if kw.arg == "update_fields" and self._list_has_pp(kw.value):
+                            self.hits.add(self._q())
+                self.generic_visit(node)
+
+        v = _V()
+        v.visit(tree)
+        for q in v.hits:
+            writers.add(f"{rel}::{q}")
+    return writers
+
+
+def test_pilot_profile_has_a_single_production_writer():
+    writers = _pilot_profile_writers()
+    assert writers == {_PILOT_PROFILE_SOLE_WRITER}, (
+        "Company.pilot_profile must be written ONLY by activate_pilot_profile (the sole sanctioned "
+        "activation boundary). A new production writer (attribute assignment, queryset update / "
+        "bulk_update, setattr literal, or save(update_fields=[...])) defeats the A4 activation "
+        f"boundary — route it through activate_pilot_profile or classify it. Expected "
+        f"{{{_PILOT_PROFILE_SOLE_WRITER}}}, found {sorted(writers)}. (Raw SQL / DB superuser is "
+        "out of scope and not claimed eliminated.)"
+    )
+
+
 def test_no_account_bulk_write_bypass():
     """A3-PR2b: Account rows must never be mutated via QuerySet.update /
     bulk_update outside the single pinned projection site (the
@@ -1466,6 +1634,11 @@ A4_READ_ONLY_OR_UX_GATE_SITES: frozenset[str] = frozenset(
         # (commands.sync_payouts / commands.verify_payout).
         "shopify_connector/views.py::ShopifySyncPayoutsView.post",
         "shopify_connector/views.py::ShopifyPayoutVerifyView.post",
+        # A4 control-plane: the restore view's BACKUP_RESTORE check is an early UX
+        # 403 only; the load-bearing, activation-serialized gate is
+        # require_supported on the LOCKED Company inside
+        # backups.importer.restore_company (a locked gate site, not listed here).
+        "backups/views.py::BackupRestoreView.post",
     }
 )
 

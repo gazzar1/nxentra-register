@@ -151,3 +151,24 @@ class TestAdminScope:
         client = _client_for(owner)
         assert client.get("/api/backups/").status_code == 200
         assert client.get(f"/api/backups/{completed_backup.public_id}/").status_code == 200
+
+
+class TestRestoreBlockedUnderActivePilot:
+    """A4: even an OWNER with the explicit backups.restore grant is refused (403,
+    pilot-scope) while a constrained pilot profile is active — refused EARLY, before
+    any BackupRecord or importer work."""
+
+    def test_granted_owner_restore_403_under_pilot(self, company):
+        owner, membership = _member(company, CompanyMembership.Role.OWNER, "pilotowner")
+        _grant(membership, "backups.restore")
+        company.pilot_profile = "ISOLATED_SHADOW_LEDGER_V1"
+        company.save()
+
+        resp = _client_for(owner).post("/api/backups/restore/", {"file": io.BytesIO(_tiny_zip())})
+
+        assert resp.status_code == 403, resp.content
+        assert resp.data["detail"].code == "pilot_scope_blocked", resp.data
+        # Refused before any restore BackupRecord (RESTORE type) was created.
+        assert not BackupRecord.objects.filter(company=company, backup_type=BackupRecord.BackupType.RESTORE).exists(), (
+            "the pilot gate must run before any RESTORE BackupRecord is created"
+        )

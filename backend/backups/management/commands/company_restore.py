@@ -80,12 +80,23 @@ class Command(BaseCommand):
 
         zip_bytes = Path(file_path).read_bytes()
 
+        from accounts.pilot_policy import PilotScopeBlocked
+
         try:
             result = restore_company(
                 company,
                 zip_bytes,
                 allow_company_mismatch=options["allow_company_mismatch"],
                 skip_invariants=options["skip_invariants"],
+            )
+        except PilotScopeBlocked as e:
+            # A4: the canonical restore boundary refused on the locked profile.
+            # The break-glass flags do NOT bypass it. G2 recovery is the isolated-
+            # database restore drill, not this in-app path.
+            raise CommandError(
+                f"Restore refused: {e.detail} In-app backup restore is unsupported "
+                "while a constrained pilot profile is active; use the isolated-database "
+                "recovery drill instead."
             )
         except RestoreError as e:
             raise CommandError(str(e))

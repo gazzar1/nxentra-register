@@ -203,6 +203,15 @@ class BackupRestoreView(APIView):
         # permission (explicit grant required even for OWNER).
         require(actor, "backups.restore")
 
+        # A4: in-app restore is unsupported while a constrained pilot profile is
+        # active — refuse EARLY (before any BackupRecord or restore work) with the
+        # stable PilotScopeBlocked 403. This is a UX fast-path only; the
+        # load-bearing, activation-serialized boundary is require_supported on the
+        # LOCKED Company inside backups.importer.restore_company.
+        from accounts.pilot_policy import Capability, require_supported
+
+        require_supported(actor.company, Capability.BACKUP_RESTORE)
+
         upload = request.FILES.get("file")
         if not upload:
             return Response(

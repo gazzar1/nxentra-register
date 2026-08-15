@@ -22,6 +22,58 @@ logger = logging.getLogger(__name__)
 User = get_user_model()
 
 
+# A4 (control-plane integrity): a read-model projection is the APPLY half of an
+# admission-gated command and must own EXACTLY the fields its producing command
+# emits — never a generic setattr over event-supplied names (which would let a
+# forged/replayed event write pilot_profile, is_superuser, password, ...). These
+# frozen sets are pinned EQUAL to the command whitelists (accounts.commands
+# update_company / update_company_settings / update_user) by
+# tests/test_architecture_rules.py::test_company_user_projection_field_ownership.
+# pilot_profile is DELIBERATELY absent from every set: it is activation-owned
+# (activate_pilot_profile is the sole production writer). Privilege/identity fields
+# (is_superuser, is_staff, password, active_company, user.is_active) are absent too.
+COMPANY_UPDATED_APPLY_FIELDS = frozenset({"name", "name_ar", "slug", "is_active"})
+COMPANY_SETTINGS_CHANGED_APPLY_FIELDS = frozenset(
+    {
+        "name",
+        "name_ar",
+        "default_currency",
+        "fiscal_year_start_month",
+        "thousand_separator",
+        "decimal_separator",
+        "decimal_places",
+        "date_format",
+        "enable_arabic_fields",
+    }
+)
+USER_UPDATED_APPLY_FIELDS = frozenset({"name", "name_ar", "email"})
+
+
+def _apply_owned_changes(instance, changes, allowed, *, event_id, label, extra_update_fields=()):
+    """Apply ONLY the owned fields named in ``changes`` and persist with a NARROW
+    ``update_fields`` — so a concurrent write to an unrelated column (e.g.
+    ``activate_pilot_profile`` writing ``pilot_profile``) is never clobbered by a
+    broad ``save()``. An event naming any field outside ``allowed`` is a VISIBLE
+    projection failure: the raise rolls back the whole ``handle()`` and its
+    ``ProjectionAppliedEvent`` marker (they share one transaction in
+    ``process_pending``), so the event is NOT marked applied. Never a silent
+    ``setattr`` over caller-supplied names."""
+    unknown = set(changes) - allowed
+    if unknown:
+        raise ValueError(
+            f"{label} event {event_id} names unsupported field(s) {sorted(unknown)}; "
+            f"the projection applies only {sorted(allowed)} (pilot_profile and other "
+            "non-owned fields are never applied from an event)."
+        )
+    update_fields = []
+    for field, change in changes.items():
+        setattr(instance, field, change.get("new"))
+        update_fields.append(field)
+    if update_fields:
+        instance.save(update_fields=[*update_fields, *extra_update_fields])
+    return len(update_fields)
+
+
 class CompanyProjection(BaseProjection):
     @property
     def name(self) -> str:
@@ -55,17 +107,20 @@ class CompanyProjection(BaseProjection):
             )
             return
 
-        # ⬇️ ADD THIS HANDLER ⬇️
         if event.event_type == EventTypes.COMPANY_UPDATED:
             company = Company.objects.filter(public_id=data["company_public_id"]).first()
             if not company:
                 logger.warning("Company not found for update: %s", data["company_public_id"])
                 return
 
-            for field, change in data.get("changes", {}).items():
-                if hasattr(company, field):
-                    setattr(company, field, change.get("new"))
-            company.save()
+            _apply_owned_changes(
+                company,
+                data.get("changes", {}),
+                COMPANY_UPDATED_APPLY_FIELDS,
+                event_id=event.id,
+                label="COMPANY_UPDATED",
+                extra_update_fields=("updated_at",),
+            )
             return
 
         if event.event_type == EventTypes.COMPANY_SETTINGS_CHANGED:
@@ -74,10 +129,14 @@ class CompanyProjection(BaseProjection):
                 logger.warning("Company not found for settings change: %s", data["company_public_id"])
                 return
 
-            for setting, change in data.get("changes", {}).items():
-                if hasattr(company, setting):
-                    setattr(company, setting, change.get("new"))
-            company.save()
+            _apply_owned_changes(
+                company,
+                data.get("changes", {}),
+                COMPANY_SETTINGS_CHANGED_APPLY_FIELDS,
+                event_id=event.id,
+                label="COMPANY_SETTINGS_CHANGED",
+                extra_update_fields=("updated_at",),
+            )
             return
 
         if event.event_type == EventTypes.COMPANY_LOGO_UPLOADED:
@@ -139,9 +198,13 @@ class UserProjection(BaseProjection):
             if not user:
                 logger.warning("User not found for update: %s", data["user_public_id"])
                 return
-            for field, change in data.get("changes", {}).items():
-                setattr(user, field, change.get("new"))
-            user.save()
+            _apply_owned_changes(
+                user,
+                data.get("changes", {}),
+                USER_UPDATED_APPLY_FIELDS,
+                event_id=event.id,
+                label="USER_UPDATED",
+            )
             return
 
         if event.event_type == EventTypes.USER_PASSWORD_CHANGED:

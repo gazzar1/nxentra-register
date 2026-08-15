@@ -815,3 +815,155 @@ class TestProjectionAppliedEventTracking:
         ).exists()
 
         assert applied is True
+
+
+# =============================================================================
+# A4 control-plane: Company/User projection field OWNERSHIP + admin lockdown.
+# The apply half of an admission-gated command owns exactly the command's fields;
+# an event naming a non-owned field (pilot_profile, is_superuser, ...) fails
+# closed; and the narrow update_fields save cannot clobber an unrelated column.
+# =============================================================================
+ISO = "ISOLATED_SHADOW_LEDGER_V1"
+
+
+def _company_event(company, event_type, changes):
+    from events.models import BusinessEvent
+
+    return BusinessEvent.objects.create(
+        company=company,
+        event_type=event_type,
+        aggregate_type="Company",
+        aggregate_id=str(company.public_id),
+        idempotency_key=f"t.{event_type}:{uuid4()}",
+        data={"company_public_id": str(company.public_id), "changes": changes},
+    )
+
+
+@pytest.mark.django_db
+class TestCompanyProjectionFieldOwnership:
+    def test_owned_field_applies(self, company):
+        from projections.accounts import CompanyProjection
+
+        ev = _company_event(company, EventTypes.COMPANY_UPDATED, {"name": {"old": company.name, "new": "Renamed Co"}})
+        CompanyProjection().handle(ev)
+        company.refresh_from_db()
+        assert company.name == "Renamed Co"
+
+    def test_pilot_profile_in_changes_fails_closed(self, company):
+        from projections.accounts import CompanyProjection
+
+        company.pilot_profile = ISO
+        company.save()
+        ev = _company_event(company, EventTypes.COMPANY_UPDATED, {"pilot_profile": {"old": ISO, "new": "NONE"}})
+        with pytest.raises(ValueError, match="pilot_profile"):
+            CompanyProjection().handle(ev)
+        company.refresh_from_db()
+        assert company.pilot_profile == ISO, "the pilot profile must not be writable from an event"
+
+    def test_unknown_field_fails_closed(self, company):
+        from projections.accounts import CompanyProjection
+
+        ev = _company_event(company, EventTypes.COMPANY_SETTINGS_CHANGED, {"is_active": {"old": True, "new": False}})
+        # is_active is owned by COMPANY_UPDATED, NOT by COMPANY_SETTINGS_CHANGED.
+        with pytest.raises(ValueError, match="is_active"):
+            CompanyProjection().handle(ev)
+
+    def test_narrow_save_does_not_clobber_concurrent_pilot_profile(self, company):
+        """Lost-update proof: the projection holds a stale (NONE) in-memory Company;
+        a competing writer commits pilot_profile=ISO; applying an owned-field change
+        through the stale instance must NOT reset pilot_profile (the old full-row
+        save() did — the narrow update_fields save does not)."""
+        from accounts.models import Company
+        from projections.accounts import COMPANY_UPDATED_APPLY_FIELDS, _apply_owned_changes
+
+        stale = Company.objects.get(pk=company.pk)  # in-memory pilot_profile = NONE
+        # Competing commit (e.g. activate_pilot_profile) lands between load and save.
+        Company.objects.filter(pk=company.pk).update(pilot_profile=ISO)
+
+        _apply_owned_changes(
+            stale,
+            {"name": {"new": "Stale-Save Co"}},
+            COMPANY_UPDATED_APPLY_FIELDS,
+            event_id=1,
+            label="COMPANY_UPDATED",
+            extra_update_fields=("updated_at",),
+        )
+
+        fresh = Company.objects.get(pk=company.pk)
+        assert fresh.pilot_profile == ISO, "narrow update_fields save must not clobber the concurrent pilot_profile"
+        assert fresh.name == "Stale-Save Co", "the owned field must still apply"
+
+    def test_rejected_event_leaves_no_applied_marker(self, company):
+        """A forbidden-field event must not be marked successfully applied — the
+        raise rolls back the ProjectionAppliedEvent marker in process_pending."""
+        from projections.accounts import CompanyProjection
+
+        proj = CompanyProjection()
+        ev = _company_event(company, EventTypes.COMPANY_UPDATED, {"pilot_profile": {"old": "NONE", "new": ISO}})
+        proj.process_pending(company)
+        assert not ProjectionAppliedEvent.objects.filter(
+            company=company, projection_name=proj.name, event=ev
+        ).exists(), "a fail-closed event must leave no applied marker"
+
+
+@pytest.mark.django_db
+class TestUserProjectionFieldOwnership:
+    def _user_event(self, company, target, changes):
+        from events.models import BusinessEvent
+
+        return BusinessEvent.objects.create(
+            company=company,
+            event_type=EventTypes.USER_UPDATED,
+            aggregate_type="User",
+            aggregate_id=str(target.public_id),
+            idempotency_key=f"t.user:{uuid4()}",
+            data={"user_public_id": str(target.public_id), "changes": changes},
+        )
+
+    def test_owned_field_applies(self, company, user):
+        ev = self._user_event(company, user, {"name": {"old": user.name, "new": "New Name"}})
+        UserProjection().handle(ev)
+        user.refresh_from_db()
+        assert user.name == "New Name"
+
+    def test_privilege_field_fails_closed(self, company, user):
+        ev = self._user_event(company, user, {"is_superuser": {"old": False, "new": True}})
+        with pytest.raises(ValueError, match="is_superuser"):
+            UserProjection().handle(ev)
+        user.refresh_from_db()
+        assert user.is_superuser is False, "privilege escalation must not be applyable from an event"
+
+
+@pytest.mark.django_db
+class TestProjectionAdminIsReadOnly:
+    def test_projection_marker_and_bookmark_admins_are_immutable(self):
+        from django.contrib.admin.sites import AdminSite
+
+        from events.admin import EventBookmarkAdmin
+        from events.models import EventBookmark
+        from projections.admin import ProjectionAppliedEventAdmin
+
+        site = AdminSite()
+        for model, admin_cls in (
+            (ProjectionAppliedEvent, ProjectionAppliedEventAdmin),
+            (EventBookmark, EventBookmarkAdmin),
+        ):
+            adm = admin_cls(model, site)
+            assert adm.has_add_permission(_req()) is False
+            assert adm.has_change_permission(_req()) is False
+            assert adm.has_delete_permission(_req()) is False  # also removes the bulk-delete action
+            assert not adm.get_actions(_req()), f"{admin_cls.__name__} must expose no mutating admin action"
+
+
+def _req():
+    from django.test import RequestFactory
+
+    req = RequestFactory().get("/admin/")
+
+    class _U:
+        is_superuser = True
+        is_staff = True
+        is_active = True
+
+    req.user = _U()
+    return req

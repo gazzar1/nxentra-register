@@ -153,8 +153,13 @@ class BusinessEventAdmin(admin.ModelAdmin):
 @admin.register(EventBookmark)
 class EventBookmarkAdmin(admin.ModelAdmin):
     """
-    Admin interface for EventBookmarks.
-    Used for managing projection progress.
+    Admin interface for EventBookmarks — operator-VISIBLE, not operator-MUTABLE.
+
+    A4: a bookmark is projection PROGRESS. Rewinding ``last_event`` (or pausing a
+    consumer) re-applies or halts canonical history — a ``Capability.PROJECTION_REBUILD``
+    bypass — so every field is read-only and add/change/delete (incl. the bulk-delete
+    action) and every progress-mutating custom action are prohibited here. Projection
+    progress is managed through the sanctioned command/runtime paths, not the admin.
     """
 
     list_display = [
@@ -170,38 +175,21 @@ class EventBookmarkAdmin(admin.ModelAdmin):
     list_select_related = ["company", "last_event"]
     ordering = ["consumer_name", "company"]
 
-    fieldsets = (
-        (
-            None,
-            {
-                "fields": ("consumer_name", "company"),
-            },
-        ),
-        (
-            "Progress",
-            {
-                "fields": ("last_event", "last_processed_at"),
-            },
-        ),
-        (
-            "Status",
-            {
-                "fields": ("is_paused", "error_count", "last_error"),
-            },
-        ),
-        (
-            "Timestamps",
-            {
-                "fields": ("created_at", "updated_at"),
-                "classes": ("collapse",),
-            },
-        ),
-    )
+    readonly_fields = [
+        "consumer_name",
+        "company",
+        "last_event",
+        "last_processed_at",
+        "is_paused",
+        "error_count",
+        "last_error",
+        "created_at",
+        "updated_at",
+    ]
 
-    readonly_fields = ["last_processed_at", "error_count", "last_error", "created_at", "updated_at"]
-    autocomplete_fields = ["company", "last_event"]
-
-    actions = ["pause_consumers", "resume_consumers", "reset_errors"]
+    # A4: no mutating custom actions; disabling delete permission also removes the
+    # default bulk-delete action.
+    actions = None
 
     def last_event_short(self, obj):
         """Display shortened last event ID."""
@@ -211,17 +199,11 @@ class EventBookmarkAdmin(admin.ModelAdmin):
 
     last_event_short.short_description = "Last Event"
 
-    @admin.action(description="Pause selected consumers")
-    def pause_consumers(self, request, queryset):
-        updated = queryset.update(is_paused=True)
-        self.message_user(request, f"Paused {updated} consumer(s).")
+    def has_add_permission(self, request):
+        return False
 
-    @admin.action(description="Resume selected consumers")
-    def resume_consumers(self, request, queryset):
-        updated = queryset.update(is_paused=False)
-        self.message_user(request, f"Resumed {updated} consumer(s).")
+    def has_change_permission(self, request, obj=None):
+        return False
 
-    @admin.action(description="Reset error counts")
-    def reset_errors(self, request, queryset):
-        updated = queryset.update(error_count=0, last_error="")
-        self.message_user(request, f"Reset errors for {updated} consumer(s).")
+    def has_delete_permission(self, request, obj=None):
+        return False

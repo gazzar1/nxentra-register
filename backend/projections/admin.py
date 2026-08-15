@@ -108,3 +108,10 @@ class ProjectionAppliedEventAdmin(admin.ModelAdmin):
 
     def has_change_permission(self, request, obj=None):
         return False
+
+    # A4: projection markers are operator-VISIBLE but not operator-MUTABLE.
+    # Deleting a ProjectionAppliedEvent lets the next drain RE-APPLY history —
+    # a Capability.PROJECTION_REBUILD bypass — so delete (incl. the bulk-delete
+    # action) is prohibited in admin.
+    def has_delete_permission(self, request, obj=None):
+        return False
