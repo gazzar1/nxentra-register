@@ -860,6 +860,20 @@ class TestCompanyProjectionFieldOwnership:
         company.refresh_from_db()
         assert company.pilot_profile == ISO, "the pilot profile must not be writable from an event"
 
+    def test_onboarding_completed_settings_change_applies(self, company):
+        """Regression (Codex P1): complete_onboarding emits COMPANY_SETTINGS_CHANGED
+        with an onboarding_completed change. The projection must APPLY it — a
+        fail-closed rejection here would stall the drain and wedge every later
+        Company event / rebuild."""
+        from projections.accounts import CompanyProjection
+
+        ev = _company_event(
+            company, EventTypes.COMPANY_SETTINGS_CHANGED, {"onboarding_completed": {"old": False, "new": True}}
+        )
+        CompanyProjection().handle(ev)
+        company.refresh_from_db()
+        assert company.onboarding_completed is True
+
     def test_unknown_field_fails_closed(self, company):
         from projections.accounts import CompanyProjection
 

@@ -1032,6 +1032,31 @@ def _local_set_literal(source: str, func_name: str, var_name: str) -> frozenset[
     return None
 
 
+def _literal_changes_keys(source: str, event_type_name: str) -> frozenset[str]:
+    """Union of LITERAL ``changes`` dict keys emitted for ``EventTypes.<name>``
+    across all emit calls in ``source``. Catches literal-dict producers (e.g.
+    ``complete_onboarding`` emitting ``{"onboarding_completed": ...}``) that a
+    command-local ``allowed_*`` set does not cover — a projection apply-set must
+    cover EVERY producer of its event type or a rebuild wedges."""
+    tree = ast.parse(source)
+    keys: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        matches_type = data = None
+        for kw in node.keywords:
+            if kw.arg == "event_type" and isinstance(kw.value, ast.Attribute) and kw.value.attr == event_type_name:
+                matches_type = True
+            if kw.arg == "data":
+                data = kw.value
+        if not matches_type or not isinstance(data, ast.Dict):
+            continue
+        for k, v in zip(data.keys, data.values, strict=False):
+            if isinstance(k, ast.Constant) and k.value == "changes" and isinstance(v, ast.Dict):
+                keys |= {ck.value for ck in v.keys if isinstance(ck, ast.Constant) and isinstance(ck.value, str)}
+    return frozenset(keys)
+
+
 def test_company_user_projection_field_ownership():
     """CompanyProjection / UserProjection apply ONLY the fields their producing
     command whitelists, fail closed on any other field (incl. pilot_profile), and
@@ -1052,18 +1077,30 @@ def test_company_user_projection_field_ownership():
         overlap = s & _FORBIDDEN_PROJECTION_APPLY_FIELDS
         assert not overlap, f"{name} projection apply-set must never include control/privilege field(s): {overlap}"
 
-    # (2) The apply-sets EQUAL the producing command whitelists (anti-drift: a new
-    #     command field that the projection cannot apply would wedge a rebuild).
+    # (2) Each apply-set EQUALS the UNION over ALL producers of its event type — the
+    #     named command's dynamic allowed_* set PLUS every literal changes-dict key
+    #     emitted for that event type (anti-drift both ways: a producer field the
+    #     projection cannot apply would wedge a rebuild; a field no producer emits is
+    #     dead apply surface).
     cmd_source = (BACKEND_ROOT / "accounts" / "commands.py").read_text(encoding="utf-8")
-    assert _local_set_literal(cmd_source, "update_company", "allowed_fields") == COMPANY_UPDATED_APPLY_FIELDS, (
-        "COMPANY_UPDATED_APPLY_FIELDS must equal update_company's allowed_fields"
+    company_updated = _local_set_literal(cmd_source, "update_company", "allowed_fields") | _literal_changes_keys(
+        cmd_source, "COMPANY_UPDATED"
     )
-    assert (
-        _local_set_literal(cmd_source, "update_company_settings", "allowed_settings")
-        == COMPANY_SETTINGS_CHANGED_APPLY_FIELDS
-    ), "COMPANY_SETTINGS_CHANGED_APPLY_FIELDS must equal update_company_settings' allowed_settings"
-    assert _local_set_literal(cmd_source, "update_user", "allowed_fields") == USER_UPDATED_APPLY_FIELDS, (
-        "USER_UPDATED_APPLY_FIELDS must equal update_user's allowed_fields"
+    assert company_updated == COMPANY_UPDATED_APPLY_FIELDS, (
+        f"COMPANY_UPDATED_APPLY_FIELDS must equal every producer's emitted fields: {company_updated}"
+    )
+    settings_changed = _local_set_literal(
+        cmd_source, "update_company_settings", "allowed_settings"
+    ) | _literal_changes_keys(cmd_source, "COMPANY_SETTINGS_CHANGED")
+    assert settings_changed == COMPANY_SETTINGS_CHANGED_APPLY_FIELDS, (
+        "COMPANY_SETTINGS_CHANGED_APPLY_FIELDS must equal the union over update_company_settings AND "
+        f"complete_onboarding (onboarding_completed) and any other producer: {settings_changed}"
+    )
+    user_updated = _local_set_literal(cmd_source, "update_user", "allowed_fields") | _literal_changes_keys(
+        cmd_source, "USER_UPDATED"
+    )
+    assert user_updated == USER_UPDATED_APPLY_FIELDS, (
+        f"USER_UPDATED_APPLY_FIELDS must equal every producer's emitted fields: {user_updated}"
     )
 
     # (3) The projection is fail-closed and carries NO unguarded setattr loop over

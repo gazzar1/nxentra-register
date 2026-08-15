@@ -32,7 +32,15 @@ User = get_user_model()
 # pilot_profile is DELIBERATELY absent from every set: it is activation-owned
 # (activate_pilot_profile is the sole production writer). Privilege/identity fields
 # (is_superuser, is_staff, password, active_company, user.is_active) are absent too.
+# COMPANY_UPDATED — sole producer accounts.commands.update_company.
 COMPANY_UPDATED_APPLY_FIELDS = frozenset({"name", "name_ar", "slug", "is_active"})
+# COMPANY_SETTINGS_CHANGED — the UNION over its TWO producers:
+#   accounts.commands.update_company_settings (its allowed_settings), and
+#   accounts.commands.complete_onboarding (which emits the literal
+#   {"onboarding_completed": ...} change on onboarding finalize). A projection
+#   that rejected onboarding_completed would fail closed on that event and stall
+#   every subsequent Company drain / rebuild — the apply-set must cover EVERY
+#   producer's fields (pinned by test_company_user_projection_field_ownership).
 COMPANY_SETTINGS_CHANGED_APPLY_FIELDS = frozenset(
     {
         "name",
@@ -44,8 +52,10 @@ COMPANY_SETTINGS_CHANGED_APPLY_FIELDS = frozenset(
         "decimal_places",
         "date_format",
         "enable_arabic_fields",
+        "onboarding_completed",
     }
 )
+# USER_UPDATED — sole producer accounts.commands.update_user.
 USER_UPDATED_APPLY_FIELDS = frozenset({"name", "name_ar", "email"})
 
 

@@ -208,7 +208,7 @@ class BackupRestoreView(APIView):
         # stable PilotScopeBlocked 403. This is a UX fast-path only; the
         # load-bearing, activation-serialized boundary is require_supported on the
         # LOCKED Company inside backups.importer.restore_company.
-        from accounts.pilot_policy import Capability, require_supported
+        from accounts.pilot_policy import Capability, PilotScopeBlocked, require_supported
 
         require_supported(actor.company, Capability.BACKUP_RESTORE)
 
@@ -256,6 +256,17 @@ class BackupRestoreView(APIView):
                 status=status.HTTP_200_OK,
             )
 
+        except PilotScopeBlocked:
+            # A4: activation committed between the early UX check (which saw NONE)
+            # and the canonical locked check inside restore_company — the locked
+            # boundary correctly refused. Preserve the SAME stable 403 semantics as
+            # the already-active path (re-raise so DRF renders pilot_scope_blocked);
+            # nothing was cleared (the refusal is before Phase 1).
+            record.status = BackupRecord.Status.FAILED
+            record.error_message = "Restore refused: constrained pilot profile active."
+            record.completed_at = timezone.now()
+            record.save()
+            raise
         except RestoreError as e:
             record.status = BackupRecord.Status.FAILED
             record.error_message = str(e)
