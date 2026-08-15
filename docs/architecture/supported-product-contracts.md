@@ -82,6 +82,7 @@ No global deadlock-freedom is claimed.
 | Unsafe automatic bank matching | `Capability.UNSAFE_BANK_MATCH` (manual matching retained) |
 | Rebuild / replay | `Capability.PROJECTION_REBUILD` at the single shared choke point |
 | Second company / signup | `deployment_has_pilot()` deployment-wide block |
+| In-app backup **restore** | `Capability.BACKUP_RESTORE` — a restore overwrites the company's books, configuration and event stream in one transaction; blocked at the canonical boundary `backups.importer.restore_company` under the Company admission lock (early HTTP 403 + CLI refusal; break-glass flags do not bypass it). Backup **export/download stay available**. **This is not G2** — G2 recovery is a separate **isolated-database** restore drill, not this in-app route |
 
 ### Activation and go-live
 
@@ -91,6 +92,12 @@ No global deadlock-freedom is claimed.
 - Activation writes durable audit evidence: a `PilotProfileActivation` row in
   the **same transaction** as the profile write (inside
   `command_writes_allowed()`).
+- `Company.pilot_profile` is **activation-owned**: `activate_pilot_profile` is
+  its sole production writer (pinned by an architecture ratchet). It is **never**
+  set from a backup restore, and the Company/User read-model projections apply
+  **only** their producing command's whitelisted fields — an event naming
+  `pilot_profile` (or any other non-owned field) is a visible projection failure,
+  never an arbitrary `setattr`.
 - Go-live requires `python manage.py pilot_preflight --company <id> --phase
   go-live` to pass with zero violations — including the full agreed workflow:
   proven-EGP store, exact sole-store ↔ sole-OWNER ↔ active-user binding

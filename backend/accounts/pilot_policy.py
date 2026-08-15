@@ -21,7 +21,9 @@ for these gates.
     vendor-payment / AP-allocation posting workflow — manual journals (incl.
     vendor-tagged lines) remain governed by the ordinary manual-journal rules;
   - currency / fiscal-configuration changes;
-  - unsafe automatic bank match / unmatch / rematch.
+  - unsafe automatic bank match / unmatch / rematch;
+  - in-app backup RESTORE (total-state overwrite) — export/download stay
+    available; G2 recovery is a separate isolated-database drill.
 
 Profile ``NONE`` supports every capability (existing behavior unchanged). An
 unrecognized stored profile value fails closed (everything gated is blocked).
@@ -55,6 +57,13 @@ class Capability(StrEnum):
     PURCHASING_ACCOUNTING = "purchasing_accounting"
     CURRENCY_FISCAL_CHANGE = "currency_fiscal_change"
     UNSAFE_BANK_MATCH = "unsafe_bank_match"
+    # In-app backup RESTORE overwrites the whole company (books, config, event
+    # stream) in one transaction and is unsupported while a constrained pilot is
+    # active — G2 recovery is an ISOLATED-DATABASE restore drill, not this route.
+    # Blocked automatically under every constrained profile via _BLOCKED_BY_PROFILE
+    # below; enforced at the canonical boundary backups.importer.restore_company
+    # under the Company admission lock (export/download stay available).
+    BACKUP_RESTORE = "backup_restore"
 
 
 # The constrained pilot ingests only the merchant's home currency, so no foreign

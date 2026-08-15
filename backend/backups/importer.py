@@ -19,7 +19,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from django.db import models, transaction
+from django.db import models
 from django.utils import timezone
 
 from accounts.rls import rls_bypass
@@ -88,7 +88,8 @@ def restore_company(company, zip_file, *, allow_company_mismatch=False, skip_inv
     registry = get_export_registry()
 
     # A161: everything below is fail-closed and runs BEFORE any data is
-    # touched.
+    # touched — structural parsing, checksums and side-effect-free archive
+    # validation may occur before admission ownership.
     _validate_archive(company, zf, manifest, registry, allow_company_mismatch=allow_company_mismatch)
 
     # Build set of model classes in registry for FK target detection
@@ -97,12 +98,22 @@ def restore_company(company, zip_file, *, allow_company_mismatch=False, skip_inv
     manifest_counts = manifest.get("model_counts") or {}
 
     with rls_bypass():
+        from accounts.pilot_policy import Capability, require_supported, serialized_company_admission
         from projections.write_barrier import bootstrap_writes_allowed, projection_writes_allowed
 
         with bootstrap_writes_allowed(), projection_writes_allowed():
-            # Wrap BOTH clear and import in a single transaction so that
-            # if import fails, the clear is rolled back and no data is lost.
-            with transaction.atomic():
+            # A4: the CANONICAL restore admission boundary. serialized_company_admission
+            # opens the outermost transaction, takes the Company admission lock (FOR NO
+            # KEY UPDATE, refetched fresh) and yields the LOCKED Company, then the
+            # BACKUP_RESTORE capability is decided on that locked row and held through the
+            # whole authoritative restore. So exactly one ordering with activate_pilot_profile
+            # can occur: activation-first -> the locked profile is active -> require_supported
+            # raises BEFORE anything is cleared; restore-first -> activation waits until this
+            # transaction commits/rolls back. The break-glass flags NEVER reach this check.
+            # (Restore is local file/ORM/raw-SQL work only — no network is held under the lock.)
+            with serialized_company_admission(company.pk) as company:
+                require_supported(company, Capability.BACKUP_RESTORE)
+
                 # Phase 1: Clear existing company data (raw SQL, reverse order)
                 cleared = _clear_company_data(company, registry)
                 stats["cleared"] = cleared

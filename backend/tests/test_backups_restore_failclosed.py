@@ -225,3 +225,62 @@ class TestHappyPathAndInvariants:
         with pytest.raises(RestoreError, match="trial balance"):
             restore_company(company, tampered)
         assert _snapshot(company) == before, "the invariant failure must roll back the whole restore"
+
+
+# =============================================================================
+# A4 control-plane: in-app restore is BLOCKED while a constrained pilot is active.
+# =============================================================================
+ISO = "ISOLATED_SHADOW_LEDGER_V1"
+
+
+def _activate(company):
+    """Set the constrained-pilot profile directly (tests the runtime GATE, not the
+    activation ceremony — activate_pilot_profile's serialization is proven in the
+    e2e concurrency suite)."""
+    company.pilot_profile = ISO
+    company.save()
+    return company
+
+
+class TestRestoreBlockedUnderActivePilot:
+    def test_direct_restore_refused_under_active_pilot(self, booked_company):
+        from accounts.pilot_policy import PilotScopeBlocked
+
+        company = booked_company
+        zip_bytes, _ = export_company(company)
+        before = _snapshot(company)
+        _activate(company)
+
+        with pytest.raises(PilotScopeBlocked) as exc:
+            restore_company(company, zip_bytes)
+        assert exc.value.capability == "backup_restore"
+        # Refused BEFORE the clear — the books are untouched.
+        company.refresh_from_db()
+        assert _snapshot(company) == {**before, "name": company.name, "currency": company.default_currency}
+        assert BusinessEvent.objects.filter(company=company).count() == before["events"]
+
+    def test_break_glass_flags_do_not_bypass_pilot(self, booked_company):
+        """allow_company_mismatch / skip_invariants are import break-glass — they
+        must NEVER bypass the pilot restriction."""
+        from accounts.pilot_policy import PilotScopeBlocked
+
+        company = booked_company
+        zip_bytes, _ = export_company(company)
+        before = _snapshot(company)
+        _activate(company)
+
+        with pytest.raises(PilotScopeBlocked):
+            restore_company(company, zip_bytes, allow_company_mismatch=True, skip_invariants=True)
+        company.refresh_from_db()
+        assert BusinessEvent.objects.filter(company=company).count() == before["events"], "no clear may have occurred"
+
+    def test_profile_none_restore_still_succeeds(self, booked_company):
+        """The gate is a no-op for a NONE-profile company — an ordinary valid
+        restore is unaffected."""
+        company = booked_company  # NONE profile by default
+        zip_bytes, _ = export_company(company)
+        before = _snapshot(company)
+
+        result = restore_company(company, zip_bytes)
+        assert result["company"] == company.slug
+        assert _snapshot(company) == before, "round-trip restore must reproduce the books exactly"
