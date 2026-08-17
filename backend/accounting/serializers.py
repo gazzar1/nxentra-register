@@ -17,11 +17,6 @@ from rest_framework import serializers
 from accounts.authz import resolve_actor
 from accounts.models import CompanyMembership
 
-from .commands import (
-    create_journal_entry,
-    save_journal_entry_complete,
-    update_journal_entry,
-)
 from .models import (
     Account,
     AccountAnalysisDefault,
@@ -587,72 +582,27 @@ class JournalEntryAutoSaveSerializer(serializers.ModelSerializer):
             cleaned.append(line)
         return cleaned
 
+    # A4 manual-journal boundary: this serializer is VALIDATION-ONLY. The live
+    # views call is_valid() and then invoke the manual-process commands
+    # (create_manual_journal_entry / update_manual_journal_entry) directly —
+    # never serializer.save(). The previous dormant create()/update() bodies
+    # called the SHARED journal cores, i.e. a latent second manual-JE door that
+    # would have bypassed the serialized Company admission + EGP gate (and DRF's
+    # ModelSerializer defaults would write the model directly if these were
+    # simply deleted), so both now refuse loudly.
     def create(self, validated_data):
-        lines_data = validated_data.pop("lines", [])
-        actor = self._get_actor()
-
-        cleaned_lines = self._clean_lines_drop_placeholders(lines_data, actor.company)
-        command_lines = []
-        for line in cleaned_lines:
-            command_lines.append(
-                {
-                    "account_id": line.get("account_id"),
-                    "description": line.get("description", ""),
-                    "description_ar": line.get("description_ar", ""),
-                    "debit": line.get("debit", 0),
-                    "credit": line.get("credit", 0),
-                    "analysis_tags": line.get("analysis_tags", []),
-                }
-            )
-
-        result = create_journal_entry(
-            actor,
-            date=validated_data.get("date"),
-            memo=validated_data.get("memo", ""),
-            memo_ar=validated_data.get("memo_ar", ""),
-            lines=command_lines,
+        raise NotImplementedError(
+            "Manual journal writes go through the manual-journal process "
+            "commands (accounting.commands.create_manual_journal_entry); "
+            "serializer.save() is not a supported write path."
         )
-        if not result.success:
-            raise serializers.ValidationError(result.error)
-
-        return result.data
 
     def update(self, instance, validated_data):
-        if instance.status not in [JournalEntry.Status.INCOMPLETE, JournalEntry.Status.DRAFT]:
-            raise serializers.ValidationError("Only INCOMPLETE/DRAFT entries can be edited.")
-
-        actor = self._get_actor()
-        if instance.company_id != actor.company.id:
-            raise serializers.ValidationError("You cannot modify entries outside your active company.")
-
-        lines_data = validated_data.pop("lines", None)
-
-        kwargs = {}
-        for field in ["date", "memo", "memo_ar"]:
-            if field in validated_data:
-                kwargs[field] = validated_data[field]
-
-        if lines_data is not None:
-            cleaned_lines = self._clean_lines_drop_placeholders(lines_data, actor.company)
-            command_lines = []
-            for line in cleaned_lines:
-                command_lines.append(
-                    {
-                        "account_id": line.get("account_id"),
-                        "description": line.get("description", ""),
-                        "description_ar": line.get("description_ar", ""),
-                        "debit": line.get("debit", 0),
-                        "credit": line.get("credit", 0),
-                        "analysis_tags": line.get("analysis_tags", []),
-                    }
-                )
-            kwargs["lines"] = command_lines
-
-        result = update_journal_entry(actor, instance.id, **kwargs)
-        if not result.success:
-            raise serializers.ValidationError(result.error)
-
-        return result.data
+        raise NotImplementedError(
+            "Manual journal writes go through the manual-journal process "
+            "commands (accounting.commands.update_manual_journal_entry); "
+            "serializer.save() is not a supported write path."
+        )
 
 
 class JournalEntrySaveCompleteSerializer(JournalEntryAutoSaveSerializer):
@@ -710,36 +660,14 @@ class JournalEntrySaveCompleteSerializer(JournalEntryAutoSaveSerializer):
 
         return attrs
 
+    # A4 manual-journal boundary: validation-only (see base class note) — the
+    # live view invokes save_manual_journal_entry_complete directly.
     def update(self, instance, validated_data):
-        actor = self._get_actor()
-
-        lines_data = validated_data.pop("lines", None)
-        kwargs = {}
-        for field in ["date", "memo", "memo_ar"]:
-            if field in validated_data:
-                kwargs[field] = validated_data[field]
-
-        if lines_data is not None:
-            cleaned_lines = self._clean_lines_drop_placeholders(lines_data, actor.company)
-            command_lines = []
-            for line in cleaned_lines:
-                command_lines.append(
-                    {
-                        "account_id": line.get("account_id"),
-                        "description": line.get("description", ""),
-                        "description_ar": line.get("description_ar", ""),
-                        "debit": line.get("debit", 0),
-                        "credit": line.get("credit", 0),
-                        "analysis_tags": line.get("analysis_tags", []),
-                    }
-                )
-            kwargs["lines"] = command_lines
-
-        result = save_journal_entry_complete(actor, instance.id, **kwargs)
-        if not result.success:
-            raise serializers.ValidationError(result.error)
-
-        return result.data
+        raise NotImplementedError(
+            "Manual journal writes go through the manual-journal process "
+            "commands (accounting.commands.save_manual_journal_entry_complete); "
+            "serializer.save() is not a supported write path."
+        )
 
 
 # =============================================================================

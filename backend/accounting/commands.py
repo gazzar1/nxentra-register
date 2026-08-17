@@ -15,6 +15,7 @@ Pattern:
 ALL state changes MUST go through commands to ensure events are emitted.
 """
 
+import dataclasses
 import functools
 import hashlib
 import json
@@ -85,7 +86,12 @@ from accounting.policies import (
 )
 from accounting.posted_journal_boundary import emit_posted_journal
 from accounts.authz import ActorContext, require
-from accounts.pilot_policy import Capability, requires_capability
+from accounts.pilot_policy import (
+    Capability,
+    require_pilot_journal_currency,
+    requires_capability,
+    serialized_company_admission,
+)
 from accounts.rls import rls_bypass
 from events.emitter import emit_event
 from events.locks import lock_company_event_counter
@@ -889,6 +895,20 @@ def delete_account(actor: ActorContext, account_id: int) -> CommandResult:
 # Journal Entry Commands
 # =============================================================================
 
+# A4 manual-journal process token. The shared journal commands below are used by
+# MANY business processes (manual API, sales/purchase posting, EDIM, settlement
+# ingestion, reconciliation, revaluation, …) and therefore make NO admission
+# decision themselves. The MANUAL general-journal process boundary (the
+# ``*_manual_journal_entry`` wrappers at the end of this section) passes this
+# module-private sentinel so the shared command runs the canonical EGP-only
+# validation (``require_pilot_journal_currency``) at its normal currency
+# resolution point — under the wrapper's Company admission lock. The sentinel is
+# an ``object()`` identity: it cannot be constructed from a request payload, and
+# no serializer exposes the ``_process_token`` parameter, so HTTP input can
+# neither forge nor disable the manual-process mode. Internal/provider callers
+# simply never pass it and are unaffected.
+_MANUAL_JOURNAL_PROCESS = object()
+
 
 @transaction.atomic
 def create_journal_entry(
@@ -904,6 +924,7 @@ def create_journal_entry(
     source_module: str = "",
     source_document: str = "",
     request_id: str | None = None,
+    _process_token=None,
 ) -> CommandResult:
     """
     Create a new journal entry.
@@ -956,6 +977,9 @@ def create_journal_entry(
     entry_exchange_rate = exchange_rate or "1.0"
 
     line_data = []
+    resolved_line_currencies: list = []
+    resolved_line_rates: list = []
+    resolved_amount_currency_values: list = []
     if lines:
         account_ids = [line.get("account_id") for line in lines if line.get("account_id")]
         accounts = {acc.id: acc for acc in Account.objects.filter(company=actor.company, id__in=account_ids)}
@@ -974,6 +998,9 @@ def create_journal_entry(
             line_currency = line.get("currency") or entry_currency
             line_exchange_rate = line.get("exchange_rate") or entry_exchange_rate
             amount_currency = line.get("amount_currency")
+            resolved_line_currencies.append(line_currency)
+            resolved_line_rates.append(line_exchange_rate)
+            resolved_amount_currency_values.append(amount_currency)
             line_data.append(
                 JournalLineData(
                     line_no=line_no,
@@ -993,6 +1020,18 @@ def create_journal_entry(
                 ).to_dict()
             )
             line_no += 1
+
+    # A4 manual boundary: canonical EGP validation at the resolution point,
+    # BEFORE any event emission — only for the manual process (see sentinel).
+    if _process_token is _MANUAL_JOURNAL_PROCESS:
+        require_pilot_journal_currency(
+            actor.company,
+            header_currency=entry_currency,
+            line_currencies=resolved_line_currencies,
+            amount_currency_values=resolved_amount_currency_values,
+            exchange_rates=[entry_exchange_rate, *resolved_line_rates],
+            context="Manual journal create",
+        )
 
     event_data = JournalEntryCreatedData(
         entry_public_id=str(entry_public_id),
@@ -1086,6 +1125,7 @@ def update_journal_entry(
     exchange_rate: str = None,
     lines: list = None,
     period: int = None,
+    _process_token=None,
 ) -> CommandResult:
     """
     Update a journal entry (autosave mode - status becomes INCOMPLETE).
@@ -1196,6 +1236,23 @@ def update_journal_entry(
             )
             line_no += 1
 
+    # A4 manual boundary: validate the RESULTING header + every RESULTING line
+    # (new values where provided, existing aggregate state otherwise) before any
+    # event emission — only for the manual process.
+    if _process_token is _MANUAL_JOURNAL_PROCESS:
+        resulting_lines = line_data if line_data is not None else (aggregate.lines or [])
+        require_pilot_journal_currency(
+            actor.company,
+            header_currency=currency if currency is not None else aggregate.currency,
+            line_currencies=[ln.get("currency") for ln in resulting_lines],
+            amount_currency_values=[ln.get("amount_currency") for ln in resulting_lines],
+            exchange_rates=[
+                exchange_rate if exchange_rate is not None else aggregate.exchange_rate,
+                *[ln.get("exchange_rate") for ln in resulting_lines],
+            ],
+            context="Manual journal update",
+        )
+
     # Any edit sets status back to INCOMPLETE
     # Only emit event if there were changes
     event = None
@@ -1231,6 +1288,7 @@ def save_journal_entry_complete(
     exchange_rate: str = None,
     lines: list = None,
     period: int = None,
+    _process_token=None,
 ) -> CommandResult:
     """
     Save a journal entry as complete (DRAFT status).
@@ -1344,6 +1402,19 @@ def save_journal_entry_complete(
     }
     if not payload["date"]:
         return CommandResult.fail("Entry date is required to save as complete.")
+
+    # A4 manual boundary: validate the RESULTING header + every RESULTING line
+    # before any event emission — only for the manual process.
+    if _process_token is _MANUAL_JOURNAL_PROCESS:
+        require_pilot_journal_currency(
+            actor.company,
+            header_currency=payload["currency"],
+            line_currencies=[ln.get("currency") for ln in lines_payload],
+            amount_currency_values=[ln.get("amount_currency") for ln in lines_payload],
+            exchange_rates=[payload["exchange_rate"], *[ln.get("exchange_rate") for ln in lines_payload]],
+            context="Manual journal save-complete",
+        )
+
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
     event = emit_event(
         actor=actor,
@@ -1374,7 +1445,7 @@ def save_journal_entry_complete(
 
 
 @transaction.atomic
-def post_journal_entry_or_raise(actor: ActorContext, entry_id: int) -> CommandResult:
+def post_journal_entry_or_raise(actor: ActorContext, entry_id: int, *, _process_token=None) -> CommandResult:
     """
     Post a journal entry, making it affect account balances.
 
@@ -1441,6 +1512,18 @@ def post_journal_entry_or_raise(actor: ActorContext, entry_id: int) -> CommandRe
     # default, and stamping that on the header/event misreports the JE
     # (live: JE-000070 showed "1 USD = 1.000000 EGP" over lines converted @48).
     entry_currency = aggregate.currency or entry.currency or actor.company.default_currency
+
+    # A4 manual boundary: header-level EGP validation before the line loop —
+    # only for the manual process (per-line validation happens at each line's
+    # resolution point below, BEFORE any FX conversion / rate lookup).
+    if _process_token is _MANUAL_JOURNAL_PROCESS:
+        require_pilot_journal_currency(
+            actor.company,
+            header_currency=entry_currency,
+            exchange_rates=[aggregate.exchange_rate or entry.exchange_rate],
+            context="Manual journal post",
+        )
+
     converted_entry_rates: set = set()
     for line in aggregate.lines:
         account_public_id = line.get("account_public_id")
@@ -1499,6 +1582,19 @@ def post_journal_entry_or_raise(actor: ActorContext, entry_id: int) -> CommandRe
         )
         original_debit = Decimal(str(line.get("debit", "0")))
         original_credit = Decimal(str(line.get("credit", "0")))
+
+        # A4 manual boundary: per-line EGP validation at the line's resolution
+        # point, BEFORE the conversion branch below — a pilot's manual post can
+        # therefore never reach an FX conversion or ExchangeRate lookup.
+        if _process_token is _MANUAL_JOURNAL_PROCESS:
+            require_pilot_journal_currency(
+                actor.company,
+                header_currency=entry_currency,
+                line_currencies=[line_currency],
+                amount_currency_values=[line.get("amount_currency")],
+                exchange_rates=[line_exchange_rate],
+                context="Manual journal post",
+            )
 
         functional_currency = actor.company.functional_currency or actor.company.default_currency
         is_adjustment = aggregate.kind == JournalEntry.Kind.ADJUSTMENT
@@ -1640,17 +1736,17 @@ def post_journal_entry_or_raise(actor: ActorContext, entry_id: int) -> CommandRe
 
 
 @translate_posted_journal_invalid
-def post_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
+def post_journal_entry(actor: ActorContext, entry_id: int, *, _process_token=None) -> CommandResult:
     """Public boundary over :func:`post_journal_entry_or_raise`: when this
     command IS the outermost operation (views, tasks, management commands,
     best-effort loops), an invariant rejection has already rolled back the
     entire posting attempt by the time it is translated here into the
     standard ``CommandResult`` failure with stable codes."""
-    return post_journal_entry_or_raise(actor, entry_id)
+    return post_journal_entry_or_raise(actor, entry_id, _process_token=_process_token)
 
 
 @transaction.atomic
-def reverse_journal_entry_or_raise(actor: ActorContext, entry_id: int) -> CommandResult:
+def reverse_journal_entry_or_raise(actor: ActorContext, entry_id: int, *, _process_token=None) -> CommandResult:
     """
     Reverse a posted journal entry.
 
@@ -1674,15 +1770,15 @@ def reverse_journal_entry_or_raise(actor: ActorContext, entry_id: int) -> Comman
         CommandResult with {"original": entry, "reversal": reversal_entry} or error
     """
     require(actor, "journal.reverse")
-    return _reverse_posted_journal_entry(actor, entry_id)
+    return _reverse_posted_journal_entry(actor, entry_id, _process_token=_process_token)
 
 
 @translate_posted_journal_invalid
-def reverse_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
+def reverse_journal_entry(actor: ActorContext, entry_id: int, *, _process_token=None) -> CommandResult:
     """Public boundary over :func:`reverse_journal_entry_or_raise` — the
     invariant rejection has already rolled back the entire reversal attempt
     when it is translated here into the standard ``CommandResult`` failure."""
-    return reverse_journal_entry_or_raise(actor, entry_id)
+    return reverse_journal_entry_or_raise(actor, entry_id, _process_token=_process_token)
 
 
 class VoidReversalError(Exception):
@@ -1698,6 +1794,7 @@ def _reverse_posted_journal_entry(
     entry_id: int,
     *,
     memo_context: str = "",
+    _process_token=None,
 ) -> CommandResult:
     """
     A155: the ONE canonical counterparty-preserving reversal core, shared
@@ -1793,6 +1890,25 @@ def _reverse_posted_journal_entry(
                 vendor_public_id=line.get("vendor_public_id"),
                 analysis_tags=analysis_tags,
             ).to_dict()
+        )
+
+    # A4 manual boundary: validate the RESULTING reversal (header + every line)
+    # before the sequence allocation and both emits — only for the manual
+    # process. Under an ACTIVE pilot a foreign POSTED original cannot exist
+    # (activation preflight refuses on non_egp_journal_data), so this is a
+    # defense-in-depth dead path in practice; it pins the semantics: a manual
+    # reversal must never mint a new foreign-currency journal.
+    if _process_token is _MANUAL_JOURNAL_PROCESS:
+        require_pilot_journal_currency(
+            actor.company,
+            header_currency=aggregate.currency or original.currency or actor.company.default_currency,
+            line_currencies=[ln.get("currency") for ln in reversal_line_data],
+            amount_currency_values=[ln.get("amount_currency") for ln in reversal_line_data],
+            exchange_rates=[
+                aggregate.exchange_rate or original.exchange_rate or "1.0",
+                *[ln.get("exchange_rate") for ln in reversal_line_data],
+            ],
+            context="Manual journal reverse",
         )
 
     # A155: allocate the entry number only after every fallible check above,
@@ -1914,6 +2030,86 @@ def delete_journal_entry(actor: ActorContext, entry_id: int) -> CommandResult:
 
     _process_projections(actor.company)
     return CommandResult.ok({"deleted": True}, event=event)
+
+
+# =============================================================================
+# Manual-Journal Process Boundary (A4)
+# =============================================================================
+#
+# The MANUAL general-journal workflow is a supported pilot process, but its
+# EGP-only contract must serialize with ``activate_pilot_profile`` — an unlocked
+# currency check would recreate the race: check NONE → activation commits →
+# foreign journal commits afterward. These thin wrappers are the manual
+# BUSINESS-PROCESS admission boundary:
+#
+#     manual route/caller
+#       → serialized_company_admission (Company admission lock, held to commit)
+#       → canonical EGP validation (require_pilot_journal_currency, invoked by
+#         the shared command at its currency-resolution point via the
+#         module-private _MANUAL_JOURNAL_PROCESS sentinel)
+#       → the existing shared journal command (sole writer — wrappers duplicate
+#         NO journal logic and emit NO events themselves)
+#
+# Provider/domain processes (Shopify, settlements, purchasing, inventory,
+# reconciliation, EDIM, revaluation, scratchpad, fiscal close) keep calling the
+# shared commands directly through their OWN admission boundaries — they are
+# NEVER routed through these wrappers and acquire no new lock here.
+#
+# Lock order (pinned): Company admission → JournalEntry / CompanySequence →
+# CompanyEventCounter → Account rows → projection read models. The wrapper
+# acquires Company admission BEFORE the shared command takes any other lock;
+# inner @transaction.atomic blocks demote to savepoints and the admission lock
+# is held through the outer commit/rollback (pilot_policy contract).
+#
+# ``delete_journal_entry`` intentionally has NO wrapper: deletion of an
+# INCOMPLETE/DRAFT entry is cleanup (it can only REMOVE residue, books nothing
+# and makes no capability/currency decision), and it is also called internally
+# by the revaluation view's stale-draft sweep.
+
+
+def create_manual_journal_entry(actor: ActorContext, *args, **kwargs) -> CommandResult:
+    """A4 manual-journal process boundary over :func:`create_journal_entry`."""
+    if actor.company is None:
+        return create_journal_entry(actor, *args, **kwargs)
+    with serialized_company_admission(actor.company.pk) as locked_company:
+        actor = dataclasses.replace(actor, company=locked_company)
+        return create_journal_entry(actor, *args, _process_token=_MANUAL_JOURNAL_PROCESS, **kwargs)
+
+
+def update_manual_journal_entry(actor: ActorContext, *args, **kwargs) -> CommandResult:
+    """A4 manual-journal process boundary over :func:`update_journal_entry`."""
+    if actor.company is None:
+        return update_journal_entry(actor, *args, **kwargs)
+    with serialized_company_admission(actor.company.pk) as locked_company:
+        actor = dataclasses.replace(actor, company=locked_company)
+        return update_journal_entry(actor, *args, _process_token=_MANUAL_JOURNAL_PROCESS, **kwargs)
+
+
+def save_manual_journal_entry_complete(actor: ActorContext, *args, **kwargs) -> CommandResult:
+    """A4 manual-journal process boundary over :func:`save_journal_entry_complete`."""
+    if actor.company is None:
+        return save_journal_entry_complete(actor, *args, **kwargs)
+    with serialized_company_admission(actor.company.pk) as locked_company:
+        actor = dataclasses.replace(actor, company=locked_company)
+        return save_journal_entry_complete(actor, *args, _process_token=_MANUAL_JOURNAL_PROCESS, **kwargs)
+
+
+def post_manual_journal_entry(actor: ActorContext, *args, **kwargs) -> CommandResult:
+    """A4 manual-journal process boundary over :func:`post_journal_entry`."""
+    if actor.company is None:
+        return post_journal_entry(actor, *args, **kwargs)
+    with serialized_company_admission(actor.company.pk) as locked_company:
+        actor = dataclasses.replace(actor, company=locked_company)
+        return post_journal_entry(actor, *args, _process_token=_MANUAL_JOURNAL_PROCESS, **kwargs)
+
+
+def reverse_manual_journal_entry(actor: ActorContext, *args, **kwargs) -> CommandResult:
+    """A4 manual-journal process boundary over :func:`reverse_journal_entry`."""
+    if actor.company is None:
+        return reverse_journal_entry(actor, *args, **kwargs)
+    with serialized_company_admission(actor.company.pk) as locked_company:
+        actor = dataclasses.replace(actor, company=locked_company)
+        return reverse_journal_entry(actor, *args, _process_token=_MANUAL_JOURNAL_PROCESS, **kwargs)
 
 
 # =============================================================================

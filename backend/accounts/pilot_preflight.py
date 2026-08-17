@@ -138,6 +138,7 @@ def run_preflight(company, *, phase: str = "go-live", for_activation: bool = Fal
         v += _out_of_scope_data_violations(company)
         v += _legacy_bank_violations(company)
         v += _purchase_state_violations(company)
+        v += _journal_currency_residue_violations(company)
 
     return v
 
@@ -613,5 +614,69 @@ def _non_egp_financial_state_violations(company) -> list[Violation]:
     bank = CanonicalBankStatement.objects.filter(company=company).exclude(currency=EGP).exclude(currency="").count()
     if bank:
         out.append(Violation("non_egp_bank_data", f"{bank} non-EGP canonical bank statement(s) exist (EGP only)."))
+
+    return out
+
+
+def _journal_currency_residue_violations(company) -> list[Violation]:
+    """Journal-level EGP drift the header-only ``non_egp_journal_data`` check
+    structurally cannot see (all statuses, INCOMPLETE/DRAFT included):
+
+    - ``non_egp_journal_line_data`` — a non-blank/non-EGP JournalLine beneath an
+      EGP/blank header. Disjoint from the header code by construction: lines
+      whose ENTRY header is already foreign are that header's rows, not these.
+    - ``fx_line_residue``   — an EGP/blank line carrying FX mechanics: a foreign
+      leg via ``amount_currency``, or a non-1 conversion rate. Normal stamps are
+      explicitly excluded (``amount_currency`` NULL and rate NULL/1 are the
+      legitimate EGP/default projection values), so clean EGP books never fire.
+    - ``fx_header_rate_residue`` — an EGP/blank header carrying a non-1
+      exchange rate. The A142 stamp only overrides the 1.0 default on a real
+      foreign conversion, so this is always drift on EGP-only books.
+
+    Read-only counts; blank ``""`` keeps its home-currency meaning throughout.
+    """
+    from decimal import Decimal
+
+    from django.db.models import Q
+
+    from accounting.models import JournalEntry, JournalLine
+
+    out: list[Violation] = []
+    home = (EGP, "")
+
+    lines = JournalLine.objects.filter(company=company, entry__currency__in=home).exclude(currency__in=home).count()
+    if lines:
+        out.append(
+            Violation(
+                "non_egp_journal_line_data",
+                f"{lines} non-EGP journal line(s) exist beneath EGP/blank headers; the pilot books EGP only.",
+            )
+        )
+
+    fx_lines = (
+        JournalLine.objects.filter(company=company, currency__in=home)
+        .filter(Q(amount_currency__isnull=False) | (Q(exchange_rate__isnull=False) & ~Q(exchange_rate=Decimal("1"))))
+        .count()
+    )
+    if fx_lines:
+        out.append(
+            Violation(
+                "fx_line_residue",
+                f"{fx_lines} EGP/blank journal line(s) carry foreign-leg mechanics "
+                "(amount_currency or a non-1 exchange rate); EGP-only books convert nothing.",
+            )
+        )
+
+    fx_headers = (
+        JournalEntry.objects.filter(company=company, currency__in=home).exclude(exchange_rate=Decimal("1")).count()
+    )
+    if fx_headers:
+        out.append(
+            Violation(
+                "fx_header_rate_residue",
+                f"{fx_headers} EGP/blank journal header(s) carry a non-1 exchange rate; "
+                "EGP-only books convert nothing.",
+            )
+        )
 
     return out

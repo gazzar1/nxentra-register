@@ -1641,6 +1641,7 @@ A4_GATE_FUNCTIONS: frozenset[str] = frozenset(
         "is_supported",
         "skip_if_unsupported",
         "require_pilot_currency",
+        "require_pilot_journal_currency",
         "skip_pilot_currency",
         "inventory_forced_non_stock",
         "require_module_enable_allowed",
@@ -1691,6 +1692,19 @@ A4_SERIALIZED_BY_CALLER_GATE_SITES: frozenset[str] = frozenset(
         # test_setup_shopify_accounts_callers_are_all_serialized; a new caller fails CI
         # there until it is proven serialized.
         "accounts/commands.py::_setup_shopify_accounts",
+        # A4 manual-journal EGP admission (Rule 14): the shared journal commands
+        # invoke require_pilot_journal_currency at their currency-resolution points
+        # ONLY when the module-private _MANUAL_JOURNAL_PROCESS sentinel is passed —
+        # and the sole producers of that sentinel are the *_manual_journal_entry
+        # wrappers, each of which owns serialized_company_admission and holds the
+        # Company lock through the shared command's whole commit/rollback. Rule 14
+        # pins the wrapper set, the token-passer closure, and the lock ownership;
+        # a new token producer or an unlocked wrapper fails CI there.
+        "accounting/commands.py::create_journal_entry",
+        "accounting/commands.py::update_journal_entry",
+        "accounting/commands.py::save_journal_entry_complete",
+        "accounting/commands.py::post_journal_entry_or_raise",
+        "accounting/commands.py::_reverse_posted_journal_entry",
     }
 )
 
@@ -2270,3 +2284,323 @@ def test_remote_payout_fetch_owns_the_network_read():
         "_fetch_payout_transactions_remote must own the remote payout-transaction read "
         "(_admin_client + list_payout_transactions) so the locked apply can be network-free."
     )
+
+
+# =============================================================================
+# Rule 14 (A4 manual-journal EGP admission): the MANUAL general-journal process
+# boundary. The manual HTTP surface must route through the *_manual_journal_entry
+# wrappers; each wrapper owns serialized Company admission and delegates to its
+# shared core (sole writer); the module-private _MANUAL_JOURNAL_PROCESS sentinel
+# — which switches on require_pilot_journal_currency inside the shared commands —
+# is producible ONLY by those wrappers; and the complete production caller set of
+# every shared journal command is frozen WITH a reviewed disposition, so a new
+# manual-JE mutation entrypoint (or a provider silently pulled into the manual
+# process) fails CI until classified.
+# =============================================================================
+
+_ACCOUNTING_COMMANDS_REL = "accounting/commands.py"
+_ACCOUNTING_VIEWS_REL = "accounting/views.py"
+_MANUAL_TOKEN_KWARG = "_process_token"
+_MANUAL_TOKEN_SENTINEL = "_MANUAL_JOURNAL_PROCESS"
+
+# wrapper -> the ONE shared core it delegates to (wrappers duplicate no logic).
+MANUAL_JOURNAL_WRAPPERS: dict[str, str] = {
+    "create_manual_journal_entry": "create_journal_entry",
+    "update_manual_journal_entry": "update_journal_entry",
+    "save_manual_journal_entry_complete": "save_journal_entry_complete",
+    "post_manual_journal_entry": "post_journal_entry",
+    "reverse_manual_journal_entry": "reverse_journal_entry",
+}
+
+# Public/raise-through boundaries that only FORWARD the token to their core —
+# not process boundaries themselves (they hold no lock; the wrapper above does).
+MANUAL_TOKEN_PASSTHROUGHS: frozenset[str] = frozenset(
+    {
+        "accounting/commands.py::post_journal_entry",
+        "accounting/commands.py::reverse_journal_entry",
+        "accounting/commands.py::reverse_journal_entry_or_raise",
+    }
+)
+
+# The COMPLETE production caller set of every shared journal command, frozen
+# two-sided with a reviewed business-process disposition per caller:
+#   manual-boundary      — the A4 manual wrappers (serialized + EGP-gated here);
+#   passthrough          — internal public->core forwarding inside commands.py;
+#   shopify-platform     — supported Shopify order/refund/COGS accounting
+#                          (serialized at the connector ingestion boundary);
+#   settlement-ingestion — Paymob/Bosta/Stripe settlement projection (emitters
+#                          gated upstream: require_pilot_currency sweep / STRIPE);
+#   purchasing           — @requires_capability(PURCHASING_ACCOUNTING) commands;
+#   inventory            — item-layer flows (INVENTORY capability at item layer);
+#   reconciliation       — bank-recon clearance/difference/unmatch flows
+#                          (auto flows decorated UNSAFE_BANK_MATCH; manual match
+#                          is the founder-reviewed supported flow);
+#   edim-commit          — settled-BLOCKED family, gating owned by a later PR;
+#   revaluation          — settled-BLOCKED family, gating owned by a later PR;
+#   scratchpad           — structurally-EGP scratchpad commit (out of cluster);
+#   cleanup              — delete/void internal callers (witnessed);
+#   seed-ops             — shell-only operator seeding (C9 operator-trust).
+EXPECTED_JOURNAL_COMMAND_CALLERS: dict[str, frozenset[str]] = {
+    "create_journal_entry": frozenset(
+        {
+            "accounting/commands.py::create_manual_journal_entry",  # manual-boundary
+            "accounting/management/commands/seed_demo_company.py::Command._create_journal_entries",  # seed-ops
+            "accounting/payment_settlement_projection.py::PaymentSettlementProjection.handle",  # settlement-ingestion
+            "accounting/tasks.py::_revalue_company",  # revaluation
+            "edim/commands.py::commit_batch",  # edim-commit
+            "inventory/commands.py::_post_negative_stock_variance_je",  # inventory
+            "inventory/commands.py::adjust_inventory",  # inventory
+            "inventory/commands.py::record_opening_balance",  # inventory
+            "platform_connectors/commands.py::create_and_post_settlement",  # settlement-ingestion
+            "projections/views.py::CurrencyRevaluationView.post",  # revaluation
+            "purchases/commands.py::post_purchase_bill",  # purchasing
+            "purchases/commands.py::post_purchase_credit_note",  # purchasing
+            "reconciliation/commands.py::_create_settlement_clearance_je",  # reconciliation
+            "reconciliation/commands.py::resolve_difference",  # reconciliation
+            "sales/commands.py::post_credit_note_or_raise",  # shopify-platform + blocked manual door
+            "sales/commands.py::post_sales_invoice_or_raise",  # shopify-platform + blocked manual door
+            "scratchpad/commands.py::commit_scratchpad_groups",  # scratchpad
+            "shopify_connector/commands.py::_create_cogs_for_fulfillment",  # shopify-platform
+            "shopify_connector/management/commands/seed_shopify_demo.py::Command._create_opening_balance",  # seed-ops
+            "shopify_connector/management/commands/seed_shopify_demo.py::Command._create_operating_expenses",  # seed-ops
+        }
+    ),
+    "update_journal_entry": frozenset(
+        {
+            "accounting/commands.py::update_manual_journal_entry",  # manual-boundary (sole caller)
+        }
+    ),
+    "save_journal_entry_complete": frozenset(
+        {
+            "accounting/commands.py::save_manual_journal_entry_complete",  # manual-boundary
+            "accounting/management/commands/seed_demo_company.py::Command._create_journal_entries",  # seed-ops
+            "accounting/payment_settlement_projection.py::PaymentSettlementProjection.handle",  # settlement-ingestion
+            "accounting/tasks.py::_revalue_company",  # revaluation
+            "edim/commands.py::commit_batch",  # edim-commit
+            "inventory/commands.py::_post_negative_stock_variance_je",  # inventory
+            "inventory/commands.py::adjust_inventory",  # inventory
+            "inventory/commands.py::record_opening_balance",  # inventory
+            "platform_connectors/commands.py::create_and_post_settlement",  # settlement-ingestion
+            "projections/views.py::CurrencyRevaluationView.post",  # revaluation
+            "purchases/commands.py::post_purchase_bill",  # purchasing
+            "purchases/commands.py::post_purchase_credit_note",  # purchasing
+            "reconciliation/commands.py::_create_settlement_clearance_je",  # reconciliation
+            "reconciliation/commands.py::resolve_difference",  # reconciliation
+            "sales/commands.py::post_credit_note_or_raise",  # shopify-platform + blocked manual door
+            "sales/commands.py::post_sales_invoice_or_raise",  # shopify-platform + blocked manual door
+            "scratchpad/commands.py::commit_scratchpad_groups",  # scratchpad
+            "shopify_connector/commands.py::_create_cogs_for_fulfillment",  # shopify-platform
+            "shopify_connector/management/commands/seed_shopify_demo.py::Command._create_opening_balance",  # seed-ops
+            "shopify_connector/management/commands/seed_shopify_demo.py::Command._create_operating_expenses",  # seed-ops
+        }
+    ),
+    "post_journal_entry": frozenset(
+        {
+            "accounting/commands.py::post_manual_journal_entry",  # manual-boundary
+            "accounting/management/commands/seed_demo_company.py::Command._create_journal_entries",  # seed-ops
+            "accounting/payment_settlement_projection.py::PaymentSettlementProjection.handle",  # settlement-ingestion
+            "accounting/tasks.py::_revalue_company",  # revaluation
+            "edim/commands.py::commit_batch",  # edim-commit (AUTO_POST branch)
+            "inventory/commands.py::_post_negative_stock_variance_je",  # inventory
+            "projections/views.py::CurrencyRevaluationView.post",  # revaluation
+            "scratchpad/commands.py::commit_scratchpad_groups",  # scratchpad
+            "shopify_connector/commands.py::_create_cogs_for_fulfillment",  # shopify-platform
+            "shopify_connector/management/commands/seed_shopify_demo.py::Command._create_opening_balance",  # seed-ops
+            "shopify_connector/management/commands/seed_shopify_demo.py::Command._create_operating_expenses",  # seed-ops
+        }
+    ),
+    "post_journal_entry_or_raise": frozenset(
+        {
+            "accounting/commands.py::post_journal_entry",  # passthrough
+            "inventory/commands.py::adjust_inventory",  # inventory
+            "inventory/commands.py::record_opening_balance",  # inventory
+            "platform_connectors/commands.py::create_and_post_settlement",  # settlement-ingestion
+            "purchases/commands.py::post_purchase_bill",  # purchasing
+            "purchases/commands.py::post_purchase_credit_note",  # purchasing
+            "reconciliation/commands.py::_create_settlement_clearance_je",  # reconciliation
+            "reconciliation/commands.py::resolve_difference",  # reconciliation
+            "sales/commands.py::post_credit_note_or_raise",  # shopify-platform + blocked manual door
+            "sales/commands.py::post_sales_invoice_or_raise",  # shopify-platform + blocked manual door
+        }
+    ),
+    "reverse_journal_entry": frozenset(
+        {
+            "accounting/commands.py::reverse_manual_journal_entry",  # manual-boundary (sole caller)
+        }
+    ),
+    "reverse_journal_entry_or_raise": frozenset(
+        {
+            "accounting/commands.py::reverse_journal_entry",  # passthrough
+            "reconciliation/commands.py::_reverse_match_side_effects",  # reconciliation (UNSAFE_BANK_MATCH callers)
+        }
+    ),
+    "_reverse_posted_journal_entry": frozenset(
+        {
+            "accounting/commands.py::reverse_journal_entry_or_raise",  # passthrough
+            "purchases/commands.py::void_purchase_bill",  # purchasing
+            "purchases/commands.py::void_purchase_credit_note",  # purchasing
+            "sales/commands.py::void_credit_note",  # sales-AR void (blocked manual door, later PR)
+            "sales/commands.py::void_sales_invoice",  # sales-AR void (blocked manual door, later PR)
+        }
+    ),
+    "delete_journal_entry": frozenset(
+        {
+            # Witnessed CLEANUP exemption: delete is deliberately UNWRAPPED — it can
+            # only REMOVE INCOMPLETE/DRAFT residue, books nothing, and makes no
+            # capability/currency decision; blocking it would strand cleanup.
+            "accounting/views.py::JournalEntryDetailView.delete",  # manual cleanup (unwrapped by design)
+            "projections/views.py::CurrencyRevaluationView.post",  # revaluation stale-draft sweep
+        }
+    ),
+}
+
+
+def _journal_command_callers() -> dict[str, set[str]]:
+    """Production caller sites (relpath::qualname) of every shared journal
+    command, plus the set of sites passing the _process_token kwarg. Same
+    production scoping as the other A4 scans; self-definitions excluded."""
+    targets = set(EXPECTED_JOURNAL_COMMAND_CALLERS)
+    callers: dict[str, set[str]] = {t: set() for t in targets}
+    token_passers: set[str] = set()
+    for path in BACKEND_ROOT.rglob("*.py"):
+        rel = path.relative_to(BACKEND_ROOT).as_posix()
+        probe = "/" + rel
+        if any(frag in probe for frag in ("/migrations/", "/tests/", "test_", "/conftest.py")):
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+
+        class _Visitor(ast.NodeVisitor):
+            def __init__(self, rel: str):
+                self.rel = rel
+                self.stack: list[str] = []
+
+            def _scope(self, node):
+                self.stack.append(node.name)
+                self.generic_visit(node)
+                self.stack.pop()
+
+            visit_ClassDef = _scope
+            visit_FunctionDef = _scope
+            visit_AsyncFunctionDef = _scope
+
+            def visit_Call(self, node):
+                name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+                qual = ".".join(self.stack) or "<module>"
+                site = f"{self.rel}::{qual}"
+                if name in targets and qual.split(".")[-1] != name:
+                    callers[name].add(site)
+                if any(kw.arg == _MANUAL_TOKEN_KWARG for kw in node.keywords):
+                    token_passers.add(site)
+                self.generic_visit(node)
+
+        _Visitor(rel).visit(tree)
+    callers["__token_passers__"] = token_passers
+    return callers
+
+
+def _accounting_commands_fn(name: str) -> ast.FunctionDef:
+    tree = ast.parse((BACKEND_ROOT / _ACCOUNTING_COMMANDS_REL).read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == name:
+            return node
+    raise AssertionError(f"{_ACCOUNTING_COMMANDS_REL} no longer defines {name}()")
+
+
+def _call_names_in(node) -> set[str]:
+    names: set[str] = set()
+    for inner in ast.walk(node):
+        if isinstance(inner, ast.Call):
+            n = getattr(inner.func, "id", None) or getattr(inner.func, "attr", None)
+            if n:
+                names.add(n)
+    return names
+
+
+def test_manual_journal_wrappers_own_admission_and_delegate_to_their_core():
+    """Each manual wrapper owns serialized_company_admission, rebinds the actor to
+    the LOCKED Company (dataclasses.replace), passes the module-private sentinel
+    to EXACTLY its shared core, and writes nothing itself (no emit, no sequence
+    allocation — the shared commands remain the sole writers)."""
+    for wrapper, core in MANUAL_JOURNAL_WRAPPERS.items():
+        fn = _accounting_commands_fn(wrapper)
+        called = _call_names_in(fn)
+        assert "serialized_company_admission" in called, f"{wrapper} must own serialized_company_admission"
+        assert "replace" in called, f"{wrapper} must rebind the actor to the locked Company (dataclasses.replace)"
+        assert core in called, f"{wrapper} must delegate to {core}()"
+        other_cores = set(MANUAL_JOURNAL_WRAPPERS.values()) - {core}
+        assert not (called & other_cores), f"{wrapper} may call ONLY its own core {core}, not {called & other_cores}"
+        forbidden = called & {"emit_event", "emit_posted_journal", "emit_event_no_actor", "_next_company_sequence"}
+        assert not forbidden, f"{wrapper} is a process boundary, not a writer — it must not call {sorted(forbidden)}"
+        # The sentinel must be passed by NAME (the module-private object), never a
+        # payload-derivable value.
+        sentinel_ok = False
+        for inner in ast.walk(fn):
+            if isinstance(inner, ast.Call):
+                for kw in inner.keywords:
+                    if kw.arg == _MANUAL_TOKEN_KWARG:
+                        assert isinstance(kw.value, ast.Name) and kw.value.id == _MANUAL_TOKEN_SENTINEL, (
+                            f"{wrapper} must pass {_MANUAL_TOKEN_KWARG}={_MANUAL_TOKEN_SENTINEL} (module-private "
+                            f"identity), got: {ast.dump(kw.value)}"
+                        )
+                        sentinel_ok = True
+        assert sentinel_ok, f"{wrapper} must pass {_MANUAL_TOKEN_KWARG}={_MANUAL_TOKEN_SENTINEL} to {core}()"
+
+
+def test_manual_process_token_producers_are_frozen():
+    """TWO-SIDED closure of the manual-process sentinel: the ONLY production
+    functions that pass _process_token are the five wrappers (which pass the
+    sentinel under their admission lock) and the pinned internal pass-throughs
+    (which forward their own parameter). A new producer — a view, serializer,
+    provider flow, or any other function — fails here until it is a reviewed
+    manual-process boundary."""
+    scan = _journal_command_callers()
+    passers = scan["__token_passers__"]
+    expected = {f"{_ACCOUNTING_COMMANDS_REL}::{w}" for w in MANUAL_JOURNAL_WRAPPERS} | MANUAL_TOKEN_PASSTHROUGHS
+    unexpected = sorted(passers - expected)
+    missing = sorted(expected - passers)
+    assert not unexpected, (
+        "NEW _process_token producer(s) — the manual-journal sentinel may be passed "
+        f"only by the manual wrappers / pinned pass-throughs: {unexpected}"
+    )
+    assert not missing, f"expected _process_token producer(s) vanished — update the registry consciously: {missing}"
+
+
+def test_manual_journal_http_surface_routes_through_wrappers():
+    """The manual JE HTTP surface calls the wrappers and NEVER a shared journal
+    core directly — view-level validation is not the safety boundary. The single
+    witnessed exception is delete_journal_entry (cleanup-only, unwrapped by
+    design and pinned in EXPECTED_JOURNAL_COMMAND_CALLERS)."""
+    tree = ast.parse((BACKEND_ROOT / _ACCOUNTING_VIEWS_REL).read_text(encoding="utf-8"))
+    called = _call_names_in(tree)
+    for wrapper in MANUAL_JOURNAL_WRAPPERS:
+        assert wrapper in called, f"{_ACCOUNTING_VIEWS_REL} must route the manual surface through {wrapper}()"
+    cores = set(MANUAL_JOURNAL_WRAPPERS.values()) | {
+        "post_journal_entry_or_raise",
+        "reverse_journal_entry_or_raise",
+        "_reverse_posted_journal_entry",
+    }
+    direct = called & cores
+    assert not direct, (
+        f"{_ACCOUNTING_VIEWS_REL} calls shared journal core(s) directly — the manual "
+        f"HTTP surface must go through the manual-process wrappers: {sorted(direct)}"
+    )
+
+
+def test_journal_command_callers_are_frozen_with_dispositions():
+    """TWO-SIDED freeze of the complete production caller set of every shared
+    journal command. A NEW caller (a new manual door, or a provider silently
+    becoming a manual-process caller) fails until it is added here WITH a
+    reviewed disposition comment; a vanished caller must be pruned consciously."""
+    scan = _journal_command_callers()
+    for command, expected in EXPECTED_JOURNAL_COMMAND_CALLERS.items():
+        found = scan[command]
+        unexpected = sorted(found - expected)
+        missing = sorted(expected - found)
+        assert not unexpected, (
+            f"NEW production caller(s) of {command}() — every caller carries exactly one "
+            f"reviewed disposition in EXPECTED_JOURNAL_COMMAND_CALLERS: {unexpected}"
+        )
+        assert not missing, f"expected caller(s) of {command}() vanished — prune the registry consciously: {missing}"

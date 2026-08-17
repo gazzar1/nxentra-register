@@ -65,6 +65,20 @@ No global deadlock-freedom is claimed.
 - provider clearing accounts (posting-profile routed);
 - expected bank deposit (EBD) lifecycle;
 - founder-reviewed supported bank matching (manual match/confirm);
+- supervised general manual journals — **EGP-only at header AND line level**.
+  The manual HTTP surface routes exclusively through the manual-journal
+  process boundary (`accounting.commands.*_manual_journal_entry`): each
+  wrapper owns `serialized_company_admission` (held through the shared
+  command's whole commit, one serializable ordering with
+  `activate_pilot_profile`) and the shared command runs the canonical
+  `require_pilot_journal_currency` validator at its currency-resolution
+  points — header, every line, `amount_currency` foreign legs, and any
+  non-1 exchange rate all reject BEFORE any event/sequence/row (blank keeps
+  its book-at-home-currency meaning). Ordinary EGP debit/credit, dimensions,
+  counterparties, descriptions and the existing kind surface are unchanged;
+  DRAFT/INCOMPLETE delete stays available as cleanup. Manual sales invoices,
+  credit notes, customer receipts, EDIM financial commit and FX revaluation
+  remain UNSUPPORTED and are not addressed by this boundary;
 - shadow-ledger reports and exception review.
 
 ### Excluded capabilities (each is a runtime gate, not UI hiding)
@@ -76,7 +90,7 @@ No global deadlock-freedom is claimed.
 | Disputes / chargebacks | `Capability.SHOPIFY_DISPUTES` — `process_dispute` skips (no row, no event) |
 | Inventory / COGS / FIFO | `Capability.INVENTORY` (Option B) — items forced NON_STOCK; no inventory/COGS module mappings; no cost fetch, no FX cost conversion |
 | Purchasing / accounts payable | `Capability.PURCHASING_ACCOUNTING` — purchase documents (bills, orders, goods receipts, credit notes), purchase-originated journals, and the vendor-payment / AP-allocation workflow. Three enforcement layers: module admission (`ModuleEnabled` raises before the enablement lookup, and both enable doors — `CompanyModulesView.put` + onboarding Step 4 — refuse enabling with locked full-payload validation before any write), the `purchases` command boundary (a **serialized** `requires_capability` gate on every command — the Company admission row is locked, the profile re-read fresh, and the lock held through the mutation's commit, so admission and `activate_pilot_profile` share one serializable ordering), and `record_vendor_payment` (same serialized gate; stable 403 `pilot_scope_blocked` at its route). Preflight drift detection runs on durable canonical evidence — surviving documents, immutable purchase/AP events, vendor payment allocations — not only document rows. Manual journals — including vendor-tagged lines — remain governed by the ordinary manual-journal rules |
-| Foreign currency | `require_pilot_currency` at settlement/bank/Shopify ingestion; EGP-only proven at go-live |
+| Foreign currency | `require_pilot_currency` at settlement/bank/Shopify ingestion; `require_pilot_journal_currency` (header + every line + `amount_currency` legs + non-1 rates) at the serialized manual-journal process boundary; EGP-only proven at go-live and by the `non_egp_journal_line_data` / `fx_line_residue` / `fx_header_rate_residue` drift codes |
 | Multiple users | `Capability.ADD_MEMBER` on every membership path |
 | Legacy banking module | `Capability.LEGACY_BANKING` |
 | Unsafe automatic bank matching | `Capability.UNSAFE_BANK_MATCH` (manual matching retained) |
