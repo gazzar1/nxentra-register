@@ -30,23 +30,26 @@ from .commands import (
     # Analysis dimension commands
     create_analysis_dimension,
     create_dimension_value,
-    # Journal entry commands
-    create_journal_entry,
+    # Journal entry commands — the manual HTTP surface goes through the A4
+    # manual-journal process boundary wrappers (serialized Company admission +
+    # canonical EGP validation), NEVER the shared journal cores directly.
+    # delete_journal_entry stays direct: cleanup-only, no wrapper by design.
+    create_manual_journal_entry,
     delete_account,
     delete_analysis_dimension,
     delete_dimension_value,
     delete_journal_entry,
-    post_journal_entry,
+    post_manual_journal_entry,
     remove_account_analysis_default,
-    reverse_journal_entry,
-    save_journal_entry_complete,
+    reverse_manual_journal_entry,
+    save_manual_journal_entry_complete,
     # Account analysis default commands
     set_account_analysis_default,
     # Journal line analysis commands
     update_account,
     update_analysis_dimension,
     update_dimension_value,
-    update_journal_entry,
+    update_manual_journal_entry,
 )
 from .models import (
     Account,
@@ -466,7 +469,7 @@ class JournalEntryListCreateView(APIView):
                 )
 
         # Execute command (this emits the event)
-        result = create_journal_entry(
+        result = create_manual_journal_entry(
             actor,
             date=data.get("date"),
             memo=data.get("memo", ""),
@@ -622,7 +625,7 @@ class JournalEntryDetailView(APIView):
             kwargs["lines"] = command_lines
 
         # Execute command (this emits the event)
-        result = update_journal_entry(actor, entry.id, **kwargs)
+        result = update_manual_journal_entry(actor, entry.id, **kwargs)
 
         if not result.success:
             return Response(
@@ -727,7 +730,7 @@ class JournalSaveCompleteView(APIView):
             print(f"[DEBUG] JournalSaveCompleteView - Total command_lines: {len(command_lines)}")
 
         # Execute command (this emits the event)
-        result = save_journal_entry_complete(actor, entry.id, **kwargs)
+        result = save_manual_journal_entry_complete(actor, entry.id, **kwargs)
 
         if not result.success:
             return Response(
@@ -756,7 +759,7 @@ class JournalPostView(APIView):
         actor = resolve_actor(request)
         # Permission check happens in command
 
-        result = post_journal_entry(actor, pk)
+        result = post_manual_journal_entry(actor, pk)
 
         if not result.success:
             return Response(
@@ -790,7 +793,7 @@ class JournalReverseView(APIView):
         actor = resolve_actor(request)
         # Permission check happens in command
 
-        result = reverse_journal_entry(actor, pk)
+        result = reverse_manual_journal_entry(actor, pk)
 
         if not result.success:
             return Response(

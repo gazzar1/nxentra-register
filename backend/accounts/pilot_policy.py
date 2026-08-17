@@ -35,6 +35,7 @@ import dataclasses
 import functools
 import logging
 from contextlib import contextmanager
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 
 from django.db import transaction
@@ -430,6 +431,98 @@ def require_pilot_currency(company, currency, *, context: str = "") -> None:
             f"{context or 'Financial input'} currency {cur} is not supported; the "
             f"constrained pilot ingests {PILOT_CURRENCY} only.",
         )
+
+
+def require_pilot_journal_currency(
+    company,
+    *,
+    header_currency,
+    line_currencies=(),
+    amount_currency_values=(),
+    exchange_rates=(),
+    context: str = "",
+) -> None:
+    """Canonical EGP-only invariant for the MANUAL general-journal process.
+
+    Validates the RESULTING journal state (header + every line, after the
+    command's normal currency resolution) for a pilot company:
+
+      - the header currency must be blank/EGP;
+      - every line currency must be blank/EGP;
+      - no line may represent a foreign leg via ``amount_currency``;
+      - no exchange rate other than 1 may be supplied (EGP books convert
+        nothing, so a non-1 rate is either a foreign conversion or drift the
+        ``fx_*_rate_residue`` preflight codes would immediately flag).
+
+    Blank/absent values keep the established "book at home currency" semantics
+    of :func:`require_pilot_currency`; profile ``NONE`` is never restricted and
+    unknown constrained profiles fail closed through :func:`is_pilot` /
+    ``_BLOCKED_BY_PROFILE`` exactly like every other gate.
+
+    LOCK CONTRACT: this helper takes NO lock itself. It must be called only
+    while the manual-journal process boundary owns the Company admission lock
+    (``serialized_company_admission``) — the shared journal commands invoke it
+    at their currency-resolution points solely on behalf of that boundary.
+    """
+    if not is_pilot(company):
+        return
+    label = context or "Manual journal"
+
+    def _blocked(detail: str):
+        return PilotScopeBlocked(NON_EGP_INGESTION, profile_of(company), detail)
+
+    header = _norm_currency(header_currency)
+    if header and header != PILOT_CURRENCY:
+        raise _blocked(
+            f"{label}: header currency {header} is not supported; the constrained pilot books {PILOT_CURRENCY} only."
+        )
+    for line_currency in line_currencies:
+        cur = _norm_currency(line_currency)
+        if cur and cur != PILOT_CURRENCY:
+            raise _blocked(
+                f"{label}: line currency {cur} is not supported; the constrained pilot books {PILOT_CURRENCY} only."
+            )
+    for value in amount_currency_values:
+        if value is None or value == "":
+            continue
+        raise _blocked(
+            f"{label}: amount_currency={value} represents a foreign-currency leg; "
+            f"the constrained pilot books {PILOT_CURRENCY} only."
+        )
+    for rate in exchange_rates:
+        if rate is None or rate == "":
+            continue
+        try:
+            rate_value = Decimal(str(rate))
+        except InvalidOperation:
+            raise _blocked(f"{label}: exchange rate {rate!r} is not a valid rate.") from None
+        if rate_value != 1:
+            raise _blocked(
+                f"{label}: exchange rate {rate_value} is not supported; {PILOT_CURRENCY}-only books convert nothing."
+            )
+
+
+def canonical_journal_currency(company, currency):
+    """Manual-journal boundary: the canonical currency SPELLING to PERSIST for a
+    pilot company, so the value written to journal events MATCHES what
+    :func:`require_pilot_journal_currency` validated (that gate compares via
+    :func:`_norm_currency`, i.e. ``strip().upper()``, but never rewrites the
+    value). A pilot only ever reaches persistence here with blank or an EGP
+    spelling, so this collapses e.g. ``"egp"`` / ``" egp "`` to canonical
+    ``"EGP"`` and leaves blank as blank.
+
+    Without it a lowercase ``"egp"`` would VALIDATE (normalized) yet PERSIST
+    verbatim, then (a) trip the CASE-SENSITIVE post-time FX branch
+    (``line_currency != functional_currency`` → a bogus ``egp→EGP`` rate lookup
+    that fails the post) and (b) be miscounted by the case-sensitive
+    ``non_egp_*`` / ``fx_*`` residue preflight — both consumers compare against
+    an uppercase-``EGP`` company config. Profile ``NONE`` is returned UNCHANGED
+    (no EGP invariant, and currency casing is not this boundary's concern);
+    already-canonical values are returned unchanged.
+    """
+    if not is_pilot(company):
+        return currency
+    return _norm_currency(currency)
 
 
 def skip_pilot_currency(company, currency, *, task: str = "") -> dict | None:
