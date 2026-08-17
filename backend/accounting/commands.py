@@ -88,6 +88,7 @@ from accounting.posted_journal_boundary import emit_posted_journal
 from accounts.authz import ActorContext, require
 from accounts.pilot_policy import (
     Capability,
+    canonical_journal_currency,
     require_pilot_journal_currency,
     requires_capability,
     serialized_company_admission,
@@ -978,7 +979,12 @@ def create_journal_entry(
 
     line_data = []
     resolved_line_currencies: list = []
-    resolved_line_rates: list = []
+    # RAW supplied line rates for the manual EGP gate: an explicitly-supplied
+    # exchange_rate of 0 is falsey and must NOT be coalesced to the entry rate
+    # before the non-1-rate check sees it, else an invalid 0 rate slips the gate
+    # and is silently booked as 1. (The coalesced ``line_exchange_rate`` below
+    # stays the PERSISTED value.)
+    supplied_line_rates: list = []
     resolved_amount_currency_values: list = []
     if lines:
         account_ids = [line.get("account_id") for line in lines if line.get("account_id")]
@@ -999,7 +1005,7 @@ def create_journal_entry(
             line_exchange_rate = line.get("exchange_rate") or entry_exchange_rate
             amount_currency = line.get("amount_currency")
             resolved_line_currencies.append(line_currency)
-            resolved_line_rates.append(line_exchange_rate)
+            supplied_line_rates.append(line.get("exchange_rate"))
             resolved_amount_currency_values.append(amount_currency)
             line_data.append(
                 JournalLineData(
@@ -1029,9 +1035,17 @@ def create_journal_entry(
             header_currency=entry_currency,
             line_currencies=resolved_line_currencies,
             amount_currency_values=resolved_amount_currency_values,
-            exchange_rates=[entry_exchange_rate, *resolved_line_rates],
+            # RAW supplied rates (not the ``or "1.0"``-coalesced values) so an
+            # explicitly-supplied 0 rate is rejected, not silently booked as 1.
+            exchange_rates=[exchange_rate, *supplied_line_rates],
             context="Manual journal create",
         )
+        # Persist the CANONICAL currency spelling a pilot was validated against,
+        # so a lowercase "egp" cannot later trip the case-sensitive post-time FX
+        # branch or the case-sensitive EGP residue preflight (no-op for NONE).
+        entry_currency = canonical_journal_currency(actor.company, entry_currency)
+        for _ld in line_data:
+            _ld["currency"] = canonical_journal_currency(actor.company, _ld["currency"])
 
     event_data = JournalEntryCreatedData(
         entry_public_id=str(entry_public_id),
@@ -1161,6 +1175,14 @@ def update_journal_entry(
         if not allowed:
             return CommandResult.fail(reason)
 
+    # A4 manual boundary: persist the CANONICAL currency spelling for a pilot
+    # (blank stays blank) so a lowercase "egp" never survives to trip the
+    # case-sensitive post-time FX branch or the EGP residue preflight. Applied
+    # BEFORE change tracking so an "egp"→"EGP" no-op records no spurious change.
+    # No-op off the manual process and for profile NONE.
+    if _process_token is _MANUAL_JOURNAL_PROCESS and currency is not None:
+        currency = canonical_journal_currency(actor.company, currency)
+
     # Track changes
     changes = {}
     current_date = aggregate.date or (entry.date.isoformat() if entry.date else None)
@@ -1187,6 +1209,9 @@ def update_journal_entry(
 
     # Update lines if provided
     line_data = None
+    # RAW supplied line rates for the manual EGP gate (see create_journal_entry):
+    # an explicit 0 must reach the non-1-rate check un-coalesced.
+    supplied_line_rates: list = []
     if lines is not None:
         changes["lines"] = {"old": "replaced", "new": f"{len(lines)} lines"}
         line_data = []
@@ -1213,7 +1238,12 @@ def update_journal_entry(
 
             account = accounts[account_id]
             line_currency = line.get("currency") or entry.currency or actor.company.default_currency
+            # Canonical currency spelling for a pilot (blank stays blank); no-op
+            # off the manual process and for profile NONE.
+            if _process_token is _MANUAL_JOURNAL_PROCESS:
+                line_currency = canonical_journal_currency(actor.company, line_currency)
             line_exchange_rate = line.get("exchange_rate") or entry.exchange_rate
+            supplied_line_rates.append(line.get("exchange_rate"))
             line_data.append(
                 JournalLineData(
                     line_no=line_no,
@@ -1246,9 +1276,16 @@ def update_journal_entry(
             header_currency=currency if currency is not None else aggregate.currency,
             line_currencies=[ln.get("currency") for ln in resulting_lines],
             amount_currency_values=[ln.get("amount_currency") for ln in resulting_lines],
+            # RAW supplied line rates when NEW lines are provided (so an explicit
+            # 0 is rejected, not coalesced to the entry rate); existing aggregate
+            # rates are already-committed values validated as-is.
             exchange_rates=[
                 exchange_rate if exchange_rate is not None else aggregate.exchange_rate,
-                *[ln.get("exchange_rate") for ln in resulting_lines],
+                *(
+                    supplied_line_rates
+                    if line_data is not None
+                    else [ln.get("exchange_rate") for ln in resulting_lines]
+                ),
             ],
             context="Manual journal update",
         )
@@ -1313,6 +1350,8 @@ def save_journal_entry_complete(
         return CommandResult.fail("Journal entry not found.")
 
     line_data = None
+    # RAW supplied line rates for the manual EGP gate (see create_journal_entry).
+    supplied_line_rates: list = []
     if lines is not None:
         line_data = []
         account_ids = [
@@ -1336,7 +1375,12 @@ def save_journal_entry_complete(
 
             account = accounts[account_id]
             line_currency = line.get("currency") or entry.currency or actor.company.default_currency
+            # Canonical currency spelling for a pilot (blank stays blank); no-op
+            # off the manual process and for profile NONE.
+            if _process_token is _MANUAL_JOURNAL_PROCESS:
+                line_currency = canonical_journal_currency(actor.company, line_currency)
             line_exchange_rate = line.get("exchange_rate") or entry.exchange_rate
+            supplied_line_rates.append(line.get("exchange_rate"))
             line_data.append(
                 JournalLineData(
                     line_no=line_no,
@@ -1392,11 +1436,16 @@ def save_journal_entry_complete(
     lines_payload = line_data if line_data is not None else aggregate.lines
     current_date = aggregate.date or (entry.date.isoformat() if entry.date else None)
     resolved_exchange_rate = exchange_rate if exchange_rate is not None else aggregate.exchange_rate
+    resolved_currency = currency if currency is not None else aggregate.currency
+    # Canonical currency spelling for a pilot (blank stays blank); no-op off the
+    # manual process and for profile NONE.
+    if _process_token is _MANUAL_JOURNAL_PROCESS:
+        resolved_currency = canonical_journal_currency(actor.company, resolved_currency)
     payload = {
         "date": date.isoformat() if hasattr(date, "isoformat") else (str(date) if date is not None else current_date),
         "memo": memo if memo is not None else (aggregate.memo or ""),
         "memo_ar": memo_ar if memo_ar is not None else (aggregate.memo_ar or ""),
-        "currency": currency if currency is not None else aggregate.currency,
+        "currency": resolved_currency,
         "exchange_rate": str(resolved_exchange_rate) if resolved_exchange_rate is not None else None,
         "lines": lines_payload,
     }
@@ -1411,7 +1460,13 @@ def save_journal_entry_complete(
             header_currency=payload["currency"],
             line_currencies=[ln.get("currency") for ln in lines_payload],
             amount_currency_values=[ln.get("amount_currency") for ln in lines_payload],
-            exchange_rates=[payload["exchange_rate"], *[ln.get("exchange_rate") for ln in lines_payload]],
+            # RAW supplied line rates when NEW lines are provided (so an explicit
+            # 0 is rejected, not coalesced to the entry rate); existing aggregate
+            # rates are already-committed values validated as-is.
+            exchange_rates=[
+                payload["exchange_rate"],
+                *(supplied_line_rates if line_data is not None else [ln.get("exchange_rate") for ln in lines_payload]),
+            ],
             context="Manual journal save-complete",
         )
 
@@ -1512,6 +1567,12 @@ def post_journal_entry_or_raise(actor: ActorContext, entry_id: int, *, _process_
     # default, and stamping that on the header/event misreports the JE
     # (live: JE-000070 showed "1 USD = 1.000000 EGP" over lines converted @48).
     entry_currency = aggregate.currency or entry.currency or actor.company.default_currency
+    # A4 manual boundary: canonical currency spelling for a pilot. The manual
+    # write paths already persist canonical EGP, so this is defense-in-depth
+    # (it heals any pre-existing lowercase drift) that keeps the posted event
+    # "EGP" and the case-sensitive FX branch below un-mis-routed. No-op for NONE.
+    if _process_token is _MANUAL_JOURNAL_PROCESS:
+        entry_currency = canonical_journal_currency(actor.company, entry_currency)
 
     # A4 manual boundary: header-level EGP validation before the line loop —
     # only for the manual process (per-line validation happens at each line's
@@ -1577,6 +1638,11 @@ def post_journal_entry_or_raise(actor: ActorContext, entry_id: int, *, _process_
             or actor.company.functional_currency
             or actor.company.default_currency
         )
+        # Canonical currency spelling for a pilot (defense in depth) so the
+        # case-sensitive functional-currency compare below is never mis-routed
+        # by a lowercase "egp". No-op off the manual process and for NONE.
+        if _process_token is _MANUAL_JOURNAL_PROCESS:
+            line_currency = canonical_journal_currency(actor.company, line_currency)
         line_exchange_rate = Decimal(
             str(line.get("exchange_rate") or aggregate.exchange_rate or entry.exchange_rate or "1.0")
         )
@@ -1865,6 +1931,13 @@ def _reverse_posted_journal_entry(
             return CommandResult.fail(f"Account {account_public_id} not found.")
 
         analysis_tags = line.get("analysis_tags", [])
+        rev_line_currency = (
+            line.get("currency") or aggregate.currency or original.currency or actor.company.default_currency
+        )
+        # Canonical currency spelling for a pilot (defense in depth); no-op off
+        # the manual process and for NONE.
+        if _process_token is _MANUAL_JOURNAL_PROCESS:
+            rev_line_currency = canonical_journal_currency(actor.company, rev_line_currency)
         reversal_line_data.append(
             JournalLineData(
                 line_no=line.get("line_no"),
@@ -1875,10 +1948,7 @@ def _reverse_posted_journal_entry(
                 debit=str(line.get("credit", "0")),
                 credit=str(line.get("debit", "0")),
                 amount_currency=str(line.get("amount_currency")) if line.get("amount_currency") is not None else None,
-                currency=line.get("currency")
-                or aggregate.currency
-                or original.currency
-                or actor.company.default_currency,
+                currency=rev_line_currency,
                 exchange_rate=str(
                     line.get("exchange_rate") or aggregate.exchange_rate or original.exchange_rate or "1.0"
                 ),
@@ -1892,6 +1962,13 @@ def _reverse_posted_journal_entry(
             ).to_dict()
         )
 
+    # Canonical reversal header currency for a pilot (blank stays blank), reused
+    # by the gate below and the reversal payload; no-op off the manual process
+    # and for NONE.
+    rev_header_currency = aggregate.currency or original.currency or actor.company.default_currency
+    if _process_token is _MANUAL_JOURNAL_PROCESS:
+        rev_header_currency = canonical_journal_currency(actor.company, rev_header_currency)
+
     # A4 manual boundary: validate the RESULTING reversal (header + every line)
     # before the sequence allocation and both emits — only for the manual
     # process. Under an ACTIVE pilot a foreign POSTED original cannot exist
@@ -1901,7 +1978,7 @@ def _reverse_posted_journal_entry(
     if _process_token is _MANUAL_JOURNAL_PROCESS:
         require_pilot_journal_currency(
             actor.company,
-            header_currency=aggregate.currency or original.currency or actor.company.default_currency,
+            header_currency=rev_header_currency,
             line_currencies=[ln.get("currency") for ln in reversal_line_data],
             amount_currency_values=[ln.get("amount_currency") for ln in reversal_line_data],
             exchange_rates=[
@@ -1930,7 +2007,7 @@ def _reverse_posted_journal_entry(
         ),
         kind=JournalEntry.Kind.REVERSAL,
         period=reversal_period,
-        currency=aggregate.currency or original.currency or actor.company.default_currency,
+        currency=rev_header_currency,
         exchange_rate=str(aggregate.exchange_rate or original.exchange_rate or "1.0"),
         posted_at=posted_at.isoformat(),
         posted_by_id=actor.user.id,

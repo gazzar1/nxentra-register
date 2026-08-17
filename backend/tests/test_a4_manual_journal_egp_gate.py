@@ -497,3 +497,242 @@ class TestJournalCurrencyPreflight:
             codes = _preflight_codes(company, **kwargs)
             assert not (codes & NEW_CODES), f"clean EGP books false-positived: {codes & NEW_CODES} ({kwargs})"
             assert "non_egp_journal_data" not in codes
+
+
+# --------------------------------------------------------------------------- #
+# E. Non-canonical EGP spelling is normalized on persist (not admitted raw)
+# --------------------------------------------------------------------------- #
+# The gate compares via strip().upper() but must not persist the raw spelling:
+# a lowercase "egp" would otherwise (a) trip the case-sensitive post-time FX
+# branch (`line_currency != functional_currency` → a bogus egp→EGP rate lookup
+# that fails the post) and (b) be miscounted by the case-sensitive non_egp_*
+# residue preflight. The manual boundary canonicalizes the PERSISTED value.
+class TestNonCanonicalEgpCanonicalized:
+    def test_lowercase_egp_header_and_line_persist_canonical_on_create(
+        self, actor_context, company, cash_account, revenue_account
+    ):
+        _make_pilot(company)
+        r = create_manual_journal_entry(
+            actor_context,
+            date=date.today(),
+            memo="lower egp",
+            currency="egp",
+            lines=_lines(cash_account, revenue_account, currency="egp"),
+        )
+        assert r.success, r.error
+        assert r.data.currency == "EGP"
+        assert {ln.currency for ln in r.data.lines.all()} == {"EGP"}
+
+    def test_whitespace_mixed_case_egp_canonicalized(self, actor_context, company, cash_account, revenue_account):
+        _make_pilot(company)
+        r = create_manual_journal_entry(
+            actor_context,
+            date=date.today(),
+            memo="pad egp",
+            currency=" Egp ",
+            lines=_lines(cash_account, revenue_account),
+        )
+        assert r.success, r.error
+        assert r.data.currency == "EGP"
+
+    def test_lowercase_egp_full_lifecycle_posts_clean_no_fx_lookup(
+        self, actor_context, company, cash_account, revenue_account
+    ):
+        """The manifestation Codex flagged: a lowercase "egp" journal must post
+        cleanly as EGP (no case-sensitive FX branch / missing-rate failure)."""
+        _make_pilot(company)
+        r = create_manual_journal_entry(
+            actor_context,
+            date=date.today(),
+            memo="lower lifecycle",
+            currency="egp",
+            lines=_lines(cash_account, revenue_account, currency="egp"),
+        )
+        assert r.success, r.error
+        assert save_manual_journal_entry_complete(actor_context, r.data.id).success
+        posted = post_manual_journal_entry(actor_context, r.data.id)
+        assert posted.success, posted.error  # would fail "Missing egp→EGP rate" without the fix
+        assert posted.data.status == JournalEntry.Status.POSTED
+        assert posted.data.currency == "EGP"
+        assert {ln.currency for ln in posted.data.lines.all()} == {"EGP"}
+
+    def test_lowercase_egp_leaves_no_currency_residue(self, actor_context, company, cash_account, revenue_account):
+        """A canonicalized "egp" journal is NOT flagged by the case-sensitive
+        residue preflight (it would fire non_egp_journal_data on a raw "egp")."""
+        _make_pilot(company)
+        r = create_manual_journal_entry(
+            actor_context,
+            date=date.today(),
+            memo="lower residue",
+            currency="egp",
+            lines=_lines(cash_account, revenue_account, currency="egp"),
+        )
+        assert r.success, r.error
+        codes = _preflight_codes(company, for_activation=True)
+        assert "non_egp_journal_data" not in codes
+        assert "non_egp_journal_line_data" not in codes
+        assert not (codes & NEW_CODES)
+
+    def test_lowercase_egp_canonicalized_on_update(self, actor_context, company, cash_account, revenue_account):
+        _make_pilot(company)
+        seeded = create_manual_journal_entry(
+            actor_context, date=date.today(), memo="seed", currency="EGP", lines=_lines(cash_account, revenue_account)
+        )
+        assert seeded.success, seeded.error
+        updated = update_manual_journal_entry(
+            actor_context,
+            seeded.data.id,
+            currency="egp",
+            lines=_lines(cash_account, revenue_account, currency="egp", amount="150.00"),
+        )
+        assert updated.success, updated.error
+        seeded.data.refresh_from_db()
+        assert seeded.data.currency == "EGP"
+        assert {ln.currency for ln in seeded.data.lines.all()} == {"EGP"}
+
+    def test_lowercase_egp_canonicalized_on_save_complete(self, actor_context, company, cash_account, revenue_account):
+        _make_pilot(company)
+        seeded = create_manual_journal_entry(
+            actor_context, date=date.today(), memo="seed", currency="EGP", lines=_lines(cash_account, revenue_account)
+        )
+        assert seeded.success, seeded.error
+        done = save_manual_journal_entry_complete(
+            actor_context,
+            seeded.data.id,
+            currency="egp",
+            lines=_lines(cash_account, revenue_account, currency="egp"),
+        )
+        assert done.success, done.error
+        seeded.data.refresh_from_db()
+        assert seeded.data.currency == "EGP"
+        assert {ln.currency for ln in seeded.data.lines.all()} == {"EGP"}
+
+    def test_none_profile_currency_casing_untouched(self, actor_context, company, cash_account, revenue_account):
+        """Gating proof: canonicalization is pilot-only. A NONE company keeps
+        its currency casing exactly as before (no behavior change)."""
+        assert company.pilot_profile == Company.PilotProfile.NONE
+        company.functional_currency = "usd"
+        company.default_currency = "usd"
+        company.save()
+        r = create_manual_journal_entry(
+            actor_context,
+            date=date.today(),
+            memo="none casing",
+            currency="usd",
+            lines=_lines(cash_account, revenue_account, currency="usd"),
+        )
+        assert r.success, r.error
+        assert r.data.currency == "usd"  # verbatim — NOT canonicalized under NONE
+
+
+# --------------------------------------------------------------------------- #
+# F. An explicitly-supplied exchange_rate of 0 is REJECTED (not coerced to 1)
+# --------------------------------------------------------------------------- #
+# 0 is falsey; the `... or "1.0"` resolution would coerce it to 1 before the
+# non-1-rate gate saw it. The gate must receive the RAW supplied rate so a 0 is
+# blocked like any other non-1 rate. A NONE profile is unaffected (the validator
+# early-returns), and a supplied 0 is still coalesced to 1 for the PERSISTED
+# value on the accepting paths.
+class TestZeroExchangeRateRejected:
+    def test_zero_header_rate_rejected_on_create(self, actor_context, company, cash_account, revenue_account):
+        _make_pilot(company)
+        before = _state(company)
+        with pytest.raises(PilotScopeBlocked) as exc:
+            create_manual_journal_entry(
+                actor_context,
+                date=date.today(),
+                memo="hdr 0",
+                currency="EGP",
+                exchange_rate=Decimal("0"),
+                lines=_lines(cash_account, revenue_account),
+            )
+        assert exc.value.capability == NON_EGP_INGESTION
+        assert _state(company) == before
+
+    def test_zero_line_rate_rejected_on_create(self, actor_context, company, cash_account, revenue_account):
+        _make_pilot(company)
+        before = _state(company)
+        with pytest.raises(PilotScopeBlocked):
+            create_manual_journal_entry(
+                actor_context,
+                date=date.today(),
+                memo="line 0",
+                currency="EGP",
+                lines=_lines(cash_account, revenue_account, exchange_rate=Decimal("0")),
+            )
+        assert _state(company) == before
+
+    def test_zero_rate_various_falsey_forms_rejected(self, actor_context, company, cash_account, revenue_account):
+        _make_pilot(company)
+        before = _state(company)
+        for zero in (0, Decimal("0"), 0.0, "0", Decimal("0.000000")):
+            with pytest.raises(PilotScopeBlocked):
+                create_manual_journal_entry(
+                    actor_context,
+                    date=date.today(),
+                    memo="zero form",
+                    currency="EGP",
+                    exchange_rate=zero,
+                    lines=_lines(cash_account, revenue_account),
+                )
+            assert _state(company) == before
+
+    def test_zero_line_rate_rejected_on_update(self, actor_context, company, cash_account, revenue_account):
+        _make_pilot(company)
+        seeded = create_manual_journal_entry(
+            actor_context, date=date.today(), memo="seed", currency="EGP", lines=_lines(cash_account, revenue_account)
+        )
+        assert seeded.success, seeded.error
+        before = _state(company)
+        with pytest.raises(PilotScopeBlocked):
+            update_manual_journal_entry(
+                actor_context,
+                seeded.data.id,
+                lines=_lines(cash_account, revenue_account, exchange_rate=Decimal("0")),
+            )
+        assert _state(company) == before
+
+    def test_zero_line_rate_rejected_on_save_complete(self, actor_context, company, cash_account, revenue_account):
+        _make_pilot(company)
+        seeded = create_manual_journal_entry(
+            actor_context, date=date.today(), memo="seed", currency="EGP", lines=_lines(cash_account, revenue_account)
+        )
+        assert seeded.success, seeded.error
+        before = _state(company)
+        with pytest.raises(PilotScopeBlocked):
+            save_manual_journal_entry_complete(
+                actor_context,
+                seeded.data.id,
+                lines=_lines(cash_account, revenue_account, exchange_rate=Decimal("0")),
+            )
+        assert _state(company) == before
+
+    def test_negative_rate_still_rejected(self, actor_context, company, cash_account, revenue_account):
+        """Sanity: a truthy non-1 rate was already rejected and stays rejected."""
+        _make_pilot(company)
+        before = _state(company)
+        with pytest.raises(PilotScopeBlocked):
+            create_manual_journal_entry(
+                actor_context,
+                date=date.today(),
+                memo="neg",
+                currency="EGP",
+                exchange_rate=Decimal("-1"),
+                lines=_lines(cash_account, revenue_account),
+            )
+        assert _state(company) == before
+
+    def test_none_profile_zero_rate_unaffected(self, actor_context, company, cash_account, revenue_account):
+        """Gating proof: the raw-rate change only feeds the pilot gate, which
+        early-returns for NONE — a 0 rate is coerced to 1 and accepted as before."""
+        _make_none_egp(company)
+        r = create_manual_journal_entry(
+            actor_context,
+            date=date.today(),
+            memo="none 0 rate",
+            currency="EGP",
+            exchange_rate=Decimal("0"),
+            lines=_lines(cash_account, revenue_account),
+        )
+        assert r.success, r.error
+        assert Decimal(r.data.exchange_rate) == Decimal("1.0")

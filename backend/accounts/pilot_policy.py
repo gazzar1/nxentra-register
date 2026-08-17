@@ -502,6 +502,29 @@ def require_pilot_journal_currency(
             )
 
 
+def canonical_journal_currency(company, currency):
+    """Manual-journal boundary: the canonical currency SPELLING to PERSIST for a
+    pilot company, so the value written to journal events MATCHES what
+    :func:`require_pilot_journal_currency` validated (that gate compares via
+    :func:`_norm_currency`, i.e. ``strip().upper()``, but never rewrites the
+    value). A pilot only ever reaches persistence here with blank or an EGP
+    spelling, so this collapses e.g. ``"egp"`` / ``" egp "`` to canonical
+    ``"EGP"`` and leaves blank as blank.
+
+    Without it a lowercase ``"egp"`` would VALIDATE (normalized) yet PERSIST
+    verbatim, then (a) trip the CASE-SENSITIVE post-time FX branch
+    (``line_currency != functional_currency`` → a bogus ``egp→EGP`` rate lookup
+    that fails the post) and (b) be miscounted by the case-sensitive
+    ``non_egp_*`` / ``fx_*`` residue preflight — both consumers compare against
+    an uppercase-``EGP`` company config. Profile ``NONE`` is returned UNCHANGED
+    (no EGP invariant, and currency casing is not this boundary's concern);
+    already-canonical values are returned unchanged.
+    """
+    if not is_pilot(company):
+        return currency
+    return _norm_currency(currency)
+
+
 def skip_pilot_currency(company, currency, *, task: str = "") -> dict | None:
     """Scheduled/background variant of :func:`require_pilot_currency`: returns the
     structured ``SKIPPED_PILOT_SCOPE`` dict (no mutation, no retry) instead of
