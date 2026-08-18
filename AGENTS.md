@@ -12,11 +12,14 @@ contradicts the **live code**, the code is authoritative until the discrepancy
 is reconciled through a deliberate decision (ADR or the owning roadmap item).
 Documents bind *intent and rules*; they do not override observed runtime
 behavior, and you must not "fix" working code solely to match a doc claim that
-a tracked item still contradicts. Known open discrepancies are recorded in
-[NEXT_TASKS.md](NEXT_TASKS.md) / [docs/adr/](docs/adr/) — for example, the
-`SalesInvoice` classification in the finance event-first policy is command-owned
-in code today but described there as a projected read model (open **A110**);
-follow the code and the A110 decision, not the stale line.
+a tracked item still contradicts. For **who writes a given financial fact**, the
+[canonical money spine](docs/architecture/canonical-money-spine.md) (the writer
+registry) and the live code are authoritative — not the illustrative model list
+in the finance event-first policy, several of whose named models (e.g.
+`SalesInvoice` — open **A110**; `BankStatement` — a documented Rule 1 hybrid)
+are command-owned in code today. Known open discrepancies are recorded in
+[NEXT_TASKS.md](NEXT_TASKS.md) / [docs/adr/](docs/adr/); follow the code and the
+owning decision, not the stale line.
 
 ## What Nxentra is (and its current boundary)
 
