@@ -101,10 +101,11 @@ outcomes remain **A5 (open)**.
   ([.github/workflows/pr-architecture-contract.yml](../../.github/workflows/pr-architecture-contract.yml))
   running the deterministic body checker, with pure tests in
   [backend/tests/test_pr_architecture_contract.py](../../backend/tests/test_pr_architecture_contract.py).
-- **Honest status: the new workflow is initially advisory.** It runs and fails
-  loudly on every PR, but it does not block merges until a later GitHub
-  ruleset / branch-protection step marks it as required. The existing `main`
-  Quality Gate is not modified by this PR. Rules 1–4 enforcement remains
+- **Honest status: the new workflow was initially advisory** (that later
+  branch-protection step has since happened — see *Transition to required*
+  below). It runs and fails loudly on every PR; as a required status check it
+  now blocks non-admin merges. The existing `main` Quality Gate was not
+  modified by this PR. Rules 1–4 enforcement remains
   partial and is strengthened incrementally through A3 and A5; Rule 5 is
   materially enforced for ISOLATED_SHADOW_LEDGER_V1 by A4; Rule 6 begins
   through the PR evidence contract.
@@ -157,9 +158,17 @@ executed as `python trusted-base/scripts/check_pr_architecture_contract.py`
 with the PR body supplied only via `PR_BODY`, and concluded **success**
 ("PR Architecture Contract: OK"). No PR code was checked out or executed and
 no secrets were available. The trusted-base design is operationally proven;
-`PR Architecture Contract` is now eligible to become a required status check
-through a separate, deliberate branch-protection change (not configured by
-this PR).
+`PR Architecture Contract` became eligible to be a required status check
+through a separate, deliberate branch-protection change.
+
+**Transition to required (branch protection observed 2026-08-18).** That
+branch-protection change has since been made: `main`'s required status checks
+now include both `Quality Gate` and `PR Architecture Contract`. The check is
+therefore **required**, not advisory — the constitution's enforcement note, the
+working-practice protocol (`ENGINEERING_PROTOCOL.md`), and the workflow header
+comment are aligned to this live state. (`enforce_admins` is off, so a repo
+admin may still bypass the required check; that is an operator escape hatch,
+not advisory status.)
 
 **Known governance debt recorded here:** the ADR directory contains a
 numbering collision — two `0002-*` files

@@ -18,9 +18,10 @@ name: PR Architecture Contract
 #
 # `edited` re-runs the check when the body is fixed.
 #
-# ADVISORY until a later ruleset/branch-protection step marks it required —
-# and per ADR-0003, only after this trusted design is proven on a real PR
-# following its merge to main.
+# REQUIRED status check on `main` (branch protection observed 2026-08-18),
+# alongside Quality Gate. It began advisory (PR #109) and became required after
+# this trusted design was proven on a real PR post-merge — see ADR-0003
+# ("Transition to required").
 
 on:
   pull_request_target:

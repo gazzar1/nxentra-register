@@ -146,8 +146,9 @@ architecture debt has **not** been eliminated by adopting this document.
 | Rule 5 — versioned contracts | **Materially enforced for `ISOLATED_SHADOW_LEDGER_V1` by A4** (merged PR #107): runtime gates at shared boundaries, transactional audited activation, exhaustive setup/go-live preflight, ~80 acceptance tests. |
 | Rule 6 — evidence-gated refactors | **Begins with the PR contract** (`.github/pull_request_template.md` + the `PR Architecture Contract` check): every PR must state its evidence. |
 
-**Advisory-first rollout:** the `PR Architecture Contract` workflow runs on
-every pull request and fails loudly on non-compliance, but it is **initially
-advisory** — it does not block merges until a later GitHub ruleset /
-branch-protection step marks it as required. The existing `main` Quality Gate
-is not modified by this governance baseline.
+**Enforcement rollout:** the `PR Architecture Contract` workflow runs on
+every pull request and fails loudly on non-compliance. It began **advisory**
+(PR #109); a subsequent branch-protection change has since made it a
+**required** status check on `main`, alongside the existing `main` Quality
+Gate. [ADR-0003](../adr/0003-architecture-constitution-governance.md) records
+the advisory→required transition.
