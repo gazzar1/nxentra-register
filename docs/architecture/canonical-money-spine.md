@@ -78,7 +78,7 @@ and verified by [`backend/accounts/pilot_preflight.py`](../../backend/accounts/p
 | Derived readers | Reconciliation matching, bank-rec UI, close checklist. |
 | Legacy / competing | **Legacy `bank_connector` app still coexists**: `bank_connector.BankAccount` / `bank_connector.BankStatement` / `BankTransaction` / `ReconciliationException` ([backend/bank_connector/models.py](../../backend/bank_connector/models.py)) are a separate, older representation. The legacy matcher UI was retired (A166) and the pilot blocks the module (`Capability.LEGACY_BANKING`); the preflight flags any legacy rows (`legacy_bank_data`). Disposition: frozen legacy, removal unscheduled. |
 | Contract status | **In scope** (EGP only — `require_pilot_currency` rejects foreign statements before any row is written; a postable Cash/Bank GL account is a go-live requirement). |
-| Known gap | Raw ingestion is not event-first (accepted hybrid, per the precedent documented in the module itself); statement currency is not validated against an account currency (GL `Account` has no currency field). |
+| Known gap | Raw ingestion is not event-first (a documented Rule 1 hybrid / tracked debt — no ADR grants a Rule 1 exception for it; precedent documented in the module itself); statement currency is not validated against an account currency (GL `Account` has no currency field). |
 
 ## 6. Reconciliation match
 
