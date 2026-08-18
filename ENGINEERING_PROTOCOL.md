@@ -1,5 +1,14 @@
 # Nxentra Engineering Protocol
 
+> **Authority ordering:** [AGENTS.md](AGENTS.md), the
+> [architecture constitution](docs/architecture/architecture-constitution.md),
+> accepted [ADRs](docs/adr/), the enforced
+> [pull-request template](.github/pull_request_template.md), and the required
+> `PR Architecture Contract` check **govern**. This protocol is **working
+> practice only** — where it and any of the above disagree, they win. Its
+> change-review template (section 5) supplements the enforced pull-request
+> template and must never replace or weaken it.
+
 This document defines the minimum engineering rules for changing Nxentra safely.
 
 Nxentra is not a simple CRUD app. It contains:
