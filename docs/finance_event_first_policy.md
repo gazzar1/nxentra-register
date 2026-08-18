@@ -18,6 +18,8 @@ Related documents:
 
 Every accounting movement starts as an emitted event. `SalesInvoice`, `JournalEntry`, `BankStatement`, `CustomerBalance`, `InventoryBalance` — all of these are **read models** projected from events. They are replayable, deletable, and regenerable. The event log is none of those things.
 
+> **Known open discrepancy (A110) — code is authoritative here.** `SalesInvoice` is currently created directly by a command (`sales/commands.py`), i.e. it is command-owned today, **not** yet a purely event-projected read model as this list implies. The classification is tracked as open **A110** (see `NEXT_TASKS.md`). Until A110 is decided, **follow the live code** — do not refactor existing `SalesInvoice` writes to match this line. The event-first *rule* (emit an event for new accounting movements; never patch a read model to fix a disagreement) still binds new work.
+
 Consequences:
 - If you need to change accounting state, **emit an event** — never UPDATE a read model directly from a view, command, or shell session
 - If you need a new aggregate (e.g., "open AR by salesperson"), **add a projection** — never query across commands

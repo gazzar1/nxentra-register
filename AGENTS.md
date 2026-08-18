@@ -7,6 +7,17 @@ documents and states the rules you may not break. When this file and a linked
 authoritative document disagree, **the linked document wins** and this file
 must be corrected.
 
+**Live code beats stale prose.** Where an authoritative document's prose
+contradicts the **live code**, the code is authoritative until the discrepancy
+is reconciled through a deliberate decision (ADR or the owning roadmap item).
+Documents bind *intent and rules*; they do not override observed runtime
+behavior, and you must not "fix" working code solely to match a doc claim that
+a tracked item still contradicts. Known open discrepancies are recorded in
+[NEXT_TASKS.md](NEXT_TASKS.md) / [docs/adr/](docs/adr/) — for example, the
+`SalesInvoice` classification in the finance event-first policy is command-owned
+in code today but described there as a projected read model (open **A110**);
+follow the code and the A110 decision, not the stale line.
+
 ## What Nxentra is (and its current boundary)
 
 Nxentra is a **reconciliation-first, event-sourced accounting platform** for
