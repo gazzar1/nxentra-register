@@ -902,9 +902,12 @@ def test_purge_rerun_verifies_convergence_before_clearing_markers(company, owner
     assert ProjectionStatus.objects.filter(company=company, status=ProjectionStatus.Status.REBUILDING).exists()
     assert "projection_rebuild_in_flight" in _run_preflight(company, for_activation=True)
 
-    # Repair (remove the poison event so the recovery rebuild can converge),
-    # then the re-run rebuilds, verifies, and clears.
+    # Repair (remove the poison event so the recovery rebuild can converge).
+    # A --no-rebuild re-run must honor the opt-out and leave the markers;
+    # the plain re-run then rebuilds, verifies, and clears.
     BusinessEvent.objects.filter(company=company, idempotency_key="a4-purge-alive-1").delete()
+    call_command("purge_orphan_je_events", "--company-id", company.id, "--no-rebuild")
+    assert ProjectionStatus.objects.filter(company=company, status=ProjectionStatus.Status.REBUILDING).exists()
     call_command("purge_orphan_je_events", "--company-id", company.id)
     assert not ProjectionStatus.objects.filter(company=company, status=ProjectionStatus.Status.REBUILDING).exists()
     assert "projection_rebuild_in_flight" not in _run_preflight(company, for_activation=True)

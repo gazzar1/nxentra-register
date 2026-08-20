@@ -255,7 +255,18 @@ class Command(BaseCommand):
                 # every marked projection and only then verifies and clears.
                 if not options["dry_run"]:
                     marked = _marked_rebuilding(company)
-                    if marked:
+                    if marked and options["no_rebuild"]:
+                        # Honor the explicit rebuild opt-out even in recovery:
+                        # the operator may need to inspect/repair state before
+                        # allowing a destructive replay. Markers stay, so
+                        # activation keeps refusing.
+                        self.stdout.write(
+                            self.style.WARNING(
+                                f"  --no-rebuild: leaving {len(marked)} stranded REBUILDING marker(s) "
+                                "in place. Re-run without --no-rebuild to rebuild and clear."
+                            )
+                        )
+                    elif marked:
                         self.stdout.write(f"  Recovering {len(marked)} stranded REBUILDING marker(s).")
                         self._rebuild_and_clear(company, marked)
                 return
