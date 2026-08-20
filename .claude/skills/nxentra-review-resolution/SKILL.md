@@ -77,8 +77,11 @@ After the clean verdict, every finding thread gets a reply naming the fixing
 commit, then resolution (AGENTS.md: no unresolved threads at merge):
 
 ```bash
-gh api graphql -f query='query { repository(owner: "<owner>", name: "<repo>") {
-  pullRequest(number: <N>) { reviewThreads(first: 50) { nodes { id isResolved path } } } } }'
+# PAGINATED — a bounded first page can hide threads past the boundary:
+gh api graphql --paginate -f query='query($endCursor: String) {
+  repository(owner: "<owner>", name: "<repo>") {
+    pullRequest(number: <N>) { reviewThreads(first: 100, after: $endCursor) {
+      nodes { id isResolved path } pageInfo { hasNextPage endCursor } } } } }'
 # per thread:
 gh api graphql -f query='mutation($tid: ID!, $body: String!) {
   addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $tid, body: $body}) { comment { id } } }' \

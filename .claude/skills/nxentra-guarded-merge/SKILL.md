@@ -17,10 +17,14 @@ HEAD=$(git rev-parse HEAD)   # the reviewed head you intend to merge
 # (a) Codex verdict names $HEAD (clean verdicts are ISSUE comments):
 gh pr view <N> --json comments --jq '.comments[-3:]'
 
-# (b) zero unresolved review threads:
-gh api graphql -f query='query { repository(owner: "<owner>", name: "<repo>") {
-  pullRequest(number: <N>) { reviewThreads(first: 50) { nodes { isResolved } } } } }' \
-  --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length'
+# (b) zero unresolved review threads — PAGINATED (a bounded first-page query
+#     can read 0 while an unresolved thread sits past the page boundary):
+gh api graphql --paginate -f query='query($endCursor: String) {
+  repository(owner: "<owner>", name: "<repo>") {
+    pullRequest(number: <N>) { reviewThreads(first: 100, after: $endCursor) {
+      nodes { isResolved } pageInfo { hasNextPage endCursor } } } } }' \
+  --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length' \
+  | awk '{s+=$1} END {print s}'   # sum across pages; must be 0
 
 # (c) every required check SUCCESS on the head COMMIT (not just "the PR"):
 gh api repos/<owner>/<repo>/commits/$HEAD/check-runs \
@@ -56,9 +60,15 @@ git fetch origin main -q
 git rev-parse "origin/main^{tree}"    # must equal ↓
 git rev-parse "$HEAD^{tree}"
 
-# post-merge main CI to green (blocking — a red main is a stop condition):
-gh run list --branch main --limit 1 --json databaseId --jq '.[0].databaseId'
-gh run watch <run-id> --exit-status
+# post-merge main CI to green (blocking — a red main is a stop condition).
+# Pin the run to the MERGE COMMIT: immediately after merging, the new run may
+# not exist yet, so `--branch main --limit 1` can return the PREVIOUS green
+# run and declare success for CI that never ran. Poll by --commit until the
+# run appears, then watch it:
+MERGE_SHA=$(gh pr view <N> --json mergeCommit --jq '.mergeCommit.oid')
+until RUN_ID=$(gh run list --commit "$MERGE_SHA" --limit 1 --json databaseId \
+  --jq '.[0].databaseId' 2>/dev/null) && [ -n "$RUN_ID" ]; do sleep 15; done
+gh run watch "$RUN_ID" --exit-status
 
 # local sync — ALWAYS ff-only (reset --hard nukes uncommitted work):
 git checkout main && git pull --ff-only
