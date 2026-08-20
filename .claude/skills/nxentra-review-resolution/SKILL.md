@@ -30,15 +30,23 @@ against an exact commit.
   issues…") — a review-object poll alone will miss them. Poll both:
 
 ```bash
-# reviews (finding rounds) — PAGINATED: the REST default is one 30-item page,
-# so an unpaginated `.[-1]` reads a STALE round once a PR accumulates many
-# reviews (a long Codex back-and-forth gets there fast):
-gh api --paginate repos/<owner>/<repo>/pulls/<N>/reviews \
-  --jq '.[] | select(.user.login=="chatgpt-codex-connector[bot]") | .id' | wc -l
-# latest round's inline findings (last id across ALL pages)
-RID=$(gh api --paginate repos/<owner>/<repo>/pulls/<N>/reviews \
-  --jq '.[] | select(.user.login=="chatgpt-codex-connector[bot]") | .id' | tail -1)
-gh api "repos/<owner>/<repo>/pulls/<N>/reviews/$RID/comments" --jq '.[] | {path, line, body}'
+set -euo pipefail   # run as a script: a failed query must abort, never feed
+                    # a stale/partial value into the next step
+
+# reviews (finding rounds) — PAGINATED (the REST default is one 30-item page,
+# so an unpaginated `.[-1]` reads a STALE round on a long back-and-forth) and
+# CAPTURED FIRST (piping gh straight into tail would let a failed later page
+# hand tail a stale id; set -e aborts on the capture instead):
+ids=$(gh api --paginate repos/<owner>/<repo>/pulls/<N>/reviews \
+  --jq '.[] | select(.user.login=="chatgpt-codex-connector[bot]") | .id')
+printf '%s\n' "$ids" | wc -l            # round count
+RID=$(printf '%s\n' "$ids" | tail -1)   # latest round across ALL pages
+
+# latest round's inline findings — PAGINATED too (one round can exceed the
+# 30-item default; an unpaginated read would silently drop findings, which
+# would then get "resolved" without ever being inspected):
+gh api --paginate "repos/<owner>/<repo>/pulls/<N>/reviews/$RID/comments" --jq '.[] | {path, line, body}'
+
 # clean verdict (issue comment)
 gh pr view <N> --json comments --jq '.comments[-3:]'
 ```
