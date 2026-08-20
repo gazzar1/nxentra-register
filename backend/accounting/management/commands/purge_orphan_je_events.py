@@ -198,30 +198,54 @@ class Command(BaseCommand):
             # Real run: delete events + rebuild projections. The delete decides
             # PROJECTION_REBUILD on the LOCKED admission row (authoritative —
             # a purge admitted on a cached NONE profile cannot commit after a
-            # concurrent activation), then deletes under that lock.
+            # concurrent activation), then deletes under that lock. The affected
+            # projections are marked REBUILDING inside the SAME admission
+            # transaction: the admission lock is necessarily released before the
+            # (multi-transaction) rebuilds run, and without the markers a pilot
+            # activation could slip into that gap, pass preflight, and then
+            # strand the read models when the gated rebuild refuses. With the
+            # markers, activation's `projection_rebuild_in_flight` preflight
+            # check refuses until every rebuild completes (or the operator
+            # repairs a failed one) — fail closed, in either ordering.
             from accounts.pilot_policy import require_supported, serialized_company_admission
+            from projections.models import ProjectionStatus
 
-            with serialized_company_admission(company.pk) as locked_company:
-                require_supported(locked_company, Capability.PROJECTION_REBUILD)
-                deleted, _ = BusinessEvent.objects.filter(id__in=orphan_event_ids).delete()
-                self.stdout.write(self.style.SUCCESS(f"  Deleted {deleted} BusinessEvent rows."))
-
-            if options["no_rebuild"]:
-                self.stdout.write(self.style.WARNING("  --no-rebuild: skipping projection rebuild."))
-                self.stdout.write(
-                    self.style.WARNING("  Run `run_projections --rebuild` manually to materialize the cleaned ledger.")
-                )
-                return
-
-            # Rebuild journal_entry_read_model + balance projections so the
-            # ledger reflects only the surviving events.
-            for projection in (
+            rebuild_projections = (
                 "journal_entry_read_model",
                 "account_balance",
                 "dimension_balance",
                 "period_account_balance",
                 "subledger_balance",
-            ):
+            )
+
+            with serialized_company_admission(company.pk) as locked_company:
+                require_supported(locked_company, Capability.PROJECTION_REBUILD)
+                deleted, _ = BusinessEvent.objects.filter(id__in=orphan_event_ids).delete()
+                for projection in rebuild_projections:
+                    status_row, _created = ProjectionStatus.objects.get_or_create(
+                        company=locked_company, projection_name=projection
+                    )
+                    status_row.mark_rebuild_started(0)
+                self.stdout.write(self.style.SUCCESS(f"  Deleted {deleted} BusinessEvent rows."))
+
+            if options["no_rebuild"]:
+                self.stdout.write(self.style.WARNING("  --no-rebuild: skipping projection rebuild."))
+                self.stdout.write(
+                    self.style.WARNING(
+                        "  Run `run_projections --rebuild` manually to materialize the cleaned ledger. "
+                        "The affected projections stay marked REBUILDING (activation refuses via "
+                        "projection_rebuild_in_flight) until you do."
+                    )
+                )
+                return
+
+            # Rebuild journal_entry_read_model + balance projections so the
+            # ledger reflects only the surviving events. Each projection's
+            # REBUILDING marker (set under the admission lock above) is cleared
+            # only after ITS rebuild succeeds — a crash leaves the marker in
+            # place, so activation keeps refusing (projection_rebuild_in_flight)
+            # until the operator repairs the divergence.
+            for projection in rebuild_projections:
                 self.stdout.write(f"  Rebuilding projection: {projection}")
                 call_command(
                     "run_projections",
@@ -229,6 +253,8 @@ class Command(BaseCommand):
                     f"--projection={projection}",
                     "--rebuild",
                 )
+                status_row = ProjectionStatus.objects.get(company=company, projection_name=projection)
+                status_row.mark_rebuild_completed()
 
             self.stdout.write(self.style.SUCCESS("Done. Ledger now reflects only surviving source documents."))
 

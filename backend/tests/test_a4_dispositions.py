@@ -810,3 +810,54 @@ def test_preflight_detects_incomplete_configured_calendar(company, owner_members
     codes = _run_preflight(company)
     assert "period_calendar_incomplete" in codes
     assert "period_dates_drift" not in codes
+
+
+# --------------------------------------------------------------------------- #
+# Codex round-3 fixes: properties REPORT routes 403 under the pilot, and the
+# purge command's REBUILDING markers keep activation excluded through the
+# post-purge rebuild gap
+# --------------------------------------------------------------------------- #
+@pytest.mark.django_db
+def test_route_properties_report_returns_403_for_pilot(company, user, owner_membership, api_client):
+    from accounts.models import CompanyModule
+
+    _make_pilot(company)
+    # Even a stale enabled row must not reopen the route: the capability check
+    # runs BEFORE the enablement lookup.
+    CompanyModule.objects.create(company=company, module_key="properties", is_enabled=True)
+    api_client.force_authenticate(user=user)
+    resp = api_client.get("/api/properties/reports/rent-roll/")
+    assert resp.status_code == 403, resp.content
+
+
+@pytest.mark.django_db
+def test_purge_marks_projections_rebuilding_inside_admission_and_blocks_activation(company, owner_membership):
+    """NONE-profile purge with --no-rebuild: the REBUILDING markers are set in
+    the same admission transaction as the delete, so an activation slipping
+    into the post-commit gap refuses on projection_rebuild_in_flight until the
+    rebuild actually runs."""
+    from django.core.management import call_command
+
+    from events.models import BusinessEvent
+    from projections.models import ProjectionStatus
+
+    # An orphan candidate: a sales-invoice memo with no surviving invoice row.
+    BusinessEvent.objects.create(
+        company=company,
+        event_type="journal_entry.posted",
+        aggregate_type="JournalEntry",
+        aggregate_id="je-orphan-1",
+        idempotency_key="a4-purge-orphan-1",
+        company_sequence=990301,
+        data={"memo": "Sales Invoice INV-000042"},
+    )
+    call_command("purge_orphan_je_events", "--company-id", company.id, "--no-rebuild")
+    assert not BusinessEvent.objects.filter(company=company, idempotency_key="a4-purge-orphan-1").exists()
+    rebuilding = set(
+        ProjectionStatus.objects.filter(company=company, status=ProjectionStatus.Status.REBUILDING).values_list(
+            "projection_name", flat=True
+        )
+    )
+    assert "journal_entry_read_model" in rebuilding and "account_balance" in rebuilding
+    # The activation-mode preflight refuses while the drain is outstanding.
+    assert "projection_rebuild_in_flight" in _run_preflight(company, for_activation=True)

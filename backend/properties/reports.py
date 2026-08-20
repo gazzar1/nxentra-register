@@ -18,6 +18,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.authz import resolve_actor
+from accounts.module_permissions import ModuleEnabled
 
 from .models import (
     Lease,
@@ -56,7 +57,8 @@ def _company_or_400(request):
 class RentRollView(APIView):
     """All active leases with current installment status."""
 
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request):
         company, err = _company_or_400(request)
@@ -125,7 +127,8 @@ class RentRollView(APIView):
 class OverdueBalancesView(APIView):
     """Lessees with outstanding overdue amounts."""
 
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request):
         company, err = _company_or_400(request)
@@ -184,7 +187,8 @@ class OverdueBalancesView(APIView):
 class LeaseExpiryReportView(APIView):
     """Leases expiring within 30/60/90 days."""
 
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request):
         company, err = _company_or_400(request)
@@ -246,7 +250,8 @@ class LeaseExpiryReportView(APIView):
 class OccupancySummaryView(APIView):
     """Occupied vs vacant units, by property."""
 
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request):
         company, err = _company_or_400(request)
@@ -297,7 +302,8 @@ class OccupancySummaryView(APIView):
 class MonthlyNetIncomeView(APIView):
     """Rental income minus expenses per property per month."""
 
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request):
         company, err = _company_or_400(request)
@@ -363,7 +369,8 @@ class MonthlyNetIncomeView(APIView):
 class RentCollectionsView(APIView):
     """Schedule total_due vs total_allocated per period."""
 
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request):
         company, err = _company_or_400(request)
@@ -419,7 +426,8 @@ class RentCollectionsView(APIView):
 class ExpenseBreakdownView(APIView):
     """Expenses by property and category."""
 
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request):
         company, err = _company_or_400(request)
@@ -492,7 +500,8 @@ class ExpenseBreakdownView(APIView):
 class DepositLiabilityView(APIView):
     """Current deposit balance per lease."""
 
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request):
         company, err = _company_or_400(request)
@@ -574,7 +583,8 @@ class DepositLiabilityView(APIView):
 class PropertyDashboardView(APIView):
     """Dashboard summary data for property management."""
 
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request):
         company, err = _company_or_400(request)
@@ -695,7 +705,8 @@ class PropertyDashboardView(APIView):
 class PropertyAlertsView(APIView):
     """Expiry warnings and overdue notices."""
 
-    permission_classes = [IsAuthenticated]
+    module_key = "properties"
+    permission_classes = [IsAuthenticated, ModuleEnabled]
 
     def get(self, request):
         company, err = _company_or_400(request)
