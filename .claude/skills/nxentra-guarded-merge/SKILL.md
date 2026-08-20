@@ -37,9 +37,15 @@ if [ "$unresolved" -ne 0 ]; then
   exit 1
 fi
 
-# (c) every required check SUCCESS on the head COMMIT (not just "the PR"):
-gh api repos/<owner>/<repo>/commits/$HEAD/check-runs \
-  --jq '.check_runs[] | [.name, .conclusion] | @tsv' | sort -u
+# (c) every required check SUCCESS on the head COMMIT (not just "the PR") —
+#     fail-closed: capture first so a failed query aborts instead of being
+#     masked by a downstream pipe stage's exit code:
+if ! check_runs=$(gh api "repos/<owner>/<repo>/commits/$HEAD/check-runs" \
+  --jq '.check_runs[] | [.name, .conclusion] | @tsv'); then
+  echo "check-runs query FAILED — gate NOT verified, do not merge"
+  exit 1
+fi
+printf '%s\n' "$check_runs" | sort -u
 # (a superseded failure plus a later success for the same check name is fine —
 #  the LATEST run per name is what counts; gh pr checks <N> shows that view)
 
@@ -67,9 +73,12 @@ gh pr merge <N> --squash --match-head-commit $HEAD
 gh pr view <N> --json state,mergeCommit
 git fetch origin main -q
 
-# TREE-IDENTITY: the squash tree must be byte-identical to the reviewed head
-git rev-parse "origin/main^{tree}"    # must equal ↓
-git rev-parse "$HEAD^{tree}"
+# TREE-IDENTITY: the squash tree must be byte-identical to the reviewed head —
+# an explicit assertion, not an eyeball comparison:
+if [ "$(git rev-parse "origin/main^{tree}")" != "$(git rev-parse "$HEAD^{tree}")" ]; then
+  echo "TREE MISMATCH between merged main and the reviewed head — investigate before anything else"
+  exit 1
+fi
 
 # post-merge main CI to green (blocking — a red main is a stop condition).
 # Pin the run to the MERGE COMMIT: immediately after merging, the new run may
