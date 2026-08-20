@@ -724,3 +724,39 @@ def test_preflight_clean_company_fires_none_of_the_new_codes(company, user, owne
         "projection_rebuild_in_flight",
     }
     assert not (codes & new_codes), codes & new_codes
+
+
+# --------------------------------------------------------------------------- #
+# Route-level 403s — view exception handlers must NOT swallow the stable
+# PilotScopeBlocked (Codex P2s on PR #123: patch's 500-with-traceback wrapper
+# and the receipt view's 400 wrapper both converted the 403)
+# --------------------------------------------------------------------------- #
+@pytest.mark.django_db
+def test_route_invoice_patch_returns_403_for_pilot(company, user, owner_membership, api_client):
+    from accounts.models import CompanyModule
+
+    _make_pilot(company)
+    _grant(company, owner_membership, "sales.invoice.update")
+    CompanyModule.objects.create(company=company, module_key="sales", is_enabled=True)
+    api_client.force_authenticate(user=user)
+    resp = api_client.patch("/api/sales/invoices/999999/", {}, format="json")
+    assert resp.status_code == 403, resp.content
+
+
+@pytest.mark.django_db
+def test_route_customer_receipt_returns_403_for_pilot(company, user, owner_membership, api_client):
+    _make_pilot(company)
+    _grant(company, owner_membership, "journal.post")
+    api_client.force_authenticate(user=user)
+    resp = api_client.post(
+        "/api/accounting/customer-receipts/",
+        {
+            "customer_id": 1,
+            "receipt_date": "2026-08-01",
+            "amount": "10.00",
+            "bank_account_id": 1,
+            "ar_control_account_id": 1,
+        },
+        format="json",
+    )
+    assert resp.status_code == 403, resp.content

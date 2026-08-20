@@ -490,8 +490,14 @@ class SalesInvoiceDetailView(APIView):
         # as a 500 with a JSON `detail` instead of Django's HTML error page —
         # otherwise the frontend can't parse the body and the user sees a
         # generic 'Failed to update invoice' toast (A72 diagnosed this).
+        # APIExceptions (e.g. the A4 PilotScopeBlocked 403) are NOT crashes:
+        # re-raise so DRF renders their stable status/body.
+        from rest_framework.exceptions import APIException
+
         try:
             result = update_sales_invoice(actor, pk, **serializer.validated_data)
+        except APIException:
+            raise
         except Exception as exc:
             logging.getLogger(__name__).exception("update_sales_invoice crashed: %s", exc)
             return Response(

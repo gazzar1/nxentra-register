@@ -2046,6 +2046,10 @@ class CustomerReceiptCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # APIExceptions (e.g. the A4 PilotScopeBlocked 403) are NOT crashes:
+        # re-raise so DRF renders their stable status/body.
+        from rest_framework.exceptions import APIException
+
         try:
             result = record_customer_receipt(
                 actor=actor,
@@ -2061,6 +2065,8 @@ class CustomerReceiptCreateView(APIView):
                 currency=receipt_currency,
                 exchange_rate=str(receipt_exchange_rate) if receipt_exchange_rate else "",
             )
+        except APIException:
+            raise
         except Exception as e:
             import traceback
 
