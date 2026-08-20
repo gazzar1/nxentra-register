@@ -39,13 +39,19 @@ set -euo pipefail   # run as a script: a failed query must abort, never feed
 # hand tail a stale id; set -e aborts on the capture instead):
 ids=$(gh api --paginate repos/<owner>/<repo>/pulls/<N>/reviews \
   --jq '.[] | select(.user.login=="chatgpt-codex-connector[bot]") | .id')
-printf '%s\n' "$ids" | wc -l            # round count
-RID=$(printf '%s\n' "$ids" | tail -1)   # latest round across ALL pages
+RID=$(printf '%s\n' "$ids" | tail -1)   # latest round across ALL pages ('' if none)
 
 # latest round's inline findings — PAGINATED too (one round can exceed the
 # 30-item default; an unpaginated read would silently drop findings, which
-# would then get "resolved" without ever being inspected):
-gh api --paginate "repos/<owner>/<repo>/pulls/<N>/reviews/$RID/comments" --jq '.[] | {path, line, body}'
+# would then get "resolved" without ever being inspected). GUARDED on a
+# non-empty RID: a clean FIRST round produces only the issue comment and no
+# review object, and an empty RID would make this call fail under set -e
+# before the verdict query below ever runs:
+if [ -n "$RID" ]; then
+  gh api --paginate "repos/<owner>/<repo>/pulls/<N>/reviews/$RID/comments" --jq '.[] | {path, line, body}'
+else
+  echo "no Codex review objects yet — the verdict, if any, is in the issue comments below"
+fi
 
 # clean verdict (issue comment)
 gh pr view <N> --json comments --jq '.comments[-3:]'
