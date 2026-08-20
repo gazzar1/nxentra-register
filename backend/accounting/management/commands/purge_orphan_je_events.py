@@ -80,12 +80,28 @@ REBUILD_PROJECTIONS = (
 )
 
 
-def _verify_and_clear_rebuild_markers(company, projections=REBUILD_PROJECTIONS) -> list[str]:
-    """Clear each projection's REBUILDING marker ONLY when its drain has
-    verifiably converged (zero lag, bookmark not paused). `run_projections
-    --rebuild` returns normally even when a handler failure or paused bookmark
-    stalls the drain, so completion of the command is NOT proof of a rebuilt
-    read model — the lag/pause check is. Returns descriptions of every marker
+def _marked_rebuilding(company) -> list[str]:
+    """The subset of REBUILD_PROJECTIONS whose ProjectionStatus is REBUILDING."""
+    from projections.models import ProjectionStatus
+
+    marked = set(
+        ProjectionStatus.objects.filter(
+            company=company,
+            projection_name__in=REBUILD_PROJECTIONS,
+            status=ProjectionStatus.Status.REBUILDING,
+        ).values_list("projection_name", flat=True)
+    )
+    return [name for name in REBUILD_PROJECTIONS if name in marked]
+
+
+def _verify_and_clear_rebuild_markers(company, projections) -> list[str]:
+    """Clear each projection's REBUILDING marker ONLY when its just-run rebuild
+    verifiably converged (zero lag, bookmark not paused). Valid ONLY
+    immediately after ``BaseProjection.rebuild`` ran for the projection: the
+    rebuild resets the bookmark and replays from scratch, so zero lag then
+    means fully replayed. Pre-existing bookmark state proves NOTHING — a
+    bookmark already past deleted events reads lag 0 while the read model
+    still carries their contributions. Returns descriptions of every marker
     left in place (empty == all clear)."""
     from events.models import EventBookmark
     from projections.base import projection_registry
@@ -232,23 +248,16 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.SUCCESS("  Nothing to purge — log is already clean."))
                 # Recovery path: a previous purge (--no-rebuild, or a crash
                 # after its delete committed) may have left REBUILDING markers
-                # behind. `run_projections --rebuild` never touches
-                # ProjectionStatus, so re-running THIS command after the manual
-                # rebuild is the documented way to verify convergence and clear
-                # them — otherwise the company would fail
-                # projection_rebuild_in_flight forever.
+                # behind. The ONLY proof of a rebuilt read model is PERFORMING
+                # the rebuild: a pre-existing bookmark can read lag 0 while the
+                # read model still carries deleted events' contributions (the
+                # bookmark was already past them), so this branch REBUILDS
+                # every marked projection and only then verifies and clears.
                 if not options["dry_run"]:
-                    stuck = _verify_and_clear_rebuild_markers(company)
-                    if stuck:
-                        self.stdout.write(
-                            self.style.WARNING(
-                                "  Rebuild marker(s) left in place — NOT converged: "
-                                + "; ".join(stuck)
-                                + ". Repair (run_projections --rebuild / resume the bookmark) and re-run."
-                            )
-                        )
-                    else:
-                        self.stdout.write("  Rebuild markers verified clear.")
+                    marked = _marked_rebuilding(company)
+                    if marked:
+                        self.stdout.write(f"  Recovering {len(marked)} stranded REBUILDING marker(s).")
+                        self._rebuild_and_clear(company, marked)
                 return
 
             if options["dry_run"]:
@@ -286,40 +295,43 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.WARNING("  --no-rebuild: skipping projection rebuild."))
                 self.stdout.write(
                     self.style.WARNING(
-                        "  Run `run_projections --rebuild` manually to materialize the cleaned ledger, "
-                        "then RE-RUN this command: it verifies each drain converged and clears the "
-                        "REBUILDING markers (activation refuses via projection_rebuild_in_flight "
-                        "until then)."
+                        "  RE-RUN this command (without --no-rebuild) to rebuild the marked "
+                        "projections and clear their REBUILDING markers (activation refuses via "
+                        "projection_rebuild_in_flight until then)."
                     )
                 )
                 return
 
-            # Rebuild journal_entry_read_model + balance projections so the
-            # ledger reflects only the surviving events. run_projections
-            # returning is NOT proof of convergence (a handler failure or
-            # paused bookmark stalls the drain but exits normally), so each
-            # projection's REBUILDING marker is cleared only after a VERIFIED
-            # zero-lag, unpaused drain — anything else keeps refusing
-            # activation until the operator repairs it.
-            for projection in REBUILD_PROJECTIONS:
-                self.stdout.write(f"  Rebuilding projection: {projection}")
-                call_command(
-                    "run_projections",
-                    f"--company={company.slug}",
-                    f"--projection={projection}",
-                    "--rebuild",
-                )
-            stuck = _verify_and_clear_rebuild_markers(company)
-            if stuck:
-                raise CommandError(
-                    "Rebuild did NOT converge for: "
-                    + "; ".join(stuck)
-                    + ". The REBUILDING marker(s) stay in place (activation keeps refusing via "
-                    "projection_rebuild_in_flight). Repair the drain and re-run this command "
-                    "to verify and clear."
-                )
+            self._rebuild_and_clear(company, list(REBUILD_PROJECTIONS))
 
             self.stdout.write(self.style.SUCCESS("Done. Ledger now reflects only surviving source documents."))
+
+    def _rebuild_and_clear(self, company, projections: list[str]) -> None:
+        """Rebuild each projection so the ledger reflects only the surviving
+        events, then clear its REBUILDING marker — but ONLY after a VERIFIED
+        converged drain. ``run_projections --rebuild`` resets the bookmark and
+        replays from scratch, yet it returns normally even when a handler
+        failure or paused bookmark stalls the replay, so the zero-lag/unpaused
+        check immediately after the reset-drain is the actual proof. A stalled
+        projection raises, its marker stays, and activation keeps refusing via
+        ``projection_rebuild_in_flight`` until the operator repairs the drain
+        and re-runs this command."""
+        for projection in projections:
+            self.stdout.write(f"  Rebuilding projection: {projection}")
+            call_command(
+                "run_projections",
+                f"--company={company.slug}",
+                f"--projection={projection}",
+                "--rebuild",
+            )
+        stuck = _verify_and_clear_rebuild_markers(company, projections)
+        if stuck:
+            raise CommandError(
+                "Rebuild did NOT converge for: "
+                + "; ".join(stuck)
+                + ". The REBUILDING marker(s) stay in place (activation keeps refusing via "
+                "projection_rebuild_in_flight). Repair the drain and re-run this command."
+            )
 
     @staticmethod
     def _extract_memo(event) -> str:
