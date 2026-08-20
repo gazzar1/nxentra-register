@@ -40,9 +40,7 @@ from __future__ import annotations
 
 import re
 
-from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
 
 from accounts.models import Company
 from accounts.rls import rls_bypass
@@ -68,6 +66,65 @@ ORPHAN_CANDIDATE_EVENT_TYPES = [
     "purchases.bill_created",
     "purchases.bill_posted",
 ]
+
+# The projections whose read models derive from the purged event types. Their
+# ProjectionStatus rows are marked REBUILDING inside the purge's admission
+# transaction and cleared only after a VERIFIED-converged rebuild.
+REBUILD_PROJECTIONS = (
+    "journal_entry_read_model",
+    "account_balance",
+    "dimension_balance",
+    "period_account_balance",
+    "subledger_balance",
+)
+
+
+def _marked_rebuilding(company) -> list[str]:
+    """The subset of REBUILD_PROJECTIONS whose ProjectionStatus is REBUILDING."""
+    from projections.models import ProjectionStatus
+
+    marked = set(
+        ProjectionStatus.objects.filter(
+            company=company,
+            projection_name__in=REBUILD_PROJECTIONS,
+            status=ProjectionStatus.Status.REBUILDING,
+        ).values_list("projection_name", flat=True)
+    )
+    return [name for name in REBUILD_PROJECTIONS if name in marked]
+
+
+def _verify_and_clear_rebuild_markers(company, projections) -> list[str]:
+    """Clear each projection's REBUILDING marker ONLY when its just-run rebuild
+    verifiably converged (zero lag, bookmark not paused). Valid ONLY
+    immediately after ``BaseProjection.rebuild`` ran for the projection: the
+    rebuild resets the bookmark and replays from scratch, so zero lag then
+    means fully replayed. Pre-existing bookmark state proves NOTHING — a
+    bookmark already past deleted events reads lag 0 while the read model
+    still carries their contributions. Returns descriptions of every marker
+    left in place (empty == all clear)."""
+    from events.models import EventBookmark
+    from projections.base import projection_registry
+    from projections.models import ProjectionStatus
+
+    not_converged: list[str] = []
+    for name in projections:
+        status_row = ProjectionStatus.objects.filter(
+            company=company, projection_name=name, status=ProjectionStatus.Status.REBUILDING
+        ).first()
+        if status_row is None:
+            continue
+        projection = projection_registry.get(name)
+        if projection is None:
+            not_converged.append(f"{name} (projection not registered)")
+            continue
+        lag = projection.get_lag(company)
+        paused = EventBookmark.objects.filter(consumer_name=name, company=company, is_paused=True).exists()
+        if lag == 0 and not paused:
+            status_row.mark_rebuild_completed()
+        else:
+            detail = f"lag={lag}" + (", bookmark paused" if paused else "")
+            not_converged.append(f"{name} ({detail})")
+    return not_converged
 
 
 class Command(BaseCommand):
@@ -105,9 +162,36 @@ class Command(BaseCommand):
             except Company.DoesNotExist as exc:
                 raise CommandError("Company not found.") from exc
 
+            # Refuse INACTIVE companies outright: downstream rebuild tooling
+            # filters on is_active, so event surgery here could delete events
+            # and then silently skip the rebuild — reactivate first, then purge.
+            if not company.is_active:
+                raise CommandError(
+                    "Refusing to purge events for an INACTIVE company: the projection "
+                    "rebuild would silently no-op and the read models would go stale. "
+                    "Reactivate the company first."
+                )
+
             self.stdout.write(f"Purging orphan JE/source-doc events for: {company.name}")
             if options["dry_run"]:
                 self.stdout.write(self.style.WARNING("DRY RUN — no writes will be performed."))
+
+            # A4: refuse BEFORE any delete on a pilot company. The previous
+            # ordering deleted canonical events and only then crashed on the
+            # PROJECTION_REBUILD gate inside the rebuild — leaving durable
+            # events-vs-read-model divergence that the blocked rebuild cannot
+            # repair. Pilot recovery is the backup/G2 isolated-database drill,
+            # never in-place event surgery. (Decided on the live row here; the
+            # real delete below re-decides under the admission lock.)
+            from accounts.pilot_policy import Capability, is_supported
+
+            if not options["dry_run"] and not is_supported(company, Capability.PROJECTION_REBUILD):
+                raise CommandError(
+                    "Refusing to purge events for a constrained-pilot company: the "
+                    "post-purge projection rebuild is blocked (PROJECTION_REBUILD), so a "
+                    "purge would strand the read models. Pilot recovery goes through the "
+                    "backup/G2 drill, not in-place event surgery."
+                )
 
             # Build the "alive" set for each source-document type.
             alive_invoices = set(SalesInvoice.objects.filter(company=company).values_list("invoice_number", flat=True))
@@ -171,6 +255,29 @@ class Command(BaseCommand):
 
             if not orphan_event_ids:
                 self.stdout.write(self.style.SUCCESS("  Nothing to purge — log is already clean."))
+                # Recovery path: a previous purge (--no-rebuild, or a crash
+                # after its delete committed) may have left REBUILDING markers
+                # behind. The ONLY proof of a rebuilt read model is PERFORMING
+                # the rebuild: a pre-existing bookmark can read lag 0 while the
+                # read model still carries deleted events' contributions (the
+                # bookmark was already past them), so this branch REBUILDS
+                # every marked projection and only then verifies and clears.
+                if not options["dry_run"]:
+                    marked = _marked_rebuilding(company)
+                    if marked and options["no_rebuild"]:
+                        # Honor the explicit rebuild opt-out even in recovery:
+                        # the operator may need to inspect/repair state before
+                        # allowing a destructive replay. Markers stay, so
+                        # activation keeps refusing.
+                        self.stdout.write(
+                            self.style.WARNING(
+                                f"  --no-rebuild: leaving {len(marked)} stranded REBUILDING marker(s) "
+                                "in place. Re-run without --no-rebuild to rebuild and clear."
+                            )
+                        )
+                    elif marked:
+                        self.stdout.write(f"  Recovering {len(marked)} stranded REBUILDING marker(s).")
+                        self._rebuild_and_clear(company, marked)
                 return
 
             if options["dry_run"]:
@@ -179,36 +286,77 @@ class Command(BaseCommand):
                 )
                 return
 
-            # Real run: delete events + rebuild projections.
-            with transaction.atomic():
+            # Real run: delete events + rebuild projections. The delete decides
+            # PROJECTION_REBUILD on the LOCKED admission row (authoritative —
+            # a purge admitted on a cached NONE profile cannot commit after a
+            # concurrent activation), then deletes under that lock. The affected
+            # projections are marked REBUILDING inside the SAME admission
+            # transaction: the admission lock is necessarily released before the
+            # (multi-transaction) rebuilds run, and without the markers a pilot
+            # activation could slip into that gap, pass preflight, and then
+            # strand the read models when the gated rebuild refuses. With the
+            # markers, activation's `projection_rebuild_in_flight` preflight
+            # check refuses until every rebuild VERIFIABLY converges — fail
+            # closed, in either ordering.
+            from accounts.pilot_policy import require_supported, serialized_company_admission
+            from projections.models import ProjectionStatus
+
+            with serialized_company_admission(company.pk) as locked_company:
+                require_supported(locked_company, Capability.PROJECTION_REBUILD)
                 deleted, _ = BusinessEvent.objects.filter(id__in=orphan_event_ids).delete()
+                for projection in REBUILD_PROJECTIONS:
+                    status_row, _created = ProjectionStatus.objects.get_or_create(
+                        company=locked_company, projection_name=projection
+                    )
+                    status_row.mark_rebuild_started(0)
                 self.stdout.write(self.style.SUCCESS(f"  Deleted {deleted} BusinessEvent rows."))
 
             if options["no_rebuild"]:
                 self.stdout.write(self.style.WARNING("  --no-rebuild: skipping projection rebuild."))
                 self.stdout.write(
-                    self.style.WARNING("  Run `run_projections --rebuild` manually to materialize the cleaned ledger.")
+                    self.style.WARNING(
+                        "  RE-RUN this command (without --no-rebuild) to rebuild the marked "
+                        "projections and clear their REBUILDING markers (activation refuses via "
+                        "projection_rebuild_in_flight until then)."
+                    )
                 )
                 return
 
-            # Rebuild journal_entry_read_model + balance projections so the
-            # ledger reflects only the surviving events.
-            for projection in (
-                "journal_entry_read_model",
-                "account_balance",
-                "dimension_balance",
-                "period_account_balance",
-                "subledger_balance",
-            ):
-                self.stdout.write(f"  Rebuilding projection: {projection}")
-                call_command(
-                    "run_projections",
-                    f"--company={company.slug}",
-                    f"--projection={projection}",
-                    "--rebuild",
-                )
+            self._rebuild_and_clear(company, list(REBUILD_PROJECTIONS))
 
             self.stdout.write(self.style.SUCCESS("Done. Ledger now reflects only surviving source documents."))
+
+    def _rebuild_and_clear(self, company, projections: list[str]) -> None:
+        """Rebuild each projection so the ledger reflects only the surviving
+        events, then clear its REBUILDING marker — but ONLY after a VERIFIED
+        converged drain. The rebuild goes DIRECTLY through the canonical gated
+        choke point ``BaseProjection.rebuild`` (which resets the bookmark and
+        replays from scratch) — never through the ``run_projections`` CLI,
+        whose active-only company filter silently no-ops for a company it does
+        not select, which would let the verify step read a stale bookmark's
+        zero lag as proof. ``rebuild()`` itself returns normally even when a
+        handler failure or paused bookmark stalls the replay, so the
+        zero-lag/unpaused check immediately after the reset-drain is the
+        actual proof. A stalled projection raises, its marker stays, and
+        activation keeps refusing via ``projection_rebuild_in_flight`` until
+        the operator repairs the drain and re-runs this command."""
+        from projections.base import projection_registry
+
+        for projection_name in projections:
+            projection = projection_registry.get(projection_name)
+            if projection is None:
+                raise CommandError(f"Projection '{projection_name}' is not registered — cannot rebuild.")
+            self.stdout.write(f"  Rebuilding projection: {projection_name}")
+            replayed = projection.rebuild(company)
+            self.stdout.write(f"    Replayed {replayed} events")
+        stuck = _verify_and_clear_rebuild_markers(company, projections)
+        if stuck:
+            raise CommandError(
+                "Rebuild did NOT converge for: "
+                + "; ".join(stuck)
+                + ". The REBUILDING marker(s) stay in place (activation keeps refusing via "
+                "projection_rebuild_in_flight). Repair the drain and re-run this command."
+            )
 
     @staticmethod
     def _extract_memo(event) -> str:

@@ -20,10 +20,25 @@ for these gates.
     receipts, credit notes), purchase-originated journals, and the
     vendor-payment / AP-allocation posting workflow — manual journals (incl.
     vendor-tagged lines) remain governed by the ordinary manual-journal rules;
-  - currency / fiscal-configuration changes;
+  - currency / fiscal-configuration changes — period configuration AND the
+    period-date / current-period / fiscal-year-lifecycle doors (year close /
+    reopen mint or reverse fiscal structure); month-level ``close_period`` /
+    ``open_period`` remain the supported period lifecycle;
   - unsafe automatic bank match / unmatch / rematch;
   - in-app backup RESTORE (total-state overwrite) — export/download stay
-    available; G2 recovery is a separate isolated-database drill.
+    available; G2 recovery is a separate isolated-database drill;
+  - manual accounts-receivable: manually created sales invoices / credit notes
+    (create, update, post, void, draft delete) and customer receipts (cash
+    application) — the Shopify platform limb (``auto_created`` documents) is
+    the pilot's own supported workflow and stays open;
+  - EDIM financial commit (generic CSV→JE import): staging / mapping /
+    validation / preview remain available, committing to the ledger is blocked;
+  - FX revaluation (interactive endpoint + scheduled task) and exchange-rate
+    maintenance (rate create / update / delete + ECB auto-fetch) — EGP-only
+    books need no rate rows at all;
+  - the clinic / properties verticals at the module-enablement boundary
+    (``Capability.VERTICAL_MODULES``) — every vertical route 403s and the
+    properties scheduled tasks skip pilot companies.
 
 Profile ``NONE`` supports every capability (existing behavior unchanged). An
 unrecognized stored profile value fails closed (everything gated is blocked).
@@ -65,6 +80,29 @@ class Capability(StrEnum):
     # below; enforced at the canonical boundary backups.importer.restore_company
     # under the Company admission lock (export/download stay available).
     BACKUP_RESTORE = "backup_restore"
+    # Manual accounts-receivable: manually created sales invoices / credit notes
+    # and customer receipts (cash application). The platform limb — documents
+    # created with ``auto_created=True`` by the Shopify connector wrappers — is
+    # the pilot's supported workflow and is NOT gated by this capability.
+    MANUAL_AR = "manual_ar"
+    # EDIM commit: the one EDIM door that writes the ledger (create / auto-post
+    # journal entries from staged CSV records). Staging, mapping, validation and
+    # preview stay available; committing is blocked under the pilot.
+    EDIM_FINANCIAL_COMMIT = "edim_financial_commit"
+    # Currency revaluation: the interactive endpoint and the scheduled task that
+    # post ADJUSTMENT journals revaluing foreign balances. EGP-only books have
+    # nothing to revalue; any revaluation journal is pilot residue.
+    FX_REVALUATION = "fx_revaluation"
+    # Exchange-rate maintenance: creating / updating / deleting ExchangeRate rows
+    # and the ECB auto-fetch fallback inside ``ExchangeRate.get_rate``. A denied
+    # auto-fetch reads as a rate-miss (every consumer already quarantines, fails
+    # loudly, or skips on a missing rate — never books 1:1 on a gated path).
+    EXCHANGE_RATE_MAINTENANCE = "exchange_rate_maintenance"
+    # The clinic / properties verticals: dormant modules that post their own
+    # journals through vertical projections. Gated at the module-enablement
+    # boundary (see MODULE_CAPABILITIES) so every vertical route 403s before the
+    # enablement lookup; the properties scheduled tasks skip pilot companies.
+    VERTICAL_MODULES = "vertical_modules"
 
 
 # The constrained pilot ingests only the merchant's home currency, so no foreign
@@ -89,28 +127,26 @@ _BLOCKED_BY_PROFILE: dict[str, frozenset[str]] = {
 # unaffected (their ``ModuleEnabled`` behavior is unchanged).
 MODULE_CAPABILITIES: dict[str, Capability] = {
     "purchases": Capability.PURCHASING_ACCOUNTING,
+    "clinic": Capability.VERTICAL_MODULES,
+    "properties": Capability.VERTICAL_MODULES,
 }
 
 # Every OTHER registered optional module carries an explicit MODULE-ENABLEMENT
 # disposition here: it is currently NOT gated at the module-enablement boundary.
 # Ungated at module enablement does NOT mean process-certified, supported, or
 # safe for pilot use — several of these modules are blocked at deeper runtime
-# boundaries, and the process-level posture of the verticals is unresolved
-# pending the Pilot Process-Surface Completeness Assessment. This set has NO
-# runtime effect: it is consumed only by the module-enablement-disposition
-# architecture ratchet, which requires every registered optional module to be
-# either mapped in ``MODULE_CAPABILITIES`` or listed here, so a NEW optional
-# module cannot silently join this surface without a reviewed decision.
+# boundaries. This set has NO runtime effect: it is consumed only by the
+# module-enablement-disposition architecture ratchet, which requires every
+# registered optional module to be either mapped in ``MODULE_CAPABILITIES`` or
+# listed here, so a NEW optional module cannot silently join this surface
+# without a reviewed decision.
 #   - sales / shopify_connector — the pilot's own supported workflow;
 #   - inventory — enablement ungated; items are forced NON_STOCK by Option B
 #     (``Capability.INVENTORY``) at the item layer, not here;
 #   - stripe_connector — module visible; Stripe is blocked at connect / sync /
 #     webhook (``Capability.STRIPE``);
 #   - bank_connector — legacy; blocked at ``Capability.LEGACY_BANKING`` and
-#     surfaced as ``legacy_bank_data`` preflight residue;
-#   - clinic / properties — verticals that post their own journals; their
-#     posted-JE-emitter posture under the pilot is unresolved pending the
-#     read-only assessment tracked for the pre-G1 review, NOT decided here.
+#     surfaced as ``legacy_bank_data`` preflight residue.
 MODULES_UNGATED_AT_PILOT_ENABLEMENT: frozenset[str] = frozenset(
     {
         "sales",
@@ -118,8 +154,6 @@ MODULES_UNGATED_AT_PILOT_ENABLEMENT: frozenset[str] = frozenset(
         "inventory",
         "stripe_connector",
         "bank_connector",
-        "clinic",
-        "properties",
     }
 )
 
@@ -177,6 +211,32 @@ def deployment_has_pilot() -> bool:
 
     with rls_bypass():
         return Company.objects.exclude(pilot_profile=Company.PilotProfile.NONE).exists()
+
+
+class PilotDeploymentRefused(RuntimeError):
+    """Raised by ``require_no_pilot_deployment`` — an operator CLI refused to
+    run because this deployment hosts a constrained-pilot company."""
+
+
+def require_no_pilot_deployment(context: str) -> None:
+    """Operator-CLI entry refusal: raise when this DEPLOYMENT hosts a pilot
+    company (active or deactivated).
+
+    For seed/demo/test tooling that writes state below the runtime gates
+    (opens write barriers and RLS bypass, emits events, bulk-deletes). On the
+    pilot's single-tenant box such tooling must not run against ANY company —
+    seeded residue is partially preflight-indistinguishable from real merchant
+    data, so the refusal is deployment-wide, up front, before any write. The
+    check is deliberately point-in-time (no admission lock — there is nothing
+    meaningful to lock for a deployment-wide refusal); the drift backstop is
+    the ``seeded_event_residue`` preflight check.
+    """
+    if deployment_has_pilot():
+        raise PilotDeploymentRefused(
+            f"Refusing to run {context}: this deployment hosts a constrained-pilot "
+            "company. Seed/demo/import tooling writes state below the A4 runtime "
+            "gates and must never run on a pilot deployment."
+        )
 
 
 def is_supported(company, capability) -> bool:

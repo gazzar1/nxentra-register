@@ -13,9 +13,9 @@ from zoneinfo import ZoneInfo
 
 from celery import shared_task
 from django.conf import settings
-from django.db import transaction
 
 from accounts.models import Company
+from accounts.pilot_policy import Capability, serialized_company_admission, skip_if_unsupported
 from accounts.rls import rls_bypass
 from events.emitter import emit_event_no_actor
 from events.payload_policy import PayloadOrigin
@@ -93,13 +93,35 @@ def _process_company(company):
     _process_projections(company)
 
 
-@transaction.atomic
 def _post_due(company, line):
-    """Transition a single schedule line from UPCOMING to DUE."""
-    with command_writes_allowed():
-        line.status = RentScheduleLine.ScheduleStatus.DUE
-        line.save(update_fields=["status", "updated_at"])
+    """Transition a single schedule line from UPCOMING to DUE.
 
+    A4: the mutation + event emission run under the Company admission lock and
+    the vertical capability is decided on the LOCKED row — pilot companies get
+    a structured skip (no write, no event). Per-line transactions are kept
+    (one line's failure does not roll back the batch), matching the previous
+    per-line ``transaction.atomic`` shape.
+    """
+    with serialized_company_admission(company.pk) as locked_company:
+        if skip_if_unsupported(
+            locked_company, Capability.VERTICAL_MODULES, task="properties.post_rent_dues_and_detect_overdue"
+        ):
+            return
+
+        with command_writes_allowed():
+            line.status = RentScheduleLine.ScheduleStatus.DUE
+            line.save(update_fields=["status", "updated_at"])
+
+        _emit_due_event(locked_company, line)
+
+    logger.info(
+        "Posted due: lease %s installment %s",
+        line.lease.contract_no,
+        line.installment_no,
+    )
+
+
+def _emit_due_event(company, line):
     emit_event_no_actor(
         company,
         event_type=EventTypes.RENT_DUE_POSTED,
@@ -118,22 +140,35 @@ def _post_due(company, line):
         payload_origin=PayloadOrigin.SYSTEM_BATCH,
     )
 
+
+def _detect_overdue(company, line, today):
+    """Transition a single schedule line from DUE to OVERDUE.
+
+    A4: same locked, per-line shape as :func:`_post_due`.
+    """
+    days_overdue = (today - line.due_date).days
+
+    with serialized_company_admission(company.pk) as locked_company:
+        if skip_if_unsupported(
+            locked_company, Capability.VERTICAL_MODULES, task="properties.post_rent_dues_and_detect_overdue"
+        ):
+            return
+
+        with command_writes_allowed():
+            line.status = RentScheduleLine.ScheduleStatus.OVERDUE
+            line.save(update_fields=["status", "updated_at"])
+
+        _emit_overdue_event(locked_company, line, days_overdue)
+
     logger.info(
-        "Posted due: lease %s installment %s",
+        "Detected overdue: lease %s installment %s (%d days)",
         line.lease.contract_no,
         line.installment_no,
+        days_overdue,
     )
 
 
-@transaction.atomic
-def _detect_overdue(company, line, today):
-    """Transition a single schedule line from DUE to OVERDUE."""
-    days_overdue = (today - line.due_date).days
-
-    with command_writes_allowed():
-        line.status = RentScheduleLine.ScheduleStatus.OVERDUE
-        line.save(update_fields=["status", "updated_at"])
-
+def _emit_overdue_event(company, line, days_overdue):
     emit_event_no_actor(
         company,
         event_type=EventTypes.RENT_OVERDUE_DETECTED,
@@ -151,13 +186,6 @@ def _detect_overdue(company, line, today):
             days_overdue=days_overdue,
         ),
         payload_origin=PayloadOrigin.SYSTEM_BATCH,
-    )
-
-    logger.info(
-        "Detected overdue: lease %s installment %s (%d days)",
-        line.lease.contract_no,
-        line.installment_no,
-        days_overdue,
     )
 
 
@@ -186,10 +214,23 @@ def check_lease_expiry():
 
 
 def _check_expiry_for_company(company):
-    """Check lease expiry alerts for a single company."""
+    """Check lease expiry alerts for a single company.
+
+    A4: the vertical capability is decided on the LOCKED admission row before
+    any ``lease.expiry_alert`` event is emitted — pilot companies get a
+    structured skip and write nothing to the event stream.
+    """
     tz = ZoneInfo(getattr(company, "timezone", None) or "UTC")
     today = datetime.now(tz).date()
 
+    with serialized_company_admission(company.pk) as locked_company:
+        if skip_if_unsupported(locked_company, Capability.VERTICAL_MODULES, task="properties.check_lease_expiry"):
+            return
+        company = locked_company
+        _scan_and_emit_expiry_alerts(company, today)
+
+
+def _scan_and_emit_expiry_alerts(company, today):
     with rls_bypass():
         for threshold in EXPIRY_THRESHOLDS:
             cutoff = today + timedelta(days=threshold)

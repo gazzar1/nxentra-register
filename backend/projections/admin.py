@@ -89,6 +89,12 @@ class PeriodAccountBalanceAdmin(admin.ModelAdmin):
     def has_change_permission(self, request, obj=None):
         return False
 
+    # A4: deleting a PeriodAccountBalance row whose rebuild is pilot-blocked
+    # (Capability.PROJECTION_REBUILD) is durable read-model divergence via
+    # admin — same class as the ProjectionAppliedEvent delete prohibition below.
+    def has_delete_permission(self, request, obj=None):
+        return False
+
 
 @admin.register(ProjectionAppliedEvent)
 class ProjectionAppliedEventAdmin(admin.ModelAdmin):

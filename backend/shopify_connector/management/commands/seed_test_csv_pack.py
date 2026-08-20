@@ -79,6 +79,16 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        # A4: never seed on a pilot deployment (this command attaches EGP fake
+        # orders to the merchant's REAL store — preflight-indistinguishable
+        # from real data except by event metadata.source).
+        from accounts.pilot_policy import PilotDeploymentRefused, require_no_pilot_deployment
+
+        try:
+            require_no_pilot_deployment("seed_test_csv_pack")
+        except PilotDeploymentRefused as exc:
+            raise CommandError(str(exc)) from exc
+
         csv_path = Path(options["csv"])
         if not csv_path.exists():
             raise CommandError(f"CSV not found: {csv_path}")

@@ -15,7 +15,7 @@ import random
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 from accounts.models import Company
@@ -104,6 +104,15 @@ class Command(BaseCommand):
 
     @transaction.atomic
     def handle(self, *args, **options):
+        # A4: never seed on a pilot deployment (creates a StripeAccount —
+        # Capability.STRIPE is blocked — plus --flush mass deletes).
+        from accounts.pilot_policy import PilotDeploymentRefused, require_no_pilot_deployment
+
+        try:
+            require_no_pilot_deployment("seed_stripe_demo")
+        except PilotDeploymentRefused as exc:
+            raise CommandError(str(exc)) from exc
+
         with projection_writes_allowed():
             self._handle(options)
 

@@ -4,15 +4,31 @@ from django.contrib import admin
 from .models import BankAccount, BankStatement, BankTransaction, ReconciliationException
 
 
+class ReadOnlyLegacyBankAdmin(admin.ModelAdmin):
+    """A4: the legacy bank module is blocked under the pilot
+    (Capability.LEGACY_BANKING) and its rows are preflight residue
+    (legacy_bank_data). Admin-side writes would be a second, ungated writer of
+    exactly that residue, so the legacy financial models are read-only here."""
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
 @admin.register(BankAccount)
-class BankAccountAdmin(admin.ModelAdmin):
+class BankAccountAdmin(ReadOnlyLegacyBankAdmin):
     list_display = ("account_name", "bank_name", "currency", "status", "company")
     list_filter = ("status", "bank_name")
     search_fields = ("account_name", "bank_name")
 
 
 @admin.register(BankStatement)
-class BankStatementAdmin(admin.ModelAdmin):
+class BankStatementAdmin(ReadOnlyLegacyBankAdmin):
     list_display = (
         "filename",
         "bank_account",
@@ -26,7 +42,7 @@ class BankStatementAdmin(admin.ModelAdmin):
 
 
 @admin.register(BankTransaction)
-class BankTransactionAdmin(admin.ModelAdmin):
+class BankTransactionAdmin(ReadOnlyLegacyBankAdmin):
     list_display = (
         "transaction_date",
         "description",
@@ -41,6 +57,9 @@ class BankTransactionAdmin(admin.ModelAdmin):
 
 @admin.register(ReconciliationException)
 class ReconciliationExceptionAdmin(admin.ModelAdmin):
+    # Deliberately NOT read-only: the exception queue is live operational
+    # workflow state (assignment/resolution), not canonical financial data —
+    # no JE or ledger row derives from it.
     list_display = (
         "title",
         "exception_type",

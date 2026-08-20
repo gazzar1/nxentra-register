@@ -1861,8 +1861,10 @@ def sync_payouts(store: ShopifyStore) -> CommandResult:
     from accounts.pilot_policy import Capability, lock_company_for_admission, skip_if_unsupported
 
     # A4: Shopify Payments payout ACCOUNTING is out of scope for the constrained
-    # pilot. This is the sole emitter of SHOPIFY_PAYOUT_SETTLED, so skipping here
-    # means no payout settlement event, no payout JE, and the abs() negative-payout
+    # pilot. This is the sole emitter of SHOPIFY_PAYOUT_SETTLED reachable on a
+    # pilot deployment (the only other emitter, the seed_shopify_demo operator
+    # CLI, refuses outright on pilot deployments), so skipping here means no
+    # payout settlement event, no payout JE, and the abs() negative-payout
     # branch is unreachable — while Shopify order/refund accounting is untouched.
     # This top check is an UNLOCKED fast-path that avoids the remote fetch for a
     # known pilot; the AUTHORITATIVE decision is re-made under the admission lock

@@ -47,7 +47,16 @@ class Command(BaseCommand):
     def _rebuild_company(self, company):
         self.stdout.write(f"\n{company.name}:")
 
-        with projection_writes_allowed():
+        # A4: this command is a projection rebuild in all but name — it clears
+        # and re-materializes DimensionBalance rows directly, bypassing the
+        # gated BaseProjection.rebuild choke point. Decide PROJECTION_REBUILD
+        # on the LOCKED admission row before any write; a pilot company is
+        # refused with zero side effects.
+        from accounts.pilot_policy import Capability, require_supported, serialized_company_admission
+
+        with serialized_company_admission(company.pk) as locked_company, projection_writes_allowed():
+            require_supported(locked_company, Capability.PROJECTION_REBUILD)
+            company = locked_company
             deleted, _ = DimensionBalance.objects.filter(company=company).delete()
             if deleted:
                 self.stdout.write(f"  Cleared {deleted} existing records")

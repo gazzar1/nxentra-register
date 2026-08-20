@@ -1646,6 +1646,7 @@ A4_GATE_FUNCTIONS: frozenset[str] = frozenset(
         "inventory_forced_non_stock",
         "require_module_enable_allowed",
         "deployment_has_pilot",
+        "require_no_pilot_deployment",
     }
 )
 A4_ADMISSION_LOCK_CALLS: frozenset[str] = frozenset({"serialized_company_admission", "lock_company_for_admission"})
@@ -1724,6 +1725,30 @@ A4_DESIGN_DEFERRED_MUTATING_SITES: frozenset[str] = frozenset(
         # their fail-closed point-in-time skip / up-front currency sweep.
         "stripe_connector/sync.py::sync_payouts",
         "accounting/settlement_imports.py::import_settlement_csv",
+        # ECB auto-fetch deny-as-rate-miss (A4 dispositions PR): a LEAF classmethod
+        # reachable from callers already holding domain locks, so acquiring the
+        # Company admission lock here would invert the pinned Company-first order.
+        # The deny is point-in-time; the exchange_rate_data preflight residue check
+        # is the drift backstop for a NONE-profile fetch racing activation.
+        "accounting/models.py::ExchangeRate._auto_fetch_rate",
+    }
+)
+
+# UNLOCKED gate sites that are OPERATOR-CLI ENTRY REFUSALS (A4 dispositions PR):
+# seed/demo/import tooling that refuses the WHOLE command up front via
+# require_no_pilot_deployment / deployment_has_pilot. The refusal is deliberately
+# point-in-time — there is no meaningful row to admission-lock for a
+# deployment-wide decision, and the mutation that follows (only on non-pilot
+# deployments) is trusted operator tooling. Drift backstop: the
+# seeded_event_residue / external_api_key_present preflight checks.
+A4_OPERATOR_CLI_REFUSAL_SITES: frozenset[str] = frozenset(
+    {
+        "accounting/management/commands/seed_demo_company.py::Command.handle",
+        "shopify_connector/management/commands/seed_shopify_demo.py::Command.handle",
+        "shopify_connector/management/commands/seed_test_csv_pack.py::Command.handle",
+        "shopify_connector/management/commands/seed_test_payout.py::Command.handle",
+        "stripe_connector/management/commands/seed_stripe_demo.py::Command.handle",
+        "tenant/management/commands/import_tenant_events.py::Command.handle",
     }
 )
 
@@ -1736,8 +1761,19 @@ def _a4_gate_call_sites() -> dict[str, bool]:
     sites: dict[str, bool] = {}
     for path in BACKEND_ROOT.rglob("*.py"):
         rel = path.relative_to(BACKEND_ROOT).as_posix()
-        probe = "/" + rel
-        if any(frag in probe for frag in ("/migrations/", "/tests/", "test_", "/conftest.py", "/pilot_policy.py")):
+        segments = rel.split("/")
+        # Path-SEGMENT exclusion (not substring): a production file merely
+        # CONTAINING "test_" in its name — e.g. seed_test_csv_pack.py — is
+        # scanned. The former substring form blind-spotted exactly those seed
+        # commands (the Rule 12c note); their refusal gates are now witnessed
+        # in A4_OPERATOR_CLI_REFUSAL_SITES.
+        if (
+            "migrations" in segments
+            or "tests" in segments
+            or segments[-1] == "conftest.py"
+            or segments[-1] == "pilot_policy.py"
+            or segments[-1].startswith("test_")
+        ):
             continue
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -1785,7 +1821,12 @@ def test_every_gate_call_site_is_serialized_or_explicitly_classified():
     assert len(sites) >= 30, f"pilot gate-site discovery looks broken: found only {len(sites)}"
 
     unlocked = {site for site, has_lock in sites.items() if not has_lock}
-    classified = A4_READ_ONLY_OR_UX_GATE_SITES | A4_SERIALIZED_BY_CALLER_GATE_SITES | A4_DESIGN_DEFERRED_MUTATING_SITES
+    classified = (
+        A4_READ_ONLY_OR_UX_GATE_SITES
+        | A4_SERIALIZED_BY_CALLER_GATE_SITES
+        | A4_DESIGN_DEFERRED_MUTATING_SITES
+        | A4_OPERATOR_CLI_REFUSAL_SITES
+    )
 
     # (1) No NEW unlocked gate call site may appear without an explicit decision.
     unclassified = sorted(unlocked - classified)
@@ -1795,7 +1836,8 @@ def test_every_gate_call_site_is_serialized_or_explicitly_classified():
         "(serialized_company_admission / lock_company_for_admission, or the "
         "requires_capability decorator). If genuinely read-only/UX add it to "
         "A4_READ_ONLY_OR_UX_GATE_SITES; if serialized by a locked caller add it to "
-        "A4_SERIALIZED_BY_CALLER_GATE_SITES; if a tracked residual add it to "
+        "A4_SERIALIZED_BY_CALLER_GATE_SITES; if an operator-CLI entry refusal add it "
+        "to A4_OPERATOR_CLI_REFUSAL_SITES; if a tracked residual add it to "
         f"A4_DESIGN_DEFERRED_MUTATING_SITES (and docs): {unclassified}"
     )
 
@@ -1807,11 +1849,17 @@ def test_every_gate_call_site_is_serialized_or_explicitly_classified():
         f"call site (renamed, removed, or now serialized) — prune it: {stale}"
     )
 
-    # (3) The read-only allowlist must not overlap the writer / residual sets.
-    overlap = sorted(
-        A4_READ_ONLY_OR_UX_GATE_SITES & (A4_SERIALIZED_BY_CALLER_GATE_SITES | A4_DESIGN_DEFERRED_MUTATING_SITES)
-    )
-    assert not overlap, f"a site is both read-only/UX AND a writer/residual — pick one: {overlap}"
+    # (3) The witnessed sets must be disjoint — a site carries exactly one disposition.
+    all_sets = [
+        A4_READ_ONLY_OR_UX_GATE_SITES,
+        A4_SERIALIZED_BY_CALLER_GATE_SITES,
+        A4_DESIGN_DEFERRED_MUTATING_SITES,
+        A4_OPERATOR_CLI_REFUSAL_SITES,
+    ]
+    for i, first in enumerate(all_sets):
+        for second in all_sets[i + 1 :]:
+            overlap = sorted(first & second)
+            assert not overlap, f"a site carries two A4 dispositions — pick one: {overlap}"
 
 
 # Rule 12c (A4 serialized-by-caller closure): _setup_shopify_accounts is an UNLOCKED
@@ -1918,6 +1966,26 @@ def test_setup_shopify_accounts_callers_are_all_serialized():
 # marker — a future non-serialized gate variant on any of them fails CI.
 A4_SERIALIZED_DECORATOR_COMMANDS: tuple[tuple[str, str, str], ...] = (
     ("accounting.commands", "configure_periods", "CURRENCY_FISCAL_CHANGE"),
+    # A4 dispositions PR: the remaining fiscal-structure doors — the three
+    # period date/status/pointer commands plus the fiscal-year lifecycle pair
+    # (close mints next year's periods and posts closing journals; reopen posts
+    # reversals). Month-level close_period/open_period stay ungated by design.
+    ("accounting.commands", "set_period_range", "CURRENCY_FISCAL_CHANGE"),
+    ("accounting.commands", "set_current_period", "CURRENCY_FISCAL_CHANGE"),
+    ("accounting.commands", "update_period_dates", "CURRENCY_FISCAL_CHANGE"),
+    ("accounting.commands", "close_fiscal_year", "CURRENCY_FISCAL_CHANGE"),
+    ("accounting.commands", "reopen_fiscal_year", "CURRENCY_FISCAL_CHANGE"),
+    # A4 dispositions PR: manual AR — the manual posting/void boundaries and
+    # cash application (the platform limb posts via the *_or_raise cores and is
+    # deliberately ungated; create/update/CN-create carry in-body conditional
+    # gates on auto_created instead, visible to Rule 12 as locked sites).
+    ("accounting.commands", "record_customer_receipt", "MANUAL_AR"),
+    ("sales.commands", "post_sales_invoice", "MANUAL_AR"),
+    ("sales.commands", "post_credit_note", "MANUAL_AR"),
+    ("sales.commands", "void_sales_invoice", "MANUAL_AR"),
+    ("sales.commands", "void_credit_note", "MANUAL_AR"),
+    # A4 dispositions PR: EDIM's single ledger door.
+    ("edim.commands", "commit_batch", "EDIM_FINANCIAL_COMMIT"),
     ("accounts.commands", "create_user_with_membership", "ADD_MEMBER"),
     ("accounts.commands", "add_user_to_company", "ADD_MEMBER"),
     ("accounts.commands", "create_invitation", "ADD_MEMBER"),
@@ -2335,11 +2403,15 @@ MANUAL_TOKEN_PASSTHROUGHS: frozenset[str] = frozenset(
 #   reconciliation       — bank-recon clearance/difference/unmatch flows
 #                          (auto flows decorated UNSAFE_BANK_MATCH; manual match
 #                          is the founder-reviewed supported flow);
-#   edim-commit          — settled-BLOCKED family, gating owned by a later PR;
-#   revaluation          — settled-BLOCKED family, gating owned by a later PR;
+#   edim-commit          — BLOCKED: @requires_capability(EDIM_FINANCIAL_COMMIT)
+#                          on commit_batch (A4 dispositions PR);
+#   revaluation          — BLOCKED: FX_REVALUATION decided under one Company
+#                          admission lock in both the HTTP view and the task
+#                          (all-or-nothing mutation sequence, A4 dispositions PR);
 #   scratchpad           — structurally-EGP scratchpad commit (out of cluster);
 #   cleanup              — delete/void internal callers (witnessed);
-#   seed-ops             — shell-only operator seeding (C9 operator-trust).
+#   seed-ops             — shell-only operator seeding; refuses outright on a
+#                          pilot deployment (require_no_pilot_deployment).
 EXPECTED_JOURNAL_COMMAND_CALLERS: dict[str, frozenset[str]] = {
     "create_journal_entry": frozenset(
         {
@@ -2357,8 +2429,8 @@ EXPECTED_JOURNAL_COMMAND_CALLERS: dict[str, frozenset[str]] = {
             "purchases/commands.py::post_purchase_credit_note",  # purchasing
             "reconciliation/commands.py::_create_settlement_clearance_je",  # reconciliation
             "reconciliation/commands.py::resolve_difference",  # reconciliation
-            "sales/commands.py::post_credit_note_or_raise",  # shopify-platform + blocked manual door
-            "sales/commands.py::post_sales_invoice_or_raise",  # shopify-platform + blocked manual door
+            "sales/commands.py::post_credit_note_or_raise",  # shopify-platform (manual door gated at public post_credit_note)
+            "sales/commands.py::post_sales_invoice_or_raise",  # shopify-platform (manual door gated at public post_sales_invoice)
             "scratchpad/commands.py::commit_scratchpad_groups",  # scratchpad
             "shopify_connector/commands.py::_create_cogs_for_fulfillment",  # shopify-platform
             "shopify_connector/management/commands/seed_shopify_demo.py::Command._create_opening_balance",  # seed-ops
@@ -2386,8 +2458,8 @@ EXPECTED_JOURNAL_COMMAND_CALLERS: dict[str, frozenset[str]] = {
             "purchases/commands.py::post_purchase_credit_note",  # purchasing
             "reconciliation/commands.py::_create_settlement_clearance_je",  # reconciliation
             "reconciliation/commands.py::resolve_difference",  # reconciliation
-            "sales/commands.py::post_credit_note_or_raise",  # shopify-platform + blocked manual door
-            "sales/commands.py::post_sales_invoice_or_raise",  # shopify-platform + blocked manual door
+            "sales/commands.py::post_credit_note_or_raise",  # shopify-platform (manual door gated at public post_credit_note)
+            "sales/commands.py::post_sales_invoice_or_raise",  # shopify-platform (manual door gated at public post_sales_invoice)
             "scratchpad/commands.py::commit_scratchpad_groups",  # scratchpad
             "shopify_connector/commands.py::_create_cogs_for_fulfillment",  # shopify-platform
             "shopify_connector/management/commands/seed_shopify_demo.py::Command._create_opening_balance",  # seed-ops
@@ -2419,8 +2491,8 @@ EXPECTED_JOURNAL_COMMAND_CALLERS: dict[str, frozenset[str]] = {
             "purchases/commands.py::post_purchase_credit_note",  # purchasing
             "reconciliation/commands.py::_create_settlement_clearance_je",  # reconciliation
             "reconciliation/commands.py::resolve_difference",  # reconciliation
-            "sales/commands.py::post_credit_note_or_raise",  # shopify-platform + blocked manual door
-            "sales/commands.py::post_sales_invoice_or_raise",  # shopify-platform + blocked manual door
+            "sales/commands.py::post_credit_note_or_raise",  # shopify-platform (manual door gated at public post_credit_note)
+            "sales/commands.py::post_sales_invoice_or_raise",  # shopify-platform (manual door gated at public post_sales_invoice)
         }
     ),
     "reverse_journal_entry": frozenset(
@@ -2439,8 +2511,8 @@ EXPECTED_JOURNAL_COMMAND_CALLERS: dict[str, frozenset[str]] = {
             "accounting/commands.py::reverse_journal_entry_or_raise",  # passthrough
             "purchases/commands.py::void_purchase_bill",  # purchasing
             "purchases/commands.py::void_purchase_credit_note",  # purchasing
-            "sales/commands.py::void_credit_note",  # sales-AR void (blocked manual door, later PR)
-            "sales/commands.py::void_sales_invoice",  # sales-AR void (blocked manual door, later PR)
+            "sales/commands.py::void_credit_note",  # sales-AR void — @requires_capability(MANUAL_AR)
+            "sales/commands.py::void_sales_invoice",  # sales-AR void — @requires_capability(MANUAL_AR)
         }
     ),
     "delete_journal_entry": frozenset(
@@ -2464,8 +2536,15 @@ def _journal_command_callers() -> dict[str, set[str]]:
     token_passers: set[str] = set()
     for path in BACKEND_ROOT.rglob("*.py"):
         rel = path.relative_to(BACKEND_ROOT).as_posix()
-        probe = "/" + rel
-        if any(frag in probe for frag in ("/migrations/", "/tests/", "test_", "/conftest.py")):
+        segments = rel.split("/")
+        # Segment-precise exclusion (see the Rule 12 scanner note): production
+        # seed files whose names contain "test_" are scanned.
+        if (
+            "migrations" in segments
+            or "tests" in segments
+            or segments[-1] == "conftest.py"
+            or segments[-1].startswith("test_")
+        ):
             continue
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -2604,3 +2683,151 @@ def test_journal_command_callers_are_frozen_with_dispositions():
             f"reviewed disposition in EXPECTED_JOURNAL_COMMAND_CALLERS: {unexpected}"
         )
         assert not missing, f"expected caller(s) of {command}() vanished — prune the registry consciously: {missing}"
+
+
+# =============================================================================
+# Rule 15 (A4 JE-origin app coverage ratchet): every APP that can ORIGINATE a
+# journal entry — the union of the frozen posted-journal emitter set (Rule 7)
+# and the frozen shared-journal-command caller set (Rule 14) — carries an
+# explicit, reviewed pilot disposition here. This is the structural answer to
+# the purchasing-breach lesson (an app with ZERO pilot references was INVISIBLE
+# to every gate-call-site scan): the scan keys on the app's JE-writing
+# BEHAVIOR, so a new JE-originating surface in ANY app — including one that
+# never mentions pilot_policy — fails two-sided until its app-level disposition
+# is reviewed. Dispositions are prose for the reviewer; the RATCHET is the
+# two-sided set equality.
+# =============================================================================
+
+A4_JE_ORIGIN_APP_DISPOSITIONS: dict[str, str] = {
+    "accounting": (
+        "supported core — manual-journal wrappers (Rule 14 sentinel + EGP boundary); "
+        "record_customer_receipt @requires_capability(MANUAL_AR); fiscal lifecycle "
+        "(configure/set/update + close/reopen_fiscal_year) @requires_capability("
+        "CURRENCY_FISCAL_CHANGE); revaluation task under admission lock + "
+        "skip_if_unsupported(FX_REVALUATION); record_vendor_payment "
+        "@requires_capability(PURCHASING_ACCOUNTING); settlement import EGP sweep "
+        "(design-deferred residual); seed_demo_company refuses on pilot deployments"
+    ),
+    "clinic": (
+        "vertical — Capability.VERTICAL_MODULES at the module-enablement boundary "
+        "(MODULE_CAPABILITIES) 403s every route before the enablement lookup; "
+        "clinic_module_enabled / clinic_state preflight residue"
+    ),
+    "edim": (
+        "generic CSV import — commit_batch (the sole ledger door) "
+        "@requires_capability(EDIM_FINANCIAL_COMMIT); staging stays available; "
+        "non_egp_edim_data / edim_commit_state preflight residue"
+    ),
+    "events": (
+        "external ingest — serialized posted-journal boundary; account.* ingest "
+        "prohibition; per-key allowed_event_types allowlist; "
+        "external_api_key_present preflight residue"
+    ),
+    "inventory": (
+        "Option B — INVENTORY capability at the item layer keeps executable "
+        "inventory state unreachable; inventory JE flows unreachable without "
+        "INVENTORY items/mappings (inventory_* preflight residue)"
+    ),
+    "platform_connectors": (
+        "settlement ingestion — supported workflow; emitters gated upstream "
+        "(require_pilot_currency sweep on imports, STRIPE / payout capability "
+        "gates on connectors); je_builder INCOMPLETE-quarantines on missing rates"
+    ),
+    "projections": (
+        "revaluation HTTP view — FX_REVALUATION decided under one Company "
+        "admission lock, all-or-nothing mutation sequence; property vertical "
+        "emitter — VERTICAL_MODULES at the module boundary + per-company "
+        "admission-locked skips in properties/tasks.py; property_state preflight "
+        "residue; rebuild choke point gated PROJECTION_REBUILD"
+    ),
+    "purchases": "blocked — every command @requires_capability(PURCHASING_ACCOUNTING); purchase_* preflight residue",
+    "reconciliation": (
+        "supported manual match + UNSAFE_BANK_MATCH decorators on the automatic "
+        "flows; clearance/difference JEs ride the serialized reconciliation commands"
+    ),
+    "sales": (
+        "manual AR blocked — create/update/CN-create carry in-body MANUAL_AR gates "
+        "on the auto_created discriminator under the admission lock; public "
+        "post/void boundaries @requires_capability(MANUAL_AR); draft-delete view "
+        "admission-locked; the auto_created platform limb is the supported "
+        "Shopify workflow (EGP enforced at the connector ingestion boundary)"
+    ),
+    "scratchpad": "structurally EGP — ScratchpadRow carries no currency field; commit builds home-currency journals only",
+    "shopify_connector": (
+        "supported pilot workflow — order/refund/COGS accounting serialized at the "
+        "connector boundary; payouts/disputes capability-gated at their emitters; "
+        "seed CLIs refuse on pilot deployments (require_no_pilot_deployment)"
+    ),
+}
+
+
+def test_every_je_origin_app_carries_pilot_disposition():
+    emitter_apps = {rel.split("/")[0] for (rel, _fn) in _collect_posted_emitters()}
+    scan = _journal_command_callers()
+    caller_apps: set[str] = set()
+    for command, sites in scan.items():
+        if command == "__token_passers__":
+            continue
+        caller_apps |= {site.split("::", 1)[0].split("/", 1)[0] for site in sites}
+    apps = emitter_apps | caller_apps
+
+    # Sanity: the union is non-trivial; a near-empty result means a scanner broke.
+    assert len(apps) >= 10, f"JE-origin app discovery looks broken: found only {sorted(apps)}"
+
+    undispositioned = sorted(apps - set(A4_JE_ORIGIN_APP_DISPOSITIONS))
+    assert not undispositioned, (
+        "App(s) can originate journal entries (posted-journal emitter or shared-"
+        "journal-command caller) but carry NO reviewed pilot disposition in "
+        "A4_JE_ORIGIN_APP_DISPOSITIONS — the purchasing breach began exactly "
+        f"here. Review and disposition: {undispositioned}"
+    )
+
+    stale = sorted(set(A4_JE_ORIGIN_APP_DISPOSITIONS) - apps)
+    assert not stale, (
+        f"A4_JE_ORIGIN_APP_DISPOSITIONS entr(ies) no longer match any JE-originating app — prune consciously: {stale}"
+    )
+
+
+# =============================================================================
+# Rule 9b (A4 dispositions PR): every public vertical command carries the
+# SERIALIZED requires_capability(VERTICAL_MODULES) gate. The ModuleEnabled
+# route permission is a point-in-time check only — the admission-serialized
+# decorator on the COMMANDS is what closes the stale-profile race against
+# activation (the same shape Rule 9 pins for purchasing).
+# =============================================================================
+
+VERTICAL_COMMAND_GATE_EXEMPT: set[str] = set()
+"""Empty by design. A public vertical command WITHOUT the serialized pilot gate
+needs a written reason and its own guard, not a quiet exemption here."""
+
+
+def test_every_public_vertical_command_carries_serialized_gate_marker():
+    from accounts.pilot_policy import Capability
+    from clinic import commands as clinic_commands
+    from properties import commands as properties_commands
+
+    for module, floor in ((clinic_commands, 10), (properties_commands, 18)):
+        discovered = _public_actor_commands(module)
+        assert len(discovered) >= floor, f"{module.__name__} command discovery looks wrong: {sorted(discovered)}"
+
+        ungated = sorted(
+            name
+            for name, fn in discovered.items()
+            if name not in VERTICAL_COMMAND_GATE_EXEMPT
+            and getattr(fn, "_pilot_capability", None) != Capability.VERTICAL_MODULES
+        )
+        assert not ungated, (
+            f"Every public {module.__name__} command must carry the "
+            f"requires_capability(VERTICAL_MODULES) gate. Ungated: {ungated}"
+        )
+
+        unserialized = sorted(
+            name
+            for name, fn in discovered.items()
+            if name not in VERTICAL_COMMAND_GATE_EXEMPT
+            and getattr(fn, "_pilot_capability_serialized", None) is not True
+        )
+        assert not unserialized, (
+            f"Every public {module.__name__} command must carry the SERIALIZED "
+            f"admission gate (`_pilot_capability_serialized is True`). Unserialized: {unserialized}"
+        )

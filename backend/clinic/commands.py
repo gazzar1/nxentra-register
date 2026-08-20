@@ -12,6 +12,7 @@ from django.db import transaction
 
 from accounting.commands import CommandResult
 from accounts.authz import ActorContext, require
+from accounts.pilot_policy import Capability, requires_capability
 from events.emitter import emit_event
 from events.types import EventTypes
 from projections.write_barrier import command_writes_allowed
@@ -33,6 +34,7 @@ from .models import Doctor, Invoice, Patient, PatientDocument, Payment, Visit
 # =============================================================================
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def create_patient(
     actor: ActorContext,
@@ -98,6 +100,7 @@ def create_patient(
     return CommandResult.ok(data={"patient": patient}, event=event)
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def update_patient(actor: ActorContext, patient_id: int, **kwargs) -> CommandResult:
     require(actor, "clinic.manage")
@@ -159,6 +162,7 @@ def update_patient(actor: ActorContext, patient_id: int, **kwargs) -> CommandRes
 # =============================================================================
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def upload_document(
     actor: ActorContext,
@@ -205,6 +209,7 @@ def upload_document(
 # =============================================================================
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def create_doctor(
     actor: ActorContext,
@@ -254,6 +259,7 @@ def create_doctor(
 # =============================================================================
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def create_visit(
     actor: ActorContext,
@@ -307,6 +313,7 @@ def create_visit(
     return CommandResult.ok(data={"visit": visit}, event=event)
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def complete_visit(
     actor: ActorContext,
@@ -367,6 +374,7 @@ def _next_invoice_no(company) -> str:
     return f"CINV-{num:04d}"
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def create_invoice(
     actor: ActorContext,
@@ -420,6 +428,7 @@ def create_invoice(
     return CommandResult.ok(data={"invoice": invoice})
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def issue_invoice(actor: ActorContext, invoice_id: int) -> CommandResult:
     """Issue a draft invoice. Emits the financial event."""
@@ -469,6 +478,7 @@ def issue_invoice(actor: ActorContext, invoice_id: int) -> CommandResult:
 # =============================================================================
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def receive_payment(
     actor: ActorContext,
@@ -538,6 +548,7 @@ def receive_payment(
     return CommandResult.ok(data={"payment": payment, "invoice": invoice}, event=event)
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def void_payment(actor: ActorContext, payment_id: int, reason: str = "") -> CommandResult:
     require(actor, "clinic.manage")

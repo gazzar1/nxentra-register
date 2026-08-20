@@ -24,6 +24,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from accounts.authz import ActorContext, require
+from accounts.pilot_policy import Capability, requires_capability
 from edim.event_types import (
     EdimBatchCommittedData,
     EdimBatchMappedData,
@@ -1314,6 +1315,7 @@ def preview_batch(
     return CommandResult.ok({"batch": batch, "preview": preview_summary}, event=event)
 
 
+@requires_capability(Capability.EDIM_FINANCIAL_COMMIT)
 @transaction.atomic
 def commit_batch(
     actor: ActorContext,
@@ -1321,6 +1323,14 @@ def commit_batch(
 ) -> CommandResult:
     """
     Commit a batch, creating journal entries via accounting commands.
+
+    Constrained pilot: BLOCKED — commit is EDIM's only ledger door (it creates
+    and can auto-post journal entries carrying arbitrary CSV currency/rates).
+    The SERIALIZED @requires_capability decorator above owns the outermost
+    transaction and the Company admission lock BEFORE the IngestionBatch lock
+    below (Company-first order), so a commit admitted on a cached NONE profile
+    cannot land after a concurrent activation. Staging / mapping / validation /
+    preview mutate only EDIM state and stay available.
 
     Args:
         actor: The actor context

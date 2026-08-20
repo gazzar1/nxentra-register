@@ -148,24 +148,7 @@ export default function CurrencyRevaluationPage() {
           { question: "When should I run currency revaluation?", answer: "Run it at the end of each month or period before closing. It recalculates foreign currency balances at current exchange rates and records any unrealized gains or losses." },
           { question: "What does auto-reverse mean?", answer: "When enabled, the system creates a second entry on the first day of the next period that reverses the revaluation. This is standard accounting practice — the unrealized gain/loss is temporary until the actual transaction settles." },
           { question: "What if I see 'skipped' currencies?", answer: "Currencies are skipped when no exchange rate is configured for the revaluation date. Go to Settings > Exchange Rates and add the missing rate, then re-run." },
-          { question: "Can I run this automatically?", answer: "Yes. Configure the 'accounting.run_currency_revaluation' periodic task in Django admin (Celery Beat) to run monthly with auto-reverse enabled." },
         ]} />
-
-        {/* Automation Note */}
-        <Card className="border-blue-200 bg-blue-50/50 dark:border-blue-900 dark:bg-blue-950/20">
-          <CardContent className="pt-4 pb-4">
-            <div className="flex items-start gap-3">
-              <RefreshCw className="h-5 w-5 text-blue-600 mt-0.5 shrink-0" />
-              <div className="text-sm">
-                <p className="font-medium text-blue-900 dark:text-blue-200">Automated Revaluation Available</p>
-                <p className="text-blue-700 dark:text-blue-400 mt-1">
-                  Currency revaluation can run automatically at period-end via Celery Beat.
-                  Configure the <code className="text-xs bg-blue-100 dark:bg-blue-900 px-1 py-0.5 rounded">accounting.run_currency_revaluation</code> periodic task in Django admin to schedule monthly runs with auto-reverse.
-                </p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
 
         {/* Summary */}
         {data && (
