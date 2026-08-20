@@ -40,7 +40,6 @@ from __future__ import annotations
 
 import re
 
-from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
 
 from accounts.models import Company
@@ -162,6 +161,16 @@ class Command(BaseCommand):
                     company = Company.objects.get(slug=options["company_slug"])
             except Company.DoesNotExist as exc:
                 raise CommandError("Company not found.") from exc
+
+            # Refuse INACTIVE companies outright: downstream rebuild tooling
+            # filters on is_active, so event surgery here could delete events
+            # and then silently skip the rebuild — reactivate first, then purge.
+            if not company.is_active:
+                raise CommandError(
+                    "Refusing to purge events for an INACTIVE company: the projection "
+                    "rebuild would silently no-op and the read models would go stale. "
+                    "Reactivate the company first."
+                )
 
             self.stdout.write(f"Purging orphan JE/source-doc events for: {company.name}")
             if options["dry_run"]:
@@ -320,21 +329,26 @@ class Command(BaseCommand):
     def _rebuild_and_clear(self, company, projections: list[str]) -> None:
         """Rebuild each projection so the ledger reflects only the surviving
         events, then clear its REBUILDING marker — but ONLY after a VERIFIED
-        converged drain. ``run_projections --rebuild`` resets the bookmark and
-        replays from scratch, yet it returns normally even when a handler
-        failure or paused bookmark stalls the replay, so the zero-lag/unpaused
-        check immediately after the reset-drain is the actual proof. A stalled
-        projection raises, its marker stays, and activation keeps refusing via
-        ``projection_rebuild_in_flight`` until the operator repairs the drain
-        and re-runs this command."""
-        for projection in projections:
-            self.stdout.write(f"  Rebuilding projection: {projection}")
-            call_command(
-                "run_projections",
-                f"--company={company.slug}",
-                f"--projection={projection}",
-                "--rebuild",
-            )
+        converged drain. The rebuild goes DIRECTLY through the canonical gated
+        choke point ``BaseProjection.rebuild`` (which resets the bookmark and
+        replays from scratch) — never through the ``run_projections`` CLI,
+        whose active-only company filter silently no-ops for a company it does
+        not select, which would let the verify step read a stale bookmark's
+        zero lag as proof. ``rebuild()`` itself returns normally even when a
+        handler failure or paused bookmark stalls the replay, so the
+        zero-lag/unpaused check immediately after the reset-drain is the
+        actual proof. A stalled projection raises, its marker stays, and
+        activation keeps refusing via ``projection_rebuild_in_flight`` until
+        the operator repairs the drain and re-runs this command."""
+        from projections.base import projection_registry
+
+        for projection_name in projections:
+            projection = projection_registry.get(projection_name)
+            if projection is None:
+                raise CommandError(f"Projection '{projection_name}' is not registered — cannot rebuild.")
+            self.stdout.write(f"  Rebuilding projection: {projection_name}")
+            replayed = projection.rebuild(company)
+            self.stdout.write(f"    Replayed {replayed} events")
         stuck = _verify_and_clear_rebuild_markers(company, projections)
         if stuck:
             raise CommandError(

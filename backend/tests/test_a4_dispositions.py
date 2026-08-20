@@ -911,3 +911,16 @@ def test_purge_rerun_verifies_convergence_before_clearing_markers(company, owner
     call_command("purge_orphan_je_events", "--company-id", company.id)
     assert not ProjectionStatus.objects.filter(company=company, status=ProjectionStatus.Status.REBUILDING).exists()
     assert "projection_rebuild_in_flight" not in _run_preflight(company, for_activation=True)
+
+
+@pytest.mark.django_db
+def test_purge_refuses_inactive_company(company, owner_membership):
+    """Codex round-7: downstream rebuild tooling filters on is_active, so an
+    inactive-company purge could delete events and silently skip the rebuild —
+    the command refuses up front instead."""
+    from django.core.management import CommandError, call_command
+
+    company.is_active = False
+    company.save(update_fields=["is_active"])
+    with pytest.raises(CommandError, match="INACTIVE"):
+        call_command("purge_orphan_je_events", "--company-id", company.id)
