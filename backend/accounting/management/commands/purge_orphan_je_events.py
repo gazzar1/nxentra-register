@@ -68,6 +68,49 @@ ORPHAN_CANDIDATE_EVENT_TYPES = [
     "purchases.bill_posted",
 ]
 
+# The projections whose read models derive from the purged event types. Their
+# ProjectionStatus rows are marked REBUILDING inside the purge's admission
+# transaction and cleared only after a VERIFIED-converged rebuild.
+REBUILD_PROJECTIONS = (
+    "journal_entry_read_model",
+    "account_balance",
+    "dimension_balance",
+    "period_account_balance",
+    "subledger_balance",
+)
+
+
+def _verify_and_clear_rebuild_markers(company, projections=REBUILD_PROJECTIONS) -> list[str]:
+    """Clear each projection's REBUILDING marker ONLY when its drain has
+    verifiably converged (zero lag, bookmark not paused). `run_projections
+    --rebuild` returns normally even when a handler failure or paused bookmark
+    stalls the drain, so completion of the command is NOT proof of a rebuilt
+    read model — the lag/pause check is. Returns descriptions of every marker
+    left in place (empty == all clear)."""
+    from events.models import EventBookmark
+    from projections.base import projection_registry
+    from projections.models import ProjectionStatus
+
+    not_converged: list[str] = []
+    for name in projections:
+        status_row = ProjectionStatus.objects.filter(
+            company=company, projection_name=name, status=ProjectionStatus.Status.REBUILDING
+        ).first()
+        if status_row is None:
+            continue
+        projection = projection_registry.get(name)
+        if projection is None:
+            not_converged.append(f"{name} (projection not registered)")
+            continue
+        lag = projection.get_lag(company)
+        paused = EventBookmark.objects.filter(consumer_name=name, company=company, is_paused=True).exists()
+        if lag == 0 and not paused:
+            status_row.mark_rebuild_completed()
+        else:
+            detail = f"lag={lag}" + (", bookmark paused" if paused else "")
+            not_converged.append(f"{name} ({detail})")
+    return not_converged
+
 
 class Command(BaseCommand):
     help = (
@@ -187,6 +230,25 @@ class Command(BaseCommand):
 
             if not orphan_event_ids:
                 self.stdout.write(self.style.SUCCESS("  Nothing to purge — log is already clean."))
+                # Recovery path: a previous purge (--no-rebuild, or a crash
+                # after its delete committed) may have left REBUILDING markers
+                # behind. `run_projections --rebuild` never touches
+                # ProjectionStatus, so re-running THIS command after the manual
+                # rebuild is the documented way to verify convergence and clear
+                # them — otherwise the company would fail
+                # projection_rebuild_in_flight forever.
+                if not options["dry_run"]:
+                    stuck = _verify_and_clear_rebuild_markers(company)
+                    if stuck:
+                        self.stdout.write(
+                            self.style.WARNING(
+                                "  Rebuild marker(s) left in place — NOT converged: "
+                                + "; ".join(stuck)
+                                + ". Repair (run_projections --rebuild / resume the bookmark) and re-run."
+                            )
+                        )
+                    else:
+                        self.stdout.write("  Rebuild markers verified clear.")
                 return
 
             if options["dry_run"]:
@@ -205,23 +267,15 @@ class Command(BaseCommand):
             # activation could slip into that gap, pass preflight, and then
             # strand the read models when the gated rebuild refuses. With the
             # markers, activation's `projection_rebuild_in_flight` preflight
-            # check refuses until every rebuild completes (or the operator
-            # repairs a failed one) — fail closed, in either ordering.
+            # check refuses until every rebuild VERIFIABLY converges — fail
+            # closed, in either ordering.
             from accounts.pilot_policy import require_supported, serialized_company_admission
             from projections.models import ProjectionStatus
-
-            rebuild_projections = (
-                "journal_entry_read_model",
-                "account_balance",
-                "dimension_balance",
-                "period_account_balance",
-                "subledger_balance",
-            )
 
             with serialized_company_admission(company.pk) as locked_company:
                 require_supported(locked_company, Capability.PROJECTION_REBUILD)
                 deleted, _ = BusinessEvent.objects.filter(id__in=orphan_event_ids).delete()
-                for projection in rebuild_projections:
+                for projection in REBUILD_PROJECTIONS:
                     status_row, _created = ProjectionStatus.objects.get_or_create(
                         company=locked_company, projection_name=projection
                     )
@@ -232,20 +286,22 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.WARNING("  --no-rebuild: skipping projection rebuild."))
                 self.stdout.write(
                     self.style.WARNING(
-                        "  Run `run_projections --rebuild` manually to materialize the cleaned ledger. "
-                        "The affected projections stay marked REBUILDING (activation refuses via "
-                        "projection_rebuild_in_flight) until you do."
+                        "  Run `run_projections --rebuild` manually to materialize the cleaned ledger, "
+                        "then RE-RUN this command: it verifies each drain converged and clears the "
+                        "REBUILDING markers (activation refuses via projection_rebuild_in_flight "
+                        "until then)."
                     )
                 )
                 return
 
             # Rebuild journal_entry_read_model + balance projections so the
-            # ledger reflects only the surviving events. Each projection's
-            # REBUILDING marker (set under the admission lock above) is cleared
-            # only after ITS rebuild succeeds — a crash leaves the marker in
-            # place, so activation keeps refusing (projection_rebuild_in_flight)
-            # until the operator repairs the divergence.
-            for projection in rebuild_projections:
+            # ledger reflects only the surviving events. run_projections
+            # returning is NOT proof of convergence (a handler failure or
+            # paused bookmark stalls the drain but exits normally), so each
+            # projection's REBUILDING marker is cleared only after a VERIFIED
+            # zero-lag, unpaused drain — anything else keeps refusing
+            # activation until the operator repairs it.
+            for projection in REBUILD_PROJECTIONS:
                 self.stdout.write(f"  Rebuilding projection: {projection}")
                 call_command(
                     "run_projections",
@@ -253,8 +309,15 @@ class Command(BaseCommand):
                     f"--projection={projection}",
                     "--rebuild",
                 )
-                status_row = ProjectionStatus.objects.get(company=company, projection_name=projection)
-                status_row.mark_rebuild_completed()
+            stuck = _verify_and_clear_rebuild_markers(company)
+            if stuck:
+                raise CommandError(
+                    "Rebuild did NOT converge for: "
+                    + "; ".join(stuck)
+                    + ". The REBUILDING marker(s) stay in place (activation keeps refusing via "
+                    "projection_rebuild_in_flight). Repair the drain and re-run this command "
+                    "to verify and clear."
+                )
 
             self.stdout.write(self.style.SUCCESS("Done. Ledger now reflects only surviving source documents."))
 

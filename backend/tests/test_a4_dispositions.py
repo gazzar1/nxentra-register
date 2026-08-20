@@ -861,3 +861,49 @@ def test_purge_marks_projections_rebuilding_inside_admission_and_blocks_activati
     assert "journal_entry_read_model" in rebuilding and "account_balance" in rebuilding
     # The activation-mode preflight refuses while the drain is outstanding.
     assert "projection_rebuild_in_flight" in _run_preflight(company, for_activation=True)
+
+
+@pytest.mark.django_db
+def test_purge_rerun_verifies_convergence_before_clearing_markers(company, owner_membership):
+    """Codex round-4: the marker clear is convergence-VERIFIED. After a
+    --no-rebuild purge, a re-run clears the markers only when every drain has
+    zero lag and no paused bookmark; a pending relevant event keeps the
+    markers (and the activation refusal) in place."""
+    from django.core.management import call_command
+
+    from events.models import BusinessEvent
+    from projections.models import ProjectionStatus
+
+    BusinessEvent.objects.create(
+        company=company,
+        event_type="journal_entry.posted",
+        aggregate_type="JournalEntry",
+        aggregate_id="je-orphan-2",
+        idempotency_key="a4-purge-orphan-2",
+        company_sequence=990401,
+        data={"memo": "Sales Invoice INV-000043"},
+    )
+    call_command("purge_orphan_je_events", "--company-id", company.id, "--no-rebuild")
+    assert ProjectionStatus.objects.filter(company=company, status=ProjectionStatus.Status.REBUILDING).exists()
+
+    # A surviving relevant event = nonzero lag for the never-drained
+    # projections -> the recovery re-run must NOT clear the markers.
+    BusinessEvent.objects.create(
+        company=company,
+        event_type="journal_entry.posted",
+        aggregate_type="JournalEntry",
+        aggregate_id="je-alive-1",
+        idempotency_key="a4-purge-alive-1",
+        company_sequence=990402,
+        data={"memo": "Opening balances"},
+    )
+    call_command("purge_orphan_je_events", "--company-id", company.id)
+    assert ProjectionStatus.objects.filter(company=company, status=ProjectionStatus.Status.REBUILDING).exists()
+    assert "projection_rebuild_in_flight" in _run_preflight(company, for_activation=True)
+
+    # Repair (remove the poison event so the drains can converge to zero lag),
+    # then the re-run verifies and clears.
+    BusinessEvent.objects.filter(company=company, idempotency_key="a4-purge-alive-1").delete()
+    call_command("purge_orphan_je_events", "--company-id", company.id)
+    assert not ProjectionStatus.objects.filter(company=company, status=ProjectionStatus.Status.REBUILDING).exists()
+    assert "projection_rebuild_in_flight" not in _run_preflight(company, for_activation=True)
