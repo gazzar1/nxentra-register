@@ -22,7 +22,9 @@ backend/.env.*
 .DS_Store
 
 # IDE/Editor
-.claude/
+# Agent workspace: local settings/plans stay ignored; shared skills are tracked.
+.claude/*
+!.claude/skills/
 
 # Test/Coverage
 backend/.coverage
