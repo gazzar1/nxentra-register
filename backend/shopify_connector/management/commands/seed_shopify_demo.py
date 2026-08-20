@@ -127,6 +127,16 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        # A4: never seed on a pilot deployment (this command is a second,
+        # otherwise-ungated emitter of payout/dispute events, writes USD data,
+        # and carries a --flush mass delete).
+        from accounts.pilot_policy import PilotDeploymentRefused, require_no_pilot_deployment
+
+        try:
+            require_no_pilot_deployment("seed_shopify_demo")
+        except PilotDeploymentRefused as exc:
+            raise CommandError(str(exc)) from exc
+
         slug = options["company_slug"]
 
         with rls_bypass():

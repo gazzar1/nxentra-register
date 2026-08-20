@@ -76,11 +76,24 @@ def run_currency_revaluation(
 
 
 def _revalue_company(company: Company, reval_date: date_type, auto_reverse: bool) -> dict:
-    """Run currency revaluation for a single company."""
+    """Run currency revaluation for a single company.
+
+    A4: pilot companies get a structured skip (no mutation, no retry); the
+    mutation sequence for NONE-profile companies runs ALL-OR-NOTHING under one
+    Company admission lock (per-company atomicity — the multi-company loop in
+    the task stays multi-commit across companies, the accepted scheduled shape).
+    """
     from django.db.models import Avg, Sum
     from django.db.models.functions import Coalesce
 
     from accounting.models import ExchangeRate, JournalEntry, JournalLine
+    from accounts.pilot_policy import Capability, serialized_company_admission, skip_if_unsupported
+
+    # Cheap point-in-time skip before any read; the authoritative decision is
+    # re-made on the LOCKED row before the first write below.
+    skipped = skip_if_unsupported(company, Capability.FX_REVALUATION, task="accounting.run_currency_revaluation")
+    if skipped:
+        return skipped
 
     functional_currency = company.functional_currency or company.default_currency
 
@@ -321,91 +334,120 @@ def _revalue_company(company: Company, reval_date: date_type, auto_reverse: bool
 
     nonce = str(_uuid.uuid4())[:8]
 
-    result = create_journal_entry(
-        actor=actor,
-        date=reval_date,
-        memo=reval_memo,
-        memo_ar=f"إعادة تقييم العملات بتاريخ {reval_date.isoformat()} [{nonce}]",
-        lines=lines,
-        kind="ADJUSTMENT",
-        currency=functional_currency,
-        period=period,
-    )
+    class _RevalAborted(Exception):
+        """Raised to roll the whole admission transaction back on any step
+        failure — per-company all-or-nothing."""
 
-    if not result.success:
-        return {"status": "error", "error": f"Failed to create JE: {result.error}"}
+    try:
+        with serialized_company_admission(company.pk) as locked_company:
+            # Authoritative capability decision on the LOCKED row: a run
+            # admitted on a cached NONE profile cannot commit after a
+            # concurrent activation.
+            skipped = skip_if_unsupported(
+                locked_company, Capability.FX_REVALUATION, task="accounting.run_currency_revaluation"
+            )
+            if skipped:
+                return skipped
 
-    entry = result.data
-    save_result = save_journal_entry_complete(actor=actor, entry_id=entry.id)
-    if not save_result.success:
-        return {"status": "error", "error": f"Failed to save JE: {save_result.error}"}
-
-    entry.refresh_from_db()
-    post_result = post_journal_entry(actor=actor, entry_id=entry.id)
-    if not post_result.success:
-        return {"status": "partial", "entry_id": entry.id, "error": f"JE created but not posted: {post_result.error}"}
-
-    entry.refresh_from_db()
-    result_data = {
-        "status": "posted",
-        "entry_id": entry.id,
-        "entry_number": entry.entry_number,
-        "adjustments_count": len(adjustments),
-        "total_gain_loss": str(sum(a["unrealized_gain_loss"] for a in adjustments)),
-    }
-
-    # Auto-reverse
-    if auto_reverse and fp:
-        next_period = FiscalPeriod.objects.filter(
-            company=company,
-            fiscal_year=fp.fiscal_year,
-            period=fp.period + 1,
-            period_type=FiscalPeriod.PeriodType.NORMAL,
-        ).first()
-        if not next_period:
-            next_period = FiscalPeriod.objects.filter(
-                company=company,
-                fiscal_year=fp.fiscal_year + 1,
-                period=1,
-                period_type=FiscalPeriod.PeriodType.NORMAL,
+            # Duplicate re-check under the admission lock (the unlocked check
+            # above the calculation only short-circuits the common case).
+            existing = JournalEntry.objects.filter(
+                company=locked_company,
+                memo=reval_memo,
+                status__in=[JournalEntry.Status.DRAFT, JournalEntry.Status.POSTED],
             ).first()
+            if existing:
+                return {"status": "skipped", "reason": f"Revaluation already exists (#{existing.id})"}
 
-        if next_period:
-            reversal_date = next_period.start_date
-            reversal_lines = []
-            for line in lines:
-                reversal_lines.append(
-                    {
-                        "account_id": line["account_id"],
-                        "description": f"Reversal: {line['description']}",
-                        "debit": line["credit"],
-                        "credit": line["debit"],
-                        "currency": line.get("currency"),
-                    }
-                )
+            result = create_journal_entry(
+                actor=actor,
+                date=reval_date,
+                memo=reval_memo,
+                memo_ar=f"إعادة تقييم العملات بتاريخ {reval_date.isoformat()} [{nonce}]",
+                lines=lines,
+                kind="ADJUSTMENT",
+                currency=functional_currency,
+                period=period,
+                source_module="revaluation",
+            )
+            if not result.success:
+                raise _RevalAborted(f"Failed to create JE: {result.error}")
 
-            try:
-                rev_result = create_journal_entry(
-                    actor=actor,
-                    date=reversal_date,
-                    memo=f"Reversal of revaluation {reval_date.isoformat()}",
-                    lines=reversal_lines,
-                    kind="ADJUSTMENT",
-                    currency=functional_currency,
-                    period=next_period.period,
-                )
-                if rev_result.success:
+            entry = result.data
+            save_result = save_journal_entry_complete(actor=actor, entry_id=entry.id)
+            if not save_result.success:
+                raise _RevalAborted(f"Failed to save JE: {save_result.error}")
+
+            entry.refresh_from_db()
+            post_result = post_journal_entry(actor=actor, entry_id=entry.id)
+            if not post_result.success:
+                raise _RevalAborted(f"Failed to post JE: {post_result.error}")
+
+            entry.refresh_from_db()
+            result_data = {
+                "status": "posted",
+                "entry_id": entry.id,
+                "entry_number": entry.entry_number,
+                "adjustments_count": len(adjustments),
+                "total_gain_loss": str(sum(a["unrealized_gain_loss"] for a in adjustments)),
+            }
+
+            # Auto-reverse — atomic with the main entry: a reversal failure
+            # rolls EVERYTHING back (no posted-without-reversal state).
+            if auto_reverse and fp:
+                next_period = FiscalPeriod.objects.filter(
+                    company=locked_company,
+                    fiscal_year=fp.fiscal_year,
+                    period=fp.period + 1,
+                    period_type=FiscalPeriod.PeriodType.NORMAL,
+                ).first()
+                if not next_period:
+                    next_period = FiscalPeriod.objects.filter(
+                        company=locked_company,
+                        fiscal_year=fp.fiscal_year + 1,
+                        period=1,
+                        period_type=FiscalPeriod.PeriodType.NORMAL,
+                    ).first()
+
+                if next_period:
+                    reversal_date = next_period.start_date
+                    reversal_lines = []
+                    for line in lines:
+                        reversal_lines.append(
+                            {
+                                "account_id": line["account_id"],
+                                "description": f"Reversal: {line['description']}",
+                                "debit": line["credit"],
+                                "credit": line["debit"],
+                                "currency": line.get("currency"),
+                            }
+                        )
+
+                    rev_result = create_journal_entry(
+                        actor=actor,
+                        date=reversal_date,
+                        memo=f"Reversal of revaluation {reval_date.isoformat()}",
+                        lines=reversal_lines,
+                        kind="ADJUSTMENT",
+                        currency=functional_currency,
+                        period=next_period.period,
+                        source_module="revaluation",
+                    )
+                    if not rev_result.success:
+                        raise _RevalAborted(f"Auto-reverse failed: {rev_result.error}")
                     rev_entry = rev_result.data
                     rev_save = save_journal_entry_complete(actor=actor, entry_id=rev_entry.id)
-                    if rev_save.success:
-                        rev_entry.refresh_from_db()
-                        rev_post = post_journal_entry(actor=actor, entry_id=rev_entry.id)
-                        if rev_post.success:
-                            rev_entry.refresh_from_db()
-                            result_data["reversal_entry_id"] = rev_entry.id
-                            result_data["reversal_entry_number"] = rev_entry.entry_number
-                            result_data["reversal_date"] = reversal_date.isoformat()
-            except Exception as e:
-                logger.warning("Auto-reverse failed for company %s: %s", company.name, e)
+                    if not rev_save.success:
+                        raise _RevalAborted(f"Auto-reverse failed: {rev_save.error}")
+                    rev_entry.refresh_from_db()
+                    rev_post = post_journal_entry(actor=actor, entry_id=rev_entry.id)
+                    if not rev_post.success:
+                        raise _RevalAborted(f"Auto-reverse failed: {rev_post.error}")
+                    rev_entry.refresh_from_db()
+                    result_data["reversal_entry_id"] = rev_entry.id
+                    result_data["reversal_entry_number"] = rev_entry.entry_number
+                    result_data["reversal_date"] = reversal_date.isoformat()
+    except _RevalAborted as exc:
+        return {"status": "error", "error": str(exc)}
 
     return result_data

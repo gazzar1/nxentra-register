@@ -5585,9 +5585,28 @@ class CurrencyRevaluationView(APIView):
         )
 
     def post(self, request):
-        """Create a revaluation adjustment journal entry."""
+        """Create a revaluation adjustment journal entry.
+
+        A4: the whole mutation sequence (stale-draft sweep, create, finalize,
+        post, optional auto-reverse) runs under ONE Company admission lock and
+        is ALL-OR-NOTHING — any failure rolls the entire attempt back, so no
+        INCOMPLETE/DRAFT revaluation residue and no posted-without-reversal
+        state can persist. Under the constrained pilot the capability gate
+        refuses before any write; NONE-profile companies keep their behavior
+        but serialize per company (the disclosed correctness-first tradeoff,
+        as with the manual-journal boundary).
+        """
+        import dataclasses
+
+        from accounts.pilot_policy import Capability, require_supported, serialized_company_admission
+
         actor = resolve_actor(request)
         require(actor, "journal.create")
+
+        # Early UX 403 for pilot companies before the (potentially rate-
+        # fetching) calculation below; the authoritative decision is re-made on
+        # the LOCKED row inside the admission block.
+        require_supported(actor.company, Capability.FX_REVALUATION)
 
         revaluation_date_str = request.data.get("revaluation_date")
         if revaluation_date_str:
@@ -5595,6 +5614,9 @@ class CurrencyRevaluationView(APIView):
         else:
             revaluation_date = date_type.today()
 
+        # Calculation stays OUTSIDE the admission lock: it can consult
+        # ExchangeRate.get_rate, whose auto-fetch fallback performs remote I/O —
+        # never hold the admission lock across a network call.
         adjustments, total_gain_loss, _skipped = self._calculate_revaluation(actor.company, revaluation_date)
 
         if not adjustments:
@@ -5603,36 +5625,7 @@ class CurrencyRevaluationView(APIView):
                 status=status.HTTP_200_OK,
             )
 
-        # Idempotency: check if a revaluation entry already exists for this date
-        from accounting.models import JournalEntry
-
         reval_memo = f"Currency revaluation as of {revaluation_date.isoformat()}"
-        existing = JournalEntry.objects.filter(
-            company=actor.company,
-            memo=reval_memo,
-            status__in=[JournalEntry.Status.DRAFT, JournalEntry.Status.POSTED],
-        ).first()
-        if existing:
-            return Response(
-                {
-                    "error": f"A revaluation entry for {revaluation_date.isoformat()} already exists (#{existing.id}). Delete it first to re-run."
-                },
-                status=status.HTTP_409_CONFLICT,
-            )
-
-        # Clean up any leftover INCOMPLETE revaluation entries from failed attempts
-        from accounting.commands import delete_journal_entry
-
-        stale = JournalEntry.objects.filter(
-            company=actor.company,
-            memo=reval_memo,
-            status=JournalEntry.Status.INCOMPLETE,
-        )
-        for s in stale:
-            try:
-                delete_journal_entry(actor, s.id)
-            except Exception:
-                pass
 
         # Find the FX gain and FX loss accounts (prefer core mapping, fallback to role)
         from accounting.mappings import ModuleAccountMapping
@@ -5781,122 +5774,156 @@ class CurrencyRevaluationView(APIView):
         import uuid as _uuid
 
         nonce = str(_uuid.uuid4())[:8]
-        result = create_journal_entry(
-            actor=actor,
-            date=revaluation_date,
-            memo=reval_memo,
-            memo_ar=f"إعادة تقييم العملات بتاريخ {revaluation_date.isoformat()} [{nonce}]",
-            lines=lines,
-            kind="ADJUSTMENT",
-            currency=functional_currency,
-            period=period,
-        )
 
-        if not result.success:
-            return Response(
-                {"error": result.error},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        class _RevaluationAborted(Exception):
+            """Raised to roll the whole admission transaction back on any
+            step failure — the all-or-nothing contract of this endpoint."""
 
-        # Transition INCOMPLETE -> DRAFT, then auto-post
-        entry = result.data
-        save_result = save_journal_entry_complete(actor=actor, entry_id=entry.id)
-        if not save_result.success:
-            entry.refresh_from_db()
-            return Response(
-                {
-                    "message": "Revaluation entry created but could not be finalized.",
-                    "entry_id": entry.id,
-                    "entry_number": entry.entry_number or "",
-                    "total_gain_loss": str(total_gain_loss),
-                    "adjustments_count": len(adjustments),
-                    "posted": False,
-                    "post_error": save_result.error,
-                },
-                status=status.HTTP_201_CREATED,
-            )
+        duplicate_entry_id = None
+        try:
+            with serialized_company_admission(actor.company.pk) as locked_company:
+                actor = dataclasses.replace(actor, company=locked_company)
+                # Authoritative capability decision on the LOCKED row: a POST
+                # admitted on a cached NONE profile cannot commit after a
+                # concurrent activation.
+                require_supported(locked_company, Capability.FX_REVALUATION)
 
-        entry.refresh_from_db()
-        post_result = post_journal_entry(actor=actor, entry_id=entry.id)
+                # Idempotency: does a revaluation entry already exist for this
+                # date? Decided under the admission lock, so two concurrent
+                # POSTs serialize and the loser gets the 409 instead of a
+                # double-post.
+                from accounting.models import JournalEntry
 
-        if not post_result.success:
-            # Entry was created but could not be auto-posted
-            entry.refresh_from_db()
-            return Response(
-                {
-                    "message": "Revaluation entry created but auto-post failed.",
-                    "entry_id": entry.id,
-                    "entry_number": entry.entry_number or "",
-                    "total_gain_loss": str(total_gain_loss),
-                    "adjustments_count": len(adjustments),
-                    "posted": False,
-                    "post_error": post_result.error,
-                },
-                status=status.HTTP_201_CREATED,
-            )
-
-        entry.refresh_from_db()
-
-        # Auto-reverse: create a separate reversal JE dated first day of next period
-        # (does NOT mark the original as REVERSED — both entries stay POSTED)
-        reversal_info = {}
-        auto_reverse = request.data.get("auto_reverse", False)
-        if auto_reverse and fp:
-            next_period = FiscalPeriod.objects.filter(
-                company=actor.company,
-                fiscal_year=fp.fiscal_year,
-                period=fp.period + 1,
-                period_type=FiscalPeriod.PeriodType.NORMAL,
-            ).first()
-            if not next_period:
-                next_period = FiscalPeriod.objects.filter(
-                    company=actor.company,
-                    fiscal_year=fp.fiscal_year + 1,
-                    period=1,
-                    period_type=FiscalPeriod.PeriodType.NORMAL,
+                existing = JournalEntry.objects.filter(
+                    company=locked_company,
+                    memo=reval_memo,
+                    status__in=[JournalEntry.Status.DRAFT, JournalEntry.Status.POSTED],
                 ).first()
+                if existing:
+                    duplicate_entry_id = existing.id
+                    raise _RevaluationAborted("duplicate")
 
-            if next_period:
-                reversal_date = next_period.start_date
-                try:
-                    # Build reversed lines (swap debit/credit)
-                    reversal_lines = []
-                    for line in lines:
-                        reversal_lines.append(
-                            {
-                                "account_id": line["account_id"],
-                                "description": f"Reversal: {line['description']}",
-                                "debit": line["credit"],
-                                "credit": line["debit"],
-                                "currency": line.get("currency"),
-                            }
+                # Clean up any leftover INCOMPLETE revaluation entries from
+                # failed attempts (each delete is its own savepoint; a failed
+                # cleanup is non-fatal — the memo nonce already prevents event
+                # idempotency collisions).
+                from accounting.commands import delete_journal_entry
+
+                stale = JournalEntry.objects.filter(
+                    company=locked_company,
+                    memo=reval_memo,
+                    status=JournalEntry.Status.INCOMPLETE,
+                )
+                for s in stale:
+                    try:
+                        delete_journal_entry(actor, s.id)
+                    except Exception:
+                        pass
+
+                result = create_journal_entry(
+                    actor=actor,
+                    date=revaluation_date,
+                    memo=reval_memo,
+                    memo_ar=f"إعادة تقييم العملات بتاريخ {revaluation_date.isoformat()} [{nonce}]",
+                    lines=lines,
+                    kind="ADJUSTMENT",
+                    currency=functional_currency,
+                    period=period,
+                    source_module="revaluation",
+                )
+                if not result.success:
+                    raise _RevaluationAborted(result.error)
+
+                # Transition INCOMPLETE -> DRAFT, then auto-post. Failures
+                # ABORT the whole attempt (no partially-finalized residue).
+                entry = result.data
+                save_result = save_journal_entry_complete(actor=actor, entry_id=entry.id)
+                if not save_result.success:
+                    raise _RevaluationAborted(save_result.error)
+
+                entry.refresh_from_db()
+                post_result = post_journal_entry(actor=actor, entry_id=entry.id)
+                if not post_result.success:
+                    raise _RevaluationAborted(post_result.error)
+
+                entry.refresh_from_db()
+
+                # Auto-reverse: create a separate reversal JE dated first day of
+                # next period (does NOT mark the original as REVERSED — both
+                # entries stay POSTED). Atomic with the main entry: a reversal
+                # failure rolls EVERYTHING back — never a silent
+                # posted-without-reversal state.
+                reversal_info = {}
+                auto_reverse = request.data.get("auto_reverse", False)
+                if auto_reverse and fp:
+                    next_period = FiscalPeriod.objects.filter(
+                        company=locked_company,
+                        fiscal_year=fp.fiscal_year,
+                        period=fp.period + 1,
+                        period_type=FiscalPeriod.PeriodType.NORMAL,
+                    ).first()
+                    if not next_period:
+                        next_period = FiscalPeriod.objects.filter(
+                            company=locked_company,
+                            fiscal_year=fp.fiscal_year + 1,
+                            period=1,
+                            period_type=FiscalPeriod.PeriodType.NORMAL,
+                        ).first()
+
+                    if next_period:
+                        reversal_date = next_period.start_date
+                        # Build reversed lines (swap debit/credit)
+                        reversal_lines = []
+                        for line in lines:
+                            reversal_lines.append(
+                                {
+                                    "account_id": line["account_id"],
+                                    "description": f"Reversal: {line['description']}",
+                                    "debit": line["credit"],
+                                    "credit": line["debit"],
+                                    "currency": line.get("currency"),
+                                }
+                            )
+
+                        rev_result = create_journal_entry(
+                            actor=actor,
+                            date=reversal_date,
+                            memo=f"Reversal of revaluation {revaluation_date.isoformat()}",
+                            memo_ar=f"عكس إعادة تقييم {revaluation_date.isoformat()}",
+                            lines=reversal_lines,
+                            kind="ADJUSTMENT",
+                            currency=functional_currency,
+                            period=next_period.period,
+                            source_module="revaluation",
                         )
-
-                    rev_result = create_journal_entry(
-                        actor=actor,
-                        date=reversal_date,
-                        memo=f"Reversal of revaluation {revaluation_date.isoformat()}",
-                        memo_ar=f"عكس إعادة تقييم {revaluation_date.isoformat()}",
-                        lines=reversal_lines,
-                        kind="ADJUSTMENT",
-                        currency=functional_currency,
-                        period=next_period.period,
-                    )
-                    if rev_result.success:
+                        if not rev_result.success:
+                            raise _RevaluationAborted(f"Auto-reverse failed: {rev_result.error}")
                         rev_entry = rev_result.data
                         rev_save = save_journal_entry_complete(actor=actor, entry_id=rev_entry.id)
-                        if rev_save.success:
-                            rev_entry.refresh_from_db()
-                            rev_post = post_journal_entry(actor=actor, entry_id=rev_entry.id)
-                            if rev_post.success:
-                                rev_entry.refresh_from_db()
-                                reversal_info = {
-                                    "reversal_entry_id": rev_entry.id,
-                                    "reversal_entry_number": rev_entry.entry_number,
-                                    "reversal_date": reversal_date.isoformat(),
-                                }
-                except Exception as e:
-                    logger.warning("Auto-reverse failed for revaluation entry %s: %s", entry.id, e)
+                        if not rev_save.success:
+                            raise _RevaluationAborted(f"Auto-reverse failed: {rev_save.error}")
+                        rev_entry.refresh_from_db()
+                        rev_post = post_journal_entry(actor=actor, entry_id=rev_entry.id)
+                        if not rev_post.success:
+                            raise _RevaluationAborted(f"Auto-reverse failed: {rev_post.error}")
+                        rev_entry.refresh_from_db()
+                        reversal_info = {
+                            "reversal_entry_id": rev_entry.id,
+                            "reversal_entry_number": rev_entry.entry_number,
+                            "reversal_date": reversal_date.isoformat(),
+                        }
+        except _RevaluationAborted as aborted:
+            if duplicate_entry_id is not None:
+                return Response(
+                    {
+                        "error": f"A revaluation entry for {revaluation_date.isoformat()} already exists (#{duplicate_entry_id}). Delete it first to re-run."
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+            return Response(
+                {"error": f"Revaluation aborted, nothing was posted: {aborted}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         return Response(
             {

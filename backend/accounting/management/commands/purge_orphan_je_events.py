@@ -42,7 +42,6 @@ import re
 
 from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
 
 from accounts.models import Company
 from accounts.rls import rls_bypass
@@ -108,6 +107,23 @@ class Command(BaseCommand):
             self.stdout.write(f"Purging orphan JE/source-doc events for: {company.name}")
             if options["dry_run"]:
                 self.stdout.write(self.style.WARNING("DRY RUN — no writes will be performed."))
+
+            # A4: refuse BEFORE any delete on a pilot company. The previous
+            # ordering deleted canonical events and only then crashed on the
+            # PROJECTION_REBUILD gate inside the rebuild — leaving durable
+            # events-vs-read-model divergence that the blocked rebuild cannot
+            # repair. Pilot recovery is the backup/G2 isolated-database drill,
+            # never in-place event surgery. (Decided on the live row here; the
+            # real delete below re-decides under the admission lock.)
+            from accounts.pilot_policy import Capability, is_supported
+
+            if not options["dry_run"] and not is_supported(company, Capability.PROJECTION_REBUILD):
+                raise CommandError(
+                    "Refusing to purge events for a constrained-pilot company: the "
+                    "post-purge projection rebuild is blocked (PROJECTION_REBUILD), so a "
+                    "purge would strand the read models. Pilot recovery goes through the "
+                    "backup/G2 drill, not in-place event surgery."
+                )
 
             # Build the "alive" set for each source-document type.
             alive_invoices = set(SalesInvoice.objects.filter(company=company).values_list("invoice_number", flat=True))
@@ -179,8 +195,14 @@ class Command(BaseCommand):
                 )
                 return
 
-            # Real run: delete events + rebuild projections.
-            with transaction.atomic():
+            # Real run: delete events + rebuild projections. The delete decides
+            # PROJECTION_REBUILD on the LOCKED admission row (authoritative —
+            # a purge admitted on a cached NONE profile cannot commit after a
+            # concurrent activation), then deletes under that lock.
+            from accounts.pilot_policy import require_supported, serialized_company_admission
+
+            with serialized_company_admission(company.pk) as locked_company:
+                require_supported(locked_company, Capability.PROJECTION_REBUILD)
                 deleted, _ = BusinessEvent.objects.filter(id__in=orphan_event_ids).delete()
                 self.stdout.write(self.style.SUCCESS(f"  Deleted {deleted} BusinessEvent rows."))
 

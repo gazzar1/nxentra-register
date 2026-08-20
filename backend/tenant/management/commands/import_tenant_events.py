@@ -113,6 +113,22 @@ class Command(BaseCommand):
                     "The company must exist in the system database before importing events."
                 )
 
+            # A4: refuse on a pilot DEPLOYMENT. This command injects arbitrary
+            # canonical events (any registered type) below every emit gate —
+            # on the pilot's single-tenant box that bypasses the entire A4
+            # runtime boundary. Tenant migration is not a pilot workflow; the
+            # sanctioned pilot recovery path is the backup/G2 drill. The check
+            # is deployment-wide (not per-company) because an import into ANY
+            # company on the pilot database breaks the isolation invariant.
+            from accounts.pilot_policy import deployment_has_pilot
+
+            if not options["dry_run"] and deployment_has_pilot():
+                raise CommandError(
+                    "Refusing to import tenant events: this deployment hosts a "
+                    "constrained-pilot company. Event injection bypasses the A4 "
+                    "runtime gates; use the backup/G2 drill for pilot recovery."
+                )
+
         self.stdout.write(f"Target database: {db_alias}")
         self.stdout.write(f"Target company: {company.name} (ID: {company.id})")
 

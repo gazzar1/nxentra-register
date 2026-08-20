@@ -29,7 +29,12 @@ from accounting.commands import (
 )
 from accounting.models import Account, Customer, JournalEntry
 from accounts.authz import ActorContext, require
-from accounts.pilot_policy import Capability, lock_company_for_admission, require_supported
+from accounts.pilot_policy import (
+    Capability,
+    lock_company_for_admission,
+    require_supported,
+    requires_capability,
+)
 from events.emitter import emit_event
 from events.types import (
     EventTypes,
@@ -732,6 +737,18 @@ def create_sales_invoice(
     """
     require(actor, "sales.invoice.create")
 
+    # A4 manual-AR gate: manually created invoices are blocked under the
+    # constrained pilot. Decide on the LOCKED admission row (Company-first,
+    # held through commit) so a create admitted on a cached NONE profile cannot
+    # commit after a concurrent activation. The platform limb
+    # (auto_created=True — Shopify's create_and_post_invoice_for_platform) is
+    # the pilot's own supported workflow: it takes no admission lock here and
+    # keeps its existing boundary.
+    if not auto_created:
+        locked_company = lock_company_for_admission(actor.company.pk)
+        actor = dataclasses.replace(actor, company=locked_company)
+        require_supported(actor.company, Capability.MANUAL_AR)
+
     # Always auto-generate invoice number (not user-editable)
     seq = _next_company_sequence(actor.company, "sales_invoice_number")
     invoice_number = f"INV-{seq:06d}"
@@ -999,6 +1016,14 @@ def update_sales_invoice(
     replace the existing lines.
     """
     require(actor, "sales.invoice.update")
+
+    # A4 manual-AR gate (mirrors create_sales_invoice): decide on the LOCKED
+    # admission row BEFORE the SalesInvoice row lock below (Company-first).
+    # The auto_created limb is the platform path and stays open.
+    if not auto_created:
+        locked_company = lock_company_for_admission(actor.company.pk)
+        actor = dataclasses.replace(actor, company=locked_company)
+        require_supported(actor.company, Capability.MANUAL_AR)
 
     try:
         invoice = SalesInvoice.objects.select_for_update().get(company=actor.company, pk=invoice_id)
@@ -1638,6 +1663,7 @@ def post_sales_invoice_or_raise(
     return CommandResult.ok(data={"invoice": invoice, "journal_entry": journal_entry}, event=event)
 
 
+@requires_capability(Capability.MANUAL_AR)
 @translate_posted_journal_invalid
 def post_sales_invoice(
     actor: ActorContext,
@@ -1648,7 +1674,12 @@ def post_sales_invoice(
     """Public boundary over :func:`post_sales_invoice_or_raise` — an
     invariant rejection has already rolled back the entire posting attempt
     when it is translated here into the standard ``CommandResult`` failure
-    with the stable canonical codes."""
+    with the stable canonical codes.
+
+    Constrained pilot: this public boundary is the MANUAL posting door and is
+    blocked by the SERIALIZED decorator above. The Shopify platform limb posts
+    through :func:`post_sales_invoice_or_raise` directly (with its control-line
+    tags) and is deliberately not gated here."""
     return post_sales_invoice_or_raise(
         actor,
         invoice_id,
@@ -1657,6 +1688,7 @@ def post_sales_invoice(
     )
 
 
+@requires_capability(Capability.MANUAL_AR)
 @translate_posted_journal_invalid
 @transaction.atomic
 def void_sales_invoice(
@@ -1666,6 +1698,8 @@ def void_sales_invoice(
 ) -> CommandResult:
     """
     Void a posted sales invoice by creating a reversing journal entry.
+
+    Constrained pilot: blocked (manual-AR void door; no platform caller).
     """
     require(actor, "sales.invoice.void")
 
@@ -1762,6 +1796,14 @@ def create_credit_note(
       tax_code_id (optional), item_id (optional), invoice_line_id (optional)
     """
     require(actor, "sales.invoice.create")
+
+    # A4 manual-AR gate (mirrors create_sales_invoice): decide on the LOCKED
+    # admission row before any read/write; the auto_created limb (Shopify
+    # refund path) stays open with its existing boundary.
+    if not auto_created:
+        locked_company = lock_company_for_admission(actor.company.pk)
+        actor = dataclasses.replace(actor, company=locked_company)
+        require_supported(actor.company, Capability.MANUAL_AR)
 
     try:
         invoice = SalesInvoice.objects.get(company=actor.company, pk=invoice_id)
@@ -2098,6 +2140,7 @@ def post_credit_note_or_raise(
     )
 
 
+@requires_capability(Capability.MANUAL_AR)
 @translate_posted_journal_invalid
 @transaction.atomic
 def void_credit_note(
@@ -2109,6 +2152,8 @@ def void_credit_note(
     Void a posted credit note by creating a reversing journal entry.
 
     This un-does the credit note effect — re-increases the customer's receivable.
+
+    Constrained pilot: blocked (manual-AR void door; no platform caller).
     """
     require(actor, "sales.invoice.post")
 
@@ -2318,6 +2363,7 @@ def create_and_post_invoice_for_platform(
     return post_result
 
 
+@requires_capability(Capability.MANUAL_AR)
 @translate_posted_journal_invalid
 def post_credit_note(
     actor: ActorContext,
@@ -2327,7 +2373,12 @@ def post_credit_note(
     """Public boundary over :func:`post_credit_note_or_raise` — an invariant
     rejection has already rolled back the entire posting attempt when it is
     translated here into the standard ``CommandResult`` failure with the
-    stable canonical codes."""
+    stable canonical codes.
+
+    Constrained pilot: this public boundary is the MANUAL posting door and is
+    blocked by the SERIALIZED decorator above. The Shopify refund limb posts
+    through :func:`post_credit_note_or_raise` directly and is deliberately not
+    gated here."""
     return post_credit_note_or_raise(
         actor,
         credit_note_id,

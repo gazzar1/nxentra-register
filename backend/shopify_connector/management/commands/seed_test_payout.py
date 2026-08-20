@@ -13,7 +13,7 @@ Usage:
 from datetime import date
 from decimal import Decimal
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 from accounts.models import Company
@@ -38,6 +38,15 @@ class Command(BaseCommand):
 
     @transaction.atomic
     def handle(self, *args, **options):
+        # A4: never seed on a pilot deployment (creates ShopifyPayout rows —
+        # Capability.SHOPIFY_PAYOUT_ACCOUNTING is blocked).
+        from accounts.pilot_policy import PilotDeploymentRefused, require_no_pilot_deployment
+
+        try:
+            require_no_pilot_deployment("seed_test_payout")
+        except PilotDeploymentRefused as exc:
+            raise CommandError(str(exc)) from exc
+
         # Resolve company
         if options["company_id"]:
             company = Company.objects.get(id=options["company_id"])

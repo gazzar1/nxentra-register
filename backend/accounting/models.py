@@ -2558,7 +2558,28 @@ class ExchangeRate(models.Model):
         Fetch exchange rate from Frankfurter API (ECB data, free, no key).
         Saves the rate with source='ECB (auto)' so users can review/override.
         Returns the rate Decimal or None if fetch fails.
+
+        A4: under the constrained pilot the fetch (and its write) is DENIED and
+        reads as an ordinary rate-miss — every ``get_rate`` consumer already
+        quarantines, fails loudly, or skips on a missing rate. The deny is
+        deliberately point-in-time (no admission lock): this classmethod is a
+        leaf reachable from callers already holding domain locks, so acquiring
+        the Company admission lock here would invert the pinned Company-first
+        lock order. The ``exchange_rate_data`` preflight residue check is the
+        drift backstop (a NONE-profile fetch racing activation leaves a row the
+        next preflight flags). Witnessed in A4_DESIGN_DEFERRED_MUTATING_SITES.
         """
+        from accounts.pilot_policy import Capability, is_supported
+
+        if not is_supported(company, Capability.EXCHANGE_RATE_MAINTENANCE):
+            logger.info(
+                "Exchange-rate auto-fetch denied under pilot profile for company %s (%s→%s) — treated as rate-miss",
+                company.pk,
+                from_currency,
+                to_currency,
+            )
+            return None
+
         import requests  # type: ignore[import-untyped,unused-ignore]
 
         try:

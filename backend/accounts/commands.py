@@ -3489,11 +3489,23 @@ def complete_onboarding(
     # module after activation (both orderings with activate_pilot_profile
     # serialize on the admission row). NONE-profile onboarding is functionally
     # unchanged; only a re-run on an already-active pilot can be refused.
-    from accounts.pilot_policy import lock_company_for_admission, require_module_enable_allowed
+    from accounts.pilot_policy import (
+        Capability,
+        lock_company_for_admission,
+        require_module_enable_allowed,
+        require_supported,
+    )
 
     company = lock_company_for_admission(actor.company.pk)
     actor = dataclasses.replace(actor, company=company)
     require_module_enable_allowed(company, modules)
+    # A4 fiscal freeze: a RE-RUN of onboarding can rewrite fiscal state through
+    # this POST door (start month; Step 2 mints FiscalYear/periods and rewrites
+    # FiscalPeriodConfig period_count/current_period/open_from/open_to on
+    # re-run). Decide on the LOCKED row, before any write, whenever the call
+    # would touch fiscal state — mirrors update_company_settings.
+    if 1 <= fiscal_year_start_month <= 12 or fiscal_year > 0:
+        require_supported(company, Capability.CURRENCY_FISCAL_CHANGE)
 
     # ---- Step 1: Company profile ----
     profile_fields = {}
@@ -3908,7 +3920,7 @@ def _create_periods(company, fiscal_year_num: int, num_periods: int, current_per
             defaults={
                 "start_date": end,
                 "end_date": end,
+                "period_type": FiscalPeriod.PeriodType.ADJUSTMENT,
                 "status": "OPEN",
-                "period_type": "ADJUSTMENT",
             },
         )

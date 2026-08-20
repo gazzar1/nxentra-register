@@ -2493,6 +2493,7 @@ def configure_periods(
     return CommandResult.ok({"period_count": period_count, "periods": periods}, event=event)
 
 
+@requires_capability(Capability.CURRENCY_FISCAL_CHANGE)
 @transaction.atomic
 def set_period_range(
     actor: ActorContext,
@@ -2511,6 +2512,9 @@ def set_period_range(
         open_to_period: Last period to open
     """
     require(actor, "periods.configure")
+    # Constrained pilot freezes the fiscal configuration: this is the BULK
+    # open/close door (rewrites every period's status in one call). Month-level
+    # close_period/open_period remain the supported period lifecycle.
 
     from projections.models import FiscalPeriodConfig
 
@@ -2553,6 +2557,7 @@ def set_period_range(
     )
 
 
+@requires_capability(Capability.CURRENCY_FISCAL_CHANGE)
 @transaction.atomic
 def set_current_period(
     actor: ActorContext,
@@ -2568,6 +2573,8 @@ def set_current_period(
         period: Period number to mark as current
     """
     require(actor, "periods.configure")
+    # Gated for fiscal-freeze consistency: the current-period pointer is part of
+    # the frozen FiscalPeriodConfig state the pilot preflight proves.
 
     from projections.models import FiscalPeriod, FiscalPeriodConfig
 
@@ -2609,6 +2616,7 @@ def set_current_period(
     return CommandResult.ok({"current_period": period}, event=event)
 
 
+@requires_capability(Capability.CURRENCY_FISCAL_CHANGE)
 @transaction.atomic
 def update_period_dates(
     actor: ActorContext,
@@ -2628,6 +2636,11 @@ def update_period_dates(
         end_date: New end date (ISO format)
     """
     require(actor, "periods.configure")
+    # Gated: date edits can re-shape which calendar days a (possibly CLOSED)
+    # period covers — the posting gates resolve periods by date range, so this
+    # door is capable of admitting postings into a closed month. Frozen under
+    # the pilot; period date drift is additionally preflight-detected
+    # (period_dates_drift / period_overlap).
 
     from datetime import date as date_cls
 
@@ -2861,6 +2874,7 @@ def check_close_readiness(
     )
 
 
+@requires_capability(Capability.CURRENCY_FISCAL_CHANGE)
 @transaction.atomic
 def close_fiscal_year(
     actor: ActorContext,
@@ -2869,6 +2883,10 @@ def close_fiscal_year(
 ) -> CommandResult:
     """
     Close a fiscal year. This is the formal year-end close workflow.
+
+    Constrained pilot: gated — year-end close is a fiscal-STRUCTURE mutation
+    (posts closing journals and mints the NEXT fiscal year's 13 periods), unlike
+    the month-level close_period/open_period lifecycle which stays available.
 
     Steps:
     1. Verify close readiness (all preconditions)
@@ -3317,6 +3335,7 @@ def run_reconciliation_check(actor: ActorContext) -> CommandResult:
     )
 
 
+@requires_capability(Capability.CURRENCY_FISCAL_CHANGE)
 @transaction.atomic
 def reopen_fiscal_year(
     actor: ActorContext,
@@ -3328,6 +3347,9 @@ def reopen_fiscal_year(
 
     This reverses the closing entries (creates compensating reversal entries)
     and reopens Period 13. The original closing entries are NEVER deleted.
+
+    Constrained pilot: gated for symmetry with close_fiscal_year — reopening
+    posts reversal journals and mutates fiscal structure.
 
     Requires:
     - fiscal_year.reopen permission
@@ -4168,6 +4190,7 @@ def set_journal_line_analysis(
 # =============================================================================
 
 
+@requires_capability(Capability.MANUAL_AR)
 @transaction.atomic
 def record_customer_receipt(
     actor: ActorContext,
@@ -4189,6 +4212,15 @@ def record_customer_receipt(
     Creates a journal entry:
     - Dr Bank Account (amount)
     - Cr AR Control (amount) with customer counterparty
+
+    Constrained pilot: BLOCKED (manual cash application). This command is a
+    direct posted-journal emitter that resolves its currency from
+    ``currency or Customer.currency or functional`` and can book realized FX —
+    none of which passes the manual-journal EGP boundary. There is also no
+    receipt void path (a JE reversal would strand ReceiptAllocation /
+    amount_paid), so under the pilot the whole door is blocked by the
+    SERIALIZED decorator above; residue is preflight-detected
+    (manual_ar_financial_state).
 
     This will:
     1. Create a posted journal entry

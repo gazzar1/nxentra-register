@@ -10,7 +10,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts.authz import resolve_actor
+from accounts.authz import require, resolve_actor
 from accounts.module_permissions import ModuleEnabled
 
 from .commands import (
@@ -520,22 +520,32 @@ class SalesInvoiceDetailView(APIView):
         if not actor.company:
             return Response({"detail": "No active company."}, status=400)
 
-        try:
-            invoice = SalesInvoice.objects.get(company=actor.company, pk=pk)
-        except SalesInvoice.DoesNotExist:
-            return Response({"detail": "Invoice not found."}, status=404)
+        require(actor, "sales.invoice.update")
 
-        if invoice.status != SalesInvoice.Status.DRAFT:
-            return Response(
-                {"detail": "Only DRAFT invoices can be deleted. Use Void to reverse a posted invoice."},
-                status=400,
-            )
-
+        from accounts.pilot_policy import Capability, require_supported, serialized_company_admission
         from projections.write_barrier import command_writes_allowed
 
-        with command_writes_allowed():
-            invoice.lines.all().delete()
-            invoice.delete()
+        # A4 manual-AR gate: draft deletion is a manual-AR door (only manual
+        # drafts exist to delete — the platform path posts atomically and never
+        # leaves a DRAFT). Decide on the LOCKED admission row, and make the
+        # row + lines deletion atomic while we are at it.
+        with serialized_company_admission(actor.company.pk) as locked_company:
+            require_supported(locked_company, Capability.MANUAL_AR)
+
+            try:
+                invoice = SalesInvoice.objects.select_for_update().get(company=locked_company, pk=pk)
+            except SalesInvoice.DoesNotExist:
+                return Response({"detail": "Invoice not found."}, status=404)
+
+            if invoice.status != SalesInvoice.Status.DRAFT:
+                return Response(
+                    {"detail": "Only DRAFT invoices can be deleted. Use Void to reverse a posted invoice."},
+                    status=400,
+                )
+
+            with command_writes_allowed():
+                invoice.lines.all().delete()
+                invoice.delete()
 
         return Response(status=204)
 

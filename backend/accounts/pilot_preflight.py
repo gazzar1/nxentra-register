@@ -139,6 +139,15 @@ def run_preflight(company, *, phase: str = "go-live", for_activation: bool = Fal
         v += _legacy_bank_violations(company)
         v += _purchase_state_violations(company)
         v += _journal_currency_residue_violations(company)
+        v += _manual_ar_violations(company)
+        v += _edim_violations(company)
+        v += _revaluation_violations(company)
+        v += _exchange_rate_violations(company)
+        v += _period_date_violations(company)
+        v += _vertical_module_violations(company)
+        v += _external_ingest_violations(company)
+        v += _seeded_event_violations(company)
+        v += _projection_rebuild_violations(company)
 
     return v
 
@@ -680,3 +689,459 @@ def _journal_currency_residue_violations(company) -> list[Violation]:
         )
 
     return out
+
+
+def _manual_ar_violations(company) -> list[Violation]:
+    """A4: manual accounts-receivable (Capability.MANUAL_AR) is out of scope.
+    Detect — read-only, never repaired:
+
+    - ``non_egp_sales_document_data`` — invoice/credit-note rows in a foreign
+      currency (any origin; the supported platform limb is EGP-only anyway);
+    - ``customer_currency_not_egp`` — Customer master data carrying a foreign
+      currency (the model default is 'USD'; a foreign customer currency is the
+      leak path into receipt currency resolution);
+    - ``manual_ar_document_state`` — manually created (``auto_created=False``)
+      invoice/credit-note rows. ROW-based evidence only: the sales lifecycle
+      events do not record the manual/platform discriminator, and the deferred
+      payload addition is a tracked event-schema decision — a hard-deleted
+      manual DRAFT therefore leaves no trace (documented, accepted);
+    - ``manual_ar_financial_state`` — manual documents with posted journals,
+      durable ``cash.customer_receipt_recorded`` events, and ReceiptAllocation
+      rows (receipts have no void path, so any receipt evidence is permanent).
+    """
+    from accounting.models import Customer
+    from events.models import BusinessEvent
+    from events.types import EventTypes
+    from sales.models import ReceiptAllocation, SalesCreditNote, SalesInvoice
+
+    out: list[Violation] = []
+    home = (EGP, "")
+
+    foreign_docs = (
+        SalesInvoice.objects.filter(company=company).exclude(currency__in=home).count()
+        + SalesCreditNote.objects.filter(company=company).exclude(currency__in=home).count()
+    )
+    if foreign_docs:
+        out.append(
+            Violation(
+                "non_egp_sales_document_data",
+                f"{foreign_docs} non-EGP sales document(s) (invoices / credit notes) exist; the pilot books EGP only.",
+            )
+        )
+
+    foreign_customers = Customer.objects.filter(company=company).exclude(currency__in=home).count()
+    if foreign_customers:
+        out.append(
+            Violation(
+                "customer_currency_not_egp",
+                f"{foreign_customers} customer(s) carry a non-EGP currency; customer currency feeds "
+                "receipt/document currency resolution and must be EGP (or blank).",
+            )
+        )
+
+    manual_docs = (
+        SalesInvoice.objects.filter(company=company, auto_created=False).count()
+        + SalesCreditNote.objects.filter(company=company, auto_created=False).count()
+    )
+    if manual_docs:
+        out.append(
+            Violation(
+                "manual_ar_document_state",
+                f"{manual_docs} manually created sales document(s) (invoices / credit notes) exist; "
+                "manual AR is out of scope for the pilot.",
+            )
+        )
+
+    manual_posted = (
+        SalesInvoice.objects.filter(company=company, auto_created=False, posted_journal_entry__isnull=False).count()
+        + SalesCreditNote.objects.filter(
+            company=company, auto_created=False, posted_journal_entry__isnull=False
+        ).count()
+    )
+    receipt_events = BusinessEvent.objects.filter(
+        company=company, event_type=EventTypes.CUSTOMER_RECEIPT_RECORDED
+    ).count()
+    receipt_allocations = ReceiptAllocation.objects.filter(company=company).count()
+    if manual_posted or receipt_events or receipt_allocations:
+        parts: list[str] = []
+        if manual_posted:
+            parts.append(f"{manual_posted} manual sales document(s) with posted journals")
+        if receipt_events:
+            parts.append(f"{receipt_events} customer-receipt event(s)")
+        if receipt_allocations:
+            parts.append(f"{receipt_allocations} receipt allocation(s)")
+        out.append(
+            Violation(
+                "manual_ar_financial_state",
+                "; ".join(parts) + " exist; manual AR posting and cash application are out of scope for the pilot.",
+            )
+        )
+
+    return out
+
+
+def _edim_violations(company) -> list[Violation]:
+    """A4: EDIM commit (Capability.EDIM_FINANCIAL_COMMIT) is out of scope.
+    Detect the loaded gun, not just fired bullets:
+
+    - ``non_egp_edim_data`` — staged records whose mapped payload carries a
+      non-EGP currency (foreign CSV data sitting commit-ready);
+    - ``edim_commit_state`` — commit-eligible batches (VALIDATED / PREVIEWED),
+      committed batches (durable evidence of EDIM-originated journals), and
+      AUTO_POST-armed configuration (a FINANCIAL-trust source paired with an
+      ACTIVE AUTO_POST mapping profile).
+    """
+    from edim.models import IngestionBatch, MappingProfile, SourceSystem, StagedRecord
+
+    out: list[Violation] = []
+    home = (EGP, "")
+
+    foreign_staged = 0
+    for payload in StagedRecord.objects.filter(company=company).values_list("mapped_payload", flat=True).iterator():
+        currency = str((payload or {}).get("currency", "") or "").upper()
+        if currency and currency not in home:
+            foreign_staged += 1
+    if foreign_staged:
+        out.append(
+            Violation(
+                "non_egp_edim_data",
+                f"{foreign_staged} EDIM staged record(s) carry a non-EGP currency; the pilot ingests EGP only.",
+            )
+        )
+
+    commit_eligible = IngestionBatch.objects.filter(
+        company=company,
+        status__in=(IngestionBatch.Status.VALIDATED, IngestionBatch.Status.PREVIEWED),
+    ).count()
+    committed = IngestionBatch.objects.filter(company=company, status=IngestionBatch.Status.COMMITTED).count()
+    armed_config = 0
+    if (
+        SourceSystem.objects.filter(company=company, trust_level=SourceSystem.TrustLevel.FINANCIAL).exists()
+        and MappingProfile.objects.filter(
+            company=company,
+            status=MappingProfile.ProfileStatus.ACTIVE,
+            posting_policy=MappingProfile.PostingPolicy.AUTO_POST,
+        ).exists()
+    ):
+        armed_config = 1
+    if commit_eligible or committed or armed_config:
+        parts = []
+        if commit_eligible:
+            parts.append(f"{commit_eligible} commit-eligible EDIM batch(es) (VALIDATED/PREVIEWED)")
+        if committed:
+            parts.append(f"{committed} committed EDIM batch(es)")
+        if armed_config:
+            parts.append("an AUTO_POST-armed source/profile configuration")
+        out.append(
+            Violation(
+                "edim_commit_state",
+                "; ".join(parts) + " exist(s); EDIM financial commit is out of scope for the pilot.",
+            )
+        )
+
+    return out
+
+
+def _revaluation_violations(company) -> list[Violation]:
+    """A4: FX revaluation (Capability.FX_REVALUATION) is out of scope. Only the
+    revaluation flows set ``kind=ADJUSTMENT`` (the manual HTTP door cannot pass
+    ``kind``), so ADJUSTMENT journals across ALL statuses — the historical
+    multi-commit flow could strand INCOMPLETE/DRAFT residue — are revaluation
+    evidence on EGP-only books."""
+    from accounting.models import JournalEntry
+
+    n = JournalEntry.objects.filter(company=company, kind=JournalEntry.Kind.ADJUSTMENT).count()
+    if n:
+        return [
+            Violation(
+                "revaluation_data",
+                f"{n} ADJUSTMENT journal entr(ies) exist (currency-revaluation evidence, any "
+                "status); EGP-only books have nothing to revalue.",
+            )
+        ]
+    return []
+
+
+def _exchange_rate_violations(company) -> list[Violation]:
+    """A4: exchange-rate maintenance (Capability.EXCHANGE_RATE_MAINTENANCE) is
+    out of scope and EGP-only books need ZERO rate rows (``get_rate``
+    short-circuits EGP→EGP without touching the table; every stored row is
+    cross-currency by construction). ALL rows are residue — this check is
+    load-bearing for the deny-as-rate-miss design: the capability deny stops
+    the FETCH, but a pre-existing row still resolves."""
+    from accounting.models import ExchangeRate
+
+    total = ExchangeRate.objects.filter(company=company).count()
+    if total:
+        auto = ExchangeRate.objects.filter(company=company, source="ECB (auto-fetched)").count()
+        detail = f" ({auto} ECB auto-fetched)" if auto else ""
+        return [
+            Violation(
+                "exchange_rate_data",
+                f"{total} exchange-rate row(s) exist{detail}; EGP-only books need no rates and "
+                "stored rows still resolve in lookups.",
+            )
+        ]
+    return []
+
+
+def _period_date_violations(company) -> list[Violation]:
+    """A4: fiscal-period DATE/tiling drift the count-only ``_period_violations``
+    cannot see. Under the frozen January fiscal year, every NORMAL period must
+    exactly tile its calendar month (start = 1st, end = last day of the SAME
+    month, period == month ordinal) and each ADJUSTMENT period must sit on
+    Dec 31 of its year (start == end == fiscal-year end, mirroring
+    ``_calculate_period_boundaries``). Overlapping NORMAL coverage (any two
+    rows, any fiscal-year label, covering one date) additionally defends the
+    date-range posting lookup. Skipped while the start month is not January —
+    ``fiscal_not_january`` already fires there and this check's expectations
+    assume the frozen structure."""
+    import calendar
+    from datetime import date as _date
+
+    from projections.models import FiscalPeriod
+
+    if company.fiscal_year_start_month != 1:
+        return []
+
+    out: list[Violation] = []
+    drifted = 0
+    normal_periods: list = []
+
+    for fp in FiscalPeriod.objects.filter(company=company).order_by("fiscal_year", "period").iterator():
+        # Adjustment-period expectation keys on period == 13 OR the ADJUSTMENT
+        # type: the onboarding path historically created P13 without stamping
+        # period_type, so a NORMAL-typed P13 with the correct Dec-31 shape is
+        # legitimate configuration, not drift.
+        if fp.period == 13 or fp.period_type == FiscalPeriod.PeriodType.ADJUSTMENT:
+            fy_end = _date(fp.fiscal_year, 12, 31)
+            if fp.start_date != fy_end or fp.end_date != fy_end:
+                drifted += 1
+            continue
+        normal_periods.append(fp)
+        if not (1 <= fp.period <= 12):
+            drifted += 1
+            continue
+        year = fp.fiscal_year
+        month = fp.period
+        expected_start = _date(year, month, 1)
+        expected_end = _date(year, month, calendar.monthrange(year, month)[1])
+        if fp.start_date != expected_start or fp.end_date != expected_end:
+            drifted += 1
+
+    if drifted:
+        out.append(
+            Violation(
+                "period_dates_drift",
+                f"{drifted} fiscal period(s) deviate from the frozen January calendar tiling "
+                "(NORMAL periods must exactly cover their calendar month; adjustment periods "
+                "sit on Dec 31).",
+            )
+        )
+
+    seen_months: dict[tuple[int, int], int] = {}
+    overlaps = 0
+    for fp in normal_periods:
+        cursor = fp.start_date
+        # Walk month-granular coverage; period dates are month-shaped by
+        # contract, so month granularity is sufficient once tiling holds and
+        # still catches gross overlaps when it does not.
+        while cursor <= fp.end_date:
+            key = (cursor.year, cursor.month)
+            if key in seen_months:
+                overlaps += 1
+                break
+            seen_months[key] = fp.pk
+            cursor = _date(cursor.year + (cursor.month // 12), (cursor.month % 12) + 1, 1)
+    if overlaps:
+        out.append(
+            Violation(
+                "period_overlap",
+                f"{overlaps} NORMAL fiscal period(s) overlap another period's calendar coverage; "
+                "the date-range posting lookup requires disjoint periods.",
+            )
+        )
+
+    return out
+
+
+def _vertical_module_violations(company) -> list[Violation]:
+    """A4: the clinic / properties verticals (Capability.VERTICAL_MODULES) are
+    out of scope. Detect enablement and any vertical state — rows or durable
+    canonical events (explicit constants, never prefix matching), mirroring the
+    purchasing precedent."""
+    from accounting.mappings import ModuleAccountMapping
+    from accounts.models import CompanyModule
+    from clinic.models import Doctor, Patient, Visit
+    from clinic.models import Invoice as ClinicInvoice
+    from clinic.models import Payment as ClinicPayment
+    from events.models import BusinessEvent
+    from events.types import EventTypes
+    from properties.models import (
+        Lease,
+        Lessee,
+        PaymentReceipt,
+        Property,
+        PropertyAccountMapping,
+        PropertyExpense,
+        RentScheduleLine,
+        SecurityDepositTransaction,
+        Unit,
+    )
+
+    clinic_event_types = (
+        EventTypes.CLINIC_DOCTOR_CREATED,
+        EventTypes.CLINIC_PATIENT_CREATED,
+        EventTypes.CLINIC_PATIENT_UPDATED,
+        EventTypes.CLINIC_VISIT_CREATED,
+        EventTypes.CLINIC_VISIT_COMPLETED,
+        EventTypes.CLINIC_INVOICE_ISSUED,
+        EventTypes.CLINIC_PAYMENT_RECEIVED,
+        EventTypes.CLINIC_PAYMENT_VOIDED,
+    )
+    property_event_types = (
+        EventTypes.PROPERTY_CREATED,
+        EventTypes.PROPERTY_UPDATED,
+        EventTypes.LEASE_CREATED,
+        EventTypes.LEASE_UPDATED,
+        EventTypes.LEASE_ACTIVATED,
+        EventTypes.LEASE_TERMINATED,
+        EventTypes.LEASE_RENEWED,
+        EventTypes.RENT_SCHEDULE_GENERATED,
+        EventTypes.RENT_DUE_POSTED,
+        EventTypes.RENT_OVERDUE_DETECTED,
+        EventTypes.RENT_LINE_WAIVED,
+        EventTypes.RENT_PAYMENT_RECEIVED,
+        EventTypes.RENT_PAYMENT_ALLOCATED,
+        EventTypes.RENT_PAYMENT_VOIDED,
+        EventTypes.DEPOSIT_RECEIVED,
+        EventTypes.DEPOSIT_ADJUSTED,
+        EventTypes.DEPOSIT_REFUNDED,
+        EventTypes.DEPOSIT_FORFEITED,
+        EventTypes.LEASE_EXPIRY_ALERT,
+        EventTypes.PROPERTY_EXPENSE_RECORDED,
+        EventTypes.PROPERTY_ACCOUNT_MAPPING_UPDATED,
+    )
+
+    out: list[Violation] = []
+
+    for module_key, code in (("clinic", "clinic_module_enabled"), ("properties", "properties_module_enabled")):
+        if CompanyModule.objects.filter(company=company, module_key=module_key, is_enabled=True).exists():
+            out.append(
+                Violation(
+                    code,
+                    f"The {module_key} module is enabled; the verticals are out of scope for the pilot.",
+                )
+            )
+
+    clinic_rows = (
+        Patient.objects.filter(company=company).count()
+        + Doctor.objects.filter(company=company).count()
+        + Visit.objects.filter(company=company).count()
+        + ClinicInvoice.objects.filter(company=company).count()
+        + ClinicPayment.objects.filter(company=company).count()
+        + ModuleAccountMapping.objects.filter(company=company, module="clinic").count()
+    )
+    clinic_events = BusinessEvent.objects.filter(company=company, event_type__in=clinic_event_types).count()
+    if clinic_rows or clinic_events:
+        parts = []
+        if clinic_rows:
+            parts.append(f"{clinic_rows} clinic row(s)")
+        if clinic_events:
+            parts.append(f"{clinic_events} clinic event(s)")
+        out.append(
+            Violation(
+                "clinic_state",
+                "; ".join(parts) + " exist; the clinic vertical is out of scope for the pilot.",
+            )
+        )
+
+    property_rows = (
+        Property.objects.filter(company=company).count()
+        + Unit.objects.filter(company=company).count()
+        + Lessee.objects.filter(company=company).count()
+        + Lease.objects.filter(company=company).count()
+        + RentScheduleLine.objects.filter(company=company).count()
+        + PaymentReceipt.objects.filter(company=company).count()
+        + SecurityDepositTransaction.objects.filter(company=company).count()
+        + PropertyExpense.objects.filter(company=company).count()
+        + PropertyAccountMapping.objects.filter(company=company).count()
+    )
+    property_events = BusinessEvent.objects.filter(company=company, event_type__in=property_event_types).count()
+    if property_rows or property_events:
+        parts = []
+        if property_rows:
+            parts.append(f"{property_rows} property row(s)")
+        if property_events:
+            parts.append(f"{property_events} property event(s)")
+        out.append(
+            Violation(
+                "property_state",
+                "; ".join(parts) + " exist; the properties vertical is out of scope for the pilot.",
+            )
+        )
+
+    return out
+
+
+def _external_ingest_violations(company) -> list[Violation]:
+    """A4: no ExternalAPIKey may exist on the pilot deployment — the generic
+    ingest endpoint is the one ingress that bypasses ModuleEnabled entirely,
+    and its per-key ``allowed_event_types`` allowlist is only as safe as the
+    keys that exist. Deployment-wide count (keys for ANY company break the
+    isolation posture). Broader ingest-surface hardening remains the tracked
+    External-Ingest-Surface-Hardening deferral."""
+    from events.api_keys import ExternalAPIKey
+
+    n = ExternalAPIKey.objects.count()
+    if n:
+        return [
+            Violation(
+                "external_api_key_present",
+                f"{n} external API key(s) exist; the pilot deployment must hold none "
+                "(generic ingest bypasses module gating).",
+            )
+        ]
+    return []
+
+
+def _seeded_event_violations(company) -> list[Violation]:
+    """A4: seed/demo tooling stamps its events with ``metadata.source`` — the
+    ONLY durable marker distinguishing seeded EGP test-pack orders from real
+    merchant data. Any tagged event means this database was used for demo/test
+    seeding and must not carry a pilot."""
+    from events.models import BusinessEvent
+
+    n = BusinessEvent.objects.filter(company=company, metadata__source__in=("demo_seed", "test_csv_pack")).count()
+    if n:
+        return [
+            Violation(
+                "seeded_event_residue",
+                f"{n} seeded demo/test event(s) exist (metadata.source demo_seed/test_csv_pack); "
+                "seeded databases must not carry a pilot.",
+            )
+        ]
+    return []
+
+
+def _projection_rebuild_violations(company) -> list[Violation]:
+    """A4: a projection rebuild admitted before activation could still be
+    draining while the profile flips (the one undetected window of the
+    design-deferred rebuild residual). Refuse while any projection reports
+    REBUILDING."""
+    from projections.models import ProjectionStatus
+
+    rebuilding = list(
+        ProjectionStatus.objects.filter(company=company, status=ProjectionStatus.Status.REBUILDING).values_list(
+            "projection_name", flat=True
+        )
+    )
+    if rebuilding:
+        return [
+            Violation(
+                "projection_rebuild_in_flight",
+                f"Projection rebuild in flight for: {', '.join(sorted(rebuilding))}; wait for the "
+                "drain to finish (or resolve its failure) before activation.",
+            )
+        ]
+    return []

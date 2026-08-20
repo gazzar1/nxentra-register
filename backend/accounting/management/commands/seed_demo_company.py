@@ -30,6 +30,15 @@ class Command(BaseCommand):
 
     @transaction.atomic
     def handle(self, *args, **options):
+        # A4: never seed on a pilot deployment (demo journals, demo exchange
+        # rates, --flush mass deletes).
+        from accounts.pilot_policy import PilotDeploymentRefused, require_no_pilot_deployment
+
+        try:
+            require_no_pilot_deployment("seed_demo_company")
+        except PilotDeploymentRefused as exc:
+            raise CommandError(str(exc)) from exc
+
         slug = options["company_slug"]
 
         with rls_bypass():

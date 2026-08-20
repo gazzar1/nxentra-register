@@ -2363,17 +2363,24 @@ class ExchangeRateListCreateView(APIView):
                 {"detail": "rate_type must be SPOT, AVERAGE, or CLOSING."}, status=status.HTTP_400_BAD_REQUEST
             )
 
-        rate_obj, created = ExchangeRate.objects.update_or_create(
-            company=actor.company,
-            from_currency=from_currency,
-            to_currency=to_currency,
-            effective_date=effective_date,
-            rate_type=rate_type,
-            defaults={
-                "rate": rate_val,
-                "source": source,
-            },
-        )
+        # A4: rate rows are FX infrastructure — EGP-only books need none.
+        # Decide on the LOCKED admission row before the write.
+        from accounts.pilot_policy import Capability, require_supported, serialized_company_admission
+
+        with serialized_company_admission(actor.company.pk) as locked_company:
+            require_supported(locked_company, Capability.EXCHANGE_RATE_MAINTENANCE)
+
+            rate_obj, created = ExchangeRate.objects.update_or_create(
+                company=locked_company,
+                from_currency=from_currency,
+                to_currency=to_currency,
+                effective_date=effective_date,
+                rate_type=rate_type,
+                defaults={
+                    "rate": rate_val,
+                    "source": source,
+                },
+            )
 
         return Response(
             {
@@ -2449,7 +2456,12 @@ class ExchangeRateDetailView(APIView):
         if "source" in request.data:
             rate_obj.source = request.data["source"]
 
-        rate_obj.save()
+        # A4: decide on the LOCKED admission row before the write.
+        from accounts.pilot_policy import Capability, require_supported, serialized_company_admission
+
+        with serialized_company_admission(actor.company.pk) as locked_company:
+            require_supported(locked_company, Capability.EXCHANGE_RATE_MAINTENANCE)
+            rate_obj.save()
 
         return Response(
             {
@@ -2470,8 +2482,13 @@ class ExchangeRateDetailView(APIView):
         actor = resolve_actor(request)
         require(actor, "settings.edit")
 
-        rate_obj = get_object_or_404(ExchangeRate, pk=pk, company=actor.company)
-        rate_obj.delete()
+        # A4: decide on the LOCKED admission row before the delete.
+        from accounts.pilot_policy import Capability, require_supported, serialized_company_admission
+
+        with serialized_company_admission(actor.company.pk) as locked_company:
+            require_supported(locked_company, Capability.EXCHANGE_RATE_MAINTENANCE)
+            rate_obj = get_object_or_404(ExchangeRate, pk=pk, company=locked_company)
+            rate_obj.delete()
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 
