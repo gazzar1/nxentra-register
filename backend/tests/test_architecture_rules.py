@@ -2786,3 +2786,48 @@ def test_every_je_origin_app_carries_pilot_disposition():
     assert not stale, (
         f"A4_JE_ORIGIN_APP_DISPOSITIONS entr(ies) no longer match any JE-originating app — prune consciously: {stale}"
     )
+
+
+# =============================================================================
+# Rule 9b (A4 dispositions PR): every public vertical command carries the
+# SERIALIZED requires_capability(VERTICAL_MODULES) gate. The ModuleEnabled
+# route permission is a point-in-time check only — the admission-serialized
+# decorator on the COMMANDS is what closes the stale-profile race against
+# activation (the same shape Rule 9 pins for purchasing).
+# =============================================================================
+
+VERTICAL_COMMAND_GATE_EXEMPT: set[str] = set()
+"""Empty by design. A public vertical command WITHOUT the serialized pilot gate
+needs a written reason and its own guard, not a quiet exemption here."""
+
+
+def test_every_public_vertical_command_carries_serialized_gate_marker():
+    from accounts.pilot_policy import Capability
+    from clinic import commands as clinic_commands
+    from properties import commands as properties_commands
+
+    for module, floor in ((clinic_commands, 10), (properties_commands, 18)):
+        discovered = _public_actor_commands(module)
+        assert len(discovered) >= floor, f"{module.__name__} command discovery looks wrong: {sorted(discovered)}"
+
+        ungated = sorted(
+            name
+            for name, fn in discovered.items()
+            if name not in VERTICAL_COMMAND_GATE_EXEMPT
+            and getattr(fn, "_pilot_capability", None) != Capability.VERTICAL_MODULES
+        )
+        assert not ungated, (
+            f"Every public {module.__name__} command must carry the "
+            f"requires_capability(VERTICAL_MODULES) gate. Ungated: {ungated}"
+        )
+
+        unserialized = sorted(
+            name
+            for name, fn in discovered.items()
+            if name not in VERTICAL_COMMAND_GATE_EXEMPT
+            and getattr(fn, "_pilot_capability_serialized", None) is not True
+        )
+        assert not unserialized, (
+            f"Every public {module.__name__} command must carry the SERIALIZED "
+            f"admission gate (`_pilot_capability_serialized is True`). Unserialized: {unserialized}"
+        )

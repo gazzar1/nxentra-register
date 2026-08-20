@@ -715,6 +715,7 @@ def test_preflight_clean_company_fires_none_of_the_new_codes(company, user, owne
         "exchange_rate_data",
         "period_dates_drift",
         "period_overlap",
+        "period_calendar_incomplete",
         "clinic_module_enabled",
         "properties_module_enabled",
         "clinic_state",
@@ -760,3 +761,52 @@ def test_route_customer_receipt_returns_403_for_pilot(company, user, owner_membe
         format="json",
     )
     assert resp.status_code == 403, resp.content
+
+
+# --------------------------------------------------------------------------- #
+# Codex round-2 fixes: vertical COMMANDS carry the serialized gate (not just
+# the point-in-time ModuleEnabled permission), and preflight rejects an
+# INCOMPLETE configured calendar (a deleted month row must not pass)
+# --------------------------------------------------------------------------- #
+@pytest.mark.django_db
+def test_clinic_command_blocked_for_pilot(company, user, owner_membership):
+    from clinic.commands import create_patient
+
+    _make_pilot(company)
+    _grant(company, owner_membership, "clinic.patients.create")
+    with pytest.raises(PilotScopeBlocked) as exc:
+        create_patient(_actor(company), code="PT-X", name="P")
+    assert exc.value.capability == Capability.VERTICAL_MODULES.value
+
+
+@pytest.mark.django_db
+def test_properties_command_blocked_for_pilot(company, user, owner_membership):
+    from properties.commands import create_property
+
+    _make_pilot(company)
+    _grant(company, owner_membership, "properties.create")
+    with pytest.raises(PilotScopeBlocked) as exc:
+        create_property(_actor(company), code="PR-X", name="P", property_type="RESIDENTIAL")
+    assert exc.value.capability == Capability.VERTICAL_MODULES.value
+
+
+@pytest.mark.django_db
+def test_preflight_detects_incomplete_configured_calendar(company, owner_membership):
+    import calendar as _calendar
+
+    from projections.models import FiscalPeriod, FiscalPeriodConfig
+
+    _make_pilot(company)
+    FiscalPeriodConfig.objects.create(company=company, fiscal_year=2032, period_count=12)
+    for month in range(1, 12):  # deliberately missing December
+        FiscalPeriod.objects.create(
+            company=company,
+            fiscal_year=2032,
+            period=month,
+            start_date=date(2032, month, 1),
+            end_date=date(2032, month, _calendar.monthrange(2032, month)[1]),
+            period_type=FiscalPeriod.PeriodType.NORMAL,
+        )
+    codes = _run_preflight(company)
+    assert "period_calendar_incomplete" in codes
+    assert "period_dates_drift" not in codes

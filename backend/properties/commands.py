@@ -24,6 +24,7 @@ from django.utils import timezone
 from accounting.commands import CommandResult
 from accounting.models import Account
 from accounts.authz import ActorContext, require
+from accounts.pilot_policy import Capability, requires_capability
 from events.emitter import emit_event
 from events.types import EventTypes
 from projections.write_barrier import command_writes_allowed
@@ -85,6 +86,7 @@ from .models import (
 # =============================================================================
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def create_property(
     actor: ActorContext,
@@ -150,6 +152,7 @@ def create_property(
     return CommandResult.ok(data={"property": prop}, event=event)
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def update_property(
     actor: ActorContext,
@@ -202,6 +205,7 @@ def update_property(
 # =============================================================================
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def create_unit(
     actor: ActorContext,
@@ -262,6 +266,7 @@ def create_unit(
     return CommandResult.ok(data={"unit": unit}, event=event)
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def update_unit(
     actor: ActorContext,
@@ -319,6 +324,7 @@ def update_unit(
 # =============================================================================
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def create_lessee(
     actor: ActorContext,
@@ -378,6 +384,7 @@ def create_lessee(
     return CommandResult.ok(data={"lessee": lessee}, event=event)
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def update_lessee(
     actor: ActorContext,
@@ -430,6 +437,7 @@ def update_lessee(
 # =============================================================================
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def create_lease(
     actor: ActorContext,
@@ -541,6 +549,7 @@ def create_lease(
 # =============================================================================
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def update_lease(
     actor: ActorContext,
@@ -665,6 +674,7 @@ def update_lease(
 # =============================================================================
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def update_property_account_mapping(
     actor: ActorContext,
@@ -821,6 +831,7 @@ def _generate_rent_schedule(lease: Lease) -> list:
 # =============================================================================
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def activate_lease(
     actor: ActorContext,
@@ -992,6 +1003,7 @@ def activate_lease(
     )
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def terminate_lease(
     actor: ActorContext,
@@ -1077,6 +1089,7 @@ def terminate_lease(
     return CommandResult.ok(data={"lease": lease}, event=event)
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def renew_lease(
     actor: ActorContext,
@@ -1202,6 +1215,7 @@ def renew_lease(
 # =============================================================================
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def record_rent_payment(
     actor: ActorContext,
@@ -1287,6 +1301,7 @@ def record_rent_payment(
     return CommandResult.ok(data={"payment": payment}, event=event)
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def allocate_rent_payment(
     actor: ActorContext,
@@ -1395,6 +1410,7 @@ def allocate_rent_payment(
     return CommandResult.ok(data={"payment": payment, "allocations": created_allocations})
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def void_payment(
     actor: ActorContext,
@@ -1477,6 +1493,7 @@ DEPOSIT_EVENT_MAP = {
 }
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def record_deposit_transaction(
     actor: ActorContext,
@@ -1565,6 +1582,7 @@ def record_deposit_transaction(
 # =============================================================================
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def waive_schedule_line(
     actor: ActorContext,
@@ -1623,6 +1641,7 @@ def waive_schedule_line(
 # =============================================================================
 
 
+@requires_capability(Capability.VERTICAL_MODULES)
 @transaction.atomic
 def record_property_expense(
     actor: ActorContext,

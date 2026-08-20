@@ -893,13 +893,16 @@ def _period_date_violations(company) -> list[Violation]:
     Dec 31 of its year (start == end == fiscal-year end, mirroring
     ``_calculate_period_boundaries``). Overlapping NORMAL coverage (any two
     rows, any fiscal-year label, covering one date) additionally defends the
-    date-range posting lookup. Skipped while the start month is not January —
+    date-range posting lookup. Every CONFIGURED fiscal year must also be
+    COMPLETE — periods 1–12 present (and 13 when the config says 13): a
+    deleted month is a hole the date-range posting lookup silently falls
+    through. Skipped while the start month is not January —
     ``fiscal_not_january`` already fires there and this check's expectations
     assume the frozen structure."""
     import calendar
     from datetime import date as _date
 
-    from projections.models import FiscalPeriod
+    from projections.models import FiscalPeriod, FiscalPeriodConfig
 
     if company.fiscal_year_start_month != 1:
         return []
@@ -959,6 +962,27 @@ def _period_date_violations(company) -> list[Violation]:
                 "period_overlap",
                 f"{overlaps} NORMAL fiscal period(s) overlap another period's calendar coverage; "
                 "the date-range posting lookup requires disjoint periods.",
+            )
+        )
+
+    # Completeness: every fiscal year the company has CONFIGURED must hold its
+    # full period set — the tiling/overlap checks above only see rows that
+    # exist, so a deleted month would otherwise pass.
+    incomplete: list[str] = []
+    for cfg in FiscalPeriodConfig.objects.filter(company=company).order_by("fiscal_year"):
+        have = set(
+            FiscalPeriod.objects.filter(company=company, fiscal_year=cfg.fiscal_year).values_list("period", flat=True)
+        )
+        expected = set(range(1, 13)) | ({13} if cfg.period_count == 13 else set())
+        missing = sorted(expected - have)
+        if missing:
+            incomplete.append(f"FY{cfg.fiscal_year} missing period(s) {missing}")
+    if incomplete:
+        out.append(
+            Violation(
+                "period_calendar_incomplete",
+                "Configured fiscal year(s) are missing periods — the date-range posting "
+                "lookup would silently fall through the hole(s): " + "; ".join(incomplete) + ".",
             )
         )
 
