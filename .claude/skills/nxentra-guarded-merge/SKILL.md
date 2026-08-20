@@ -18,13 +18,17 @@ HEAD=$(git rev-parse HEAD)   # the reviewed head you intend to merge
 gh pr view <N> --json comments --jq '.comments[-3:]'
 
 # (b) zero unresolved review threads — PAGINATED (a bounded first-page query
-#     can read 0 while an unresolved thread sits past the page boundary):
-gh api graphql --paginate -f query='query($endCursor: String) {
+#     can read 0 while an unresolved thread sits past the page boundary) and
+#     FAIL-CLOSED (a failed query must abort the gate, never read as 0 — a
+#     bare `... | awk` pipeline would print 0 and exit 0 on API failure):
+counts=$(gh api graphql --paginate -f query='query($endCursor: String) {
   repository(owner: "<owner>", name: "<repo>") {
     pullRequest(number: <N>) { reviewThreads(first: 100, after: $endCursor) {
       nodes { isResolved } pageInfo { hasNextPage endCursor } } } } }' \
-  --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length' \
-  | awk '{s+=$1} END {print s}'   # sum across pages; must be 0
+  --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length') \
+  || { echo "thread query FAILED — gate NOT verified, do not merge"; false; }
+unresolved=$(printf '%s\n' "$counts" | awk '{s+=$1} END {print s+0}')
+[ "$unresolved" -eq 0 ] || echo "$unresolved unresolved thread(s) — do not merge"
 
 # (c) every required check SUCCESS on the head COMMIT (not just "the PR"):
 gh api repos/<owner>/<repo>/commits/$HEAD/check-runs \
