@@ -19,16 +19,23 @@ gh pr view <N> --json comments --jq '.comments[-3:]'
 
 # (b) zero unresolved review threads — PAGINATED (a bounded first-page query
 #     can read 0 while an unresolved thread sits past the page boundary) and
-#     FAIL-CLOSED (a failed query must abort the gate, never read as 0 — a
-#     bare `... | awk` pipeline would print 0 and exit 0 on API failure):
-counts=$(gh api graphql --paginate -f query='query($endCursor: String) {
+#     FAIL-CLOSED with an explicit `exit 1` (a bare `false` or a `... | awk`
+#     pipeline keeps executing without set -e, so a failed query would read
+#     as 0 and let the rest of the gate run unverified). Run the gate block
+#     as a script so the exits stop the ritual:
+if ! counts=$(gh api graphql --paginate -f query='query($endCursor: String) {
   repository(owner: "<owner>", name: "<repo>") {
     pullRequest(number: <N>) { reviewThreads(first: 100, after: $endCursor) {
       nodes { isResolved } pageInfo { hasNextPage endCursor } } } } }' \
-  --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length') \
-  || { echo "thread query FAILED — gate NOT verified, do not merge"; false; }
+  --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length'); then
+  echo "thread query FAILED — gate NOT verified, do not merge"
+  exit 1
+fi
 unresolved=$(printf '%s\n' "$counts" | awk '{s+=$1} END {print s+0}')
-[ "$unresolved" -eq 0 ] || echo "$unresolved unresolved thread(s) — do not merge"
+if [ "$unresolved" -ne 0 ]; then
+  echo "$unresolved unresolved thread(s) — do not merge"
+  exit 1
+fi
 
 # (c) every required check SUCCESS on the head COMMIT (not just "the PR"):
 gh api repos/<owner>/<repo>/commits/$HEAD/check-runs \
