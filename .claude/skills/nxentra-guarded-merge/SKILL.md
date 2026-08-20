@@ -30,8 +30,12 @@ Gates (b)–(d) are mechanical assertions:
 
 ```bash
 set -euo pipefail
-HEAD=$(git rev-parse HEAD)          # the reviewed head you intend to merge
-BASE=<sha>                          # the origin/main SHA the PR was built and reviewed on
+# Pin BOTH inputs as literals — separate script invocations share NO variables,
+# so every stage re-declares them (an ambient/empty value under set -u is
+# exactly the failure this prevents; and after the merge the branch may be
+# gone, so `git rev-parse HEAD` is only valid here in stage 1):
+HEAD=<reviewed-head-sha>            # the exact head you reviewed; in stage 1: $(git rev-parse HEAD)
+BASE=<reviewed-base-sha>            # the origin/main SHA the PR was built and reviewed on
 
 # (b) zero unresolved review threads — PAGINATED (a bounded first page can
 #     read 0 while an unresolved thread sits past the boundary) and
@@ -46,16 +50,17 @@ if [ "$unresolved" -ne 0 ]; then
   echo "$unresolved unresolved thread(s) — do not merge"; exit 1
 fi
 
-# (c) checks on the head COMMIT (not just "the PR"): ASSERT that at least one
-#     check ran and that the LATEST run of every check name concluded success
-#     (a superseded failure with a later success for the same name is fine —
-#     check_runs is returned newest-first, so unique_by(.name) keeps the
-#     latest). A pending/failed/cancelled required check must abort:
-bad=$(gh api "repos/<owner>/<repo>/commits/$HEAD/check-runs" \
-  --jq '[.check_runs | sort_by(.started_at) | reverse | unique_by(.name)[]
-         | select(.conclusion != "success") | "\(.name): \(.conclusion // .status)"] | @tsv')
-total=$(gh api "repos/<owner>/<repo>/commits/$HEAD/check-runs" --jq '.total_count')
-if [ "$total" -eq 0 ]; then echo "NO check runs on $HEAD — do not merge"; exit 1; fi
+# (c) checks on the head COMMIT (not just "the PR"): PAGINATED (a single REST
+#     page can omit a check name entirely after many re-runs, letting a
+#     pending/failed check vanish from the sample), then ASSERT that at least
+#     one check ran and that the LATEST run of every check name concluded
+#     success (a superseded failure with a later success for the same name is
+#     fine). Pending/failed/cancelled must abort:
+runs=$(gh api --paginate "repos/<owner>/<repo>/commits/$HEAD/check-runs" \
+  --jq '.check_runs[] | [.name, .started_at, (.conclusion // .status)] | @tsv')
+if [ -z "$runs" ]; then echo "NO check runs on $HEAD — do not merge"; exit 1; fi
+bad=$(printf '%s\n' "$runs" | sort -t"$(printf '\t')" -k1,1 -k2,2 \
+  | awk -F'\t' '{latest[$1]=$3} END {for (n in latest) if (latest[n] != "success") print n ": " latest[n]}')
 if [ -n "$bad" ]; then echo "non-success latest check(s) on $HEAD: $bad — do not merge"; exit 1; fi
 
 # (d) main still equals the reviewed base — --match-head-commit protects the
@@ -73,6 +78,8 @@ means re-verify (rebase or fresh review) — never merge past it.
 ## 2. Merge — guarded, never forced
 
 ```bash
+set -euo pipefail
+HEAD=<reviewed-head-sha>   # re-declare: stages share nothing
 gh pr merge <N> --squash --match-head-commit "$HEAD"
 ```
 
@@ -84,6 +91,7 @@ gh pr merge <N> --squash --match-head-commit "$HEAD"
 
 ```bash
 set -euo pipefail
+HEAD=<reviewed-head-sha>   # re-declare: stages share nothing
 
 # merged state + merge commit (asserted, not displayed):
 state=$(gh pr view <N> --json state --jq '.state')
