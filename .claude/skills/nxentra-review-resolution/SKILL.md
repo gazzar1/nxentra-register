@@ -30,13 +30,15 @@ against an exact commit.
   issues…") — a review-object poll alone will miss them. Poll both:
 
 ```bash
-# reviews (finding rounds)
-gh api repos/<owner>/<repo>/pulls/<N>/reviews \
-  --jq '[.[] | select(.user.login=="chatgpt-codex-connector[bot]")] | length'
-# latest round's inline findings
-RID=$(gh api repos/<owner>/<repo>/pulls/<N>/reviews \
-  --jq '[.[] | select(.user.login=="chatgpt-codex-connector[bot]")] | .[-1].id')
-gh api repos/<owner>/<repo>/pulls/<N>/reviews/$RID/comments --jq '.[] | {path, line, body}'
+# reviews (finding rounds) — PAGINATED: the REST default is one 30-item page,
+# so an unpaginated `.[-1]` reads a STALE round once a PR accumulates many
+# reviews (a long Codex back-and-forth gets there fast):
+gh api --paginate repos/<owner>/<repo>/pulls/<N>/reviews \
+  --jq '.[] | select(.user.login=="chatgpt-codex-connector[bot]") | .id' | wc -l
+# latest round's inline findings (last id across ALL pages)
+RID=$(gh api --paginate repos/<owner>/<repo>/pulls/<N>/reviews \
+  --jq '.[] | select(.user.login=="chatgpt-codex-connector[bot]") | .id' | tail -1)
+gh api "repos/<owner>/<repo>/pulls/<N>/reviews/$RID/comments" --jq '.[] | {path, line, body}'
 # clean verdict (issue comment)
 gh pr view <N> --json comments --jq '.comments[-3:]'
 ```

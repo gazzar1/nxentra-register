@@ -57,9 +57,12 @@ fi
 #     success (a superseded failure with a later success for the same name is
 #     fine). Pending/failed/cancelled must abort:
 runs=$(gh api --paginate "repos/<owner>/<repo>/commits/$HEAD/check-runs" \
-  --jq '.check_runs[] | [.name, .started_at, (.conclusion // .status)] | @tsv')
+  --jq '.check_runs[] | [.name, .id, (.conclusion // .status)] | @tsv')
 if [ -z "$runs" ]; then echo "NO check runs on $HEAD — do not merge"; exit 1; fi
-bad=$(printf '%s\n' "$runs" | sort -t"$(printf '\t')" -k1,1 -k2,2 \
+# Order attempts by the always-present numeric run id (started_at is NULLABLE
+# while an attempt is queued, which would sort a new pending attempt BEFORE an
+# old success and let the stale success win); awk keeps the last = latest:
+bad=$(printf '%s\n' "$runs" | sort -t"$(printf '\t')" -k1,1 -k2,2n \
   | awk -F'\t' '{latest[$1]=$3} END {for (n in latest) if (latest[n] != "success") print n ": " latest[n]}')
 if [ -n "$bad" ]; then echo "non-success latest check(s) on $HEAD: $bad — do not merge"; exit 1; fi
 # The branch-protection-REQUIRED names must each be PRESENT and green — a
