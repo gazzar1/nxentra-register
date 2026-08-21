@@ -888,6 +888,35 @@ def test_purge_rerun_verifies_convergence_before_clearing_markers(company, owner
 
     # A poison event (handler-erroring payload) stalls the recovery REBUILD ->
     # the re-run raises, the marker stays, activation keeps refusing.
+    # A3-PR3 note: the payload must be invariant-CLEAN (balanced, resolvable
+    # accounts, well-formed entry id) so the apply boundary passes it — an
+    # invariant-VIOLATING payload no longer stalls anything (it quarantines
+    # and the drain converges; that class is covered by
+    # tests/test_a3_apply_boundary.py). The garbage DATE is what makes the
+    # handler raise: a materialization defect outside the invariant's scope,
+    # which correctly remains a loud head-of-line halt.
+    from uuid import uuid4
+
+    from accounting.models import Account
+
+    poison_debit = Account.objects.create(
+        public_id=uuid4(),
+        company=company,
+        code="1000",
+        name="Cash",
+        account_type=Account.AccountType.ASSET,
+        normal_balance=Account.NormalBalance.DEBIT,
+        status=Account.Status.ACTIVE,
+    )
+    poison_credit = Account.objects.create(
+        public_id=uuid4(),
+        company=company,
+        code="4000",
+        name="Revenue",
+        account_type=Account.AccountType.REVENUE,
+        normal_balance=Account.NormalBalance.CREDIT,
+        status=Account.Status.ACTIVE,
+    )
     BusinessEvent.objects.create(
         company=company,
         event_type="journal_entry.posted",
@@ -895,7 +924,28 @@ def test_purge_rerun_verifies_convergence_before_clearing_markers(company, owner
         aggregate_id="je-alive-1",
         idempotency_key="a4-purge-alive-1",
         company_sequence=990402,
-        data={"memo": "Opening balances"},
+        data={
+            "entry_public_id": str(uuid4()),
+            "memo": "Opening balances",
+            "date": "not-a-date",
+            "period": 1,
+            "total_debit": "10.00",
+            "total_credit": "10.00",
+            "lines": [
+                {
+                    "line_no": 1,
+                    "account_public_id": str(poison_debit.public_id),
+                    "debit": "10.00",
+                    "credit": "0.00",
+                },
+                {
+                    "line_no": 2,
+                    "account_public_id": str(poison_credit.public_id),
+                    "debit": "0.00",
+                    "credit": "10.00",
+                },
+            ],
+        },
     )
     with pytest.raises(CommandError, match="did NOT converge"):
         call_command("purge_orphan_je_events", "--company-id", company.id)

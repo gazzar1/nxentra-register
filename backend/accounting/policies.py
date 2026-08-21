@@ -139,12 +139,32 @@ def can_change_account_type(actor, account) -> tuple[bool, str]:
 
     Rules:
     - Cannot change type if account has transactions (LOCKED)
+    - A3-PR3: cannot change type once the account carries POSTED/REVERSED
+      journal lines. The LOCKED check alone was a dead guard (no production
+      code ever sets LOCKED), which left ``account_type`` mutable on accounts
+      with posted history — and memo classification at the apply boundary
+      derives from the CURRENT account type, so such a change would make
+      legitimately-emitted historical journal events fail the canonical
+      apply invariant (quarantined on rebuild, refused on restore). Like
+      ``can_delete_account``, the guard decides on durable evidence, not on
+      a status flag; DRAFT/INCOMPLETE references deliberately do not freeze
+      the type. The command-layer field freeze already keeps
+      ``ledger_domain`` (the other memo input) immutable, so together the
+      apply-time memo verdict is time-invariant for any account with posted
+      history.
     """
     if not check_tenant_boundary(actor, account):
         return False, "Cross-company action denied."
 
     if account.status == account.Status.LOCKED:
         return False, "Cannot change type of an account with transactions."
+
+    from accounting.models import JournalEntry
+
+    if account.journal_lines.filter(
+        entry__status__in=(JournalEntry.Status.POSTED, JournalEntry.Status.REVERSED)
+    ).exists():
+        return False, "Cannot change type of an account that has posted transactions."
 
     return True, ""
 

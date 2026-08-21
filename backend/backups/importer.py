@@ -312,6 +312,41 @@ def _verify_restore(company, manifest, manifest_counts, stats, *, skip_invariant
             f"--skip-invariants only if the source books had a known drift."
         )
 
+    # A3-PR3 (D6): restore re-inserts the event stream AND the read-model
+    # rows directly from the archive — it never replays, so the apply-time
+    # choke point in process_pending cannot see restored history. This is
+    # the equivalent fail-closed check, inside the restore transaction:
+    # every restored JOURNAL_ENTRY_POSTED event must satisfy the canonical
+    # apply invariant, or the whole restore rolls back and the original
+    # books survive. Same break-glass as the other financial invariants:
+    # --skip-invariants (logged loudly above) is the only way past it.
+    from accounting.posted_journal_apply import evaluate_posted_journal_for_apply
+    from events.types import EventTypes
+
+    facts_cache: dict = {}
+    bad_events = 0
+    sample = []
+    posted_events = (
+        BusinessEvent.objects.filter(company=company, event_type=EventTypes.JOURNAL_ENTRY_POSTED)
+        .select_related("payload_ref")
+        .order_by("company_sequence")
+    )
+    for event in posted_events.iterator(chunk_size=500):
+        codes = evaluate_posted_journal_for_apply(event, facts_cache=facts_cache)
+        if codes:
+            bad_events += 1
+            if len(sample) < 20:
+                sample.append(f"seq={event.company_sequence}: {', '.join(codes)}")
+    if bad_events:
+        raise RestoreError(
+            f"Restore verification failed: {bad_events} restored posted-journal "
+            f"event(s) fail the canonical apply invariant "
+            f"({'; '.join(sample)}{'; ...' if bad_events > len(sample) else ''}). "
+            f"Refusing to commit a corrupt event stream. Use the management "
+            f"command with --skip-invariants only for a deliberate, documented "
+            f"recovery of known-bad history."
+        )
+
 
 def _clear_company_data(company, registry):
     """

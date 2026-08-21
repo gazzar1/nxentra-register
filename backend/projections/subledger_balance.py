@@ -56,7 +56,9 @@ class SubledgerBalanceProjection(BaseProjection):
     def consumes(self) -> list[str]:
         return [
             EventTypes.JOURNAL_ENTRY_POSTED,
-            # LEPH chunked journal events
+            # A3-PR3 (D5): stays CONSUMED so the apply boundary sees it, but
+            # the boundary quarantines every chunk event before any handler
+            # runs — see AccountBalanceProjection.consumes for the rationale.
             EventTypes.JOURNAL_LINES_CHUNK_ADDED,
         ]
 
@@ -71,9 +73,9 @@ class SubledgerBalanceProjection(BaseProjection):
         """
         if event.event_type == EventTypes.JOURNAL_ENTRY_POSTED:
             self._handle_posted(event)
-        elif event.event_type == EventTypes.JOURNAL_LINES_CHUNK_ADDED:
-            self._handle_chunk(event)
         else:
+            # JOURNAL_LINES_CHUNK_ADDED never reaches here — the A3-PR3 apply
+            # boundary quarantines it at the process_pending choke point.
             logger.warning(f"Unknown event type: {event.event_type}")
 
     def _handle_posted(self, event: BusinessEvent) -> None:
@@ -93,33 +95,6 @@ class SubledgerBalanceProjection(BaseProjection):
             entry_date = datetime.fromisoformat(entry_date_str).date()
 
         # Process each line
-        for line_data in lines:
-            self._apply_line(
-                company=event.company,
-                line_data=line_data,
-                entry_date=entry_date,
-                event=event,
-            )
-
-    def _handle_chunk(self, event: BusinessEvent) -> None:
-        """Handle LEPH journal.lines_chunk_added event."""
-        data = event.get_data()
-        lines = data.get("lines", [])
-
-        if not lines:
-            return
-
-        # Get entry date from parent event if available
-        entry_date = None
-        if event.caused_by_event:
-            parent_data = event.caused_by_event.get_data()
-            entry_date_str = parent_data.get("date")
-            if entry_date_str:
-                from datetime import datetime
-
-                entry_date = datetime.fromisoformat(entry_date_str).date()
-
-        # Process each line in the chunk
         for line_data in lines:
             self._apply_line(
                 company=event.company,

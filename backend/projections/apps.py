@@ -8,10 +8,25 @@ logger = logging.getLogger(__name__)
 
 # Core projection modules (always loaded, not vertical-specific).
 # These use module-level projection_registry.register() calls.
+#
+# ORDER IS LOAD-BEARING (A3-PR3): registration order is the order every drain
+# pass runs projections in, and the balance projections resolve rows the read
+# models materialize. `projections.accounting` (Account + JournalEntry read
+# models) MUST precede every balance projection — before this fix,
+# `account_balance` ran first, so a fresh-database replay (tenant migrate,
+# from-zero rebuild) applied balance events before any Account row existed
+# and silently zeroed balances. `projections.periods` must likewise precede
+# `projections.period_balance`. The dependency prefix is pinned by an
+# architecture test. Note the order fixes sequencing WITHIN a pass only; a
+# limit-bounded pass can still reach journal events whose accounts sit
+# beyond the account read model's processed window — that residual is
+# handled at the apply boundary (JE_ACCOUNT_UNKNOWN with prior in-stream
+# account evidence DEFERS instead of quarantining; accounting/
+# posted_journal_apply.validate_posted_journal_apply).
 CORE_PROJECTION_MODULES = [
-    "projections.account_balance",
     "projections.accounting",
     "projections.accounts",
+    "projections.account_balance",
     "projections.dimension_balance",
     "projections.dimension_sync",
     "projections.periods",
@@ -35,6 +50,15 @@ class ProjectionsConfig(AppConfig):
         # -----------------------------------------------------------------
         for module_path in CORE_PROJECTION_MODULES:
             importlib.import_module(module_path)
+
+        # A3-PR3: register the journal-family apply validators with the
+        # framework choke point (projections.apply_validation) — the apply
+        # side of the A3 boundary. Registration lives here, next to core
+        # projection registration, so no drain can run before the validators
+        # exist. Idempotent; pinned by an architecture test.
+        from accounting.posted_journal_apply import register_apply_validators
+
+        register_apply_validators()
 
         # -----------------------------------------------------------------
         # 2. Discover vertical-module projections from AppConfig.projections.

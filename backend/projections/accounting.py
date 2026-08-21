@@ -493,7 +493,9 @@ class JournalEntryProjection(BaseProjection):
             if data.get("source_document"):
                 entry.source_document = data["source_document"]
             entry.save(_projection_write=True)
-            self._replace_lines(entry, data.get("lines", []))
+            # A3-PR3: the payload passed the canonical apply invariant at the
+            # process_pending choke point before this handler ran.
+            self._replace_lines(entry, data.get("lines", []), validated_posted=True)
             return
 
         if event.event_type == EventTypes.JOURNAL_ENTRY_REVERSED:
@@ -567,26 +569,76 @@ class JournalEntryProjection(BaseProjection):
 
         logger.warning("Unhandled event type for JournalEntryProjection: %s", event.event_type)
 
-    def _replace_lines(self, entry: JournalEntry, lines: list[dict]) -> None:
+    def _replace_lines(self, entry: JournalEntry, lines: list[dict], *, validated_posted: bool = False) -> None:
+        """Materialize the entry's lines from the event payload.
+
+        ``validated_posted=True`` — the JOURNAL_ENTRY_POSTED branch (A3-PR3):
+        the payload has already passed the canonical apply invariant at the
+        ``process_pending`` choke point, so every line is a
+        resolvable-account, one-sided, non-zero ledger line. Nothing may be
+        dropped (the pre-A3 silent ``continue`` on unresolvable/zero lines is
+        how history lost money — an impossible state now raises loudly
+        instead), and the payload's own ``line_no`` owns line identity
+        (founder decision D4): ``derive_journal_line_public_id`` is fed the
+        POSTED line numbers, so line ids are exactly what was posted,
+        replay-stable across rebuilds. If any line lacks an integer
+        ``line_no`` (tolerated by the invariant), the whole entry falls back
+        to deterministic sequential numbering.
+
+        ``validated_posted=False`` — the draft lifecycle events (CREATED /
+        UPDATED / SAVED_COMPLETE): drafts carry no invariant; incomplete
+        lines (missing account, zero amounts) are legitimately skipped and
+        lines are renumbered sequentially, exactly as before.
+        """
         entry.lines.all().delete()
+
+        use_payload_line_nos = False
+        if validated_posted:
+            from accounting.posted_journal_apply import MAX_STORABLE_LINE_NO
+
+            payload_nos = [line.get("line_no") for line in lines if isinstance(line, dict)]
+            use_payload_line_nos = (
+                len(payload_nos) == len(lines)
+                and all(
+                    isinstance(n, int) and not isinstance(n, bool) and 0 <= n <= MAX_STORABLE_LINE_NO
+                    for n in payload_nos
+                )
+                and len(set(payload_nos)) == len(payload_nos)
+            )
+
         line_objects = []
-        line_analysis_tags = {}  # line_no -> analysis_tags
-        line_no = 1
+        line_analysis_tags = {}  # assigned line_no -> analysis_tags
+        next_seq = 1
         for line in lines:
             account_public_id = line.get("account_public_id")
-            if not account_public_id:
-                continue
-            account = Account.objects.filter(
-                company=entry.company,
-                public_id=account_public_id,
-            ).first()
-            if not account:
+            account = None
+            if account_public_id:
+                account = Account.objects.filter(
+                    company=entry.company,
+                    public_id=account_public_id,
+                ).first()
+            if account is None:
+                if validated_posted:
+                    # Impossible post-validation (the apply invariant just
+                    # resolved every referenced account inside this same
+                    # transaction). Reaching here means the A3 boundary has a
+                    # defect — halt loudly, never materialize a partial entry.
+                    raise ValueError(
+                        f"A3-PR3 internal invariant: validated posted payload for entry "
+                        f"{entry.public_id} references unresolvable account "
+                        f"{account_public_id!r} at materialization time."
+                    )
                 continue
             debit = Decimal(str(line.get("debit", "0")))
             credit = Decimal(str(line.get("credit", "0")))
 
-            # Skip invalid lines (DB constraint: not both zero)
+            # Skip invalid draft lines (DB constraint: not both zero)
             if debit == 0 and credit == 0:
+                if validated_posted:
+                    raise ValueError(
+                        f"A3-PR3 internal invariant: validated posted payload for entry "
+                        f"{entry.public_id} carries a zero/zero line at materialization time."
+                    )
                 continue
 
             # Resolve counterparty if provided
@@ -607,13 +659,16 @@ class JournalEntryProjection(BaseProjection):
                     public_id=vendor_public_id,
                 ).first()
 
+            assigned_line_no = line.get("line_no") if use_payload_line_nos else next_seq
             line_objects.append(
                 JournalLine(
                     entry=entry,
                     company=entry.company,
-                    line_no=line_no,
+                    line_no=assigned_line_no,
                     # P1: deterministic, replay-stable id (was a fresh uuid4 default).
-                    public_id=derive_journal_line_public_id(entry.public_id, line_no),
+                    # D4: for validated posted payloads the POSTED line_no is
+                    # the identity input, so the derived id is a posted fact.
+                    public_id=derive_journal_line_public_id(entry.public_id, assigned_line_no),
                     account=account,
                     description=line.get("description", ""),
                     description_ar=line.get("description_ar", ""),
@@ -628,8 +683,8 @@ class JournalEntryProjection(BaseProjection):
             )
             # Store analysis tags for this line
             if line.get("analysis_tags"):
-                line_analysis_tags[line_no] = line.get("analysis_tags")
-            line_no += 1
+                line_analysis_tags[assigned_line_no] = line.get("analysis_tags")
+            next_seq += 1
         if line_objects:
             JournalLine.objects.projection().bulk_create(line_objects)
 

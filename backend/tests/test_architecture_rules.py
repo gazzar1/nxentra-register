@@ -560,6 +560,162 @@ def test_single_posted_journal_invariant_module():
 
 
 # =============================================================================
+# Rule 6b (A3-PR3): the apply boundary stays wired, complete, and unforkable
+# =============================================================================
+#
+# PR3 puts the canonical invariant at the ONE apply choke point
+# (BaseProjection.process_pending → projections.apply_validation) and gives the
+# journal family's sibling doors boundary-local guards. These rules pin the
+# wiring so it cannot silently unwind: the validator map is frozen (empty
+# allowlist), the choke-point call precedes every handler dispatch, no
+# projection can override process_pending around it, the chunk family stays
+# consume-to-quarantine, and the projection registry applies read models
+# before the balance projections that resolve their rows.
+
+
+def test_apply_validator_registry_pins_journal_family():
+    """The framework registry must map the COMPLETE journal family to the
+    accounting-owned validators — by identity, with no extras and no
+    allowlist. Removing or replacing one is an A3 regression and requires an
+    ADR per the exception policy."""
+    from accounting import posted_journal_apply as pja
+    from events.types import EventTypes
+    from projections.apply_validation import get_apply_validator, registered_apply_event_types
+
+    expected = {
+        EventTypes.JOURNAL_ENTRY_POSTED: pja.validate_posted_journal_apply,
+        EventTypes.JOURNAL_ENTRY_REVERSED: pja.validate_reversed_journal_apply,
+        EventTypes.JOURNAL_ENTRY_DELETED: pja.validate_deleted_journal_apply,
+        EventTypes.JOURNAL_LINES_CHUNK_ADDED: pja.validate_chunked_journal_apply,
+    }
+    assert pja.apply_validator_map() == expected, (
+        "accounting.posted_journal_apply.apply_validator_map() must cover exactly the journal family"
+    )
+    for event_type, fn in expected.items():
+        assert get_apply_validator(event_type) is fn, (
+            f"The registered apply validator for '{event_type}' is not the canonical "
+            f"accounting implementation — registration was skipped or replaced."
+        )
+    # The frozen-registry property itself: NOTHING beyond the journal family
+    # may sit at the choke point without editing this test consciously — an
+    # unreviewed register_apply_validator() call from any app's import/ready
+    # side effect must fail here, not slide in silently.
+    assert registered_apply_event_types() == frozenset(expected), (
+        "The apply-validator registry holds event types beyond the pinned journal "
+        f"family: {sorted(registered_apply_event_types() - frozenset(expected))}"
+    )
+
+
+def test_process_pending_validates_before_every_handler_dispatch():
+    """The choke-point call must sit inside process_pending, before the ONE
+    handler dispatch. A second `self.handle(event)` call site — or a dispatch
+    the validator does not precede — is a bypass."""
+    source = (BACKEND_ROOT / "projections" / "base.py").read_text(encoding="utf-8")
+    assert source.count("self.handle(event)") == 1, (
+        "BaseProjection must dispatch handlers at exactly one call site (process_pending)"
+    )
+    assert source.count("validate_event_for_apply(event)") == 1
+    assert source.index("validate_event_for_apply(event)") < source.index("self.handle(event)"), (
+        "apply validation must run BEFORE the handler dispatch"
+    )
+
+
+def test_no_projection_subclass_overrides_process_pending():
+    """process_pending is the choke point — a subclass overriding it could
+    apply events without validation. Registration imports every projection
+    module, so walking BaseProjection's subclass tree covers them all."""
+    from projections.base import BaseProjection, projection_registry
+
+    assert projection_registry.all(), "registry must be populated at app-ready"
+    offenders: list[str] = []
+
+    def _walk(cls) -> None:
+        for sub in cls.__subclasses__():
+            if "process_pending" in sub.__dict__ or "rebuild" in sub.__dict__:
+                offenders.append(f"{sub.__module__}.{sub.__qualname__}")
+            _walk(sub)
+
+    _walk(BaseProjection)
+    assert not offenders, (
+        "No projection may override process_pending (the A3 apply choke point) "
+        "or rebuild (the A154/A4 gated path). Violations:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_chunk_family_stays_consumed_for_quarantine():
+    """D5 consume-to-quarantine: de-listing JOURNAL_LINES_CHUNK_ADDED from the
+    balance projections would turn the visible quarantine into a silent skip
+    past a registered financial event type."""
+    from events.types import EventTypes
+    from projections.account_balance import AccountBalanceProjection
+    from projections.subledger_balance import SubledgerBalanceProjection
+
+    for cls in (AccountBalanceProjection, SubledgerBalanceProjection):
+        assert EventTypes.JOURNAL_LINES_CHUNK_ADDED in cls().consumes, (
+            f"{cls.__name__} must keep consuming the chunk type so the apply boundary quarantines it visibly"
+        )
+
+
+def test_core_projection_order_read_models_before_balances():
+    """A3-PR3 registry-order fix: the Account/JournalEntry read models (and the
+    fiscal-period read model) must register before the balance projections
+    that resolve their rows — otherwise a fresh-database replay quarantines
+    on spurious JE_ACCOUNT_UNKNOWN (previously: silently zeroed balances)."""
+    from projections.apps import CORE_PROJECTION_MODULES as order
+
+    for balance in (
+        "projections.account_balance",
+        "projections.dimension_balance",
+        "projections.period_balance",
+        "projections.subledger_balance",
+    ):
+        assert order.index("projections.accounting") < order.index(balance), (
+            f"projections.accounting must precede {balance} in CORE_PROJECTION_MODULES"
+        )
+    assert order.index("projections.periods") < order.index("projections.period_balance")
+
+
+def test_apply_boundary_codes_disjoint_from_canonical_set():
+    """APPLY_* outcome codes label boundary outcomes, never payload-invariant
+    violations — they must stay disjoint from the frozen canonical JE_* set."""
+    from accounting import posted_journal_apply as pja
+    from accounting.journal_invariant import JE_VIOLATION_CODES
+
+    apply_codes = {
+        pja.APPLY_UNREADABLE_PAYLOAD,
+        pja.APPLY_ENTRY_REF_INVALID,
+        pja.APPLY_DELETE_TARGET_POSTED,
+        pja.APPLY_CHUNKED_JOURNAL_UNSUPPORTED,
+    }
+    assert not (apply_codes & JE_VIOLATION_CODES)
+
+
+def test_apply_boundary_module_is_provider_neutral_and_settings_free():
+    """The apply boundary follows the invariant module's discipline: no
+    provider/vertical imports (Rule 2) and no django settings consultation —
+    TESTING / DISABLE_EVENT_VALIDATION do not exist at this boundary."""
+    for rel in ("accounting/posted_journal_apply.py", "projections/apply_validation.py"):
+        path = BACKEND_ROOT / rel
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        violations: list[str] = []
+        for node in ast.walk(tree):
+            modules: list[str] = []
+            if isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                modules = [node.module]
+            for module in modules:
+                if module.split(".")[0] in _A3_FORBIDDEN_IMPORT_PREFIXES:
+                    violations.append(f"{rel} line {node.lineno}: import of '{module}'")
+                if module == "django.conf" or module.startswith("django.conf."):
+                    violations.append(f"{rel} line {node.lineno}: settings import")
+        assert not violations, "apply-boundary modules must stay provider-neutral and settings-free:\n  " + "\n  ".join(
+            violations
+        )
+
+
+# =============================================================================
 # Rule 7 (A3-PR2): every JOURNAL_ENTRY_POSTED emission goes through the
 # canonical emit boundary — and nothing substitutes or bypasses it
 # =============================================================================

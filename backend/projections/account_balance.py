@@ -54,8 +54,14 @@ class AccountBalanceProjection(BaseProjection):
         return [
             EventTypes.JOURNAL_ENTRY_POSTED,
             # Note: REVERSED entries emit a new POSTED event for the reversal
-            # so we don't need to handle REVERSED separately
-            # LEPH chunked journal events (for large batch imports)
+            # so we don't need to handle REVERSED separately.
+            # A3-PR3 (D5): the LEPH chunk type stays CONSUMED so the apply
+            # boundary sees it, but the boundary quarantines every chunk
+            # event before any handler runs (a single chunk cannot satisfy
+            # the entry-level posted-journal invariant, and the chunked emit
+            # family is dormant — A171 tracks its removal). Consume-to-
+            # quarantine, not de-listing: a chunk event must surface as an
+            # operator-visible failure, never advance past silently.
             EventTypes.JOURNAL_LINES_CHUNK_ADDED,
         ]
 
@@ -67,14 +73,12 @@ class AccountBalanceProjection(BaseProjection):
         1. Get or create AccountBalance for the account
         2. Apply debit/credit based on the line
         3. Update statistics and last_event
-
-        Also handles LEPH chunked events (JOURNAL_LINES_CHUNK_ADDED).
         """
         if event.event_type == EventTypes.JOURNAL_ENTRY_POSTED:
             self._handle_posted(event)
-        elif event.event_type == EventTypes.JOURNAL_LINES_CHUNK_ADDED:
-            self._handle_chunk(event)
         else:
+            # JOURNAL_LINES_CHUNK_ADDED never reaches here — the A3-PR3 apply
+            # boundary quarantines it at the process_pending choke point.
             logger.warning(f"Unknown event type: {event.event_type}")
 
     def _handle_posted(self, event: BusinessEvent) -> None:
@@ -97,44 +101,6 @@ class AccountBalanceProjection(BaseProjection):
             entry_date = None
 
         # Process each line
-        for line_data in lines:
-            self._apply_line(
-                company=event.company,
-                line_data=line_data,
-                entry_date=entry_date,
-                event=event,
-            )
-
-    def _handle_chunk(self, event: BusinessEvent) -> None:
-        """
-        Handle LEPH journal.lines_chunk_added event.
-
-        This processes a chunk of journal lines from a large journal entry.
-        Each chunk is processed independently, and the projection accumulates
-        balances across all chunks.
-
-        For chunk events, we get the entry date from the parent JOURNAL_CREATED
-        event via the caused_by_event relationship.
-        """
-        # Use get_data() for LEPH compatibility
-        data = event.get_data()
-        lines = data.get("lines", [])
-
-        if not lines:
-            logger.debug(f"Chunk event {event.id} has no lines")
-            return
-
-        # Get entry date from parent event if available
-        entry_date = None
-        if event.caused_by_event:
-            parent_data = event.caused_by_event.get_data()
-            entry_date_str = parent_data.get("date")
-            if entry_date_str:
-                from datetime import datetime
-
-                entry_date = datetime.fromisoformat(entry_date_str).date()
-
-        # Process each line in the chunk
         for line_data in lines:
             self._apply_line(
                 company=event.company,

@@ -20,6 +20,7 @@ from django.utils import timezone
 
 from accounts.models import Company
 from events.models import BusinessEvent, EventBookmark
+from projections.apply_validation import validate_event_for_apply
 from projections.models import ProjectionAppliedEvent
 from projections.write_barrier import projection_writes_allowed
 
@@ -265,6 +266,15 @@ class BaseProjection(ABC):
                             processed += 1
                             continue
 
+                        # A3-PR3: THE apply-validation choke point. Runs for
+                        # every event, inside the per-event transaction,
+                        # before any handler — so every trigger path (live
+                        # drain, Celery, CLI, rebuild, tenant replay) and
+                        # every consuming projection gets one shared verdict.
+                        # A registered validator quarantines by raising
+                        # ProjectionTerminalSkip (handled below); event types
+                        # without a validator pass through untouched.
+                        validate_event_for_apply(event)
                         self.handle(event)
                         bookmark.mark_processed(event)
                         processed += 1

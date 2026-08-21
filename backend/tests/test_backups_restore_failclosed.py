@@ -57,7 +57,33 @@ def booked_company(company, user, cash_account, revenue_account):
         aggregate_type="JournalEntry",
         aggregate_id=str(entry.public_id),
         idempotency_key=f"test.backup:{entry.public_id}",
-        data={"entry_public_id": str(entry.public_id)},
+        # A3-PR3 (D6): restore verification now runs the canonical apply
+        # invariant over every restored posted-JE event, so the fixture's
+        # backing event must be a REAL invariant-valid payload (a real
+        # stream's posted events always are — the emit boundary guarantees
+        # it), not a stub.
+        data={
+            "entry_public_id": str(entry.public_id),
+            "date": "2026-03-10",
+            "period": 3,
+            "memo": "restore-fixture entry",
+            "total_debit": "100.00",
+            "total_credit": "100.00",
+            "lines": [
+                {
+                    "line_no": 1,
+                    "account_public_id": str(cash_account.public_id),
+                    "debit": "100.00",
+                    "credit": "0.00",
+                },
+                {
+                    "line_no": 2,
+                    "account_public_id": str(revenue_account.public_id),
+                    "debit": "0.00",
+                    "credit": "100.00",
+                },
+            ],
+        },
     )
     return company
 
@@ -225,6 +251,118 @@ class TestHappyPathAndInvariants:
         with pytest.raises(RestoreError, match="trial balance"):
             restore_company(company, tampered)
         assert _snapshot(company) == before, "the invariant failure must roll back the whole restore"
+
+
+def _retamper_member(zip_bytes, member, new_bytes):
+    """Replace one model member AND recompute the manifest export_hash so the
+    archive stays internally consistent — only a post-restore invariant can
+    catch the corruption (export_hash proves internal consistency, not
+    provenance)."""
+    import hashlib
+
+    from backups.model_registry import get_export_registry
+
+    src = zipfile.ZipFile(io.BytesIO(zip_bytes))
+    replaced = {member: new_bytes}
+    hasher = hashlib.sha256()
+    names = set(src.namelist())
+    for label in get_export_registry():
+        m = f"models/{label}.json"
+        if m in names:
+            hasher.update(replaced.get(m, src.read(m)))
+    new_hash = hasher.hexdigest()
+
+    def _fix_hash(manifest):
+        manifest["export_hash"] = new_hash
+
+    return _tamper(zip_bytes, replace=replaced, edit_manifest=_fix_hash)
+
+
+class TestApplyInvariantOnRestore:
+    """A3-PR3 (D6): restore re-inserts the event stream wholesale and never
+    replays it, so the projection-apply choke point cannot see restored
+    history. `_verify_restore` therefore runs the canonical apply invariant
+    over every restored JOURNAL_ENTRY_POSTED event, fail-closed inside the
+    restore transaction."""
+
+    def _tamper_posted_event(self, zip_bytes, mutate):
+        src = zipfile.ZipFile(io.BytesIO(zip_bytes))
+        events = json.loads(src.read("models/events.BusinessEvent.json"))
+        touched = 0
+        for record in events:
+            if record.get("event_type") == "journal_entry.posted":
+                mutate(record)
+                touched += 1
+        assert touched, "fixture must contain a posted-JE event"
+        return _retamper_member(
+            zip_bytes,
+            "models/events.BusinessEvent.json",
+            json.dumps(events, ensure_ascii=False).encode("utf-8"),
+        )
+
+    def test_unbalanced_posted_event_fails_restore(self, booked_company):
+        """The event payload is corrupted but the materialized ROWS still
+        balance — the trial-balance check passes and ONLY the event-corpus
+        apply invariant can refuse the archive."""
+        company = booked_company
+        zip_bytes, _ = export_company(company)
+        before = _snapshot(company)
+
+        def _unbalance(record):
+            record["data"]["lines"][1]["credit"] = "90.00"
+
+        tampered = self._tamper_posted_event(zip_bytes, _unbalance)
+
+        with pytest.raises(RestoreError, match="apply invariant"):
+            restore_company(company, tampered)
+        assert _snapshot(company) == before, "the failed corpus check must roll back the whole restore"
+
+    def test_missing_entry_id_fails_restore_same_as_apply(self, booked_company):
+        """The identity guard lives in the shared evaluator, so restore
+        applies the EXACT verdict apply-time enforcement applies — an
+        invariant-clean event without a materializable entry_public_id must
+        not be certified by restore only to quarantine at the next rebuild."""
+        company = booked_company
+        zip_bytes, _ = export_company(company)
+        before = _snapshot(company)
+
+        def _strip_id(record):
+            del record["data"]["entry_public_id"]
+
+        tampered = self._tamper_posted_event(zip_bytes, _strip_id)
+
+        with pytest.raises(RestoreError, match="apply invariant"):
+            restore_company(company, tampered)
+        assert _snapshot(company) == before
+
+    def test_unreadable_posted_event_payload_fails_restore(self, booked_company):
+        company = booked_company
+        zip_bytes, _ = export_company(company)
+        before = _snapshot(company)
+
+        def _break(record):
+            record["data"] = [1, 2, 3]  # non-dict payload → APPLY_UNREADABLE_PAYLOAD
+
+        tampered = self._tamper_posted_event(zip_bytes, _break)
+
+        with pytest.raises(RestoreError, match="apply invariant"):
+            restore_company(company, tampered)
+        assert _snapshot(company) == before
+
+    def test_skip_invariants_break_glass_bypasses_corpus_check(self, booked_company):
+        """--skip-invariants is the ONLY way past the corpus check — the same
+        documented break-glass as the trial-balance/subledger invariants,
+        for deliberate recovery of known-bad history."""
+        company = booked_company
+        zip_bytes, _ = export_company(company)
+
+        def _unbalance(record):
+            record["data"]["lines"][1]["credit"] = "90.00"
+
+        tampered = self._tamper_posted_event(zip_bytes, _unbalance)
+
+        result = restore_company(company, tampered, skip_invariants=True)
+        assert result["company"] == company.slug
 
 
 # =============================================================================
