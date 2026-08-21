@@ -348,7 +348,17 @@ def _unknown_accounts_are_pending_materialization(event: BusinessEvent) -> bool:
                 projection_name=AccountProjection().name,
                 event=prior,
             ).exists():
-                # Already consumed, row still absent — not pending.
+                # Codex round-4 P1: the marker alone is a stale-read hazard —
+                # the account projection may have COMMITTED (row + marker)
+                # between this function's earlier facts query and this marker
+                # query. Re-resolve the row AFTER observing the marker: if it
+                # exists now, the reference is materialized and the retry
+                # will succeed (defer); only marker-with-row-still-absent
+                # means draining can never materialize it (terminal).
+                if load_account_facts(event.company, [cid]):
+                    creates_cid = True
+                    break
+                # Consumed, row still absent — not pending.
                 continue
             creates_cid = True
             break

@@ -988,6 +988,65 @@ class TestMemoClassificationAtApply:
         log = ProjectionFailureLog.objects.get(company=company, event_id=event.id)
         assert "JE_ACCOUNT_UNKNOWN" in log.message
 
+    def test_marker_observed_after_concurrent_commit_defers(
+        self, company, user, cash_account, revenue_account, monkeypatch
+    ):
+        """Codex round-4 P1: the account projection may COMMIT (row + marker)
+        between the probe's facts query and its marker query — observing the
+        marker must trigger a re-resolution, and a row that exists now means
+        defer (the retry succeeds), never terminal. Simulated by making the
+        probe's FIRST facts read stale (account absent) while the DB holds
+        the committed row + marker."""
+        from accounting import journal_invariant
+        from accounting.models import Account
+        from accounting.posted_journal_apply import _unknown_accounts_are_pending_materialization
+        from projections.accounting import AccountProjection
+        from projections.models import ProjectionAppliedEvent
+
+        lag_id = uuid4()
+        acct_event = emit_event(
+            company=company,
+            event_type=EventTypes.ACCOUNT_CREATED,
+            aggregate_type="Account",
+            aggregate_id=str(lag_id),
+            data={
+                "account_public_id": str(lag_id),
+                "code": "1092",
+                "name": "Concurrently committed",
+                "account_type": "ASSET",
+                "normal_balance": "DEBIT",
+                "is_header": False,
+            },
+            caused_by_user=user,
+            idempotency_key=f"apply-test:race:{lag_id}",
+        )
+        payload = _posted_payload(uuid4(), user, cash_account, revenue_account)
+        payload["lines"][0]["account_public_id"] = str(lag_id)
+        event = _emit_posted(company, user, payload)
+
+        # The concurrent commit: row AND marker both exist in the DB.
+        AccountProjection().process_pending(company)
+        assert Account.objects.filter(company=company, public_id=lag_id).exists()
+        assert ProjectionAppliedEvent.objects.filter(
+            company=company, projection_name=AccountProjection().name, event=acct_event
+        ).exists()
+
+        # Stale first read: the probe's initial facts query misses the row.
+        real_load = journal_invariant.load_account_facts
+        calls = {"n": 0}
+
+        def _stale_first(company_arg, ids):
+            calls["n"] += 1
+            facts = real_load(company_arg, ids)
+            if calls["n"] == 1:
+                facts = {k: v for k, v in facts.items() if k != str(lag_id)}
+            return facts
+
+        monkeypatch.setattr(journal_invariant, "load_account_facts", _stale_first)
+
+        assert _unknown_accounts_are_pending_materialization(event) is True
+        assert calls["n"] >= 2  # the re-resolution after the marker ran
+
     def test_unmaterializable_account_evidence_stays_terminal(self, company, user, cash_account, revenue_account):
         """Codex round-2 P2: a prior account event whose payload matches the
         id but lacks a required creation field (AccountProjection subscripts
@@ -1121,3 +1180,21 @@ class TestAccountTypeFrozenOncePosted:
 
         result = update_account(actor_context, cash_account.id, account_type=Account.AccountType.EXPENSE)
         assert result.success, result.error
+
+    def test_type_change_fails_closed_on_malformed_posted_shapes(
+        self, company, user, actor_context, cash_account, revenue_account
+    ):
+        """Codex round-4 P2: malformed payload SHAPES (non-dict payload,
+        non-list lines, non-dict line entry) fail the freeze scan closed —
+        'no readable references' is not 'no references'."""
+        from accounting.commands import update_account
+        from accounting.models import Account
+
+        payload = _posted_payload(uuid4(), user, cash_account, revenue_account)
+        event = _emit_posted(company, user, payload)
+
+        for corruption in ([1, 2, 3], dict(payload, lines=1), dict(payload, lines=["junk", payload["lines"][1]])):
+            _corrupt(event, corruption)
+            result = update_account(actor_context, cash_account.id, account_type=Account.AccountType.MEMO)
+            assert not result.success
+            assert "cannot be verified" in result.error

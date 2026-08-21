@@ -189,21 +189,33 @@ def can_change_account_type(actor, account) -> tuple[bool, str]:
         company=actor.company,
         event_type=EventTypes.JOURNAL_ENTRY_POSTED,
     ).select_related("payload_ref")
+    cannot_verify = (
+        False,
+        "Cannot change account type: a stored posted-journal event is "
+        "unreadable or malformed, so the account's posted history cannot be verified.",
+    )
     for event in posted_events.iterator(chunk_size=500):
         try:
             data = event.get_data()
         except Exception:
             # An unreadable posted payload might reference this account —
             # fail closed (unavailability over contradictory history).
-            return False, (
-                "Cannot change account type: a stored posted-journal event is "
-                "unreadable, so the account's posted history cannot be verified."
-            )
-        lines = data.get("lines") if isinstance(data, dict) else None
-        if isinstance(lines, list) and any(
-            isinstance(line, dict) and canonical_account_id(line.get("account_public_id")) == target for line in lines
-        ):
-            return False, "Cannot change type of an account that has posted transactions."
+            return cannot_verify
+        # Codex round-4 P2: malformed payload SHAPES fail closed exactly like
+        # resolution exceptions — a non-dict payload, a non-list lines
+        # container, or a non-dict line entry could all hide a reference a
+        # later repair/rebuild would reveal; "no readable references" is not
+        # "no references".
+        if not isinstance(data, dict):
+            return cannot_verify
+        lines = data.get("lines")
+        if not isinstance(lines, list):
+            return cannot_verify
+        for line in lines:
+            if not isinstance(line, dict):
+                return cannot_verify
+            if canonical_account_id(line.get("account_public_id")) == target:
+                return False, "Cannot change type of an account that has posted transactions."
 
     return True, ""
 
