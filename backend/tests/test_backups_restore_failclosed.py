@@ -411,6 +411,80 @@ class TestApplyInvariantOnRestore:
         result = restore_company(company, zip_bytes)
         assert result["company"] == company.slug
 
+    def test_lag_state_with_applied_marker_is_refused(self, company, user, cash_account, revenue_account):
+        """Codex round-2 P2: the deferred disposition promises a post-restore
+        retry — but restore imports the archive's applied-markers verbatim
+        and never replays, so a marker for the lagging journal means the
+        retry can never happen (a pre-boundary projector marked it applied
+        after silently skipping the lagging lines). That archive must be
+        REFUSED, not certified."""
+        from events.emitter import emit_event
+        from events.types import EventTypes
+        from projections.accounting import JournalEntryProjection
+        from projections.models import ProjectionAppliedEvent
+        from projections.write_barrier import projection_writes_allowed
+
+        lag_id = uuid4()
+        emit_event(
+            company=company,
+            event_type=EventTypes.ACCOUNT_CREATED,
+            aggregate_type="Account",
+            aggregate_id=str(lag_id),
+            data={
+                "account_public_id": str(lag_id),
+                "code": "1095",
+                "name": "Marked lagging account",
+                "account_type": "ASSET",
+                "normal_balance": "DEBIT",
+                "is_header": False,
+            },
+            caused_by_user=user,
+            idempotency_key=f"restore-marked:acct:{lag_id}",
+        )
+        entry_id = uuid4()
+        posted = emit_event(
+            company=company,
+            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(entry_id),
+            data={
+                "entry_public_id": str(entry_id),
+                "entry_number": "JE-MARK-1",
+                "date": "2026-03-12",
+                "memo": "marked lagging entry",
+                "kind": "NORMAL",
+                "period": 3,
+                "posted_at": "2026-03-12T12:00:00",
+                "posted_by_id": user.id,
+                "posted_by_email": user.email,
+                "total_debit": "40.00",
+                "total_credit": "40.00",
+                "lines": [
+                    {"line_no": 1, "account_public_id": str(lag_id), "debit": "40.00", "credit": "0.00"},
+                    {
+                        "line_no": 2,
+                        "account_public_id": str(revenue_account.public_id),
+                        "debit": "0.00",
+                        "credit": "40.00",
+                    },
+                ],
+            },
+            caused_by_user=user,
+            idempotency_key=f"restore-marked:posted:{entry_id}",
+        )
+        # The pre-boundary damage shape: a consumer marked the journal
+        # applied even though its account line never materialized.
+        with projection_writes_allowed():
+            ProjectionAppliedEvent.objects.create(
+                company=company,
+                projection_name=JournalEntryProjection().name,
+                event=posted,
+            )
+
+        zip_bytes, _ = export_company(company)
+        with pytest.raises(RestoreError, match="apply invariant"):
+            restore_company(company, zip_bytes)
+
     def test_skip_invariants_break_glass_bypasses_corpus_check(self, booked_company):
         """--skip-invariants is the ONLY way past the corpus check — the same
         documented break-glass as the trial-balance/subledger invariants,

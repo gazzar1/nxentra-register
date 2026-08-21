@@ -310,9 +310,21 @@ def _unknown_accounts_are_pending_materialization(event: BusinessEvent) -> bool:
                 prior_data = prior.get_data()
             except Exception:
                 continue
-            if isinstance(prior_data, dict) and canonical_account_id(prior_data.get("account_public_id")) == cid:
-                creates_cid = True
-                break
+            if not isinstance(prior_data, dict):
+                continue
+            if canonical_account_id(prior_data.get("account_public_id")) != cid:
+                continue
+            # Materializability (Codex round-2 P2): identity alone is not
+            # evidence the row will EVER exist — AccountProjection.handle
+            # subscripts these keys unconditionally, so a payload missing
+            # one raises before update_or_create and can never create the
+            # row; deferring on it would retry forever. Deeper malformation
+            # (bad choice values) still fails the ACCOUNT projection loudly
+            # — a visible halt on its own stream, not an invisible defer.
+            if not all(key in prior_data for key in ("code", "name", "account_type")):
+                continue
+            creates_cid = True
+            break
         if not creates_cid:
             return False
     return True

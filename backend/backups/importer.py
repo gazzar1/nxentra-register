@@ -331,9 +331,23 @@ def _verify_restore(company, manifest, manifest_counts, stats, *, skip_invariant
         .select_related("payload_ref")
         .order_by("company_sequence")
     )
+    from projections.models import ProjectionAppliedEvent
+
     for event in posted_events.iterator(chunk_size=500):
         codes = evaluate_posted_journal_for_apply(event, facts_cache=facts_cache)
-        if codes and is_deferrable_apply_verdict(event, codes):
+        if (
+            codes
+            and is_deferrable_apply_verdict(event, codes)
+            # Codex round-2 P2: the deferred disposition promises a
+            # post-restore RETRY — but restore imports the archive's
+            # ProjectionAppliedEvent markers verbatim and never replays, so
+            # a marker for this event means process_pending will
+            # short-circuit and the retry can never happen (a pre-boundary
+            # backup whose projector marked the journal applied after
+            # silently skipping the lagging lines). Accept the lag verdict
+            # only when NO consumer marker exists; otherwise fail closed.
+            and not ProjectionAppliedEvent.objects.filter(company=company, event=event).exists()
+        ):
             # The read-model-lag case the apply choke point DEFERS on (same
             # shared predicate): the archive captured a posted event whose
             # referenced account row was not yet materialized, with the

@@ -268,11 +268,22 @@ class Command(BaseCommand):
             .order_by("-company_sequence")[:100]
         )
 
+        from projections.models import ProjectionAppliedEvent
+
         facts_cache: dict = {}
         invalid = []
         for event in events:
             codes = evaluate_posted_journal_for_apply(event, facts_cache=facts_cache)
-            if codes and is_deferrable_apply_verdict(event, codes):
+            if (
+                codes
+                and is_deferrable_apply_verdict(event, codes)
+                # Same marker guard as restore verification (Codex round-2
+                # P2): a marker for this event means no retry will ever
+                # re-apply it — the lag is NOT self-healing there, so it IS
+                # reportable damage (pre-boundary silent skip), not a
+                # deferred event.
+                and not ProjectionAppliedEvent.objects.filter(company=company, event=event).exists()
+            ):
                 # Read-model lag the choke point DEFERS on (shared predicate)
                 # — replayable, not corrupt; reporting it as CRITICAL would
                 # break the "exactly what apply-time enforcement would

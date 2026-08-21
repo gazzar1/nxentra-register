@@ -124,10 +124,20 @@ class SubledgerBalanceProjection(BaseProjection):
 
         debit = Decimal(line_data.get("debit", "0"))
         credit = Decimal(line_data.get("credit", "0"))
-        is_memo = line_data.get("is_memo_line", False)
 
-        # Skip memo lines for financial balances
-        if is_memo:
+        # A3-PR3 (Codex round-2 P1): memo classification from the RESOLVED
+        # ACCOUNT (the canonical invariant's authority rule) — the payload
+        # flag is only the fallback when no account resolves (which validated
+        # posted events never hit; see AccountBalanceProjection._apply_line).
+        from accounting.journal_invariant import canonical_account_id
+        from accounting.models import Account
+
+        cid = canonical_account_id(line_data.get("account_public_id"))
+        account = Account.objects.filter(company=company, public_id=cid).first() if cid else None
+        if account is not None:
+            if account.is_memo_account:
+                return
+        elif line_data.get("is_memo_line", False):
             return
 
         # Skip if no actual amount

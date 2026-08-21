@@ -152,9 +152,8 @@ class PeriodAccountBalanceProjection(BaseProjection):
         account_public_id = line_data.get("account_public_id")
         debit = Decimal(line_data.get("debit", "0"))
         credit = Decimal(line_data.get("credit", "0"))
-        is_memo = line_data.get("is_memo_line", False)
 
-        if not account_public_id or is_memo:
+        if not account_public_id:
             return
         if debit == 0 and credit == 0:
             return
@@ -163,6 +162,12 @@ class PeriodAccountBalanceProjection(BaseProjection):
             account = Account.objects.get(public_id=account_public_id, company=company)
         except Account.DoesNotExist:
             logger.error(f"Account {account_public_id} not found in event {event.id}")
+            return
+
+        # A3-PR3 (Codex round-2 P1): memo classification from the RESOLVED
+        # ACCOUNT (the canonical invariant's authority rule), never the raw
+        # payload flag — see AccountBalanceProjection._apply_line.
+        if account.is_memo_account:
             return
 
         with transaction.atomic():

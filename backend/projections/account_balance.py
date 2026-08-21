@@ -131,15 +131,10 @@ class AccountBalanceProjection(BaseProjection):
         account_public_id = line_data.get("account_public_id")
         debit = Decimal(line_data.get("debit", "0"))
         credit = Decimal(line_data.get("credit", "0"))
-        is_memo = line_data.get("is_memo_line", False)
 
         # Validation: must have account
         if not account_public_id:
             logger.warning(f"Line missing account_public_id in event {event.id}")
-            return
-
-        # Skip memo lines for financial balances
-        if is_memo:
             return
 
         # Skip if no actual amount
@@ -157,6 +152,16 @@ class AccountBalanceProjection(BaseProjection):
                 f"Account/company mismatch for account {account_public_id}: "
                 f"account.company_id={account.company_id} company.id={company.id}"
             )
+
+        # A3-PR3 (Codex round-2 P1): memo classification comes from the
+        # RESOLVED ACCOUNT — the same authority rule the canonical invariant
+        # applies. The payload is_memo_line flag is historical metadata: a
+        # historical/foreign payload whose flag disagrees with the account
+        # would otherwise be validated under one classification and
+        # materialized under another (a financial line flagged true silently
+        # vanishing from balances).
+        if account.is_memo_account:
+            return
 
         # ═══════════════════════════════════════════════════════════════════════
         # CRITICAL: Use transaction + select_for_update to prevent race conditions

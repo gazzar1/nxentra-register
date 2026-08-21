@@ -849,6 +849,102 @@ class TestAccountUnknownDefersOnReadModelLag:
 
 
 # --------------------------------------------------------------------------- #
+# Memo classification at apply: the resolved account is authoritative in the
+# CONSUMERS too, not only in the validator (Codex round-2 P1)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.django_db
+class TestMemoClassificationAtApply:
+    def test_financial_line_flagged_memo_still_reaches_balances(self, company, user, cash_account, revenue_account):
+        """A historical/foreign payload flagging a FINANCIAL-account line as
+        memo passes the invariant (the flag is non-authoritative — the line's
+        amounts count), so the balance consumers must count it too; trusting
+        the raw flag silently dropped the money from balances."""
+        payload = _posted_payload(uuid4(), user, cash_account, revenue_account)
+        event = _emit_posted(company, user, payload)
+        flagged = dict(payload)
+        flagged["lines"] = [dict(payload["lines"][0], is_memo_line=True), dict(payload["lines"][1])]
+        _corrupt(event, flagged)
+
+        AccountBalanceProjection().process_pending(company)
+
+        cash = AccountBalance.objects.get(company=company, account=cash_account)
+        assert cash.debit_total == Decimal("100.00")
+        assert not ProjectionFailureLog.objects.filter(company=company).exists()
+
+    def test_memo_account_line_flagged_false_stays_out_of_balances(self, company, user, cash_account, revenue_account):
+        """The inverse: a MEMO-account line whose flag says False is memo by
+        the account's authority — it must not leak into financial balances."""
+        from accounting.models import Account
+
+        memo_account = Account.objects.create(
+            public_id=uuid4(),
+            company=company,
+            code="9000",
+            name="Statistical units",
+            account_type=Account.AccountType.MEMO,
+            normal_balance=Account.NormalBalance.DEBIT,
+            status=Account.Status.ACTIVE,
+        )
+        payload = _posted_payload(uuid4(), user, cash_account, revenue_account)
+        event = _emit_posted(company, user, payload)
+        with_memo = dict(payload)
+        with_memo["lines"] = payload["lines"] + [
+            {
+                "line_no": 3,
+                "account_public_id": str(memo_account.public_id),
+                "debit": "50.00",
+                "credit": "0.00",
+                "is_memo_line": False,  # lying flag — the account says memo
+            }
+        ]
+        _corrupt(event, with_memo)
+
+        AccountBalanceProjection().process_pending(company)
+
+        assert not ProjectionFailureLog.objects.filter(company=company).exists()
+        assert AccountBalance.objects.get(company=company, account=cash_account).debit_total == Decimal("100.00")
+        assert not AccountBalance.objects.filter(company=company, account=memo_account).exists()
+
+    def test_unmaterializable_account_evidence_stays_terminal(self, company, user, cash_account, revenue_account):
+        """Codex round-2 P2: a prior account event whose payload matches the
+        id but lacks a required creation field (AccountProjection subscripts
+        'code' unconditionally) can never materialize the row — deferring on
+        it would retry forever; it must stay terminal quarantine."""
+        broken_id = uuid4()
+        acct_event = emit_event(
+            company=company,
+            event_type=EventTypes.ACCOUNT_CREATED,
+            aggregate_type="Account",
+            aggregate_id=str(broken_id),
+            data={
+                "account_public_id": str(broken_id),
+                "code": "1095",
+                "name": "Will be broken",
+                "account_type": "ASSET",
+                "normal_balance": "DEBIT",
+                "is_header": False,
+            },
+            caused_by_user=user,
+            idempotency_key=f"apply-test:broken:{broken_id}",
+        )
+        broken_payload = dict(acct_event.get_data())
+        del broken_payload["code"]
+        _corrupt(acct_event, broken_payload)
+
+        payload = _posted_payload(uuid4(), user, cash_account, revenue_account)
+        payload["lines"][0]["account_public_id"] = str(broken_id)
+        event = _emit_posted(company, user, payload)
+        _corrupt(event, payload)
+
+        JournalEntryProjection().process_pending(company)
+
+        log = ProjectionFailureLog.objects.get(company=company, event_id=event.id)
+        assert "JE_ACCOUNT_UNKNOWN" in log.message
+
+
+# --------------------------------------------------------------------------- #
 # The subset-property precondition: account_type frozen once history posts
 # --------------------------------------------------------------------------- #
 
