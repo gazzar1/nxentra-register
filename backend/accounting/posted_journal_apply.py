@@ -291,17 +291,16 @@ def _entry_pending_materialization(event: BusinessEvent, entry_public_id: object
     if JournalEntry.objects.filter(company=event.company, public_id=target).exists():
         return False  # the row exists — nothing pending
     # Candidates by PAYLOAD identity as well as aggregate metadata (Codex
-    # round-6 P2): the evaluator and the handler key on the payload's
+    # rounds 6+7 P2): the evaluator and the handler key on the payload's
     # entry_public_id — external ingest legitimately carries a different
     # aggregate_id — so an aggregate-only query would miss a genuinely
-    # pending post and let the lifecycle event no-op-consume. (An
-    # external-STORAGE posted event whose aggregate also mismatches would
-    # evade the inline-JSON lookup — real emitters stamp
-    # aggregate == payload, so that residual requires a >64KB ingested
-    # payload with mismatched metadata; the payload-verification loop below
-    # remains the authority for everything the query returns.)
+    # pending post and let the lifecycle event no-op-consume. The payload
+    # arm covers BOTH storage strategies: inline JSON and external storage
+    # (a >64 KiB ingested payload stores {} inline, so the
+    # payload_ref__payload arm is what finds it). The payload-verification
+    # loop below remains the authority for everything the query returns.
     candidates = _BusinessEvent.objects.filter(
-        Q(aggregate_id=target) | Q(data__entry_public_id=target),
+        Q(aggregate_id=target) | Q(data__entry_public_id=target) | Q(payload_ref__payload__entry_public_id=target),
         company=event.company,
         event_type=EventTypes.JOURNAL_ENTRY_POSTED,
         company_sequence__lt=event.company_sequence,

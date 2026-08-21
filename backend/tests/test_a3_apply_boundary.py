@@ -1017,6 +1017,68 @@ class TestLifecycleOrderingUnderDefer:
         original = JournalEntry.objects.get(company=company, public_id=original_id)
         assert original.status == JournalEntry.Status.REVERSED
 
+    def test_pending_post_found_in_external_payload_storage(self, company, user, cash_account, revenue_account):
+        """Codex round-7 P2: a >64KiB ingested post stores {} inline — the
+        pending-post lookup must reach the EXTERNAL payload store
+        (payload_ref__payload) when the aggregate metadata also mismatches,
+        or the lifecycle event no-op-consumes past a genuinely pending
+        post."""
+        from events.models import EventPayload
+        from projections.accounting import AccountProjection
+
+        lag_id = self._emit_lagging_account(company, user, code="1087")
+        original_id = uuid4()
+        payload = _posted_payload(original_id, user, cash_account, revenue_account)
+        payload["lines"][0]["account_public_id"] = str(lag_id)
+        posted = emit_event(
+            company=company,
+            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(uuid4()),  # mismatched aggregate metadata
+            data=payload,
+            caused_by_user=user,
+            idempotency_key=f"apply-test:ext:{original_id}",
+        )
+        # Convert to external storage: {} inline, payload in the store.
+        ep = EventPayload.objects.create(
+            content_hash=uuid4().hex + uuid4().hex,
+            payload=payload,
+            size_bytes=70000,
+        )
+        BusinessEvent.objects.filter(pk=posted.pk).update(
+            payload_storage="external", payload_ref=ep, data={}, payload_hash=""
+        )
+
+        reversal_id = uuid4()
+        _emit_posted(company, user, _posted_payload(reversal_id, user, revenue_account, cash_account))
+        reversed_event = emit_event(
+            company=company,
+            event_type=EventTypes.JOURNAL_ENTRY_REVERSED,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(original_id),
+            data={
+                "original_entry_public_id": str(original_id),
+                "reversal_entry_public_id": str(reversal_id),
+                "reversed_at": "2026-01-05T12:00:00",
+                "reversed_by_id": user.id,
+                "reversed_by_email": user.email,
+            },
+            caused_by_user=user,
+            idempotency_key=f"apply-test:ext-rev:{original_id}",
+        )
+
+        projection = JournalEntryProjection()
+        projection.process_pending(company)
+        assert not ProjectionAppliedEvent.objects.filter(
+            company=company, projection_name=projection.name, event=reversed_event
+        ).exists()  # deferred — found via the external payload store
+
+        AccountProjection().process_pending(company)
+        projection.process_pending(company)
+
+        original = JournalEntry.objects.get(company=company, public_id=original_id)
+        assert original.status == JournalEntry.Status.REVERSED
+
     def test_delete_defers_then_guard_decides_on_the_row(self, company, user, cash_account, revenue_account):
         """A delete racing a deferred post must not slip through as a no-op —
         it defers, and once the post materializes, the posted-target guard
