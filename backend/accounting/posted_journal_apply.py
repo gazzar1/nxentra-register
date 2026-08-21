@@ -357,15 +357,23 @@ def _unknown_accounts_are_pending_materialization(event: BusinessEvent) -> bool:
     }
     if not referenced:
         return False
+    from django.db.models import Q
+
     unresolved = referenced - load_account_facts(event.company, referenced).keys()
     for cid in unresolved:
-        # Bounded payload verification: real streams carry at most one
-        # ACCOUNT_CREATED per aggregate; the cap only guards degenerate
-        # foreign streams from turning this probe into a scan.
+        # Candidates by PAYLOAD identity as well as aggregate metadata, in
+        # both storage strategies (Codex round-8 P2 — the same rule as the
+        # entry probe): AccountProjection materializes the payload's
+        # account_public_id, so a foreign event whose metadata names another
+        # id would be missed by an aggregate-only query and a valid posted
+        # journal would be terminally quarantined instead of deferred.
+        # Bounded: real streams carry at most one ACCOUNT_CREATED per
+        # aggregate; the cap only guards degenerate foreign streams from
+        # turning this probe into a scan. The payload/materializability
+        # verification loop below stays the authority.
         candidates = _BusinessEvent.objects.filter(
+            Q(aggregate_id=cid) | Q(data__account_public_id=cid) | Q(payload_ref__payload__account_public_id=cid),
             company=event.company,
-            aggregate_type="Account",
-            aggregate_id=cid,
             event_type=EventTypes.ACCOUNT_CREATED,
             company_sequence__lt=event.company_sequence,
         ).order_by("company_sequence")[:5]

@@ -765,6 +765,53 @@ class TestAccountUnknownDefersOnReadModelLag:
         new_balance = AccountBalance.objects.get(company=company, account__public_id=new_account_id)
         assert new_balance.debit_total == Decimal("100.00")
 
+    def test_pending_account_found_by_payload_identity(self, company, user, cash_account, revenue_account):
+        """Codex round-8 P2: an account event whose payload creates X but
+        whose aggregate metadata names another id still counts as pending
+        evidence for a posted journal referencing X — an aggregate-only
+        query would terminally quarantine a valid event that a retry after
+        the account projection would apply."""
+        from accounting.models import Account
+        from projections.accounting import AccountProjection
+
+        new_account_id = uuid4()
+        emit_event(
+            company=company,
+            event_type=EventTypes.ACCOUNT_CREATED,
+            aggregate_type="Account",
+            aggregate_id=str(uuid4()),  # mismatched aggregate metadata
+            data={
+                "account_public_id": str(new_account_id),
+                "code": "1086",
+                "name": "Payload-identity account",
+                "account_type": "ASSET",
+                "normal_balance": "DEBIT",
+                "is_header": False,
+            },
+            caused_by_user=user,
+            idempotency_key=f"apply-test:mismatch-acct:{new_account_id}",
+        )
+        payload = _posted_payload(uuid4(), user, cash_account, revenue_account)
+        payload["lines"][0]["account_public_id"] = str(new_account_id)
+        event = _emit_posted(company, user, payload)
+
+        balances = AccountBalanceProjection()
+        balances.process_pending(company)
+
+        # Deferred (found via payload identity), never quarantined.
+        assert not ProjectionFailureLog.objects.filter(company=company, event_id=event.id).exists()
+        assert not ProjectionAppliedEvent.objects.filter(
+            company=company, projection_name=balances.name, event_id=event.id
+        ).exists()
+
+        AccountProjection().process_pending(company)
+        assert Account.objects.filter(company=company, public_id=new_account_id).exists()
+        balances.process_pending(company)
+
+        assert AccountBalance.objects.get(company=company, account__public_id=new_account_id).debit_total == Decimal(
+            "100.00"
+        )
+
     def test_genuinely_unknown_account_stays_terminal(self, company, user, cash_account, revenue_account):
         """No prior account event in the stream = a genuine unknown reference:
         terminal quarantine, exactly as before the defer refinement."""
