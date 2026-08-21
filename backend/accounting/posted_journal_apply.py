@@ -265,6 +265,55 @@ def is_deferrable_apply_verdict(event: BusinessEvent, codes: list[str]) -> bool:
     return set(codes) == {JE_ACCOUNT_UNKNOWN} and _unknown_accounts_are_pending_materialization(event)
 
 
+def _entry_pending_materialization(event: BusinessEvent, entry_public_id: object) -> bool:
+    """True iff the referenced journal entry's row is absent while its OWN
+    JOURNAL_ENTRY_POSTED event sits EARLIER in the stream, payload-verified
+    and not yet consumed by the JournalEntry read model — the deferred-post
+    case (Codex round-5 P1). Applies the same accumulated rules as the
+    account probe: payload identity beats aggregate metadata; a consumed
+    marker triggers a row re-resolution (the round-4 stale-read rule) and
+    counts as pending only if the row exists now; consumed-without-row (a
+    quarantined/partial prior post) is NOT pending — the sibling handler's
+    tolerant behavior for genuinely absent referents stays unchanged."""
+    from accounting.models import JournalEntry
+    from events.models import BusinessEvent as _BusinessEvent
+    from events.types import EventTypes
+    from projections.accounting import JournalEntryProjection
+    from projections.models import ProjectionAppliedEvent
+
+    target = str(entry_public_id)
+    if JournalEntry.objects.filter(company=event.company, public_id=target).exists():
+        return False  # the row exists — nothing pending
+    candidates = _BusinessEvent.objects.filter(
+        company=event.company,
+        aggregate_type="JournalEntry",
+        aggregate_id=target,
+        event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+        company_sequence__lt=event.company_sequence,
+    ).order_by("company_sequence")[:5]
+    je_read_model = JournalEntryProjection().name
+    for prior in candidates:
+        try:
+            prior_data = prior.get_data()
+        except Exception:
+            continue
+        if not isinstance(prior_data, dict) or str(prior_data.get("entry_public_id")) != target:
+            continue
+        if ProjectionAppliedEvent.objects.filter(
+            company=event.company,
+            projection_name=je_read_model,
+            event=prior,
+        ).exists():
+            # Consumed — re-resolve the row (stale-read rule): present now
+            # means the retry will see it; still absent means the prior post
+            # was quarantined/partial, which is not pending.
+            if JournalEntry.objects.filter(company=event.company, public_id=target).exists():
+                return True
+            continue
+        return True  # unconsumed prior posted event — genuinely pending
+    return False
+
+
 def _unknown_accounts_are_pending_materialization(event: BusinessEvent) -> bool:
     """True iff EVERY referenced account id that fails to resolve against the
     Account read model has an ACCOUNT_CREATED event EARLIER in this company's
@@ -393,13 +442,27 @@ def _is_uuid(value: object) -> bool:
 
 
 def validate_reversed_journal_apply(event: BusinessEvent) -> None:
-    """journal_entry.reversed: shape guard (D5). Both entry references must be
-    well-formed UUIDs — a payload missing them previously raised KeyError in
-    the handler, halting the whole projection stream head-of-line."""
+    """journal_entry.reversed: shape guard (D5) plus lifecycle ordering
+    (Codex round-5 P1). Both entry references must be well-formed UUIDs — a
+    payload missing them previously raised KeyError in the handler, halting
+    the whole projection stream head-of-line. And when either referenced
+    entry's OWN posted event is still pending materialization (a deferred
+    post earlier in the same replay batch), this event must DEFER too:
+    letting the handler run would silently no-op on the missing rows and
+    consume the event, so the retried posts could never receive their
+    reversal — the relationship would be permanently lost."""
     data = _readable_payload(event)
     for key in ("original_entry_public_id", "reversal_entry_public_id"):
         if not _is_uuid(data.get(key)):
             raise PostedJournalApplyInvalid(event.event_type, [APPLY_ENTRY_REF_INVALID])
+    for key in ("original_entry_public_id", "reversal_entry_public_id"):
+        if _entry_pending_materialization(event, data[key]):
+            from projections.base import DeferEvent
+
+            raise DeferEvent(
+                "reversal references a journal entry whose own posted event is still "
+                "pending materialization — deferring so the lifecycle applies in order"
+            )
 
 
 def validate_deleted_journal_apply(event: BusinessEvent) -> None:
@@ -415,6 +478,18 @@ def validate_deleted_journal_apply(event: BusinessEvent) -> None:
     entry_public_id = data.get("entry_public_id")
     if not _is_uuid(entry_public_id):
         raise PostedJournalApplyInvalid(event.event_type, [APPLY_ENTRY_REF_INVALID])
+    # Lifecycle ordering (Codex round-5 P1, same rule as the reversed door):
+    # with the target's own posted event still pending materialization, the
+    # status probe below would read an absent row and wave the delete
+    # through as a no-op — defer so the guard decides against the
+    # materialized row instead.
+    if _entry_pending_materialization(event, entry_public_id):
+        from projections.base import DeferEvent
+
+        raise DeferEvent(
+            "delete targets a journal entry whose own posted event is still "
+            "pending materialization — deferring so the guard decides against the row"
+        )
     status = (
         JournalEntry.objects.filter(company=event.company, public_id=str(entry_public_id))
         .values_list("status", flat=True)

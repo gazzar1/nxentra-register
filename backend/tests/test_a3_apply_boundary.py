@@ -849,6 +849,127 @@ class TestAccountUnknownDefersOnReadModelLag:
 
 
 # --------------------------------------------------------------------------- #
+# Lifecycle ordering under defer (Codex round-5 P1): sibling events wait for
+# their pending posted referents instead of no-op-consuming
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.django_db
+class TestLifecycleOrderingUnderDefer:
+    def _emit_lagging_account(self, company, user, code="1091"):
+        lag_id = uuid4()
+        emit_event(
+            company=company,
+            event_type=EventTypes.ACCOUNT_CREATED,
+            aggregate_type="Account",
+            aggregate_id=str(lag_id),
+            data={
+                "account_public_id": str(lag_id),
+                "code": code,
+                "name": f"Lagging {code}",
+                "account_type": "ASSET",
+                "normal_balance": "DEBIT",
+                "is_header": False,
+            },
+            caused_by_user=user,
+            idempotency_key=f"apply-test:lifecycle-acct:{lag_id}",
+        )
+        return lag_id
+
+    def test_reversal_defers_until_posted_pair_materializes(self, company, user, cash_account, revenue_account):
+        """Both POSTED events of a reversal pair defer on a lagging account;
+        the REVERSED event must defer WITH them — a silent no-op consume
+        would lose the reversal relationship permanently once the posts
+        retry."""
+        from projections.accounting import AccountProjection
+
+        lag_id = self._emit_lagging_account(company, user)
+
+        original_id, reversal_id = uuid4(), uuid4()
+        for entry_id, flip in ((original_id, False), (reversal_id, True)):
+            payload = _posted_payload(entry_id, user, cash_account, revenue_account)
+            payload["lines"][0]["account_public_id"] = str(lag_id)
+            if flip:  # the reversal carries swapped sides
+                payload["lines"][0], payload["lines"][1] = (
+                    dict(payload["lines"][1], line_no=1),
+                    dict(payload["lines"][0], line_no=2),
+                )
+            _emit_posted(company, user, payload)
+        reversed_event = emit_event(
+            company=company,
+            event_type=EventTypes.JOURNAL_ENTRY_REVERSED,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(original_id),
+            data={
+                "original_entry_public_id": str(original_id),
+                "reversal_entry_public_id": str(reversal_id),
+                "reversed_at": "2026-01-03T12:00:00",
+                "reversed_by_id": user.id,
+                "reversed_by_email": user.email,
+            },
+            caused_by_user=user,
+            idempotency_key=f"apply-test:lifecycle-rev:{original_id}",
+        )
+
+        projection = JournalEntryProjection()
+        projection.process_pending(company)
+
+        # Everything deferred: nothing consumed, nothing quarantined.
+        assert not ProjectionAppliedEvent.objects.filter(company=company, projection_name=projection.name).exists()
+        assert not ProjectionFailureLog.objects.filter(company=company).exists()
+
+        AccountProjection().process_pending(company)
+        projection.process_pending(company)
+
+        original = JournalEntry.objects.get(company=company, public_id=original_id)
+        assert original.status == JournalEntry.Status.REVERSED
+        reversal = JournalEntry.objects.get(company=company, public_id=reversal_id)
+        assert reversal.reverses_entry_id == original.id
+        assert ProjectionAppliedEvent.objects.filter(
+            company=company, projection_name=projection.name, event=reversed_event
+        ).exists()
+
+    def test_delete_defers_then_guard_decides_on_the_row(self, company, user, cash_account, revenue_account):
+        """A delete racing a deferred post must not slip through as a no-op —
+        it defers, and once the post materializes, the posted-target guard
+        quarantines it against the real row."""
+        from accounting.posted_journal_apply import APPLY_DELETE_TARGET_POSTED
+        from projections.accounting import AccountProjection
+
+        lag_id = self._emit_lagging_account(company, user, code="1090")
+        entry_id = uuid4()
+        payload = _posted_payload(entry_id, user, cash_account, revenue_account)
+        payload["lines"][0]["account_public_id"] = str(lag_id)
+        _emit_posted(company, user, payload)
+        delete_event = emit_event(
+            company=company,
+            event_type=EventTypes.JOURNAL_ENTRY_DELETED,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(entry_id),
+            data={
+                "entry_public_id": str(entry_id),
+                "date": date.today().isoformat(),
+                "memo": "racing delete",
+                "status": "POSTED",
+            },
+            caused_by_user=user,
+            idempotency_key=f"apply-test:lifecycle-del:{entry_id}",
+        )
+
+        projection = JournalEntryProjection()
+        projection.process_pending(company)
+        assert not ProjectionAppliedEvent.objects.filter(company=company, projection_name=projection.name).exists()
+
+        AccountProjection().process_pending(company)
+        projection.process_pending(company)
+
+        # The post materialized; the delete quarantined against the real row.
+        assert JournalEntry.objects.filter(company=company, public_id=entry_id).exists()
+        log = ProjectionFailureLog.objects.get(company=company, event_id=delete_event.id)
+        assert APPLY_DELETE_TARGET_POSTED in log.message
+
+
+# --------------------------------------------------------------------------- #
 # Memo classification at apply: the resolved account is authoritative in the
 # CONSUMERS too, not only in the validator (Codex round-2 P1)
 # --------------------------------------------------------------------------- #
