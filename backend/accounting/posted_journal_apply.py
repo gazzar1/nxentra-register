@@ -48,6 +48,10 @@ same read models carry boundary-local guards (founder decision D5):
   chunked emit family is dormant (zero production emitters; A171 tracks its
   removal), and per-chunk balance application was a validation-free parallel
   door into the balance projections.
+- ``journal_line.analysis_set`` — defers while its journal's own posted
+  event is pending materialization (the backfill emits it after the post;
+  a no-op consume would leave the retried post's lines permanently
+  untagged), and quarantines a malformed entry reference.
 
 Apply-boundary outcome codes (``APPLY_*``) are deliberately DISJOINT from
 the frozen canonical ``JE_*`` set: they label boundary outcomes (unreadable
@@ -275,6 +279,8 @@ def _entry_pending_materialization(event: BusinessEvent, entry_public_id: object
     counts as pending only if the row exists now; consumed-without-row (a
     quarantined/partial prior post) is NOT pending — the sibling handler's
     tolerant behavior for genuinely absent referents stays unchanged."""
+    from django.db.models import Q
+
     from accounting.models import JournalEntry
     from events.models import BusinessEvent as _BusinessEvent
     from events.types import EventTypes
@@ -284,13 +290,22 @@ def _entry_pending_materialization(event: BusinessEvent, entry_public_id: object
     target = str(entry_public_id)
     if JournalEntry.objects.filter(company=event.company, public_id=target).exists():
         return False  # the row exists — nothing pending
+    # Candidates by PAYLOAD identity as well as aggregate metadata (Codex
+    # round-6 P2): the evaluator and the handler key on the payload's
+    # entry_public_id — external ingest legitimately carries a different
+    # aggregate_id — so an aggregate-only query would miss a genuinely
+    # pending post and let the lifecycle event no-op-consume. (An
+    # external-STORAGE posted event whose aggregate also mismatches would
+    # evade the inline-JSON lookup — real emitters stamp
+    # aggregate == payload, so that residual requires a >64KB ingested
+    # payload with mismatched metadata; the payload-verification loop below
+    # remains the authority for everything the query returns.)
     candidates = _BusinessEvent.objects.filter(
+        Q(aggregate_id=target) | Q(data__entry_public_id=target),
         company=event.company,
-        aggregate_type="JournalEntry",
-        aggregate_id=target,
         event_type=EventTypes.JOURNAL_ENTRY_POSTED,
         company_sequence__lt=event.company_sequence,
-    ).order_by("company_sequence")[:5]
+    ).order_by("company_sequence")[:10]
     je_read_model = JournalEntryProjection().name
     for prior in candidates:
         try:
@@ -499,6 +514,28 @@ def validate_deleted_journal_apply(event: BusinessEvent) -> None:
         raise PostedJournalApplyInvalid(event.event_type, [APPLY_DELETE_TARGET_POSTED])
 
 
+def validate_line_analysis_apply(event: BusinessEvent) -> None:
+    """journal_line_analysis.set: lifecycle ordering (Codex round-6 P1). The
+    backfill emits this event AFTER its journal's posted event — during a
+    bounded replay where that post is deferred, the handler's missing-entry
+    branch would silently consume the analysis event and the retried post
+    would create permanently untagged lines. Same disposition as the
+    reversed/deleted doors: a well-formed entry reference whose post is
+    pending materialization DEFERS; a malformed reference quarantines (the
+    handler subscripts it unconditionally — the KeyError-halt class)."""
+    data = _readable_payload(event)
+    entry_public_id = data.get("entry_public_id")
+    if not _is_uuid(entry_public_id):
+        raise PostedJournalApplyInvalid(event.event_type, [APPLY_ENTRY_REF_INVALID])
+    if _entry_pending_materialization(event, entry_public_id):
+        from projections.base import DeferEvent
+
+        raise DeferEvent(
+            "line-analysis event targets a journal entry whose own posted event is "
+            "still pending materialization — deferring so the tags land on real lines"
+        )
+
+
 def validate_chunked_journal_apply(event: BusinessEvent) -> None:
     """journal.lines_chunk_added: quarantined unconditionally (D5) — see the
     module docstring. Consume-to-quarantine, not de-listing: the event must
@@ -521,6 +558,7 @@ def apply_validator_map() -> dict[str, Callable[[BusinessEvent], None]]:
         EventTypes.JOURNAL_ENTRY_REVERSED: validate_reversed_journal_apply,
         EventTypes.JOURNAL_ENTRY_DELETED: validate_deleted_journal_apply,
         EventTypes.JOURNAL_LINES_CHUNK_ADDED: validate_chunked_journal_apply,
+        EventTypes.JOURNAL_LINE_ANALYSIS_SET: validate_line_analysis_apply,
     }
 
 

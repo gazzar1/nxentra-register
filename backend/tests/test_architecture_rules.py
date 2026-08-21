@@ -587,6 +587,7 @@ def test_apply_validator_registry_pins_journal_family():
         EventTypes.JOURNAL_ENTRY_REVERSED: pja.validate_reversed_journal_apply,
         EventTypes.JOURNAL_ENTRY_DELETED: pja.validate_deleted_journal_apply,
         EventTypes.JOURNAL_LINES_CHUNK_ADDED: pja.validate_chunked_journal_apply,
+        EventTypes.JOURNAL_LINE_ANALYSIS_SET: pja.validate_line_analysis_apply,
     }
     assert pja.apply_validator_map() == expected, (
         "accounting.posted_journal_apply.apply_validator_map() must cover exactly the journal family"
