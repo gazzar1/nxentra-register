@@ -907,6 +907,87 @@ class TestMemoClassificationAtApply:
         assert AccountBalance.objects.get(company=company, account=cash_account).debit_total == Decimal("100.00")
         assert not AccountBalance.objects.filter(company=company, account=memo_account).exists()
 
+    def test_consumed_account_event_without_row_stays_terminal(self, company, user, cash_account, revenue_account):
+        """Codex round-3 P2 (the closing rule): once the ACCOUNT read model
+        has consumed the prior account event (marker exists) and the row
+        still does not resolve, draining can never materialize it — the
+        reference is permanently unknown and must quarantine, not defer
+        forever behind an uninsertable payload (None values, uniqueness
+        collisions, or any other write failure)."""
+        from projections.accounting import AccountProjection
+        from projections.models import ProjectionAppliedEvent
+        from projections.write_barrier import projection_writes_allowed
+
+        ghost_id = uuid4()
+        acct_event = emit_event(
+            company=company,
+            event_type=EventTypes.ACCOUNT_CREATED,
+            aggregate_type="Account",
+            aggregate_id=str(ghost_id),
+            data={
+                "account_public_id": str(ghost_id),
+                "code": "1094",
+                "name": "Consumed but rowless",
+                "account_type": "ASSET",
+                "normal_balance": "DEBIT",
+                "is_header": False,
+            },
+            caused_by_user=user,
+            idempotency_key=f"apply-test:ghost:{ghost_id}",
+        )
+        # The account projection consumed the event but no row exists
+        # (applied-without-row / terminal-skip shape).
+        with projection_writes_allowed():
+            ProjectionAppliedEvent.objects.create(
+                company=company,
+                projection_name=AccountProjection().name,
+                event=acct_event,
+            )
+
+        payload = _posted_payload(uuid4(), user, cash_account, revenue_account)
+        payload["lines"][0]["account_public_id"] = str(ghost_id)
+        event = _emit_posted(company, user, payload)
+        _corrupt(event, payload)
+
+        JournalEntryProjection().process_pending(company)
+
+        log = ProjectionFailureLog.objects.get(company=company, event_id=event.id)
+        assert "JE_ACCOUNT_UNKNOWN" in log.message
+
+    def test_empty_creation_values_stay_terminal(self, company, user, cash_account, revenue_account):
+        """Codex round-3 P2 (static layer): present-but-empty creation values
+        (code=None / '') are statically-evident garbage, never evidence."""
+        broken_id = uuid4()
+        acct_event = emit_event(
+            company=company,
+            event_type=EventTypes.ACCOUNT_CREATED,
+            aggregate_type="Account",
+            aggregate_id=str(broken_id),
+            data={
+                "account_public_id": str(broken_id),
+                "code": "1093",
+                "name": "Will be nulled",
+                "account_type": "ASSET",
+                "normal_balance": "DEBIT",
+                "is_header": False,
+            },
+            caused_by_user=user,
+            idempotency_key=f"apply-test:nulled:{broken_id}",
+        )
+        nulled = dict(acct_event.get_data())
+        nulled["code"] = None
+        _corrupt(acct_event, nulled)
+
+        payload = _posted_payload(uuid4(), user, cash_account, revenue_account)
+        payload["lines"][0]["account_public_id"] = str(broken_id)
+        event = _emit_posted(company, user, payload)
+        _corrupt(event, payload)
+
+        JournalEntryProjection().process_pending(company)
+
+        log = ProjectionFailureLog.objects.get(company=company, event_id=event.id)
+        assert "JE_ACCOUNT_UNKNOWN" in log.message
+
     def test_unmaterializable_account_evidence_stays_terminal(self, company, user, cash_account, revenue_account):
         """Codex round-2 P2: a prior account event whose payload matches the
         id but lacks a required creation field (AccountProjection subscripts
@@ -986,12 +1067,53 @@ class TestAccountTypeFrozenOncePosted:
         from accounting.models import Account
 
         _emit_posted(company, user, _posted_payload(uuid4(), user, cash_account, revenue_account))
-        # No drain: the event is committed but unmaterialized.
+        # No drain: the event is committed but unmaterialized — the durable
+        # posted-event scan must find the reference anyway.
         assert not cash_account.journal_lines.exists()
 
         result = update_account(actor_context, cash_account.id, account_type=Account.AccountType.MEMO)
         assert not result.success
-        assert "awaiting materialization" in result.error
+        assert "posted transactions" in result.error
+
+    def test_type_change_refused_on_marker_with_partial_application(
+        self, company, user, actor_context, cash_account, revenue_account
+    ):
+        """Codex round-3 P1: an applied-marker is NOT proof of complete
+        materialization — a pre-boundary projector could mark the event
+        applied after silently skipping this account's line (no row). The
+        durable posted-event payload scan must refuse regardless of
+        projection state."""
+        from accounting.commands import update_account
+        from accounting.models import Account
+        from projections.models import ProjectionAppliedEvent
+        from projections.write_barrier import projection_writes_allowed
+
+        event = _emit_posted(company, user, _posted_payload(uuid4(), user, cash_account, revenue_account))
+        with projection_writes_allowed():
+            ProjectionAppliedEvent.objects.create(
+                company=company,
+                projection_name=JournalEntryProjection().name,
+                event=event,
+            )
+        assert not cash_account.journal_lines.exists()  # the partial-application shape
+
+        result = update_account(actor_context, cash_account.id, account_type=Account.AccountType.MEMO)
+        assert not result.success
+        assert "posted transactions" in result.error
+
+    def test_type_change_fails_closed_on_unreadable_posted_event(
+        self, company, user, actor_context, cash_account, revenue_account
+    ):
+        payload = _posted_payload(uuid4(), user, cash_account, revenue_account)
+        event = _emit_posted(company, user, payload)
+        BusinessEvent.objects.filter(pk=event.pk).update(payload_storage="external")  # get_data raises
+
+        from accounting.commands import update_account
+        from accounting.models import Account
+
+        result = update_account(actor_context, cash_account.id, account_type=Account.AccountType.MEMO)
+        assert not result.success
+        assert "cannot be verified" in result.error
 
     def test_type_change_still_allowed_without_posted_history(self, company, actor_context, cash_account):
         from accounting.commands import update_account

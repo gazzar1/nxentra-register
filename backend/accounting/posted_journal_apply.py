@@ -24,7 +24,9 @@ account facts apply consults stay what they were at emit. That precondition
 is enforced, not assumed: the two memo-classification inputs are immutable
 once an account carries posted history (``ledger_domain`` is outside the
 frozen ACCOUNT_UPDATE_ALLOWED_FIELDS set; ``account_type`` is refused by
-``can_change_account_type`` on durable posted-line evidence — A3-PR3),
+``can_change_account_type`` on durable posted-EVENT evidence — a payload scan
+of the stored stream, since projection rows/markers cannot prove absence —
+A3-PR3),
 account rows soft-delete (existence is monotone), and read-model LAG on
 ``JE_ACCOUNT_UNKNOWN`` defers instead of quarantining (see
 ``validate_posted_journal_apply``). Residual: direct DB surgery outside the
@@ -314,14 +316,39 @@ def _unknown_accounts_are_pending_materialization(event: BusinessEvent) -> bool:
                 continue
             if canonical_account_id(prior_data.get("account_public_id")) != cid:
                 continue
-            # Materializability (Codex round-2 P2): identity alone is not
-            # evidence the row will EVER exist — AccountProjection.handle
-            # subscripts these keys unconditionally, so a payload missing
-            # one raises before update_or_create and can never create the
-            # row; deferring on it would retry forever. Deeper malformation
-            # (bad choice values) still fails the ACCOUNT projection loudly
-            # — a visible halt on its own stream, not an invisible defer.
-            if not all(key in prior_data for key in ("code", "name", "account_type")):
+            # Materializability (Codex rounds 2+3 P2). Two layers, because
+            # statically re-predicting the projection's write logic is an
+            # unwinnable arms race (missing keys, None values, uniqueness
+            # collisions, ...):
+            #
+            # (a) static: the creation fields AccountProjection.handle
+            #     subscripts unconditionally must be present and non-empty
+            #     strings — statically-evident garbage is never evidence;
+            # (b) dynamic (the closing rule): the evidence only counts while
+            #     the ACCOUNT read model has NOT yet consumed the prior
+            #     event. Once its ProjectionAppliedEvent marker exists and
+            #     the row STILL does not resolve, draining can never
+            #     materialize it (applied-without-row, or terminally
+            #     skipped) — the reference is permanently unknown and must
+            #     go terminal, not defer forever. While the account
+            #     projection is instead HALTED on a bad prior event, the
+            #     defer persists exactly as long as that visible,
+            #     operator-repairable halt does (the A41 dependency
+            #     contract), and flips terminal the moment the operator
+            #     terminally skips it.
+            if not all(
+                isinstance(prior_data.get(key), str) and prior_data.get(key) for key in ("code", "name", "account_type")
+            ):
+                continue
+            from projections.accounting import AccountProjection
+            from projections.models import ProjectionAppliedEvent
+
+            if ProjectionAppliedEvent.objects.filter(
+                company=event.company,
+                projection_name=AccountProjection().name,
+                event=prior,
+            ).exists():
+                # Already consumed, row still absent — not pending.
                 continue
             creates_cid = True
             break

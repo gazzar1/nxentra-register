@@ -159,47 +159,51 @@ def can_change_account_type(actor, account) -> tuple[bool, str]:
     if account.status == account.Status.LOCKED:
         return False, "Cannot change type of an account with transactions."
 
+    from accounting.journal_invariant import canonical_account_id
     from accounting.models import JournalEntry
     from events.models import BusinessEvent
     from events.types import EventTypes
-    from projections.accounting import JournalEntryProjection
-    from projections.models import ProjectionAppliedEvent
 
-    # Fail-closed completeness check (Codex round-1 P1): the JournalLine rows
-    # below are PROJECTION-OWNED state. A posted event that has committed but
-    # not yet materialized (e.g. external ingest awaiting the async drain)
-    # would make the row check pass, and the drain would later apply this
-    # type change BEFORE validating the earlier journal — quarantining
-    # legitimately-emitted history. update_account already holds the
-    # CompanyEventCounter lock when this policy runs, so no NEW posted event
-    # can commit concurrently; if any existing posted event is still
-    # unmaterialized, the row evidence is incomplete and the change is
-    # refused rather than decided on a stale read model (the PR2b posture:
-    # mutation unavailability is accepted, contradictory history is not).
-    je_read_model = JournalEntryProjection().name
-    unmaterialized = (
-        BusinessEvent.objects.filter(
-            company=actor.company,
-            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
-        )
-        .exclude(
-            id__in=ProjectionAppliedEvent.objects.filter(
-                company=actor.company,
-                projection_name=je_read_model,
-            ).values("event_id")
-        )
-        .exists()
-    )
-    if unmaterialized:
-        return False, (
-            "Cannot change account type while posted journal events are awaiting "
-            "materialization — retry after projections catch up."
-        )
-
+    # Fast path on the read model: any POSTED/REVERSED line row is already
+    # sufficient refusal evidence.
     if account.journal_lines.filter(
         entry__status__in=(JournalEntry.Status.POSTED, JournalEntry.Status.REVERSED)
     ).exists():
         return False, "Cannot change type of an account that has posted transactions."
+
+    # Durable-evidence scan (Codex rounds 1+3 P1): projection state — rows OR
+    # applied-markers — cannot prove the account is unreferenced. An
+    # unmaterialized posted event has no rows yet; a pre-boundary
+    # marker-with-partial-application (a projector that marked the event
+    # applied after silently skipping this account's line) has a marker but
+    # no row either. The only durable truth is the POSTED EVENTS themselves:
+    # if any stored posted payload references this account, the type is
+    # frozen — a later rebuild re-derives from those payloads and would
+    # reinterpret/quarantine valid history under the new type.
+    # update_account already holds the CompanyEventCounter lock here, so no
+    # new posted event can commit concurrently. Type changes are rare
+    # operator actions; the scan is bounded by the company's posted-event
+    # count and short-circuits on first reference.
+    target = canonical_account_id(account.public_id)
+    posted_events = BusinessEvent.objects.filter(
+        company=actor.company,
+        event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+    ).select_related("payload_ref")
+    for event in posted_events.iterator(chunk_size=500):
+        try:
+            data = event.get_data()
+        except Exception:
+            # An unreadable posted payload might reference this account —
+            # fail closed (unavailability over contradictory history).
+            return False, (
+                "Cannot change account type: a stored posted-journal event is "
+                "unreadable, so the account's posted history cannot be verified."
+            )
+        lines = data.get("lines") if isinstance(data, dict) else None
+        if isinstance(lines, list) and any(
+            isinstance(line, dict) and canonical_account_id(line.get("account_public_id")) == target for line in lines
+        ):
+            return False, "Cannot change type of an account that has posted transactions."
 
     return True, ""
 
