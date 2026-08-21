@@ -320,7 +320,7 @@ def _verify_restore(company, manifest, manifest_counts, stats, *, skip_invariant
     # apply invariant, or the whole restore rolls back and the original
     # books survive. Same break-glass as the other financial invariants:
     # --skip-invariants (logged loudly above) is the only way past it.
-    from accounting.posted_journal_apply import evaluate_posted_journal_for_apply
+    from accounting.posted_journal_apply import evaluate_posted_journal_for_apply, is_deferrable_apply_verdict
     from events.types import EventTypes
 
     facts_cache: dict = {}
@@ -333,6 +333,14 @@ def _verify_restore(company, manifest, manifest_counts, stats, *, skip_invariant
     )
     for event in posted_events.iterator(chunk_size=500):
         codes = evaluate_posted_journal_for_apply(event, facts_cache=facts_cache)
+        if codes and is_deferrable_apply_verdict(event, codes):
+            # The read-model-lag case the apply choke point DEFERS on (same
+            # shared predicate): the archive captured a posted event whose
+            # referenced account row was not yet materialized, with the
+            # creating account event earlier in the restored stream — the
+            # post-restore drain will materialize the account and then apply
+            # the journal. A replayable backup must not be refused.
+            continue
         if codes:
             bad_events += 1
             if len(sample) < 20:

@@ -235,12 +235,10 @@ def validate_posted_journal_apply(event: BusinessEvent) -> None:
     the correct disposition for a materialization defect that is not a
     financial invariant violation (and is what the purge-recovery
     convergence verification treats as a non-converged drain)."""
-    from accounting.journal_invariant import JE_ACCOUNT_UNKNOWN
-
     codes = evaluate_posted_journal_for_apply(event)
     if not codes:
         return
-    if set(codes) == {JE_ACCOUNT_UNKNOWN} and _unknown_accounts_are_pending_materialization(event):
+    if is_deferrable_apply_verdict(event, codes):
         from projections.base import DeferEvent
 
         raise DeferEvent(
@@ -251,13 +249,32 @@ def validate_posted_journal_apply(event: BusinessEvent) -> None:
     raise PostedJournalApplyInvalid(event.event_type, codes)
 
 
+def is_deferrable_apply_verdict(event: BusinessEvent, codes: list[str]) -> bool:
+    """THE single defer predicate, shared by every verdict consumer (the
+    choke-point validator, restore verification, the event-first audit —
+    Codex round-1 P2: verdict symmetry must include the lag disposition, or
+    a batch caller reports as corrupt / refuses a backup of exactly the
+    replayable-lag state the choke point defers on). True iff the verdict is
+    SOLELY ``JE_ACCOUNT_UNKNOWN`` and every unresolved reference is pending
+    materialization per :func:`_unknown_accounts_are_pending_materialization`.
+    """
+    from accounting.journal_invariant import JE_ACCOUNT_UNKNOWN
+
+    return set(codes) == {JE_ACCOUNT_UNKNOWN} and _unknown_accounts_are_pending_materialization(event)
+
+
 def _unknown_accounts_are_pending_materialization(event: BusinessEvent) -> bool:
     """True iff EVERY referenced account id that fails to resolve against the
     Account read model has an ACCOUNT_CREATED event EARLIER in this company's
-    stream — pending materialization, not a genuine unknown. Runs only on the
-    failure path (zero cost for valid events). Ids that resolve on this
-    re-check (materialized between evaluations) also count as pending — the
-    retry will succeed."""
+    stream WHOSE PAYLOAD ACTUALLY CREATES that id — pending materialization,
+    not a genuine unknown. The payload check matters (Codex round-1 P2): the
+    AccountProjection materializes the payload's ``account_public_id``, so a
+    foreign/corrupted event whose aggregate metadata says ``cid`` but whose
+    payload creates a DIFFERENT id would never resolve — trusting
+    ``aggregate_id`` alone would defer such a reference forever instead of
+    quarantining it. Runs only on the failure path (zero cost for valid
+    events). Ids that resolve on this re-check (materialized between
+    evaluations) also count as pending — the retry will succeed."""
     from accounting.journal_invariant import canonical_account_id, load_account_facts
     from events.models import BusinessEvent as _BusinessEvent
     from events.types import EventTypes
@@ -277,13 +294,26 @@ def _unknown_accounts_are_pending_materialization(event: BusinessEvent) -> bool:
         return False
     unresolved = referenced - load_account_facts(event.company, referenced).keys()
     for cid in unresolved:
-        if not _BusinessEvent.objects.filter(
+        # Bounded payload verification: real streams carry at most one
+        # ACCOUNT_CREATED per aggregate; the cap only guards degenerate
+        # foreign streams from turning this probe into a scan.
+        candidates = _BusinessEvent.objects.filter(
             company=event.company,
             aggregate_type="Account",
             aggregate_id=cid,
             event_type=EventTypes.ACCOUNT_CREATED,
             company_sequence__lt=event.company_sequence,
-        ).exists():
+        ).order_by("company_sequence")[:5]
+        creates_cid = False
+        for prior in candidates:
+            try:
+                prior_data = prior.get_data()
+            except Exception:
+                continue
+            if isinstance(prior_data, dict) and canonical_account_id(prior_data.get("account_public_id")) == cid:
+                creates_cid = True
+                break
+        if not creates_cid:
             return False
     return True
 

@@ -779,6 +779,74 @@ class TestAccountUnknownDefersOnReadModelLag:
         log = ProjectionFailureLog.objects.get(company=company, event_id=event.id)
         assert "JE_ACCOUNT_UNKNOWN" in log.message
 
+    def test_aggregate_id_without_creating_payload_stays_terminal(self, company, user, cash_account, revenue_account):
+        """Codex round-1 P2: an account event whose aggregate_id matches the
+        reference but whose PAYLOAD creates a different id is not evidence —
+        the AccountProjection materializes the payload id, so the reference
+        would never resolve and trusting aggregate metadata would defer it
+        forever. Payload-verified: this stays terminal quarantine."""
+        phantom_id = uuid4()
+        emit_event(
+            company=company,
+            event_type=EventTypes.ACCOUNT_CREATED,
+            aggregate_type="Account",
+            aggregate_id=str(phantom_id),  # metadata claims phantom_id...
+            data={
+                "account_public_id": str(uuid4()),  # ...payload creates a DIFFERENT id
+                "code": "1098",
+                "name": "Mismatched aggregate",
+                "account_type": "ASSET",
+                "normal_balance": "DEBIT",
+                "is_header": False,
+            },
+            caused_by_user=user,
+            idempotency_key=f"apply-test:phantom:{phantom_id}",
+        )
+        payload = _posted_payload(uuid4(), user, cash_account, revenue_account)
+        payload["lines"][0]["account_public_id"] = str(phantom_id)
+        event = _emit_posted(company, user, payload)
+        _corrupt(event, payload)  # bypass any emit-side normalization concerns
+
+        JournalEntryProjection().process_pending(company)
+
+        log = ProjectionFailureLog.objects.get(company=company, event_id=event.id)
+        assert "JE_ACCOUNT_UNKNOWN" in log.message
+
+    def test_batch_callers_share_the_defer_verdict(self, company, user, cash_account, revenue_account):
+        """Codex round-1 P2 (verdict symmetry): the audit must not report the
+        replayable-lag state as critically corrupt — the shared predicate
+        gives every consumer the choke point's disposition."""
+        from accounting.management.commands.audit_event_first import Command as AuditCommand
+        from accounting.posted_journal_apply import is_deferrable_apply_verdict
+
+        new_account_id = uuid4()
+        emit_event(
+            company=company,
+            event_type=EventTypes.ACCOUNT_CREATED,
+            aggregate_type="Account",
+            aggregate_id=str(new_account_id),
+            data={
+                "account_public_id": str(new_account_id),
+                "code": "1097",
+                "name": "Lagging account",
+                "account_type": "ASSET",
+                "normal_balance": "DEBIT",
+                "is_header": False,
+            },
+            caused_by_user=user,
+            idempotency_key=f"apply-test:lag:{new_account_id}",
+        )
+        payload = _posted_payload(uuid4(), user, cash_account, revenue_account)
+        payload["lines"][0]["account_public_id"] = str(new_account_id)
+        event = _emit_posted(company, user, payload)
+
+        codes = evaluate_posted_journal_for_apply(event)
+        assert codes == ["JE_ACCOUNT_UNKNOWN"]
+        assert is_deferrable_apply_verdict(event, codes)
+
+        check = AuditCommand()._check_event_payload_integrity(company)
+        assert check["count"] == 0, check["details"]
+
 
 # --------------------------------------------------------------------------- #
 # The subset-property precondition: account_type frozen once history posts
@@ -809,6 +877,25 @@ class TestAccountTypeFrozenOncePosted:
         # History still evaluates clean — the subset property holds.
         event = BusinessEvent.objects.get(company=company, event_type=EventTypes.JOURNAL_ENTRY_POSTED)
         assert evaluate_posted_journal_for_apply(event) == []
+
+    def test_type_change_fails_closed_on_unmaterialized_history(
+        self, company, user, actor_context, cash_account, revenue_account
+    ):
+        """Codex round-1 P1: the JournalLine rows are projection-owned — a
+        posted event that committed but has not materialized yet (async
+        drain) must fail the guard CLOSED, not slip past a stale read model
+        (the drain would otherwise apply the type change before validating
+        the earlier journal, quarantining legitimate history)."""
+        from accounting.commands import update_account
+        from accounting.models import Account
+
+        _emit_posted(company, user, _posted_payload(uuid4(), user, cash_account, revenue_account))
+        # No drain: the event is committed but unmaterialized.
+        assert not cash_account.journal_lines.exists()
+
+        result = update_account(actor_context, cash_account.id, account_type=Account.AccountType.MEMO)
+        assert not result.success
+        assert "awaiting materialization" in result.error
 
     def test_type_change_still_allowed_without_posted_history(self, company, actor_context, cash_account):
         from accounting.commands import update_account

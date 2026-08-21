@@ -160,6 +160,41 @@ def can_change_account_type(actor, account) -> tuple[bool, str]:
         return False, "Cannot change type of an account with transactions."
 
     from accounting.models import JournalEntry
+    from events.models import BusinessEvent
+    from events.types import EventTypes
+    from projections.accounting import JournalEntryProjection
+    from projections.models import ProjectionAppliedEvent
+
+    # Fail-closed completeness check (Codex round-1 P1): the JournalLine rows
+    # below are PROJECTION-OWNED state. A posted event that has committed but
+    # not yet materialized (e.g. external ingest awaiting the async drain)
+    # would make the row check pass, and the drain would later apply this
+    # type change BEFORE validating the earlier journal — quarantining
+    # legitimately-emitted history. update_account already holds the
+    # CompanyEventCounter lock when this policy runs, so no NEW posted event
+    # can commit concurrently; if any existing posted event is still
+    # unmaterialized, the row evidence is incomplete and the change is
+    # refused rather than decided on a stale read model (the PR2b posture:
+    # mutation unavailability is accepted, contradictory history is not).
+    je_read_model = JournalEntryProjection().name
+    unmaterialized = (
+        BusinessEvent.objects.filter(
+            company=actor.company,
+            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+        )
+        .exclude(
+            id__in=ProjectionAppliedEvent.objects.filter(
+                company=actor.company,
+                projection_name=je_read_model,
+            ).values("event_id")
+        )
+        .exists()
+    )
+    if unmaterialized:
+        return False, (
+            "Cannot change account type while posted journal events are awaiting "
+            "materialization — retry after projections catch up."
+        )
 
     if account.journal_lines.filter(
         entry__status__in=(JournalEntry.Status.POSTED, JournalEntry.Status.REVERSED)

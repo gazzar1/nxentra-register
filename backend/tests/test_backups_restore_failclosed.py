@@ -349,6 +349,68 @@ class TestApplyInvariantOnRestore:
             restore_company(company, tampered)
         assert _snapshot(company) == before
 
+    def test_backup_of_replayable_lag_state_restores(self, company, user, cash_account, revenue_account):
+        """Codex round-1 P2 (verdict symmetry): a backup captured while a
+        posted event's referenced account row was not yet materialized — with
+        the creating account event earlier in the stream — is REPLAYABLE, and
+        the apply choke point would DEFER it, not quarantine it. Restore must
+        share that disposition instead of refusing a legitimate backup."""
+        from events.emitter import emit_event
+        from events.types import EventTypes
+
+        lag_id = uuid4()
+        emit_event(
+            company=company,
+            event_type=EventTypes.ACCOUNT_CREATED,
+            aggregate_type="Account",
+            aggregate_id=str(lag_id),
+            data={
+                "account_public_id": str(lag_id),
+                "code": "1096",
+                "name": "Lagging restore account",
+                "account_type": "ASSET",
+                "normal_balance": "DEBIT",
+                "is_header": False,
+            },
+            caused_by_user=user,
+            idempotency_key=f"restore-lag:acct:{lag_id}",
+        )
+        entry_id = uuid4()
+        emit_event(
+            company=company,
+            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(entry_id),
+            data={
+                "entry_public_id": str(entry_id),
+                "entry_number": "JE-LAG-1",
+                "date": "2026-03-11",
+                "memo": "lagging entry",
+                "kind": "NORMAL",
+                "period": 3,
+                "posted_at": "2026-03-11T12:00:00",
+                "posted_by_id": user.id,
+                "posted_by_email": user.email,
+                "total_debit": "50.00",
+                "total_credit": "50.00",
+                "lines": [
+                    {"line_no": 1, "account_public_id": str(lag_id), "debit": "50.00", "credit": "0.00"},
+                    {
+                        "line_no": 2,
+                        "account_public_id": str(revenue_account.public_id),
+                        "debit": "0.00",
+                        "credit": "50.00",
+                    },
+                ],
+            },
+            caused_by_user=user,
+            idempotency_key=f"restore-lag:posted:{entry_id}",
+        )
+        # No drain: the lagging account row does not exist at export time.
+        zip_bytes, _ = export_company(company)
+        result = restore_company(company, zip_bytes)
+        assert result["company"] == company.slug
+
     def test_skip_invariants_break_glass_bypasses_corpus_check(self, booked_company):
         """--skip-invariants is the ONLY way past the corpus check — the same
         documented break-glass as the trial-balance/subledger invariants,

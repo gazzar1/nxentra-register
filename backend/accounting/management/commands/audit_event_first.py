@@ -254,7 +254,7 @@ class Command(BaseCommand):
         (``check_posted_journal(mode="apply")`` under the hood), so the audit
         reports exactly what apply-time enforcement would quarantine.
         """
-        from accounting.posted_journal_apply import evaluate_posted_journal_for_apply
+        from accounting.posted_journal_apply import evaluate_posted_journal_for_apply, is_deferrable_apply_verdict
         from events.models import BusinessEvent
         from events.types import EventTypes
 
@@ -272,6 +272,12 @@ class Command(BaseCommand):
         invalid = []
         for event in events:
             codes = evaluate_posted_journal_for_apply(event, facts_cache=facts_cache)
+            if codes and is_deferrable_apply_verdict(event, codes):
+                # Read-model lag the choke point DEFERS on (shared predicate)
+                # — replayable, not corrupt; reporting it as CRITICAL would
+                # break the "exactly what apply-time enforcement would
+                # quarantine" contract.
+                continue
             if codes:
                 invalid.append({"event_id": event.id, "reason": ", ".join(codes)})
 
