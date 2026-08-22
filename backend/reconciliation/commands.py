@@ -1412,7 +1412,13 @@ def _manual_match_settlement_ebd(
         # Roll the WHOLE command back — including the clearance JE posted
         # above, so no orphan clearance survives a confirm that didn't confirm.
         transaction.set_rollback(True)
-        return CommandResult.fail(err)
+        # Codex round-12: the rollback erases the swallowed handler failure's
+        # ProjectionFailureLog/bookmark diagnostics along with the event (an FL
+        # is event-keyed, and the event no longer exists). The marker lets the
+        # VIEW — running after this atomic exits — write durable, event-less
+        # operator evidence (Notification) so repeated retries never erase the
+        # trail needed to investigate the projection fault.
+        return CommandResult.fail(err, data={"canonical_apply_failed": True})
 
     return CommandResult.ok(
         data={
@@ -1514,7 +1520,13 @@ def manual_match(
         # Roll the WHOLE command back (event included) — a confirm event that
         # did not confirm must not linger to overwrite a later pairing.
         transaction.set_rollback(True)
-        return CommandResult.fail(err)
+        # Codex round-12: the rollback erases the swallowed handler failure's
+        # ProjectionFailureLog/bookmark diagnostics along with the event (an FL
+        # is event-keyed, and the event no longer exists). The marker lets the
+        # VIEW — running after this atomic exits — write durable, event-less
+        # operator evidence (Notification) so repeated retries never erase the
+        # trail needed to investigate the projection fault.
+        return CommandResult.fail(err, data={"canonical_apply_failed": True})
 
     return CommandResult.ok(
         data={
@@ -1852,7 +1864,13 @@ def unmatch_line(
         # Roll back everything — including the reversal JEs — so a failed
         # unmatch leaves the original match fully intact, not half-reversed.
         transaction.set_rollback(True)
-        return CommandResult.fail(err)
+        # Codex round-12: the rollback erases the swallowed handler failure's
+        # ProjectionFailureLog/bookmark diagnostics along with the event (an FL
+        # is event-keyed, and the event no longer exists). The marker lets the
+        # VIEW — running after this atomic exits — write durable, event-less
+        # operator evidence (Notification) so repeated retries never erase the
+        # trail needed to investigate the projection fault.
+        return CommandResult.fail(err, data={"canonical_apply_failed": True})
 
     return CommandResult.ok()
 
@@ -1988,7 +2006,13 @@ def exclude_line(
         # Roll back everything — a failed exclude leaves the line exactly as
         # it was, with no stale unmatch event pending.
         transaction.set_rollback(True)
-        return CommandResult.fail(err)
+        # Codex round-12: the rollback erases the swallowed handler failure's
+        # ProjectionFailureLog/bookmark diagnostics along with the event (an FL
+        # is event-keyed, and the event no longer exists). The marker lets the
+        # VIEW — running after this atomic exits — write durable, event-less
+        # operator evidence (Notification) so repeated retries never erase the
+        # trail needed to investigate the projection fault.
+        return CommandResult.fail(err, data={"canonical_apply_failed": True})
 
     return CommandResult.ok()
 

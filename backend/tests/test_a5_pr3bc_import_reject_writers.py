@@ -834,6 +834,13 @@ def test_settlement_replay_backfills_orphan_flags_for_already_posted_event(shopi
     flag = ImportRejectedRow.objects.get(company=company)
     assert flag.reason_code == ImportRejectedRow.ReasonCode.ORPHAN_ORDER_ID
     assert flag.status == ImportRejectedRow.Status.QUARANTINED
+    assert flag.occurrence_count == 1, "a replay backfill is not a re-import"
+
+    # Codex round-12: replay CONVERGES — re-replaying the same event leaves the
+    # flag byte-identical (no occurrence bump; that counter counts re-IMPORTS).
+    PaymentSettlementProjection().handle(event)
+    flag.refresh_from_db()
+    assert flag.occurrence_count == 1
 
 
 def test_orphan_flag_writer_is_provider_neutral(company):
@@ -1114,6 +1121,41 @@ def test_manual_match_rejects_wrong_pairing_from_earlier_pending_event(
         if str(ev.get_data().get("journal_line_public_id") or "") == str(jl_b.public_id)
     ]
     assert jl_b_events == []
+
+
+def test_failed_match_apply_leaves_durable_notification_via_view(
+    company, user, owner_membership, manual_match_targets, api_client, monkeypatch
+):
+    """Codex round-12: the rollback erases the event AND the event-keyed
+    ProjectionFailureLog, so the VIEW writes durable event-less evidence — a
+    Notification to company admins — after the command's atomic exits."""
+    from accounts.models import Notification
+
+    _break_reconciliation_projection(monkeypatch)
+    api_client.force_authenticate(user=user)
+    resp = api_client.post(
+        "/api/accounting/bank-statements/match/",
+        {
+            "bank_line_id": manual_match_targets["bank_line"].id,
+            "journal_line_id": manual_match_targets["journal_line"].id,
+        },
+        format="json",
+    )
+    assert resp.status_code == 400
+    note = Notification.objects.filter(company=company, source_module="reconciliation").first()
+    assert note is not None, "the failure trail must survive the rollback"
+    assert "could not be applied" in note.title
+
+    # Retries APPEND evidence rather than erase it.
+    api_client.post(
+        "/api/accounting/bank-statements/match/",
+        {
+            "bank_line_id": manual_match_targets["bank_line"].id,
+            "journal_line_id": manual_match_targets["journal_line"].id,
+        },
+        format="json",
+    )
+    assert Notification.objects.filter(company=company, source_module="reconciliation").count() >= 2
 
 
 def test_manual_match_success_path_unchanged(company, actor, manual_match_targets):

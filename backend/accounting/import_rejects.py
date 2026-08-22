@@ -117,10 +117,18 @@ def persist_import_rejects(
     rejects: list[dict],
     statement=None,
     identity_scope: str = "",
+    bump_occurrence: bool = True,
 ) -> int:
     """Persist reject descriptors idempotently; returns how many were written
     (created or occurrence-bumped). Malformed/unknown descriptors are skipped
-    with a log line — evidence persistence must never fail an import."""
+    with a log line — evidence persistence must never fail an import.
+
+    ``bump_occurrence=False`` is the PROJECTION-derived mode (Codex round-12):
+    occurrence_count counts re-IMPORTS of a source row, so a projection replay
+    or rebuild re-sighting the same canonical rows must upsert WITHOUT
+    incrementing — otherwise every replay mutates operator-visible state and
+    replay convergence breaks. Importer call sites keep the default (a real
+    re-upload IS a re-sighting)."""
     from accounting.models import ImportRejectedRow
 
     written = 0
@@ -171,10 +179,10 @@ def persist_import_rejects(
                 "status": status,
             },
         )
-        if not created:
-            # Re-sighting: bump the counter atomically (update_or_create already
-            # refreshed the mutable fields + last_seen_at). resolved is NOT
-            # cleared — see the module docstring.
+        if not created and bump_occurrence:
+            # Re-sighting via a real re-import: bump the counter atomically
+            # (update_or_create already refreshed the mutable fields +
+            # last_seen_at). resolved is NOT cleared — see the module docstring.
             ImportRejectedRow.objects.filter(pk=_row.pk).update(occurrence_count=F("occurrence_count") + 1)
         written += 1
     return written
@@ -292,4 +300,7 @@ def persist_orphan_review_flags_for_posted_event(company, event) -> None:
         source_filename=canonical_filename,
         import_batch_id=import_batch_id,
         rejects=orphan_rejects,
+        # Projection-derived: a replay/rebuild re-sighting the same canonical
+        # rows must not mutate occurrence_count (Codex round-12).
+        bump_occurrence=False,
     )

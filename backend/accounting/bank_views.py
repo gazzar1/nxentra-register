@@ -52,6 +52,27 @@ def _parse_rejects_hash(rejects: list) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _notify_canonical_apply_failure(actor, action: str, error: str) -> None:
+    """A5-PR3c (Codex round-12): durable, event-less operator evidence for a
+    match/unmatch/exclude whose canonical apply failed. The command rolled the
+    WHOLE atomic back (event + the swallowed handler failure's
+    ProjectionFailureLog included — an FL is event-keyed and the event is
+    gone), so this Notification — written AFTER the command's atomic exits —
+    is the trail that survives; repeated retries append rather than erase."""
+    from accounts.models import Notification
+
+    Notification.notify_company_admins(
+        company=actor.company,
+        title=f"Bank {action} could not be applied",
+        message=(
+            f"{error} The action was rolled back; nothing was recorded. If retries keep "
+            "failing, the reconciliation projection handler is erroring and needs investigation."
+        ),
+        level=Notification.Level.ERROR,
+        source_module="reconciliation",
+    )
+
+
 # =============================================================================
 # Bank Statements
 # =============================================================================
@@ -643,6 +664,8 @@ class BankManualMatchView(APIView):
 
         result = recon.manual_match(actor, int(bank_line_id), int(journal_line_id))
         if not result.success:
+            if isinstance(result.data, dict) and result.data.get("canonical_apply_failed"):
+                _notify_canonical_apply_failure(actor, "manual match", result.error or "")
             return Response(
                 {"error": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -687,6 +710,8 @@ class BankUnmatchView(APIView):
 
         result = recon.unmatch_line(actor, int(bank_line_id))
         if not result.success:
+            if isinstance(result.data, dict) and result.data.get("canonical_apply_failed"):
+                _notify_canonical_apply_failure(actor, "unmatch", result.error or "")
             return Response(
                 {"error": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -761,6 +786,8 @@ class BankExcludeLineView(APIView):
 
         result = recon.exclude_line(actor, int(bank_line_id))
         if not result.success:
+            if isinstance(result.data, dict) and result.data.get("canonical_apply_failed"):
+                _notify_canonical_apply_failure(actor, "exclude", result.error or "")
             return Response(
                 {"error": result.error},
                 status=status.HTTP_400_BAD_REQUEST,
