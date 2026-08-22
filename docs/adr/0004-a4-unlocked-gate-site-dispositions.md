@@ -145,7 +145,11 @@ CLIs: the backfill stamps every `JOURNAL_LINE_ANALYSIS_SET` event it emits with
 activation — and every post-sync/import drift check — refuse whenever any such
 event exists. The event is the canonical marker (a legitimate posting-time
 projection also writes `JournalLineAnalysis` rows, so only the event metadata
-distinguishes backfill residue). Behavior pinned by
+distinguishes backfill residue), and the backfill commits each row and its
+marker event ATOMICALLY (`_tag_line_durably` wraps both in one
+`transaction.atomic()`), so a committed backfill row can never exist without its
+event — the event-keyed backstop catches every committed mutation and no partial
+write can hide from both the retry and the check. Behavior pinned by
 `test_backfill_platform_settlement_dims_refuses_apply_on_pilot_deployment` (and
 the report-only counterpart) and `test_preflight_detects_backfill_settlement_dims_residue`
 in `backend/tests/test_a4_dispositions.py`.

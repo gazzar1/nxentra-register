@@ -34,6 +34,7 @@ import hashlib
 import json
 
 from django.core.management.base import BaseCommand, CommandError
+from django.db import transaction
 from django.db.models import F
 
 from accounting.mappings import ModuleAccountMapping
@@ -65,38 +66,45 @@ def _untagged_lines(company, provider, clearing, dimension, revenue_account):
 
 
 def _tag_line_durably(company, line, dimension, value):
-    """Row now + JOURNAL_LINE_ANALYSIS_SET event (full tag union) for replay."""
-    with projection_writes_allowed():
-        JournalLineAnalysis.objects.projection().get_or_create(
-            journal_line=line,
-            dimension=dimension,
-            defaults={"company": company, "dimension_value": value},
-        )
+    """Row + JOURNAL_LINE_ANALYSIS_SET event (full tag union) for replay,
+    committed ATOMICALLY. A committed row without its marker event would be
+    invisible to BOTH the retry (``_untagged_lines`` excludes the now-tagged
+    row) AND the ``backfill_settlement_dims_residue`` preflight backstop (which
+    keys on the event's ``metadata.source``). The event is the canonical residue
+    marker, so a partial write must never persist: this atomic guarantees
+    row ⟺ event — either both land or neither does."""
+    with transaction.atomic():
+        with projection_writes_allowed():
+            JournalLineAnalysis.objects.projection().get_or_create(
+                journal_line=line,
+                dimension=dimension,
+                defaults={"company": company, "dimension_value": value},
+            )
 
-    tag_data = [
-        {
-            "dimension_public_id": str(a.dimension.public_id),
-            "dimension_code": a.dimension.code,
-            "value_public_id": str(a.dimension_value.public_id),
-            "value_code": a.dimension_value.code,
-        }
-        for a in line.analysis_tags.select_related("dimension", "dimension_value").order_by("dimension__code")
-    ]
-    entry_public_id = str(line.entry.public_id)
-    digest = hashlib.sha256(json.dumps(tag_data, sort_keys=True).encode()).hexdigest()[:16]
-    emit_event_no_actor(
-        company=company,
-        event_type=EventTypes.JOURNAL_LINE_ANALYSIS_SET,
-        aggregate_type="JournalEntry",
-        aggregate_id=entry_public_id,
-        idempotency_key=f"journal_line.analysis_set:{entry_public_id}:{line.line_no}:{digest}",
-        metadata={"source": "backfill_platform_settlement_dims"},
-        data=JournalLineAnalysisSetData(
-            entry_public_id=entry_public_id,
-            line_no=line.line_no,
-            analysis_tags=tag_data,
-        ),
-    )
+        tag_data = [
+            {
+                "dimension_public_id": str(a.dimension.public_id),
+                "dimension_code": a.dimension.code,
+                "value_public_id": str(a.dimension_value.public_id),
+                "value_code": a.dimension_value.code,
+            }
+            for a in line.analysis_tags.select_related("dimension", "dimension_value").order_by("dimension__code")
+        ]
+        entry_public_id = str(line.entry.public_id)
+        digest = hashlib.sha256(json.dumps(tag_data, sort_keys=True).encode()).hexdigest()[:16]
+        emit_event_no_actor(
+            company=company,
+            event_type=EventTypes.JOURNAL_LINE_ANALYSIS_SET,
+            aggregate_type="JournalEntry",
+            aggregate_id=entry_public_id,
+            idempotency_key=f"journal_line.analysis_set:{entry_public_id}:{line.line_no}:{digest}",
+            metadata={"source": "backfill_platform_settlement_dims"},
+            data=JournalLineAnalysisSetData(
+                entry_public_id=entry_public_id,
+                line_no=line.line_no,
+                analysis_tags=tag_data,
+            ),
+        )
 
 
 def backfill_company(company, apply: bool) -> list[dict]:

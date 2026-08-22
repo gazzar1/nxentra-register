@@ -1159,7 +1159,9 @@ def _backfill_dims_residue_violations(company) -> list[Violation]:
     ``activate_pilot_profile`` leaves this residue, and any tagged event makes
     activation and every drift check refuse. The event is the canonical marker
     (the derived ``JournalLineAnalysis`` rows a legitimate posting-time projection
-    also writes are indistinguishable without it)."""
+    also writes are indistinguishable without it), and the backfill commits each
+    row and its marker event ATOMICALLY, so a backfill row can never exist without
+    its event — this event-keyed check catches every committed backfill mutation."""
     from events.models import BusinessEvent
 
     n = BusinessEvent.objects.filter(company=company, metadata__source="backfill_platform_settlement_dims").count()
