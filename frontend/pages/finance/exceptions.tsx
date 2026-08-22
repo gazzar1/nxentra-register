@@ -119,6 +119,10 @@ export default function ExceptionsPage() {
   // summary card, which pairs with the always-unresolved projection summary
   // (Codex round-5: the filtered count would inflate the total under Resolved/All).
   const [unresolvedRejectsCount, setUnresolvedRejectsCount] = useState(0);
+  // Growing page size for the reject queue — "Load more" raises it so that a large
+  // malformed CSV's rejections past the first 100 stay reachable and resolvable
+  // (Codex round-7: the badge could report a total the operator could not page to).
+  const [rejectLimit, setRejectLimit] = useState(100);
   const [resolvingRejectId, setResolvingRejectId] = useState<number | null>(null);
   const [expandedRejectId, setExpandedRejectId] = useState<number | null>(null);
 
@@ -150,7 +154,7 @@ export default function ExceptionsPage() {
           category: (categoryFilter || undefined) as FailureCategory | undefined,
           limit: 100,
         }),
-        importRejectedRowsService.list({ resolved: resolvedFilter, limit: 100 }),
+        importRejectedRowsService.list({ resolved: resolvedFilter, limit: rejectLimit }),
         // Filter-independent unresolved count for the summary card (see state).
         importRejectedRowsService.list({ resolved: "false", limit: 1 }),
       ]);
@@ -173,7 +177,7 @@ export default function ExceptionsPage() {
     setLoading(true);
     fetchAll().finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolvedFilter, projectionFilter, categoryFilter]);
+  }, [resolvedFilter, projectionFilter, categoryFilter, rejectLimit]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -599,6 +603,21 @@ export default function ExceptionsPage() {
                   ))}
                 </tbody>
               </table>
+            )}
+            {/* Codex round-7: the filtered total can exceed the fetched page, so
+                keep older rejections reachable/resolvable instead of stranding them
+                behind the newest 100. */}
+            {importRejects.length < importRejectsCount && (
+              <div className="border-t p-3 text-center">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setRejectLimit((n) => n + 100)}
+                  disabled={loading || refreshing}
+                >
+                  Load more ({importRejects.length} of {importRejectsCount})
+                </Button>
+              </div>
             )}
           </CardContent>
         </Card>
