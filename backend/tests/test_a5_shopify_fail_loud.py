@@ -16,8 +16,10 @@ This locks in:
 - the three branches now raise (fail-loud → durable, operator-visible outcome);
 - K#1: a legitimately zero-value order/refund leaves a durable handled-zero
   marker (source row → PROCESSED, no JE) instead of a silent consume;
-- K#2: a transient `process_order_paid` failure is marked retryable so the
-  webhook view answers 503 (Shopify redelivers) instead of a silent 200.
+- negative refunds get a durable, operator-visible REJECTED outcome at ingress.
+
+(The webhook-retryability / malformed-order-payload durable-rejection work is
+deferred to A5-PR2b by founder decision — see NEXT_TASKS.)
 """
 
 from datetime import date
@@ -346,52 +348,6 @@ def test_process_refund_zero_amount_persists_handled_zero_marker(company, owner_
     assert refund.status == ShopifyRefund.Status.PROCESSED
     assert refund.event_id is None, "a zero refund must emit no accounting event"
     assert not BusinessEvent.objects.filter(company=company, idempotency_key="shopify.refund.created:9900031").exists()
-
-
-# =============================================================================
-# K#2 — webhook ingress: transient order-paid failures are retryable (→ 503)
-# =============================================================================
-
-
-def test_process_order_paid_marks_transient_failure_retryable(company, owner_membership):
-    """A transient failure inside process_order_paid must return
-    retryable=True so the webhook view answers 503 and Shopify redelivers,
-    instead of a silent 200 that loses the order until the 48h poller."""
-    import shopify_connector.commands as cmd
-
-    store = _shopify_setup(company)
-
-    def _boom(*args, **kwargs):
-        raise RuntimeError("transient DB blip")
-
-    with patch.object(cmd, "_prepare_order_item_metadata", side_effect=_boom):
-        result = cmd.process_order_paid(store, {"id": 9900040, "currency": "EGP"})
-
-    assert not result.success
-    assert result.data and result.data.get("retryable") is True
-
-
-def test_process_order_paid_permanent_payload_error_not_retryable(company, owner_membership):
-    """Codex round-5 P2: a PERMANENT provider-data error (e.g. a non-numeric amount
-    that fails Decimal parsing) must be acknowledged (NOT retryable — no 503 loop)
-    with a durable operator-visible Notification, unlike a transient failure which
-    stays retryable (the test above)."""
-    from accounts.models import Notification
-    from shopify_connector import commands as cmd
-
-    store = _shopify_setup(company)
-
-    def _bad_data(*args, **kwargs):
-        raise ValueError("could not convert string to Decimal: 'abc'")
-
-    with patch.object(cmd, "_prepare_order_item_metadata", side_effect=_bad_data):
-        result = cmd.process_order_paid(store, {"id": 9900090, "currency": "EGP"})
-
-    assert not result.success
-    assert not (result.data or {}).get("retryable"), "a permanent payload error must not be retryable"
-    assert Notification.objects.filter(
-        company=company, source_module="shopify_connector", title__icontains="invalid payload"
-    ).exists()
 
 
 # =============================================================================
