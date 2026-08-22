@@ -113,7 +113,12 @@ export default function ExceptionsPage() {
 
   // A5-PR3: durable per-row import rejections (settlement / bank CSV).
   const [importRejects, setImportRejects] = useState<ImportRejectedRow[]>([]);
+  // Filtered count (respects the Open/Resolved/All filter) — drives the queue.
   const [importRejectsCount, setImportRejectsCount] = useState(0);
+  // Always-unresolved count (filter-independent) — drives the "Total Unresolved"
+  // summary card, which pairs with the always-unresolved projection summary
+  // (Codex round-5: the filtered count would inflate the total under Resolved/All).
+  const [unresolvedRejectsCount, setUnresolvedRejectsCount] = useState(0);
   const [resolvingRejectId, setResolvingRejectId] = useState<number | null>(null);
   const [expandedRejectId, setExpandedRejectId] = useState<number | null>(null);
 
@@ -137,7 +142,7 @@ export default function ExceptionsPage() {
 
   const fetchAll = async () => {
     try {
-      const [sum, list, rejects] = await Promise.all([
+      const [sum, list, rejects, unresolvedRejects] = await Promise.all([
         projectionFailuresService.summary(),
         projectionFailuresService.list({
           resolved: resolvedFilter,
@@ -146,12 +151,15 @@ export default function ExceptionsPage() {
           limit: 100,
         }),
         importRejectedRowsService.list({ resolved: resolvedFilter, limit: 100 }),
+        // Filter-independent unresolved count for the summary card (see state).
+        importRejectedRowsService.list({ resolved: "false", limit: 1 }),
       ]);
       setSummary(sum);
       setItems(list.results);
       setTotalCount(list.total_count);
       setImportRejects(rejects.results);
       setImportRejectsCount(rejects.total_count);
+      setUnresolvedRejectsCount(unresolvedRejects.total_count);
     } catch (err) {
       toast({
         title: "Failed to load exceptions",
@@ -291,14 +299,16 @@ export default function ExceptionsPage() {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                {/* A5-PR3 (Codex round-4): fold the import-reject queue into the
-                    page-level total + all-clear so this card can't say "0 / all
-                    clear" while dropped import rows sit unresolved below. */}
+                {/* A5-PR3 (Codex round-4/5): fold the ALWAYS-UNRESOLVED import-reject
+                    count into the page-level total + all-clear so this card can't say
+                    "0 / all clear" while dropped import rows sit unresolved below —
+                    and using the filter-independent count keeps the total correct
+                    under the Resolved/All queue filters. */}
                 <div className="text-3xl font-semibold">
-                  {summary.total_unresolved + importRejectsCount}
+                  {summary.total_unresolved + unresolvedRejectsCount}
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {summary.total_unresolved + importRejectsCount === 0
+                  {summary.total_unresolved + unresolvedRejectsCount === 0
                     ? "All clear — projections healthy."
                     : "Need operator review."}
                 </p>

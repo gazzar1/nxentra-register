@@ -10,7 +10,7 @@ company's preserved rows. RLS is Postgres-only; this migration is a no-op on SQL
 platform_connectors/migrations/0008_provider_payout_rls.py.
 """
 
-from django.db import connection, migrations
+from django.db import migrations
 
 RLS_TABLES = [
     "import_rejected_row",
@@ -45,16 +45,23 @@ def _build_rls_reverse_sql() -> str:
 
 
 def apply_rls(apps, schema_editor):
-    if connection.vendor != "postgresql":
+    # Run the DDL through the connection Django is actually migrating (the
+    # per-alias `migrate database=<alias>` connection), NOT the global default
+    # connection — otherwise a dedicated-tenant migration records 0041 as applied
+    # on the target while creating the policy on `default`, leaving the target's
+    # import_rejected_row without RLS. Matches accounting/0039 / shopify/0017.
+    conn = schema_editor.connection
+    if conn.vendor != "postgresql":
         return
-    with connection.cursor() as cursor:
+    with conn.cursor() as cursor:
         cursor.execute(_build_rls_sql())
 
 
 def reverse_rls(apps, schema_editor):
-    if connection.vendor != "postgresql":
+    conn = schema_editor.connection
+    if conn.vendor != "postgresql":
         return
-    with connection.cursor() as cursor:
+    with conn.cursor() as cursor:
         cursor.execute(_build_rls_reverse_sql())
 
 
