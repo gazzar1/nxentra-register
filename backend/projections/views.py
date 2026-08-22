@@ -244,6 +244,7 @@ class TrialBalanceView(DimensionFilterMixin, APIView):
         # never the raw payload flag — otherwise these reports disagree
         # with the accepted journal and the projected balances.
         from accounting.posted_journal_apply import (
+            excluded_posted_event_ids,
             line_is_memo,
             memo_account_public_ids,
             posted_event_accepted_for_apply,
@@ -251,11 +252,12 @@ class TrialBalanceView(DimensionFilterMixin, APIView):
 
         memo_ids = memo_account_public_ids(actor.company)
         apply_facts_cache: dict = {}
+        apply_excluded_ids = excluded_posted_event_ids(actor.company)
         for event in events:
             # A3-PR3 (Codex round-12 P1): fold only events the apply boundary
             # ACCEPTS — a quarantined/deferred event is not in the canonical
             # balances, and folding it would misstate the report.
-            if not posted_event_accepted_for_apply(event, apply_facts_cache):
+            if not posted_event_accepted_for_apply(event, apply_facts_cache, apply_excluded_ids):
                 continue
             entry_date_str = event.get_data().get("date")
             if not entry_date_str:
@@ -719,6 +721,7 @@ class BalanceSheetView(DimensionFilterMixin, APIView):
         # never the raw payload flag — otherwise these reports disagree
         # with the accepted journal and the projected balances.
         from accounting.posted_journal_apply import (
+            excluded_posted_event_ids,
             line_is_memo,
             memo_account_public_ids,
             posted_event_accepted_for_apply,
@@ -726,11 +729,12 @@ class BalanceSheetView(DimensionFilterMixin, APIView):
 
         memo_ids = memo_account_public_ids(actor.company)
         apply_facts_cache: dict = {}
+        apply_excluded_ids = excluded_posted_event_ids(actor.company)
         for event in events:
             # A3-PR3 (Codex round-12 P1): fold only events the apply boundary
             # ACCEPTS — a quarantined/deferred event is not in the canonical
             # balances, and folding it would misstate the report.
-            if not posted_event_accepted_for_apply(event, apply_facts_cache):
+            if not posted_event_accepted_for_apply(event, apply_facts_cache, apply_excluded_ids):
                 continue
             entry_date_str = event.get_data().get("date")
             if not entry_date_str:
@@ -1233,6 +1237,7 @@ class IncomeStatementView(DimensionFilterMixin, APIView):
         # never the raw payload flag — otherwise these reports disagree
         # with the accepted journal and the projected balances.
         from accounting.posted_journal_apply import (
+            excluded_posted_event_ids,
             line_is_memo,
             memo_account_public_ids,
             posted_event_accepted_for_apply,
@@ -1240,11 +1245,12 @@ class IncomeStatementView(DimensionFilterMixin, APIView):
 
         memo_ids = memo_account_public_ids(actor.company)
         apply_facts_cache: dict = {}
+        apply_excluded_ids = excluded_posted_event_ids(actor.company)
         for event in events:
             # A3-PR3 (Codex round-12 P1): fold only events the apply boundary
             # ACCEPTS — a quarantined/deferred event is not in the canonical
             # balances, and folding it would misstate the report.
-            if not posted_event_accepted_for_apply(event, apply_facts_cache):
+            if not posted_event_accepted_for_apply(event, apply_facts_cache, apply_excluded_ids):
                 continue
             entry_date_str = event.get_data().get("date")
             if not entry_date_str:
@@ -2162,6 +2168,7 @@ class DimensionPLComparisonView(DimensionFilterMixin, APIView):
         # never the raw payload flag — otherwise these reports disagree
         # with the accepted journal and the projected balances.
         from accounting.posted_journal_apply import (
+            excluded_posted_event_ids,
             line_is_memo,
             memo_account_public_ids,
             posted_event_accepted_for_apply,
@@ -2169,11 +2176,12 @@ class DimensionPLComparisonView(DimensionFilterMixin, APIView):
 
         memo_ids = memo_account_public_ids(actor.company)
         apply_facts_cache: dict = {}
+        apply_excluded_ids = excluded_posted_event_ids(actor.company)
         for event in events:
             # A3-PR3 (Codex round-12 P1): fold only events the apply boundary
             # ACCEPTS — a quarantined/deferred event is not in the canonical
             # balances, and folding it would misstate the report.
-            if not posted_event_accepted_for_apply(event, apply_facts_cache):
+            if not posted_event_accepted_for_apply(event, apply_facts_cache, apply_excluded_ids):
                 continue
             entry_date_str = event.get_data().get("date")
             if not entry_date_str:
@@ -3475,6 +3483,7 @@ class DashboardChartsView(APIView):
         # never the raw payload flag — otherwise these reports disagree
         # with the accepted journal and the projected balances.
         from accounting.posted_journal_apply import (
+            excluded_posted_event_ids,
             line_is_memo,
             memo_account_public_ids,
             posted_event_accepted_for_apply,
@@ -3482,11 +3491,12 @@ class DashboardChartsView(APIView):
 
         memo_ids = memo_account_public_ids(actor.company)
         apply_facts_cache: dict = {}
+        apply_excluded_ids = excluded_posted_event_ids(actor.company)
         for event in events:
             # A3-PR3 (Codex round-12 P1): fold only events the apply boundary
             # ACCEPTS — a quarantined/deferred event is not in the canonical
             # balances, and folding it would misstate the report.
-            if not posted_event_accepted_for_apply(event, apply_facts_cache):
+            if not posted_event_accepted_for_apply(event, apply_facts_cache, apply_excluded_ids):
                 continue
             entry_date_str = event.get_data().get("date")
             if not entry_date_str:
@@ -3727,6 +3737,7 @@ class DashboardWidgetsView(APIView):
             # never the raw payload flag — otherwise these reports disagree
             # with the accepted journal and the projected balances.
             from accounting.posted_journal_apply import (
+                excluded_posted_event_ids,
                 line_is_memo,
                 memo_account_public_ids,
                 posted_event_accepted_for_apply,
@@ -3734,11 +3745,12 @@ class DashboardWidgetsView(APIView):
 
             memo_ids = memo_account_public_ids(actor.company)
             apply_facts_cache: dict = {}
+            apply_excluded_ids = excluded_posted_event_ids(actor.company)
             for event in recent_events:
                 # A3-PR3 (Codex round-12 P1): fold only events the apply boundary
                 # ACCEPTS — a quarantined/deferred event is not in the canonical
                 # balances, and folding it would misstate the report.
-                if not posted_event_accepted_for_apply(event, apply_facts_cache):
+                if not posted_event_accepted_for_apply(event, apply_facts_cache, apply_excluded_ids):
                     continue
                 ev_data = event.get_data()
                 entry_date = ev_data.get("date", "")

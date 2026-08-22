@@ -480,7 +480,9 @@ def _readable_payload(event: BusinessEvent) -> dict:
     return data
 
 
-def posted_event_accepted_for_apply(event, facts_cache: dict | None = None) -> bool:
+def posted_event_accepted_for_apply(
+    event, facts_cache: dict | None = None, excluded_ids: frozenset | None = None
+) -> bool:
     """The shared filter for event-fold READERS (the report views,
     AccountBalance verification): fold only what the apply boundary actually
     accepted into the balances (Codex round-12 P1 — folding a quarantined or
@@ -500,13 +502,40 @@ def posted_event_accepted_for_apply(event, facts_cache: dict | None = None) -> b
        a clean not-yet-drained event stays included, preserving the
        reports' event-first read-ahead behavior.
 
+    A MANUALLY-resolved log (``resolved_by`` set via the queue endpoint) is
+    an operator claim, not a re-apply — only a SELF-HEALED log
+    (``resolved_by`` NULL, stamped by the framework on an actual successful
+    apply) counts as historical acceptance (Codex round-14 P1).
+
     Pass a per-request ``facts_cache`` so account lookups are shared across
-    the fold."""
+    the fold, and ``excluded_ids`` (from :func:`excluded_posted_event_ids`)
+    so batch folds pay ONE disposition query instead of one per event
+    (Codex round-14 P2)."""
+    if excluded_ids is not None:
+        if event.id in excluded_ids:
+            return False
+    else:
+        from projections.models import ProjectionFailureLog
+
+        if (
+            ProjectionFailureLog.objects.filter(company=event.company, event=event)
+            .exclude(resolved=True, resolved_by__isnull=True)
+            .exists()
+        ):
+            return False
+    return not evaluate_posted_journal_for_apply(event, facts_cache)
+
+
+def excluded_posted_event_ids(company) -> frozenset:
+    """Event ids with a disqualifying persisted disposition (any failure log
+    that is not SELF-HEALED) — the batch preload for event-fold readers."""
     from projections.models import ProjectionFailureLog
 
-    if ProjectionFailureLog.objects.filter(company=event.company, event=event, resolved=False).exists():
-        return False
-    return not evaluate_posted_journal_for_apply(event, facts_cache)
+    return frozenset(
+        ProjectionFailureLog.objects.filter(company=company)
+        .exclude(resolved=True, resolved_by__isnull=True)
+        .values_list("event_id", flat=True)
+    )
 
 
 def memo_account_public_ids(company) -> frozenset[str]:

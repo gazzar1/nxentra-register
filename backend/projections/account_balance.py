@@ -347,6 +347,7 @@ class AccountBalanceProjection(BaseProjection):
         # A3-PR3 (Codex round-11 P1): account-derived memo classification —
         # the raw payload flag would disagree with the projected balances.
         from accounting.posted_journal_apply import (
+            excluded_posted_event_ids,
             line_is_memo,
             memo_account_public_ids,
             posted_event_accepted_for_apply,
@@ -354,13 +355,14 @@ class AccountBalanceProjection(BaseProjection):
 
         memo_ids = memo_account_public_ids(company)
         apply_facts_cache: dict = {}
+        apply_excluded_ids = excluded_posted_event_ids(company)
 
         for event in events:
             # A3-PR3 (Codex round-12 P1): verify against exactly what the
             # apply boundary ACCEPTS — a quarantined event is deliberately
             # absent from balances, and folding it would report a false
             # integrity mismatch.
-            if not posted_event_accepted_for_apply(event, apply_facts_cache):
+            if not posted_event_accepted_for_apply(event, apply_facts_cache, apply_excluded_ids):
                 continue
             # Use get_data() for LEPH compatibility
             data = event.get_data()

@@ -183,6 +183,7 @@ class AccountBalance(ProjectionOwnedModel):
         # verifying against the raw payload flag would disagree with the
         # apply boundary and the balance consumers whenever the flag lies.
         from accounting.posted_journal_apply import (
+            excluded_posted_event_ids,
             line_is_memo,
             memo_account_public_ids,
             posted_event_accepted_for_apply,
@@ -190,11 +191,12 @@ class AccountBalance(ProjectionOwnedModel):
 
         memo_ids = memo_account_public_ids(self.company)
         apply_facts_cache: dict = {}
+        apply_excluded_ids = excluded_posted_event_ids(self.company)
 
         for event in events:
             # A3-PR3 (Codex round-12 P1): fold only apply-accepted events —
             # see AccountBalanceProjection.verify_all_balances.
-            if not posted_event_accepted_for_apply(event, apply_facts_cache):
+            if not posted_event_accepted_for_apply(event, apply_facts_cache, apply_excluded_ids):
                 continue
             lines = event.get_data().get("lines", [])
             for line_data in lines:

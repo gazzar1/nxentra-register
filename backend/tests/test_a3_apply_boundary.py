@@ -276,6 +276,24 @@ class TestPostedApplyEnforcement:
         verdict = revenue.verify_integrity()
         assert verdict["is_valid"], verdict
 
+        # Codex round-14 P1: a MANUAL queue resolution is an operator claim,
+        # not a re-apply — the event stays excluded (resolved_by is set).
+        log = ProjectionFailureLog.objects.get(company=company, event_id=bad_event.id, projection_name=balances.name)
+        log.mark_resolved(user, note="operator says fixed")
+        verdict = revenue.verify_integrity()
+        assert verdict["is_valid"], verdict
+
+        # The prescribed repair path — a rebuild that actually re-applies —
+        # re-admits the event: balances include it, logs become SELF-healed
+        # (resolved_by NULL), and verification agrees again.
+        balances.rebuild(company)
+        revenue.refresh_from_db()
+        assert revenue.credit_total == Decimal("150.00")
+        log.refresh_from_db()
+        assert log.resolved and log.resolved_by is None
+        verdict = revenue.verify_integrity()
+        assert verdict["is_valid"], verdict
+
     def test_cross_company_account_quarantines(self, company, second_company, user, cash_account, revenue_account):
         from accounting.models import Account
 

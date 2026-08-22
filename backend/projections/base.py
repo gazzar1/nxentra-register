@@ -288,14 +288,21 @@ class BaseProjection(ABC):
                         # projection_name, event) is the table's unique key.
                         from projections.models import ProjectionFailureLog
 
+                        # A3-PR3 (Codex round-14 P1): stamp ALL failure rows
+                        # for this key — including manually-resolved ones —
+                        # as SELF-HEALED (resolved_by NULL is the persisted
+                        # mark of a genuine successful re-apply, and the
+                        # event-fold acceptance filter keys on it). A manual
+                        # queue resolution is an operator claim; an actual
+                        # successful apply is the stronger truth.
                         ProjectionFailureLog.objects.filter(
                             company=company,
                             projection_name=self.name,
                             event=event,
-                            resolved=False,
-                        ).update(
+                        ).exclude(resolved=True, resolved_by__isnull=True).update(
                             resolved=True,
                             resolved_at=timezone.now(),
+                            resolved_by=None,
                             resolution_note="Self-healed: event processed successfully on retry.",
                         )
 
