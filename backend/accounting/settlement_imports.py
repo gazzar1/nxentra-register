@@ -63,10 +63,10 @@ def _to_decimal_flagged(value) -> tuple[Decimal, bool]:
 
     Returns ``(amount, malformed)``: an empty/None cell is a legitimate 0
     (``malformed=False``); a cell that fails to parse (``"abc"``, ``"1.2.3"``)
-    coerces to 0 exactly as before — the aggregate math and the projection's
-    imbalance quarantine are unchanged — but ``malformed=True`` lets the caller
-    write the durable per-row MALFORMED_NUMERIC evidence (A5-PR3b) instead of
-    losing the corruption without a trace.
+    returns ``malformed=True`` so the parser EXCLUDES the whole row from the
+    batch and records durable MALFORMED_NUMERIC evidence (A5-PR3b; Codex
+    round-3: a zero-substituted cell could otherwise slip past the imbalance
+    guard and post corrupted money whenever the equation happened to balance).
     """
     if value is None:
         return Decimal("0"), False
@@ -231,20 +231,25 @@ def parse_paymob_csv_full(file_content: bytes | str) -> tuple[list[dict], list[d
         else:
             refund = Decimal("0")
         if malformed_cells:
-            # The malformed cell coerces to 0 exactly as before (aggregates and
-            # the projection's imbalance quarantine are unchanged); the reject
-            # row is the durable per-row evidence of the corruption.
+            # Codex round-3: a REJECTED row must not feed posted totals. A
+            # zero-substituted cell can slip past the imbalance guard when the
+            # equation happens to balance (e.g. malformed fee with gross==net),
+            # posting corrupted money while the evidence says "rejected". So
+            # the WHOLE row is excluded from the batch (aggregates + line
+            # items) and recorded — the batch posts its clean rows only, and
+            # the payout-total shortfall surfaces at bank reconciliation.
             rejects.append(
                 reject_descriptor(
                     row_index=row_index,
                     raw_row=row,
                     reason_code="MALFORMED_NUMERIC",
                     reason_message=(
-                        f"Unparseable numeric cell(s) {', '.join(malformed_cells)} coerced to 0 "
-                        f"in batch {batch_id} — verify the batch before trusting its totals."
+                        f"Unparseable numeric cell(s) {', '.join(malformed_cells)} in batch {batch_id} — "
+                        "row excluded from the import; fix the cell and re-import under a corrected batch id."
                     ),
                 )
             )
+            continue
         gateway_raw = (row.get(columns["gateway"]) or "").strip() if columns["gateway"] else ""
         gateway_normalized = normalize_gateway_code(gateway_raw)
         order_id = (row.get(columns["order_id"]) or "").strip() if columns["order_id"] else ""
@@ -443,17 +448,20 @@ def parse_bosta_csv_full(file_content: bytes | str) -> tuple[list[dict], list[di
         else:
             returned_uncollected = Decimal("0")
         if malformed_cells:
+            # Codex round-3: same exclusion as Paymob — a rejected row must not
+            # feed posted totals (see the Paymob branch for the full rationale).
             rejects.append(
                 reject_descriptor(
                     row_index=row_index,
                     raw_row=row,
                     reason_code="MALFORMED_NUMERIC",
                     reason_message=(
-                        f"Unparseable numeric cell(s) {', '.join(malformed_cells)} coerced to 0 "
-                        f"in batch {batch_id} — verify the batch before trusting its totals."
+                        f"Unparseable numeric cell(s) {', '.join(malformed_cells)} in batch {batch_id} — "
+                        "row excluded from the import; fix the cell and re-import under a corrected batch id."
                     ),
                 )
             )
+            continue
         order_id = (row.get(columns["order_id"]) or "").strip() if columns["order_id"] else ""
         if not order_id and columns["shipment_id"]:
             order_id = (row.get(columns["shipment_id"]) or "").strip()
@@ -1196,6 +1204,8 @@ def import_settlement_csv(
         )
 
         if unknown_order_ids:
+            # Transient signal about THIS upload (pre-existing A26 semantics —
+            # includes non-digit refs; the durable flags below are digit-only).
             logger.warning(
                 "Settlement import %s:%s references %d unknown order_ids: %s. "
                 "JE posts but provider clearing may go negative on the orphaned portion.",
@@ -1204,57 +1214,99 @@ def import_settlement_csv(
                 len(unknown_order_ids),
                 ", ".join(unknown_order_ids[:10]),
             )
-            # A5-PR3b (founder-approved 0042): durable per-line review flag —
-            # QUARANTINED, not REJECTED, because the line POSTED. Written
-            # OUTSIDE the emit atomic (it closed above). Codex round-2: gate on
-            # a FRESHLY emitted event — a deduplicated re-upload posts NOTHING
-            # (the emitter returns the original immutable event), so writing
-            # flags from the NEW upload's rows would fabricate evidence about
-            # rows that never became canonical. The original import already
-            # flagged the canonical rows.
-            if already_existed:
-                continue
-            unknown_set = set(unknown_order_ids)
-            orphan_rejects = []
-            for li_index, li in enumerate(batch.get("line_items") or [], start=1):
-                li_order_id = str(li.get("order_id") or "").strip()
-                # DURABLE flag scope: digit ids only. The A26 lookup only ever
-                # checks digit ids against ShopifyOrder (shopify_order_id is
-                # numeric), so only a digit id can be a genuinely orphaned
-                # Shopify reference; non-digit refs (Bosta shipment/tracking
-                # ids like "ORD-1") are ALWAYS "unknown" by construction and
-                # would page a false review flag for every COD row. They keep
-                # the pre-existing transient unknown_order_ids badge unchanged.
-                if li_order_id and li_order_id.isdigit() and li_order_id in unknown_set:
-                    orphan_rejects.append(
-                        {
-                            # Position within this batch's line items (the parser
-                            # aggregates by batch, so the original file index is
-                            # gone by here; the batch id disambiguates).
-                            "row_index": li_index,
-                            # Copy + stamp the batch id (never mutate li — it is
-                            # the emitted event's line_items entry). The batch id
-                            # in raw_row keeps identical orphan rows in DIFFERENT
-                            # batches at the same within-batch position from
-                            # colliding in the dedup hash (Codex round-1), and is
-                            # better evidence besides.
-                            "raw_row": {**li, "payout_batch_id": batch["payout_batch_id"]},
-                            "reason_code": "ORPHAN_ORDER_ID",
-                            "reason_message": (
-                                f"Batch {batch['payout_batch_id']}: order_id {li_order_id} matches no "
-                                "local order. The JE posted — provider clearing may go negative on "
-                                "this row. Investigate, then resolve."
-                            ),
-                            "status": "QUARANTINED",
-                        }
-                    )
-            persist_import_rejects(
-                company,
-                source_kind="SETTLEMENT",
-                provider_code=code,
-                source_filename=source_filename,
-                import_batch_id=batch_uuid,
-                rejects=orphan_rejects,
-            )
+
+        # A5-PR3b (founder-approved 0042): durable per-line orphan review flags,
+        # derived from the STORED event's payload — the canonical rows that
+        # actually post(ed). Codex rounds 2-3: an upload-derived flag fabricates
+        # evidence whenever the emitter deduplicates (sequential re-upload with
+        # changed contents, or the loser of two concurrent uploads racing the
+        # same batch id — already_existed is a pre-check and cannot see the
+        # race). Deriving from `event` is truthful in every case, and a re-sight
+        # of the same canonical rows just bumps occurrence_count.
+        _persist_orphan_flags_from_event(
+            company,
+            event,
+            provider_code=code,
+            import_batch_id=batch_uuid,
+            external_system=external_system,
+        )
 
     return emitted
+
+
+def _persist_orphan_flags_from_event(
+    company,
+    event,
+    *,
+    provider_code: str,
+    import_batch_id,
+    external_system: str,
+) -> None:
+    """Write QUARANTINED ORPHAN_ORDER_ID review flags for the CANONICAL rows in
+    ``event``'s payload whose digit order_id matches no local order.
+
+    Digit ids only: the A26 lookup only ever checks digit ids against
+    ShopifyOrder (shopify_order_id is numeric), so only a digit id can be a
+    genuinely orphaned Shopify reference; non-digit refs (Bosta shipment /
+    tracking ids like "ORD-1") are ALWAYS "unknown" by construction and would
+    page a false review flag for every COD row.
+    """
+    if event is None or external_system != "shopify":
+        return
+
+    from accounting.import_rejects import persist_import_rejects
+
+    data = event.get_data() or {}
+    line_items = data.get("line_items") or []
+    payout_batch_id = str(data.get("payout_batch_id") or "")
+    # Canonical filename from the STORED event's metadata (not this upload's) —
+    # it names the file that created the canonical rows AND keeps the flag
+    # identity stable when the same batch is re-uploaded under a new filename.
+    canonical_filename = str((getattr(event, "metadata", None) or {}).get("filename") or "")
+    digit_ids = sorted(
+        {str(li.get("order_id") or "").strip() for li in line_items if str(li.get("order_id") or "").strip().isdigit()}
+    )
+    if not digit_ids:
+        return
+    try:
+        from shopify_connector.models import ShopifyOrder
+
+        known = {
+            str(oid)
+            for oid in ShopifyOrder.objects.filter(company=company, shopify_order_id__in=digit_ids).values_list(
+                "shopify_order_id", flat=True
+            )
+        }
+    except ImportError:
+        known = set()
+
+    orphan_rejects = []
+    for li_index, li in enumerate(line_items, start=1):
+        li_order_id = str(li.get("order_id") or "").strip()
+        if li_order_id and li_order_id.isdigit() and li_order_id not in known:
+            orphan_rejects.append(
+                {
+                    # Position within the batch's canonical line items (the
+                    # parser aggregates by batch, so the original file index is
+                    # gone; the stamped batch id disambiguates — and keeps
+                    # identical rows in different batches from colliding in the
+                    # dedup hash, Codex round-1).
+                    "row_index": li_index,
+                    "raw_row": {**li, "payout_batch_id": payout_batch_id},
+                    "reason_code": "ORPHAN_ORDER_ID",
+                    "reason_message": (
+                        f"Batch {payout_batch_id}: order_id {li_order_id} matches no local order. "
+                        "The JE posted — provider clearing may go negative on this row. "
+                        "Investigate, then resolve."
+                    ),
+                    "status": "QUARANTINED",
+                }
+            )
+    persist_import_rejects(
+        company,
+        source_kind="SETTLEMENT",
+        provider_code=provider_code,
+        source_filename=canonical_filename,
+        import_batch_id=import_batch_id,
+        rejects=orphan_rejects,
+    )

@@ -77,15 +77,32 @@ def compute_reject_dedup_hash(
     company_id: int,
     source_kind: str,
     provider_code: str,
+    identity_scope: str,
     source_filename: str,
     row_index: int,
     reason_code: str,
     raw_row: dict,
 ) -> str:
-    """Stable identity for one rejected row across re-uploads (NOT batch-scoped)."""
+    """Stable identity for one rejected row across re-uploads (NOT batch-scoped).
+
+    ``identity_scope`` narrows the identity beyond provider_code where needed —
+    bank rejects pass ``account:<pk>`` (Codex round-3: two ACCOUNTS importing a
+    same-named file with an identical bad row at the same position are distinct
+    evidence, but a re-upload to the SAME account still dedups); settlement
+    rejects pass "" (provider_code already scopes them).
+    """
     canonical = json.dumps(raw_row, sort_keys=True, default=str, ensure_ascii=False)
     material = "|".join(
-        [str(company_id), source_kind, provider_code, source_filename, str(row_index), reason_code, canonical]
+        [
+            str(company_id),
+            source_kind,
+            provider_code,
+            identity_scope,
+            source_filename,
+            str(row_index),
+            reason_code,
+            canonical,
+        ]
     )
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
@@ -99,6 +116,7 @@ def persist_import_rejects(
     import_batch_id: uuid.UUID,
     rejects: list[dict],
     statement=None,
+    identity_scope: str = "",
 ) -> int:
     """Persist reject descriptors idempotently; returns how many were written
     (created or occurrence-bumped). Malformed/unknown descriptors are skipped
@@ -131,6 +149,7 @@ def persist_import_rejects(
             company_id=company.pk,
             source_kind=source_kind,
             provider_code=provider_code,
+            identity_scope=identity_scope,
             source_filename=source_filename,
             row_index=row_index,
             reason_code=reason_code,

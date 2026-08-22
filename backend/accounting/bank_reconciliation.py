@@ -376,6 +376,10 @@ def import_bank_statement(
         import_batch_id=batch_uuid,
         rejects=list(parse_rejects or []) + commit_rejects,
         statement=statement,
+        # Codex round-3: scope identity to the bank ACCOUNT — two accounts
+        # importing a same-named file with an identical bad row are distinct
+        # evidence; a re-upload to the SAME account still dedups.
+        identity_scope=f"account:{account.pk}",
     )
 
     logger.info(

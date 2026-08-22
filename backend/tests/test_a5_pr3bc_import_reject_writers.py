@@ -6,8 +6,8 @@ the production writers:
 
 Settlement (PR3b):
 - blank batch id  -> EMPTY_BATCH_ID reject; the file's other batches still post
-- malformed money -> MALFORMED_NUMERIC reject; aggregates unchanged (coerce-to-0),
-  so the batch quarantines via the pre-existing imbalance TerminalSkip
+- malformed money -> MALFORMED_NUMERIC reject; the WHOLE row is excluded from
+  the batch (a rejected row must never feed posted totals — Codex round-3)
 - re-upload       -> same reject row, occurrence_count bumped (idempotent)
 - preview         -> counts rejects, writes NOTHING
 - whole-file refusal (non-EGP pilot) -> zero rejects persisted (side-effect-free)
@@ -150,11 +150,12 @@ ORD-2,500.00,15.00,485.00,PR3B-BAD,2026-04-25
 """
 
 
-def test_settlement_malformed_gross_writes_reject_and_batch_quarantines(shopify_setup, company):
-    """Case 2: the malformed cell coerces to 0 exactly as before, so the batch
-    trips the pre-existing imbalance quarantine — but the corrupted ROW now has
-    durable evidence naming the cell."""
-    from projections.models import ProjectionFailureLog
+def test_settlement_malformed_row_is_excluded_and_clean_subset_posts(shopify_setup, company):
+    """Codex round-3: a REJECTED row must not feed posted totals. The malformed
+    row is excluded from the batch entirely; the clean rows post, and the reject
+    row is the durable evidence of the exclusion."""
+    from events.models import BusinessEvent
+    from events.types import EventTypes
 
     import_settlement_csv(
         company=company,
@@ -165,14 +166,46 @@ def test_settlement_malformed_gross_writes_reject_and_batch_quarantines(shopify_
     reject = ImportRejectedRow.objects.get(company=company)
     assert reject.reason_code == ImportRejectedRow.ReasonCode.MALFORMED_NUMERIC
     assert "gross" in reject.reason_message
+    assert "excluded" in reject.reason_message
     assert reject.raw_row.get("gross") == "abc"
 
+    # The emitted batch contains ONLY the clean row's money — no zero-substitution.
+    event = BusinessEvent.objects.get(company=company, event_type=EventTypes.PAYMENT_SETTLEMENT_RECEIVED)
+    data = event.get_data()
+    assert data["gross_amount"] == "500.00"
+    assert len(data["line_items"]) == 1
+
     _run_settlement_projection(company)
-    # Imbalance quarantine: no JE, visible failure log — unchanged behavior.
-    assert not JournalEntry.objects.filter(
-        company=company, source_module="payment_settlement", source_document="paymob:PR3B-BAD"
+    assert JournalEntry.objects.filter(
+        company=company,
+        source_module="payment_settlement",
+        source_document="paymob:PR3B-BAD",
+        status=JournalEntry.Status.POSTED,
     ).exists()
-    assert ProjectionFailureLog.objects.filter(company=company, resolved=False).exists()
+
+
+def test_settlement_malformed_fee_cannot_post_zero_substituted(shopify_setup, company):
+    """Codex round-3's exact case: fee malformed while gross == net — the old
+    coerce-to-0 would have BALANCED (gross == net + 0) and posted corrupted
+    money. The row is excluded instead."""
+    from events.models import BusinessEvent
+    from events.types import EventTypes
+
+    csv = b"""order_id,gross,fee,net,payout_batch_id,payout_date
+ORD-1,100.00,abc,100.00,PR3B-FEE,2026-04-25
+ORD-2,500.00,15.00,485.00,PR3B-FEE,2026-04-25
+"""
+    import_settlement_csv(
+        company=company, provider_normalized_code="paymob", file_content=csv, source_filename="fee.csv"
+    )
+    reject = ImportRejectedRow.objects.get(company=company)
+    assert reject.reason_code == ImportRejectedRow.ReasonCode.MALFORMED_NUMERIC
+    assert "fee" in reject.reason_message
+
+    event = BusinessEvent.objects.get(company=company, event_type=EventTypes.PAYMENT_SETTLEMENT_RECEIVED)
+    data = event.get_data()
+    assert data["gross_amount"] == "500.00", "the malformed row's 100.00 must not feed the batch"
+    assert len(data["line_items"]) == 1
 
 
 def test_settlement_reject_reupload_bumps_occurrence(shopify_setup, company):
@@ -410,6 +443,43 @@ def _import_bank(actor, account, lines, **kw):
         source="MANUAL",
         **kw,
     )
+
+
+def test_bank_reject_identity_scoped_to_account(company, actor, merchant_bank, revenue_account):
+    """Codex round-3: two ACCOUNTS importing a same-named file with an identical
+    bad row at the same position are DISTINCT evidence; a re-upload to the same
+    account still dedups."""
+    with projection_writes_allowed():
+        second_bank = Account.objects.projection().create(
+            company=company,
+            code="10200",
+            name="Second Bank — PR3bc",
+            account_type=Account.AccountType.ASSET,
+            status=Account.Status.ACTIVE,
+        )
+    desc = {
+        "row_index": 2,
+        "raw_row": {"Date": "bad", "Amount": "100.00"},
+        "reason_code": "UNPARSEABLE_DATE",
+        "reason_message": "bad date",
+    }
+    lines = [{"line_date": date(2026, 4, 25), "amount": "100.00", "description": "ok", "reference": ""}]
+
+    r1 = _import_bank(actor, merchant_bank, lines, source_filename="april.csv", parse_rejects=[desc])
+    r2 = _import_bank(actor, second_bank, lines, source_filename="april.csv", parse_rejects=[desc])
+    assert r1.success and r2.success
+
+    rejects = ImportRejectedRow.objects.filter(company=company).order_by("id")
+    assert rejects.count() == 2, "each account keeps its own evidence"
+    assert {r.statement_id for r in rejects} == {
+        r1.data["statement"].id,
+        r2.data["statement"].id,
+    }
+
+    # Re-upload to the SAME account still dedups (occurrence bump, no new row).
+    r3 = _import_bank(actor, merchant_bank, lines, source_filename="april.csv", parse_rejects=[desc])
+    assert r3.success
+    assert ImportRejectedRow.objects.filter(company=company).count() == 2
 
 
 def test_bank_commit_persists_parse_rejects_linked_to_statement(company, actor, merchant_bank):
