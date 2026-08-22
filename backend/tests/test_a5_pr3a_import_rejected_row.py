@@ -171,3 +171,51 @@ def test_resolve_view_owner_ok(company, user, owner_membership, api_client):
     assert row.resolved
     # Resolved rows drop out of the default (open) queue.
     assert api_client.get("/api/reports/import-rejected-rows/").data["total_count"] == 0
+
+
+def test_list_view_keyset_pagination_no_dup_or_skip(company, user, owner_membership, api_client):
+    """Codex round-9: keyset paging on -id returns each row exactly once across
+    pages and leaves nothing unreachable."""
+    from accounting.models import ImportRejectedRow
+
+    for _ in range(3):
+        _make_reject(company)
+
+    api_client.force_authenticate(user=user)
+    p1 = api_client.get("/api/reports/import-rejected-rows/?limit=2")
+    assert p1.status_code == 200, p1.data
+    assert len(p1.data["results"]) == 2
+    assert p1.data["total_count"] == 3
+    assert p1.data["next_cursor"] is not None
+
+    p2 = api_client.get(f"/api/reports/import-rejected-rows/?limit=2&cursor={p1.data['next_cursor']}")
+    assert len(p2.data["results"]) == 1
+    assert p2.data["next_cursor"] is None
+
+    ids_p1 = {r["id"] for r in p1.data["results"]}
+    ids_p2 = {r["id"] for r in p2.data["results"]}
+    assert ids_p1.isdisjoint(ids_p2), "keyset pages must not duplicate a row"
+    all_ids = set(ImportRejectedRow.objects.filter(company=company).values_list("id", flat=True))
+    assert ids_p1 | ids_p2 == all_ids, "every row must be reachable across keyset pages"
+
+
+def test_list_view_keyset_is_stable_across_mutation(company, user, owner_membership, api_client):
+    """A row resolved between page fetches must not make the next keyset page skip
+    an unseen row — the offset-pagination hazard keyset removes."""
+    rows = [_make_reject(company) for _ in range(3)]  # ascending ids
+    rows_by_id = {r.id: r for r in rows}
+
+    api_client.force_authenticate(user=user)
+    p1 = api_client.get("/api/reports/import-rejected-rows/?limit=1")
+    assert len(p1.data["results"]) == 1
+    first_id = p1.data["results"][0]["id"]  # highest id (newest first)
+    cursor = p1.data["next_cursor"]
+    assert cursor is not None
+
+    # Mutate the set between fetches: resolve the row we already saw (it drops out
+    # of the default open queue). Offset paging would now skip a row; keyset cannot.
+    rows_by_id[first_id].mark_resolved(user)
+
+    p2 = api_client.get(f"/api/reports/import-rejected-rows/?limit=1&cursor={cursor}")
+    assert len(p2.data["results"]) == 1
+    assert p2.data["results"][0]["id"] < first_id, "keyset must return the next-lower id, nothing skipped"

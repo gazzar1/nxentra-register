@@ -32,7 +32,8 @@ export interface ImportRejectedRowListResponse {
   results: ImportRejectedRow[];
   total_count: number;
   limit: number;
-  offset: number;
+  // Keyset pagination: the cursor for the next page, or null on the last page.
+  next_cursor: string | null;
 }
 
 export interface ImportRejectListParams {
@@ -40,7 +41,8 @@ export interface ImportRejectListParams {
   source_kind?: ImportSourceKind;
   reason_code?: string;
   limit?: number;
-  offset?: number;
+  // Keyset cursor from a prior response's `next_cursor` (fetch the next page).
+  cursor?: string;
 }
 
 const BASE_PATH = "/reports/import-rejected-rows";

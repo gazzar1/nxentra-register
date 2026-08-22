@@ -273,7 +273,15 @@ class ImportRejectedRowListView(APIView):
 
     List durable per-row import rejections for the current company (settlement +
     bank-CSV rows dropped at ingest). Filters: resolved (default false),
-    source_kind, reason_code. Pagination: limit (default 100, max 500), offset.
+    source_kind, reason_code.
+
+    Pagination is KEYSET (cursor) on the immutable primary key, newest first
+    (`-id`): `limit` (default 100, max 500) and `cursor` (the previous page's
+    `next_cursor`). Keyset — not offset — because the queue mutates between page
+    fetches (an earlier row resolved, or a re-seen row bumped): an offset would
+    then skip or duplicate rows and could strand a genuine rejection, whereas
+    `id < cursor` over an immutable key never does. The response carries
+    `next_cursor` (null when the last page has been returned).
     """
 
     permission_classes = [IsAuthenticated]
@@ -285,11 +293,7 @@ class ImportRejectedRowListView(APIView):
         # raw_row carries financial import evidence — gate on the same read
         # permission as other report/audit views (Codex P2).
         require(actor, "reports.view")
-        qs = (
-            ImportRejectedRow.objects.filter(company=actor.company)
-            .select_related("resolved_by")
-            .order_by("-last_seen_at")
-        )
+        qs = ImportRejectedRow.objects.filter(company=actor.company).select_related("resolved_by")
 
         resolved_param = request.query_params.get("resolved")
         if resolved_param == "true":
@@ -306,18 +310,30 @@ class ImportRejectedRowListView(APIView):
 
         try:
             limit = min(max(int(request.query_params.get("limit", 100)), 1), 500)
-            offset = max(int(request.query_params.get("offset", 0)), 0)
         except (ValueError, TypeError):
-            limit, offset = 100, 0
+            limit = 100
 
         total_count = qs.count()
-        page = qs[offset : offset + limit]
+
+        ordered = qs.order_by("-id")
+        cursor = request.query_params.get("cursor")
+        if cursor:
+            try:
+                ordered = ordered.filter(id__lt=int(cursor))
+            except (ValueError, TypeError):
+                # A malformed cursor is treated as "from the start" rather than 500ing.
+                pass
+
+        page = list(ordered[:limit])
+        # A full page means there may be more; the last row's id is the next cursor.
+        next_cursor = str(page[-1].id) if len(page) == limit else None
+
         return Response(
             {
                 "results": [_serialize_reject(r) for r in page],
                 "total_count": total_count,
                 "limit": limit,
-                "offset": offset,
+                "next_cursor": next_cursor,
             }
         )
 

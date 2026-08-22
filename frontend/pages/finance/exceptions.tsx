@@ -14,7 +14,7 @@
  * count, and a "Mark resolved" action.
  */
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { GetServerSideProps } from "next";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import {
@@ -119,11 +119,16 @@ export default function ExceptionsPage() {
   // summary card, which pairs with the always-unresolved projection summary
   // (Codex round-5: the filtered count would inflate the total under Resolved/All).
   const [unresolvedRejectsCount, setUnresolvedRejectsCount] = useState(0);
-  // Offset-paged "Load more" for the reject queue so a large malformed CSV's
-  // rejections past the first page stay reachable/resolvable. A growing single-
-  // request limit is capped by the endpoint's 500 max (Codex round-8), so each
-  // page is a fixed-size fetch at an increasing offset instead.
+  // Keyset-paged "Load more" for the reject queue (Codex round-7/8/9): a growing
+  // single-request limit hits the endpoint's 500 cap, and offset paging skips/dups
+  // rows when the set mutates between fetches — so page by the server's next_cursor
+  // over an immutable key. `null` cursor ⇒ no more pages ⇒ hide the button.
   const [loadingMoreRejects, setLoadingMoreRejects] = useState(false);
+  const [rejectNextCursor, setRejectNextCursor] = useState<string | null>(null);
+  // Monotonic fetch generation: a filter reload bumps it so a slow in-flight
+  // "Load more" started under the OLD filter is discarded instead of appended to
+  // the freshly reset list (Codex round-9 stale-response race).
+  const fetchGenRef = useRef(0);
   const [resolvingRejectId, setResolvingRejectId] = useState<number | null>(null);
   const [expandedRejectId, setExpandedRejectId] = useState<number | null>(null);
 
@@ -146,6 +151,8 @@ export default function ExceptionsPage() {
   // =========================================================================
 
   const fetchAll = async () => {
+    // A reset fetch: bump the generation so any in-flight "Load more" is discarded.
+    const gen = ++fetchGenRef.current;
     try {
       const [sum, list, rejects, unresolvedRejects] = await Promise.all([
         projectionFailuresService.summary(),
@@ -155,17 +162,22 @@ export default function ExceptionsPage() {
           category: (categoryFilter || undefined) as FailureCategory | undefined,
           limit: 100,
         }),
-        importRejectedRowsService.list({ resolved: resolvedFilter, limit: 100, offset: 0 }),
+        // First keyset page (no cursor) — resets the reject queue to the newest page.
+        importRejectedRowsService.list({ resolved: resolvedFilter, limit: 100 }),
         // Filter-independent unresolved count for the summary card (see state).
         importRejectedRowsService.list({ resolved: "false", limit: 1 }),
       ]);
+      // A newer fetch (filter change) superseded this one — drop the stale result.
+      if (gen !== fetchGenRef.current) return;
       setSummary(sum);
       setItems(list.results);
       setTotalCount(list.total_count);
       setImportRejects(rejects.results);
       setImportRejectsCount(rejects.total_count);
+      setRejectNextCursor(rejects.next_cursor);
       setUnresolvedRejectsCount(unresolvedRejects.total_count);
     } catch (err) {
+      if (gen !== fetchGenRef.current) return;
       toast({
         title: "Failed to load exceptions",
         description: (err as Error).message || "Try refreshing.",
@@ -186,20 +198,29 @@ export default function ExceptionsPage() {
     setRefreshing(false);
   };
 
-  // Append the next page of import rejections (offset = rows already loaded).
-  // Fixed 100-row pages keep every request under the endpoint's 500 clamp, so
-  // rows past the first 500 stay reachable (unlike a growing single-request limit).
+  // Append the next keyset page (cursor = the previous page's next_cursor). Immutable
+  // -id ordering means a row resolved/re-seen between fetches can't skip or dup rows;
+  // dedup-on-append is a belt-and-braces guard. The generation check discards a page
+  // whose filter was changed out from under it mid-flight (Codex round-9).
   const handleLoadMoreRejects = async () => {
+    if (!rejectNextCursor) return;
+    const gen = fetchGenRef.current; // capture; a "load more" is not a reset
     setLoadingMoreRejects(true);
     try {
       const next = await importRejectedRowsService.list({
         resolved: resolvedFilter,
         limit: 100,
-        offset: importRejects.length,
+        cursor: rejectNextCursor,
       });
-      setImportRejects((prev) => [...prev, ...next.results]);
+      if (gen !== fetchGenRef.current) return; // filter reloaded mid-flight — discard
+      setImportRejects((prev) => {
+        const seen = new Set(prev.map((r) => r.id));
+        return [...prev, ...next.results.filter((r) => !seen.has(r.id))];
+      });
       setImportRejectsCount(next.total_count);
+      setRejectNextCursor(next.next_cursor);
     } catch (err) {
+      if (gen !== fetchGenRef.current) return;
       toast({
         title: "Failed to load more import rejections",
         description: (err as Error).message || "Try refreshing.",
@@ -629,16 +650,16 @@ export default function ExceptionsPage() {
                 </tbody>
               </table>
             )}
-            {/* Codex round-7: the filtered total can exceed the fetched page, so
-                keep older rejections reachable/resolvable instead of stranding them
-                behind the newest 100. */}
-            {importRejects.length < importRejectsCount && (
+            {/* Keyset "Load more": shown while the server reports another page
+                (next_cursor); disabled during a filter reload so a stale page can't
+                be appended to a freshly reset list (Codex round-7/8/9). */}
+            {rejectNextCursor !== null && (
               <div className="border-t p-3 text-center">
                 <Button
                   size="sm"
                   variant="outline"
                   onClick={handleLoadMoreRejects}
-                  disabled={loadingMoreRejects || refreshing}
+                  disabled={loadingMoreRejects || loading || refreshing}
                 >
                   {loadingMoreRejects ? (
                     <Loader2 className="h-3 w-3 animate-spin" />
