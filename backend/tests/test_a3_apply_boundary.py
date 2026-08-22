@@ -233,6 +233,49 @@ class TestPostedApplyEnforcement:
         assert "JE_ACCOUNT_UNKNOWN" in log.message
         assert not AccountBalance.objects.filter(company=company).exists()
 
+    def test_repair_does_not_retroactively_accept_quarantined_event(self, company, user, cash_account, revenue_account):
+        """Codex round-13 P1: repairing the cause AFTER a quarantine makes
+        re-evaluation CLEAN, but the applied marker still blocks re-apply —
+        readers must honor the PERSISTED disposition (unresolved failure
+        log) until a deliberate rebuild re-applies the event, or reports
+        fold what balances exclude."""
+        from accounting.models import Account
+
+        good_id = uuid4()
+        _emit_posted(company, user, _posted_payload(good_id, user, cash_account, revenue_account))
+
+        ghost_id = uuid4()
+        payload = _posted_payload(uuid4(), user, cash_account, revenue_account, amount="50.00")
+        bad_event = _emit_posted(company, user, payload)
+        bad = dict(payload)
+        bad["lines"] = [dict(payload["lines"][0], account_public_id=str(ghost_id)), dict(payload["lines"][1])]
+        _corrupt(bad_event, bad)
+
+        balances = AccountBalanceProjection()
+        balances.process_pending(company)
+        assert ProjectionFailureLog.objects.filter(company=company, event_id=bad_event.id, resolved=False).exists()
+
+        revenue = AccountBalance.objects.get(company=company, account=revenue_account)
+        assert revenue.credit_total == Decimal("100.00")  # only the good event
+        assert revenue.verify_integrity()["is_valid"]
+
+        # The "repair": the missing account now exists — re-evaluation is
+        # clean, but the event was never re-applied.
+        Account.objects.create(
+            public_id=ghost_id,
+            company=company,
+            code="1082",
+            name="Repaired account",
+            account_type=Account.AccountType.ASSET,
+            normal_balance=Account.NormalBalance.DEBIT,
+            status=Account.Status.ACTIVE,
+        )
+        assert evaluate_posted_journal_for_apply(BusinessEvent.objects.get(pk=bad_event.pk)) == []
+
+        # The persisted disposition still excludes it from the fold.
+        verdict = revenue.verify_integrity()
+        assert verdict["is_valid"], verdict
+
     def test_cross_company_account_quarantines(self, company, second_company, user, cash_account, revenue_account):
         from accounting.models import Account
 

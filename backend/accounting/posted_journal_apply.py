@@ -481,13 +481,31 @@ def _readable_payload(event: BusinessEvent) -> dict:
 
 
 def posted_event_accepted_for_apply(event, facts_cache: dict | None = None) -> bool:
-    """True iff the apply verdict is CLEAN — the shared filter for event-fold
-    READERS (the report views, AccountBalance verification): a quarantined
-    (or lag-deferred, not-yet-applied) posted event is deliberately NOT in
-    the canonical balances, so folding it would disagree with them (Codex
-    round-12 P1 — incorrect reports and false integrity mismatches). Pass a
-    per-request ``facts_cache`` so account lookups are shared across the
-    fold."""
+    """The shared filter for event-fold READERS (the report views,
+    AccountBalance verification): fold only what the apply boundary actually
+    accepted into the balances (Codex round-12 P1 — folding a quarantined or
+    lag-deferred event misstates reports and produces false integrity
+    mismatches).
+
+    Two layers, in order (Codex round-13 P1):
+
+    1. The PERSISTED disposition wins: an event with an UNRESOLVED
+       ``ProjectionFailureLog`` was quarantined (or is failing) — it is not
+       in the balances, and a later repair does not retroactively accept it:
+       current validity is not historical acceptance. The event re-enters
+       the fold only through the deliberate repair path the fix_hint
+       prescribes — a rebuild that re-applies it and self-heals the log
+       (A105) — never by re-evaluation alone.
+    2. For events with no failure record, the live verdict decides —
+       a clean not-yet-drained event stays included, preserving the
+       reports' event-first read-ahead behavior.
+
+    Pass a per-request ``facts_cache`` so account lookups are shared across
+    the fold."""
+    from projections.models import ProjectionFailureLog
+
+    if ProjectionFailureLog.objects.filter(company=event.company, event=event, resolved=False).exists():
+        return False
     return not evaluate_posted_journal_for_apply(event, facts_cache)
 
 
