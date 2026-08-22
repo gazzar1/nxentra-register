@@ -276,6 +276,24 @@ ORD-CN,1000.00,0,0,1000.00,PR3B-CN,2026-04-25
     ).exists()
 
 
+def test_settlement_identical_orphans_in_two_batches_stay_distinct(shopify_setup, company):
+    """Codex round-1 P2: identical orphan rows in DIFFERENT batches at the same
+    within-batch position must not collide in the dedup hash — the batch id is
+    part of the preserved evidence."""
+    csv = b"""order_id,gross,fee,net,payout_batch_id,payout_date
+8888,300.00,9.00,291.00,PR3B-B1,2026-04-25
+8888,300.00,9.00,291.00,PR3B-B2,2026-04-25
+"""
+    import_settlement_csv(
+        company=company, provider_normalized_code="paymob", file_content=csv, source_filename="twins.csv"
+    )
+    flags = ImportRejectedRow.objects.filter(
+        company=company, reason_code=ImportRejectedRow.ReasonCode.ORPHAN_ORDER_ID
+    ).order_by("id")
+    assert flags.count() == 2, "one durable review flag per source row, per batch"
+    assert {f.raw_row.get("payout_batch_id") for f in flags} == {"PR3B-B1", "PR3B-B2"}
+
+
 def test_settlement_orphan_order_id_writes_quarantined_review_flag(shopify_setup, company):
     """Founder-approved 0042: an orphan order_id row still POSTS, but leaves a
     durable QUARANTINED review flag instead of only a transient response field."""
@@ -598,6 +616,79 @@ def test_manual_match_reports_failure_when_projection_swallows(company, actor, m
     assert bank_line.match_status == BankStatementLine.MatchStatus.UNMATCHED
     # The failure is durable + retryable: event committed, failure log written.
     assert ProjectionFailureLog.objects.filter(company=company, resolved=False).exists()
+
+
+def test_manual_match_rejects_wrong_pairing_from_earlier_pending_event(
+    company, actor, manual_match_targets, merchant_bank, revenue_account, monkeypatch
+):
+    """Codex round-1 P2: an EARLIER pending confirmation for the same bank line
+    applies (a different pairing) and processing stops before THIS command's
+    event — the status changed, but not to THIS request's pairing. The command
+    must fail, not report the other pairing as this match's success."""
+    from reconciliation.commands import CONFIDENCE_EXACT, _emit_match_confirmed, manual_match
+    from reconciliation.projections import ReconciliationProjection
+
+    bank_line = manual_match_targets["bank_line"]
+    jl_b = manual_match_targets["journal_line"]  # the pairing THIS request asks for
+
+    # A second posted JE provides JL-A — the earlier, still-pending pairing.
+    with projection_writes_allowed():
+        other_entry = JournalEntry.objects.create(
+            company=company,
+            date=date(2026, 4, 26),
+            period=4,
+            memo="PR3c earlier pending JE",
+            kind=JournalEntry.Kind.NORMAL,
+            status=JournalEntry.Status.POSTED,
+            entry_number="JE-PR3C-2",
+        )
+        jl_a = JournalLine.objects.create(
+            company=company,
+            entry=other_entry,
+            line_no=1,
+            account=merchant_bank,
+            debit=Decimal("777.00"),
+            credit=Decimal("0"),
+        )
+        JournalLine.objects.create(
+            company=company,
+            entry=other_entry,
+            line_no=2,
+            account=revenue_account,
+            debit=Decimal("0"),
+            credit=Decimal("777.00"),
+        )
+
+    # The earlier confirmation exists as a PENDING event (not yet projected).
+    _emit_match_confirmed(
+        company=company,
+        bank_line=bank_line,
+        journal_line=jl_a,
+        match_kind="manual_pick",
+        confidence=CONFIDENCE_EXACT,
+        difference_amount=Decimal("0"),
+        statement_date=bank_line.statement.statement_date,
+        confirmation_kind="manual",
+    )
+
+    # The projection applies the earlier event normally but fails on THIS one.
+    real_handle = ReconciliationProjection.handle
+
+    def selective(self, event):
+        data = event.get_data()
+        if str(data.get("journal_line_public_id") or "") == str(jl_b.public_id):
+            raise RuntimeError("PR3bc injected: current event fails")
+        return real_handle(self, event)
+
+    monkeypatch.setattr(ReconciliationProjection, "handle", selective)
+
+    result = manual_match(actor, bank_line.id, jl_b.id)
+
+    assert not result.success, "the canonical pairing is JL-A, not this request's JL-B"
+    assert "pairing" in (result.error or "")
+    bank_line.refresh_from_db()
+    assert bank_line.matched_journal_line_id == jl_a.id  # the earlier event applied
+    assert bank_line.match_status == BankStatementLine.MatchStatus.MANUAL_MATCHED
 
 
 def test_manual_match_success_path_unchanged(company, actor, manual_match_targets):

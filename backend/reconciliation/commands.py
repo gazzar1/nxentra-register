@@ -116,26 +116,49 @@ def _run_reconciliation_projection_sync(company) -> None:
     ReconciliationProjection().process_pending(company)
 
 
-def _canonical_match_state_error(bank_line: BankStatementLine, *, forbidden_status: str, action: str) -> str | None:
-    """A5-PR3c (D#9): after the synchronous projection run, verify the canonical
-    match state actually changed — process_pending SWALLOWS a handler exception
-    (projections/base.py logs + writes the failure log + breaks; no re-raise),
-    so without this check the command returns OK and the API reports success
-    while the canonical read model still disagrees.
+_JL_UNSET = object()
 
-    Returns an error message when the canonical state still equals
-    ``forbidden_status`` (the pre-action state), else None. The caller returns
+
+def _canonical_match_state_error(
+    bank_line: BankStatementLine,
+    *,
+    expected_statuses: tuple[str, ...],
+    expected_matched_jl_id=_JL_UNSET,
+    action: str,
+) -> str | None:
+    """A5-PR3c (D#9): after the synchronous projection run, verify THIS action's
+    exact canonical outcome landed — process_pending SWALLOWS a handler
+    exception (projections/base.py logs + writes the failure log + breaks; no
+    re-raise), so without this check the command returns OK and the API reports
+    success while the canonical read model disagrees.
+
+    Codex round-1 (PR #129): a mere pre/post "did it change" check is not
+    enough — an EARLIER pending confirmation for the same bank line can apply
+    (a different pairing) before processing stops ahead of THIS command's
+    event. So the check validates the expected terminal status set AND, when
+    given, the exact ``matched_journal_line`` the current action must produce
+    (``None`` for unmatch/exclude — the projection clears the FK).
+
+    Returns an error message on mismatch, else None. The caller returns
     ``CommandResult.fail`` WITHOUT rolling back: the emitted event and the
     ProjectionFailureLog stay committed, so the async projection pass retries
     and a transient failure self-heals — the operator just never sees a false
     success in the meantime.
     """
     bank_line.refresh_from_db()
-    if bank_line.match_status == forbidden_status:
+    if bank_line.match_status not in expected_statuses:
         return (
-            f"The {action} was recorded but could not be applied — the bank line is still "
-            f"{bank_line.match_status}. See /finance/exceptions; a transient failure retries "
-            "automatically on the next projection pass."
+            f"The {action} was recorded but could not be applied — the bank line is "
+            f"{bank_line.match_status}, expected {' or '.join(expected_statuses)}. See "
+            "/finance/exceptions; a transient failure retries automatically on the next "
+            "projection pass."
+        )
+    if expected_matched_jl_id is not _JL_UNSET and bank_line.matched_journal_line_id != expected_matched_jl_id:
+        return (
+            f"The {action} was recorded but the canonical pairing does not correspond to this "
+            "request (an earlier pending confirmation may have applied instead). See "
+            "/finance/exceptions; the remaining event retries automatically on the next "
+            "projection pass."
         )
     return None
 
@@ -1370,9 +1393,17 @@ def _manual_match_settlement_ebd(
 
     # A5-PR3c (D#9): same canonical post-check as the plain branch — the
     # clearance JE stays posted (committed with the event; unmatch reverses it),
-    # but the API must not claim "matched" while the line is still UNMATCHED.
+    # but the API must not claim "matched" unless THIS action's pairing landed:
+    # the projection stamps the CLEARANCE JE line as matched_journal_line, and a
+    # non-zero difference legitimately lands MATCHED_WITH_DIFFERENCE (A165).
     err = _canonical_match_state_error(
-        bank_line, forbidden_status=BankStatementLine.MatchStatus.UNMATCHED, action="manual match"
+        bank_line,
+        expected_statuses=(
+            BankStatementLine.MatchStatus.MANUAL_MATCHED,
+            BankStatementLine.MatchStatus.MATCHED_WITH_DIFFERENCE,
+        ),
+        expected_matched_jl_id=clearance_je_line.id,
+        action="manual match",
     )
     if err:
         return CommandResult.fail(err)
@@ -1456,9 +1487,14 @@ def manual_match(
 
     _run_reconciliation_projection_sync(actor.company)
 
-    # A5-PR3c (D#9): never report a match the canonical read model didn't apply.
+    # A5-PR3c (D#9): never report a match the canonical read model didn't apply
+    # — and only THIS pairing counts (a plain manual pick emits difference 0,
+    # so the exact expected terminal status is MANUAL_MATCHED to this JL).
     err = _canonical_match_state_error(
-        bank_line, forbidden_status=BankStatementLine.MatchStatus.UNMATCHED, action="manual match"
+        bank_line,
+        expected_statuses=(BankStatementLine.MatchStatus.MANUAL_MATCHED,),
+        expected_matched_jl_id=journal_line.id,
+        action="manual match",
     )
     if err:
         return CommandResult.fail(err)
@@ -1769,10 +1805,6 @@ def unmatch_line(
 
     _clear_match_state(bank_line, settlement_ebd_line)  # A99: now a no-op.
 
-    # A5-PR3c (D#9 class): capture the pre-action status — "still equal after
-    # the sync projection run" means the swallowed-failure false-success.
-    pre_action_status = bank_line.match_status
-
     _emit_match_unmatched(
         company=actor.company,
         bank_line=bank_line,
@@ -1787,7 +1819,14 @@ def unmatch_line(
 
     _run_reconciliation_projection_sync(actor.company)
 
-    err = _canonical_match_state_error(bank_line, forbidden_status=pre_action_status, action="unmatch")
+    # A5-PR3c (D#9 class): unmatch has one exact terminal outcome — UNMATCHED
+    # with the matched-JL FK cleared by the projection.
+    err = _canonical_match_state_error(
+        bank_line,
+        expected_statuses=(BankStatementLine.MatchStatus.UNMATCHED,),
+        expected_matched_jl_id=None,
+        action="unmatch",
+    )
     if err:
         return CommandResult.fail(err)
 
@@ -1908,16 +1947,17 @@ def exclude_line(
 
     _run_reconciliation_projection_sync(actor.company)
 
-    # A5-PR3c (D#9 class): exclude has one legitimate terminal state — assert it
-    # directly (a pre-state comparison would false-fail the idempotent
+    # A5-PR3c (D#9 class): exclude has one exact terminal outcome — EXCLUDED
+    # with the matched-JL FK cleared (also correct for the idempotent
     # exclude-of-an-already-EXCLUDED line, which this command permits).
-    bank_line.refresh_from_db()
-    if bank_line.match_status != BankStatementLine.MatchStatus.EXCLUDED:
-        return CommandResult.fail(
-            f"The exclude was recorded but could not be applied — the bank line is still "
-            f"{bank_line.match_status}. See /finance/exceptions; a transient failure retries "
-            "automatically on the next projection pass."
-        )
+    err = _canonical_match_state_error(
+        bank_line,
+        expected_statuses=(BankStatementLine.MatchStatus.EXCLUDED,),
+        expected_matched_jl_id=None,
+        action="exclude",
+    )
+    if err:
+        return CommandResult.fail(err)
 
     return CommandResult.ok()
 

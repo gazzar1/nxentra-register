@@ -1226,7 +1226,13 @@ def import_settlement_csv(
                             # aggregates by batch, so the original file index is
                             # gone by here; the batch id disambiguates).
                             "row_index": li_index,
-                            "raw_row": li,
+                            # Copy + stamp the batch id (never mutate li — it is
+                            # the emitted event's line_items entry). The batch id
+                            # in raw_row keeps identical orphan rows in DIFFERENT
+                            # batches at the same within-batch position from
+                            # colliding in the dedup hash (Codex round-1), and is
+                            # better evidence besides.
+                            "raw_row": {**li, "payout_batch_id": batch["payout_batch_id"]},
                             "reason_code": "ORPHAN_ORDER_ID",
                             "reason_message": (
                                 f"Batch {batch['payout_batch_id']}: order_id {li_order_id} matches no "

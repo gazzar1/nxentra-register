@@ -166,7 +166,7 @@ def test_manual_match_does_not_directly_flip_journal_line_reconciled(company, ma
     # change, and the command now says so honestly instead of reporting a
     # false success — the event-first contract below is unchanged.
     assert not result.success, "canonical state did not change — the command must not claim success"
-    assert "still" in (result.error or ""), result.error
+    assert "/finance/exceptions" in (result.error or ""), result.error
 
     # Event WAS emitted (committed despite the honest failure — the async
     # projection pass retries it).
