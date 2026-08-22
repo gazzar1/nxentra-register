@@ -290,9 +290,37 @@ class TestPostedApplyEnforcement:
         revenue.refresh_from_db()
         assert revenue.credit_total == Decimal("150.00")
         log.refresh_from_db()
-        assert log.resolved and log.resolved_by is None
+        from projections.models import SELF_HEALED_RESOLUTION_NOTE
+
+        assert log.resolved and log.resolution_note == SELF_HEALED_RESOLUTION_NOTE
         verdict = revenue.verify_integrity()
         assert verdict["is_valid"], verdict
+
+    def test_operator_note_cannot_forge_self_heal(self, company, user, cash_account, revenue_account):
+        """Codex round-15 P1: the self-heal signature is framework-owned —
+        mark_resolved (and the queue endpoint routing through it) replaces a
+        colliding operator note, so a manual resolution can never read as a
+        successful re-apply."""
+        from projections.models import SELF_HEALED_RESOLUTION_NOTE
+
+        _emit_posted(company, user, _posted_payload(uuid4(), user, cash_account, revenue_account))
+        payload = _posted_payload(uuid4(), user, cash_account, revenue_account, amount="50.00")
+        bad_event = _emit_posted(company, user, payload)
+        bad = dict(payload)
+        bad["lines"] = [dict(payload["lines"][0], account_public_id=str(uuid4())), dict(payload["lines"][1])]
+        _corrupt(bad_event, bad)
+
+        balances = AccountBalanceProjection()
+        balances.process_pending(company)
+
+        log = ProjectionFailureLog.objects.get(company=company, event_id=bad_event.id, projection_name=balances.name)
+        log.mark_resolved(user, note=SELF_HEALED_RESOLUTION_NOTE)  # forge attempt
+        log.refresh_from_db()
+        assert log.resolution_note != SELF_HEALED_RESOLUTION_NOTE
+
+        revenue = AccountBalance.objects.get(company=company, account=revenue_account)
+        verdict = revenue.verify_integrity()
+        assert verdict["is_valid"], verdict  # still excluded from the fold
 
     def test_cross_company_account_quarantines(self, company, second_company, user, cash_account, revenue_account):
         from accounting.models import Account

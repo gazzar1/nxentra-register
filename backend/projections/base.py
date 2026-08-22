@@ -286,8 +286,6 @@ class BaseProjection(ABC):
                         # A163) showed already-healed failures forever.
                         # Cheap conditional UPDATE: (company,
                         # projection_name, event) is the table's unique key.
-                        from projections.models import ProjectionFailureLog
-
                         # A3-PR3 (Codex round-14 P1): stamp ALL failure rows
                         # for this key — including manually-resolved ones —
                         # as SELF-HEALED (resolved_by NULL is the persisted
@@ -295,15 +293,17 @@ class BaseProjection(ABC):
                         # event-fold acceptance filter keys on it). A manual
                         # queue resolution is an operator claim; an actual
                         # successful apply is the stronger truth.
+                        from projections.models import SELF_HEALED_RESOLUTION_NOTE, ProjectionFailureLog
+
                         ProjectionFailureLog.objects.filter(
                             company=company,
                             projection_name=self.name,
                             event=event,
-                        ).exclude(resolved=True, resolved_by__isnull=True).update(
+                        ).exclude(resolved=True, resolution_note=SELF_HEALED_RESOLUTION_NOTE).update(
                             resolved=True,
                             resolved_at=timezone.now(),
                             resolved_by=None,
-                            resolution_note="Self-healed: event processed successfully on retry.",
+                            resolution_note=SELF_HEALED_RESOLUTION_NOTE,
                         )
 
                 except DeferEvent as defer:

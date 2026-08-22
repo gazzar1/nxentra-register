@@ -20,7 +20,6 @@ See:
 - docs/finance_event_first_policy.md §8
 """
 
-from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -194,11 +193,10 @@ class ProjectionFailureResolveView(APIView):
             )
 
         note = (request.data.get("resolution_note") or "").strip()[:2000]
-        log.resolved = True
-        log.resolved_at = timezone.now()
-        log.resolved_by = request.user
-        log.resolution_note = note
-        log.save(update_fields=["resolved", "resolved_at", "resolved_by", "resolution_note"])
+        # A3-PR3 (Codex round-15 P1): route through mark_resolved — the ONE
+        # place that guarantees an operator resolution cannot reproduce the
+        # framework's self-heal signature.
+        log.mark_resolved(request.user, note=note)
 
         return Response(_serialize_failure(log))
 

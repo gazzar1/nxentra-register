@@ -1191,6 +1191,12 @@ class ProjectionStatus(models.Model):
 # - projections/exceptions.py — ProjectionStateError, ProjectionCommandFailedError
 # - projections/base.py BaseProjection.on_error — writes here
 
+# The framework-owned mark of a GENUINE successful re-apply (A105 self-heal,
+# written only by BaseProjection.process_pending on a successful handle).
+# The event-fold acceptance filter keys on this persisted resolution KIND;
+# mark_resolved refuses to reproduce it (Codex round-15 P1).
+SELF_HEALED_RESOLUTION_NOTE = "Self-healed: event processed successfully on retry."
+
 
 class ProjectionFailureLog(models.Model):
     """Operator-visible record of a projection handler failing on an event.
@@ -1309,12 +1315,22 @@ class ProjectionFailureLog(models.Model):
         return f"[{self.category}] {self.projection_name} on event {self.event_id}: {self.message[:60]}"
 
     def mark_resolved(self, user=None, note: str = ""):
-        """Operator action: mark this failure as resolved."""
+        """Operator action: mark this failure as resolved.
+
+        A3-PR3 (Codex round-15 P1): an operator resolution must never be
+        able to produce the framework's SELF-HEALED signature — the
+        event-fold acceptance filter keys on the persisted resolution KIND
+        (the framework-owned resolution_note sentinel; resolved_by is a
+        nullable SET_NULL user reference and therefore not a reliable kind
+        marker). A colliding note is replaced, and an empty note gets an
+        explicit operator marker.
+        """
         from django.utils import timezone
 
         self.resolved = True
         self.resolved_at = timezone.now()
         self.resolved_by = user
-        if note:
-            self.resolution_note = note
+        if not note or note.strip() == SELF_HEALED_RESOLUTION_NOTE:
+            note = "Operator-resolved."
+        self.resolution_note = note
         self.save(update_fields=["resolved", "resolved_at", "resolved_by", "resolution_note"])

@@ -502,10 +502,12 @@ def posted_event_accepted_for_apply(
        a clean not-yet-drained event stays included, preserving the
        reports' event-first read-ahead behavior.
 
-    A MANUALLY-resolved log (``resolved_by`` set via the queue endpoint) is
-    an operator claim, not a re-apply — only a SELF-HEALED log
-    (``resolved_by`` NULL, stamped by the framework on an actual successful
-    apply) counts as historical acceptance (Codex round-14 P1).
+    A MANUALLY-resolved log is an operator claim, not a re-apply — only a
+    SELF-HEALED log counts as historical acceptance, keyed on the persisted
+    resolution KIND (the framework-owned ``SELF_HEALED_RESOLUTION_NOTE``
+    sentinel, which ``mark_resolved`` refuses to reproduce; ``resolved_by``
+    is a nullable SET_NULL user reference and therefore not a reliable kind
+    marker — Codex rounds 14+15 P1).
 
     Pass a per-request ``facts_cache`` so account lookups are shared across
     the fold, and ``excluded_ids`` (from :func:`excluded_posted_event_ids`)
@@ -515,11 +517,16 @@ def posted_event_accepted_for_apply(
         if event.id in excluded_ids:
             return False
     else:
-        from projections.models import ProjectionFailureLog
+        from projections.account_balance import AccountBalanceProjection
+        from projections.models import SELF_HEALED_RESOLUTION_NOTE, ProjectionFailureLog
 
         if (
-            ProjectionFailureLog.objects.filter(company=event.company, event=event)
-            .exclude(resolved=True, resolved_by__isnull=True)
+            ProjectionFailureLog.objects.filter(
+                company=event.company,
+                event=event,
+                projection_name=AccountBalanceProjection().name,
+            )
+            .exclude(resolved=True, resolution_note=SELF_HEALED_RESOLUTION_NOTE)
             .exists()
         ):
             return False
@@ -527,13 +534,26 @@ def posted_event_accepted_for_apply(
 
 
 def excluded_posted_event_ids(company) -> frozenset:
-    """Event ids with a disqualifying persisted disposition (any failure log
-    that is not SELF-HEALED) — the batch preload for event-fold readers."""
-    from projections.models import ProjectionFailureLog
+    """Event ids with a disqualifying persisted disposition — the batch
+    preload for event-fold readers.
+
+    Scoped to the BALANCE projection's logs (Codex round-15 P1): every
+    reader folds amount semantics that mirror ``account_balance``, and the
+    canonical apply quarantine stamps every consumer including it — while an
+    UNRELATED consumer's operational failure (e.g. the JE read model halting
+    on a malformed ``posted_at`` the invariant does not govern) must not
+    eclipse a journal the balance projection actually applied. Disqualifying
+    = any log that is not SELF-HEALED (the framework-owned resolution-note
+    sentinel)."""
+    from projections.account_balance import AccountBalanceProjection
+    from projections.models import SELF_HEALED_RESOLUTION_NOTE, ProjectionFailureLog
 
     return frozenset(
-        ProjectionFailureLog.objects.filter(company=company)
-        .exclude(resolved=True, resolved_by__isnull=True)
+        ProjectionFailureLog.objects.filter(
+            company=company,
+            projection_name=AccountBalanceProjection().name,
+        )
+        .exclude(resolved=True, resolution_note=SELF_HEALED_RESOLUTION_NOTE)
         .values_list("event_id", flat=True)
     )
 
