@@ -334,3 +334,39 @@ def test_process_order_paid_marks_transient_failure_retryable(company, owner_mem
 
     assert not result.success
     assert result.data and result.data.get("retryable") is True
+
+
+# =============================================================================
+# Codex round-2 P2 — negative refunds get a durable REJECTED marker at ingress
+# =============================================================================
+
+
+def test_process_refund_negative_amount_persists_rejected_marker(company, owner_membership):
+    """Codex round-2 P2: a NEGATIVE refund is invalid provider data caught at
+    ingress before any event, so it can't reach the projection's invalid-data
+    guard. The canonical process_refund must persist a durable, operator-visible
+    REJECTED marker (a ShopifyRefund row status=ERROR with the reason) and emit no
+    accounting event — the invalid external evidence must not vanish."""
+    from events.models import BusinessEvent
+    from shopify_connector import commands as cmd
+
+    store = _shopify_setup(company)
+    _make_order_row(company, store, order_id="9900060", total="100.00")
+
+    result = cmd.process_refund(
+        store,
+        {
+            "id": 9900061,
+            "order_id": 9900060,
+            "created_at": "2026-05-04T00:00:00Z",
+            "transactions": [{"kind": "refund", "status": "success", "amount": "-5.00"}],
+            "refund_line_items": [],
+        },
+    )
+    assert not result.success
+
+    refund = ShopifyRefund.objects.get(company=company, shopify_refund_id=9900061)
+    assert refund.status == ShopifyRefund.Status.ERROR
+    assert "negative" in refund.error_message.lower()
+    assert refund.event_id is None
+    assert not BusinessEvent.objects.filter(company=company, idempotency_key="shopify.refund.created:9900061").exists()

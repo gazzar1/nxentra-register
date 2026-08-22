@@ -1498,7 +1498,26 @@ def process_refund(store: ShopifyStore, payload: dict) -> CommandResult:
             refund_amount += Decimal(str(line.get("subtotal", "0")))
 
     if refund_amount < 0:
-        return CommandResult.fail("Refund amount is negative.")
+        # A5 (Codex round-2 P2): a negative refund is invalid provider data. Like
+        # the zero case, this is caught at ingress BEFORE any event, so it can
+        # never reach the projection's invalid-data guard — persist a durable,
+        # operator-visible REJECTED marker HERE (a ShopifyRefund row, status=ERROR,
+        # with the reason) instead of a bare fail the webhook acks (200) and loses.
+        # No accounting event is emitted (nothing valid to post).
+        with command_writes_allowed():
+            ShopifyRefund.objects.create(
+                company=store.company,
+                order=order,
+                shopify_refund_id=shopify_refund_id,
+                amount=refund_amount,
+                currency=order.currency,
+                reason=payload.get("note", ""),
+                shopify_created_at=payload.get("created_at", "") or datetime.now().isoformat(),
+                raw_payload=payload,
+                status=ShopifyRefund.Status.ERROR,
+                error_message=(f"Refund amount is negative ({refund_amount}); invalid provider data — not accounted."),
+            )
+        return CommandResult.fail(f"Refund amount is negative ({refund_amount}).")
 
     refund_date_str = payload.get("created_at", "")
     try:
