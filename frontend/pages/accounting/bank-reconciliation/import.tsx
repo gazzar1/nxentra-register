@@ -148,7 +148,14 @@ export default function ImportStatementPage() {
       setParseRejects(data.rejected_rows ?? []);
       setParseFilename(data.source_filename || csvFile.name || "");
       const rejectedCount = data.rejected_row_count ?? 0;
-      if (data.count === 0) {
+      if (data.count === 0 && rejectedCount > 0) {
+        toast({
+          title: `Parsed 0 lines — ${rejectedCount} row(s) rejected`,
+          description:
+            "If the column mapping is correct, you can still import to record the rejected rows as durable evidence.",
+          variant: "destructive",
+        });
+      } else if (data.count === 0) {
         toast({
           title: "Parsed 0 lines",
           description:
@@ -182,7 +189,10 @@ export default function ImportStatementPage() {
       });
       return;
     }
-    if (parsedLines.length === 0) {
+    // A5-PR3c (Codex round-4): an all-invalid file (0 survivors, N rejects) is
+    // still committable — the statement records with zero lines and the
+    // rejected rows become durable evidence in Finance → Exceptions.
+    if (parsedLines.length === 0 && parseRejects.length === 0) {
       toast({ title: "No lines to import.", variant: "destructive" });
       return;
     }
@@ -423,16 +433,25 @@ export default function ImportStatementPage() {
           </CardContent>
         </Card>
 
-        {/* Import Action */}
-        {parsedLines.length > 0 && (
-          <div className="flex justify-end">
+        {/* Import Action — also shown for an all-invalid file (0 lines, N
+            rejects) so the rejected rows can still be recorded as durable
+            evidence (A5-PR3c, Codex round-4). */}
+        {(parsedLines.length > 0 || parseRejects.length > 0) && (
+          <div className="flex flex-col items-end gap-1">
+            {parseRejects.length > 0 && (
+              <p className="text-xs text-muted-foreground">
+                {parseRejects.length} rejected row(s) will be recorded under Finance → Exceptions.
+              </p>
+            )}
             <Button onClick={handleImport} disabled={importing} size="lg">
               {importing ? (
                 <Loader2 className="me-2 h-4 w-4 animate-spin" />
               ) : (
                 <Upload className="me-2 h-4 w-4" />
               )}
-              Import {parsedLines.length} Lines
+              {parsedLines.length > 0
+                ? `Import ${parsedLines.length} Lines`
+                : `Record ${parseRejects.length} Rejected Row(s)`}
             </Button>
           </div>
         )}

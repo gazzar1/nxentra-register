@@ -250,8 +250,13 @@ def import_bank_statement(
     except Account.DoesNotExist:
         return CommandResult.fail("Account not found.")
 
-    if not lines_data:
+    if not lines_data and not parse_rejects:
         return CommandResult.fail("No transaction lines provided.")
+    # Codex round-4: an ALL-INVALID file (zero survivors, N rejects) must still
+    # be committable, or its rows never gain durable evidence — the statement is
+    # created with zero lines (already a legitimate outcome: a full-duplicate
+    # re-upload does the same) and the rejects link to it. The EGP-only gate
+    # below still governs, so a foreign reject-only commit refuses whole-file.
 
     # A4: the constrained pilot ingests EGP only — reject a foreign-currency bank
     # statement before any BankStatement / line row is written. Serialize the

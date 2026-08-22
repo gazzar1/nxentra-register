@@ -932,10 +932,28 @@ def import_settlement_csv(
     method = payment_method or spec.default_method
     batch_uuid = import_batch_id or _uuid.uuid4()
 
+    # A4 / Codex round-4: sweep the REJECTED rows' currency evidence BEFORE any
+    # durable data is created — an all-rejected foreign-currency file produces
+    # zero batches, so without this it would slip past the batch-level EGP-only
+    # sweep below and still write reject rows for an out-of-scope upload. Same
+    # alias set the parsers honor; a row with no currency cell books nothing and
+    # carries no foreign claim, so it is accepted (home-currency semantics,
+    # matching the batch sweep's fallback). No-op for non-pilot companies.
+    from accounts.pilot_policy import require_pilot_currency
+
+    for _desc in parse_rejects:
+        _raw = _desc.get("raw_row") or {}
+        for _cell_key, _cell_value in _raw.items():
+            if str(_cell_key).strip().lower() in ("currency", "currency_code", "curr"):
+                _cur = str(_cell_value or "").strip().upper()
+                if _cur:
+                    require_pilot_currency(company, _cur, context=f"Settlement rejected row {_desc.get('row_index')}")
+
     if not batches:
         # Every row was dropped (e.g. all blank batch ids): there is nothing to
-        # import — and nothing for the whole-file gates below to gate — but the
-        # dropped rows must not vanish. Persist the evidence, then return.
+        # import — and nothing for the BATCH-level gates below to gate (the
+        # reject-row currency sweep above already ran) — but the dropped rows
+        # must not vanish. Persist the evidence, then return.
         persist_import_rejects(
             company,
             source_kind="SETTLEMENT",

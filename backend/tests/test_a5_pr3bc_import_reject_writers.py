@@ -265,6 +265,29 @@ ORD-2,500.00,15.00,485.00,,2026-04-25,USD
     assert ImportRejectedRow.objects.count() == 0
 
 
+def test_settlement_all_rejected_foreign_file_refused_before_evidence(shopify_setup, company):
+    """Codex round-4: an ALL-REJECTED file produces zero batches, so the batch
+    currency sweep never runs — the reject-row currency sweep must still refuse
+    a foreign file for a pilot company BEFORE any durable data is written."""
+    from accounts.models import Company
+    from accounts.pilot_policy import PilotScopeBlocked
+
+    company.pilot_profile = Company.PilotProfile.ISOLATED_SHADOW_LEDGER_V1
+    company.default_currency = "EGP"
+    company.functional_currency = "EGP"
+    company.save(update_fields=["pilot_profile", "default_currency", "functional_currency"])
+
+    # Every row rejected (blank batch id) AND explicitly USD.
+    csv = b"""order_id,gross,fee,net,payout_batch_id,payout_date,currency
+ORD-1,100.00,3.00,97.00,,2026-04-25,USD
+"""
+    with pytest.raises(PilotScopeBlocked):
+        import_settlement_csv(
+            company=company, provider_normalized_code="paymob", file_content=csv, source_filename="usd_all_bad.csv"
+        )
+    assert ImportRejectedRow.objects.count() == 0
+
+
 def test_settlement_all_zero_batch_writes_handled_zero_marker(shopify_setup, company):
     """D#13: an all-zero batch stays a benign no-op (no JE, no failure log, no
     page) but now leaves a durable, queryable handled-zero sentinel."""
@@ -551,6 +574,33 @@ def test_bank_commit_time_bad_amount_rejects_instead_of_500(company, actor, merc
         ).count()
         == 2
     )
+
+
+def test_bank_reject_only_commit_creates_statement_and_evidence(company, actor, merchant_bank):
+    """Codex round-4: an ALL-INVALID file (zero survivors, N rejects) must still
+    be committable — statement with zero lines (the full-duplicate re-upload
+    precedent), rejects linked to it."""
+    from accounting.models import BankStatement
+
+    desc = {
+        "row_index": 1,
+        "raw_row": {"Date": "bad", "Amount": "xx"},
+        "reason_code": "UNPARSEABLE_DATE",
+        "reason_message": "bad date",
+    }
+    result = _import_bank(actor, merchant_bank, [], source_filename="all_bad.csv", parse_rejects=[desc])
+    assert result.success, result.error
+    assert result.data["lines_created"] == 0
+    assert result.data["lines_rejected"] == 1
+
+    statement = result.data["statement"]
+    assert BankStatement.objects.filter(pk=statement.pk).exists()
+    reject = ImportRejectedRow.objects.get(company=company)
+    assert reject.statement_id == statement.id
+
+    # Truly-empty input (no lines AND no rejects) still refuses.
+    empty = _import_bank(actor, merchant_bank, [])
+    assert not empty.success
 
 
 def test_bank_duplicates_stay_counter_only(company, actor, merchant_bank):
