@@ -14,7 +14,10 @@ import { useToast } from "@/components/ui/toaster";
 import { useAccounts } from "@/queries/useAccounts";
 import { useAuth } from "@/contexts/AuthContext";
 import { currencyOptions } from "@/lib/constants";
-import { bankReconciliationService } from "@/services/bank-reconciliation.service";
+import {
+  bankReconciliationService,
+  type ImportRejectDescriptor,
+} from "@/services/bank-reconciliation.service";
 
 const MAPPING_STORAGE_KEY = "nxentra:bank-import-mapping";
 
@@ -75,6 +78,10 @@ export default function ImportStatementPage() {
   const [parsedLines, setParsedLines] = useState<
     Array<{ line_date: string; description: string; amount: string; reference: string }>
   >([]);
+  // A5-PR3c: rows the parser dropped — echoed back on the commit so they
+  // become durable ImportRejectedRow evidence (visible in /finance/exceptions).
+  const [parseRejects, setParseRejects] = useState<ImportRejectDescriptor[]>([]);
+  const [parseFilename, setParseFilename] = useState("");
   const [parsingHeaders, setParsingHeaders] = useState(false);
   const [parsingLines, setParsingLines] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -92,6 +99,8 @@ export default function ImportStatementPage() {
     setSampleRows([]);
     setMapping(null);
     setParsedLines([]);
+    setParseRejects([]);
+    setParseFilename("");
   }, [form.account_id]);
 
   const handleParseHeaders = async () => {
@@ -136,12 +145,20 @@ export default function ImportStatementPage() {
           reference: l.reference || "",
         })),
       );
+      setParseRejects(data.rejected_rows ?? []);
+      setParseFilename(data.source_filename || csvFile.name || "");
+      const rejectedCount = data.rejected_row_count ?? 0;
       if (data.count === 0) {
         toast({
           title: "Parsed 0 lines",
           description:
             "Check the column mapping — the date column may not match the date format.",
           variant: "destructive",
+        });
+      } else if (rejectedCount > 0) {
+        toast({
+          title: `Parsed ${data.count} lines from CSV.`,
+          description: `${rejectedCount} row(s) could not be parsed and will be recorded as import rejections on import.`,
         });
       } else {
         toast({ title: `Parsed ${data.count} lines from CSV.` });
@@ -182,13 +199,19 @@ export default function ImportStatementPage() {
         currency: form.currency,
         source: "CSV",
         lines: parsedLines,
+        // A5-PR3c: persist the parse-time drops as durable evidence.
+        parse_rejects: parseRejects,
+        source_filename: parseFilename,
       });
       const skipped = data.lines_skipped_duplicate ?? 0;
+      const rejected = data.lines_rejected ?? 0;
+      const parts = [`Imported ${data.lines_created} transactions`];
+      if (skipped > 0) parts.push(`skipped ${skipped} duplicates`);
+      if (rejected > 0) parts.push(`recorded ${rejected} rejected row(s)`);
       toast({
-        title:
-          skipped > 0
-            ? `Imported ${data.lines_created} transactions, skipped ${skipped} duplicates.`
-            : `Imported ${data.lines_created} transactions.`,
+        title: `${parts.join(", ")}.`,
+        description:
+          rejected > 0 ? "Rejected rows are listed under Finance → Exceptions." : undefined,
       });
       router.push(`/accounting/bank-reconciliation/${data.id}`);
     } catch {

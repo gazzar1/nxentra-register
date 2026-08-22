@@ -116,6 +116,30 @@ def _run_reconciliation_projection_sync(company) -> None:
     ReconciliationProjection().process_pending(company)
 
 
+def _canonical_match_state_error(bank_line: BankStatementLine, *, forbidden_status: str, action: str) -> str | None:
+    """A5-PR3c (D#9): after the synchronous projection run, verify the canonical
+    match state actually changed — process_pending SWALLOWS a handler exception
+    (projections/base.py logs + writes the failure log + breaks; no re-raise),
+    so without this check the command returns OK and the API reports success
+    while the canonical read model still disagrees.
+
+    Returns an error message when the canonical state still equals
+    ``forbidden_status`` (the pre-action state), else None. The caller returns
+    ``CommandResult.fail`` WITHOUT rolling back: the emitted event and the
+    ProjectionFailureLog stay committed, so the async projection pass retries
+    and a transient failure self-heals — the operator just never sees a false
+    success in the meantime.
+    """
+    bank_line.refresh_from_db()
+    if bank_line.match_status == forbidden_status:
+        return (
+            f"The {action} was recorded but could not be applied — the bank line is still "
+            f"{bank_line.match_status}. See /finance/exceptions; a transient failure retries "
+            "automatically on the next projection pass."
+        )
+    return None
+
+
 def _infer_match_kind_for_unmatch(
     bank_line: BankStatementLine,
     previous_jl: JournalLine | None,
@@ -1344,6 +1368,15 @@ def _manual_match_settlement_ebd(
 
     _run_reconciliation_projection_sync(actor.company)
 
+    # A5-PR3c (D#9): same canonical post-check as the plain branch — the
+    # clearance JE stays posted (committed with the event; unmatch reverses it),
+    # but the API must not claim "matched" while the line is still UNMATCHED.
+    err = _canonical_match_state_error(
+        bank_line, forbidden_status=BankStatementLine.MatchStatus.UNMATCHED, action="manual match"
+    )
+    if err:
+        return CommandResult.fail(err)
+
     return CommandResult.ok(
         data={
             "bank_line": bank_line,
@@ -1422,6 +1455,13 @@ def manual_match(
     )
 
     _run_reconciliation_projection_sync(actor.company)
+
+    # A5-PR3c (D#9): never report a match the canonical read model didn't apply.
+    err = _canonical_match_state_error(
+        bank_line, forbidden_status=BankStatementLine.MatchStatus.UNMATCHED, action="manual match"
+    )
+    if err:
+        return CommandResult.fail(err)
 
     return CommandResult.ok(
         data={
@@ -1729,6 +1769,10 @@ def unmatch_line(
 
     _clear_match_state(bank_line, settlement_ebd_line)  # A99: now a no-op.
 
+    # A5-PR3c (D#9 class): capture the pre-action status — "still equal after
+    # the sync projection run" means the swallowed-failure false-success.
+    pre_action_status = bank_line.match_status
+
     _emit_match_unmatched(
         company=actor.company,
         bank_line=bank_line,
@@ -1742,6 +1786,10 @@ def unmatch_line(
     )
 
     _run_reconciliation_projection_sync(actor.company)
+
+    err = _canonical_match_state_error(bank_line, forbidden_status=pre_action_status, action="unmatch")
+    if err:
+        return CommandResult.fail(err)
 
     return CommandResult.ok()
 
@@ -1859,6 +1907,17 @@ def exclude_line(
     )
 
     _run_reconciliation_projection_sync(actor.company)
+
+    # A5-PR3c (D#9 class): exclude has one legitimate terminal state — assert it
+    # directly (a pre-state comparison would false-fail the idempotent
+    # exclude-of-an-already-EXCLUDED line, which this command permits).
+    bank_line.refresh_from_db()
+    if bank_line.match_status != BankStatementLine.MatchStatus.EXCLUDED:
+        return CommandResult.fail(
+            f"The exclude was recorded but could not be applied — the bank line is still "
+            f"{bank_line.match_status}. See /finance/exceptions; a transient failure retries "
+            "automatically on the next projection pass."
+        )
 
     return CommandResult.ok()
 

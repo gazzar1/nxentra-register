@@ -4,6 +4,15 @@ import apiClient from "@/lib/api-client";
 // Types
 // =============================================================================
 
+// A5-PR3c: a row the CSV parser dropped — surfaced in the parse response and
+// echoed back on the commit, which persists it as durable evidence.
+export interface ImportRejectDescriptor {
+  row_index: number;
+  raw_row: Record<string, unknown>;
+  reason_code: string;
+  reason_message: string;
+}
+
 export interface BankStatementSummary {
   id: number;
   public_id: string;
@@ -200,23 +209,36 @@ export const bankReconciliationService = {
       amount: string;
       reference?: string;
     }>;
+    // A5-PR3c: echo the parse response's rejected_rows + source_filename so
+    // the commit persists them as durable ImportRejectedRow evidence.
+    parse_rejects?: ImportRejectDescriptor[];
+    source_filename?: string;
   }) =>
     apiClient.post<{
       id: number;
       public_id: string;
       lines_created: number;
       lines_skipped_duplicate: number;
+      lines_rejected: number;
+      import_batch_id: string;
     }>("/accounting/bank-statements/", data),
 
   getStatement: (id: number) =>
     apiClient.get<BankStatementDetail>(`/accounting/bank-statements/${id}/`),
 
   parseCSV: (formData: FormData) =>
-    apiClient.post<{ lines: Array<Record<string, string>>; count: number }>(
-      "/accounting/bank-statements/parse-csv/",
-      formData,
-      { headers: { "Content-Type": "multipart/form-data" } },
-    ),
+    apiClient.post<{
+      lines: Array<Record<string, string>>;
+      count: number;
+      // A5-PR3c: rows the parser dropped (bad date / malformed numeric /
+      // unparseable amount / zero) — pass back on createStatement so the
+      // commit persists them.
+      rejected_rows: ImportRejectDescriptor[];
+      rejected_row_count: number;
+      source_filename: string;
+    }>("/accounting/bank-statements/parse-csv/", formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+    }),
 
   parseCSVHeaders: (formData: FormData) =>
     apiClient.post<{

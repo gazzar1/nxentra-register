@@ -125,6 +125,33 @@ class PaymentSettlementProjection(BaseProjection):
     def consumes(self) -> list[str]:
         return [EventTypes.PAYMENT_SETTLEMENT_RECEIVED]
 
+    @staticmethod
+    def _stamp_handled_marker(event: BusinessEvent, kind: str) -> None:
+        """A5-PR3b: durable, queryable marker for a legitimately-unposted batch.
+
+        This projection owns no source row of its own to flip (unlike the
+        Shopify handled-zero markers, which flip ShopifyOrder/ShopifyRefund),
+        and every candidate carrier is hazardous: PlatformSettlement is
+        command-owned (write-barrier), ProviderPayout is another projection's
+        read model (clobbered on re-apply, deleted by ITS rebuild). So the
+        marker is a ProjectionAppliedEvent SENTINEL row under a namespaced
+        projection_name (``payment_settlement:handled_zero`` /
+        ``payment_settlement:handled_via_cn``) — no migration, idempotent
+        (unique on company+name+event), written inside the framework's
+        per-event atomic + projection_writes_allowed. A benign no-op batch
+        must NOT page, so this is deliberately NOT a ProjectionFailureLog.
+        Query: ProjectionAppliedEvent.objects.filter(projection_name=
+        "payment_settlement:<kind>"). Note rebuild() clears only the bare
+        projection name; sentinels persist, and get_or_create dedups replays.
+        """
+        from projections.models import ProjectionAppliedEvent
+
+        ProjectionAppliedEvent.objects.get_or_create(
+            company=event.company,
+            projection_name=f"{PROJECTION_NAME}:{kind}",
+            event=event,
+        )
+
     def handle(self, event: BusinessEvent) -> None:
         from projections.exceptions import ProjectionStateError, ProjectionTerminalSkip
 
@@ -203,6 +230,11 @@ class PaymentSettlementProjection(BaseProjection):
             # immutable and re-import reuses the same idempotency key, so a
             # retry-forever would head-of-line-stall the settlement stream.
             if gross == 0 and net == 0 and fees == 0 and uncollected == 0:
+                # A5-PR3b (D#13): durable handled-zero marker instead of a bare
+                # return — an all-zero batch stays a benign no-op (no JE, no
+                # failure log, no page) but is no longer indistinguishable from
+                # a silently-lost one.
+                self._stamp_handled_marker(event, "handled_zero")
                 logger.info("PaymentSettlement: empty batch %s — nothing to post", payout_batch_id)
                 return
             raise ProjectionTerminalSkip(
@@ -267,10 +299,12 @@ class PaymentSettlementProjection(BaseProjection):
                     )
 
             # If the entire batch was already credited via CNs, every JE line
-            # would be zero — there's nothing to post. Stamp the source
-            # document anyway so the idempotency guard recognizes the batch
-            # as "handled" on replay.
+            # would be zero — there's nothing to post. A5-PR3b: the old comment
+            # promised to "stamp the source document" but nothing was written;
+            # the handled-via-CN marker is now real, so a fully-credited batch
+            # is durably distinguishable from a silently-lost one.
             if gross <= 0:
+                self._stamp_handled_marker(event, "handled_via_cn")
                 logger.info(
                     "PaymentSettlement %s: every line already credited via CN — no JE needed.",
                     source_document,

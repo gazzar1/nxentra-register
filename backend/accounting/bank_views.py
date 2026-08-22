@@ -108,6 +108,16 @@ class BankStatementListCreateView(APIView):
                 except ValueError:
                     ld["line_date"] = statement_date
 
+        # A5-PR3c: parse-time reject descriptors echoed back from the parse-csv
+        # response — the commit is the moment they become durable evidence.
+        # Bounded + shape/reason-validated downstream (persist_import_rejects
+        # drops anything malformed); a client omitting them just loses evidence,
+        # which is no worse than the pre-PR3c behavior.
+        parse_rejects = d.get("parse_rejects") or []
+        if not isinstance(parse_rejects, list):
+            parse_rejects = []
+        parse_rejects = parse_rejects[:1000]
+
         result = bank_import.import_bank_statement(
             actor=actor,
             account_id=account_id,
@@ -119,6 +129,8 @@ class BankStatementListCreateView(APIView):
             lines_data=lines_data,
             source=d.get("source", "CSV"),
             currency=d.get("currency", "USD"),
+            source_filename=str(d.get("source_filename") or "")[:255],
+            parse_rejects=parse_rejects,
         )
 
         if not result.success:
@@ -138,6 +150,11 @@ class BankStatementListCreateView(APIView):
                 # the merchant understands why row counts can differ from
                 # what they uploaded.
                 "lines_skipped_duplicate": result.data.get("lines_skipped_duplicate", 0),
+                # A5-PR3c: durable per-row rejects persisted by this commit
+                # (parse-time echoes + commit-time drops) — visible at
+                # /finance/exceptions, grouped by import_batch_id.
+                "lines_rejected": result.data.get("lines_rejected", 0),
+                "import_batch_id": result.data.get("import_batch_id", ""),
             },
             status=status.HTTP_201_CREATED,
         )
@@ -214,12 +231,20 @@ class BankStatementCSVImportView(APIView):
             "date_format": request.data.get("date_format", "%Y-%m-%d"),
         }
 
-        lines = bank_import.parse_csv_statement(csv_content, **column_map)
+        # A5-PR3c: the full variant also returns the rows the parser dropped
+        # (bad date / malformed numeric / bad amount / zero) as reject
+        # descriptors. NOTHING is persisted here — the operator may still be
+        # iterating on column mappings; the frontend echoes `rejected_rows`
+        # back on the COMMIT, which persists them as ImportRejectedRow.
+        lines, rejected_rows = bank_import.parse_csv_statement_full(csv_content, **column_map)
 
         return Response(
             {
                 "lines": lines,
                 "count": len(lines),
+                "rejected_rows": rejected_rows,
+                "rejected_row_count": len(rejected_rows),
+                "source_filename": getattr(csv_file, "name", "") or "",
             }
         )
 
@@ -532,6 +557,10 @@ class BankManualMatchView(APIView):
         # so the UI can route the operator to the difference-reason flow.
         bank_line = result.data["bank_line"]
         bank_line.refresh_from_db()
+        # A5-PR3c (D#9): "matched" is truthful by construction — manual_match
+        # verifies the canonical state after its synchronous projection run and
+        # returns failure if the line is still UNMATCHED (previously this could
+        # answer {"status": "matched", "match_status": "UNMATCHED"}).
         return Response(
             {
                 "status": "matched",
@@ -567,6 +596,9 @@ class BankUnmatchView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # A5-PR3c (D#9 class): truthful by construction — unmatch_line verifies
+        # the canonical match state after its synchronous projection run and
+        # fails if it didn't change, so success here implies canonical UNMATCHED.
         return Response({"status": "unmatched"})
 
 
@@ -638,6 +670,8 @@ class BankExcludeLineView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # A5-PR3c (D#9 class): truthful by construction — exclude_line asserts
+        # canonical EXCLUDED after its synchronous projection run.
         return Response({"status": "excluded"})
 
 

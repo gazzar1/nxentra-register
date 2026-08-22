@@ -162,9 +162,14 @@ def test_manual_match_does_not_directly_flip_journal_line_reconciled(company, ma
             journal_line_id=journal_line.id,
         )
 
-    assert result.success, f"manual_match failed: {result.error}"
+    # A5-PR3c (D#9): with the projection stubbed the canonical state cannot
+    # change, and the command now says so honestly instead of reporting a
+    # false success — the event-first contract below is unchanged.
+    assert not result.success, "canonical state did not change — the command must not claim success"
+    assert "still" in (result.error or ""), result.error
 
-    # Event WAS emitted.
+    # Event WAS emitted (committed despite the honest failure — the async
+    # projection pass retries it).
     events_after = BusinessEvent.objects.filter(
         company=company,
         event_type=EventTypes.RECONCILIATION_MATCH_CONFIRMED,
@@ -231,9 +236,11 @@ def test_unmatch_line_does_not_directly_clear_difference_fields(company, manual_
     ):
         result = unmatch_line(actor=actor, bank_line_id=bank_line.id)
 
-    assert result.success, f"unmatch_line failed: {result.error}"
+    # A5-PR3c (D#9): the projection was stubbed, so the canonical state cannot
+    # have cleared — the command reports that honestly now (no false success).
+    assert not result.success, "canonical state did not change — the command must not claim success"
 
-    # Event WAS emitted.
+    # Event WAS emitted (committed; retried by the async projection pass).
     events_after = BusinessEvent.objects.filter(
         company=company,
         event_type=EventTypes.RECONCILIATION_MATCH_UNMATCHED,

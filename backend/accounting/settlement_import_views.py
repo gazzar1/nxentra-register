@@ -103,6 +103,12 @@ class SettlementCSVImportView(APIView):
             )
         override_reason = (request.data.get("override_reason") or "").strip()[:2000]
 
+        # A5-PR3b: generate the upload's reject-group id HERE so the response
+        # can read back the durable ImportRejectedRow evidence the import wrote.
+        import uuid as _uuid
+
+        import_batch_id = _uuid.uuid4()
+
         try:
             emitted = import_settlement_csv(
                 company=actor.company,
@@ -115,6 +121,7 @@ class SettlementCSVImportView(APIView):
                 fiscal_year_override=fiscal_year_override,
                 override_reason=override_reason,
                 override_user=request.user if period_override else None,
+                import_batch_id=import_batch_id,
             )
         except SettlementImportError as exc:
             return Response(
@@ -141,12 +148,26 @@ class SettlementCSVImportView(APIView):
         except Exception:  # pragma: no cover - defensive
             logger.exception("Inline projection run after CSV import failed; events still queued")
 
+        # A5-PR3b: surface this upload's durable reject rows (dropped/flagged
+        # source rows + orphan-order review flags) so the merchant sees them at
+        # upload time, not only on /finance/exceptions.
+        from accounting.models import ImportRejectedRow
+
+        reject_qs = ImportRejectedRow.objects.filter(company=actor.company, import_batch_id=import_batch_id)
+        rejected_row_count = reject_qs.count()
+        reject_rows = list(
+            reject_qs.order_by("row_index").values("row_index", "reason_code", "reason_message", "status")[:200]
+        )
+
         return Response(
             {
                 "provider": provider,
                 "filename": getattr(upload, "name", ""),
                 "batches": emitted,
                 "batch_count": len(emitted),
+                "import_batch_id": str(import_batch_id),
+                "rejected_row_count": rejected_row_count,
+                "rejected_rows": reject_rows,
             },
             status=http_status.HTTP_200_OK,
         )
