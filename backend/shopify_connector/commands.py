@@ -11,7 +11,7 @@ import logging
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 import requests
 from django.conf import settings
@@ -1234,11 +1234,29 @@ def process_order_paid(store: ShopifyStore, payload: dict) -> CommandResult:
     try:
         prepared_items = _prepare_order_item_metadata(store, payload)
         return _process_order_paid_inner(store, payload, prepared_items)
+    except (InvalidOperation, ValueError, TypeError) as e:
+        # A5 (Codex round-5 P2): a PERMANENT provider-data error (e.g. a non-numeric
+        # total_price / line price that fails Decimal parsing) will never succeed on
+        # retry — acknowledge it (no 503 loop) and raise an operator-visible
+        # Notification as durable invalid-evidence, rather than marking it retryable.
+        logger.error("process_order_paid rejected invalid payload for store %s: %s", store.shop_domain, e)
+        from accounts.models import Notification
+
+        Notification.notify_company_admins(
+            company=store.company,
+            title="Shopify order rejected — invalid payload",
+            message=(
+                f"Order {payload.get('id')} arrived with invalid data ({e}) and was rejected — no "
+                f"order or journal was created. Correct it in Shopify and re-sync, or book it manually."
+            ),
+            level=Notification.Level.ERROR,
+            source_module="shopify_connector",
+        )
+        return CommandResult.fail(f"Invalid order payload: {e}")
     except Exception as e:
-        # A5 (K#2): mark retryable so the webhook view answers 503 and Shopify
-        # redelivers (backoff ~48h) instead of a silent 200 that loses the order
-        # until the 48h poller. Mirrors process_refund's transient-fail contract;
-        # the poller stays the durable backstop for a permanently-bad payload.
+        # A5 (K#2): a TRANSIENT failure (DB/network) — mark retryable so the webhook
+        # view answers 503 and Shopify redelivers (backoff ~48h) instead of a silent
+        # 200 that loses the order until the 48h poller.
         logger.error("process_order_paid failed for store %s: %s", store.shop_domain, e)
         return CommandResult.fail(str(e), data={"retryable": True})
 

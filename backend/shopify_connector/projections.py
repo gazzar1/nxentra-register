@@ -1193,9 +1193,9 @@ class ShopifyAccountingHandler(BaseProjection):
                 f"never received after {event_age} — genuine orphan; no invoice can be "
                 f"produced to credit against.",
                 fix_hint=(
-                    "Confirm the order in Shopify and re-run the sync so its order_paid event "
-                    "arrives (the refund then self-heals), or book the refund manually and "
-                    "resolve this from /finance/exceptions."
+                    "If the order later syncs, its invoice will post but THIS refund will NOT "
+                    "auto-heal (its event is already consumed) — book the refund with a manual "
+                    "journal against that invoice and resolve this from /finance/exceptions."
                 ),
             )
 
@@ -1274,8 +1274,9 @@ class ShopifyAccountingHandler(BaseProjection):
                 raise ProjectionTerminalSkip(
                     f"Shopify refund {refund_id} dated {entry_date} cannot post its credit note: {result.error}",
                     fix_hint=(
-                        "Reopen the fiscal period to post this refund's credit note, "
-                        "or exclude pre-close history from the import."
+                        "Reopening the period will NOT auto-post this credit note (the refund "
+                        "event is already consumed) — after reopening, book the credit note with "
+                        "a manual journal and resolve this from /finance/exceptions."
                     ),
                 )
 

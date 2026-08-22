@@ -371,6 +371,29 @@ def test_process_order_paid_marks_transient_failure_retryable(company, owner_mem
     assert result.data and result.data.get("retryable") is True
 
 
+def test_process_order_paid_permanent_payload_error_not_retryable(company, owner_membership):
+    """Codex round-5 P2: a PERMANENT provider-data error (e.g. a non-numeric amount
+    that fails Decimal parsing) must be acknowledged (NOT retryable — no 503 loop)
+    with a durable operator-visible Notification, unlike a transient failure which
+    stays retryable (the test above)."""
+    from accounts.models import Notification
+    from shopify_connector import commands as cmd
+
+    store = _shopify_setup(company)
+
+    def _bad_data(*args, **kwargs):
+        raise ValueError("could not convert string to Decimal: 'abc'")
+
+    with patch.object(cmd, "_prepare_order_item_metadata", side_effect=_bad_data):
+        result = cmd.process_order_paid(store, {"id": 9900090, "currency": "EGP"})
+
+    assert not result.success
+    assert not (result.data or {}).get("retryable"), "a permanent payload error must not be retryable"
+    assert Notification.objects.filter(
+        company=company, source_module="shopify_connector", title__icontains="invalid payload"
+    ).exists()
+
+
 # =============================================================================
 # Codex round-2 P2 — negative refunds get a durable REJECTED marker at ingress
 # =============================================================================
