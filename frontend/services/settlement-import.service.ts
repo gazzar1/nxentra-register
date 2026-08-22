@@ -102,11 +102,14 @@ export interface CommitResult {
     unknown_order_ids: string[];
   }>;
   batch_count: number;
-  // A5-PR3b: this upload's durable reject evidence (grouped by import_batch_id;
-  // listed under Finance → Exceptions).
+  // A5-PR3b: this upload's durable evidence (grouped by import_batch_id; listed
+  // under Finance → Exceptions). Rejected rows were EXCLUDED from posting;
+  // review rows (orphan order ids) POSTED and need review (Codex round-7).
   import_batch_id: string;
   rejected_row_count: number;
   rejected_rows: SettlementRejectedRow[];
+  review_row_count: number;
+  review_rows: SettlementRejectedRow[];
 }
 
 export interface OpenFiscalPeriod {

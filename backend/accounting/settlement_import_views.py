@@ -148,16 +148,21 @@ class SettlementCSVImportView(APIView):
         except Exception:  # pragma: no cover - defensive
             logger.exception("Inline projection run after CSV import failed; events still queued")
 
-        # A5-PR3b: surface this upload's durable reject rows (dropped/flagged
-        # source rows + orphan-order review flags) so the merchant sees them at
-        # upload time, not only on /finance/exceptions.
+        # A5-PR3b: surface this upload's durable evidence rows at upload time,
+        # not only on /finance/exceptions. Codex round-7: the two statuses are
+        # DIFFERENT financial outcomes and must never share one count —
+        # REJECTED rows were EXCLUDED from posting, while QUARANTINED rows
+        # (orphan-order review flags) POSTED and merely need review.
         from accounting.models import ImportRejectedRow
 
         reject_qs = ImportRejectedRow.objects.filter(company=actor.company, import_batch_id=import_batch_id)
-        rejected_row_count = reject_qs.count()
-        reject_rows = list(
-            reject_qs.order_by("row_index").values("row_index", "reason_code", "reason_message", "status")[:200]
-        )
+        rejected_qs = reject_qs.filter(status=ImportRejectedRow.Status.REJECTED)
+        review_qs = reject_qs.filter(status=ImportRejectedRow.Status.QUARANTINED)
+        rejected_row_count = rejected_qs.count()
+        review_row_count = review_qs.count()
+        _row_fields = ("row_index", "reason_code", "reason_message", "status")
+        reject_rows = list(rejected_qs.order_by("row_index").values(*_row_fields)[:200])
+        review_rows = list(review_qs.order_by("row_index").values(*_row_fields)[:200])
 
         return Response(
             {
@@ -168,6 +173,8 @@ class SettlementCSVImportView(APIView):
                 "import_batch_id": str(import_batch_id),
                 "rejected_row_count": rejected_row_count,
                 "rejected_rows": reject_rows,
+                "review_row_count": review_row_count,
+                "review_rows": review_rows,
             },
             status=http_status.HTTP_200_OK,
         )

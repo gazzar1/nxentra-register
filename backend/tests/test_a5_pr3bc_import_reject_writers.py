@@ -437,9 +437,35 @@ def test_settlement_http_response_carries_reject_summary(shopify_setup, company,
     assert resp.status_code == 200, resp.data
     assert resp.data["rejected_row_count"] == 1
     assert resp.data["rejected_rows"][0]["reason_code"] == "EMPTY_BATCH_ID"
+    assert resp.data["review_row_count"] == 0  # no orphan flags in this file
     assert resp.data["import_batch_id"]
     # The persisted row is grouped under the response's batch id.
     assert ImportRejectedRow.objects.filter(company=company, import_batch_id=resp.data["import_batch_id"]).count() == 1
+
+
+def test_settlement_http_response_separates_review_from_rejected(
+    shopify_setup, company, user, owner_membership, api_client
+):
+    """Codex round-7: a QUARANTINED orphan flag describes a row that POSTED —
+    it must never inflate rejected_row_count (which the UI labels 'excluded
+    from posting')."""
+    from django.core.files.uploadedfile import SimpleUploadedFile
+
+    csv = b"""order_id,gross,fee,net,payout_batch_id,payout_date
+9999,300.00,9.00,291.00,PR3B-HTTP-ORPHAN,2026-04-25
+"""
+    api_client.force_authenticate(user=user)
+    upload = SimpleUploadedFile("orphan.csv", csv, content_type="text/csv")
+    resp = api_client.post(
+        "/api/accounting/settlements/import/",
+        {"file": upload, "provider": "paymob"},
+        format="multipart",
+    )
+    assert resp.status_code == 200, resp.data
+    assert resp.data["rejected_row_count"] == 0, "the orphan row POSTED — it is not a rejection"
+    assert resp.data["review_row_count"] == 1
+    assert resp.data["review_rows"][0]["reason_code"] == "ORPHAN_ORDER_ID"
+    assert resp.data["review_rows"][0]["status"] == "QUARANTINED"
 
 
 # =============================================================================
