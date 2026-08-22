@@ -125,10 +125,19 @@ export default function ExceptionsPage() {
   // over an immutable key. `null` cursor ⇒ no more pages ⇒ hide the button.
   const [loadingMoreRejects, setLoadingMoreRejects] = useState(false);
   const [rejectNextCursor, setRejectNextCursor] = useState<string | null>(null);
-  // Monotonic fetch generation: a filter reload bumps it so a slow in-flight
-  // "Load more" started under the OLD filter is discarded instead of appended to
-  // the freshly reset list (Codex round-9 stale-response race).
+  // `reloading` is true while ANY reset (initial load, filter change, refresh, or a
+  // resolve-triggered refetch) is in flight — every reset goes through fetchAll, so
+  // this uniformly disables "Load more" during a reset.
+  const [reloading, setReloading] = useState(false);
+  // Monotonic fetch generation: a reset bumps it so a slow in-flight "Load more"
+  // started BEFORE the reset is discarded instead of appended to the reset list.
   const fetchGenRef = useRef(0);
+  // Synchronous "a reset is in flight" flag (a ref, not state, so the load-more
+  // handler reads the live value with no render/batching lag): blocks a load-more
+  // from STARTING during a reset — the case the generation check alone misses,
+  // because a load-more begun mid-reset would capture that reset's own generation
+  // (Codex round-10).
+  const resetInFlightRef = useRef(false);
   const [resolvingRejectId, setResolvingRejectId] = useState<number | null>(null);
   const [expandedRejectId, setExpandedRejectId] = useState<number | null>(null);
 
@@ -151,8 +160,11 @@ export default function ExceptionsPage() {
   // =========================================================================
 
   const fetchAll = async () => {
-    // A reset fetch: bump the generation so any in-flight "Load more" is discarded.
+    // A reset fetch: bump the generation so any in-flight "Load more" is discarded,
+    // and mark a reset in flight so a NEW "Load more" can't start mid-reset.
     const gen = ++fetchGenRef.current;
+    resetInFlightRef.current = true;
+    setReloading(true);
     try {
       const [sum, list, rejects, unresolvedRejects] = await Promise.all([
         projectionFailuresService.summary(),
@@ -183,6 +195,13 @@ export default function ExceptionsPage() {
         description: (err as Error).message || "Try refreshing.",
         variant: "destructive",
       });
+    } finally {
+      // Only the LATEST reset clears the flags — a superseded reset must not
+      // re-enable load-more while a newer reset is still running.
+      if (gen === fetchGenRef.current) {
+        resetInFlightRef.current = false;
+        setReloading(false);
+      }
     }
   };
 
@@ -203,16 +222,20 @@ export default function ExceptionsPage() {
   // dedup-on-append is a belt-and-braces guard. The generation check discards a page
   // whose filter was changed out from under it mid-flight (Codex round-9).
   const handleLoadMoreRejects = async () => {
-    if (!rejectNextCursor) return;
+    // Never start a page while a reset is in flight: a load-more begun mid-reset
+    // would capture that reset's generation and slip past the check below, appending
+    // an old-cursor page onto the freshly reset list (Codex round-10).
+    if (!rejectNextCursor || resetInFlightRef.current) return;
     const gen = fetchGenRef.current; // capture; a "load more" is not a reset
+    const cursor = rejectNextCursor;
     setLoadingMoreRejects(true);
     try {
       const next = await importRejectedRowsService.list({
         resolved: resolvedFilter,
         limit: 100,
-        cursor: rejectNextCursor,
+        cursor,
       });
-      if (gen !== fetchGenRef.current) return; // filter reloaded mid-flight — discard
+      if (gen !== fetchGenRef.current) return; // a reset started after us — discard
       setImportRejects((prev) => {
         const seen = new Set(prev.map((r) => r.id));
         return [...prev, ...next.results.filter((r) => !seen.has(r.id))];
@@ -651,15 +674,16 @@ export default function ExceptionsPage() {
               </table>
             )}
             {/* Keyset "Load more": shown while the server reports another page
-                (next_cursor); disabled during a filter reload so a stale page can't
-                be appended to a freshly reset list (Codex round-7/8/9). */}
+                (next_cursor); disabled during ANY reset (reloading covers initial
+                load, filter change, refresh, and resolve-triggered refetches) so a
+                stale page can't be appended to a freshly reset list (Codex 7/8/9/10). */}
             {rejectNextCursor !== null && (
               <div className="border-t p-3 text-center">
                 <Button
                   size="sm"
                   variant="outline"
                   onClick={handleLoadMoreRejects}
-                  disabled={loadingMoreRejects || loading || refreshing}
+                  disabled={loadingMoreRejects || reloading}
                 >
                   {loadingMoreRejects ? (
                     <Loader2 className="h-3 w-3 animate-spin" />
