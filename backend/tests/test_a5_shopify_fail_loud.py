@@ -292,10 +292,16 @@ def test_refund_orphaned_by_terminally_applied_order_quarantines(company, owner_
 def test_order_zero_total_marks_processed_no_journal(company, owner_membership):
     """A zero-total order books no JE, but must not be silently consumed: the
     source row is marked PROCESSED (the handled-zero marker) with NO journal and
-    NO failure log (so a benign zero never trips /_health/alerts)."""
+    NO failure log (so a benign zero never trips /_health/alerts). Codex round-7 P2:
+    it must be handled even with NO SALES_REVENUE mapping — classification precedes
+    the revenue-mapping guard, so a zero order never falsely stalls the stream."""
+    from accounting.mappings import ModuleAccountMapping
     from sales.models import SalesInvoice
 
     store = _shopify_setup(company)
+    # Remove the revenue mapping to prove the zero order is classified BEFORE the
+    # SALES_REVENUE guard (a leftover role keeps the mapping non-empty).
+    ModuleAccountMapping.objects.filter(company=company, module="shopify_connector", role="SALES_REVENUE").delete()
     _make_order_row(company, store, order_id="9900020", total="0")
     event = _emit_order(company, order_id="9900020", amount="0", store=store)
 

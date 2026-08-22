@@ -697,31 +697,13 @@ class ShopifyAccountingHandler(BaseProjection):
         from sales.models import TaxCode
         from shopify_connector.models import ShopifyOrder
 
-        revenue_account = mapping.get(ROLE_SALES_REVENUE)
-        if not revenue_account:
-            # A80: raise instead of silent return.
-            from projections.exceptions import ProjectionStateError
-
-            raise ProjectionStateError(
-                f"SALES_REVENUE not configured in shopify_connector mapping for "
-                f"company {event.company.name} (order {data.get('order_number')})",
-                fix_hint=(
-                    "Setup → Account Mapping → Shopify Connector → add SALES_REVENUE "
-                    "role pointing at the company's main Sales Revenue account."
-                ),
-            )
-
-        shipping_account = mapping.get(ROLE_SHIPPING_REVENUE) or revenue_account
-        tax_account = mapping.get(ROLE_SALES_TAX_PAYABLE)
-
+        # A5 (Codex round-7 P2): classify a zero/negative order BEFORE the
+        # revenue-mapping requirement. A zero-value order needs no accounting, so it
+        # must not trip the SALES_REVENUE guard (which would raise, spawn a spurious
+        # /finance/exceptions alert, and stall the stream under stop_on_error).
         total_price = Decimal(str(data.get("amount", "0")))
-        subtotal = Decimal(str(data.get("subtotal", "0")))
-        total_tax = Decimal(str(data.get("total_tax", "0")))
-        total_shipping = Decimal(str(data.get("total_shipping", "0")))
         order_name = data.get("order_name", data.get("order_number", ""))
         shopify_order_id = str(data.get("shopify_order_id", ""))
-        entry_date = _parse_date(data.get("transaction_date")) or event.created_at.date()
-        currency = data.get("currency") or getattr(event.company, "default_currency", "USD")
 
         if total_price < 0:
             # A5 (Codex P2b): a NEGATIVE order total is invalid provider data, not
@@ -742,6 +724,29 @@ class ShopifyAccountingHandler(BaseProjection):
             )
             logger.info("Shopify order %s handled as zero-value (no journal needed)", order_name)
             return
+
+        revenue_account = mapping.get(ROLE_SALES_REVENUE)
+        if not revenue_account:
+            # A80: raise instead of silent return.
+            from projections.exceptions import ProjectionStateError
+
+            raise ProjectionStateError(
+                f"SALES_REVENUE not configured in shopify_connector mapping for "
+                f"company {event.company.name} (order {data.get('order_number')})",
+                fix_hint=(
+                    "Setup → Account Mapping → Shopify Connector → add SALES_REVENUE "
+                    "role pointing at the company's main Sales Revenue account."
+                ),
+            )
+
+        shipping_account = mapping.get(ROLE_SHIPPING_REVENUE) or revenue_account
+        tax_account = mapping.get(ROLE_SALES_TAX_PAYABLE)
+
+        subtotal = Decimal(str(data.get("subtotal", "0")))
+        total_tax = Decimal(str(data.get("total_tax", "0")))
+        total_shipping = Decimal(str(data.get("total_shipping", "0")))
+        entry_date = _parse_date(data.get("transaction_date")) or event.created_at.date()
+        currency = data.get("currency") or getattr(event.company, "default_currency", "USD")
 
         # A134: resolve the exact store this order belongs to (by
         # store_public_id / shop_domain) instead of blindly taking the
