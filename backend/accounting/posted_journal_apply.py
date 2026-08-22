@@ -322,8 +322,13 @@ def _entry_pending_materialization(event: BusinessEvent, entry_public_id: object
     je_read_model = JournalEntryProjection().name
 
     def _is_pending_evidence(prior) -> bool | None:
-        """True = pending; False = consumed (stop looking — the guard acts on
-        current rows); None = not this entry's post."""
+        """True = pending (this matching post is unconsumed); False = this
+        matching post is consumed; None = not this entry's post. The CALLER
+        must keep scanning past consumed matches (Codex round-20 P1): a
+        stream can carry the same entry id twice — a consumed earlier post
+        must not hide a later deferred REPOST, or a lifecycle event applies
+        against the old lines and its effect is lost when the repost
+        retries. Pending wins if ANY matching prior lacks the marker."""
         try:
             prior_data = prior.get_data()
         except Exception:
@@ -347,16 +352,15 @@ def _entry_pending_materialization(event: BusinessEvent, entry_public_id: object
     seen_pks = set()
     for prior in fast:
         seen_pks.add(prior.pk)
-        verdict = _is_pending_evidence(prior)
-        if verdict is not None:
-            return verdict
-    # Canonical-scan fallback for noncanonical stored spellings.
+        if _is_pending_evidence(prior) is True:
+            return True  # a consumed match never ends the scan — a repost may follow
+    # Canonical-scan fallback for noncanonical stored spellings (and any
+    # reposts beyond the fast path's cap).
     for prior in base.order_by("company_sequence").iterator(chunk_size=200):
         if prior.pk in seen_pks:
             continue
-        verdict = _is_pending_evidence(prior)
-        if verdict is not None:
-            return verdict
+        if _is_pending_evidence(prior) is True:
+            return True
     return False
 
 

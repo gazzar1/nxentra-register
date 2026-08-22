@@ -1510,6 +1510,56 @@ class TestLifecycleOrderingUnderDefer:
         original = JournalEntry.objects.get(company=company, public_id=original_id)
         assert original.status == JournalEntry.Status.REVERSED
 
+    def test_consumed_first_post_does_not_hide_deferred_repost(self, company, user, cash_account, revenue_account):
+        """Codex round-20 P1: two posts can carry the same entry id — a
+        consumed earlier post must not end the pending scan while a later
+        REPOST is deferred, or the analysis event applies against the old
+        lines and its effect is lost when the repost retries."""
+        from projections.accounting import AccountProjection
+
+        entry_id = uuid4()
+        _emit_posted(company, user, _posted_payload(entry_id, user, cash_account, revenue_account))
+        projection = JournalEntryProjection()
+        projection.process_pending(company)  # first post consumed + applied
+
+        lag_id = self._emit_lagging_account(company, user, code="1081")
+        repost_payload = _posted_payload(entry_id, user, cash_account, revenue_account, amount="60.00")
+        repost_payload["lines"][0]["account_public_id"] = str(lag_id)
+        emit_event(
+            company=company,
+            event_type=EventTypes.JOURNAL_ENTRY_POSTED,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(entry_id),
+            data=repost_payload,
+            caused_by_user=user,
+            idempotency_key=f"apply-test:repost:{entry_id}",
+        )
+        analysis_event = emit_event(
+            company=company,
+            event_type=EventTypes.JOURNAL_LINE_ANALYSIS_SET,
+            aggregate_type="JournalEntry",
+            aggregate_id=str(entry_id),
+            data={"entry_public_id": str(entry_id), "line_no": 1, "analysis_tags": []},
+            caused_by_user=user,
+            idempotency_key=f"apply-test:repost-analysis:{entry_id}",
+        )
+
+        projection.process_pending(company)
+        # The repost deferred — the analysis event must defer WITH it, not
+        # apply against the first post's lines.
+        assert not ProjectionAppliedEvent.objects.filter(
+            company=company, projection_name=projection.name, event=analysis_event
+        ).exists()
+
+        AccountProjection().process_pending(company)
+        projection.process_pending(company)
+
+        entry = JournalEntry.objects.get(company=company, public_id=entry_id)
+        assert entry.lines.filter(debit=Decimal("60.00")).exists()  # repost's lines materialized
+        assert ProjectionAppliedEvent.objects.filter(
+            company=company, projection_name=projection.name, event=analysis_event
+        ).exists()
+
     def test_pending_post_found_in_external_payload_storage(self, company, user, cash_account, revenue_account):
         """Codex round-7 P2: a >64KiB ingested post stores {} inline — the
         pending-post lookup must reach the EXTERNAL payload store
